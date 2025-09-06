@@ -1,380 +1,379 @@
-"""Main CLI entry point for receivers package."""
+#!/usr/bin/env python3
+"""
+receivers CLI - GPS Receiver Data Management Tool
+
+Enhanced command-line interface for downloading and managing GPS receiver data.
+Migrated from getSeptentrio3 with modern subcommand architecture.
+
+Usage:
+    receivers download STATION [STATION...] [OPTIONS]
+    receivers status STATION
+    receivers health STATION
+"""
 
 import argparse
-import json
 import logging
 import sys
-from typing import Any, Dict
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import List, Optional
 
-from rich import box
-from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table
+import gtimes.timefunc as gt
+from gtimes.timefunc import currDatetime
 
-# Import receiver classes (conditionally)
-try:
-    from ..septentrio.polarx5 import PolaRX5
-
-    HAS_POLARX5 = True
-except ImportError:
-    HAS_POLARX5 = False
-
-# Import configuration parser (will be updated when gps_parser is available)
-try:
-    import gps_parser
-
-    HAS_GPS_PARSER = True
-except ImportError:
-    HAS_GPS_PARSER = False
+from ..septentrio.polarx5 import PolaRX5
+from ..base.exceptions import ConfigurationError, ConnectionError
 
 
-console = Console()
-
-
-def create_receiver(station_id: str, receiver_type: str = "polarx5") -> Any:
-    """Create a receiver instance based on type.
-
-    Args:
-        station_id: Station identifier
-        receiver_type: Type of receiver
-
-    Returns:
-        Receiver instance
-
-    Raises:
-        ValueError: If receiver type is not supported or configuration missing
-    """
-    if not HAS_GPS_PARSER:
-        # For now, create a minimal config for testing
-        station_info = {
-            "router": {"ip": "10.6.1.90"},  # Updated IP
-            "receiver": {"ftpport": "2160"},
-        }
-        console.print(
-            "[yellow]Warning: gps_parser not available, using minimal config[/yellow]"
-        )
-    else:
-        parser = gps_parser.ConfigParser()
-        parsed_info = parser.getStationInfo(station_id.upper())
-        if not parsed_info or 'station' not in parsed_info:
-            # Fall back to minimal config if no station info
-            console.print(
-                "[yellow]Warning: No station configuration found, using minimal config[/yellow]"
-            )
-            station_info = {
-                "router": {"ip": "10.6.1.90"},  # Updated IP
-                "receiver": {"ftpport": "2160"},
-            }
-        else:
-            # Convert gps_parser format to receivers format
-            station_data = parsed_info['station']
-            if 'router_ip' in station_data and 'receiver_ftpport' in station_data:
-                station_info = {
-                    "router": {
-                        "ip": station_data['router_ip'],
-                        "type": station_data.get('router_type', ''),
-                    },
-                    "receiver": {
-                        "ftpport": station_data['receiver_ftpport'],
-                        "httpport": station_data.get('receiver_httpport', '8060'),
-                        "type": station_data.get('receiver_type', 'PolaRX5'),
-                    },
-                    "station": {
-                        "name": station_data.get('station_name', ''),
-                        "connection_type": station_data.get('connection_type', ''),
-                    }
-                }
-                console.print(
-                    f"[green]Loaded configuration for {station_id} from gps_parser[/green]"
-                )
-            else:
-                # Fall back if incomplete config  
-                console.print(
-                    "[yellow]Warning: Incomplete station config, using minimal config[/yellow]"
-                )
-                station_info = {
-                    "router": {"ip": "10.6.1.90"},
-                    "receiver": {"ftpport": "2160"},
-                }
-
-    if receiver_type.lower() == "polarx5":
-        if not HAS_POLARX5:
-            raise ValueError("PolaRX5 support not available (missing dependencies)")
-        return PolaRX5(station_id, station_info)
-    else:
-        raise ValueError(f"Unsupported receiver type: {receiver_type}")
-
-
-def format_health_status(health: Dict[str, Any]) -> None:
-    """Format and display health status using Rich."""
-
-    # Main status panel
-    status_color = "green" if health["overall_status"] == "healthy" else "red"
-    status_panel = Panel(
-        f"[bold {status_color}]{health['overall_status'].upper()}[/bold {status_color}]",
-        title=f"Station {health['station_id']} ({health['receiver_type']})",
-        expand=False,
+def setup_logging(level: int = logging.INFO) -> logging.Logger:
+    """Set up logging for CLI commands."""
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
     )
-    console.print(status_panel)
-
-    # Connection details table
-    table = Table(title="Connection Status", box=box.ROUNDED)
-    table.add_column("Component", style="cyan")
-    table.add_column("Status", style="bold")
-    table.add_column("Details", style="dim")
-
-    conn = health["connection"]
-    router_status = "✅ OK" if conn["router"] else "❌ FAIL"
-    receiver_status = "✅ OK" if conn["receiver"] else "❌ FAIL"
-
-    table.add_row("Router", router_status, f"{conn['ip']}:{conn['port']}")
-    table.add_row("Receiver", receiver_status, conn.get("error", ""))
-
-    console.print(table)
-
-    # Timestamp
-    console.print(f"\n[dim]Last checked: {health['timestamp']}[/dim]")
+    return logging.getLogger("receivers")
 
 
-def cmd_health(args) -> int:
-    """Check receiver health status."""
-    try:
-        receiver = create_receiver(args.station_id, args.receiver_type)
-        health = receiver.get_health_status()
+def parse_datetime(date_str: str) -> datetime:
+    """Parse datetime string in format YYYYMMDD-HHMM or YYYYMMDD."""
+    if "-" in date_str:
+        return datetime.strptime(date_str, "%Y%m%d-%H%M")
+    else:
+        return datetime.strptime(date_str, "%Y%m%d")
 
-        if args.json:
-            console.print(json.dumps(health, indent=2))
-        else:
-            format_health_status(health)
 
-        return 0 if health["overall_status"] == "healthy" else 1
-
-    except Exception as e:
-        console.print(f"[red]Error checking health: {e}[/red]")
-        return 1
+def get_station_config(station_id: str) -> dict:
+    """Get station configuration. TODO: integrate with gps_parser config system."""
+    # For now, use hardcoded configs - TODO: read from config file
+    # This matches getSeptentrio2 operational configurations
+    
+    # Default configuration for testing
+    default_config = {
+        'router': {'ip': '10.6.1.90'},
+        'receiver': {'ftpport': 2160, 'ftp_mode': 'auto'}
+    }
+    
+    # Station-specific overrides (from getSeptentrio2)
+    station_configs = {
+        'ELDC': {'router': {'ip': '10.6.1.90'}, 'receiver': {'ftpport': 2160, 'ftp_mode': 'active'}},
+        'THOB': {'router': {'ip': '10.6.1.90'}, 'receiver': {'ftpport': 2160, 'ftp_mode': 'active'}},
+        # TODO: Add more stations from operational config
+    }
+    
+    return station_configs.get(station_id.upper(), default_config)
 
 
 def cmd_download(args) -> int:
-    """Download data from receiver."""
-    try:
-        receiver = create_receiver(args.station_id, args.receiver_type)
-
-        # Prepare download parameters
-        download_args = {
-            "start": args.start,
-            "end": args.end,
-            "session": args.session,
-            "sync": not args.dry_run,
-            "clean_tmp": args.clean_tmp,
-            "archive": args.archive,
-            "loglevel": logging.DEBUG if args.verbose else logging.INFO,
-        }
-
-        if args.tmp_dir:
-            download_args["tmp_dir"] = args.tmp_dir
-
-        console.print(f"[bold]Downloading data for {args.station_id}[/bold]")
-        if args.dry_run:
-            console.print("[yellow]DRY RUN - No files will be downloaded[/yellow]")
-
-        result = receiver.download_data(**download_args)
-
-        # Display results
-        if args.json:
-            console.print(json.dumps(result, indent=2, default=str))
-        else:
-            status_color = "green" if result["status"] == "completed" else "yellow"
-            console.print(
-                f"\n[{status_color}]Status: {result['status']}[/{status_color}]"
+    """Download command - main data download functionality."""
+    logger = setup_logging(args.loglevel)
+    logger.info(f"Starting download for stations: {args.stations}")
+    
+    # Process time arguments (from getSeptentrio3 logic)
+    start_time = None
+    end_time = None
+    
+    if args.start:
+        start_time = parse_datetime(args.start)
+    
+    if args.end:
+        end_time = parse_datetime(args.end)
+    
+    # Default to days back if no start/end specified
+    if not start_time and args.days:
+        start_time = currDatetime(days=-args.days, refday=datetime.now())
+    
+    if not end_time:
+        end_time = datetime.now() - timedelta(days=1)  # Default to yesterday
+    
+    # Process session frequency arguments (from getSeptentrio3)
+    afrequency = args.afrequency or args.session.split("_")[0]
+    ffrequency = args.ffrequency or args.session.split("_")[1]
+    
+    logger.info(f"Time range: {start_time} to {end_time}")
+    logger.info(f"Session: {args.session}, File frequency: {ffrequency}, Acquisition frequency: {afrequency}")
+    
+    # Download for each station
+    total_downloaded = 0
+    total_errors = 0
+    
+    for station_id in args.stations:
+        station_id = station_id.upper()
+        logger.info(f"Processing station: {station_id}")
+        
+        try:
+            # Get station configuration
+            station_config = get_station_config(station_id)
+            
+            # Create PolaRX5 instance
+            receiver = PolaRX5(station_id, station_config)
+            
+            # Test connection if requested
+            if args.test_connection:
+                status = receiver.get_connection_status()
+                if not status.get('receiver'):
+                    logger.error(f"Connection test failed for {station_id}: {status.get('error')}")
+                    total_errors += 1
+                    continue
+                logger.info(f"Connection test successful for {station_id}")
+            
+            # Download data
+            result = receiver.download_data(
+                start=start_time,
+                end=end_time,
+                session=args.session,
+                ffrequency=ffrequency,
+                afrequency=afrequency,
+                compression=args.compression,
+                sync=args.sync,
+                clean_tmp=args.clean_tmp,
+                archive=args.archive,
+                loglevel=args.loglevel
             )
-            console.print(f"Files checked: {result['files_checked']}")
-            console.print(f"Files missing: {result['files_missing']}")
-            console.print(f"Files downloaded: {result['files_downloaded']}")
-            console.print(f"Duration: {result['duration']:.2f} seconds")
-
-        return 0
-
-    except Exception as e:
-        console.print(f"[red]Error during download: {e}[/red]")
-        return 1
+            
+            # Report results
+            files_downloaded = result.get('files_downloaded', 0)
+            total_downloaded += files_downloaded
+            
+            logger.info(f"Station {station_id}: {files_downloaded} files downloaded")
+            logger.info(f"Status: {result.get('status')}, Duration: {result.get('duration', 0):.2f}s")
+            
+            if files_downloaded > 0:
+                logger.info("Downloaded files:")
+                for file_path in result.get('downloaded_files', []):
+                    logger.info(f"  - {file_path}")
+            
+        except (ConfigurationError, ConnectionError) as e:
+            logger.error(f"Error processing {station_id}: {e}")
+            total_errors += 1
+        except Exception as e:
+            logger.error(f"Unexpected error processing {station_id}: {e}")
+            total_errors += 1
+    
+    # Final summary
+    logger.info(f"Download complete. Total files: {total_downloaded}, Errors: {total_errors}")
+    return 0 if total_errors == 0 else 1
 
 
 def cmd_status(args) -> int:
-    """Show receiver status information."""
+    """Status command - check receiver connection status."""
+    logger = setup_logging(args.loglevel)
+    station_id = args.station.upper()
+    
     try:
-        receiver = create_receiver(args.station_id, args.receiver_type)
-
-        info = receiver.get_station_info()
-        connection = receiver.get_connection_status()
-
-        if args.json:
-            data = {"station_info": info, "connection": connection}
-            console.print(json.dumps(data, indent=2))
-        else:
-            # Station info table
-            table = Table(title=f"Station {args.station_id} Status", box=box.ROUNDED)
-            table.add_column("Property", style="cyan")
-            table.add_column("Value", style="bold")
-
-            table.add_row("Station ID", info["station_id"])
-            table.add_row("Receiver Type", info["receiver_type"])
-            table.add_row("IP Address", info["ip"])
-            table.add_row("FTP Port", str(info["port"]))
-            table.add_row("Passive Mode", "Yes" if info["pasv_mode"] else "No")
-
-            # Connection status
-            conn_status = (
-                "✅ Connected" if connection["receiver"] else "❌ Disconnected"
-            )
-            table.add_row("Connection", conn_status)
-
-            console.print(table)
-
+        station_config = get_station_config(station_id)
+        receiver = PolaRX5(station_id, station_config)
+        
+        status = receiver.get_connection_status()
+        
+        print(f"Station: {station_id}")
+        print(f"IP: {status.get('ip')}:{status.get('port')}")
+        print(f"Router Status: {'✅' if status.get('router') else '❌'}")
+        print(f"Receiver Status: {'✅' if status.get('receiver') else '❌'}")
+        
+        if status.get('error'):
+            print(f"Error: {status['error']}")
+            return 1
+            
         return 0
-
+        
     except Exception as e:
-        console.print(f"[red]Error getting status: {e}[/red]")
+        logger.error(f"Status check failed: {e}")
         return 1
+
+
+def cmd_health(args) -> int:
+    """Health command - get receiver health information."""
+    logger = setup_logging(args.loglevel)
+    station_id = args.station.upper()
+    
+    try:
+        station_config = get_station_config(station_id)
+        receiver = PolaRX5(station_id, station_config)
+        
+        health = receiver.get_health_status()
+        
+        print(f"Station: {health['station_id']}")
+        print(f"Receiver Type: {health['receiver_type']}")
+        print(f"Overall Status: {health['overall_status']}")
+        print(f"Timestamp: {health['timestamp']}")
+        
+        # Connection details
+        conn = health.get('connection', {})
+        print(f"Connection: {'✅' if conn.get('receiver') else '❌'}")
+        
+        return 0
+        
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return 1
+
+
+def create_parser() -> argparse.ArgumentParser:
+    """Create argument parser with getSeptentrio3 compatibility."""
+    parser = argparse.ArgumentParser(
+        prog="receivers",
+        description="GPS Receiver Data Management Tool",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  receivers download ELDC --sync --archive
+  receivers download THOB ELDC --days 7 --session 15s_24hr
+  receivers download ELDC --start 20250905 --end 20250906
+  receivers status ELDC
+  receivers health THOB
+        """
+    )
+    
+    # Global options
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_const",
+        dest="loglevel",
+        const=logging.DEBUG,
+        default=logging.INFO,
+        help="Enable verbose output"
+    )
+    
+    # Subcommands
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+    
+    # Download subcommand (main functionality from getSeptentrio3)
+    download_parser = subparsers.add_parser(
+        "download",
+        help="Download data from GPS receivers",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    download_parser.add_argument(
+        "stations",
+        nargs="+",
+        help="List of stations to download (e.g., ELDC THOB)"
+    )
+    
+    # Time range options (from getSeptentrio3)
+    download_parser.add_argument(
+        "-D", "--days",
+        type=int,
+        default=10,
+        help="Number of days back to check for data (default: 10)"
+    )
+    
+    download_parser.add_argument(
+        "-s", "--start",
+        type=str,
+        help="Start date, format YYYYMMDD or YYYYMMDD-HHMM"
+    )
+    
+    download_parser.add_argument(
+        "-e", "--end", 
+        type=str,
+        help="End date, format YYYYMMDD or YYYYMMDD-HHMM"
+    )
+    
+    # Session options (from getSeptentrio3)
+    download_parser.add_argument(
+        "-se", "--session",
+        type=str,
+        default="15s_24hr",
+        choices=["15s_24hr", "1Hz_1hr", "status_1hr"],
+        help="Data sampling session (default: 15s_24hr)"
+    )
+    
+    download_parser.add_argument(
+        "-comp", "--compression",
+        type=str,
+        default=".gz",
+        help="Compression type (default: .gz)"
+    )
+    
+    download_parser.add_argument(
+        "-ffr", "--ffrequency",
+        type=str,
+        default="",
+        help="Data file frequency (auto-detected from session if not specified)"
+    )
+    
+    download_parser.add_argument(
+        "-afr", "--afrequency",
+        type=str,
+        default="",
+        help="Acquisition frequency (auto-detected from session if not specified)"
+    )
+    
+    # Download behavior options (from getSeptentrio3)
+    download_parser.add_argument(
+        "-sy", "--sync",
+        action="store_true",
+        help="Sync new or partial files from source (enable actual download)"
+    )
+    
+    download_parser.add_argument(
+        "-cl", "--clean_tmp",
+        action="store_true",
+        help="Clean download directory and start over on partial downloads"
+    )
+    
+    download_parser.add_argument(
+        "-ar", "--archive",
+        action="store_true",
+        help="Archive the downloaded data to final location"
+    )
+    
+    download_parser.add_argument(
+        "-t", "--test-connection",
+        action="store_true",
+        help="Test connection before attempting download"
+    )
+    
+    download_parser.set_defaults(func=cmd_download)
+    
+    # Status subcommand
+    status_parser = subparsers.add_parser("status", help="Check receiver connection status")
+    status_parser.add_argument("station", help="Station ID to check")
+    status_parser.add_argument(
+        "-v", "--verbose",
+        action="store_const",
+        dest="loglevel",
+        const=logging.DEBUG,
+        default=logging.INFO,
+        help="Enable verbose output"
+    )
+    status_parser.set_defaults(func=cmd_status)
+    
+    # Health subcommand  
+    health_parser = subparsers.add_parser("health", help="Get receiver health information")
+    health_parser.add_argument("station", help="Station ID to check")
+    health_parser.add_argument(
+        "-v", "--verbose",
+        action="store_const",
+        dest="loglevel",
+        const=logging.DEBUG,
+        default=logging.INFO,
+        help="Enable verbose output"
+    )
+    health_parser.set_defaults(func=cmd_health)
+    
+    return parser
 
 
 def main() -> int:
     """Main CLI entry point."""
-    parser = argparse.ArgumentParser(
-        prog="receivers",
-        description="GPS/GNSS receiver management and data download toolkit",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  receivers health REYK                    # Check health of REYK station
-  receivers download REYK --sync           # Download missing data
-  receivers status HOFN --json             # Get status as JSON
-  receivers download VMEY --start 2024-01-15 --end 2024-01-20 --dry-run
-        """,
-    )
-
-    parser.add_argument("--version", action="version", version="%(prog)s 0.1.0")
-
-    # Global options
-    parser.add_argument(
-        "-v", "--verbose", action="store_true", help="Enable verbose output"
-    )
-
-    parser.add_argument("--json", action="store_true", help="Output results as JSON")
-
-    # Subcommands
-    subparsers = parser.add_subparsers(
-        dest="command", help="Available commands", metavar="COMMAND"
-    )
-
-    # Health check command
-    health_parser = subparsers.add_parser(
-        "health",
-        help="Check receiver health status",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        description="Check the health status of a GPS/GNSS receiver",
-    )
-    health_parser.add_argument(
-        "station_id", help="Station identifier (e.g., REYK, HOFN, VMEY)"
-    )
-    health_parser.add_argument(
-        "-t",
-        "--receiver-type",
-        default="polarx5",
-        choices=["polarx5"],
-        help="Receiver type (default: polarx5)",
-    )
-    health_parser.set_defaults(func=cmd_health)
-
-    # Download command
-    download_parser = subparsers.add_parser(
-        "download",
-        help="Download data from receiver",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        description="Download GPS/GNSS data from receiver to local archive",
-    )
-    download_parser.add_argument(
-        "station_id", help="Station identifier (e.g., REYK, HOFN, VMEY)"
-    )
-    download_parser.add_argument(
-        "-t",
-        "--receiver-type",
-        default="polarx5",
-        choices=["polarx5"],
-        help="Receiver type (default: polarx5)",
-    )
-    download_parser.add_argument(
-        "-s",
-        "--start",
-        help="Start date (ISO format: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)",
-    )
-    download_parser.add_argument(
-        "-e", "--end", help="End date (ISO format: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)"
-    )
-    download_parser.add_argument(
-        "--session",
-        default="15s_24hr",
-        choices=["15s_24hr", "1Hz_1hr", "status_1hr"],
-        help="Data session type (default: 15s_24hr)",
-    )
-    download_parser.add_argument(
-        "--sync",
-        action="store_true",
-        help="Actually download files (default is dry-run)",
-    )
-    download_parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show what would be downloaded without downloading",
-    )
-    download_parser.add_argument(
-        "--clean-tmp",
-        action="store_true",
-        default=True,
-        help="Clean temporary directory before download",
-    )
-    download_parser.add_argument(
-        "--no-archive",
-        action="store_false",
-        dest="archive",
-        help="Don't archive downloaded files",
-    )
-    download_parser.add_argument("--tmp-dir", help="Temporary download directory")
-    download_parser.set_defaults(func=cmd_download)
-
-    # Status command
-    status_parser = subparsers.add_parser(
-        "status",
-        help="Show receiver status information",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        description="Display detailed status information for a receiver",
-    )
-    status_parser.add_argument(
-        "station_id", help="Station identifier (e.g., REYK, HOFN, VMEY)"
-    )
-    status_parser.add_argument(
-        "-t",
-        "--receiver-type",
-        default="polarx5",
-        choices=["polarx5"],
-        help="Receiver type (default: polarx5)",
-    )
-    status_parser.set_defaults(func=cmd_status)
-
-    # Parse arguments
+    parser = create_parser()
     args = parser.parse_args()
-
+    
     if not args.command:
         parser.print_help()
         return 1
-
-    # Set up logging
-    if args.verbose:
-        logging.basicConfig(level=logging.DEBUG)
-    else:
-        logging.basicConfig(level=logging.WARNING)
-
-    # Execute command
-    return args.func(args)
+    
+    try:
+        return args.func(args)
+    except KeyboardInterrupt:
+        print("\nOperation cancelled by user")
+        return 130
+    except Exception as e:
+        logging.error(f"Unexpected error: {e}")
+        return 1
 
 
 if __name__ == "__main__":

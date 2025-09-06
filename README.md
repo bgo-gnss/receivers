@@ -21,14 +21,20 @@ pip install -e .[dev]
 # Check receiver health (using ELDC as working example)
 receivers health ELDC
 
-# Download data (dry run)
-receivers download REYK --start 2024-01-15 --end 2024-01-20
+# Download data with sync and archive
+receivers download ELDC --sync --archive --days 7
 
-# Actually download data
-receivers download REYK --start 2024-01-15 --end 2024-01-20 --sync
+# Download specific date range with progress bar
+receivers download ELDC THOB --start 20250905 --end 20250906 --sync --archive
+
+# Force clean download (restart partial files)
+receivers download ELDC --sync --archive --clean_tmp --days 3
+
+# Test connection before download
+receivers download ELDC --sync --test-connection --archive
 
 # Get station status
-receivers status HOFN --json
+receivers status ELDC
 ```
 
 ### Python API
@@ -78,11 +84,15 @@ print(f"Downloaded {result['files_downloaded']} files")
 
 ✅ **Completed**:
 - Modern package structure with pyproject.toml
-- Abstract base receiver class
+- Abstract base receiver class  
 - PolaRX5 implementation with modernized download logic
-- CLI with subcommand structure
-- Rich console output
-- Type hints and error handling
+- Advanced CLI with getSeptentrio3 compatibility and progress bars
+- Comprehensive file validation and integrity checking
+- Partial download resumption with --clean_tmp support
+- Remote file missing protection (locks local copies)
+- Atomic file operations with proper tmp directory workflow
+- Rich console output with detailed logging
+- Type hints and comprehensive error handling
 
 🔄 **In Progress**:
 - Integration with gps_parser for station configuration (requires full receiver config data)
@@ -122,10 +132,10 @@ mypy src/receivers/
 ## 📦 Dependencies
 
 ### Core Dependencies
-- `gtimes>=0.4.0`: GPS time conversions
+- `gtimes>=0.4.0`: GPS time conversions and RINEX filename formatting
 - `gps_parser`: Station configuration (local package)
-- `rich>=13.0.0`: Console output
-- `progressbar2`: Download progress display
+- `rich>=13.0.0`: Console output and logging
+- `tqdm>=4.60.0`: Modern progress bar with transfer speed and ETA
 
 ### Development Dependencies
 - `pytest`: Testing framework
@@ -177,10 +187,14 @@ Configuration is typically managed through the `gps_parser` package.
 
 ### Septentrio PolaRX5 Specifics
 
-- Uses FTP for data download
-- Supports passive/active FTP based on IP range
-- Downloads SBF format files (.sbf.gz)
-- Organizes data by session type (15s_24hr, 1Hz_1hr, etc.)
+- Uses FTP for data download with automatic passive/active mode selection
+- Downloads SBF format files with RINEX naming convention (.sbf.gz)
+- Supports multiple session types (15s_24hr, 1Hz_1hr, status_1hr)
+- Real-time progress bars with transfer speed and ETA display
+- Comprehensive file validation with size checking and corruption detection
+- Automatic partial download resumption (resume from interruption)
+- Remote file missing protection (preserves existing local files)
+- getSeptentrio3 compatibility with modern enhancements
 
 ### Network Configuration
 
