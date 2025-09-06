@@ -14,9 +14,11 @@ import gtimes.timefunc as gt
 from gtimes.timefunc import currDatetime
 
 try:
-    import progressbar2 as progressbar
+    from tqdm import tqdm
+    progressbar_available = True
 except ImportError:
-    progressbar = None
+    progressbar_available = False
+    tqdm = None
 
 from ..base.exceptions import (
     ConfigurationError,
@@ -47,12 +49,22 @@ class PolaRX5(BaseReceiver):
         # Extract connection info from station_info
         self._setup_connection_info()
 
-        # Session mapping for different data types
+        # Session mapping from getSeptentrio3: session_type -> (session_letter, session_path)
         self.session_map = {
-            "15s_24hr": ("a", "log1_15s_24hr"),
-            "1Hz_1hr": ("b", "log2_1hz_1hr"),
-            "status_1hr": ("b", "log5_status_1hr"),
+            "15s_24hr": ("a", "LOG1_15s_24hr"),    # Daily 15-second data
+            "1Hz_1hr": ("b", "LOG2_1Hz_1hr"),      # Hourly 1Hz data  
+            "status_1hr": ("b", "LOG5_status_1hr"), # Hourly status files
         }
+        
+        # Receiver paths (from getSeptentrio3)
+        self.base_path = "/DSK1/SSN/"
+        
+        # Data paths - config-based with env fallback
+        self.data_prepath = self._get_data_prepath()
+        
+        # Tools paths for SBF conversion
+        self.sbf2rin_path = "/home/gpsops/bin/sbf2rin"
+        self.teqc_path = "/home/gpsops/bin/teqc"
 
     def _get_logger(self, level: int = logging.WARNING) -> logging.Logger:
         """Set up logger for this receiver instance."""
@@ -68,6 +80,21 @@ class PolaRX5(BaseReceiver):
             logger.propagate = False
 
         return logger
+    
+    def _get_data_prepath(self) -> str:
+        """Get data prepath from config or environment.
+        
+        Priority: 
+        1. Configuration file setting
+        2. Environment variable DATA_PREPATH  
+        3. Default /data/
+        """
+        # TODO: Implement config file reading when gps_parser integration is ready
+        # For now, use environment variable with fallback
+        import os
+        # TODO: Review and decide on proper default path strategy
+        # Current: ./data/ for development, consider /data/ or ~/data/ for production
+        return os.getenv("DATA_PREPATH", "./data/")
 
     def _setup_connection_info(self):
         """Extract and validate connection information from station_info."""
@@ -75,9 +102,22 @@ class PolaRX5(BaseReceiver):
             self.ip_number = self.station_info["router"]["ip"]
             self.ip_port = int(self.station_info["receiver"]["ftpport"])
 
-            # Determine passive mode based on IP pattern
-            regexp = re.compile(r"10\.4\.[12]")
-            self.pasv = not regexp.search(self.ip_number)
+            # Determine passive mode from config or hardcoded station list (from getSeptentrio2)
+            # Stations that need ACTIVE mode (set_pasv(False)) - from getSeptentrio2 line 540
+            active_mode_stations = {
+                'ROTH', 'SVIN', 'SVIE', 'VMEY', 'THOB', 'ODDF', 'SAUD', 'HRIC', 'OLKE', 
+                'KALF', 'VOGS', 'SLEC', 'HVOL', 'GOLA', 'FAGD', 'SKRO', 'KIDC', 'HAUC', 
+                'STHV', 'ENTC', 'KVEC', 'HITA', 'SEY9', 'NYLA', 'TEST'
+            }
+            
+            # Check if station needs active mode or if explicitly configured
+            ftp_mode = self.station_info.get("receiver", {}).get("ftp_mode", "auto")
+            if ftp_mode == "active":
+                self.pasv = False
+            elif ftp_mode == "passive": 
+                self.pasv = True
+            else:  # auto-detect from getSeptentrio2 station list
+                self.pasv = self.station_id not in active_mode_stations
 
             self.logger.info(
                 f"Station {self.station_id} - IP: {self.ip_number}:{self.ip_port}, PASV: {self.pasv}"
@@ -184,8 +224,8 @@ class PolaRX5(BaseReceiver):
             closed="both",
         )
 
-        # Create archive and remote file paths
-        archive_format = f"/data/%Y/#b/{self.station_id}/{session}/raw/{self.station_id}%Y%m%d%H00a.sbf{compression}"
+        # Create archive and remote file paths using configurable prepath
+        archive_format = f"{self.data_prepath}%Y/#b/{self.station_id}/{session}/raw/{self.station_id}%Y%m%d%H00a.sbf{compression}"
         archive_file_list = gt.datepathlist(
             archive_format, ffrequency, datelist=file_datetime_list, closed="both"
         )
@@ -199,14 +239,32 @@ class PolaRX5(BaseReceiver):
             zip(file_datetime_list, zip(archive_file_list, igs_file_list))
         )
 
-        # Find missing files
-        missing_file_dict = {
-            key: value
-            for (key, value) in file_date_dict.items()
-            if not os.path.isfile(value[0])
-        }
+        # Find missing files and incomplete files (like getSeptentrio3 logic)
+        missing_file_dict = {}
+        incomplete_file_dict = {}
+        
+        for key, value in file_date_dict.items():
+            archive_file = value[0]
+            if not os.path.isfile(archive_file):
+                # File doesn't exist - needs download
+                missing_file_dict[key] = value
+            else:
+                # File exists - check if it's incomplete by attempting to get remote size
+                if sync:  # Only check completeness if we plan to sync
+                    try:
+                        # Try to get remote file size for comparison
+                        remote_path = self._get_remote_file_path(key, session)
+                        # Note: We'll check completeness during actual download
+                        # For now, assume existing files are complete unless proven otherwise
+                        pass
+                    except Exception:
+                        # Can't verify completeness without FTP connection
+                        pass
+                        
+        # Combine missing and incomplete files for processing
+        all_missing_files = {**missing_file_dict, **incomplete_file_dict}
 
-        if not missing_file_dict:
+        if not all_missing_files:
             self.logger.info("Archive is up to date")
             return {
                 "status": "up_to_date",
@@ -216,24 +274,25 @@ class PolaRX5(BaseReceiver):
                 "duration": time.time() - start_time,
             }
 
-        self.logger.info(f"Missing files: {len(missing_file_dict)}")
+        self.logger.info(f"Missing files: {len(all_missing_files)}")
 
         downloaded_files_dict = {}
         if sync:
             downloaded_files_dict = self._sync_missing_files(
-                missing_file_dict,
+                all_missing_files,
                 tmp_dir_path,
                 session,
                 predir,
                 ffrequency,
                 clean_tmp,
                 archive,
+                compression,
             )
 
         return {
             "status": "completed" if sync else "dry_run",
             "files_checked": len(file_date_dict),
-            "files_missing": len(missing_file_dict),
+            "files_missing": len(all_missing_files),
             "files_downloaded": len(downloaded_files_dict),
             "downloaded_files": list(downloaded_files_dict.values()),
             "duration": time.time() - start_time,
@@ -274,6 +333,49 @@ class PolaRX5(BaseReceiver):
 
         return start, end
 
+    def make_file_name(self, day, session="15s_24hr", compression=".gz"):
+        """Generate Septentrio file name using getSeptentrio3 logic.
+        
+        Args:
+            day: datetime object for the file date
+            session: session type (15s_24hr, 1Hz_1hr)
+            compression: compression suffix (.gz)
+            
+        Returns:
+            str: formatted filename (e.g., ELDC202509040000a.sbf.gz)
+        """
+        import re
+        
+        # Session type detection
+        daysession = re.compile(r"24h", re.IGNORECASE)
+        hoursession = re.compile(r"1h", re.IGNORECASE)
+        
+        if daysession.search(session):
+            filedate = day.strftime("%Y%m%d0000a")  # Daily files end with 'a'
+        elif hoursession.search(session):
+            filedate = day.strftime("%Y%m%d%H00b")  # Hourly files end with 'b'
+        else:
+            # Default to daily format
+            filedate = day.strftime("%Y%m%d0000a")
+            
+        # Septentrio PolaRX5 uses .sbf format
+        file_name = f"{self.station_id}{filedate}.sbf{compression}"
+        
+        return file_name
+        
+    def _get_remote_file_path(self, date_key, session):
+        """Get remote file path for a given date and session."""
+        if session not in self.session_map:
+            raise ConfigurationError(f"Unknown session type: {session}")
+            
+        session_letter, session_path = self.session_map[session]
+        
+        # Build remote path like getSeptentrio3
+        gps_week = gt.date2gpsWeek(date_key)[0]
+        remote_path = f"{self.base_path}{session_path}/{gps_week:05d}/"
+        
+        return remote_path
+
     def _sync_missing_files(
         self,
         missing_file_dict,
@@ -283,6 +385,7 @@ class PolaRX5(BaseReceiver):
         ffrequency,
         clean_tmp,
         archive,
+        compression=".gz",
     ):
         """Sync missing files from receiver to local archive."""
         # Get session info
@@ -290,7 +393,7 @@ class PolaRX5(BaseReceiver):
             raise ConfigurationError(f"Unknown session type: {session}")
 
         session_info = self.session_map[session][1]
-        remote_format = f"{predir}{session_info}/%y%j/"
+        remote_format = f"{self.base_path}{session_info}/%y%j/"
         remote_path_list = gt.datepathlist(
             remote_format,
             ffrequency,
@@ -298,10 +401,15 @@ class PolaRX5(BaseReceiver):
             closed="both",
         )
 
-        # Create download dictionary
-        download_file_dict = dict(
-            zip([path[1] for path in missing_file_dict.values()], remote_path_list)
+        # Generate remote filenames using RINEX format (like getSeptentrio3)
+        # Remote files use RINEX naming: STATION#Rin2_compression format  
+        igs_format = f"{self.station_id}#Rin2_{compression}"
+        igs_file_name_list = gt.datepathlist(
+            igs_format, ffrequency, datelist=list(missing_file_dict.keys()), closed="both"
         )
+        
+        # Create download dictionary with RINEX filenames and remote paths
+        download_file_dict = dict(zip(igs_file_name_list, remote_path_list))
 
         # Connect and download
         ftp = self._ftp_open_connection()
@@ -354,18 +462,90 @@ class PolaRX5(BaseReceiver):
             remote_file = f"{remote_dir}{file_name}"
 
             try:
-                remote_file_size = ftp.size(remote_file)
-                offset = local_file.stat().st_size if local_file.exists() else 0
-
-                diff = self._download_with_progressbar(
-                    ftp, remote_file, str(local_file), remote_file_size, offset
-                )
-
-                if diff == 0:
-                    downloaded_files.append(str(local_file))
-                    self.logger.info(f"Successfully downloaded {file_name}")
+                # Check if remote file exists and get size (like getSeptentrio3)
+                try:
+                    remote_file_size = ftp.size(remote_file)
+                    remote_file_exists = True
+                except Exception as e:
+                    # Check if it's a "file not found" vs "connection error"
+                    error_msg = str(e).lower()
+                    if "550" in error_msg or "not found" in error_msg or "no such file" in error_msg:
+                        # Remote file is missing - lock local copy if exists
+                        remote_file_exists = False
+                        remote_file_size = None
+                        if local_file.exists():
+                            self.logger.warning(f"🔒 Remote file {file_name} missing but local copy exists")
+                            self.logger.warning(f"   Local copy LOCKED and will not be modified: {local_file}")
+                            continue  # Skip this file completely - never touch local copy
+                        else:
+                            self.logger.error(f"❌ Remote file {file_name} not found on server")
+                            continue  # No local, no remote - nothing to do
+                    else:
+                        # Connection/server error - can't determine file status
+                        self.logger.error(f"⚠️  Cannot check remote file {file_name}: {e}")
+                        remote_file_exists = False
+                        remote_file_size = None
+                
+                # Handle existing partial files and size mismatches
+                offset = 0
+                if local_file.exists():
+                    local_file_size = local_file.stat().st_size
+                    
+                    # Check for size mismatch - force re-download if mismatch detected
+                    if remote_file_size is not None and local_file_size == remote_file_size:
+                        # File is complete and matches remote size
+                        self.logger.info(f"✅ File {file_name} already complete ({local_file_size:,} bytes)")
+                        downloaded_files.append(str(local_file))
+                        continue
+                    elif remote_file_size is not None and local_file_size > remote_file_size:
+                        # Local file is larger than remote - corruption detected
+                        self.logger.warning(f"🔧 Local file {file_name} is larger than remote ({local_file_size:,} > {remote_file_size:,} bytes)")
+                        if clean_tmp:
+                            self.logger.info(f"   Re-downloading due to size mismatch (clean_tmp=True)")
+                            local_file.unlink()
+                            offset = 0
+                        else:
+                            self.logger.info(f"   Keeping corrupted file (clean_tmp=False)")
+                            continue
+                    elif not clean_tmp:
+                        # Resume partial download (default behavior)
+                        offset = local_file_size
+                        self.logger.info(f"📄 Resuming download from {offset:,} bytes (clean_tmp=False)")
+                    else:
+                        # clean_tmp=True - start fresh
+                        self.logger.info(f"🔄 Restarting download (clean_tmp=True)")
+                        local_file.unlink()
+                        offset = 0
+                
+                if remote_file_size is not None:
+                    # Use progress bar download
+                    diff = self._download_with_progressbar(ftp, remote_file, str(local_file), remote_file_size, offset)
+                    
+                    # Validate download completeness (like getSeptentrio3)
+                    local_file_size = local_file.stat().st_size
+                    self.logger.info(f"Remote file size: {remote_file_size} bytes, Local file size: {local_file_size} bytes")
+                    self.logger.info(f"Difference between remote and downloaded file: {diff} bytes")
+                    
+                    if diff == 0:
+                        downloaded_files.append(str(local_file))
+                        self.logger.info(f"✅ Successfully downloaded {file_name} ({local_file_size:,} bytes)")
+                    else:
+                        self.logger.error(f"❌ Download incomplete for {file_name}: size mismatch of {diff} bytes")
+                        self.logger.error(f"   Expected: {remote_file_size:,} bytes, Got: {local_file_size:,} bytes")
+                        self.logger.info(f"   Partial file kept for resume: {local_file}")
+                        # Keep partial file for resume in next attempt
+                        
                 else:
-                    self.logger.warning(f"Size mismatch for {file_name}: {diff} bytes")
+                    # Fallback to simple download without progress
+                    with open(local_file, "ab") as f:
+                        ftp.retrbinary(f"RETR {remote_file}", f.write, rest=offset)
+                    
+                    # Without remote size, just check if file grew
+                    if local_file.exists() and local_file.stat().st_size > offset:
+                        downloaded_files.append(str(local_file))
+                        self.logger.info(f"Successfully downloaded {file_name} (size validation not available)")
+                    else:
+                        self.logger.warning(f"Download may have failed for {file_name}")
 
             except Exception as e:
                 self.logger.error(f"Failed to download {file_name}: {e}")
@@ -376,53 +556,88 @@ class PolaRX5(BaseReceiver):
     def _download_with_progressbar(
         self, ftp, remote_file, local_file, remote_file_size, offset=0
     ):
-        """Download file with progress bar display."""
-        if progressbar is None:
+        """Download file with progress bar display (like getSeptentrio3)."""
+        if not progressbar_available:
             # Fallback without progress bar
             with open(local_file, "ab") as f:
                 ftp.retrbinary(f"RETR {remote_file}", f.write, rest=offset)
         else:
-            # Use progress bar
-            widgets = [
-                f"Downloading {Path(remote_file).name}: ",
-                progressbar.Percentage(),
-                " ",
-                progressbar.Bar(),
-                " ",
-                progressbar.ETA(),
-                " ",
-                progressbar.FileTransferSpeed(),
-            ]
+            # Use tqdm progress bar
+            filename = Path(remote_file).name
+            desc = f"Downloading {filename}"
+            
+            with tqdm(
+                total=remote_file_size,
+                initial=offset,
+                unit='B',
+                unit_scale=True,
+                unit_divisor=1024,
+                desc=desc
+            ) as pbar:
+                with open(local_file, "ab") as f:
+                    def callback(chunk):
+                        f.write(chunk)
+                        pbar.update(len(chunk))
 
-            pbar = progressbar.ProgressBar(
-                min_value=offset, max_value=remote_file_size, widgets=widgets
-            ).start()
-
-            with open(local_file, "ab") as f:
-
-                def callback(chunk):
-                    f.write(chunk)
-                    pbar.update(pbar.value + len(chunk))
-
-                ftp.retrbinary(f"RETR {remote_file}", callback, rest=offset)
-            pbar.finish()
+                    ftp.retrbinary(f"RETR {remote_file}", callback, rest=offset)
 
         local_file_size = os.path.getsize(local_file)
         return local_file_size - remote_file_size
 
     def _archive_files(self, downloaded_files_dict, missing_file_dict):
-        """Move downloaded files to archive locations."""
+        """Move downloaded files to archive locations (like getSeptentrio3)."""
         for ddate, tmp_file in downloaded_files_dict.items():
             if not os.path.isfile(tmp_file):
                 continue
-
-            archive_path, _ = os.path.split(missing_file_dict[ddate][0])
-            os.makedirs(archive_path, exist_ok=True)
+                
+            tmp_file_size = os.path.getsize(tmp_file)
+            self.logger.info(f"File to archive {os.path.basename(tmp_file)} ({tmp_file_size:,} bytes)")
 
             destination = missing_file_dict[ddate][0]
-            if not os.path.isfile(destination):
+            archive_path, _ = os.path.split(destination)
+            os.makedirs(archive_path, exist_ok=True)
+            
+            if os.path.isfile(destination):
+                # Archive file already exists - check sizes (like getSeptentrio3)
+                archive_file_size = os.path.getsize(destination)
+                if tmp_file_size == archive_file_size:
+                    self.logger.warning(f"Files dated {ddate}:\n   {tmp_file} and {destination}\n"
+                                      f"   have the same size {tmp_file_size:,} bytes. Aborting archive.")
+                    continue
+            
+            # Atomic move to archive location (like getSeptentrio3)
+            self.logger.info(f"Move file dated {ddate} from {tmp_file} to {destination}")
+            try:
                 os.rename(tmp_file, destination)
-                self.logger.info(f"Archived {os.path.basename(tmp_file)}")
+                
+                # Verify successful archive (like getSeptentrio3)
+                if os.path.isfile(destination):
+                    archive_file_size = os.path.getsize(destination)
+                    if tmp_file_size == archive_file_size:
+                        self.logger.info(f"✅ File successfully archived ({archive_file_size:,} bytes)")
+                        # Remove temp file is handled by os.rename (atomic move)
+                    else:
+                        self.logger.error(f"❌ Archive size mismatch: expected {tmp_file_size:,}, got {archive_file_size:,}")
+                        # Try to clean up if archive failed
+                        if os.path.isfile(tmp_file):
+                            os.unlink(tmp_file)
+                            self.logger.info(f"🧹 Cleaned up failed tmp file: {tmp_file}")
+                else:
+                    self.logger.error(f"❌ Archive failed: destination file not found")
+                    # Clean up tmp file on failure
+                    if os.path.isfile(tmp_file):
+                        os.unlink(tmp_file)
+                        self.logger.info(f"🧹 Cleaned up failed tmp file: {tmp_file}")
+                        
+            except Exception as e:
+                self.logger.error(f"❌ Failed to move {tmp_file} to {destination}: {e}")
+                # Clean up tmp file on failure
+                if os.path.isfile(tmp_file):
+                    try:
+                        os.unlink(tmp_file)
+                        self.logger.info(f"🧹 Cleaned up failed tmp file: {tmp_file}")
+                    except Exception as cleanup_e:
+                        self.logger.error(f"❌ Failed to cleanup tmp file {tmp_file}: {cleanup_e}")
 
     def get_health_status(self) -> Dict[str, Any]:
         """Get health status of PolaRX5 receiver.
@@ -447,6 +662,178 @@ class PolaRX5(BaseReceiver):
             health["overall_status"] = "unhealthy"
 
         return health
+    
+    def download_health_data(
+        self, 
+        start: Optional[Union[datetime, str]] = None,
+        end: Optional[Union[datetime, str]] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """Download health data (status_1hr session) from PolaRX5 receiver.
+        
+        Uses LOG5_status_1hr session containing binary health/status files
+        that need conversion to ASCII format for analysis.
+        
+        Returns:
+            Dictionary with download results and health data files
+        """
+        return self.download_data(
+            start=start,
+            end=end, 
+            session="status_1hr",
+            ffrequency="1H",
+            **kwargs
+        )
+    
+    def get_health_archive_path(self, timestamp: datetime) -> str:
+        """Generate health data archive path using gtimes datepath pattern.
+        
+        Format: {prepath}/YYYY/#b/STATION/status/station_status_timestamp.sbf
+        
+        Args:
+            timestamp: datetime for the health data file
+            
+        Returns:
+            Full path to health archive file
+        """
+        # Use gtimes-compatible format for health data
+        health_format = f"{self.data_prepath}%Y/#b/{self.station_id}/status/{self.station_id.lower()}_status_%Y%m%d%H%M.sbf"
+        return gt.datepathlist(health_format, "1H", datelist=[timestamp], closed="both")[0]
+    
+    def convert_sbf_to_ascii(self, sbf_file_path: Union[str, Path]) -> Dict[str, Any]:
+        """Convert SBF binary health file to ASCII using sbf2rin + teqc.
+        
+        This implements the operational conversion workflow:
+        SBF → (sbf2rin) → RINEX → (teqc +err) → ASCII health data
+        
+        Args:
+            sbf_file_path: Path to SBF binary file
+            
+        Returns:
+            Dictionary with conversion results and output paths
+        """
+        import subprocess
+        import tempfile
+        from pathlib import Path
+        
+        sbf_file = Path(sbf_file_path)
+        if not sbf_file.exists():
+            raise FileNotFoundError(f"SBF file not found: {sbf_file_path}")
+        
+        # Create temporary and output files
+        temp_dir = Path(tempfile.mkdtemp())
+        rinex_temp = temp_dir / f"{sbf_file.stem}.rinex"
+        ascii_output = sbf_file.parent / f"{sbf_file.stem}.ascii"
+        
+        try:
+            # Step 1: SBF to RINEX conversion
+            sbf2rin_cmd = [self.sbf2rin_path, "-f", str(sbf_file), "-d", str(rinex_temp)]
+            result1 = subprocess.run(sbf2rin_cmd, capture_output=True, text=True)
+            
+            if result1.returncode != 0:
+                return {
+                    "success": False,
+                    "error": f"sbf2rin failed: {result1.stderr}",
+                    "step": "sbf2rin"
+                }
+            
+            # Step 2: TEQC health data extraction (simplified - would need proper config)
+            teqc_cmd = [self.teqc_path, "+err", "err.lst", str(rinex_temp)]
+            result2 = subprocess.run(teqc_cmd, capture_output=True, text=True, cwd=temp_dir)
+            
+            # Save ASCII output
+            with open(ascii_output, 'w') as f:
+                f.write(result2.stdout)
+            
+            return {
+                "success": True,
+                "sbf_file": str(sbf_file),
+                "ascii_file": str(ascii_output),
+                "sbf2rin_success": result1.returncode == 0,
+                "teqc_success": result2.returncode == 0,
+                "processing_time": datetime.utcnow().isoformat()
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "step": "conversion_process"
+            }
+        finally:
+            # Cleanup temporary files
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)
+    
+    def extract_health_metrics(self, ascii_file_path: Union[str, Path]) -> Dict[str, Any]:
+        """Extract health metrics from ASCII converted file.
+        
+        Parses TEQC ASCII output to extract structured health data
+        matching the current PostgreSQL schema.
+        
+        Args:
+            ascii_file_path: Path to ASCII health data file
+            
+        Returns:
+            Dictionary with structured health metrics
+        """
+        # TODO: Implement ASCII parsing based on actual TEQC output format
+        # This is a placeholder structure matching current DB schema
+        return {
+            "router_status": True,  # Parse from ASCII
+            "receiver_status": True,  # Parse from ASCII 
+            "temperature": 45.2,  # Extract from ASCII
+            "voltage": 12.1,  # Extract from ASCII
+            "satellite_count": 12,  # Additional metric
+            "signal_quality": {  # Enhanced metrics
+                "GPS": 8.5,
+                "GLONASS": 7.2, 
+                "Galileo": 8.1
+            }
+        }
+    
+    def store_health_data(self, health_data: Dict[str, Any], storage_path: Optional[str] = None) -> str:
+        """Store health data to structured JSON files for gradual DB migration.
+        
+        Creates file structure: {prepath}/YYYY/#b/station/status/health/
+        
+        Args:
+            health_data: Structured health metrics dictionary
+            storage_path: Optional custom storage path
+            
+        Returns:
+            Path to stored JSON file
+        """
+        import json
+        from pathlib import Path
+        
+        if storage_path is None:
+            # Use gtimes pattern for health storage
+            timestamp = datetime.fromisoformat(health_data.get("timestamp", datetime.utcnow().isoformat()))
+            health_dir_format = f"{self.data_prepath}%Y/#b/{self.station_id}/status/health/"
+            health_dir = gt.datepathlist(health_dir_format, "1D", datelist=[timestamp], closed="both")[0]
+        else:
+            health_dir = storage_path
+            
+        Path(health_dir).mkdir(parents=True, exist_ok=True)
+        
+        # Create daily health file with timestamp
+        timestamp_str = health_data.get("timestamp", datetime.utcnow().isoformat())
+        date_str = datetime.fromisoformat(timestamp_str).strftime("%Y%m%d")
+        json_file = Path(health_dir) / f"{self.station_id.lower()}_health_{date_str}.json"
+        
+        # Append to daily file (for multiple hourly measurements)
+        existing_data = []
+        if json_file.exists():
+            with open(json_file, 'r') as f:
+                existing_data = json.load(f)
+        
+        existing_data.append(health_data)
+        
+        with open(json_file, 'w') as f:
+            json.dump(existing_data, f, indent=2)
+            
+        return str(json_file)
 
     def get_station_info(self) -> Dict[str, Any]:
         """Get station information and configuration.

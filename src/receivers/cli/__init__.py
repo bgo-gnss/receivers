@@ -1,4 +1,4 @@
-"""Command-line interface for receivers package."""
+"""Command-line interface for GPS receivers package."""
 
 from .main import main
 
