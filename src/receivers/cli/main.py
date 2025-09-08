@@ -24,6 +24,16 @@ from gtimes.timefunc import currDatetime
 from ..septentrio.polarx5 import PolaRX5
 from ..base.exceptions import ConfigurationError, ConnectionError
 
+# Import gps_parser for centralized config
+try:
+    import sys
+    sys.path.append('../gps_parser/src')
+    import gps_parser
+    HAS_GPS_PARSER = True
+except ImportError:
+    HAS_GPS_PARSER = False
+    gps_parser = None
+
 
 def setup_logging(level: int = logging.INFO) -> logging.Logger:
     """Set up logging for CLI commands."""
@@ -44,24 +54,99 @@ def parse_datetime(date_str: str) -> datetime:
 
 
 def get_station_config(station_id: str) -> dict:
-    """Get station configuration. TODO: integrate with gps_parser config system."""
-    # For now, use hardcoded configs - TODO: read from config file
-    # This matches getSeptentrio2 operational configurations
+    """Get station configuration from gps_parser with getSeptentrio2 fallback."""
+    station_upper = station_id.upper()
     
-    # Default configuration for testing
-    default_config = {
-        'router': {'ip': '10.6.1.90'},
-        'receiver': {'ftpport': 2160, 'ftp_mode': 'auto'}
+    # Try gps_parser first (centralized config)
+    if HAS_GPS_PARSER:
+        try:
+            parser = gps_parser.ConfigParser()
+            station_info = parser.getStationInfo(station_upper)
+            
+            if station_info and 'station' in station_info:
+                station_data = station_info['station']
+                
+                # Extract router IP from gps_parser format
+                router_ip = station_data.get('router_ip')
+                if not router_ip:
+                    # Handle different field naming in gps_parser
+                    router_ip = station_data.get('Router_IP')
+                
+                if router_ip:
+                    # Build config from gps_parser data
+                    ftp_port = int(station_data.get('receiver_ftpport', 
+                                                  station_data.get('Receiver_FTP_PORT', 2160)))
+                    
+                    station_config = {
+                        'router': {'ip': router_ip},
+                        'receiver': {'ftpport': ftp_port, 'ftp_mode': 'auto'}
+                    }
+                    return station_config
+                    
+        except Exception as e:
+            # Log but continue to fallback - don't fail hard on gps_parser issues
+            logging.warning(f"gps_parser failed for {station_upper}: {e}")
+    
+    # Fallback to hardcoded mapping from getSeptentrio2 (for operational reliability)
+    STATION_IP_MAPPING = {
+        # Extended network stations (10.6.x.x range) - commonly used
+        'ELDC': "10.6.1.90",
+        'ROTH': "10.6.1.97",
+        'SVIE': "10.6.1.87", 
+        'HAHV': "10.6.1.68",
+        'SAUD': "10.6.1.64",
+        'INTA': "10.6.1.93",
+        'AUST': "10.6.1.156",
+        'ORFC': "10.6.1.91",
+        'GFUM': "10.6.1.58",
+        'KAST': "10.6.1.102",
+        
+        # Internal network stations (10.4.x.x range) - commonly used
+        'THOB': "10.4.2.28",
+        'HUSM': "10.4.1.240",
+        'GJAC': "10.4.1.226", 
+        'HLID': "10.4.1.238",
+        'VMEY': "10.4.2.81",
+        'VOGS': "10.4.2.8",
+        'HVOL': "10.4.2.23",
+        'HVER': "10.4.2.25",
+        'SLEC': "10.4.2.224",
+        'BUDH': "10.4.2.26",
+        'SVIN': "10.4.2.22",
+        'ENTC': "10.4.2.96",
+        'INGC': "10.4.1.23",
+        'KVIC': "10.4.1.24", 
+        'KOTC': "10.4.1.21",
+        
+        # Test station
+        'TEST': "10.4.2.235",
+        
+        # Domain-based stations (*.gps.vedur.is) - commonly requested  
+        'NYLA': "nyla.gps.vedur.is",
+        'VONC': "vonc.gps.vedur.is",
+        'OLKE': "OLKE.gps.vedur.is",
+        'KALF': "kalf.gps.vedur.is",
+        'KVEC': "kvec.gps.vedur.is",
+        'HRIC': "hric.gps.vedur.is",
+        'GOLA': "GOLA.gps.vedur.is",
+        'SKRO': "skro.gps.vedur.is",
+        'URHC': "URHC.gps.vedur.is",
+        'HAFS': "HAFS.gps.vedur.is",
+        'SOHO': "SOHO.gps.vedur.is",
+        # TODO: Add remaining 60+ stations as needed from operational config
     }
     
-    # Station-specific overrides (from getSeptentrio2)
-    station_configs = {
-        'ELDC': {'router': {'ip': '10.6.1.90'}, 'receiver': {'ftpport': 2160, 'ftp_mode': 'active'}},
-        'THOB': {'router': {'ip': '10.6.1.90'}, 'receiver': {'ftpport': 2160, 'ftp_mode': 'active'}},
-        # TODO: Add more stations from operational config
+    if station_upper not in STATION_IP_MAPPING:
+        # Return None to indicate missing configuration - caller should handle warning
+        return None
+    
+    # Build configuration from fallback mapping
+    station_config = {
+        'router': {'ip': STATION_IP_MAPPING[station_upper]},
+        'receiver': {'ftpport': 2160, 'ftp_mode': 'auto'}  # Most stations use auto-detect mode
     }
     
-    return station_configs.get(station_id.upper(), default_config)
+    return station_config
 
 
 def cmd_download(args) -> int:
@@ -86,9 +171,21 @@ def cmd_download(args) -> int:
     if not end_time:
         end_time = datetime.now() - timedelta(days=1)  # Default to yesterday
     
+    # For hourly sessions, extend end_time to end of day to capture all hours
+    if args.session == "status_1hr" and start_time and end_time:
+        if start_time.date() == end_time.date():  # Same day
+            end_time = end_time.replace(hour=23, minute=0, second=0, microsecond=0)
+    
     # Process session frequency arguments (from getSeptentrio3)
     afrequency = args.afrequency or args.session.split("_")[0]
     ffrequency = args.ffrequency or args.session.split("_")[1]
+    
+    # Convert frequency to gtimes format
+    frequency_mapping = {
+        "24hr": "1D",  # Daily
+        "1hr": "1H",   # Hourly
+    }
+    ffrequency = frequency_mapping.get(ffrequency, ffrequency)
     
     logger.info(f"Time range: {start_time} to {end_time}")
     logger.info(f"Session: {args.session}, File frequency: {ffrequency}, Acquisition frequency: {afrequency}")
@@ -104,6 +201,23 @@ def cmd_download(args) -> int:
         try:
             # Get station configuration
             station_config = get_station_config(station_id)
+            if station_config is None:
+                logger.warning(f"⚠️  Station {station_id} not found in configuration - SKIPPING")
+                total_errors += 1
+                continue
+            
+            # Validate required configuration values
+            try:
+                ip = station_config["router"]["ip"]
+                port = station_config["receiver"]["ftpport"]
+                if not ip or not port:
+                    logger.warning(f"⚠️  Station {station_id} missing IP ({ip}) or port ({port}) - SKIPPING")
+                    total_errors += 1
+                    continue
+            except KeyError as e:
+                logger.warning(f"⚠️  Station {station_id} configuration missing required key {e} - SKIPPING")
+                total_errors += 1
+                continue
             
             # Create PolaRX5 instance
             receiver = PolaRX5(station_id, station_config)
@@ -162,6 +276,10 @@ def cmd_status(args) -> int:
     
     try:
         station_config = get_station_config(station_id)
+        if station_config is None:
+            logger.warning(f"⚠️  Station {station_id} not found in configuration")
+            return 1
+            
         receiver = PolaRX5(station_id, station_config)
         
         status = receiver.get_connection_status()
@@ -189,18 +307,45 @@ def cmd_health(args) -> int:
     
     try:
         station_config = get_station_config(station_id)
+        if station_config is None:
+            logger.warning(f"⚠️  Station {station_id} not found in configuration")
+            return 1
+            
         receiver = PolaRX5(station_id, station_config)
         
-        health = receiver.get_health_status()
-        
-        print(f"Station: {health['station_id']}")
-        print(f"Receiver Type: {health['receiver_type']}")
-        print(f"Overall Status: {health['overall_status']}")
-        print(f"Timestamp: {health['timestamp']}")
-        
-        # Connection details
-        conn = health.get('connection', {})
-        print(f"Connection: {'✅' if conn.get('receiver') else '❌'}")
+        if args.analyze_status:
+            # Detailed health analysis from status session files
+            analysis = receiver.analyze_health_data()
+            
+            if 'error' in analysis:
+                print(f"❌ Error: {analysis['error']}")
+                if 'suggestion' in analysis:
+                    print(f"💡 Suggestion: {analysis['suggestion']}")
+                return 1
+            
+            print(analysis.get('health_report', 'No health report available'))
+            
+            # Save detailed analysis to CSV if requested
+            if args.save_csv and analysis.get('dataframe_available'):
+                from ..septentrio.health_analyzer import HealthDataAnalyzer
+                analyzer = HealthDataAnalyzer(analysis['ascii_directory'])
+                analyzer.load_all_files()
+                csv_path = f"{station_id}_health_analysis.csv"
+                analyzer.save_health_data_csv(csv_path)
+                print(f"\n📊 Detailed data saved to: {csv_path}")
+            
+        else:
+            # Basic health check (connection status)
+            health = receiver.get_health_status()
+            
+            print(f"Station: {health['station_id']}")
+            print(f"Receiver Type: {health['receiver_type']}")
+            print(f"Overall Status: {health['overall_status']}")
+            print(f"Timestamp: {health['timestamp']}")
+            
+            # Connection details
+            conn = health.get('connection', {})
+            print(f"Connection: {'✅' if conn.get('receiver') else '❌'}")
         
         return 0
         
@@ -351,6 +496,16 @@ Examples:
         const=logging.DEBUG,
         default=logging.INFO,
         help="Enable verbose output"
+    )
+    health_parser.add_argument(
+        "-a", "--analyze-status",
+        action="store_true",
+        help="Analyze detailed health data from status session ASCII files"
+    )
+    health_parser.add_argument(
+        "--save-csv",
+        action="store_true", 
+        help="Save detailed health analysis to CSV file (requires --analyze-status)"
     )
     health_parser.set_defaults(func=cmd_health)
     
