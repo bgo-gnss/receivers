@@ -65,6 +65,9 @@ class PolaRX5(BaseReceiver):
         # Tools paths for SBF conversion
         self.sbf2rin_path = "/home/gpsops/bin/sbf2rin"
         self.teqc_path = "/home/gpsops/bin/teqc"
+        
+        # Timeout configuration based on station network type
+        self._setup_timeouts()
 
     def _get_logger(self, level: int = logging.WARNING) -> logging.Logger:
         """Set up logger for this receiver instance."""
@@ -95,6 +98,41 @@ class PolaRX5(BaseReceiver):
         # TODO: Review and decide on proper default path strategy
         # Current: ./data/ for development, consider /data/ or ~/data/ for production
         return os.getenv("DATA_PREPATH", "./data/")
+    
+    def _setup_timeouts(self):
+        """Setup timeout configuration based on station network characteristics."""
+        # Remote/mobile stations that need longer timeouts (domain-based or known slow)
+        mobile_stations = {
+            'NYLA', 'VONC', 'OLKE', 'KALF', 'KVEC', 'HRIC', 'GOLA', 'SKRO', 
+            'URHC', 'HAFS', 'SOHO', 'JOKU', 'HRAH', 'KALT', 'GFUM'
+        }
+        
+        # Very remote stations with satellite/slow mobile connections
+        very_remote_stations = {
+            'NYLA', 'GFUM', 'JOKU', 'HRAH'  # Add more as needed
+        }
+        
+        if self.station_id in very_remote_stations:
+            # Very remote stations: longer timeouts for satellite/slow mobile
+            self.connection_timeout = 30  # Connection establishment
+            self.inactivity_timeout = 120  # No progress at all
+            self.progress_timeout = 600   # Making progress but slow (10 min)
+            self.min_speed_threshold = 1024  # 1 KB/s minimum
+        elif self.station_id in mobile_stations:
+            # Mobile stations: moderate timeouts
+            self.connection_timeout = 20
+            self.inactivity_timeout = 60   # No progress at all  
+            self.progress_timeout = 300    # Making progress but slow (5 min)
+            self.min_speed_threshold = 2048  # 2 KB/s minimum
+        else:
+            # Fixed/wired stations: standard timeouts
+            self.connection_timeout = 10
+            self.inactivity_timeout = 30   # No progress at all
+            self.progress_timeout = 180    # Making progress but slow (3 min)  
+            self.min_speed_threshold = 8192  # 8 KB/s minimum
+        
+        self.logger.info(f"Timeout config - Connection: {self.connection_timeout}s, "
+                        f"Inactivity: {self.inactivity_timeout}s, Progress: {self.progress_timeout}s")
 
     def _setup_connection_info(self):
         """Extract and validate connection information from station_info."""
@@ -103,24 +141,26 @@ class PolaRX5(BaseReceiver):
             self.ip_port = int(self.station_info["receiver"]["ftpport"])
 
             # Determine passive mode from config or hardcoded station list (from getSeptentrio2)
-            # Stations that need ACTIVE mode (set_pasv(False)) - from getSeptentrio2 line 540
-            active_mode_stations = {
-                'ROTH', 'SVIN', 'SVIE', 'VMEY', 'THOB', 'ODDF', 'SAUD', 'HRIC', 'OLKE', 
+            # Stations that need PASSIVE mode (set_pasv(True)) - from getSeptentrio2 line 553
+            passive_mode_stations = {
+                'ROTH', 'SVIN', 'SVIE', 'VMEY', 'THOB', 'SAUD', 'HRIC', 'OLKE', 
                 'KALF', 'VOGS', 'SLEC', 'HVOL', 'GOLA', 'FAGD', 'SKRO', 'KIDC', 'HAUC', 
-                'STHV', 'ENTC', 'KVEC', 'HITA', 'SEY9', 'NYLA', 'TEST'
+                'STHV', 'ENTC', 'KVEC', 'HITA', 'SEY9', 'NYLA', 'ELDC', 'TEST', 'FEFC', 
+                'HERV', 'AFST', 'SOHO', 'AUST', 'BUDH', 'VONC', 'GJAC', 'URHC', 'HAFS', 
+                'JOKU', 'HRAH', 'KALT', 'GFUM'
             }
             
-            # Check if station needs active mode or if explicitly configured
+            # Check if station needs passive mode or if explicitly configured
             ftp_mode = self.station_info.get("receiver", {}).get("ftp_mode", "auto")
             if ftp_mode == "active":
                 self.pasv = False
             elif ftp_mode == "passive": 
                 self.pasv = True
             else:  # auto-detect from getSeptentrio2 station list
-                self.pasv = self.station_id not in active_mode_stations
+                self.pasv = self.station_id in passive_mode_stations
 
             self.logger.info(
-                f"Station {self.station_id} - IP: {self.ip_number}:{self.ip_port}, PASV: {self.pasv}"
+                f"Station {self.station_id} - Address: {self.ip_number}:{self.ip_port}, FTP Passive: {self.pasv}"
             )
 
         except KeyError as e:
@@ -137,7 +177,7 @@ class PolaRX5(BaseReceiver):
         try:
             # Simple connection test
             ftp = FTP()
-            ftp.connect(self.ip_number, self.ip_port, timeout=10)
+            ftp.connect(self.ip_number, self.ip_port, timeout=self.connection_timeout)
             ftp.login("anonymous")
             ftp.set_pasv(self.pasv)
             ftp.quit()
@@ -214,15 +254,25 @@ class PolaRX5(BaseReceiver):
 
         self.logger.info(f"Checking {session} sessions from {start} to {end}")
 
-        # Generate file lists
-        file_datetime_list = gt.datepathlist(
-            "#datelist",
-            ffrequency,
-            starttime=start,
-            endtime=end,
-            datelist=[],
-            closed="both",
-        )
+        # Generate file lists - special handling for hourly sessions
+        if ffrequency == "1H":
+            # For hourly sessions, manually generate hourly timestamps
+            from datetime import timedelta
+            file_datetime_list = []
+            current = start
+            while current <= end:
+                file_datetime_list.append(current)
+                current += timedelta(hours=1)
+            self.logger.info(f"Generated {len(file_datetime_list)} hourly timestamps")
+        else:
+            file_datetime_list = gt.datepathlist(
+                "#datelist",
+                ffrequency,
+                starttime=start,
+                endtime=end,
+                datelist=[],
+                closed="both",
+            )
 
         # Create archive and remote file paths using configurable prepath
         archive_format = f"{self.data_prepath}%Y/#b/{self.station_id}/{session}/raw/{self.station_id}%Y%m%d%H00a.sbf{compression}"
@@ -434,11 +484,13 @@ class PolaRX5(BaseReceiver):
         finally:
             ftp.close()
 
-    def _ftp_open_connection(self, timeout: int = 10) -> Optional[FTP]:
+    def _ftp_open_connection(self, timeout: Optional[int] = None) -> Optional[FTP]:
         """Open FTP connection to receiver."""
         try:
             self.logger.info("Connecting to receiver...")
             ftp = FTP()
+            if timeout is None:
+                timeout = self.connection_timeout
             ftp.connect(self.ip_number, self.ip_port, timeout=timeout)
             ftp.login("anonymous")
             ftp.set_pasv(self.pasv)
@@ -451,8 +503,19 @@ class PolaRX5(BaseReceiver):
     def _ftp_download(self, files_dict, local_dir, clean_tmp=True, ftp=None):
         """Download files via FTP with progress tracking."""
         downloaded_files = []
+        
+        # Log station connection details once at the beginning
+        self.logger.info(f"Station connection: {self.ip_number}:{self.ip_port}")
+        
+        # Track unique paths to log each only once
+        logged_paths = set()
 
         for file_name, remote_dir in sorted(files_dict.items(), reverse=True):
+            # Log remote directory path only once per unique path
+            if remote_dir not in logged_paths:
+                self.logger.info(f"Remote path: {remote_dir}")
+                logged_paths.add(remote_dir)
+                
             self.logger.info(f"Downloading {file_name}")
 
             local_file = local_dir / file_name
@@ -470,13 +533,21 @@ class PolaRX5(BaseReceiver):
                     # Check if it's a "file not found" vs "connection error"
                     error_msg = str(e).lower()
                     if "550" in error_msg or "not found" in error_msg or "no such file" in error_msg:
-                        # Remote file is missing - lock local copy if exists
+                        # Remote file is missing - check local file for archiving
                         remote_file_exists = False
                         remote_file_size = None
                         if local_file.exists():
-                            self.logger.warning(f"🔒 Remote file {file_name} missing but local copy exists")
-                            self.logger.warning(f"   Local copy LOCKED and will not be modified: {local_file}")
-                            continue  # Skip this file completely - never touch local copy
+                            local_size = local_file.stat().st_size
+                            if local_size > 0:
+                                self.logger.info(f"📁 Remote file {file_name} missing, but local copy exists ({local_size:,} bytes)")
+                                self.logger.info(f"   Adding existing local file to archive queue: {local_file}")
+                                # Add to downloaded_files for archiving (it's a complete file from previous download)
+                                downloaded_files.append(str(local_file))
+                            else:
+                                # Zero-size file should be removed
+                                self.logger.warning(f"🗑️ Removing zero-size local file: {local_file}")
+                                local_file.unlink()
+                            continue
                         else:
                             self.logger.error(f"❌ Remote file {file_name} not found on server")
                             continue  # No local, no remote - nothing to do
@@ -519,7 +590,7 @@ class PolaRX5(BaseReceiver):
                 
                 if remote_file_size is not None:
                     # Use progress bar download
-                    diff = self._download_with_progressbar(ftp, remote_file, str(local_file), remote_file_size, offset)
+                    diff = self._download_with_progressbar_and_retry(ftp, remote_file, str(local_file), remote_file_size, offset)
                     
                     # Validate download completeness (like getSeptentrio3)
                     local_file_size = local_file.stat().st_size
@@ -556,15 +627,27 @@ class PolaRX5(BaseReceiver):
     def _download_with_progressbar(
         self, ftp, remote_file, local_file, remote_file_size, offset=0
     ):
-        """Download file with progress bar display (like getSeptentrio3)."""
+        """Download file with progress bar display and intelligent timeout handling.
+        
+        Implements station-specific timeout handling:
+        - Progress-based timeouts (don't timeout if making progress)
+        - Inactivity timeouts (timeout if no progress at all)
+        - Speed-based timeouts (timeout if too slow overall)
+        - Station-specific thresholds for mobile/remote stations
+        """
         if not progressbar_available:
             # Fallback without progress bar
             with open(local_file, "ab") as f:
                 ftp.retrbinary(f"RETR {remote_file}", f.write, rest=offset)
         else:
-            # Use tqdm progress bar
+            # Use tqdm progress bar with intelligent timeout monitoring
             filename = Path(remote_file).name
             desc = f"Downloading {filename}"
+            
+            # Progress monitoring variables
+            last_progress_time = time.time()
+            last_bytes = offset
+            start_time = time.time()
             
             with tqdm(
                 total=remote_file_size,
@@ -576,16 +659,88 @@ class PolaRX5(BaseReceiver):
             ) as pbar:
                 with open(local_file, "ab") as f:
                     def callback(chunk):
+                        nonlocal last_progress_time, last_bytes
+                        
+                        # Write chunk and update progress
                         f.write(chunk)
                         pbar.update(len(chunk))
+                        
+                        # Check timeout conditions
+                        current_bytes = pbar.n
+                        current_time = time.time()
+                        time_since_last_progress = current_time - last_progress_time
+                        bytes_since_last_check = current_bytes - last_bytes
+                        
+                        # If we made progress, reset progress timer
+                        if bytes_since_last_check > 0:
+                            last_progress_time = current_time
+                            last_bytes = current_bytes
+                        
+                        # Check for inactivity timeout (no progress at all)
+                        elif time_since_last_progress > self.inactivity_timeout:
+                            raise ConnectionError(f"Download timed out: no progress for {time_since_last_progress:.1f}s")
+                        
+                        # Check for overall progress timeout (making progress but too slow)
+                        total_time = current_time - start_time
+                        if total_time > self.progress_timeout:
+                            avg_speed = (current_bytes - offset) / total_time if total_time > 0 else 0
+                            if avg_speed < self.min_speed_threshold:
+                                raise ConnectionError(f"Download timed out: speed {avg_speed:.0f} B/s below minimum {self.min_speed_threshold} B/s")
 
                     ftp.retrbinary(f"RETR {remote_file}", callback, rest=offset)
 
         local_file_size = os.path.getsize(local_file)
         return local_file_size - remote_file_size
+    
+    def _download_with_progressbar_and_retry(
+        self, ftp, remote_file, local_file, remote_file_size, offset=0
+    ):
+        """Download with progress bar and intelligent FTP mode retry on connection issues."""
+        try:
+            # Try with current FTP mode first
+            return self._download_with_progressbar(ftp, remote_file, local_file, remote_file_size, offset)
+        except Exception as e:
+            error_msg = str(e).lower()
+            
+            # Check if it's a data connection issue that might benefit from mode switching
+            connection_errors = ['connection refused', 'errno 111', 'data connection', 'port']
+            if any(err in error_msg for err in connection_errors):
+                self.logger.warning(f"⚠️  Data connection failed with {self._get_ftp_mode_description()}: {e}")
+                
+                # Try switching FTP mode
+                original_pasv = ftp.passiveserver
+                try:
+                    new_pasv = not original_pasv
+                    ftp.set_pasv(new_pasv)
+                    self.logger.info(f"🔄 Retrying with {self._get_ftp_mode_description(new_pasv)} mode...")
+                    
+                    # Retry download with switched mode
+                    result = self._download_with_progressbar(ftp, remote_file, local_file, remote_file_size, offset)
+                    self.logger.info(f"✅ Success with {self._get_ftp_mode_description(new_pasv)} mode - updating station config")
+                    
+                    # Update our internal mode preference for this station
+                    self.pasv = new_pasv
+                    
+                    return result
+                    
+                except Exception as retry_e:
+                    # Restore original mode and re-raise original error
+                    ftp.set_pasv(original_pasv)
+                    self.logger.error(f"❌ Both FTP modes failed. Original: {e}, Retry: {retry_e}")
+                    raise e
+            else:
+                # Not a connection error we can fix with mode switching
+                raise e
+    
+    def _get_ftp_mode_description(self, pasv=None):
+        """Get human-readable FTP mode description."""
+        if pasv is None:
+            pasv = getattr(self, 'pasv', True)
+        return "passive" if pasv else "active"
 
     def _archive_files(self, downloaded_files_dict, missing_file_dict):
-        """Move downloaded files to archive locations (like getSeptentrio3)."""
+        """Move downloaded files to archive locations with getSeptentrio3 naming convention."""
+        archived_count = 0
         for ddate, tmp_file in downloaded_files_dict.items():
             if not os.path.isfile(tmp_file):
                 continue
@@ -594,7 +749,12 @@ class PolaRX5(BaseReceiver):
             self.logger.info(f"File to archive {os.path.basename(tmp_file)} ({tmp_file_size:,} bytes)")
 
             destination = missing_file_dict[ddate][0]
-            archive_path, _ = os.path.split(destination)
+            archive_path, archive_filename = os.path.split(destination)
+            
+            # Archive files use full SBF format like getSeptentrio3:
+            # ORFC2490.25_.gz -> ORFC202509060000a.sbf.gz
+            # The destination path is already correctly generated by gtimes.datepathlist
+            
             os.makedirs(archive_path, exist_ok=True)
             
             if os.path.isfile(destination):
@@ -615,7 +775,9 @@ class PolaRX5(BaseReceiver):
                     archive_file_size = os.path.getsize(destination)
                     if tmp_file_size == archive_file_size:
                         self.logger.info(f"✅ File successfully archived ({archive_file_size:,} bytes)")
-                        # Remove temp file is handled by os.rename (atomic move)
+                        self.logger.info(f"   Final location: {destination}")
+                        archived_count += 1
+                        # tmp file removed by os.rename (atomic move)
                     else:
                         self.logger.error(f"❌ Archive size mismatch: expected {tmp_file_size:,}, got {archive_file_size:,}")
                         # Try to clean up if archive failed
@@ -638,6 +800,23 @@ class PolaRX5(BaseReceiver):
                         self.logger.info(f"🧹 Cleaned up failed tmp file: {tmp_file}")
                     except Exception as cleanup_e:
                         self.logger.error(f"❌ Failed to cleanup tmp file {tmp_file}: {cleanup_e}")
+        
+        # Clean up empty tmp directories
+        self._cleanup_empty_tmp_directories()
+        
+        return archived_count
+    
+    def _cleanup_empty_tmp_directories(self):
+        """Remove empty station directories from tmp download area."""
+        try:
+            tmp_base = Path("/home/bgo/tmp/download/")
+            if tmp_base.exists():
+                for station_dir in tmp_base.iterdir():
+                    if station_dir.is_dir() and not any(station_dir.iterdir()):
+                        station_dir.rmdir()
+                        self.logger.info(f"🧹 Removed empty tmp directory: {station_dir}")
+        except Exception as e:
+            self.logger.warning(f"⚠️  Failed to clean up tmp directories: {e}")
 
     def get_health_status(self) -> Dict[str, Any]:
         """Get health status of PolaRX5 receiver.
@@ -662,6 +841,66 @@ class PolaRX5(BaseReceiver):
             health["overall_status"] = "unhealthy"
 
         return health
+    
+    def analyze_health_data(self, ascii_dir: Optional[str] = None) -> Dict[str, Any]:
+        """Analyze health data from converted ASCII status files.
+        
+        Uses the HealthDataAnalyzer to process ReceiverStatus blocks from
+        ASCII files converted from SBF status sessions.
+        
+        Args:
+            ascii_dir: Directory containing ASCII status files. 
+                      If None, uses default status_1hr/ascii directory.
+        
+        Returns:
+            Dictionary with comprehensive health analysis results
+        """
+        from .health_analyzer import HealthDataAnalyzer
+        
+        if ascii_dir is None:
+            ascii_dir = f"data/2025/sep/{self.station_id}/status_1hr/ascii"
+        
+        if not os.path.exists(ascii_dir):
+            return {
+                "error": f"ASCII directory not found: {ascii_dir}",
+                "suggestion": "Run SBF to ASCII conversion first"
+            }
+        
+        # Initialize and run health analyzer
+        analyzer = HealthDataAnalyzer(ascii_dir)
+        analyzer.load_all_files()
+        
+        if not analyzer.health_data:
+            return {
+                "error": "No health data found in ASCII files",
+                "ascii_dir": ascii_dir
+            }
+        
+        # Get comprehensive analysis
+        cpu_analysis = analyzer.analyze_cpu_load()
+        uptime_analysis = analyzer.analyze_uptime()
+        status_analysis = analyzer.analyze_rx_status()
+        
+        # Generate DataFrame for time series analysis
+        df = analyzer.get_dataframe()
+        time_span = df['datetime'].max() - df['datetime'].min() if not df.empty else None
+        
+        return {
+            "station_id": self.station_id,
+            "analysis_timestamp": datetime.utcnow().isoformat(),
+            "ascii_directory": ascii_dir,
+            "data_summary": {
+                "total_records": len(analyzer.health_data),
+                "time_span": str(time_span) if time_span else None,
+                "first_record": df['datetime'].min().isoformat() if not df.empty else None,
+                "last_record": df['datetime'].max().isoformat() if not df.empty else None,
+            },
+            "cpu_analysis": cpu_analysis,
+            "uptime_analysis": uptime_analysis,
+            "receiver_status": status_analysis,
+            "health_report": analyzer.generate_health_report(),
+            "dataframe_available": not df.empty
+        }
     
     def download_health_data(
         self, 
