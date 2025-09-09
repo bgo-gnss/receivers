@@ -16,13 +16,14 @@ import logging
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Any
 
 import gtimes.timefunc as gt
 from gtimes.timefunc import currDatetime
 
 from ..septentrio.polarx5 import PolaRX5
 from ..base.exceptions import ConfigurationError, ConnectionError
+from ..base.type_validator import ReceiverTypeValidator
 import importlib
 import inspect
 from pathlib import Path
@@ -415,6 +416,153 @@ def cmd_health(args) -> int:
         return 1
 
 
+def cmd_validate(args) -> int:
+    """Validate command - check receiver type configuration accuracy."""
+    logger = setup_logging(args.loglevel)
+    
+    try:
+        # Initialize validator
+        validator = ReceiverTypeValidator(logger)
+        
+        # Get stations to validate
+        if args.stations:
+            # Validate specific stations
+            station_ids = [s.upper() for s in args.stations]
+            station_configs = {}
+            for station_id in station_ids:
+                config = get_station_config(station_id)
+                if config:
+                    station_configs[station_id] = config
+                else:
+                    logger.warning(f"Station {station_id} not found in configuration")
+        else:
+            # Validate all stations
+            logger.info("Validating all stations in configuration...")
+            station_configs = get_all_station_configs()
+        
+        if not station_configs:
+            logger.error("No stations found to validate")
+            return 1
+        
+        # Run validation
+        logger.info(f"Validating receiver types for {len(station_configs)} stations...")
+        results = validator.batch_validate_stations(station_configs)
+        
+        # Analyze results
+        matches = sum(1 for r in results.values() if r.get('validation_status') == 'match')
+        mismatches = sum(1 for r in results.values() if r.get('validation_status') == 'mismatch')
+        unreachable = sum(1 for r in results.values() if r.get('validation_status') == 'unreachable')
+        errors = sum(1 for r in results.values() if r.get('validation_status') == 'error')
+        
+        # Print summary
+        print(f"\n=== RECEIVER TYPE VALIDATION RESULTS ===")
+        print(f"Total stations validated: {len(results)}")
+        print(f"✅ Correct receiver types: {matches}")
+        print(f"❌ Mismatched receiver types: {mismatches}")
+        print(f"🔌 Unreachable stations: {unreachable}")
+        print(f"⚠️  Errors: {errors}")
+        
+        # Show mismatches in detail
+        if mismatches > 0:
+            print(f"\n=== RECEIVER TYPE MISMATCHES ===")
+            for station_id, result in results.items():
+                if result.get('validation_status') == 'mismatch':
+                    configured = result.get('configured_type', 'Unknown')
+                    detected = ', '.join(result.get('detected_types', []))
+                    suggestion = result.get('suggestion', {})
+                    recommended = suggestion.get('recommended_type', 'Unknown')
+                    confidence = suggestion.get('confidence', 0)
+                    
+                    print(f"\n📡 {station_id} ({result.get('ip', 'Unknown IP')})")
+                    print(f"   Configured: {configured}")
+                    print(f"   Detected:   {detected}")
+                    print(f"   Recommended: {recommended} (confidence: {confidence:.1%})")
+        
+        # Generate correction report if requested
+        if args.report:
+            report = validator.generate_correction_report(results)
+            print(f"\n{report}")
+            
+            # Save report to file
+            report_file = f"receiver_validation_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            with open(report_file, 'w') as f:
+                f.write(report)
+            print(f"📄 Detailed report saved to: {report_file}")
+        
+        # Auto-fix if requested (EXPERIMENTAL)
+        if args.fix and mismatches > 0:
+            logger.warning("⚠️  AUTO-FIX is EXPERIMENTAL - backup your stations.cfg first!")
+            response = input("Do you want to proceed with auto-corrections? [y/N]: ")
+            
+            if response.lower() in ['y', 'yes']:
+                fixed_count = apply_receiver_type_corrections(results)
+                print(f"🔧 Applied corrections to {fixed_count} stations")
+                if fixed_count > 0:
+                    print("⚠️  Please restart receivers service and verify functionality")
+            else:
+                print("Auto-fix cancelled")
+        
+        # Return appropriate exit code
+        return 0 if (mismatches == 0 and errors == 0) else 1
+        
+    except Exception as e:
+        logger.error(f"Validation failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
+def get_all_station_configs() -> Dict[str, Dict[str, Any]]:
+    """Get configurations for all stations.
+    
+    Returns:
+        Dictionary mapping station_id to configuration
+    """
+    if not HAS_GPS_PARSER:
+        logging.error("gps_parser not available - cannot load all stations")
+        return {}
+    
+    try:
+        import configparser
+        parser = gps_parser.ConfigParser()
+        config = configparser.ConfigParser()
+        config.read(parser.get_stations_config_path())
+        
+        stations = {}
+        for section in config.sections():
+            try:
+                station_config = get_station_config(section)
+                if station_config:
+                    stations[section] = station_config
+            except Exception as e:
+                logging.debug(f"Could not load config for {section}: {e}")
+        
+        return stations
+    except Exception as e:
+        logging.error(f"Could not load all station configurations: {e}")
+        return {}
+
+
+def apply_receiver_type_corrections(validation_results: Dict[str, Dict[str, Any]]) -> int:
+    """Apply receiver type corrections to stations.cfg (EXPERIMENTAL).
+    
+    Args:
+        validation_results: Results from validation
+        
+    Returns:
+        Number of corrections applied
+    """
+    # TODO: Implement auto-correction to stations.cfg
+    # This would require:
+    # 1. Reading stations.cfg
+    # 2. Updating receiver_type fields for mismatched stations
+    # 3. Writing back to stations.cfg
+    # 4. Validating the changes
+    
+    logging.warning("Auto-correction not yet implemented - use --report to get manual corrections")
+    return 0
+
+
 def create_parser() -> argparse.ArgumentParser:
     """Create argument parser with getSeptentrio3 compatibility."""
     parser = argparse.ArgumentParser(
@@ -587,6 +735,32 @@ Examples:
         help="Save detailed health analysis to CSV file (requires --analyze-status)"
     )
     health_parser.set_defaults(func=cmd_health)
+    
+    # Validate subcommand - check receiver type configuration
+    validate_parser = subparsers.add_parser("validate", help="Validate receiver type configuration")
+    validate_parser.add_argument(
+        "stations", 
+        nargs="*", 
+        help="Station IDs to validate (if none provided, validates all stations)"
+    )
+    validate_parser.add_argument(
+        "--fix",
+        action="store_true",
+        help="Automatically fix mismatched receiver types in station.cfg (EXPERIMENTAL)"
+    )
+    validate_parser.add_argument(
+        "--report",
+        action="store_true", 
+        help="Generate detailed correction report"
+    )
+    validate_parser.add_argument(
+        "-v", "--verbose",
+        action="store_const",
+        dest="loglevel",
+        const=logging.INFO,
+        help="Enable verbose output"
+    )
+    validate_parser.set_defaults(func=cmd_validate)
     
     return parser
 
