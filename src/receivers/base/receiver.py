@@ -4,6 +4,8 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any, Dict, Union
 
+from .config_manager import get_config_manager
+
 
 class BaseReceiver(ABC):
     """Abstract base class for GPS/GNSS receivers.
@@ -22,6 +24,12 @@ class BaseReceiver(ABC):
         self.station_id = station_id.upper()
         self.station_info = station_info
         self.connection_status = {"router": None, "receiver": None}
+        
+        # Initialize shared configuration manager
+        self.config_manager = get_config_manager()
+        
+        # Get common configuration values that all receivers need
+        self.data_prepath = self.config_manager.get_data_prepath()
 
     @abstractmethod
     def get_connection_status(self) -> Dict[str, Any]:

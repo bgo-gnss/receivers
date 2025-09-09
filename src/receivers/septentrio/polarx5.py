@@ -50,18 +50,14 @@ class PolaRX5(BaseReceiver):
         # Extract connection info from station_info
         self._setup_connection_info()
 
-        # Session mapping from gps_parser configuration
-        self.session_map = self._get_session_map()
+        # Configuration from shared ConfigManager (BaseReceiver provides self.config_manager)
+        self.session_map = self.config_manager.get_session_map()
+        # data_prepath already available via BaseReceiver initialization
 
-        # Receiver base path from gps_parser configuration
-        self.base_path = self._get_system_path("receiver_base_path")
-
-        # Data paths - config-based with env fallback
-        self.data_prepath = self._get_data_prepath()
-
-        # Tools paths from gps_parser system configuration
-        self.sbf2rin_path = self._get_system_path("sbf2rin_path")
-        self.teqc_path = self._get_system_path("teqc_path")
+        # System paths from ConfigManager
+        self.base_path = self.config_manager.get_system_path("receiver_base_path")
+        self.sbf2rin_path = self.config_manager.get_system_path("sbf2rin_path")
+        self.teqc_path = self.config_manager.get_system_path("teqc_path")
 
         # Timeout configuration based on station network type
         self._setup_timeouts()
@@ -81,109 +77,6 @@ class PolaRX5(BaseReceiver):
 
         return logger
 
-    def _get_data_prepath(self) -> str:
-        """Get data prepath from gps_parser configuration or environment.
-
-        Priority:
-        1. gps_parser configuration file setting
-        2. Environment variable DATA_PREPATH
-        3. Default ./data/
-        """
-        try:
-            # Try to get path from gps_parser
-            import sys
-
-            sys.path.append("../gps_parser/src")
-            import gps_parser
-
-            parser = gps_parser.ConfigParser()
-            return parser.getSystemPath("data_prepath")
-
-        except Exception:
-            # Fallback to environment variable or default
-            import os
-
-            return os.getenv("DATA_PREPATH", "./data/")
-
-    def _get_system_path(self, path_name: str) -> str:
-        """Get system tool path from gps_parser configuration.
-
-        Args:
-            path_name: Name of the system path to retrieve
-
-        Returns:
-            Full path to the system tool
-        """
-        try:
-            # Try to get path from gps_parser
-            import sys
-
-            sys.path.append("../gps_parser/src")
-            import gps_parser
-
-            parser = gps_parser.ConfigParser()
-            return parser.getSystemPath(path_name)
-
-        except Exception as e:
-            self.logger.warning(f"Could not load {path_name} from gps_parser: {e}")
-
-            # Fallback paths for critical tools
-            fallback_paths = {
-                "sbf2rin_path": "/home/gpsops/bin/sbf2rin",
-                "teqc_path": "/home/gpsops/bin/teqc",
-                "bin2asc_path": "/opt/rxtools/bin/bin2asc",
-            }
-
-            fallback_path = fallback_paths.get(path_name, f"/usr/local/bin/{path_name}")
-            self.logger.info(f"Using fallback path for {path_name}: {fallback_path}")
-            return fallback_path
-
-    def _get_session_map(self) -> Dict[str, tuple]:
-        """Get session mapping from gps_parser configuration.
-
-        Returns:
-            Dictionary mapping session types to (session_letter, session_path) tuples
-        """
-        try:
-            # Try to get session configuration from gps_parser
-            import sys
-
-            sys.path.append("../gps_parser/src")
-            import gps_parser
-
-            parser = gps_parser.ConfigParser()
-
-            # Build session map from gps_parser configuration
-            session_map = {}
-            for session_type in ["15s_24hr", "1Hz_1hr", "status_1hr"]:
-                try:
-                    session_config = parser.getSessionConfig(session_type)
-                    session_map[session_type] = (
-                        session_config["session_letter"],
-                        session_config["session_path"],
-                    )
-                except Exception as e:
-                    self.logger.warning(
-                        f"Could not load session config for {session_type}: {e}"
-                    )
-
-            # If we got any session configurations, return them
-            if session_map:
-                self.logger.info(
-                    f"Loaded {len(session_map)} session configurations from gps_parser"
-                )
-                return session_map
-
-        except Exception as e:
-            self.logger.warning(f"Could not load session mapping from gps_parser: {e}")
-
-        # Fallback to hardcoded session mapping
-        self.logger.info("Using fallback session mapping")
-        return {
-            "15s_24hr": ("a", "LOG1_15s_24hr"),  # Daily 15-second data
-            "1Hz_1hr": ("b", "LOG2_1Hz_1hr"),  # Hourly 1Hz data
-            "status_1hr": ("b", "LOG5_status_1hr"),  # Hourly status files
-        }
 
     def _setup_timeouts(self):
         """Setup timeout configuration using gps_parser centralized configuration."""
