@@ -1,0 +1,529 @@
+"""Trimble NetR9 receiver implementation.
+
+Modern implementation of Trimble NetR9 receiver support, ported from the legacy
+system with modern BaseReceiver interface, HTTP client, and FTP download capabilities.
+"""
+
+import logging
+import os
+import time
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, Dict, List, Tuple, Union
+
+import gtimes.timefunc as gt
+
+from ..base.receiver import BaseReceiver
+from ..base.exceptions import ConnectionError, ConfigurationError
+from .http_client import TrimbleHTTPClient
+from .health_parser import TrimbleHealthParser
+from .ftp_client import TrimbleFTPClient
+
+
+class NetR9(BaseReceiver):
+    """Trimble NetR9 receiver implementation.
+    
+    Provides HTTP-based health monitoring and FTP-based data download
+    for Trimble NetR9 GNSS receivers.
+    """
+    
+    def __init__(self, station_id: str, station_info: Dict[str, Any]):
+        """Initialize NetR9 receiver.
+        
+        Args:
+            station_id: Station identifier
+            station_info: Station configuration dictionary
+        """
+        super().__init__(station_id, station_info)
+        
+        self.logger = logging.getLogger(f"receivers.trimble.netr9.{self.station_id}")
+        
+        # Validate required configuration
+        self._validate_config()
+        
+        # Initialize HTTP client for health monitoring
+        self.http_client = TrimbleHTTPClient(station_id, station_info)
+        
+        # Initialize FTP client for data downloads
+        self.ftp_client = TrimbleFTPClient(station_id, station_info)
+        
+        # Initialize health parser
+        self.health_parser = TrimbleHealthParser(station_id, "NetR9")
+        
+        # Default data path configuration (can be overridden in download_data)
+        self.data_prepath = station_info.get("data_prepath", "/mnt_data/rawgpsdata/%Y/%b/")
+        self.tmp_dir = "/home/bgo/tmp/download/"
+        
+        # NetR9 HTTP API endpoints (from old system)
+        self.endpoints = {
+            'voltage': '/prog/show?Voltages',
+            'temperature': '/prog/show?Temperature',
+            'sessions': '/prog/show?sessions',
+            'position': '/prog/show?position',
+            'tracking': '/prog/show?trackingstatus',
+            'firmware': '/prog/show?firmwareversion',
+            'directory': '/prog/show?directory&path=/{path}'
+        }
+        
+        self.logger.info(f"Initialized NetR9 receiver for {self.station_id}")
+    
+    def _validate_config(self):
+        """Validate required configuration parameters."""
+        try:
+            router_config = self.station_info["router"]
+            receiver_config = self.station_info["receiver"]
+            
+            if not router_config.get("ip"):
+                raise ConfigurationError(f"Missing router IP for station {self.station_id}")
+            
+            # Check for HTTP port (can be httpport or receiver_httpport depending on config format)
+            http_port = receiver_config.get("httpport") or receiver_config.get("receiver_httpport")
+            if not http_port:
+                self.logger.warning(f"Missing HTTP port for {self.station_id}, using default 8060")
+                receiver_config["httpport"] = 8060
+            else:
+                receiver_config["httpport"] = http_port
+                
+            if not receiver_config.get("ftpport"):
+                self.logger.warning(f"Missing FTP port for {self.station_id}, using default 21")
+                receiver_config["ftpport"] = 21
+                
+        except KeyError as e:
+            raise ConfigurationError(f"Invalid station configuration for {self.station_id}: {e}")
+    
+    def get_connection_status(self) -> Dict[str, Any]:
+        """Check connection status to NetR9 receiver.
+        
+        Returns:
+            Dictionary with connection status information
+        """
+        try:
+            self.logger.debug(f"Testing connection to {self.station_id}")
+            
+            # Test HTTP connection
+            http_test = self.http_client.test_connection()
+            
+            # Test FTP connection
+            ftp_test = self.ftp_client.test_connection()
+            
+            # Update internal connection status
+            self.connection_status = {
+                "router": http_test["success"],
+                "receiver": http_test["success"]
+            }
+            
+            return {
+                "station_id": self.station_id,
+                "ip": self.station_info["router"]["ip"],
+                "port": self.station_info["receiver"]["httpport"],
+                "router": http_test["success"],
+                "receiver": http_test["success"],
+                "http_test": http_test,
+                "ftp_test": ftp_test,
+                "error": http_test.get("error")
+            }
+            
+        except Exception as e:
+            error_msg = f"Connection test failed: {e}"
+            self.logger.error(error_msg)
+            
+            self.connection_status = {"router": False, "receiver": False}
+            
+            return {
+                "station_id": self.station_id,
+                "router": False,
+                "receiver": False,
+                "error": error_msg
+            }
+    
+    def get_health_status(self) -> Dict[str, Any]:
+        """Get comprehensive health status from NetR9 receiver.
+        
+        Returns:
+            Dictionary with health metrics and status information
+        """
+        health_data = {}
+        
+        try:
+            self.logger.debug(f"Collecting health data from {self.station_id}")
+            
+            # Check connection first
+            connection_status = self.get_connection_status()
+            if not connection_status["receiver"]:
+                return {
+                    "station_id": self.station_id,
+                    "receiver_type": "NetR9",
+                    "timestamp": datetime.now(),
+                    "overall_status": "offline",
+                    "error": connection_status.get("error", "Receiver not accessible")
+                }
+            
+            # Collect voltage information
+            try:
+                success, response, error = self.http_client.get_url(self.endpoints['voltage'])
+                if success and response:
+                    health_data['voltage'] = self.health_parser.parse_voltage_response(response)
+                else:
+                    health_data['voltage'] = {"status": "error", "error": error or "No response"}
+            except Exception as e:
+                health_data['voltage'] = {"status": "error", "error": str(e)}
+            
+            # Collect temperature information
+            try:
+                success, response, error = self.http_client.get_url(self.endpoints['temperature'])
+                if success and response:
+                    health_data['temperature'] = self.health_parser.parse_temperature_response(response)
+                else:
+                    health_data['temperature'] = {"status": "error", "error": error or "No response"}
+            except Exception as e:
+                health_data['temperature'] = {"status": "error", "error": str(e)}
+            
+            # Collect session information
+            try:
+                success, response, error = self.http_client.get_url(self.endpoints['sessions'])
+                if success and response:
+                    health_data['sessions'] = self.health_parser.parse_sessions_response(response)
+                else:
+                    health_data['sessions'] = {"status": "error", "error": error or "No response"}
+            except Exception as e:
+                health_data['sessions'] = {"status": "error", "error": str(e)}
+            
+            # Collect tracking information
+            try:
+                success, response, error = self.http_client.get_url(self.endpoints['tracking'])
+                if success and response:
+                    health_data['tracking'] = self.health_parser.parse_tracking_response(response)
+                else:
+                    health_data['tracking'] = {"status": "error", "error": error or "No response"}
+            except Exception as e:
+                health_data['tracking'] = {"status": "error", "error": str(e)}
+            
+            # Create standardized health report
+            return self.health_parser.create_standard_health_report(health_data)
+            
+        except Exception as e:
+            error_msg = f"Health data collection failed: {e}"
+            self.logger.error(error_msg)
+            
+            return {
+                "station_id": self.station_id,
+                "receiver_type": "NetR9",
+                "timestamp": datetime.now(),
+                "overall_status": "error",
+                "error": error_msg
+            }
+    
+    def download_data(
+        self,
+        start: Union[datetime, str],
+        end: Union[datetime, str],
+        session: str = "15s_24hr",
+        sync: bool = True,
+        clean_tmp: bool = True,
+        archive: bool = True,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """Download data from NetR9 receiver for specified time period.
+        
+        Args:
+            start: Start time for data download
+            end: End time for data download
+            session: Data session type (e.g., '15s_24hr', '1Hz_1hr')
+            sync: Whether to sync missing files
+            clean_tmp: Whether to clean temporary download directory
+            archive: Whether to archive downloaded files
+            **kwargs: Additional receiver-specific parameters
+            
+        Returns:
+            Dictionary with download results and file information
+        """
+        start_time = time.time()
+        
+        try:
+            self.logger.info(f"Starting download for NetR9 {self.station_id}")
+            
+            # Process time parameters
+            start, end = self._process_time_parameters(start, end, session)
+            
+            # Set up directories
+            tmp_dir_path = Path(self.tmp_dir) / self.station_id
+            tmp_dir_path.mkdir(parents=True, exist_ok=True)
+            
+            # Generate file list based on session type and time range
+            files_dict, archive_files_dict = self._generate_file_list(start, end, session, **kwargs)
+            
+            if not files_dict:
+                self.logger.warning(f"No files to download for {self.station_id}")
+                return {
+                    "station_id": self.station_id,
+                    "receiver_type": "NetR9",
+                    "status": "no_files",
+                    "files_downloaded": 0,
+                    "downloaded_files": [],
+                    "duration": time.time() - start_time
+                }
+            
+            self.logger.info(f"Missing files: {len(files_dict)}")
+            
+            # Download files if sync is enabled
+            downloaded_files = []
+            if sync:
+                downloaded_files = self.ftp_client.download_files(files_dict, tmp_dir_path, clean_tmp)
+            else:
+                self.logger.info("Sync disabled - skipping actual download")
+            
+            # Archive files if requested and files were downloaded
+            if archive and downloaded_files:
+                self._archive_files(downloaded_files, archive_files_dict)
+            
+            # Record performance metrics
+            duration = time.time() - start_time
+            performance_metrics = {
+                'success': len(downloaded_files) > 0 if sync else True,
+                'duration': duration,
+                'bytes_downloaded': sum(Path(f).stat().st_size for f in downloaded_files if Path(f).exists()),
+                'connection_time': getattr(self.ftp_client, '_last_connection_time', 0.0)
+            }
+            self._record_performance_metrics(performance_metrics)
+            
+            return {
+                "station_id": self.station_id,
+                "receiver_type": "NetR9",
+                "status": "completed",
+                "files_downloaded": len(downloaded_files),
+                "downloaded_files": downloaded_files,
+                "duration": duration,
+                "start_time": start,
+                "end_time": end,
+                "session": session
+            }
+            
+        except Exception as e:
+            duration = time.time() - start_time
+            error_msg = f"Download failed: {e}"
+            self.logger.error(error_msg)
+            
+            return {
+                "station_id": self.station_id,
+                "receiver_type": "NetR9",
+                "status": "error",
+                "files_downloaded": 0,
+                "downloaded_files": [],
+                "error": error_msg,
+                "duration": duration
+            }
+    
+    def get_station_info(self) -> Dict[str, Any]:
+        """Get station information and configuration.
+        
+        Returns:
+            Dictionary with station information
+        """
+        return {
+            "station_id": self.station_id,
+            "receiver_type": "NetR9",
+            "router_ip": self.station_info["router"]["ip"],
+            "http_port": self.station_info["receiver"]["httpport"],
+            "ftp_port": self.station_info["receiver"].get("ftpport", 21),
+            "connection_type": self.station_info["station"].get("connection_type", "unknown"),
+            "timeout_category": self.station_info["receiver"].get("timeout_category", "mobile"),
+            "configuration": self.station_info
+        }
+    
+    def get_firmware_version(self) -> Dict[str, Any]:
+        """Get firmware version from NetR9 receiver.
+        
+        Returns:
+            Dictionary with firmware information
+        """
+        try:
+            success, response, error = self.http_client.get_url(self.endpoints['firmware'])
+            if success and response:
+                return {
+                    "success": True,
+                    "firmware_version": response.strip(),
+                    "raw_response": response
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": error or "No response"
+                }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    def get_position(self) -> Dict[str, Any]:
+        """Get current position from NetR9 receiver.
+        
+        Returns:
+            Dictionary with position information
+        """
+        try:
+            success, response, error = self.http_client.get_url(self.endpoints['position'])
+            if success and response:
+                # TODO: Parse position response (would need to see actual response format)
+                return {
+                    "success": True,
+                    "raw_response": response,
+                    "note": "Position parsing not yet implemented"
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": error or "No response"
+                }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    def _process_time_parameters(self, start: Union[datetime, str], end: Union[datetime, str], 
+                               session: str) -> Tuple[datetime, datetime]:
+        """Process and validate time parameters.
+        
+        Args:
+            start: Start time
+            end: End time
+            session: Session type
+            
+        Returns:
+            Tuple of processed start and end datetime objects
+        """
+        # Convert strings to datetime if needed
+        if isinstance(start, str):
+            start = datetime.strptime(start, "%Y-%m-%d")
+        if isinstance(end, str):
+            end = datetime.strptime(end, "%Y-%m-%d")
+        
+        # For hourly sessions, extend end time to capture all hours of the day
+        if "1hr" in session and start.date() == end.date():
+            end = end.replace(hour=23, minute=59, second=59)
+        
+        return start, end
+    
+    def _generate_file_list(self, start: datetime, end: datetime, session: str, 
+                          **kwargs) -> Tuple[Dict[str, str], Dict[str, str]]:
+        """Generate list of files to download based on time range and session.
+        
+        Args:
+            start: Start time
+            end: End time  
+            session: Session type
+            **kwargs: Additional parameters
+            
+        Returns:
+            Tuple of (files_dict, archive_files_dict)
+            files_dict maps filename -> remote_directory
+            archive_files_dict maps filename -> archive_path
+        """
+        # Extract session parameters
+        parts = session.split('_')
+        if len(parts) >= 2:
+            afrequency = parts[0]  # e.g., "15s", "1Hz"
+            ffrequency = parts[1]  # e.g., "24hr", "1hr"
+        else:
+            afrequency = "15s"
+            ffrequency = "24hr"
+        
+        # Map frequency to gtimes format
+        frequency_mapping = {
+            "24hr": "1D",  # Daily files
+            "1hr": "1H",   # Hourly files
+        }
+        gt_frequency = frequency_mapping.get(ffrequency, "1D")
+        
+        # Generate datetime list using PolaRX5 pattern
+        datelist = gt.datepathlist(
+            "#datelist",
+            gt_frequency, 
+            starttime=start,
+            endtime=end,
+            datelist=[],
+            closed="both"
+        )
+        
+        # Generate remote file paths (NetR9 specific format)
+        files_dict = {}
+        archive_files_dict = {}
+        
+        for dt in datelist:
+            # NetR9 filename format: SSSSDDDF.YYT (where SSSS=station, DDD=day of year, F=file seq, YY=year, T=file type)
+            doy = dt.timetuple().tm_yday
+            year = dt.strftime('%y')
+            
+            if ffrequency == "24hr":
+                # Daily files: STATIONDDF.YYT
+                filename = f"{self.station_id}{doy:03d}0.{year}T"
+                remote_dir = f"/Internal/{dt.strftime('%Y')}/{dt.strftime('%m')}/T/"
+            elif ffrequency == "1hr":
+                # Hourly files: STATIONDDF.YYT (F = hour)
+                filename = f"{self.station_id}{doy:03d}{dt.hour}.{year}T"
+                remote_dir = f"/Internal/{dt.strftime('%Y')}/{dt.strftime('%m')}/T/"
+            else:
+                # Default to daily
+                filename = f"{self.station_id}{doy:03d}0.{year}T"
+                remote_dir = f"/Internal/{dt.strftime('%Y')}/{dt.strftime('%m')}/T/"
+            
+            files_dict[filename] = remote_dir
+            
+            # Generate archive path using standard strftime
+            archive_path = f"{self.data_prepath}{self.station_id}/{session}/raw/{filename}"
+            archive_files_dict[filename] = archive_path
+        
+        return files_dict, archive_files_dict
+    
+    def _archive_files(self, downloaded_files: List[str], archive_files_dict: Dict[str, str]):
+        """Archive downloaded files to final locations.
+        
+        Args:
+            downloaded_files: List of downloaded file paths
+            archive_files_dict: Dictionary mapping filename to archive path
+        """
+        for file_path in downloaded_files:
+            try:
+                file_path_obj = Path(file_path)
+                filename = file_path_obj.name
+                
+                if filename in archive_files_dict:
+                    archive_path = Path(archive_files_dict[filename])
+                    
+                    # Create archive directory
+                    archive_path.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    # Move file to archive location
+                    file_path_obj.rename(archive_path)
+                    self.logger.info(f"✅ Archived {filename} to {archive_path}")
+                else:
+                    self.logger.warning(f"No archive path found for {filename}")
+                    
+            except Exception as e:
+                self.logger.error(f"Failed to archive {filename}: {e}")
+    
+    def _record_performance_metrics(self, metrics: Dict[str, Any]):
+        """Record performance metrics for adaptive timeout system.
+        
+        Args:
+            metrics: Performance metrics dictionary
+        """
+        try:
+            # Import here to avoid circular imports
+            import sys
+            sys.path.append('../gps_parser/src')
+            import gps_parser
+            
+            parser = gps_parser.ConfigParser()
+            parser.record_performance_data(self.station_id, metrics)
+            
+        except ImportError:
+            self.logger.debug("gps_parser not available - skipping performance metrics")
+        except Exception as e:
+            self.logger.warning(f"Failed to record performance metrics: {e}")
+    
+    def __del__(self):
+        """Clean up resources."""
+        if hasattr(self, 'http_client'):
+            self.http_client.close()

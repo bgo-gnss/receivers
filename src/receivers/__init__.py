@@ -29,3 +29,20 @@ try:
 except ImportError:
     # Dependencies not available, skip receiver implementations
     pass
+
+try:
+    from .trimble.netr9 import NetR9
+    from .trimble.netrs import NetRS
+
+    __all__.extend(["NetR9", "NetRS"])
+except ImportError:
+    # Dependencies not available, skip receiver implementations
+    pass
+
+try:
+    from .leica.leica_gnss import Leica
+
+    __all__.append("Leica")
+except ImportError:
+    # Dependencies not available, skip receiver implementations
+    pass
