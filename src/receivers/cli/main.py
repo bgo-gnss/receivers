@@ -23,6 +23,9 @@ from gtimes.timefunc import currDatetime
 
 from ..septentrio.polarx5 import PolaRX5
 from ..base.exceptions import ConfigurationError, ConnectionError
+import importlib
+import inspect
+from pathlib import Path
 
 # Import gps_parser for centralized config
 try:
@@ -33,6 +36,63 @@ try:
 except ImportError:
     HAS_GPS_PARSER = False
     gps_parser = None
+
+
+def get_available_receiver_types() -> dict:
+    """Dynamically discover available receiver types by scanning receiver modules.
+    
+    Returns:
+        dict: Maps receiver_type names to their module paths and classes
+    """
+    available_receivers = {}
+    
+    try:
+        # Get the receivers package directory
+        import receivers
+        receivers_dir = Path(receivers.__file__).parent
+        
+        # Scan all subdirectories (manufacturer folders)
+        for manufacturer_dir in receivers_dir.iterdir():
+            if not manufacturer_dir.is_dir() or manufacturer_dir.name.startswith('_'):
+                continue
+                
+            # Scan Python files in manufacturer directory
+            for py_file in manufacturer_dir.glob('*.py'):
+                if py_file.name.startswith('_'):
+                    continue
+                    
+                module_name = f"receivers.{manufacturer_dir.name}.{py_file.stem}"
+                try:
+                    # Import the module
+                    module = importlib.import_module(module_name)
+                    
+                    # Look for classes that inherit from BaseReceiver
+                    for name, obj in inspect.getmembers(module, inspect.isclass):
+                        # Check if it's a receiver class (has BaseReceiver in MRO)
+                        if (hasattr(obj, '__module__') and 
+                            obj.__module__ == module_name and
+                            hasattr(obj, '__bases__')):
+                            
+                            # Check if it inherits from BaseReceiver but is not BaseReceiver itself
+                            base_names = [base.__name__ for base in obj.__mro__]
+                            if 'BaseReceiver' in base_names and name != 'BaseReceiver':
+                                available_receivers[name] = {
+                                    'class': obj,
+                                    'module': module_name,
+                                    'manufacturer': manufacturer_dir.name
+                                }
+                                
+                except ImportError as e:
+                    # Skip modules that can't be imported
+                    logging.debug(f"Could not import {module_name}: {e}")
+                    continue
+                    
+    except Exception as e:
+        logging.warning(f"Failed to scan for receiver types: {e}")
+        # Fallback to known receivers
+        available_receivers = {'PolaRX5': {'class': PolaRX5, 'module': 'receivers.septentrio.polarx5', 'manufacturer': 'septentrio'}}
+        
+    return available_receivers
 
 
 def setup_logging(level: int = logging.INFO) -> logging.Logger:
@@ -53,100 +113,84 @@ def parse_datetime(date_str: str) -> datetime:
         return datetime.strptime(date_str, "%Y%m%d")
 
 
-def get_station_config(station_id: str) -> dict:
-    """Get station configuration from gps_parser with getSeptentrio2 fallback."""
+def get_station_config(station_id: str) -> Optional[dict]:
+    """Get station configuration from gps_parser centralized configuration."""
     station_upper = station_id.upper()
     
-    # Try gps_parser first (centralized config)
-    if HAS_GPS_PARSER:
-        try:
-            parser = gps_parser.ConfigParser()
-            station_info = parser.getStationInfo(station_upper)
-            
-            if station_info and 'station' in station_info:
-                station_data = station_info['station']
-                
-                # Extract router IP from gps_parser format
-                router_ip = station_data.get('router_ip')
-                if not router_ip:
-                    # Handle different field naming in gps_parser
-                    router_ip = station_data.get('Router_IP')
-                
-                if router_ip:
-                    # Build config from gps_parser data
-                    ftp_port = int(station_data.get('receiver_ftpport', 
-                                                  station_data.get('Receiver_FTP_PORT', 2160)))
-                    
-                    station_config = {
-                        'router': {'ip': router_ip},
-                        'receiver': {'ftpport': ftp_port, 'ftp_mode': 'auto'}
-                    }
-                    return station_config
-                    
-        except Exception as e:
-            # Log but continue to fallback - don't fail hard on gps_parser issues
-            logging.warning(f"gps_parser failed for {station_upper}: {e}")
-    
-    # Fallback to hardcoded mapping from getSeptentrio2 (for operational reliability)
-    STATION_IP_MAPPING = {
-        # Extended network stations (10.6.x.x range) - commonly used
-        'ELDC': "10.6.1.90",
-        'ROTH': "10.6.1.97",
-        'SVIE': "10.6.1.87", 
-        'HAHV': "10.6.1.68",
-        'SAUD': "10.6.1.64",
-        'INTA': "10.6.1.93",
-        'AUST': "10.6.1.156",
-        'ORFC': "10.6.1.91",
-        'GFUM': "10.6.1.58",
-        'KAST': "10.6.1.102",
-        
-        # Internal network stations (10.4.x.x range) - commonly used
-        'THOB': "10.4.2.28",
-        'HUSM': "10.4.1.240",
-        'GJAC': "10.4.1.226", 
-        'HLID': "10.4.1.238",
-        'VMEY': "10.4.2.81",
-        'VOGS': "10.4.2.8",
-        'HVOL': "10.4.2.23",
-        'HVER': "10.4.2.25",
-        'SLEC': "10.4.2.224",
-        'BUDH': "10.4.2.26",
-        'SVIN': "10.4.2.22",
-        'ENTC': "10.4.2.96",
-        'INGC': "10.4.1.23",
-        'KVIC': "10.4.1.24", 
-        'KOTC': "10.4.1.21",
-        
-        # Test station
-        'TEST': "10.4.2.235",
-        
-        # Domain-based stations (*.gps.vedur.is) - commonly requested  
-        'NYLA': "nyla.gps.vedur.is",
-        'VONC': "vonc.gps.vedur.is",
-        'OLKE': "OLKE.gps.vedur.is",
-        'KALF': "kalf.gps.vedur.is",
-        'KVEC': "kvec.gps.vedur.is",
-        'HRIC': "hric.gps.vedur.is",
-        'GOLA': "GOLA.gps.vedur.is",
-        'SKRO': "skro.gps.vedur.is",
-        'URHC': "URHC.gps.vedur.is",
-        'HAFS': "HAFS.gps.vedur.is",
-        'SOHO': "SOHO.gps.vedur.is",
-        # TODO: Add remaining 60+ stations as needed from operational config
-    }
-    
-    if station_upper not in STATION_IP_MAPPING:
-        # Return None to indicate missing configuration - caller should handle warning
+    # Use gps_parser as primary configuration source
+    if not HAS_GPS_PARSER:
+        logging.error("gps_parser module not available - cannot load station configurations")
         return None
     
-    # Build configuration from fallback mapping
-    station_config = {
-        'router': {'ip': STATION_IP_MAPPING[station_upper]},
-        'receiver': {'ftpport': 2160, 'ftp_mode': 'auto'}  # Most stations use auto-detect mode
-    }
-    
-    return station_config
+    try:
+        parser = gps_parser.ConfigParser()
+        station_info = parser.getStationInfo(station_upper)
+        
+        if not station_info or 'station' not in station_info:
+            logging.warning(f"Station {station_upper} not found in stations.cfg")
+            return None
+            
+        station_data = station_info['station']
+        
+        # Extract required configuration from gps_parser format
+        router_ip = station_data.get('router_ip')
+        ftp_port = station_data.get('receiver_ftpport')
+        receiver_type = station_data.get('receiver_type')
+        
+        if not router_ip or not ftp_port:
+            logging.warning(f"Station {station_upper} missing required config: router_ip={router_ip}, ftpport={ftp_port}")
+            return None
+        
+        # Convert port to int if it's a string
+        try:
+            ftp_port = int(ftp_port)
+        except (ValueError, TypeError):
+            logging.warning(f"Station {station_upper} has invalid FTP port: {ftp_port}")
+            return None
+        
+        # Check for supported receiver types using dynamic discovery
+        available_receivers = get_available_receiver_types()
+        supported_types = list(available_receivers.keys())
+        
+        if not receiver_type:
+            logging.warning(f"⚠️  Station {station_upper} missing receiver_type in configuration")
+            logging.warning(f"   Supported types: {', '.join(supported_types)}")
+            logging.warning(f"   This station will be skipped - please add receiver_type to stations.cfg")
+            return None
+        elif receiver_type not in supported_types:
+            logging.warning(f"⚠️  Station {station_upper} has unsupported receiver type: {receiver_type}")
+            logging.warning(f"   Supported types: {', '.join(supported_types)}")
+            logging.warning(f"   This station will be skipped until receiver support is implemented")
+            if supported_types:
+                manufacturers = set(info['manufacturer'] for info in available_receivers.values())
+                logging.warning(f"   To add support, create: src/receivers/{receiver_type.lower()}/module.py")
+                logging.warning(f"   Current manufacturers: {', '.join(manufacturers)}")
+            return None
+        
+        # Get FTP mode using enhanced gps_parser rule-based system
+        ftp_mode = parser.getStationFtpMode(station_upper, router_ip)
+        
+        # Build standardized config structure
+        station_config = {
+            'router': {'ip': router_ip},
+            'receiver': {
+                'ftpport': ftp_port, 
+                'ftp_mode': ftp_mode,
+                'type': receiver_type
+            },
+            'station': {
+                'id': station_upper,
+                'router_type': station_data.get('router_type'),
+                'connection_type': station_data.get('connection_type')
+            }
+        }
+        
+        logging.debug(f"Loaded config for {station_upper}: {router_ip}:{ftp_port} ({receiver_type})")
+        return station_config
+        
+    except Exception as e:
+        logging.error(f"Failed to load configuration for {station_upper}: {e}")
+        return None
 
 
 def cmd_download(args) -> int:
@@ -219,8 +263,17 @@ def cmd_download(args) -> int:
                 total_errors += 1
                 continue
             
-            # Create PolaRX5 instance
-            receiver = PolaRX5(station_id, station_config)
+            # Create receiver instance dynamically based on receiver_type
+            receiver_type = station_config["receiver"]["type"]
+            available_receivers = get_available_receiver_types()
+            
+            if receiver_type not in available_receivers:
+                logger.error(f"⚠️  Receiver type {receiver_type} not available - this should not happen")
+                total_errors += 1
+                continue
+                
+            ReceiverClass = available_receivers[receiver_type]["class"]
+            receiver = ReceiverClass(station_id, station_config)
             
             # Test connection if requested
             if args.test_connection:
@@ -280,7 +333,11 @@ def cmd_status(args) -> int:
             logger.warning(f"⚠️  Station {station_id} not found in configuration")
             return 1
             
-        receiver = PolaRX5(station_id, station_config)
+        # Create receiver instance dynamically based on receiver_type
+        receiver_type = station_config["receiver"]["type"]
+        available_receivers = get_available_receiver_types()
+        ReceiverClass = available_receivers[receiver_type]["class"]
+        receiver = ReceiverClass(station_id, station_config)
         
         status = receiver.get_connection_status()
         
@@ -311,7 +368,11 @@ def cmd_health(args) -> int:
             logger.warning(f"⚠️  Station {station_id} not found in configuration")
             return 1
             
-        receiver = PolaRX5(station_id, station_config)
+        # Create receiver instance dynamically based on receiver_type
+        receiver_type = station_config["receiver"]["type"]
+        available_receivers = get_available_receiver_types()
+        ReceiverClass = available_receivers[receiver_type]["class"]
+        receiver = ReceiverClass(station_id, station_config)
         
         if args.analyze_status:
             # Detailed health analysis from status session files
@@ -397,11 +458,29 @@ Examples:
     )
     
     # Time range options (from getSeptentrio3)
+    # Get default values from gps_parser configuration
+    try:
+        if HAS_GPS_PARSER:
+            parser_config = gps_parser.ConfigParser()
+            default_days = parser_config.getDefaultValue('default_days_back')
+            default_session = parser_config.getDefaultValue('default_session')
+            default_compression = parser_config.getDefaultValue('default_compression')
+        else:
+            # Fallback values if gps_parser not available
+            default_days = 10
+            default_session = "15s_24hr"
+            default_compression = ".gz"
+    except Exception:
+        # Fallback values on any gps_parser error
+        default_days = 10
+        default_session = "15s_24hr"
+        default_compression = ".gz"
+    
     download_parser.add_argument(
         "-D", "--days",
         type=int,
-        default=10,
-        help="Number of days back to check for data (default: 10)"
+        default=default_days,
+        help=f"Number of days back to check for data (default: {default_days})"
     )
     
     download_parser.add_argument(
@@ -420,16 +499,16 @@ Examples:
     download_parser.add_argument(
         "-se", "--session",
         type=str,
-        default="15s_24hr",
+        default=default_session,
         choices=["15s_24hr", "1Hz_1hr", "status_1hr"],
-        help="Data sampling session (default: 15s_24hr)"
+        help=f"Data sampling session (default: {default_session})"
     )
     
     download_parser.add_argument(
         "-comp", "--compression",
         type=str,
-        default=".gz",
-        help="Compression type (default: .gz)"
+        default=default_compression,
+        help=f"Compression type (default: {default_compression})"
     )
     
     download_parser.add_argument(
