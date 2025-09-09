@@ -50,8 +50,7 @@ class NetR9(BaseReceiver):
         # Initialize health parser
         self.health_parser = TrimbleHealthParser(station_id, "NetR9")
         
-        # Default data path configuration (can be overridden in download_data)
-        self.data_prepath = station_info.get("data_prepath", "/mnt_data/rawgpsdata/%Y/%b/")
+        # data_prepath is now handled by BaseReceiver via ConfigManager
         self.tmp_dir = "/home/bgo/tmp/download/"
         
         # NetR9 HTTP API endpoints (from old system)
