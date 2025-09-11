@@ -38,6 +38,9 @@ except ImportError:
     HAS_GPS_PARSER = False
     gps_parser = None
 
+# Import station config from utility to avoid circular imports
+from ..config_utils import get_station_config
+
 
 def get_available_receiver_types() -> dict:
     """Dynamically discover available receiver types by scanning receiver modules.
@@ -48,9 +51,10 @@ def get_available_receiver_types() -> dict:
     available_receivers = {}
     
     try:
-        # Get the receivers package directory
-        import receivers
-        receivers_dir = Path(receivers.__file__).parent
+        # Get the receivers package directory without importing the package
+        # Use __file__ to find the receivers directory relative to this CLI module
+        current_file = Path(__file__)
+        receivers_dir = current_file.parent.parent  # Go up from cli/ to receivers/
         
         # Scan all subdirectories (manufacturer folders)
         for manufacturer_dir in receivers_dir.iterdir():
@@ -114,89 +118,25 @@ def parse_datetime(date_str: str) -> datetime:
         return datetime.strptime(date_str, "%Y%m%d")
 
 
-def get_station_config(station_id: str) -> Optional[dict]:
-    """Get station configuration from gps_parser centralized configuration."""
-    station_upper = station_id.upper()
-    
-    # Use gps_parser as primary configuration source
-    if not HAS_GPS_PARSER:
-        logging.error("gps_parser module not available - cannot load station configurations")
-        return None
-    
-    try:
-        parser = gps_parser.ConfigParser()
-        station_info = parser.getStationInfo(station_upper)
-        
-        if not station_info or 'station' not in station_info:
-            logging.warning(f"Station {station_upper} not found in stations.cfg")
-            return None
-            
-        station_data = station_info['station']
-        
-        # Extract required configuration from gps_parser format
-        router_ip = station_data.get('router_ip')
-        ftp_port = station_data.get('receiver_ftpport')
-        receiver_type = station_data.get('receiver_type')
-        
-        if not router_ip or not ftp_port:
-            logging.warning(f"Station {station_upper} missing required config: router_ip={router_ip}, ftpport={ftp_port}")
-            return None
-        
-        # Convert port to int if it's a string
-        try:
-            ftp_port = int(ftp_port)
-        except (ValueError, TypeError):
-            logging.warning(f"Station {station_upper} has invalid FTP port: {ftp_port}")
-            return None
-        
-        # Check for supported receiver types using dynamic discovery
-        available_receivers = get_available_receiver_types()
-        supported_types = list(available_receivers.keys())
-        
-        if not receiver_type:
-            logging.warning(f"⚠️  Station {station_upper} missing receiver_type in configuration")
-            logging.warning(f"   Supported types: {', '.join(supported_types)}")
-            logging.warning(f"   This station will be skipped - please add receiver_type to stations.cfg")
-            return None
-        elif receiver_type not in supported_types:
-            logging.warning(f"⚠️  Station {station_upper} has unsupported receiver type: {receiver_type}")
-            logging.warning(f"   Supported types: {', '.join(supported_types)}")
-            logging.warning(f"   This station will be skipped until receiver support is implemented")
-            if supported_types:
-                manufacturers = set(info['manufacturer'] for info in available_receivers.values())
-                logging.warning(f"   To add support, create: src/receivers/{receiver_type.lower()}/module.py")
-                logging.warning(f"   Current manufacturers: {', '.join(manufacturers)}")
-            return None
-        
-        # Get FTP mode using enhanced gps_parser rule-based system
-        ftp_mode = parser.getStationFtpMode(station_upper, router_ip)
-        
-        # Build standardized config structure
-        station_config = {
-            'router': {'ip': router_ip},
-            'receiver': {
-                'ftpport': ftp_port, 
-                'ftp_mode': ftp_mode,
-                'type': receiver_type
-            },
-            'station': {
-                'id': station_upper,
-                'router_type': station_data.get('router_type'),
-                'connection_type': station_data.get('connection_type')
-            }
-        }
-        
-        logging.debug(f"Loaded config for {station_upper}: {router_ip}:{ftp_port} ({receiver_type})")
-        return station_config
-        
-    except Exception as e:
-        logging.error(f"Failed to load configuration for {station_upper}: {e}")
-        return None
+# get_station_config function moved to config_utils.py to avoid circular imports
 
 
 def cmd_download(args) -> int:
     """Download command - main data download functionality."""
-    logger = setup_logging(args.loglevel)
+    
+    # Set up production logging if requested
+    if getattr(args, 'production', False) or getattr(args, 'json_log', False):
+        from ..base.production_logging import setup_production_logging
+        production_config = setup_production_logging(
+            json_output=getattr(args, 'json_log', False),
+            verbose=(args.loglevel == logging.DEBUG)
+        )
+        logger = production_config.create_station_logger('receivers')
+        audit_logger = production_config.get_audit_logger()
+    else:
+        logger = setup_logging(args.loglevel)
+        audit_logger = None
+    
     logger.info(f"Starting download for stations: {args.stations}")
     
     # Process time arguments (from getSeptentrio3 logic)
@@ -302,6 +242,20 @@ def cmd_download(args) -> int:
             # Report results
             files_downloaded = result.get('files_downloaded', 0)
             total_downloaded += files_downloaded
+            
+            # Log to audit trail if production logging enabled
+            if audit_logger:
+                audit_logger.log_download_session(station_id, {
+                    'session': args.session,
+                    'status': result.get('status', 'unknown'),
+                    'duration': result.get('duration', 0),
+                    'files_downloaded': files_downloaded,
+                    'bytes_downloaded': result.get('total_bytes', 0),
+                    'errors': result.get('errors', 0),
+                    'start_time': start_time.isoformat() if start_time else None,
+                    'end_time': end_time.isoformat() if end_time else None,
+                    'connection_time': getattr(receiver, '_last_connection_time', None)
+                })
             
             logger.info(f"Station {station_id}: {files_downloaded} files downloaded")
             logger.info(f"Status: {result.get('status')}, Duration: {result.get('duration', 0):.2f}s")
@@ -416,9 +370,97 @@ def cmd_health(args) -> int:
         return 1
 
 
+def cmd_validate_web_accuracy(args) -> int:
+    """Validate configuration accuracy using web interface scraping."""
+    import sys
+    from pathlib import Path
+    
+    # Add the receivers root directory to path
+    receivers_root = Path(__file__).parent.parent.parent.parent
+    sys.path.insert(0, str(receivers_root))
+    
+    try:
+        from config_accuracy_validator import ConfigAccuracyValidator
+        
+        validator = ConfigAccuracyValidator()
+        
+        # Get stations to validate
+        if args.stations:
+            station_ids = [s.upper() for s in args.stations]
+        else:
+            # Get all configured stations
+            station_configs = get_all_station_configs()
+            station_ids = list(station_configs.keys())
+        
+        if not station_ids:
+            print("❌ No stations found to validate")
+            return 1
+        
+        # Run web accuracy validation
+        results, summary = validator.validate_multiple_stations(station_ids)
+        
+        if args.summary:
+            # Show summary only
+            print(f"\n📊 CONFIGURATION ACCURACY SUMMARY")
+            print(f"{'='*50}")
+            print(f"Total stations: {summary['total_stations']}")
+            print(f"✅ Correct configs: {summary['correct_configs']}")
+            print(f"❌ Mismatched configs: {summary['mismatched_configs']}")
+            print(f"⚠️  Unverifiable: {summary['unverifiable_configs']}")
+            
+            if summary['type_mismatches']:
+                print(f"\n🔧 Type mismatches: {', '.join(summary['type_mismatches'])}")
+            
+            if summary['name_mismatches']:
+                print(f"🏷️  Name mismatches: {', '.join(summary['name_mismatches'])}")
+            
+            accuracy_rate = summary['correct_configs'] / summary['total_stations'] * 100
+            print(f"\n📈 Configuration accuracy: {accuracy_rate:.1f}%")
+        else:
+            # Show detailed results
+            print(f"\n📋 DETAILED CONFIGURATION VALIDATION")
+            print(f"{'='*60}")
+            
+            for station_id, result in results.items():
+                print(f"\n🏢 {station_id}:")
+                print(f"   IP: {result['ip']}")
+                
+                if result['status'] == 'error':
+                    print(f"   ❌ ERROR: {result['error']}")
+                    continue
+                
+                if result.get('actual_type'):
+                    type_status = "✅" if result.get('type_match', True) else "❌"
+                    print(f"   {type_status} Type: {result['configured_type']} vs {result['actual_type']}")
+                
+                if result.get('actual_station_name'):
+                    name_status = "✅" if result.get('name_match', True) else "❌"
+                    print(f"   {name_status} Name: {station_id} vs {result['actual_station_name']}")
+                
+                if result.get('type_mismatch'):
+                    print(f"      🔧 Fix: {result['type_mismatch']['suggested_fix']}")
+                
+                if result.get('name_mismatch'):
+                    print(f"      🔧 Fix: {result['name_mismatch']['suggested_fix']}")
+        
+        return 0 if summary['mismatched_configs'] == 0 else 1
+        
+    except ImportError as e:
+        print(f"❌ Web accuracy validation requires additional dependencies: {e}")
+        print("   Install with: pip install beautifulsoup4")
+        return 1
+    except Exception as e:
+        print(f"❌ Web accuracy validation failed: {e}")
+        return 1
+
+
 def cmd_validate(args) -> int:
     """Validate command - check receiver type configuration accuracy."""
     logger = setup_logging(args.loglevel)
+    
+    # Check if web accuracy validation was requested
+    if args.web_accuracy:
+        return cmd_validate_web_accuracy(args)
     
     try:
         # Initialize validator
@@ -698,6 +740,19 @@ Examples:
         help="Test connection before attempting download"
     )
     
+    # Production logging options
+    download_parser.add_argument(
+        "--json-log",
+        action="store_true",
+        help="Output logs in JSON format for monitoring systems"
+    )
+    
+    download_parser.add_argument(
+        "--production",
+        action="store_true",
+        help="Enable production logging mode (concise, structured output)"
+    )
+    
     download_parser.set_defaults(func=cmd_download)
     
     # Status subcommand
@@ -754,6 +809,16 @@ Examples:
         help="Generate detailed correction report"
     )
     validate_parser.add_argument(
+        "--web-accuracy", "-w",
+        action="store_true",
+        help="Validate config accuracy using web interface scraping (more reliable)"
+    )
+    validate_parser.add_argument(
+        "--summary", "-s", 
+        action="store_true",
+        help="Show summary report only"
+    )
+    validate_parser.add_argument(
         "-v", "--verbose",
         action="store_const",
         dest="loglevel",
@@ -761,6 +826,20 @@ Examples:
         help="Enable verbose output"
     )
     validate_parser.set_defaults(func=cmd_validate)
+    
+    # Scheduler subcommand (bulk downloads) 
+    try:
+        from .scheduler import create_scheduler_parser
+        create_scheduler_parser(subparsers)
+    except ImportError:
+        # APScheduler not available - add placeholder
+        scheduler_parser = subparsers.add_parser(
+            "scheduler", 
+            help="Bulk download scheduler (requires APScheduler)"
+        )
+        scheduler_parser.set_defaults(func=lambda args: print(
+            "❌ Scheduler requires APScheduler. Install with: pip install apscheduler"
+        ))
     
     return parser
 
@@ -773,6 +852,15 @@ def main() -> int:
     if not args.command:
         parser.print_help()
         return 1
+    
+    # Handle scheduler subcommands
+    if args.command == "scheduler":
+        try:
+            from .scheduler import handle_scheduler_command
+            return handle_scheduler_command(args)
+        except ImportError:
+            print("❌ Scheduler requires APScheduler. Install with: pip install apscheduler")
+            return 1
     
     try:
         return args.func(args)
