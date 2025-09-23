@@ -21,12 +21,9 @@ from typing import Dict, List, Optional, Any
 import gtimes.timefunc as gt
 from gtimes.timefunc import currDatetime
 
-from ..septentrio.polarx5 import PolaRX5
 from ..base.exceptions import ConfigurationError, ConnectionError
 from ..base.type_validator import ReceiverTypeValidator
-import importlib
-import inspect
-from pathlib import Path
+from ..base.receiver_factory import get_receiver_factory, create_receiver
 
 # Import gps_parser for centralized config
 try:
@@ -40,64 +37,6 @@ except ImportError:
 
 # Import station config from utility to avoid circular imports
 from ..config_utils import get_station_config
-
-
-def get_available_receiver_types() -> dict:
-    """Dynamically discover available receiver types by scanning receiver modules.
-    
-    Returns:
-        dict: Maps receiver_type names to their module paths and classes
-    """
-    available_receivers = {}
-    
-    try:
-        # Get the receivers package directory without importing the package
-        # Use __file__ to find the receivers directory relative to this CLI module
-        current_file = Path(__file__)
-        receivers_dir = current_file.parent.parent  # Go up from cli/ to receivers/
-        
-        # Scan all subdirectories (manufacturer folders)
-        for manufacturer_dir in receivers_dir.iterdir():
-            if not manufacturer_dir.is_dir() or manufacturer_dir.name.startswith('_'):
-                continue
-                
-            # Scan Python files in manufacturer directory
-            for py_file in manufacturer_dir.glob('*.py'):
-                if py_file.name.startswith('_'):
-                    continue
-                    
-                module_name = f"receivers.{manufacturer_dir.name}.{py_file.stem}"
-                try:
-                    # Import the module
-                    module = importlib.import_module(module_name)
-                    
-                    # Look for classes that inherit from BaseReceiver
-                    for name, obj in inspect.getmembers(module, inspect.isclass):
-                        # Check if it's a receiver class (has BaseReceiver in MRO)
-                        if (hasattr(obj, '__module__') and 
-                            obj.__module__ == module_name and
-                            hasattr(obj, '__bases__')):
-                            
-                            # Check if it inherits from BaseReceiver but is not BaseReceiver itself
-                            base_names = [base.__name__ for base in obj.__mro__]
-                            if 'BaseReceiver' in base_names and name != 'BaseReceiver':
-                                available_receivers[name] = {
-                                    'class': obj,
-                                    'module': module_name,
-                                    'manufacturer': manufacturer_dir.name
-                                }
-                                
-                except ImportError as e:
-                    # Skip modules that can't be imported
-                    logging.debug(f"Could not import {module_name}: {e}")
-                    continue
-                    
-    except Exception as e:
-        logging.warning(f"Failed to scan for receiver types: {e}")
-        # Fallback to known receivers
-        available_receivers = {'PolaRX5': {'class': PolaRX5, 'module': 'receivers.septentrio.polarx5', 'manufacturer': 'septentrio'}}
-        
-    return available_receivers
 
 
 def setup_logging(level: int = logging.INFO) -> logging.Logger:
@@ -204,17 +143,8 @@ def cmd_download(args) -> int:
                 total_errors += 1
                 continue
             
-            # Create receiver instance dynamically based on receiver_type
-            receiver_type = station_config["receiver"]["type"]
-            available_receivers = get_available_receiver_types()
-            
-            if receiver_type not in available_receivers:
-                logger.error(f"⚠️  Receiver type {receiver_type} not available - this should not happen")
-                total_errors += 1
-                continue
-                
-            ReceiverClass = available_receivers[receiver_type]["class"]
-            receiver = ReceiverClass(station_id, station_config)
+            # Create receiver instance using factory pattern
+            receiver = create_receiver(station_id, station_config)
             
             # Test connection if requested
             if args.test_connection:
@@ -288,11 +218,8 @@ def cmd_status(args) -> int:
             logger.warning(f"⚠️  Station {station_id} not found in configuration")
             return 1
             
-        # Create receiver instance dynamically based on receiver_type
-        receiver_type = station_config["receiver"]["type"]
-        available_receivers = get_available_receiver_types()
-        ReceiverClass = available_receivers[receiver_type]["class"]
-        receiver = ReceiverClass(station_id, station_config)
+        # Create receiver instance using factory pattern
+        receiver = create_receiver(station_id, station_config)
         
         status = receiver.get_connection_status()
         
@@ -323,11 +250,8 @@ def cmd_health(args) -> int:
             logger.warning(f"⚠️  Station {station_id} not found in configuration")
             return 1
             
-        # Create receiver instance dynamically based on receiver_type
-        receiver_type = station_config["receiver"]["type"]
-        available_receivers = get_available_receiver_types()
-        ReceiverClass = available_receivers[receiver_type]["class"]
-        receiver = ReceiverClass(station_id, station_config)
+        # Create receiver instance using factory pattern
+        receiver = create_receiver(station_id, station_config)
         
         if args.analyze_status:
             # Detailed health analysis from status session files
@@ -466,6 +390,11 @@ def cmd_validate(args) -> int:
         # Initialize validator
         validator = ReceiverTypeValidator(logger)
         
+        # Get receiver factory for available types
+        factory = get_receiver_factory()
+        available_types = list(factory.get_available_types().keys())
+        logger.info(f"Available receiver types: {', '.join(available_types)}")
+
         # Get stations to validate
         if args.stations:
             # Validate specific stations
@@ -481,11 +410,11 @@ def cmd_validate(args) -> int:
             # Validate all stations
             logger.info("Validating all stations in configuration...")
             station_configs = get_all_station_configs()
-        
+
         if not station_configs:
             logger.error("No stations found to validate")
             return 1
-        
+
         # Run validation
         logger.info(f"Validating receiver types for {len(station_configs)} stations...")
         results = validator.batch_validate_stations(station_configs)

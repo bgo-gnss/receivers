@@ -28,46 +28,40 @@ class ConfigManager:
         self._gps_parser = None
     
     def _get_parser(self):
-        """Lazy load gps_parser to avoid import issues."""
+        """Lazy load gps_parser with proper error handling."""
         if self._gps_parser is None:
             try:
                 # Try different import strategies for gps_parser
                 import gps_parser
                 self._gps_parser = gps_parser.ConfigParser()
+                self.logger.debug("Successfully loaded gps_parser")
             except ImportError:
                 try:
-                    # Try with path adjustment
+                    # Try with path adjustment for development
                     sys.path.append("../gps_parser/src")
                     import gps_parser
                     self._gps_parser = gps_parser.ConfigParser()
+                    self.logger.debug("Successfully loaded gps_parser with path adjustment")
                 except ImportError:
-                    self.logger.warning("Could not import gps_parser - using fallbacks")
-                    self._gps_parser = None
-        
+                    self.logger.error("Could not import gps_parser - configuration unavailable")
+                    raise ImportError(
+                        "gps_parser package not found. Please install gps_parser:\\n"
+                        "cd ../gps_parser && pip install -e ."
+                    )
+
         return self._gps_parser
     
     def get_data_prepath(self) -> str:
-        """Get data prepath from gps_parser configuration or environment.
-
-        Priority:
-        1. gps_parser configuration file setting
-        2. Environment variable DATA_PREPATH
-        3. Default ./data/
+        """Get data prepath from gps_parser configuration.
 
         Returns:
-            Data prepath string
-        """
-        try:
-            parser = self._get_parser()
-            if parser:
-                return parser.getSystemPath("data_prepath")
-        except Exception as e:
-            self.logger.debug(f"Could not get data_prepath from gps_parser: {e}")
+            Data prepath string from configuration
 
-        # Fallback to environment variable or default
-        fallback = os.getenv("DATA_PREPATH", "./data/")
-        self.logger.debug(f"Using fallback data prepath: {fallback}")
-        return fallback
+        Raises:
+            Exception: If data_prepath not found in configuration
+        """
+        parser = self._get_parser()
+        return parser.getSystemPath("data_prepath")
 
     def get_system_path(self, path_name: str) -> str:
         """Get system tool path from gps_parser configuration.
@@ -77,92 +71,50 @@ class ConfigManager:
 
         Returns:
             Full path to the system tool
+
+        Raises:
+            Exception: If path not found in configuration
         """
-        try:
-            parser = self._get_parser()
-            if parser:
-                return parser.getSystemPath(path_name)
-        except Exception as e:
-            self.logger.debug(f"Could not load {path_name} from gps_parser: {e}")
-
-        # Fallback paths for critical tools
-        fallback_paths = {
-            "sbf2rin_path": "/home/gpsops/bin/sbf2rin",
-            "teqc_path": "/home/gpsops/bin/teqc", 
-            "bin2asc_path": "/opt/rxtools/bin/bin2asc",
-            "sbf2asc_path": "/opt/rxtools/bin/sbf2asc",
-            "sbfanalyzer_path": "/opt/rxtools/bin/sbfanalyzer",
-            "sbfconverter_path": "/opt/rxtools/bin/sbfconverter",
-        }
-
-        fallback_path = fallback_paths.get(path_name, f"/usr/local/bin/{path_name}")
-        self.logger.info(f"Using fallback path for {path_name}: {fallback_path}")
-        return fallback_path
+        parser = self._get_parser()
+        return parser.getSystemPath(path_name)
 
     def get_session_map(self) -> Dict[str, Tuple[str, str]]:
         """Get session mapping from gps_parser configuration.
 
         Returns:
             Dictionary mapping session types to (session_letter, session_path) tuples
+
+        Raises:
+            Exception: If session configuration not found
         """
-        try:
-            parser = self._get_parser()
-            if parser:
-                # Build session map from gps_parser configuration
-                session_map = {}
-                for session_type in ["15s_24hr", "1Hz_1hr", "status_1hr"]:
-                    try:
-                        session_config = parser.getSessionConfig(session_type)
-                        session_map[session_type] = (
-                            session_config["session_letter"],
-                            session_config["session_path"],
-                        )
-                    except Exception as e:
-                        self.logger.debug(
-                            f"Could not load session config for {session_type}: {e}"
-                        )
+        parser = self._get_parser()
 
-                # If we got any session configurations, return them
-                if session_map:
-                    self.logger.debug(
-                        f"Loaded {len(session_map)} session configurations from gps_parser"
-                    )
-                    return session_map
-        except Exception as e:
-            self.logger.debug(f"Could not load session mapping from gps_parser: {e}")
+        # Build session map from gps_parser configuration
+        session_map = {}
+        for session_type in ["15s_24hr", "1Hz_1hr", "status_1hr"]:
+            session_config = parser.getSessionConfig(session_type)
+            session_map[session_type] = (
+                session_config["session_letter"],
+                session_config["session_path"],
+            )
 
-        # Fallback to hardcoded session mapping
-        self.logger.debug("Using fallback session mapping")
-        return {
-            "15s_24hr": ("a", "LOG1_15s_24hr"),  # Daily 15-second data
-            "1Hz_1hr": ("b", "LOG2_1Hz_1hr"),  # Hourly 1Hz data  
-            "status_1hr": ("b", "LOG5_status_1hr"),  # Hourly status files
-        }
+        self.logger.debug(f"Loaded {len(session_map)} session configurations from gps_parser")
+        return session_map
 
-    def get_timeout_config(self, station_id: str, ip: str) -> str:
-        """Get timeout category for a station.
-        
+    def get_timeout_config(self, station_id: str) -> Dict[str, int]:
+        """Get timeout configuration for a station.
+
         Args:
             station_id: Station identifier
-            ip: Station IP address
-            
+
         Returns:
-            Timeout category: 'fixed_wired', 'mobile', or 'very_remote'
+            Dictionary with timeout values from gps_parser
+
+        Raises:
+            Exception: If timeout configuration not found
         """
-        try:
-            parser = self._get_parser()
-            if parser:
-                return parser.getStationTimeout(station_id)
-        except Exception as e:
-            self.logger.debug(f"Could not get timeout config for {station_id}: {e}")
-        
-        # Fallback timeout categorization based on IP ranges
-        if ip.startswith("10.4.") or ip.startswith("10.6."):
-            return "mobile"
-        elif "gps.vedur.is" in ip:
-            return "fixed_wired"
-        else:
-            return "mobile"  # Conservative default
+        parser = self._get_parser()
+        return parser.getStationTimeout(station_id)
 
     def get_ftp_mode(self, station_id: str, ip: str) -> str:
         """Get FTP mode for a station.

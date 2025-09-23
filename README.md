@@ -284,6 +284,25 @@ Downloaded files follow the structure:
 /data/YYYY/MMM/STATION/SESSION/raw/
 ```
 
+## 📁 Project Structure
+
+```
+receivers/
+├── src/                      # Source code
+├── tests/                    # Test suite
+├── docs/                     # Documentation
+│   ├── diagrams/            # Architecture diagrams (Mermaid)
+│   ├── development/         # Development guides & changelog
+│   ├── examples/            # Example scripts & sample data
+│   ├── legacy/              # Legacy code (replaced by modern CLI)
+│   └── RECEIVER_IMPLEMENTATION.md
+├── CLAUDE.md                # AI assistant instructions
+├── README.md                # This file
+├── LICENSE                  # MIT License
+├── pyproject.toml          # Python project configuration
+└── environment.yml         # Conda environment
+```
+
 ## 📄 License
 
 MIT License - See LICENSE file for details.
