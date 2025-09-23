@@ -140,3 +140,8 @@ download/
 # Mamba/Conda
 .mamba/
 .conda/
+# Generated diagrams (keep source .md files, ignore generated outputs)
+docs/diagrams/*.pdf
+docs/diagrams/*.png
+docs/diagrams/*.svg
+docs/diagrams/*_combined.pdf
