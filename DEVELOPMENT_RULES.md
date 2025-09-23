@@ -115,10 +115,28 @@ type(scope): description
 ```
 
 ### Commit Rules
-1. **One logical change per commit**
-2. **Test before committing** (run linting/tests)
-3. **Descriptive messages** (explain why, not what)
-4. **No direct commits to main** (use feature branches)
+
+**Phase 1: Rapid Development (Current)**
+1. **Commit frequently** after each successful improvement
+2. **Push immediately** after each commit
+3. **Work directly on main** for fast iteration
+4. **Test before committing** (run linting/basic tests)
+5. **Descriptive messages** (explain why, not what)
+
+**Phase 2: Stabilization (Future)**
+1. **Use feature branches** for new features/changes
+2. **Self-review PRs** before merging to main
+3. **No direct commits to main** (use feature branches)
+4. **Comprehensive testing** before merging
+
+**When to Transition to Phase 2:**
+- ✅ Core architecture stabilized (factory pattern, base classes working)
+- ✅ Main workflows tested and proven (download, health, validation)
+- ✅ Ready to add features rather than redesign foundation
+- ✅ Planning to involve collaborators or reviewers
+- ✅ Want safety net for experimental features
+
+**Current Status:** Phase 1 - Rapid Development
 
 ### Pre-Commit Checklist
 ```bash
