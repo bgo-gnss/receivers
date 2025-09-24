@@ -79,7 +79,7 @@ class ConfigManager:
         return parser.getSystemPath(path_name)
 
     def get_session_map(self) -> Dict[str, Tuple[str, str]]:
-        """Get session mapping from gps_parser configuration.
+        """Get session mapping from receivers configuration.
 
         Returns:
             Dictionary mapping session types to (session_letter, session_path) tuples
@@ -87,18 +87,39 @@ class ConfigManager:
         Raises:
             Exception: If session configuration not found
         """
-        parser = self._get_parser()
+        from ..config.receivers_config import get_receivers_config
 
-        # Build session map from gps_parser configuration
+        receivers_config = get_receivers_config()
+
+        # Build session map from receivers.cfg configuration
         session_map = {}
-        for session_type in ["15s_24hr", "1Hz_1hr", "status_1hr"]:
-            session_config = parser.getSessionConfig(session_type)
-            session_map[session_type] = (
-                session_config["session_letter"],
-                session_config["session_path"],
-            )
 
-        self.logger.debug(f"Loaded {len(session_map)} session configurations from gps_parser")
+        # Get the receiver config for septentrio which contains session mappings
+        septentrio_config = receivers_config.get_receiver_config("septentrio")
+
+        for session_type in ["15s_24hr", "1Hz_1hr", "status_1hr"]:
+            mapping_key = f"session_map_{session_type}"
+            mapping_key_lower = f"session_map_{session_type.lower()}"
+
+            if mapping_key in septentrio_config:
+                # Parse format: "letter,path"
+                letter, path = septentrio_config[mapping_key].split(",", 1)
+                session_map[session_type] = (letter.strip(), path.strip())
+            elif mapping_key_lower in septentrio_config:
+                # Try lowercase version (configparser converts keys to lowercase)
+                letter, path = septentrio_config[mapping_key_lower].split(",", 1)
+                session_map[session_type] = (letter.strip(), path.strip())
+            else:
+                # Fallback to gps_parser if not found in receivers config
+                parser = self._get_parser()
+                session_config = parser.getSessionConfig(session_type)
+                session_map[session_type] = (
+                    session_config["session_letter"],
+                    session_config["session_path"],
+                )
+                self.logger.warning(f"Session mapping for {session_type} not found in receivers.cfg, using gps_parser fallback")
+
+        self.logger.debug(f"Loaded {len(session_map)} session configurations from receivers config")
         return session_map
 
     def get_timeout_config(self, station_id: str) -> Dict[str, int]:

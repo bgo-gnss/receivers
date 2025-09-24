@@ -137,6 +137,9 @@ tmp/
 download/
 *.log
 
+# Local data directory (development)
+tmp/data/
+
 # Mamba/Conda
 .mamba/
 .conda/

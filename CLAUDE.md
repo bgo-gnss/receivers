@@ -82,6 +82,15 @@ receivers scheduler config --show
 - **Persistence**: SQLite job store survives restarts
 - **Manual compatibility**: All manual operations remain fully functional
 
+### Path Building System
+- **Unified approach**: Single `build_path()` method handles all path generation using gtimes templates
+- **Dynamic frequency**: Respects session frequency (1H for hourly, 1D for daily) instead of hardcoded values
+- **Consistent formatting**: Both remote and archive paths use same gtimes-based datetime formatting
+- **Separation of concerns**: Path generation completely separated from download mechanics
+- **Year-future-proof**: Automatic year handling prevents hardcoding bugs (e.g., `.25_` format)
+- **Multiple input types**: Supports single datetime, datetime lists, or start/end time ranges
+- **IGS filename accuracy**: Uses gtimes `#Rin2` format for correct hour-to-letter mapping
+
 ### Production Logging
 - **Concise output**: Timestamp, level icon, station, message format
 - **JSON mode**: Structured logs for monitoring system integration

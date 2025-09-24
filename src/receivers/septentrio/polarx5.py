@@ -26,6 +26,7 @@ from ..base.exceptions import (
     ConnectionError,
 )
 from ..base.receiver import BaseReceiver
+from ..utils.file_validator import FileValidator
 
 
 class PolaRX5(BaseReceiver):
@@ -52,12 +53,17 @@ class PolaRX5(BaseReceiver):
 
         # Configuration from shared ConfigManager (BaseReceiver provides self.config_manager)
         self.session_map = self.config_manager.get_session_map()
-        # data_prepath already available via BaseReceiver initialization
+        # Configuration available via BaseReceiver initialization
+        # Get Septentrio-specific configuration
+        self.septentrio_config = self.receivers_config.get_receiver_config("septentrio")
 
         # System paths from ConfigManager
         self.base_path = self.config_manager.get_system_path("receiver_base_path")
         self.sbf2rin_path = self.config_manager.get_system_path("sbf2rin_path")
         self.teqc_path = self.config_manager.get_system_path("teqc_path")
+
+        # Initialize file validator for download integrity checking
+        self.file_validator = FileValidator(self.logger)
 
         # Timeout configuration based on station network type
         self._setup_timeouts()
@@ -76,7 +82,6 @@ class PolaRX5(BaseReceiver):
             logger.propagate = False
 
         return logger
-
 
     def _setup_timeouts(self):
         """Setup timeout configuration using gps_parser centralized configuration."""
@@ -179,52 +184,77 @@ class PolaRX5(BaseReceiver):
         self.connection_status = status
         return status
 
+    def get_file_extension(self) -> str:
+        """Get Septentrio file extension from configuration.
+
+        Returns:
+            File extension with compression (e.g., '.sbf.gz')
+        """
+        return self.septentrio_config.get("file_extension", ".sbf.gz")
+
+    def get_session_letter(self, session: str) -> str:
+        """Get session letter for Septentrio receiver.
+
+        Args:
+            session: Session type (e.g., '15s_24hr', '1Hz_1hr', 'status_1hr')
+
+        Returns:
+            Session letter code from session mapping ('a', 'b', 'c')
+        """
+        if session in self.session_map:
+            return self.session_map[session][0]  # First element is the letter
+        return "a"  # Default fallback
+
     def download_data(
         self,
         start: Optional[Union[datetime, str]] = None,
         end: Optional[Union[datetime, str]] = None,
         session: str = "15s_24hr",
-        ffrequency: str = "1D",
-        afrequency: str = "15s",
-        clean_tmp: bool = True,
         sync: bool = False,
-        compression: str = ".gz",
+        clean_tmp: bool = True,
         archive: bool = True,
-        immediate_archive: bool = True,
-        tmp_dir: str = "/home/bgo/tmp/download/",
-        predir: str = "/DSK2/SSN/",
-        loglevel: int = logging.WARNING,
+        **kwargs,
     ) -> Dict[str, Any]:
-        """Download data from PolaRX5 receiver.
+        """Download data from PolaRX5 receiver with comprehensive validation.
 
         This is the main download function that handles file synchronization
-        from the receiver to the local archive.
+        from the receiver to the local archive with integrity checking and
+        fault-tolerant archiving.
 
         Args:
             start: Start time for download period
             end: End time for download period
-            session: Data session type
-            ffrequency: File frequency (e.g., '1D', '1H')
-            afrequency: Acquisition frequency
-            clean_tmp: Clean temporary directory before download
+            session: Data session type (e.g., '15s_24hr', '1Hz_1hr')
             sync: Whether to actually sync files (False for dry run)
-            compression: File compression type
+            clean_tmp: Whether to clean temporary directory before download
             archive: Whether to archive downloaded files
-            immediate_archive: If True, archive each file immediately after download (fault-tolerant)
-                             If False, archive all files after download completion (efficient)
-            tmp_dir: Temporary download directory
-            predir: Remote directory prefix
-            loglevel: Logging level
+            **kwargs: Additional parameters (ffrequency, afrequency, etc.)
 
         Returns:
             Dictionary with download results and file information
         """
+        # Extract legacy parameters from kwargs for backward compatibility
+        loglevel = kwargs.get("loglevel", logging.WARNING)
+        ffrequency = kwargs.get("ffrequency", "1D")
+        afrequency = kwargs.get("afrequency", "15s")
+        compression = kwargs.get("compression", ".gz")
+        immediate_archive = kwargs.get("immediate_archive", True)
+        predir = kwargs.get("predir", "/DSK2/SSN/")
+
         # Set logger level
         self.logger.setLevel(loglevel)
 
-        # Set up directories
+        # Get centralized configuration paths
+        tmp_dir = self.receivers_config.get_tmp_dir()
         tmp_dir_path = Path(tmp_dir) / self.station_id
         tmp_dir_path.mkdir(parents=True, exist_ok=True)
+
+        # Clean tmp directory if requested
+        if clean_tmp:
+            self.logger.info(f"Cleaning temporary directory: {tmp_dir_path}")
+            files_removed = self.file_validator.clean_directory(str(tmp_dir_path))
+            if files_removed > 0:
+                self.logger.info(f"Removed {files_removed} files from tmp directory")
 
         # Handle time parameters and performance tracking
         start_time = time.time()
@@ -244,66 +274,190 @@ class PolaRX5(BaseReceiver):
 
         self.logger.info(f"Checking {session} sessions from {start} to {end}")
 
-        # Generate file lists - special handling for hourly sessions
-        if ffrequency == "1H":
-            # For hourly sessions, manually generate hourly timestamps
-            from datetime import timedelta
+        # Generate all datetime lists and paths using unified approach
+        session_info = self.session_map[session][1]
 
-            file_datetime_list = []
-            current = start
-            while current <= end:
-                file_datetime_list.append(current)
-                current += timedelta(hours=1)
-            self.logger.info(f"Generated {len(file_datetime_list)} hourly timestamps")
-        else:
-            file_datetime_list = gt.datepathlist(
-                "#datelist",
-                ffrequency,
-                starttime=start,
-                endtime=end,
-                datelist=[],
-                closed="both",
-            )
+        # Generate datetime list using unified build_path method
+        file_datetime_list = self.build_path(None, "#datelist", session, ffrequency, start, end)
+        self.logger.info(f"Generated {len(file_datetime_list)} timestamps")
 
-        # Create archive and remote file paths using configurable prepath
-        archive_format = f"{self.data_prepath}%Y/#b/{self.station_id}/{session}/raw/{self.station_id}%Y%m%d%H00a.sbf{compression}"
-        archive_file_list = gt.datepathlist(
-            archive_format, ffrequency, datelist=file_datetime_list, closed="both"
+        # Create archive paths using unified method
+        archive_template = self.receivers_config.get_archive_template()
+        prepath = self.receivers_config.get_prepath()
+        extension = self.get_file_extension()
+
+        # Build archive template
+        full_archive_template = archive_template.format(
+            prepath=prepath,
+            station='{station}',
+            session='{session}',
+            extension=extension,
+            session_letter='{session_letter}'
         )
+        archive_file_list = self.build_path(file_datetime_list, full_archive_template, session, ffrequency)
 
-        igs_format = f"{self.station_id}#Rin2_{compression}"
-        igs_file_list = gt.datepathlist(
-            igs_format, ffrequency, datelist=file_datetime_list, closed="both"
-        )
+        # Create remote paths with filenames using unified method
+        remote_template = f"{self.base_path}{session_info}/%y%j/{self.station_id}#Rin2_{compression}"
+        remote_full_paths = self.build_path(file_datetime_list, remote_template, session, ffrequency)
+
+        # Extract remote directories and IGS filenames
+        remote_path_list = []
+        igs_file_list = []
+        for full_path in remote_full_paths:
+            remote_dir = os.path.dirname(full_path) + "/"  # Add trailing slash for FTP
+            igs_filename = os.path.basename(full_path)
+            remote_path_list.append(remote_dir)
+            igs_file_list.append(igs_filename)
 
         file_date_dict = dict(
             zip(file_datetime_list, zip(archive_file_list, igs_file_list))
         )
 
-        # Find missing files and incomplete files (like getSeptentrio3 logic)
+        # Create remote path mapping for later use in _sync_missing_files
+        remote_path_dict = dict(zip(file_datetime_list, remote_path_list))
+
+        # Find missing and invalid files using comprehensive validation
         missing_file_dict = {}
         incomplete_file_dict = {}
+        validated_files = 0
+        corrupted_files_removed = 0
+        files_archived_from_tmp = 0
 
         for key, value in file_date_dict.items():
             archive_file = value[0]
+            validated_files += 1
+
             if not os.path.isfile(archive_file):
-                # File doesn't exist - needs download
+                # Archive file doesn't exist at expected path - check for alternatives
+                igs_file = value[1]  # Remote filename format
+                tmp_file_path = tmp_dir_path / igs_file
+
+                # Check if file exists with .gz extension (in case original wasn't compressed)
+                archive_file_gz = (
+                    archive_file + ".gz" if not archive_file.endswith(".gz") else None
+                )
+                if archive_file_gz and os.path.isfile(archive_file_gz):
+                    self.logger.debug(
+                        f"File already archived with compression: {archive_file_gz}"
+                    )
+                    continue  # File exists in archive, skip download
+
+                # Check if file exists in tmp and can be archived
+                if tmp_file_path.exists():
+                    # Validate tmp file before archiving
+                    validation_result = self.file_validator.validate_file(
+                        str(tmp_file_path)
+                    )
+                    if validation_result["valid"]:
+                        # File exists in tmp and is valid - try to archive it
+                        self.logger.info(
+                            f"Found completed file in tmp, archiving: {tmp_file_path}"
+                        )
+                        if self._archive_single_file(
+                            str(tmp_file_path), key, {key: value}
+                        ):
+                            self.logger.info(
+                                f"✅ Successfully archived existing tmp file: {archive_file}"
+                            )
+                            files_archived_from_tmp += 1
+                            continue  # File is now archived, no need to download
+                        else:
+                            self.logger.warning(
+                                f"Failed to archive tmp file, will re-download: {tmp_file_path}"
+                            )
+                    else:
+                        self.logger.debug(
+                            f"Tmp file invalid ({validation_result['status']}), will re-download: {tmp_file_path}"
+                        )
+
+                # File doesn't exist in archive or tmp (or tmp file is invalid) - needs download
                 missing_file_dict[key] = value
             else:
-                # File exists - check if it's incomplete by attempting to get remote size
-                if sync:  # Only check completeness if we plan to sync
-                    try:
-                        # Try to get remote file size for comparison
-                        remote_path = self._get_remote_file_path(key, session)
-                        # Note: We'll check completeness during actual download
-                        # For now, assume existing files are complete unless proven otherwise
-                        pass
-                    except Exception:
-                        # Can't verify completeness without FTP connection
-                        pass
+                # File exists in archive - trust it unless obviously corrupted
+                # Only check for zero-size files, don't validate compression integrity
+                try:
+                    file_size = os.path.getsize(archive_file)
+                    if file_size == 0:
+                        self.logger.info(
+                            f"Removing zero-size archive file: {archive_file}"
+                        )
+                        try:
+                            os.unlink(archive_file)
+                            corrupted_files_removed += 1
+                            missing_file_dict[key] = value  # Need to download
+                        except OSError as e:
+                            self.logger.warning(
+                                f"Could not remove zero-size file {archive_file}: {e}"
+                            )
+                    else:
+                        # Archive file exists and has size > 0 - trust it
+                        self.logger.debug(
+                            f"Archive file exists: {archive_file} ({file_size} bytes)"
+                        )
+                except OSError as e:
+                    self.logger.warning(
+                        f"Could not check archive file {archive_file}: {e}"
+                    )
+                    missing_file_dict[key] = value  # Treat as missing
+
+        if corrupted_files_removed > 0:
+            self.logger.info(
+                f"Removed {corrupted_files_removed} corrupted/incomplete files"
+            )
+
+        if files_archived_from_tmp > 0:
+            self.logger.info(
+                f"Archived {files_archived_from_tmp} files from tmp directory"
+            )
+
+        self.logger.info(f"Validated {validated_files} existing files")
+
+        # Final check: search archive directory for any files that might match our date range
+        # This prevents re-downloading files that were archived with different naming
+        final_missing_files = {}
+        files_found_in_archive = 0
+        for key, value in missing_file_dict.items():
+            archive_file = value[0]
+            archive_dir = os.path.dirname(archive_file)
+
+            if os.path.isdir(archive_dir):
+                # Check if any files in the archive directory match this datetime
+                # For hourly sessions, include hour in pattern to avoid false matches
+                if ffrequency == "1H":
+                    # For hourly files, use full datetime pattern including hour
+                    datetime_str = key.strftime("%Y%m%d%H")
+                    station_pattern = f"{self.station_id}{datetime_str}"
+                else:
+                    # For daily files, use date pattern
+                    date_str = key.strftime("%Y%m%d")
+                    station_pattern = f"{self.station_id}{date_str}"
+
+                found_existing = False
+                try:
+                    for existing_file in os.listdir(archive_dir):
+                        if existing_file.startswith(station_pattern):
+                            self.logger.debug(
+                                f"Found existing archive file for pattern {station_pattern}: {existing_file}"
+                            )
+                            found_existing = True
+                            break
+                except OSError:
+                    pass  # Directory access error, treat as not found
+
+                if found_existing:
+                    files_found_in_archive += 1
+                    continue  # Skip this date - file already exists in archive
+
+            # No existing file found - add to final missing list
+            final_missing_files[key] = value
+
+        if files_found_in_archive > 0:
+            self.logger.info(
+                f"Found {files_found_in_archive} files already archived, skipping re-download"
+            )
 
         # Combine missing and incomplete files for processing
-        all_missing_files = {**missing_file_dict, **incomplete_file_dict}
+        all_missing_files = {**final_missing_files, **incomplete_file_dict}
 
         if not all_missing_files:
             self.logger.info("Archive is up to date")
@@ -335,35 +489,53 @@ class PolaRX5(BaseReceiver):
         # For dry run, try connection first - run diagnostics only if it fails
         if not sync and all_missing_files:
             self.logger.info("Testing FTP connection for dry run...")
-            
+
             # Optimistic approach: try connection first
             try:
                 from ftplib import FTP
+
                 ftp = FTP()
                 ftp.connect(self.ip_number, self.ip_port, timeout=3)
                 ftp.close()
-                self.logger.info(f"✅ Connection test OK: {self.ip_number}:{self.ip_port}")
+                self.logger.info(
+                    f"✅ Connection test OK: {self.ip_number}:{self.ip_port}"
+                )
             except Exception as e:
                 # Connection failed - now run diagnostics to understand why
                 from ..base.download_diagnostics import DownloadDiagnosticsAnalyzer
+
                 diagnostics = DownloadDiagnosticsAnalyzer(self.station_id, self.logger)
-                
+
                 network_check = diagnostics.classify_network_failure(self.ip_number)
-                
-                if network_check['classification'] == 'invalid_ip':
-                    self.logger.critical(f"❌ INVALID IP: {self.ip_number} - likely configuration typo")
-                    self.logger.critical(f"💡 SUGGESTED FIX: Check station configuration for correct IP address")
-                elif 'connection refused' in str(e).lower():
-                    self.logger.error(f"❌ FTP CONNECTION REFUSED: {self.ip_number}:{self.ip_port}")
-                    if network_check['classification'] == 'network_ok':
-                        self.logger.error(f"💡 Router responds but FTP refused - Wrong port ({self.ip_port}) or port forwarding issue")
+
+                if network_check["classification"] == "invalid_ip":
+                    self.logger.critical(
+                        f"❌ INVALID IP: {self.ip_number} - likely configuration typo"
+                    )
+                    self.logger.critical(
+                        f"💡 SUGGESTED FIX: Check station configuration for correct IP address"
+                    )
+                elif "connection refused" in str(e).lower():
+                    self.logger.error(
+                        f"❌ FTP CONNECTION REFUSED: {self.ip_number}:{self.ip_port}"
+                    )
+                    if network_check["classification"] == "network_ok":
+                        self.logger.error(
+                            f"💡 Router responds but FTP refused - Wrong port ({self.ip_port}) or port forwarding issue"
+                        )
                     else:
-                        self.logger.error(f"💡 LIKELY ISSUE: Wrong FTP port ({self.ip_port}) or port forwarding not configured")
-                    self.logger.error(f"💡 SUGGESTED ACTION: Verify ftpport={self.ip_port} in station configuration")
+                        self.logger.error(
+                            f"💡 LIKELY ISSUE: Wrong FTP port ({self.ip_port}) or port forwarding not configured"
+                        )
+                    self.logger.error(
+                        f"💡 SUGGESTED ACTION: Verify ftpport={self.ip_port} in station configuration"
+                    )
                 else:
                     self.logger.warning(f"⚠️ Connection test failed: {e}")
-                    if network_check.get('analysis'):
-                        self.logger.info(f"Network analysis: {network_check['analysis']}")
+                    if network_check.get("analysis"):
+                        self.logger.info(
+                            f"Network analysis: {network_check['analysis']}"
+                        )
 
         try:
             if sync:
@@ -373,10 +545,10 @@ class PolaRX5(BaseReceiver):
                     session,
                     predir,
                     ffrequency,
-                    clean_tmp,
                     archive,
                     immediate_archive,
                     compression,
+                    remote_path_dict,
                 )
 
                 # Calculate total bytes downloaded
@@ -386,36 +558,43 @@ class PolaRX5(BaseReceiver):
 
         except Exception as e:
             sync_success = False
-            
+
             # Handle ConfigurationError (like invalid IP) with concise output
             from ..base.exceptions import ConfigurationError
+
             if isinstance(e, ConfigurationError):
                 # For configuration errors, provide minimal output focused on the fix
                 self.logger.critical(f"❌ Configuration Error: {e}")
-                performance_metrics.update({
-                    "success": False,
-                    "duration": time.time() - start_time,
-                    "error_type": "configuration_error",
-                    "error_category": e.category.value if hasattr(e, 'category') else "unknown",
-                    "validation_needed": True
-                })
+                performance_metrics.update(
+                    {
+                        "success": False,
+                        "duration": time.time() - start_time,
+                        "error_type": "configuration_error",
+                        "error_category": e.category.value
+                        if hasattr(e, "category")
+                        else "unknown",
+                        "validation_needed": True,
+                    }
+                )
                 self._record_performance_metrics(performance_metrics)
-                
+
                 return {
                     "status": "configuration_error",
                     "error": str(e),
                     "error_type": "invalid_ip_range",
-                    "suggested_fix": getattr(e, 'suggested_fix', 'Check station configuration'),
+                    "suggested_fix": getattr(
+                        e, "suggested_fix", "Check station configuration"
+                    ),
                     "files_checked": len(file_date_dict),
                     "files_missing": len(all_missing_files),
                     "files_downloaded": 0,
                     "duration": time.time() - start_time,
-                    "validation_triggered": True
+                    "validation_triggered": True,
                 }
-            
+
             # For other errors, log normally
             self.logger.error(f"Sync failed: {e}")
-            
+
             # Check if this was a timeout-related error
             if any(
                 timeout_word in str(e).lower()
@@ -428,20 +607,24 @@ class PolaRX5(BaseReceiver):
                     performance_metrics["timeout_type"] = "inactivity"
                 else:
                     performance_metrics["timeout_type"] = "progress"
-            
+
             # Enhanced failure handling - analyze what went wrong
             try:
                 # Get expected vs found files for analysis
                 expected_files = list(file_date_dict.keys())
-                found_files = list(downloaded_files_dict.keys()) if 'downloaded_files_dict' in locals() else []
-                
+                found_files = (
+                    list(downloaded_files_dict.keys())
+                    if "downloaded_files_dict" in locals()
+                    else []
+                )
+
                 # Create receiver response context
                 receiver_response = {
-                    'connection_ok': getattr(self, '_last_connection_time', 0) > 0,
-                    'ftp_connected': False,  # Connection failed, so FTP never connected
-                    'performance_metrics': performance_metrics
+                    "connection_ok": getattr(self, "_last_connection_time", 0) > 0,
+                    "ftp_connected": False,  # Connection failed, so FTP never connected
+                    "performance_metrics": performance_metrics,
                 }
-                
+
                 # Use enhanced failure handling
                 failure_result = self.handle_download_failure(
                     expected_files=expected_files,
@@ -449,16 +632,20 @@ class PolaRX5(BaseReceiver):
                     session_type=session,
                     date_range=f"{start} to {end}",
                     error=e,
-                    receiver_response=receiver_response
+                    receiver_response=receiver_response,
                 )
-                
+
                 # Log the failure analysis
-                if failure_result and 'failure_analysis' in failure_result:
-                    analysis = failure_result['failure_analysis']
-                    self.logger.info(f"Failure analysis: {analysis.get('analysis', 'No analysis available')}")
-                    if analysis.get('validation_trigger'):
-                        self.logger.warning(f"Validation triggered for {self.station_id}")
-                
+                if failure_result and "failure_analysis" in failure_result:
+                    analysis = failure_result["failure_analysis"]
+                    self.logger.info(
+                        f"Failure analysis: {analysis.get('analysis', 'No analysis available')}"
+                    )
+                    if analysis.get("validation_trigger"):
+                        self.logger.warning(
+                            f"Validation triggered for {self.station_id}"
+                        )
+
             except Exception as handler_error:
                 self.logger.debug(f"Failure handler error: {handler_error}")
 
@@ -571,37 +758,29 @@ class PolaRX5(BaseReceiver):
         session,
         predir,
         ffrequency,
-        clean_tmp,
         archive,
         immediate_archive,
         compression=".gz",
+        remote_path_dict=None,
     ):
         """Sync missing files from receiver to local archive."""
-        # Get session info
-        if session not in self.session_map:
-            raise ConfigurationError(f"Unknown session type: {session}")
+        # Simple approach: use pre-built paths and extract IGS filenames
 
-        session_info = self.session_map[session][1]
-        remote_format = f"{self.base_path}{session_info}/%y%j/"
-        remote_path_list = gt.datepathlist(
-            remote_format,
-            ffrequency,
-            datelist=list(missing_file_dict.keys()),
-            closed="both",
-        )
+        # Sort missing_file_dict by datetime to ensure consistent ordering
+        sorted_missing_items = sorted(missing_file_dict.items())
 
-        # Generate remote filenames using RINEX format (like getSeptentrio3)
-        # Remote files use RINEX naming: STATION#Rin2_compression format
-        igs_format = f"{self.station_id}#Rin2_{compression}"
-        igs_file_name_list = gt.datepathlist(
-            igs_format,
-            ffrequency,
-            datelist=list(missing_file_dict.keys()),
-            closed="both",
-        )
+        # Extract IGS filenames and get corresponding remote paths
+        download_file_dict = {}
+        for dt, (archive_path, igs_filename) in sorted_missing_items:
+            if remote_path_dict and dt in remote_path_dict:
+                remote_path = remote_path_dict[dt]
+            else:
+                # Fallback to old method if remote_path_dict not available
+                raise ValueError("Remote path dictionary is required but not provided")
+            download_file_dict[igs_filename] = remote_path
 
-        # Create download dictionary with RINEX filenames and remote paths
-        download_file_dict = dict(zip(igs_file_name_list, remote_path_list))
+        # Create properly ordered missing_file_dict for immediate archiving
+        updated_missing_file_dict = dict(sorted_missing_items)
 
         # Connect and download
         ftp = self._ftp_open_connection()
@@ -612,15 +791,21 @@ class PolaRX5(BaseReceiver):
 
         try:
             downloaded_files = self._ftp_download(
-                download_file_dict, tmp_dir, clean_tmp=clean_tmp, ftp=ftp,
-                archive=archive, immediate_archive=immediate_archive, missing_file_dict=missing_file_dict
+                download_file_dict,
+                tmp_dir,
+                ftp=ftp,
+                archive=archive,
+                immediate_archive=immediate_archive,
+                missing_file_dict=updated_missing_file_dict,
             )
 
-            downloaded_files_dict = dict(zip(missing_file_dict, downloaded_files))
+            downloaded_files_dict = dict(
+                zip(updated_missing_file_dict, downloaded_files)
+            )
 
             # Archive files (only if not using immediate archiving)
             if downloaded_files_dict and archive and not immediate_archive:
-                self._archive_files(downloaded_files_dict, missing_file_dict)
+                self._archive_files(downloaded_files_dict, updated_missing_file_dict)
 
             return downloaded_files_dict
 
@@ -630,10 +815,12 @@ class PolaRX5(BaseReceiver):
     def _ftp_open_connection(self, timeout: Optional[int] = None) -> Optional[FTP]:
         """Open FTP connection to receiver with optimistic approach - try first, diagnose on failure."""
         connection_start = time.time()
-        
+
         # Optimistic approach: Try connection directly first
         try:
-            self.logger.info(f"Attempting FTP connection to {self.ip_number}:{self.ip_port}...")
+            self.logger.info(
+                f"Attempting FTP connection to {self.ip_number}:{self.ip_port}..."
+            )
             ftp = FTP()
             if timeout is None:
                 timeout = self.connection_timeout
@@ -650,54 +837,81 @@ class PolaRX5(BaseReceiver):
         except Exception as e:
             connection_time = time.time() - connection_start
             error_str = str(e).lower()
-            
+
             # Connection failed - now run intelligent diagnostics to determine why
-            self.logger.info(f"Connection failed after {connection_time:.2f}s - running diagnostics...")
-            
+            self.logger.info(
+                f"Connection failed after {connection_time:.2f}s - running diagnostics..."
+            )
+
             from ..base.download_diagnostics import DownloadDiagnosticsAnalyzer
+
             diagnostics = DownloadDiagnosticsAnalyzer(self.station_id, self.logger)
-            
+
             # Quick network classification to understand the failure
             network_check = diagnostics.classify_network_failure(self.ip_number)
-            
+
             # If it's an invalid IP range, provide critical error immediately
-            if network_check['classification'] == 'invalid_ip':
-                self.logger.critical(f"❌ INVALID IP: {self.ip_number} - likely configuration typo")
-                self.logger.critical(f"💡 SUGGESTED FIX: Check station configuration for correct IP address")
-                
+            if network_check["classification"] == "invalid_ip":
+                self.logger.critical(
+                    f"❌ INVALID IP: {self.ip_number} - likely configuration typo"
+                )
+                self.logger.critical(
+                    f"💡 SUGGESTED FIX: Check station configuration for correct IP address"
+                )
+
                 from ..base.exceptions import ConfigurationError, FailureCategory
+
                 raise ConfigurationError(
                     message=f"Invalid IP range {self.ip_number} - likely configuration typo",
                     station_id=self.station_id,
                     category=FailureCategory.DNS_FAILURE,
                     config_field="router_ip",
                     actual_value=self.ip_number,
-                    suggested_fix="Verify IP address in station configuration"
+                    suggested_fix="Verify IP address in station configuration",
                 )
-            
+
             # Provide intelligent error analysis based on failure type and network status
-            if 'connection refused' in error_str:
-                self.logger.error(f"❌ FTP CONNECTION REFUSED: {self.ip_number}:{self.ip_port}")
-                if network_check['classification'] == 'network_ok':
-                    self.logger.error(f"💡 Router responds but FTP refused - Wrong port ({self.ip_port}) or port forwarding issue")
+            if "connection refused" in error_str:
+                self.logger.error(
+                    f"❌ FTP CONNECTION REFUSED: {self.ip_number}:{self.ip_port}"
+                )
+                if network_check["classification"] == "network_ok":
+                    self.logger.error(
+                        f"💡 Router responds but FTP refused - Wrong port ({self.ip_port}) or port forwarding issue"
+                    )
                 else:
-                    self.logger.error(f"💡 LIKELY ISSUE: Wrong FTP port ({self.ip_port}) or port forwarding not configured")
-                self.logger.error(f"💡 SUGGESTED ACTION: Verify ftpport={self.ip_port} in station configuration")
-            elif 'timeout' in error_str or 'timed out' in error_str:
-                if network_check['classification'] == 'network_ok':
-                    self.logger.error(f"⚠️ RECEIVER TIMEOUT: Router responds but receiver doesn't on FTP port")
-                    self.logger.error(f"💡 LIKELY ISSUE: Receiver down, ethernet broken, or firewall blocking FTP")
+                    self.logger.error(
+                        f"💡 LIKELY ISSUE: Wrong FTP port ({self.ip_port}) or port forwarding not configured"
+                    )
+                self.logger.error(
+                    f"💡 SUGGESTED ACTION: Verify ftpport={self.ip_port} in station configuration"
+                )
+            elif "timeout" in error_str or "timed out" in error_str:
+                if network_check["classification"] == "network_ok":
+                    self.logger.error(
+                        f"⚠️ RECEIVER TIMEOUT: Router responds but receiver doesn't on FTP port"
+                    )
+                    self.logger.error(
+                        f"💡 LIKELY ISSUE: Receiver down, ethernet broken, or firewall blocking FTP"
+                    )
                 else:
                     self.logger.error(f"⚠️ NETWORK TIMEOUT: {network_check['analysis']}")
             else:
                 self.logger.error(f"Connection failed: {e}")
                 self.logger.info(f"Network analysis: {network_check['analysis']}")
-            
+
             self._last_connection_time = connection_time
             return None
 
-    def _ftp_download(self, files_dict, local_dir, clean_tmp=True, ftp=None, 
-                     archive=True, immediate_archive=True, missing_file_dict=None):
+    def _ftp_download(
+        self,
+        files_dict,
+        local_dir,
+        ftp=None,
+        archive=True,
+        immediate_archive=True,
+        missing_file_dict=None,
+    ):
         """Download files via FTP with progress tracking."""
         downloaded_files = []
 
@@ -706,7 +920,7 @@ class PolaRX5(BaseReceiver):
 
         # Track unique paths to log each only once
         logged_paths = set()
-        
+
         # For immediate archiving, we need to track which datetime each file corresponds to
         # This will be populated from the calling code
 
@@ -719,8 +933,8 @@ class PolaRX5(BaseReceiver):
             self.logger.info(f"Downloading {file_name}")
 
             local_file = local_dir / file_name
-            if clean_tmp and local_file.exists():
-                local_file.unlink()
+            # Initialize offset for download resumption
+            offset = 0
 
             remote_file = f"{remote_dir}{file_name}"
 
@@ -771,70 +985,20 @@ class PolaRX5(BaseReceiver):
                         remote_file_exists = False
                         remote_file_size = None
 
-                # Handle existing partial files and size mismatches
-                offset = 0
+                # Now that we have remote file size, check if we should resume existing local file
                 if local_file.exists():
-                    local_file_size = local_file.stat().st_size
-
-                    # Check for size mismatch - force re-download if mismatch detected
-                    if (
-                        remote_file_size is not None
-                        and local_file_size == remote_file_size
-                    ):
-                        # File is complete and matches remote size
-                        self.logger.info(
-                            f"✅ File {file_name} already complete ({local_file_size:,} bytes)"
+                    should_resume, resume_offset = (
+                        self.file_validator.should_resume_download(
+                            str(local_file), remote_file_size
                         )
-                        
-                        # Immediate archiving if enabled
-                        if immediate_archive and archive and missing_file_dict:
-                            # Find the datetime key for this file
-                            file_datetime = None
-                            for dt_key, (arch_path, _) in missing_file_dict.items():
-                                if file_name in arch_path or os.path.basename(arch_path).startswith(file_name[:8]):
-                                    file_datetime = dt_key
-                                    break
-                            
-                            if file_datetime and self._archive_single_file(str(local_file), file_datetime, missing_file_dict):
-                                # File successfully archived - add archive path to downloaded files
-                                downloaded_files.append(missing_file_dict[file_datetime][0])
-                            else:
-                                # Archive failed - add tmp file path
-                                downloaded_files.append(str(local_file))
-                        else:
-                            # No immediate archiving - add tmp file path
-                            downloaded_files.append(str(local_file))
-                        continue
-                    elif (
-                        remote_file_size is not None
-                        and local_file_size > remote_file_size
-                    ):
-                        # Local file is larger than remote - corruption detected
-                        self.logger.warning(
-                            f"🔧 Local file {file_name} is larger than remote ({local_file_size:,} > {remote_file_size:,} bytes)"
-                        )
-                        if clean_tmp:
-                            self.logger.info(
-                                f"   Re-downloading due to size mismatch (clean_tmp=True)"
-                            )
-                            local_file.unlink()
-                            offset = 0
-                        else:
-                            self.logger.info(
-                                f"   Keeping corrupted file (clean_tmp=False)"
-                            )
-                            continue
-                    elif not clean_tmp:
-                        # Resume partial download (default behavior)
-                        offset = local_file_size
-                        self.logger.info(
-                            f"📄 Resuming download from {offset:,} bytes (clean_tmp=False)"
-                        )
+                    )
+                    if should_resume:
+                        offset = resume_offset
+                        self.logger.info(f"📄 Resuming download from {offset:,} bytes")
                     else:
-                        # clean_tmp=True - start fresh
-                        self.logger.info(f"🔄 Restarting download (clean_tmp=True)")
-                        local_file.unlink()
-                        offset = 0
+                        self.logger.info(
+                            f"🔄 Starting fresh download (invalid tmp file removed)"
+                        )
 
                 if remote_file_size is not None:
                     # Use progress bar download
@@ -855,19 +1019,55 @@ class PolaRX5(BaseReceiver):
                         self.logger.info(
                             f"✅ Successfully downloaded {file_name} ({local_file_size:,} bytes)"
                         )
-                        
+
+                        # Validate downloaded file integrity
+                        validation_result = self.file_validator.validate_file(
+                            str(local_file)
+                        )
+                        if not validation_result["valid"]:
+                            self.logger.warning(
+                                f"Downloaded file failed validation: {validation_result['error']}"
+                            )
+                            self.logger.info(
+                                f"Removing invalid downloaded file: {local_file}"
+                            )
+                            try:
+                                os.unlink(local_file)
+                                continue  # Skip this file
+                            except OSError as e:
+                                self.logger.error(
+                                    f"Could not remove invalid file {local_file}: {e}"
+                                )
+                                continue
+                        else:
+                            self.logger.debug(
+                                f"Downloaded file validated: {validation_result['compression']} compression, {validation_result['size']} bytes"
+                            )
+
                         # Immediate archiving if enabled
                         if immediate_archive and archive and missing_file_dict:
-                            # Find the datetime key for this file
+                            # Find the datetime key for this file by matching the downloaded filename
                             file_datetime = None
-                            for dt_key, (arch_path, _) in missing_file_dict.items():
-                                if file_name in arch_path or os.path.basename(arch_path).startswith(file_name[:8]):
+                            for dt_key, (
+                                arch_path,
+                                igs_filename,
+                            ) in missing_file_dict.items():
+                                if file_name == igs_filename:
                                     file_datetime = dt_key
+                                    self.logger.info(
+                                        f"✅ Found match: {file_name} -> {dt_key}"
+                                    )
                                     break
-                            
-                            if file_datetime and self._archive_single_file(str(local_file), file_datetime, missing_file_dict):
+
+                            if file_datetime and self._archive_single_file(
+                                str(local_file),
+                                file_datetime,
+                                {file_datetime: missing_file_dict[file_datetime]},
+                            ):
                                 # File successfully archived - add archive path to downloaded files
-                                downloaded_files.append(missing_file_dict[file_datetime][0])
+                                downloaded_files.append(
+                                    missing_file_dict[file_datetime][0]
+                                )
                             else:
                                 # Archive failed - add tmp file path
                                 downloaded_files.append(str(local_file))
@@ -888,15 +1088,71 @@ class PolaRX5(BaseReceiver):
 
                 else:
                     # Fallback to simple download without progress
-                    with open(local_file, "ab") as f:
+                    file_mode = "ab" if offset > 0 else "wb"
+                    with open(local_file, file_mode) as f:
                         ftp.retrbinary(f"RETR {remote_file}", f.write, rest=offset)
 
                     # Without remote size, just check if file grew
                     if local_file.exists() and local_file.stat().st_size > offset:
-                        downloaded_files.append(str(local_file))
-                        self.logger.info(
-                            f"Successfully downloaded {file_name} (size validation not available)"
+                        # Validate downloaded file integrity
+                        validation_result = self.file_validator.validate_file(
+                            str(local_file)
                         )
+                        if not validation_result["valid"]:
+                            self.logger.warning(
+                                f"Downloaded file failed validation: {validation_result['error']}"
+                            )
+                            self.logger.info(
+                                f"Removing invalid downloaded file: {local_file}"
+                            )
+                            try:
+                                os.unlink(local_file)
+                                continue  # Skip this file
+                            except OSError as e:
+                                self.logger.error(
+                                    f"Could not remove invalid file {local_file}: {e}"
+                                )
+                                continue
+
+                        # Immediate archiving if enabled (same logic as progress bar path)
+                        if immediate_archive and archive and missing_file_dict:
+                            # Find the datetime key for this file by matching the downloaded filename
+                            file_datetime = None
+                            for dt_key, (
+                                arch_path,
+                                igs_filename,
+                            ) in missing_file_dict.items():
+                                if file_name == igs_filename:
+                                    file_datetime = dt_key
+                                    self.logger.info(
+                                        f"✅ Found match: {file_name} -> {dt_key}"
+                                    )
+                                    break
+
+                            if file_datetime and self._archive_single_file(
+                                str(local_file),
+                                file_datetime,
+                                {file_datetime: missing_file_dict[file_datetime]},
+                            ):
+                                # File successfully archived - add archive path to downloaded files
+                                downloaded_files.append(
+                                    missing_file_dict[file_datetime][0]
+                                )
+                                self.logger.info(
+                                    f"Successfully downloaded and archived {file_name} (fallback path)"
+                                )
+                            else:
+                                # Archive failed - add tmp file path
+                                downloaded_files.append(str(local_file))
+                                self.logger.info(
+                                    f"Successfully downloaded {file_name} (fallback path, archiving failed)"
+                                )
+                        else:
+                            # No immediate archiving - add tmp file path
+                            downloaded_files.append(str(local_file))
+                            self.logger.info(
+                                f"Successfully downloaded {file_name} (size validation not available, integrity validated)"
+                            )
                     else:
                         self.logger.warning(f"Download may have failed for {file_name}")
 
@@ -919,7 +1175,8 @@ class PolaRX5(BaseReceiver):
         """
         if not progressbar_available:
             # Fallback without progress bar
-            with open(local_file, "ab") as f:
+            file_mode = "ab" if offset > 0 else "wb"
+            with open(local_file, file_mode) as f:
                 ftp.retrbinary(f"RETR {remote_file}", f.write, rest=offset)
         else:
             # Use tqdm progress bar with intelligent timeout monitoring
@@ -939,7 +1196,8 @@ class PolaRX5(BaseReceiver):
                 unit_divisor=1024,
                 desc=desc,
             ) as pbar:
-                with open(local_file, "ab") as f:
+                file_mode = "ab" if offset > 0 else "wb"
+                with open(local_file, file_mode) as f:
 
                     def callback(chunk):
                         nonlocal last_progress_time, last_bytes
@@ -1046,28 +1304,30 @@ class PolaRX5(BaseReceiver):
             pasv = getattr(self, "pasv", True)
         return "passive" if pasv else "active"
 
-    def _archive_single_file(self, tmp_file_path: str, file_datetime, missing_file_dict) -> bool:
+    def _archive_single_file(
+        self, tmp_file_path: str, file_datetime, missing_file_dict
+    ) -> bool:
         """Archive a single file immediately after download.
-        
+
         Args:
             tmp_file_path: Path to the temporary downloaded file
             file_datetime: The datetime key for this file
             missing_file_dict: Dict mapping datetime to (archive_path, remote_path) tuples
-            
+
         Returns:
             True if archiving succeeded, False otherwise
         """
         if not os.path.isfile(tmp_file_path):
             self.logger.warning(f"Cannot archive - file not found: {tmp_file_path}")
             return False
-            
+
         tmp_file_size = os.path.getsize(tmp_file_path)
         destination = missing_file_dict[file_datetime][0]
         archive_path, archive_filename = os.path.split(destination)
-        
+
         # Create archive directory
         os.makedirs(archive_path, exist_ok=True)
-        
+
         # Check if archive file already exists
         if os.path.isfile(destination):
             archive_file_size = os.path.getsize(destination)
@@ -1078,29 +1338,75 @@ class PolaRX5(BaseReceiver):
                 # Remove tmp file and consider this a success
                 os.unlink(tmp_file_path)
                 return True
-        
-        # Atomic move to archive location
-        self.logger.info(f"📦 Archiving {archive_filename} ({tmp_file_size:,} bytes)")
-        try:
-            os.rename(tmp_file_path, destination)
-            
-            # Verify successful archive
-            if os.path.isfile(destination):
-                archive_file_size = os.path.getsize(destination)
-                if tmp_file_size == archive_file_size:
-                    self.logger.info(f"✅ Archived to: {destination}")
+
+        # Check if file needs compression during archiving
+        validation_result = self.file_validator.validate_file(tmp_file_path)
+        needs_compression = validation_result.get("compression") == "none"
+
+        if needs_compression and not destination.endswith(".gz"):
+            # File is uncompressed and destination doesn't have .gz - add compression
+            destination_gz = destination + ".gz"
+            self.logger.info(
+                f"📦 Archiving with compression: {archive_filename} → {os.path.basename(destination_gz)} ({tmp_file_size:,} bytes)"
+            )
+
+            try:
+                import gzip
+                import shutil
+
+                # Compress file to destination
+                with open(tmp_file_path, "rb") as f_in:
+                    with gzip.open(destination_gz, "wb") as f_out:
+                        shutil.copyfileobj(f_in, f_out)
+
+                # Remove tmp file
+                os.unlink(tmp_file_path)
+
+                # Verify compressed archive
+                if os.path.isfile(destination_gz):
+                    compressed_size = os.path.getsize(destination_gz)
+                    compression_ratio = (
+                        (tmp_file_size - compressed_size) / tmp_file_size * 100
+                    )
+                    self.logger.info(
+                        f"✅ Compressed and archived to: {destination_gz} ({compressed_size:,} bytes, {compression_ratio:.1f}% reduction)"
+                    )
                     return True
                 else:
                     self.logger.error(
-                        f"❌ Archive size mismatch: expected {tmp_file_size:,}, got {archive_file_size:,}"
+                        f"❌ Compression failed: destination file not found"
                     )
                     return False
-            else:
-                self.logger.error(f"❌ Archive failed: destination file not found")
+
+            except Exception as e:
+                self.logger.error(f"❌ Compression failed: {e}")
                 return False
-                
-        except Exception as e:
-            self.logger.error(f"❌ Archive error: {e}")
+        else:
+            # File is already compressed or destination expects uncompressed - just move
+            self.logger.info(
+                f"📦 Archiving {archive_filename} ({tmp_file_size:,} bytes)"
+            )
+            try:
+                os.rename(tmp_file_path, destination)
+
+                # Verify successful archive
+                if os.path.isfile(destination):
+                    archive_file_size = os.path.getsize(destination)
+                    if tmp_file_size == archive_file_size:
+                        self.logger.info(f"✅ Archived to: {destination}")
+                        return True
+                    else:
+                        self.logger.error(
+                            f"❌ Archive size mismatch: expected {tmp_file_size:,}, got {archive_file_size:,}"
+                        )
+                        return False
+                else:
+                    self.logger.error(f"❌ Archive failed: destination file not found")
+                    return False
+
+            except Exception as e:
+                self.logger.error(f"❌ Archive error: {e}")
+                return False
             # Clean up tmp file on failure
             if os.path.isfile(tmp_file_path):
                 os.unlink(tmp_file_path)
