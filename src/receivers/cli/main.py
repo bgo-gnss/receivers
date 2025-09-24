@@ -88,17 +88,31 @@ def cmd_download(args) -> int:
     if args.end:
         end_time = parse_datetime(args.end)
     
-    # Default to days back if no start/end specified
+    # Default to time periods back if no start/end specified (dynamic based on session frequency)
     if not start_time and args.days:
-        start_time = currDatetime(days=-args.days, refday=datetime.now())
+        # Get session frequency from configuration to determine time unit
+        from ..config.receivers_config import get_receivers_config
+        receivers_config = get_receivers_config()
+        session_frequency = receivers_config.get_session_frequency(args.session)
+
+        if session_frequency == "1H":  # Hourly sessions
+            # For hourly sessions, -D N means N hours back
+            start_time = datetime.now() - timedelta(hours=args.days)
+        else:  # Daily sessions (1D) or fallback
+            # For daily sessions, -D N means N days back (existing behavior)
+            start_time = currDatetime(days=-args.days, refday=datetime.now())
     
     if not end_time:
-        end_time = datetime.now() - timedelta(days=1)  # Default to yesterday
+        # Default end time based on session frequency
+        if args.session and "1hr" in args.session:  # Hourly sessions
+            # For hourly data, end at the previous completed hour (not current hour)
+            now = datetime.now()
+            end_time = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+        else:  # Daily sessions
+            end_time = datetime.now() - timedelta(days=1)  # Default to yesterday
     
-    # For hourly sessions, extend end_time to end of day to capture all hours
-    if args.session == "status_1hr" and start_time and end_time:
-        if start_time.date() == end_time.date():  # Same day
-            end_time = end_time.replace(hour=23, minute=0, second=0, microsecond=0)
+    # Note: Removed legacy end-of-day extension for status_1hr
+    # This was causing downloads of future/incomplete hours
     
     # Process session frequency arguments (from getSeptentrio3)
     afrequency = args.afrequency or args.session.split("_")[0]
@@ -599,7 +613,7 @@ Examples:
         "-D", "--days",
         type=int,
         default=default_days,
-        help=f"Number of days back to check for data (default: {default_days})"
+        help=f"Number of time periods back to check for data. For daily sessions (15s_24hr): days back. For hourly sessions (1Hz_1hr, status_1hr): hours back (default: {default_days})"
     )
     
     download_parser.add_argument(
