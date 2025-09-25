@@ -96,18 +96,30 @@ def cmd_download(args) -> int:
         session_frequency = receivers_config.get_session_frequency(args.session)
 
         if session_frequency == "1H":  # Hourly sessions
-            # For hourly sessions, -D N means N hours back
-            start_time = datetime.now() - timedelta(hours=args.days)
+            # For hourly sessions, -D N means the Nth complete hour back
+            # Example: -D 1 means 1 complete hour back (previous completed hour)
+            now = datetime.now()
+            # Get the start of the Nth complete hour back
+            target_hour = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=args.days)
+            start_time = target_hour
         else:  # Daily sessions (1D) or fallback
             # For daily sessions, -D N means N days back (existing behavior)
             start_time = currDatetime(days=-args.days, refday=datetime.now())
-    
+
     if not end_time:
         # Default end time based on session frequency
         if args.session and "1hr" in args.session:  # Hourly sessions
-            # For hourly data, end at the previous completed hour (not current hour)
-            now = datetime.now()
-            end_time = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+            if args.days:  # -D parameter was used
+                # For hourly sessions with -D N, download N complete hours back
+                # -D 1 means 1 complete hour back (14:00 file when it's 15:24)
+                # -D 4 means 4 complete hours back (11:00, 12:00, 13:00, 14:00 files)
+                # End time should be exactly at the hour boundary
+                now = datetime.now()
+                last_complete_hour = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+                end_time = last_complete_hour
+            else:
+                # No -D parameter, use single hour
+                end_time = start_time + timedelta(minutes=1)
         else:  # Daily sessions
             end_time = datetime.now() - timedelta(days=1)  # Default to yesterday
     
@@ -695,7 +707,16 @@ Examples:
         action="store_true",
         help="Enable production logging mode (concise, structured output)"
     )
-    
+
+    download_parser.add_argument(
+        "-v", "--verbose",
+        action="store_const",
+        dest="loglevel",
+        const=logging.DEBUG,
+        default=logging.INFO,
+        help="Enable verbose output"
+    )
+
     download_parser.set_defaults(func=cmd_download)
     
     # Status subcommand

@@ -36,10 +36,18 @@ class ReceiverFactory:
                 self.logger.debug("NetRS receiver type not available")
 
             try:
-                from ..leica.geosystem import GeoSystem
-                self._receiver_types["GeoSystem"] = GeoSystem
+                from ..trimble.netr9 import NetR9
+                self._receiver_types["NetR9"] = NetR9
             except ImportError:
-                self.logger.debug("GeoSystem receiver type not available")
+                self.logger.debug("NetR9 receiver type not available")
+
+            try:
+                from ..leica.g10 import LeicaG10
+                self._receiver_types["Leica"] = LeicaG10
+                self._receiver_types["LeicaG10"] = LeicaG10
+                self._receiver_types["G10"] = LeicaG10  # Support G10 from station config
+            except ImportError:
+                self.logger.debug("LeicaG10 receiver type not available")
 
             self.logger.debug(f"Discovered receiver types: {list(self._receiver_types.keys())}")
 
@@ -65,6 +73,40 @@ class ReceiverFactory:
         """
         return receiver_type in self._receiver_types
 
+    def _adapt_configuration(self, station_config: Dict[str, Any], receiver_type: str) -> Dict[str, Any]:
+        """Adapt station configuration to expected format for receiver type.
+
+        Args:
+            station_config: Original station configuration
+            receiver_type: Type of receiver being created
+
+        Returns:
+            Adapted configuration dictionary
+        """
+        # If config already has separate router/receiver sections, return as-is
+        if "router" in station_config and "receiver" in station_config:
+            return station_config
+
+        # Adapt legacy format where everything is under 'station' key
+        if "station" in station_config:
+            station_data = station_config["station"]
+            adapted_config = {
+                "station": station_data,  # Keep original station data
+                "router": {
+                    "ip": station_data.get("router_ip", "")
+                },
+                "receiver": {
+                    "type": station_data.get("receiver_type", receiver_type),
+                    "httpport": int(station_data.get("receiver_httpport", 8060)),
+                    "ftpport": int(station_data.get("receiver_ftpport", 21)),
+                    "controlport": int(station_data.get("receiver_controlport", 28784))
+                }
+            }
+            return adapted_config
+
+        # Return original if no adaptation needed
+        return station_config
+
     def create_receiver(
         self,
         station_id: str,
@@ -82,11 +124,21 @@ class ReceiverFactory:
         Raises:
             ConfigurationError: If receiver type is unsupported or config invalid
         """
-        try:
+        # Try different configuration formats
+        receiver_type = None
+
+        # Format 1: receiver.type (new format)
+        if "receiver" in station_config and "type" in station_config["receiver"]:
             receiver_type = station_config["receiver"]["type"]
-        except KeyError:
+
+        # Format 2: station.receiver_type (legacy format)
+        elif "station" in station_config and "receiver_type" in station_config["station"]:
+            receiver_type = station_config["station"]["receiver_type"]
+
+        if not receiver_type:
             raise ConfigurationError(
-                f"Missing receiver type in configuration for station {station_id}",
+                f"Missing receiver type in configuration for station {station_id}. "
+                f"Expected 'receiver.type' or 'station.receiver_type'",
                 station_id=station_id,
                 config_field="receiver.type"
             )
@@ -105,7 +157,9 @@ class ReceiverFactory:
         ReceiverClass = self._receiver_types[receiver_type]
 
         try:
-            receiver = ReceiverClass(station_id, station_config)
+            # Adapt configuration format for receivers that expect separate router/receiver sections
+            adapted_config = self._adapt_configuration(station_config, receiver_type)
+            receiver = ReceiverClass(station_id, adapted_config)
             self.logger.debug(f"Created {receiver_type} receiver for station {station_id}")
             return receiver
 

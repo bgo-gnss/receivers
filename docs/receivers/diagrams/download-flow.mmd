@@ -1,0 +1,89 @@
+flowchart TD
+    A[CLI Command: receivers download STATION] --> B[Parse Arguments]
+    B --> C[Load Station Configuration]
+    C --> D{Station Config Valid?}
+    D -->|No| E[Exit with Error]
+    D -->|Yes| F["ReceiverFactory.create()"]
+
+    F --> G{Detect Receiver Type}
+    G -->|Leica| H[Create LeicaG10 Instance]
+    G -->|NetR9| I[Create NetR9 Instance]
+    G -->|NetRS| J[Create NetRS Instance]
+    G -->|PolaRX5| K[Create PolaRX5 Instance]
+
+    H --> L[Initialize FTP Downloader]
+    I --> M[Initialize HTTP Downloader]
+    J --> N[Initialize HTTP Downloader]
+    K --> O[Initialize FTP/TCP Downloader]
+
+    L --> P[Test Connection?]
+    M --> P
+    N --> P
+    O --> P
+
+    P -->|Yes| Q[Test FTP/HTTP Connection]
+    P -->|No| R[Skip Connection Test]
+    Q --> S{Connection OK?}
+    S -->|No| E
+    S -->|Yes| R
+
+    R --> T["Call receiver.download_data()"]
+
+    T --> U[Generate File List]
+    U --> V[Parse Session Parameters]
+    V --> W[Build DateTime List using gtimes]
+    W --> X[Generate Remote Paths]
+    X --> Y[Generate Archive Paths]
+
+    Y --> Z[Normalize Timestamps]
+    Z -->|Daily 15s_24hr| AA[Set hour=0 midnight]
+    Z -->|Hourly 1Hz_1hr| BB[Keep actual hour]
+    AA --> CC[Create Archive Mapping]
+    BB --> CC
+
+    CC --> DD[Validate Existing Files]
+    DD --> EE{Check Archive}
+    EE -->|Exists & Valid| FF[Skip File - Add to Found List]
+    EE -->|Missing/Invalid| GG[Add to Missing List]
+    FF --> HH{More Files?}
+    GG --> HH
+    HH -->|Yes| EE
+    HH -->|No| II{Missing Files?}
+
+    II -->|None| JJ[Archive Up to Date - Exit]
+    II -->|Some| KK[Download Missing Files]
+
+    KK --> LL[For Each Missing File]
+    LL --> MM{Protocol?}
+    MM -->|FTP| NN[FTP Download with Progress]
+    MM -->|HTTP| OO[HTTP Download with Progress]
+
+    NN --> PP[Download to Temp Directory]
+    OO --> PP
+    PP --> QQ{Download Success?}
+    QQ -->|No| RR[Retry with Backoff]
+    RR --> QQ
+    QQ -->|Yes| SS[Validate Downloaded File]
+
+    SS --> TT{Valid?}
+    TT -->|No| RR
+    TT -->|Yes| UU[Process File]
+
+    UU --> VV{ZIP File?}
+    VV -->|Yes| WW[Unzip to .m00]
+    VV -->|No| XX[Keep as Downloaded]
+    WW --> XX
+
+    XX --> YY[Archive File]
+    YY --> ZZ[Compress to .gz]
+    ZZ --> AAA[Move to Archive Directory]
+    AAA --> BBB[Clean Temp Files]
+
+    BBB --> CCC{More Files?}
+    CCC -->|Yes| LL
+    CCC -->|No| DDD[Log Summary & Exit]
+
+    style A fill:#e1f5fe
+    style E fill:#ffebee
+    style JJ fill:#e8f5e8
+    style DDD fill:#e8f5e8

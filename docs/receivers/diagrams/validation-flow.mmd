@@ -1,0 +1,57 @@
+flowchart TD
+    A[Start File Validation] --> B[Get files_dict & archive_files_dict]
+    B --> C[Initialize Counters: validated=0, found=0]
+    C --> D[For Each File in files_dict]
+
+    D --> E[Get Archive Path from Mapping]
+    E --> F{Archive Path Exists?}
+    F -->|No| G[Add to Missing Files]
+    F -->|Yes| H[Check Archive File Exists]
+
+    H --> I{File.exists?}
+    I -->|No| J[Check Compressed Version .gz]
+    I -->|Yes| K[Validate Archive File]
+
+    J --> L{Compressed Exists?}
+    L -->|No| M[Check Temp Directory]
+    L -->|Yes| N[Validate Compressed File]
+
+    K --> O{Valid?}
+    N --> O
+    O -->|Yes| P[found++, Skip Download]
+    O -->|No| Q[File Corrupted - Add to Missing]
+
+    M --> R{Check Temp ZIP}
+    R -->|Exists| S[Validate Temp ZIP]
+    R -->|No ZIP| T[Check Temp Uncompressed]
+    T -->|Exists| U[Validate Temp File]
+    T -->|Not Found| G
+
+    S --> V{Temp Valid?}
+    U --> V
+    V -->|Yes| P
+    V -->|No| G
+
+    P --> W[validated++]
+    Q --> W
+    G --> W
+
+    W --> X{More Files?}
+    X -->|Yes| D
+    X -->|No| Y[Log Results]
+
+    Y --> Z{Any Missing?}
+    Z -->|None| AA[Archive Up to Date]
+    Z -->|Some| BB[Return Missing Files for Download]
+
+    subgraph Legend
+        C1[🟢 File Found & Valid]
+        C2[🟡 File Missing - Need Download]
+        C3[🔴 File Corrupted - Re-download]
+    end
+
+    style A fill:#e1f5fe
+    style AA fill:#e8f5e8
+    style BB fill:#fff3e0
+    style G fill:#ffebee
+    style Q fill:#ffebee

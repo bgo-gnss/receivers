@@ -1,0 +1,74 @@
+flowchart TD
+    subgraph API["🎯 CLI & API Layer"]
+        CLI[CLI Main]
+        Factory[Receiver Factory]
+        Config[Config Manager]
+    end
+
+    subgraph REC["🔧 Receiver Types"]
+        Leica[Leica G10]
+        NetR9[NetR9]
+        NetRS[NetRS]
+        PolaRX5[PolaRX5]
+    end
+
+    subgraph DL["🌐 Download Layer"]
+        FTP[FTP Client]
+        HTTP[HTTP Client]
+        TCP[TCP Client]
+    end
+
+    subgraph PROC["⚙️ Processing Layer"]
+        Validation[File Validator]
+        Archive[Archive Manager]
+        Compression[Compression]
+    end
+
+    subgraph STORE["💾 Storage Layer"]
+        TempDir[Temp Directory]
+        DataStore[Archive Storage]
+        LogStore[Log Storage]
+    end
+
+    %% CLI to Factory
+    CLI --> Factory
+
+    %% Factory to Receivers
+    Factory --> Leica
+    Factory --> NetR9
+    Factory --> NetRS
+    Factory --> PolaRX5
+
+    %% Receivers to Download Clients
+    Leica --> FTP
+    NetR9 --> HTTP
+    NetRS --> HTTP
+    PolaRX5 --> FTP
+    PolaRX5 --> TCP
+
+    %% Download to Processing
+    FTP --> Validation
+    HTTP --> Validation
+    TCP --> Validation
+
+    %% Processing Flow
+    Validation --> Archive
+    Validation --> TempDir
+    Archive --> Compression
+    Archive --> DataStore
+
+    %% Config to Logs
+    Config --> LogStore
+
+    %% Styling
+    classDef apiStyle fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef recStyle fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef dlStyle fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px
+    classDef procStyle fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef storeStyle fill:#fce4ec,stroke:#880e4f,stroke-width:2px
+
+    class CLI,Factory,Config apiStyle
+    class Leica,NetR9,NetRS,PolaRX5 recStyle
+    class FTP,HTTP,TCP dlStyle
+    class Validation,Archive,Compression procStyle
+    class TempDir,DataStore,LogStore storeStyle

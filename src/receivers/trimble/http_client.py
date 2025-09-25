@@ -26,12 +26,21 @@ class TrimbleHTTPClient:
             station_config: Station configuration dictionary
         """
         self.station_id = station_id.upper()
-        self.logger = logging.getLogger(f"receivers.trimble.http.{self.station_id}")
+
+        # Set up logging (matching PolaRX5 pattern)
+        self.logger = self._get_logger()
         
         # Extract connection details
         self.ip = station_config["router"]["ip"]
         self.http_port = station_config["receiver"].get("httpport", 8060)
         self.timeout_category = station_config["receiver"].get("timeout_category", "mobile")
+
+        # Get NetR9-specific timeout settings if available
+        from ..config.receivers_config import get_receivers_config
+        receivers_config = get_receivers_config()
+        netr9_config = receivers_config.get_receiver_config("netr9")
+        self.connect_timeout = netr9_config.get("http_timeout_connect", 15)
+        self.read_timeout = netr9_config.get("http_timeout_read", 120)
         
         # Build base URL
         self.base_url = f"http://{self.ip}:{self.http_port}/"
@@ -84,7 +93,8 @@ class TrimbleHTTPClient:
                 url,
                 params=params,
                 auth=self.auth,
-                timeout=(self.timeout["connect"], self.timeout["read"])
+                timeout=(self.connect_timeout, self.read_timeout),
+                stream=True  # Enable streaming for large downloads
             )
             
             duration = time.time() - start_time
@@ -142,7 +152,7 @@ class TrimbleHTTPClient:
                 data=data,
                 json=json_data,
                 auth=self.auth,
-                timeout=(self.timeout["connect"], self.timeout["read"])
+                timeout=(self.connect_timeout, self.read_timeout)
             )
             
             duration = time.time() - start_time
@@ -187,6 +197,66 @@ class TrimbleHTTPClient:
             "timeout_category": self.timeout_category
         }
     
+    def download_file(self, endpoint: str, expected_size: Optional[int] = None) -> Tuple[bool, Any, Optional[str]]:
+        """Download a file with streaming and progress-aware timeouts.
+
+        Args:
+            endpoint: API endpoint path for file download
+            expected_size: Expected file size for progress tracking
+
+        Returns:
+            Tuple of (success, response_object, error_message)
+        """
+        url = urljoin(self.base_url, endpoint.lstrip('/'))
+        start_time = time.time()
+
+        try:
+            self.logger.debug(f"Downloading file from {url}")
+
+            # Use longer timeout for file downloads
+            connect_timeout = self.connect_timeout
+            read_timeout = max(self.read_timeout, 300)  # At least 5 minutes for large files
+
+            response = self.session.get(
+                url,
+                auth=self.auth,
+                timeout=(connect_timeout, read_timeout),
+                stream=True  # Always stream for file downloads
+            )
+
+            # Check for HTTP errors
+            response.raise_for_status()
+
+            duration = time.time() - start_time
+            content_length = response.headers.get('content-length')
+            self.logger.debug(f"File download started, content-length: {content_length}, response time: {duration:.2f}s")
+
+            return True, response, None
+
+        except requests.exceptions.Timeout as e:
+            duration = time.time() - start_time
+            error_msg = f"File download timeout after {duration:.2f}s: {e}"
+            self.logger.warning(error_msg)
+            return False, None, error_msg
+
+        except requests.exceptions.ConnectionError as e:
+            duration = time.time() - start_time
+            error_msg = f"File download connection error after {duration:.2f}s: {e}"
+            self.logger.warning(error_msg)
+            return False, None, error_msg
+
+        except requests.exceptions.HTTPError as e:
+            duration = time.time() - start_time
+            error_msg = f"File download HTTP error {response.status_code} after {duration:.2f}s: {e}"
+            self.logger.warning(error_msg)
+            return False, None, error_msg
+
+        except Exception as e:
+            duration = time.time() - start_time
+            error_msg = f"Unexpected file download error after {duration:.2f}s: {e}"
+            self.logger.error(error_msg)
+            return False, None, error_msg
+
     def close(self):
         """Close HTTP session."""
         if hasattr(self, 'session'):
@@ -199,3 +269,18 @@ class TrimbleHTTPClient:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit."""
         self.close()
+
+    def _get_logger(self, level: int = logging.WARNING) -> logging.Logger:
+        """Set up logger for this receiver instance."""
+        logger_name = f"{__name__}.{self.station_id}"
+        logger = logging.getLogger(logger_name)
+
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter("[%(levelname)s] %(name)s: %(message)s")
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
+            logger.setLevel(level)
+            logger.propagate = False
+
+        return logger

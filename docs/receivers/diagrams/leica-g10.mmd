@@ -1,0 +1,62 @@
+classDiagram
+    class LeicaG10 {
+        -station_id: str
+        -station_info: dict
+        -leica_config: dict
+        -ftp_downloader: LeicaFTPDownloader
+        -file_validator: FileValidator
+        +__init__(station_id, station_info, loglevel)
+        +test_connection() dict
+        +download_data(start, end, session, sync, clean_tmp, archive) dict
+        -_generate_file_list(start, end, session) tuple
+        -_process_zip_files(downloaded_files) list
+        -_validate_archived_file(file_path) bool
+    }
+
+    class LeicaFTPDownloader {
+        -station_id: str
+        -ip: str
+        -ftp_port: int
+        -connect_timeout: int
+        -data_timeout: int
+        -use_passive: bool
+        +download_file(remote_filename, local_path, remote_dir, expected_size, retry_count) bool
+        +download_files(files_dict, tmp_dir, clean_tmp) list
+        +test_connection() dict
+        -_download_file_single_attempt(remote_filename, local_path, remote_dir, expected_size) bool
+    }
+
+    class ProgressBar {
+        -total_size: int
+        -filename: str
+        -width: int
+        -current_size: int
+        -start_time: float
+        +update(bytes_downloaded) void
+        +finish() void
+        -_display_progress() void
+    }
+
+    class BaseReceiver {
+        <<abstract>>
+        +station_id: str
+        +station_info: dict
+        +build_path(datetime_list, template, session, frequency) list
+        +get_file_extension() str
+        +test_connection()* dict
+        +download_data(start, end, session, sync, clean_tmp, archive)* dict
+    }
+
+    class FileValidator {
+        +validate_file(file_path) dict
+        +clean_directory(directory_path) int
+    }
+
+    LeicaG10 --|> BaseReceiver
+    LeicaG10 --> LeicaFTPDownloader
+    LeicaG10 --> FileValidator
+    LeicaFTPDownloader --> ProgressBar
+
+    note for LeicaG10 "Handles Leica G10 receivers\nFTP downloads from /SD Card/Data/\nZIP file processing (.m00.zip → .m00)\nDOY-based filenames (STATION{DOY}a.m00.zip)"
+
+    note for LeicaFTPDownloader "FTP client optimized for Leica G10\nActive mode (passive=false)\nBinary transfer mode\nRetry logic with exponential backoff\nProgress tracking with speed/ETA"

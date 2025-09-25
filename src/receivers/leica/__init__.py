@@ -1,5 +1,5 @@
 """Leica receiver implementations."""
 
-from .leica_gnss import Leica
+from .g10 import LeicaG10
 
-__all__ = ['Leica']
+__all__ = ['LeicaG10']
