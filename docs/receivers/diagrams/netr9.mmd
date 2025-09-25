@@ -1,0 +1,41 @@
+classDiagram
+    class NetR9 {
+        -station_id: str
+        -station_info: dict
+        -netr9_config: dict
+        -http_downloader: HTTPDownloadClient
+        +__init__(station_id, station_info, loglevel)
+        +test_connection() dict
+        +download_data(start, end, session, sync, clean_tmp, archive) dict
+        -_generate_file_list(start, end, session) tuple
+        -_build_cache_dir_structure(dt, session) str
+        -_build_remote_url(dt, session, station_id) str
+    }
+
+    class HTTPDownloadClient {
+        -station_id: str
+        -base_url: str
+        -http_port: int
+        -connect_timeout: int
+        -stall_timeout: int
+        +download_file(url, local_path, expected_size) bool
+        +download_files(files_dict, tmp_dir, clean_tmp) list
+        +test_connection(base_url) dict
+    }
+
+    class BaseReceiver {
+        <<abstract>>
+        +station_id: str
+        +station_info: dict
+        +build_path(datetime_list, template, session, frequency) list
+        +get_file_extension() str
+        +test_connection()* dict
+        +download_data(start, end, session, sync, clean_tmp, archive)* dict
+    }
+
+    NetR9 --|> BaseReceiver
+    NetR9 --> HTTPDownloadClient
+
+    note for NetR9 "Trimble NetR9 receiver\nHTTP downloads from port 8060\nCache directory structure\n/Internal/YYYYMM/session/\nFilename: STATIONYYYYMMDDHHMM{letter}.T02"
+
+    note for HTTPDownloadClient "HTTP client for Trimble receivers\nStream downloads with progress\nStall timeout (no data timeout)\nResume capability for large files"

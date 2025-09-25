@@ -1,0 +1,39 @@
+classDiagram
+    class NetRS {
+        -station_id: str
+        -station_info: dict
+        -netrs_config: dict
+        -http_downloader: NetRSHTTPDownloadClient
+        +__init__(station_id, station_info, loglevel)
+        +test_connection() dict
+        +download_data(start, end, session, sync, clean_tmp, archive) dict
+        -_generate_file_list(start, end, session) tuple
+    }
+
+    class NetRSHTTPDownloadClient {
+        -station_id: str
+        -base_url: str
+        -http_port: int
+        -connect_timeout: int
+        -stall_timeout: int
+        +download_file(url, local_path, expected_size) bool
+        +download_files(files_dict, tmp_dir, clean_tmp) list
+        +test_connection(base_url) dict
+    }
+
+    class BaseReceiver {
+        <<abstract>>
+        +station_id: str
+        +station_info: dict
+        +build_path(datetime_list, template, session, frequency) list
+        +get_file_extension() str
+        +test_connection()* dict
+        +download_data(start, end, session, sync, clean_tmp, archive)* dict
+    }
+
+    NetRS --|> BaseReceiver
+    NetRS --> NetRSHTTPDownloadClient
+
+    note for NetRS "Trimble NetRS receiver\nHTTP downloads from port 8060\nSimpler directory structure\n/download/YYYYMM/session/\nFilename: STATIONYYYYMMDDHHMM{letter}.T00"
+
+    note for NetRSHTTPDownloadClient "HTTP client specific to NetRS\nDifferent URL patterns than NetR9\nT00 file extension\nSame timeout and stall logic"

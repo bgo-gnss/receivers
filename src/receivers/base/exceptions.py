@@ -4,7 +4,14 @@
 class ReceiverError(Exception):
     """Base exception for receiver-related errors."""
 
-    pass
+    def __init__(self, message: str = "", *args, **kwargs):
+        """Initialize receiver error with message and optional context."""
+        # Call parent with only the message and positional args
+        super().__init__(message, *args)
+        self.message = message
+        # Store additional context as attributes
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
 
 class ConnectionError(ReceiverError):

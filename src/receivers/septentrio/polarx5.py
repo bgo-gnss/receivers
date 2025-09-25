@@ -27,6 +27,8 @@ from ..base.exceptions import (
 )
 from ..base.receiver import BaseReceiver
 from ..utils.file_validator import FileValidator
+from ..utils.session_parser import parse_session_parameters
+from ..utils.performance_recorder import record_performance_metrics, create_performance_metrics
 
 
 class PolaRX5(BaseReceiver):
@@ -55,7 +57,7 @@ class PolaRX5(BaseReceiver):
         self.session_map = self.config_manager.get_session_map()
         # Configuration available via BaseReceiver initialization
         # Get Septentrio-specific configuration
-        self.septentrio_config = self.receivers_config.get_receiver_config("septentrio")
+        self.septentrio_config = self.receivers_config.get_receiver_config("polarx5")
 
         # System paths from ConfigManager
         self.base_path = self.config_manager.get_system_path("receiver_base_path")
@@ -1602,22 +1604,50 @@ class PolaRX5(BaseReceiver):
         self,
         start: Optional[Union[datetime, str]] = None,
         end: Optional[Union[datetime, str]] = None,
+        convert_to_ascii: bool = False,
         **kwargs,
     ) -> Dict[str, Any]:
-        """Download health data (status_1hr session) from PolaRX5 receiver.
+        """Download and optionally convert health data for analysis.
 
-        Uses LOG5_status_1hr session containing binary health/status files
-        that need conversion to ASCII format for analysis.
+        Downloads LOG5_status_1hr session containing binary health/status files.
+        Future versions will support automatic SBF to ASCII conversion and
+        integration with health analysis workflows.
+
+        Args:
+            start: Start time for download period
+            end: End time for download period
+            convert_to_ascii: Future feature - convert SBF to ASCII format
+            **kwargs: Additional parameters passed to download_data
 
         Returns:
             Dictionary with download results and health data files
+
+        TODO: Add SBF to ASCII conversion when convert_to_ascii=True
+        TODO: Integrate with health analysis pipeline
+        TODO: Add automatic health report generation option
         """
-        return self.download_data(
+        # Download raw SBF health data
+        result = self.download_data(
             start=start, end=end, session="status_1hr", ffrequency="1H", **kwargs
         )
 
+        # TODO: Future enhancement - SBF to ASCII conversion
+        if convert_to_ascii:
+            self.logger.warning(
+                "SBF to ASCII conversion not yet implemented. "
+                "Downloaded files are in binary SBF format."
+            )
+            # Future: Add conversion logic here
+            # Future: Update result with ASCII file paths
+
+        # TODO: Future enhancement - trigger health analysis if requested
+        # if kwargs.get('analyze_after_download'):
+        #     result['health_analysis'] = self.analyze_health_data()
+
+        return result
+
     def get_health_archive_path(self, timestamp: datetime) -> str:
-        """Generate health data archive path using gtimes datepath pattern.
+        """Generate health data archive path using unified build_path method.
 
         Format: {prepath}/YYYY/#b/STATION/status/station_status_timestamp.sbf
 
@@ -1627,11 +1657,16 @@ class PolaRX5(BaseReceiver):
         Returns:
             Full path to health archive file
         """
-        # Use gtimes-compatible format for health data
-        health_format = f"{self.data_prepath}%Y/#b/{self.station_id}/status/{self.station_id.lower()}_status_%Y%m%d%H%M.sbf"
-        return gt.datepathlist(
-            health_format, "1H", datelist=[timestamp], closed="both"
-        )[0]
+        # Use unified build_path method with health-specific template
+        health_template = f"{self.data_prepath}%Y/#b/{{station}}/status/{{station_lower}}_status_%Y%m%d%H%M.sbf"
+
+        # Substitute station-specific placeholders
+        health_template = health_template.format(
+            station=self.station_id,
+            station_lower=self.station_id.lower()
+        )
+
+        return self.build_path(timestamp, health_template, "status_1hr", "1H")[0]
 
     def convert_sbf_to_ascii(self, sbf_file_path: Union[str, Path]) -> Dict[str, Any]:
         """Convert SBF binary health file to ASCII using sbf2rin + teqc.
