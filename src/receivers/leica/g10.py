@@ -74,16 +74,9 @@ class LeicaG10(BaseReceiver):
         # Connection status
         self.connection_status = {"router": False, "receiver": False}
 
-        # Phase 1 utilities (feature-flagged)
-        self.use_phase1_utilities = os.environ.get("USE_PHASE1_UTILITIES", "0") == "1"
-
-        if self.use_phase1_utilities:
-            self.logger.info("✨ Phase 1 utilities enabled")
-            self.archive_validator = ArchiveValidator(logger=self.logger)
-            self.time_processor = TimeParameterProcessor(logger=self.logger)
-        else:
-            self.archive_validator = None
-            self.time_processor = None
+        # Phase 1 utilities (always enabled - Phase 3B)
+        self.archive_validator = ArchiveValidator(logger=self.logger)
+        self.time_processor = TimeParameterProcessor(logger=self.logger)
 
     def _get_logger(self, level: int = logging.INFO) -> logging.Logger:
         """Set up logger for this receiver instance."""
@@ -323,9 +316,9 @@ class LeicaG10(BaseReceiver):
             downloaded_files = []
             if sync:
                 if missing_files_dict:
-                    # Create callback for immediate unzip+archive if Phase 1 enabled
+                    # Create callback for immediate unzip+archive when archiving enabled
                     process_callback = None
-                    if self.use_phase1_utilities and archive:
+                    if archive:
                         def immediate_process_callback(zip_path: str) -> Optional[str]:
                             """Unzip and archive immediately after download."""
                             # Unzip the file
@@ -362,19 +355,11 @@ class LeicaG10(BaseReceiver):
             else:
                 self.logger.info("Sync disabled - skipping actual download")
 
-            # Process downloaded .zip files (only if not already processed inline)
-            processed_files = []
-            if downloaded_files and not (self.use_phase1_utilities and archive):
-                processed_files = self._process_zip_files(downloaded_files)
-            elif downloaded_files:
-                # Files already processed inline, use as-is
-                processed_files = downloaded_files
-
-            # Archive files if requested and files were processed
-            # (only if not already archived inline)
+            # Files are processed (unzipped+archived) inline by callback when archive=True
+            # downloaded_files contains archive paths when archiving is enabled
+            processed_files = downloaded_files
             archived_files = []
-            if archive and processed_files and not (self.use_phase1_utilities and archive):
-                archived_count = self._archive_files(processed_files, archive_files_dict)
+            if archive and processed_files:
                 # After archiving, create list of archived file paths
                 for file_path in processed_files:
                     file_path_obj = Path(file_path)
@@ -702,50 +687,7 @@ class LeicaG10(BaseReceiver):
             downloaded_files: List of downloaded file paths (.m00 files)
             archive_files_dict: Dictionary mapping filename to archive path
         """
-        # Use Phase 1 FileArchiver if enabled (IMMEDIATE mode for fault tolerance)
-        if self.use_phase1_utilities:
-            self.logger.debug("Using Phase 1 FileArchiver (IMMEDIATE mode)")
-            archived_count = 0
-
-            for file_path in downloaded_files:
-                try:
-                    file_path_obj = Path(file_path)
-                    filename = file_path_obj.name
-
-                    if not file_path_obj.exists():
-                        self.logger.warning(
-                            f"Cannot archive - file not found: {file_path}"
-                        )
-                        continue
-
-                    if filename in archive_files_dict:
-                        archive_path = Path(archive_files_dict[filename])
-
-                        # Archive file immediately (one at a time for fault tolerance)
-                        with FileArchiver(mode=ArchiveMode.IMMEDIATE, logger=self.logger) as archiver:
-                            success = archiver.archive_file(
-                                file_path_obj,
-                                archive_path,
-                                compress=True,
-                                remove_tmp=True,
-                            )
-
-                        if success:
-                            archived_count += 1
-                        else:
-                            self.logger.error(f"❌ Failed to archive {filename}")
-
-                except Exception as e:
-                    self.logger.error(
-                        f"❌ Failed to archive {filename}: {e}"
-                    )
-
-            self.logger.info(
-                f"Phase 1 archiving: {archived_count}/{len(downloaded_files)} files archived"
-            )
-            return archived_count
-
-        # Original implementation (fallback)
+        self.logger.debug("Using Phase 1 FileArchiver (IMMEDIATE mode)")
         archived_count = 0
 
         for file_path in downloaded_files:
@@ -754,79 +696,36 @@ class LeicaG10(BaseReceiver):
                 filename = file_path_obj.name
 
                 if not file_path_obj.exists():
-                    self.logger.warning(f"Cannot archive - file not found: {file_path}")
+                    self.logger.warning(
+                        f"Cannot archive - file not found: {file_path}"
+                    )
                     continue
 
                 if filename in archive_files_dict:
-                    # Get file size before archiving
-                    tmp_file_size = file_path_obj.stat().st_size
-                    self.logger.info(
-                        f"File to archive {filename} ({tmp_file_size:,} bytes)"
-                    )
-
                     archive_path = Path(archive_files_dict[filename])
-                    archive_filename = archive_path.name
 
-                    # Create archive directory
-                    archive_path.parent.mkdir(parents=True, exist_ok=True)
-
-                    # Check if archive file already exists
-                    if archive_path.exists():
-                        archive_file_size = archive_path.stat().st_size
-                        if tmp_file_size == archive_file_size:
-                            self.logger.warning(
-                                f"Archive file already exists with same size ({tmp_file_size:,} bytes): {archive_filename}"
-                            )
-                            # Remove tmp file and consider this a success
-                            file_path_obj.unlink()
-                            archived_count += 1
-                            continue
-
-                    # Leica files (.m00) are compressed during archiving
-                    self.logger.info(
-                        f"📦 Archiving with compression: {filename} → {archive_filename} ({tmp_file_size:,} bytes)"
-                    )
-
-                    with open(file_path_obj, "rb") as f_in:
-                        with gzip.open(archive_path, "wb") as f_out:
-                            shutil.copyfileobj(f_in, f_out)
-
-                    # Verify compressed archive
-                    if archive_path.exists():
-                        compressed_size = archive_path.stat().st_size
-                        compression_ratio = (
-                            (tmp_file_size - compressed_size) / tmp_file_size * 100
+                    # Archive file immediately (one at a time for fault tolerance)
+                    with FileArchiver(mode=ArchiveMode.IMMEDIATE, logger=self.logger) as archiver:
+                        success = archiver.archive_file(
+                            file_path_obj,
+                            archive_path,
+                            compress=True,
+                            remove_tmp=True,
                         )
-                        self.logger.info(
-                            f"✅ Compressed and archived to: {archive_path} ({compressed_size:,} bytes, {compression_ratio:.1f}% reduction)"
-                        )
+
+                    if success:
                         archived_count += 1
-
-                        # Remove tmp file
-                        file_path_obj.unlink()
                     else:
-                        self.logger.error(
-                            f"❌ Compression failed: destination file not found"
-                        )
-                else:
-                    self.logger.warning(f"No archive path found for {filename}")
+                        self.logger.error(f"❌ Failed to archive {filename}")
 
             except Exception as e:
-                self.logger.error(f"❌ Failed to archive {filename}: {e}")
-                # Clean up tmp file on failure
-                if file_path_obj.exists():
-                    try:
-                        file_path_obj.unlink()
-                        self.logger.info(f"🧹 Cleaned up failed tmp file: {file_path}")
-                    except Exception as cleanup_e:
-                        self.logger.error(
-                            f"❌ Failed to cleanup tmp file {file_path}: {cleanup_e}"
-                        )
+                self.logger.error(
+                    f"❌ Failed to archive {filename}: {e}"
+                )
 
-        # Log final archiving results
-        if archived_count > 0:
-            self.logger.info(f"✅ Successfully archived {archived_count} files")
-
+        self.logger.info(
+            f"Archiving complete: {archived_count}/{len(downloaded_files)} files archived"
+        )
         return archived_count
 
     def get_file_extension(self) -> str:

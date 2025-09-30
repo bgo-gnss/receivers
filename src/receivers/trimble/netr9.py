@@ -67,18 +67,10 @@ class NetR9(BaseReceiver):
         # data_prepath is now handled by BaseReceiver via ConfigManager
         self.tmp_dir = "/home/bgo/tmp/download/"
 
-        # Phase 1 utilities (feature-flagged)
-        # Enable with environment variable: USE_PHASE1_UTILITIES=1
-        self.use_phase1_utilities = os.environ.get("USE_PHASE1_UTILITIES", "0") == "1"
-
-        if self.use_phase1_utilities:
-            self.logger.info("✨ Phase 1 utilities enabled")
-            self.archive_validator = ArchiveValidator(logger=self.logger)
-            self.time_processor = TimeParameterProcessor(logger=self.logger)
-            # FileArchiver will be created per-download with appropriate mode
-        else:
-            self.archive_validator = None
-            self.time_processor = None
+        # Phase 1 utilities (always enabled - Phase 3B)
+        self.archive_validator = ArchiveValidator(logger=self.logger)
+        self.time_processor = TimeParameterProcessor(logger=self.logger)
+        # FileArchiver will be created per-download with appropriate mode
 
         # NetR9 HTTP API endpoints (from old system)
         self.endpoints = {
@@ -451,20 +443,15 @@ class NetR9(BaseReceiver):
                         tmp_dir_path,
                         clean_tmp,
                         archive_files_dict=archive_files_dict if archive else None,
-                        use_phase1_utilities=self.use_phase1_utilities and archive
+                        use_phase1_utilities=archive  # Always use Phase 1 when archiving
                     )
                 else:
                     self.logger.info("Archive is up to date - no files to download")
             else:
                 self.logger.info("Sync disabled - skipping actual download")
 
-            # Archive files if requested and files were downloaded
-            # Note: If Phase 1 immediate archiving is enabled, files are already archived
-            # and downloaded_files contains archive paths instead of tmp paths
-            if archive and downloaded_files:
-                # Only archive if files weren't already archived inline
-                if not (self.use_phase1_utilities and archive):
-                    self._archive_files(downloaded_files, archive_files_dict)
+            # Files are archived inline by download client when archive=True
+            # downloaded_files contains archive paths when archiving is enabled
 
             # Record performance metrics using abstracted utility
             duration = time.time() - start_time
@@ -586,41 +573,8 @@ class NetR9(BaseReceiver):
         Returns:
             Tuple of processed start and end datetime objects
         """
-        # Use Phase 1 TimeParameterProcessor if enabled
-        if self.use_phase1_utilities and self.time_processor:
-            self.logger.debug("Using Phase 1 TimeParameterProcessor")
-            return self.time_processor.process_time_parameters(start, end, session)
-
-        # Original implementation (fallback)
-        # If already datetime objects, use them as-is (CLI has calculated correctly)
-        if isinstance(start, datetime) and isinstance(end, datetime):
-            return start, end
-
-        # Convert strings to datetime if needed (legacy support)
-        if isinstance(start, str):
-            # Try different date formats
-            try:
-                start = datetime.fromisoformat(start)
-            except ValueError:
-                try:
-                    start = datetime.strptime(start, "%Y-%m-%d %H:%M:%S")
-                except ValueError:
-                    start = datetime.strptime(start, "%Y-%m-%d")
-
-        if isinstance(end, str):
-            # Try different date formats
-            try:
-                end = datetime.fromisoformat(end)
-            except ValueError:
-                try:
-                    end = datetime.strptime(end, "%Y-%m-%d %H:%M:%S")
-                except ValueError:
-                    end = datetime.strptime(end, "%Y-%m-%d")
-
-        # Respect the CLI-provided time range (like PolaRX5 does)
-        # Do NOT override the end time - CLI has already set it correctly for -D parameter
-
-        return start, end
+        self.logger.debug("Using Phase 1 TimeParameterProcessor")
+        return self.time_processor.process_time_parameters(start, end, session)
 
     def _validate_archived_file(self, file_path: Path) -> bool:
         """Basic sanity checks for archived files.
@@ -758,48 +712,9 @@ class NetR9(BaseReceiver):
             downloaded_files: List of downloaded file paths
             archive_files_dict: Dictionary mapping filename to archive path
         """
-        # Use Phase 1 FileArchiver if enabled (IMMEDIATE mode for fault tolerance)
-        if self.use_phase1_utilities:
-            self.logger.debug("Using Phase 1 FileArchiver (IMMEDIATE mode)")
-            archived_count = 0
-
-            for file_path in downloaded_files:
-                try:
-                    file_path_obj = Path(file_path)
-                    filename = file_path_obj.name
-
-                    if not file_path_obj.exists():
-                        self.logger.warning(f"Cannot archive - file not found: {file_path}")
-                        continue
-
-                    if filename in archive_files_dict:
-                        archive_path = Path(archive_files_dict[filename])
-
-                        # Archive file immediately (one at a time for fault tolerance)
-                        with FileArchiver(mode=ArchiveMode.IMMEDIATE, logger=self.logger) as archiver:
-                            success = archiver.archive_file(
-                                file_path_obj,
-                                archive_path,
-                                compress=True,
-                                remove_tmp=True
-                            )
-
-                        if success:
-                            archived_count += 1
-                        else:
-                            self.logger.error(f"❌ Failed to archive {filename}")
-
-                except Exception as e:
-                    self.logger.error(f"❌ Failed to archive {filename}: {e}")
-
-            self.logger.info(f"Phase 1 archiving: {archived_count}/{len(downloaded_files)} files archived")
-            return archived_count
-
-        # Original implementation (fallback)
-        import gzip
-        import shutil
-
+        self.logger.debug("Using Phase 1 FileArchiver (IMMEDIATE mode)")
         archived_count = 0
+
         for file_path in downloaded_files:
             try:
                 file_path_obj = Path(file_path)
@@ -810,76 +725,26 @@ class NetR9(BaseReceiver):
                     continue
 
                 if filename in archive_files_dict:
-                    # Get file size before archiving (matching PolaRX5 pattern)
-                    tmp_file_size = file_path_obj.stat().st_size
-                    self.logger.info(
-                        f"File to archive {filename} ({tmp_file_size:,} bytes)"
-                    )
-
                     archive_path = Path(archive_files_dict[filename])
-                    archive_filename = archive_path.name
 
-                    # Create archive directory
-                    archive_path.parent.mkdir(parents=True, exist_ok=True)
-
-                    # Check if archive file already exists (matching PolaRX5 pattern)
-                    if archive_path.exists():
-                        archive_file_size = archive_path.stat().st_size
-                        if tmp_file_size == archive_file_size:
-                            self.logger.warning(
-                                f"Archive file already exists with same size ({tmp_file_size:,} bytes): {archive_filename}"
-                            )
-                            # Remove tmp file and consider this a success
-                            file_path_obj.unlink()
-                            archived_count += 1
-                            continue
-
-                    # NetR9 files are always raw .T02 - compress them during archiving
-                    # Archive path already includes .gz extension from template
-                    self.logger.info(
-                        f"📦 Archiving with compression: {filename} → {archive_filename} ({tmp_file_size:,} bytes)"
-                    )
-
-                    with open(file_path_obj, "rb") as f_in:
-                        with gzip.open(archive_path, "wb") as f_out:
-                            shutil.copyfileobj(f_in, f_out)
-
-                    # Verify compressed archive (matching PolaRX5 pattern)
-                    if archive_path.exists():
-                        compressed_size = archive_path.stat().st_size
-                        compression_ratio = (
-                            (tmp_file_size - compressed_size) / tmp_file_size * 100
+                    # Archive file immediately (one at a time for fault tolerance)
+                    with FileArchiver(mode=ArchiveMode.IMMEDIATE, logger=self.logger) as archiver:
+                        success = archiver.archive_file(
+                            file_path_obj,
+                            archive_path,
+                            compress=True,
+                            remove_tmp=True
                         )
-                        self.logger.info(
-                            f"✅ Compressed and archived to: {archive_path} ({compressed_size:,} bytes, {compression_ratio:.1f}% reduction)"
-                        )
+
+                    if success:
                         archived_count += 1
-
-                        # Remove tmp file
-                        file_path_obj.unlink()
                     else:
-                        self.logger.error(
-                            f"❌ Compression failed: destination file not found"
-                        )
-                else:
-                    self.logger.warning(f"No archive path found for {filename}")
+                        self.logger.error(f"❌ Failed to archive {filename}")
 
             except Exception as e:
                 self.logger.error(f"❌ Failed to archive {filename}: {e}")
-                # Clean up tmp file on failure
-                if file_path_obj.exists():
-                    try:
-                        file_path_obj.unlink()
-                        self.logger.info(f"🧹 Cleaned up failed tmp file: {file_path}")
-                    except Exception as cleanup_e:
-                        self.logger.error(
-                            f"❌ Failed to cleanup tmp file {file_path}: {cleanup_e}"
-                        )
 
-        # Log final archiving results (matching PolaRX5 pattern)
-        if archived_count > 0:
-            self.logger.info(f"✅ Successfully archived {archived_count} files")
-
+        self.logger.info(f"Archiving complete: {archived_count}/{len(downloaded_files)} files archived")
         return archived_count
 
     def get_file_extension(self) -> str:
