@@ -29,6 +29,11 @@ from ..utils.performance_recorder import (
 from ..utils.session_parser import parse_session_parameters
 from .leica_ftp_download_client import LeicaFTPDownloader
 
+# Phase 1 utilities (feature-flagged)
+from ..utils.archive_validator import ArchiveValidator
+from ..utils.time_processor import TimeParameterProcessor
+from ..utils.file_archiver import FileArchiver, ArchiveMode
+
 
 class LeicaG10(BaseReceiver):
     """Leica G10 GNSS receiver implementation.
@@ -57,8 +62,8 @@ class LeicaG10(BaseReceiver):
         # Set up directories
         self.tmp_dir = "/home/bgo/tmp/download/"
 
-        # Get Leica-specific configuration
-        self.leica_config = self.receivers_config.get_receiver_config("leica")
+        # Get G10-specific configuration
+        self.leica_config = self.receivers_config.get_receiver_config("g10")
 
         # Validate station configuration
         self._validate_station_config()
@@ -68,6 +73,17 @@ class LeicaG10(BaseReceiver):
 
         # Connection status
         self.connection_status = {"router": False, "receiver": False}
+
+        # Phase 1 utilities (feature-flagged)
+        self.use_phase1_utilities = os.environ.get("USE_PHASE1_UTILITIES", "0") == "1"
+
+        if self.use_phase1_utilities:
+            self.logger.info("✨ Phase 1 utilities enabled")
+            self.archive_validator = ArchiveValidator(logger=self.logger)
+            self.time_processor = TimeParameterProcessor(logger=self.logger)
+        else:
+            self.archive_validator = None
+            self.time_processor = None
 
     def _get_logger(self, level: int = logging.INFO) -> logging.Logger:
         """Set up logger for this receiver instance."""
@@ -216,7 +232,7 @@ class LeicaG10(BaseReceiver):
                 self.logger.info("No files to check for this time range")
                 return {
                     "station_id": self.station_id,
-                    "receiver_type": "LeicaG10",
+                    "receiver_type": "G10",
                     "status": "no_files",
                     "files_downloaded": 0,
                     "downloaded_files": [],
@@ -293,7 +309,7 @@ class LeicaG10(BaseReceiver):
                 self.logger.info("Archive is up to date")
                 return {
                     "station_id": self.station_id,
-                    "receiver_type": "LeicaG10",
+                    "receiver_type": "G10",
                     "status": "up_to_date",
                     "files_checked": len(files_dict),
                     "files_missing": 0,
@@ -307,22 +323,57 @@ class LeicaG10(BaseReceiver):
             downloaded_files = []
             if sync:
                 if missing_files_dict:
+                    # Create callback for immediate unzip+archive if Phase 1 enabled
+                    process_callback = None
+                    if self.use_phase1_utilities and archive:
+                        def immediate_process_callback(zip_path: str) -> Optional[str]:
+                            """Unzip and archive immediately after download."""
+                            # Unzip the file
+                            unzipped = self._unzip_single_file(zip_path)
+                            if not unzipped:
+                                return None
+
+                            # Archive the unzipped .m00 file
+                            m00_filename = Path(unzipped).name
+                            if m00_filename in archive_files_dict:
+                                archive_path = Path(archive_files_dict[m00_filename])
+
+                                from ..utils.file_archiver import FileArchiver, ArchiveMode
+                                with FileArchiver(mode=ArchiveMode.IMMEDIATE, logger=self.logger) as archiver:
+                                    success = archiver.archive_file(
+                                        Path(unzipped),
+                                        archive_path,
+                                        compress=True,
+                                        remove_tmp=True
+                                    )
+
+                                if success:
+                                    return str(archive_path)
+
+                            return unzipped
+
+                        process_callback = immediate_process_callback
+
                     downloaded_files = self.ftp_downloader.download_files(
-                        missing_files_dict, tmp_dir_path, clean_tmp
+                        missing_files_dict, tmp_dir_path, clean_tmp, process_callback
                     )
                 else:
                     self.logger.info("Archive is up to date - no files to download")
             else:
                 self.logger.info("Sync disabled - skipping actual download")
 
-            # Process downloaded .zip files
+            # Process downloaded .zip files (only if not already processed inline)
             processed_files = []
-            if downloaded_files:
+            if downloaded_files and not (self.use_phase1_utilities and archive):
                 processed_files = self._process_zip_files(downloaded_files)
+            elif downloaded_files:
+                # Files already processed inline, use as-is
+                processed_files = downloaded_files
 
             # Archive files if requested and files were processed
+            # (only if not already archived inline)
             archived_files = []
-            if archive and processed_files:
+            if archive and processed_files and not (self.use_phase1_utilities and archive):
                 archived_count = self._archive_files(processed_files, archive_files_dict)
                 # After archiving, create list of archived file paths
                 for file_path in processed_files:
@@ -361,7 +412,7 @@ class LeicaG10(BaseReceiver):
 
             return {
                 "station_id": self.station_id,
-                "receiver_type": "LeicaG10",
+                "receiver_type": "G10",
                 "status": "completed",
                 "files_downloaded": len(final_files),
                 "downloaded_files": final_files,
@@ -378,7 +429,7 @@ class LeicaG10(BaseReceiver):
 
             return {
                 "station_id": self.station_id,
-                "receiver_type": "LeicaG10",
+                "receiver_type": "G10",
                 "status": "error",
                 "files_downloaded": 0,
                 "downloaded_files": [],
@@ -525,6 +576,64 @@ class LeicaG10(BaseReceiver):
 
         return files_dict, archive_files_dict
 
+    def _unzip_single_file(self, zip_file_path: str) -> Optional[str]:
+        """Unzip a single .zip file and return the path to the unzipped file.
+
+        Args:
+            zip_file_path: Path to the .zip file
+
+        Returns:
+            Path to unzipped .m00 file, or None if unzipping failed
+        """
+        zip_path = Path(zip_file_path)
+        if not zip_path.exists():
+            self.logger.warning(f"File not found: {zip_file_path}")
+            return None
+
+        if not str(zip_path).endswith('.zip'):
+            self.logger.warning(f"File is not a zip file: {zip_file_path}")
+            return zip_file_path  # Return as-is
+
+        # Unzip the file
+        try:
+            self.logger.info(f"📦 Unzipping: {zip_path.name}")
+
+            # Run unzip command in the same directory
+            result = subprocess.run(
+                ['unzip', '-o', str(zip_path)],
+                cwd=zip_path.parent,
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+
+            if result.returncode == 0:
+                # Find the unzipped .m00 file
+                base_name = zip_path.stem  # Remove .zip extension
+                m00_file = zip_path.parent / base_name
+
+                if m00_file.exists():
+                    self.logger.info(f"✅ Unzipped: {base_name}")
+
+                    # Remove the zip file to save space
+                    zip_path.unlink()
+                    self.logger.debug(f"🧹 Removed zip file: {zip_path.name}")
+
+                    return str(m00_file)
+                else:
+                    self.logger.error(f"❌ Unzipped file not found: {base_name}")
+                    return None
+            else:
+                self.logger.error(f"❌ Unzip failed for {zip_path.name}: {result.stderr}")
+                return None
+
+        except subprocess.TimeoutExpired:
+            self.logger.error(f"❌ Unzip timeout for {zip_path.name}")
+            return None
+        except Exception as e:
+            self.logger.error(f"❌ Unzip error for {zip_path.name}: {e}")
+            return None
+
     def _process_zip_files(self, downloaded_files: List[str]) -> List[str]:
         """Process downloaded .zip files by unzipping them.
 
@@ -593,6 +702,50 @@ class LeicaG10(BaseReceiver):
             downloaded_files: List of downloaded file paths (.m00 files)
             archive_files_dict: Dictionary mapping filename to archive path
         """
+        # Use Phase 1 FileArchiver if enabled (IMMEDIATE mode for fault tolerance)
+        if self.use_phase1_utilities:
+            self.logger.debug("Using Phase 1 FileArchiver (IMMEDIATE mode)")
+            archived_count = 0
+
+            for file_path in downloaded_files:
+                try:
+                    file_path_obj = Path(file_path)
+                    filename = file_path_obj.name
+
+                    if not file_path_obj.exists():
+                        self.logger.warning(
+                            f"Cannot archive - file not found: {file_path}"
+                        )
+                        continue
+
+                    if filename in archive_files_dict:
+                        archive_path = Path(archive_files_dict[filename])
+
+                        # Archive file immediately (one at a time for fault tolerance)
+                        with FileArchiver(mode=ArchiveMode.IMMEDIATE, logger=self.logger) as archiver:
+                            success = archiver.archive_file(
+                                file_path_obj,
+                                archive_path,
+                                compress=True,
+                                remove_tmp=True,
+                            )
+
+                        if success:
+                            archived_count += 1
+                        else:
+                            self.logger.error(f"❌ Failed to archive {filename}")
+
+                except Exception as e:
+                    self.logger.error(
+                        f"❌ Failed to archive {filename}: {e}"
+                    )
+
+            self.logger.info(
+                f"Phase 1 archiving: {archived_count}/{len(downloaded_files)} files archived"
+            )
+            return archived_count
+
+        # Original implementation (fallback)
         archived_count = 0
 
         for file_path in downloaded_files:
@@ -724,7 +877,7 @@ class LeicaG10(BaseReceiver):
             if not connection_status["receiver"]:
                 return {
                     "station_id": self.station_id,
-                    "receiver_type": "LeicaG10",
+                    "receiver_type": "G10",
                     "timestamp": datetime.now(),
                     "overall_status": "offline",
                     "error": connection_status.get("error", "Receiver not accessible"),
@@ -744,7 +897,7 @@ class LeicaG10(BaseReceiver):
 
             return {
                 "station_id": self.station_id,
-                "receiver_type": "LeicaG10",
+                "receiver_type": "G10",
                 "timestamp": datetime.now(),
                 "overall_status": overall_status,
                 "connection": health_data["connection"],
@@ -757,7 +910,7 @@ class LeicaG10(BaseReceiver):
 
             return {
                 "station_id": self.station_id,
-                "receiver_type": "LeicaG10",
+                "receiver_type": "G10",
                 "timestamp": datetime.now(),
                 "overall_status": "error",
                 "error": error_msg,

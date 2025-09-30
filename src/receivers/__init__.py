@@ -40,9 +40,9 @@ except ImportError:
     pass
 
 try:
-    from .leica.leica_gnss import Leica
+    from .leica.g10 import LeicaG10 as G10
 
-    __all__.append("Leica")
+    __all__.append("G10")
 except ImportError:
     # Dependencies not available, skip receiver implementations
     pass

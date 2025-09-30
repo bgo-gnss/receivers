@@ -74,12 +74,21 @@ flowchart TD
     VV -->|No| XX[Keep as Downloaded]
     WW --> XX
 
-    XX --> YY[Archive File]
-    YY --> ZZ[Compress to .gz]
-    ZZ --> AAA[Move to Archive Directory]
-    AAA --> BBB[Clean Temp Files]
+    XX --> YY{USE_PHASE1_UTILITIES?}
+    YY -->|Yes| ZZZ["⚡ IMMEDIATE Archive\n(Phase 1 FileArchiver)"]
+    YY -->|No| YYY[Legacy Archive]
 
-    BBB --> CCC{More Files?}
+    ZZZ --> AAA1[Compress to .gz]
+    AAA1 --> BBB1[Move to Archive Directory]
+    BBB1 --> CCC1[Clean Temp File]
+    CCC1 --> DDD1[✅ File Archived]
+
+    YYY --> AAA[Legacy Compress]
+    AAA --> BBB[Legacy Move]
+    BBB --> CCC2[Legacy Clean]
+    CCC2 --> DDD1
+
+    DDD1 --> CCC{More Files?}
     CCC -->|Yes| LL
     CCC -->|No| DDD[Log Summary & Exit]
 

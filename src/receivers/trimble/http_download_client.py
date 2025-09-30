@@ -116,22 +116,23 @@ class NetR9HTTPDownloader:
         from ..config.receivers_config import get_receivers_config
         receivers_config = get_receivers_config()
         netr9_config = receivers_config.get_receiver_config("netr9")
-        self.connect_timeout = netr9_config.get("http_timeout_connect", 30)
-        self.stall_timeout = netr9_config.get("http_stall_timeout", 120)
+        # Increased defaults for slow/remote connections
+        self.connect_timeout = netr9_config.get("http_timeout_connect", 60)
+        self.stall_timeout = netr9_config.get("http_stall_timeout", 180)
 
         # Track connection time for metrics
         self._last_connection_time = 0.0
 
         self.logger.info(f"Initialized NetR9 HTTP downloader for {self.station_id}")
 
-    def _get_logger(self, level: int = logging.WARNING) -> logging.Logger:
+    def _get_logger(self, level: int = logging.INFO) -> logging.Logger:
         """Set up logger for this receiver instance."""
         logger_name = f"{__name__}.{self.station_id}"
         logger = logging.getLogger(logger_name)
 
         if not logger.handlers:
             handler = logging.StreamHandler()
-            formatter = logging.Formatter("[%(levelname)s] %(name)s: %(message)s")
+            formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
             handler.setFormatter(formatter)
             logger.addHandler(handler)
             logger.setLevel(level)
@@ -335,16 +336,20 @@ class NetR9HTTPDownloader:
             return False
 
     def download_files(self, files_dict: Dict[str, str], tmp_dir: Path,
-                      clean_tmp: bool = True) -> List[str]:
+                      clean_tmp: bool = True,
+                      archive_files_dict: Optional[Dict[str, str]] = None,
+                      use_phase1_utilities: bool = False) -> List[str]:
         """Download multiple files from NetR9 receiver.
 
         Args:
             files_dict: Dictionary mapping filename -> remote_directory
             tmp_dir: Temporary download directory
             clean_tmp: Whether to clean temporary directory first
+            archive_files_dict: Optional dict mapping filename -> archive_path (for immediate archiving)
+            use_phase1_utilities: Whether to use Phase 1 FileArchiver for immediate archiving
 
         Returns:
-            List of successfully downloaded file paths
+            List of successfully downloaded/archived file paths
         """
         if clean_tmp and tmp_dir.exists():
             self.logger.info(f"Cleaning temporary directory: {tmp_dir}")
@@ -394,7 +399,32 @@ class NetR9HTTPDownloader:
             success = self.download_file(remote_dir, filename, local_file_path, expected_size)
 
             if success:
-                downloaded_files.append(str(local_file_path))
+                # Archive immediately after download if enabled
+                if archive_files_dict and filename in archive_files_dict and use_phase1_utilities:
+                    archive_path = Path(archive_files_dict[filename])
+                    self.logger.info(f"📦 Archiving immediately after download: {filename}")
+
+                    # Import FileArchiver only when needed
+                    from ..utils.file_archiver import FileArchiver, ArchiveMode
+
+                    with FileArchiver(mode=ArchiveMode.IMMEDIATE, logger=self.logger) as archiver:
+                        archive_success = archiver.archive_file(
+                            local_file_path,
+                            archive_path,
+                            compress=True,
+                            remove_tmp=True
+                        )
+
+                    if archive_success:
+                        # Add archive path to downloaded files list
+                        downloaded_files.append(str(archive_path))
+                    else:
+                        self.logger.error(f"❌ Failed to archive {filename} after download")
+                        # Add tmp file path as fallback
+                        downloaded_files.append(str(local_file_path))
+                else:
+                    # No immediate archiving - add tmp file path
+                    downloaded_files.append(str(local_file_path))
             else:
                 self.logger.error(f"❌ Failed to download {filename}")
 

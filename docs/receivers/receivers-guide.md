@@ -78,6 +78,7 @@ classDiagram
 **File Path**: `src/receivers/leica/g10.py`
 
 #### Key Characteristics
+
 - **Protocol**: FTP (Anonymous login)
 - **Port**: 2160 (non-standard)
 - **Connection Mode**: Active (passive=false) - Critical for data transfer success
@@ -85,17 +86,20 @@ classDiagram
 - **Directory Structure**: Flat structure directly under session directories
 
 #### Session Support
+
 - **15s_24hr**: Daily files in `/SD Card/Data/15s_24hr/`
 - **1Hz_1hr**: Hourly files in `/SD Card/Data/1s_1hr/STATION/YYYY/MM/DD/`
 - **status_1hr**: Status files (future implementation)
 
 #### Unique Features
+
 - **ZIP Processing**: Only receiver type that downloads compressed files
 - **DOY Filenames**: Uses day-of-year format (267a.m00.zip for Sept 24)
 - **Active FTP**: Requires active mode for data connections
 - **Binary Mode**: Explicit binary mode setting prevents corruption
 
 #### Critical Configuration
+
 ```ini
 [leica]
 ftp_port = 2160
@@ -159,6 +163,7 @@ classDiagram
 **File Path**: `src/receivers/trimble/netr9.py`
 
 #### Key Characteristics
+
 - **Protocol**: HTTP
 - **Port**: 8060
 - **File Format**: Raw T02 files (no compression)
@@ -166,11 +171,13 @@ classDiagram
 - **URL Pattern**: `http://station.domain:8060/CACHEDIR.../download/Internal/YYYYMM/session/`
 
 #### Session Support
+
 - **15s_24hr**: Daily files with 'a' suffix
 - **1Hz_1hr**: Hourly files with 'b' suffix
 - **status_1hr**: Status files with 'c' suffix
 
 #### Unique Features
+
 - **Cache Directory**: Complex nested directory structure for organization
 - **Stream Downloads**: HTTP streaming for large files
 - **Stall Timeout**: Progress-based timeout (120s without data)
@@ -228,6 +235,7 @@ classDiagram
 **File Path**: `src/receivers/trimble/netrs.py`
 
 #### Key Characteristics
+
 - **Protocol**: HTTP
 - **Port**: 8060
 - **File Format**: Raw T00 files (no compression)
@@ -235,25 +243,153 @@ classDiagram
 - **File Extension**: .T00 (vs .T02 for NetR9)
 
 #### Session Support
+
 - **15s_24hr**: Daily files in `/download/YYYYMM/a/`
 - **1Hz_1hr**: Hourly files in `/download/YYYYMM/b/`
 - **status_1hr**: Status files in `/download/YYYYMM/c/`
 
 #### Differences from NetR9
+
 - **Simpler URLs**: No cache directory complexity
 - **T00 Extension**: Different file extension
 - **Directory Mapping**: Session letters map directly to directories
 
+## PolaRX5 Receiver
+
+Septentrio PolaRX5 receivers use FTP-based downloads with SBF binary format.
+
+```mermaid
+classDiagram
+    class PolaRX5 {
+        -station_id: str
+        -station_info: dict
+        -septentrio_config: dict
+        -file_validator: FileValidator
+        -connection_timeout: int
+        -inactivity_timeout: int
+        -progress_timeout: int
+        +__init__(station_id, station_info)
+        +test_connection() dict
+        +download_data(start, end, session, sync, clean_tmp, archive) dict
+        +get_health_status() dict
+        +analyze_health_data(ascii_dir) dict
+        -_ftp_open_connection(timeout) FTP
+        -_ftp_download(files_dict, local_dir, ftp, archive, immediate_archive) list
+        -_download_with_progressbar(ftp, remote_file, local_file, remote_file_size, offset) int
+        -_download_with_progressbar_and_retry(ftp, remote_file, local_file, remote_file_size, offset) int
+        -_archive_single_file(tmp_file_path, file_datetime, missing_file_dict) bool
+        -_setup_timeouts() void
+        -_setup_connection_info() void
+    }
+
+    class BaseReceiver {
+        <<abstract>>
+        +station_id: str
+        +station_info: dict
+        +build_path(datetime_list, template, session, frequency) list
+        +get_file_extension() str
+        +test_connection()* dict
+        +download_data(start, end, session, sync, clean_tmp, archive)* dict
+    }
+
+    class FileValidator {
+        +validate_file(file_path) dict
+        +should_resume_download(file_path, expected_size) tuple
+        +clean_directory(directory_path) int
+    }
+
+    class DownloadDiagnosticsAnalyzer {
+        +classify_network_failure(ip_address) dict
+        +analyze_ftp_failure(error, connection_info) dict
+    }
+
+    PolaRX5 --|> BaseReceiver
+    PolaRX5 --> FileValidator
+    PolaRX5 --> DownloadDiagnosticsAnalyzer
+
+    note for PolaRX5 "Septentrio PolaRX5 receiver\nFTP downloads (passive/active)\nSBF binary format (.sbf → .sbf.gz)\nAdvanced timeout handling\nIntelligent diagnostics\nImmediate archiving support\nHealth data analysis"
+```
+
+**Diagram Source**: [diagrams/polarx5.mmd](diagrams/polarx5.mmd)
+
+### PolaRX5 Implementation Details
+
+**File Path**: `src/receivers/septentrio/polarx5.py`
+
+#### Key Characteristics
+
+- **Protocol**: FTP (Configurable passive/active mode)
+- **Port**: 21 (standard FTP)
+- **File Format**: SBF binary files (.sbf → .sbf.gz)
+- **Directory Structure**: Nested by GPS week (`/DSK2/SSN/session_path/GPSWEEK/`)
+- **IGS Naming**: Uses gtimes `#Rin2` format for hour-to-letter mapping
+
+#### Session Support
+
+- **15s_24hr**: Daily files in `/DSK2/SSN/a/GPSWEEK/`
+- **1Hz_1hr**: Hourly files in `/DSK2/SSN/b/GPSWEEK/`
+- **status_1hr**: Status/health files in `/DSK2/SSN/c/GPSWEEK/`
+
+#### Unique Features
+
+- **Adaptive Timeouts**: Station-specific timeout configuration from gps_parser
+  - Connection timeout: Network-dependent (mobile/remote/fixed)
+  - Inactivity timeout: No-progress detection
+  - Progress timeout: Minimum speed threshold enforcement
+- **Intelligent Diagnostics**: Network failure classification and analysis
+  - Invalid IP detection
+  - Connection refused vs timeout analysis
+  - Router vs receiver failure differentiation
+- **FTP Mode Auto-Retry**: Automatic passive/active mode switching on connection failures
+- **Resume Capability**: Intelligent partial download resumption
+- **Immediate Archiving**: Fault-tolerant file-by-file archiving during download
+- **Health Data Support**: SBF status file analysis and monitoring
+
+#### Critical Configuration
+
+```ini
+[polarx5]
+protocol = ftp
+ftp_port = 21
+file_extension = .sbf.gz
+base_path = /DSK2/SSN/
+```
+
+#### Timeout Configuration
+
+The PolaRX5 implementation uses centralized timeout configuration from gps_parser based on network type:
+
+- **Fixed Network Stations**: Fast timeouts (10s connect, 30s inactivity)
+- **Mobile Network Stations**: Extended timeouts (20s connect, 60s inactivity)
+- **Remote Stations**: Maximum timeouts (30s connect, 120s inactivity)
+
+#### Advanced Error Handling
+
+- **Network Diagnostics**: Automatic failure classification
+- **Configuration Validation**: Invalid IP range detection
+- **Port Forwarding Issues**: Intelligent connection refused analysis
+- **Timeout Types**: Differentiation between connection, inactivity, and progress timeouts
+
+#### Health Monitoring
+
+- **Status Downloads**: Automatic status_1hr session downloads
+- **Health Analysis**: ReceiverStatus block parsing from ASCII conversions
+- **Metrics Tracking**: CPU load, uptime, receiver status analysis
+- **Performance Recording**: Integration with gps_parser adaptive learning system
+
 ## Unified Architecture Features
 
 ### Common Base Class
+
 All receivers inherit from `BaseReceiver` which provides:
+
 - **Unified Path Generation**: `build_path()` method using gtimes templates
 - **Configuration Management**: Consistent config loading
 - **Session Parameter Parsing**: Standardized session handling
 - **Archive Template Support**: Common archiving patterns
 
 ### Timestamp Normalization
+
 **Critical Feature**: All receivers now use consistent timestamp normalization:
 
 ```python
@@ -266,22 +402,26 @@ else:
 ```
 
 This ensures consistent archive naming:
+
 - Daily files: `STATION202509240000a.ext.gz`
 - Hourly files: `STATION202509241500b.ext.gz`
 
 ### Error Handling & Reliability
 
 #### Connection Management
+
 - **Timeout Handling**: Separate connect and data timeouts
 - **Retry Logic**: Exponential backoff for failed operations
 - **Protocol-Specific**: Optimized for each receiver's characteristics
 
 #### File Validation
+
 - **Integrity Checks**: Size and basic structure validation
 - **Archive Mapping**: Efficient filename to archive path mapping
 - **Resume Capability**: Handle partial downloads gracefully
 
 #### Progress Monitoring
+
 - **Real-time Progress**: Speed, ETA, and percentage completion
 - **Stall Detection**: Different strategies per protocol
 - **User Feedback**: Clear indication of download status
@@ -313,18 +453,21 @@ This modular approach allows easy addition of new receiver types while maintaini
 ## Troubleshooting by Receiver Type
 
 ### Leica G10 Common Issues
+
 - **Connection Refused**: Check `ftp_passive = false` setting
 - **File Corruption**: Ensure binary mode is enabled
 - **Slow Downloads**: Increase `ftp_timeout_data` setting
 - **ZIP Errors**: Verify file integrity after download
 
 ### NetR9/NetRS Common Issues
+
 - **HTTP 404 Errors**: Verify URL patterns and cache directory structure
 - **Stall Timeouts**: Increase `http_stall_timeout` for slow connections
 - **File Not Found**: Check session directory mapping
 - **Large File Issues**: Monitor progress-based timeout behavior
 
 ### Configuration Debugging
+
 ```bash
 # Test specific receiver type
 receivers download STATION --test-connection -v

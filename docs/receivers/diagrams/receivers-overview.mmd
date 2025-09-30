@@ -18,9 +18,15 @@ flowchart TD
         TCP[TCP Client]
     end
 
+    subgraph UTIL["✨ Phase 1 Utilities USE_PHASE1_UTILITIES=1"]
+        TimeProc[Time Parameter Processor]
+        ArchVal[Archive Validator]
+        FileArch[File Archiver IMMEDIATE]
+    end
+
     subgraph PROC["⚙️ Processing Layer"]
         Validation[File Validator]
-        Archive[Archive Manager]
+        Archive[Archive Manager Legacy]
         Compression[Compression]
     end
 
@@ -39,6 +45,20 @@ flowchart TD
     Factory --> NetRS
     Factory --> PolaRX5
 
+    %% Receivers use Phase 1 Utilities (when enabled)
+    Leica -.->|Phase 1| TimeProc
+    Leica -.->|Phase 1| ArchVal
+    Leica -.->|Phase 1| FileArch
+    NetR9 -.->|Phase 1| TimeProc
+    NetR9 -.->|Phase 1| ArchVal
+    NetR9 -.->|Phase 1| FileArch
+    NetRS -.->|Phase 1| TimeProc
+    NetRS -.->|Phase 1| ArchVal
+    NetRS -.->|Phase 1| FileArch
+    PolaRX5 -.->|Phase 1| TimeProc
+    PolaRX5 -.->|Phase 1| ArchVal
+    PolaRX5 -.->|Phase 1| FileArch
+
     %% Receivers to Download Clients
     Leica --> FTP
     NetR9 --> HTTP
@@ -51,7 +71,11 @@ flowchart TD
     HTTP --> Validation
     TCP --> Validation
 
-    %% Processing Flow
+    %% Phase 1 Utilities to Storage
+    FileArch ==>|Immediate Archive| DataStore
+    ArchVal -.-> DataStore
+
+    %% Legacy Processing Flow
     Validation --> Archive
     Validation --> TempDir
     Archive --> Compression
@@ -64,11 +88,13 @@ flowchart TD
     classDef apiStyle fill:#e1f5fe,stroke:#01579b,stroke-width:2px
     classDef recStyle fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
     classDef dlStyle fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px
+    classDef utilStyle fill:#fff9c4,stroke:#f57f17,stroke-width:3px
     classDef procStyle fill:#fff3e0,stroke:#e65100,stroke-width:2px
     classDef storeStyle fill:#fce4ec,stroke:#880e4f,stroke-width:2px
 
     class CLI,Factory,Config apiStyle
     class Leica,NetR9,NetRS,PolaRX5 recStyle
     class FTP,HTTP,TCP dlStyle
+    class TimeProc,ArchVal,FileArch utilStyle
     class Validation,Archive,Compression procStyle
     class TempDir,DataStore,LogStore storeStyle
