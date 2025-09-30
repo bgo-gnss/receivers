@@ -68,10 +68,14 @@ docs = [
 ]
 local = [
     "gtimes>=0.4.0",  # Local package - install separately
-    # "gps_parser",   # Local package - install separately  
+    # "gps_parser",   # Local package - install separately
+]
+scheduler = [
+    "apscheduler>=3.10.0",
+    "sqlalchemy>=2.0.0",
 ]
 all = [
-    "receivers[dev,test,docs,local]",
+    "receivers[dev,test,docs,local,scheduler]",
 ]
 
 [project.urls]
@@ -149,11 +153,13 @@ addopts = [
 ]
 markers = [
     "unit: Unit tests for individual components",
-    "integration: Integration tests with receivers", 
+    "integration: Integration tests with receivers",
     "ftp: Tests requiring FTP connections",
     "slow: Slow tests that may take time",
     "septentrio: Septentrio-specific tests",
     "polarx5: PolaRX5 receiver tests",
+    "scheduler: Scheduler-related tests",
+    "concurrent: Tests for concurrent operations",
 ]
 
 [tool.coverage.run]
