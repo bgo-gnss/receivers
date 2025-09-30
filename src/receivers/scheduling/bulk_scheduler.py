@@ -15,7 +15,7 @@ import logging
 import json
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
@@ -278,9 +278,9 @@ class BulkDownloadScheduler:
         
     def _download_station_data(self, station_id: str, session_type: str):
         """Download data for a single station (job function)."""
-        
+
         job_id = f"{session_type}_{station_id}"
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         
         try:
             self.logger.info(f"Starting download: {station_id} ({session_type})")
@@ -310,12 +310,12 @@ class BulkDownloadScheduler:
             # Determine time range based on session type
             if session_type == '15s_24hr':
                 # Daily data - get yesterday's data
-                end_time = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+                end_time = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
                 start_time = end_time - timedelta(days=1)
                 frequency = '1D'
             else:
                 # Hourly data - get previous hour's data
-                end_time = datetime.utcnow().replace(minute=0, second=0, microsecond=0)
+                end_time = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
                 start_time = end_time - timedelta(hours=1)
                 frequency = '1H'
                 

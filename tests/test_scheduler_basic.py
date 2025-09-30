@@ -68,7 +68,7 @@ class TestScheduleConfig:
 class TestBulkDownloadSchedulerInit:
     """Test BulkDownloadScheduler initialization."""
 
-    @patch('receivers.scheduling.bulk_scheduler.get_all_station_configs')
+    @patch('receivers.cli.main.get_all_station_configs')
     def test_scheduler_initialization(self, mock_get_stations):
         """Test basic scheduler initialization."""
         # Mock station configs
@@ -88,7 +88,7 @@ class TestBulkDownloadSchedulerInit:
         assert 'TEST1' in scheduler.stations
         assert 'TEST2' in scheduler.stations
 
-    @patch('receivers.scheduling.bulk_scheduler.get_all_station_configs')
+    @patch('receivers.cli.main.get_all_station_configs')
     def test_scheduler_with_station_filter(self, mock_get_stations):
         """Test scheduler with station filter."""
         mock_get_stations.return_value = {
@@ -105,7 +105,7 @@ class TestBulkDownloadSchedulerInit:
         # Should filter to only specified stations
         assert scheduler.station_filter == ['ELDC', 'ORFC']  # Uppercased
 
-    @patch('receivers.scheduling.bulk_scheduler.get_all_station_configs')
+    @patch('receivers.cli.main.get_all_station_configs')
     def test_scheduler_with_max_stations(self, mock_get_stations):
         """Test scheduler with max stations limit."""
         mock_get_stations.return_value = {
@@ -122,7 +122,7 @@ class TestBulkDownloadSchedulerInit:
 
     def test_scheduler_default_configs(self):
         """Test scheduler has correct default session configs."""
-        with patch('receivers.scheduling.bulk_scheduler.get_all_station_configs', return_value={}):
+        with patch('receivers.cli.main.get_all_station_configs', return_value={}):
             scheduler = BulkDownloadScheduler(production_mode=False)
 
             # Should have 3 default session types
@@ -155,7 +155,7 @@ class TestBulkDownloadSchedulerInit:
 class TestSchedulerStationFiltering:
     """Test station filtering logic."""
 
-    @patch('receivers.scheduling.bulk_scheduler.get_all_station_configs')
+    @patch('receivers.cli.main.get_all_station_configs')
     def test_get_stations_for_session_no_filter(self, mock_get_stations):
         """Test getting stations without filter."""
         mock_get_stations.return_value = {
@@ -173,7 +173,7 @@ class TestSchedulerStationFiltering:
         assert 'ORFC' in stations
         assert 'THOB' not in stations  # Disabled
 
-    @patch('receivers.scheduling.bulk_scheduler.get_all_station_configs')
+    @patch('receivers.cli.main.get_all_station_configs')
     def test_get_stations_with_filter(self, mock_get_stations):
         """Test getting stations with filter applied."""
         mock_get_stations.return_value = {
@@ -194,7 +194,7 @@ class TestSchedulerStationFiltering:
         assert 'THOB' in stations
         assert 'ORFC' not in stations
 
-    @patch('receivers.scheduling.bulk_scheduler.get_all_station_configs')
+    @patch('receivers.cli.main.get_all_station_configs')
     def test_get_stations_with_max_limit(self, mock_get_stations):
         """Test getting stations with max limit."""
         mock_get_stations.return_value = {
@@ -217,7 +217,7 @@ class TestSchedulerStationFiltering:
 class TestSchedulerTimeDistribution:
     """Test time distribution logic for scheduled downloads."""
 
-    @patch('receivers.scheduling.bulk_scheduler.get_all_station_configs')
+    @patch('receivers.cli.main.get_all_station_configs')
     def test_time_distribution_calculation(self, mock_get_stations):
         """Test that stations are distributed across time window."""
         # Create 10 stations
@@ -254,7 +254,7 @@ class TestSchedulerTimeDistribution:
         assert schedule_minute_0 >= config.schedule_minute
         assert schedule_minute_9 < (config.schedule_minute + config.distribution_window)
 
-    @patch('receivers.scheduling.bulk_scheduler.get_all_station_configs')
+    @patch('receivers.cli.main.get_all_station_configs')
     def test_many_stations_distribution(self, mock_get_stations):
         """Test distribution with many stations (more than window minutes)."""
         # Create 50 stations with 10-minute window
@@ -283,7 +283,7 @@ class TestSchedulerTimeDistribution:
 class TestSchedulerJobScheduling:
     """Test job scheduling without execution."""
 
-    @patch('receivers.scheduling.bulk_scheduler.get_all_station_configs')
+    @patch('receivers.cli.main.get_all_station_configs')
     def test_schedule_all_sessions(self, mock_get_stations):
         """Test scheduling all session types."""
         mock_get_stations.return_value = {
@@ -311,7 +311,7 @@ class TestSchedulerJobScheduling:
         assert 'status_1hr_TEST1' in job_ids
         assert 'status_1hr_TEST2' in job_ids
 
-    @patch('receivers.scheduling.bulk_scheduler.get_all_station_configs')
+    @patch('receivers.cli.main.get_all_station_configs')
     def test_get_job_status(self, mock_get_stations):
         """Test getting scheduler status."""
         mock_get_stations.return_value = {
