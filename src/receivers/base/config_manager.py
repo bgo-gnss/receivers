@@ -78,8 +78,11 @@ class ConfigManager:
         parser = self._get_parser()
         return parser.getSystemPath(path_name)
 
-    def get_session_map(self) -> Dict[str, Tuple[str, str]]:
+    def get_session_map(self, receiver_type: str = "polarx5") -> Dict[str, Tuple[str, str]]:
         """Get session mapping from receivers configuration.
+
+        Args:
+            receiver_type: Receiver type (e.g., 'polarx5', 'netr9', 'netrs', 'g10')
 
         Returns:
             Dictionary mapping session types to (session_letter, session_path) tuples
@@ -94,20 +97,20 @@ class ConfigManager:
         # Build session map from receivers.cfg configuration
         session_map = {}
 
-        # Get the receiver config for septentrio which contains session mappings
-        septentrio_config = receivers_config.get_receiver_config("septentrio")
+        # Get the receiver config which contains session mappings
+        receiver_config = receivers_config.get_receiver_config(receiver_type)
 
         for session_type in ["15s_24hr", "1Hz_1hr", "status_1hr"]:
             mapping_key = f"session_map_{session_type}"
             mapping_key_lower = f"session_map_{session_type.lower()}"
 
-            if mapping_key in septentrio_config:
+            if mapping_key in receiver_config:
                 # Parse format: "letter,path"
-                letter, path = septentrio_config[mapping_key].split(",", 1)
+                letter, path = receiver_config[mapping_key].split(",", 1)
                 session_map[session_type] = (letter.strip(), path.strip())
-            elif mapping_key_lower in septentrio_config:
+            elif mapping_key_lower in receiver_config:
                 # Try lowercase version (configparser converts keys to lowercase)
-                letter, path = septentrio_config[mapping_key_lower].split(",", 1)
+                letter, path = receiver_config[mapping_key_lower].split(",", 1)
                 session_map[session_type] = (letter.strip(), path.strip())
             else:
                 # Fallback to gps_parser if not found in receivers config

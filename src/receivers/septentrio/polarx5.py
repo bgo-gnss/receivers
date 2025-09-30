@@ -59,7 +59,7 @@ class PolaRX5(BaseReceiver):
         self._setup_connection_info()
 
         # Configuration from shared ConfigManager (BaseReceiver provides self.config_manager)
-        self.session_map = self.config_manager.get_session_map()
+        self.session_map = self.config_manager.get_session_map("polarx5")
         # Configuration available via BaseReceiver initialization
         # Get Septentrio-specific configuration
         self.septentrio_config = self.receivers_config.get_receiver_config("polarx5")
