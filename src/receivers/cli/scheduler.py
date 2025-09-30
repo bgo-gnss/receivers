@@ -38,31 +38,36 @@ def cmd_scheduler_start(args) -> int:
         
         # Schedule all sessions
         scheduler.schedule_all_sessions()
-        
-        # Show scheduled jobs
-        jobs = scheduler.get_scheduled_jobs()
-        print(f"✅ Scheduled {len(jobs)} download jobs")
-        
-        if args.show_jobs:
-            print("\\nScheduled jobs:")
-            for job in sorted(jobs, key=lambda x: x['next_run'] or ''):
-                next_run = job['next_run'] or 'Not scheduled'
-                print(f"  {job['id']}: {next_run}")
-        
+
+        # Count jobs before starting
+        jobs_count = len(scheduler.get_scheduled_jobs())
+        print(f"✅ Scheduled {jobs_count} download jobs")
+
         # Set up signal handling for graceful shutdown
         def signal_handler(signum, frame):
             print("\\n🛑 Shutting down scheduler...")
             scheduler.stop()
             sys.exit(0)
-            
+
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
-        
+
         print(f"🚀 Starting scheduler with {args.max_workers} workers...")
         print("   Press Ctrl+C to stop")
-        
-        # Start scheduler (blocking)
+
+        # Start scheduler (non-blocking for BackgroundScheduler)
         scheduler.start()
+
+        # Give scheduler a moment to process jobs and calculate next run times
+        time.sleep(0.1)
+
+        # Now show scheduled jobs with their actual next run times
+        if args.show_jobs:
+            jobs = scheduler.get_scheduled_jobs()
+            print("\\nScheduled jobs:")
+            for job in sorted(jobs, key=lambda x: x['next_run'] or ''):
+                next_run = job['next_run'] or 'Not scheduled'
+                print(f"  {job['id']}: {next_run}")
         
         # Keep running
         while True:
