@@ -4,7 +4,7 @@ APScheduler-based bulk download system for GPS receivers.
 
 Features:
 - Distributed scheduling across time windows
-- Complete manual operation compatibility  
+- Complete manual operation compatibility
 - Production logging integration
 - Email alert integration
 - Performance monitoring
@@ -19,6 +19,108 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
+
+
+# Module-level download function for APScheduler serialization
+def _download_station_data_job(station_id: str, session_type: str, production_mode: bool = False):
+    """Download data for a single station (standalone job function for APScheduler).
+
+    This is a module-level function to allow APScheduler to serialize it to the database.
+    Instance methods cannot be serialized when the instance contains non-serializable
+    objects like schedulers.
+
+    Args:
+        station_id: Station identifier
+        session_type: Session type (15s_24hr, 1Hz_1hr, status_1hr)
+        production_mode: Whether to use production logging
+    """
+    job_id = f"{session_type}_{station_id}"
+    exec_start_time = datetime.now(timezone.utc)
+
+    # Set up logging
+    logger = logging.getLogger(f'gps_scheduler.job.{station_id}')
+
+    try:
+        logger.info(f"Starting download: {station_id} ({session_type})")
+
+        # Import receiver management here to avoid circular imports
+        from ..cli.main import get_station_config, create_receiver
+        from ..base.production_logging import setup_production_logging
+
+        # Set up production logging
+        if production_mode:
+            prod_config = setup_production_logging(json_output=False, verbose=False)
+            recv_logger = prod_config.create_station_logger(station_id)
+            audit_logger = prod_config.get_audit_logger()
+        else:
+            recv_logger = logging.getLogger(f'receiver.{station_id}')
+            audit_logger = None
+
+        # Get station configuration
+        station_config = get_station_config(station_id)
+        if not station_config:
+            raise ValueError(f"No configuration found for station {station_id}")
+
+        # Create receiver instance
+        receiver = create_receiver(station_id, station_config, recv_logger)
+
+        # Determine time range based on session type
+        if session_type == '15s_24hr':
+            # Daily data - get yesterday's data
+            end_time = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+            start_time = end_time - timedelta(days=1)
+            frequency = '1D'
+        else:
+            # Hourly data - get previous hour's data
+            end_time = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+            start_time = end_time - timedelta(hours=1)
+            frequency = '1H'
+
+        # Download data with all our enhanced features
+        result = receiver.download_data(
+            start=start_time,
+            end=end_time,
+            session=session_type,
+            ffrequency=frequency,
+            sync=True,  # Always sync in scheduled mode
+            archive=True,  # Always archive
+            immediate_archive=True,  # Use fault-tolerant immediate archiving
+            clean_tmp=True,
+            compression='.gz',
+            loglevel=logging.INFO
+        )
+
+        # Log results to audit trail
+        if audit_logger:
+            audit_logger.log_download_session(station_id, {
+                'session': session_type,
+                'status': result.get('status', 'completed'),
+                'duration': result.get('duration', 0),
+                'files_downloaded': result.get('files_downloaded', 0),
+                'bytes_downloaded': result.get('total_bytes', 0),
+                'errors': result.get('errors', 0),
+                'scheduled': True,
+                'start_time': start_time.isoformat(),
+                'end_time': end_time.isoformat()
+            })
+
+        # Report success
+        files_downloaded = result.get('files_downloaded', 0)
+        duration = result.get('duration', 0)
+        logger.info(f"Completed: {station_id} ({session_type}) - "
+                   f"{files_downloaded} files in {duration:.1f}s")
+
+    except Exception as e:
+        logger.error(f"Download failed: {station_id} ({session_type}) - {e}")
+
+        # Log failure to audit trail
+        if 'audit_logger' in locals() and audit_logger:
+            audit_logger.log_failure_event(station_id, {
+                'session': session_type,
+                'error_type': type(e).__name__,
+                'error_message': str(e),
+                'scheduled': True
+            })
 
 try:
     from apscheduler.schedulers.blocking import BlockingScheduler
@@ -252,21 +354,21 @@ class BulkDownloadScheduler:
             # Schedule based on frequency
             if config.frequency == 'daily':
                 self.scheduler.add_job(
-                    func=self._download_station_data,
+                    func=_download_station_data_job,
                     trigger='cron',
-                    args=[station_id, session_type],
+                    args=[station_id, session_type, self.production_mode],
                     hour=0,
                     minute=schedule_minute,
                     id=job_id,
                     replace_existing=True,
                     max_instances=1
                 )
-                
+
             elif config.frequency == 'hourly':
                 self.scheduler.add_job(
-                    func=self._download_station_data,
+                    func=_download_station_data_job,
                     trigger='cron',
-                    args=[station_id, session_type],
+                    args=[station_id, session_type, self.production_mode],
                     minute=schedule_minute,
                     id=job_id,
                     replace_existing=True,
@@ -277,94 +379,17 @@ class BulkDownloadScheduler:
                         f"({config.frequency} at {config.schedule_minute:02d}:XX)")
         
     def _download_station_data(self, station_id: str, session_type: str):
-        """Download data for a single station (job function)."""
+        """Download data for a single station (wrapper for backward compatibility).
 
+        This method wraps the module-level function for backward compatibility.
+        Direct scheduling uses the module-level function to avoid serialization issues.
+        """
         job_id = f"{session_type}_{station_id}"
         start_time = datetime.now(timezone.utc)
-        
+
         try:
-            self.logger.info(f"Starting download: {station_id} ({session_type})")
             self.running_jobs[job_id] = start_time
-            
-            # Import receiver management here to avoid circular imports
-            from ..cli.main import get_station_config, create_receiver
-            from ..base.production_logging import setup_production_logging
-            
-            # Set up production logging
-            if self.production_mode:
-                prod_config = setup_production_logging(json_output=False, verbose=False)
-                logger = prod_config.create_station_logger(station_id)
-                audit_logger = prod_config.get_audit_logger()
-            else:
-                logger = logging.getLogger(f'receiver.{station_id}')
-                audit_logger = None
-                
-            # Get station configuration
-            station_config = get_station_config(station_id)
-            if not station_config:
-                raise ValueError(f"No configuration found for station {station_id}")
-                
-            # Create receiver instance
-            receiver = create_receiver(station_id, station_config, logger)
-            
-            # Determine time range based on session type
-            if session_type == '15s_24hr':
-                # Daily data - get yesterday's data
-                end_time = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-                start_time = end_time - timedelta(days=1)
-                frequency = '1D'
-            else:
-                # Hourly data - get previous hour's data
-                end_time = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-                start_time = end_time - timedelta(hours=1)
-                frequency = '1H'
-                
-            # Download data with all our enhanced features
-            result = receiver.download_data(
-                start=start_time,
-                end=end_time,
-                session=session_type,
-                ffrequency=frequency,
-                sync=True,  # Always sync in scheduled mode
-                archive=True,  # Always archive
-                immediate_archive=True,  # Use fault-tolerant immediate archiving
-                clean_tmp=True,
-                compression='.gz',
-                loglevel=logging.INFO
-            )
-            
-            # Log results to audit trail
-            if audit_logger:
-                audit_logger.log_download_session(station_id, {
-                    'session': session_type,
-                    'status': result.get('status', 'completed'),
-                    'duration': result.get('duration', 0),
-                    'files_downloaded': result.get('files_downloaded', 0),
-                    'bytes_downloaded': result.get('total_bytes', 0),
-                    'errors': result.get('errors', 0),
-                    'scheduled': True,
-                    'start_time': start_time.isoformat(),
-                    'end_time': end_time.isoformat()
-                })
-                
-            # Report success
-            files_downloaded = result.get('files_downloaded', 0)
-            duration = result.get('duration', 0)
-            self.logger.info(f"Completed: {station_id} ({session_type}) - "
-                           f"{files_downloaded} files in {duration:.1f}s")
-            
-        except Exception as e:
-            self.logger.error(f"Download failed: {station_id} ({session_type}) - {e}")
-            
-            # Log failure to audit trail
-            if 'audit_logger' in locals() and audit_logger:
-                audit_logger.log_failure_event(station_id, {
-                    'session': session_type,
-                    'error_type': type(e).__name__,
-                    'error_message': str(e),
-                    'scheduled': True
-                })
-                
+            _download_station_data_job(station_id, session_type, self.production_mode)
         finally:
             # Clean up
             if job_id in self.running_jobs:
