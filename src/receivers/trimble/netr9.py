@@ -89,15 +89,8 @@ class NetR9(BaseReceiver):
         """Set up logger for this receiver instance."""
         logger_name = f"{__name__}.{self.station_id}"
         logger = logging.getLogger(logger_name)
-
-        if not logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter("[%(levelname)s] %(name)s: %(message)s")
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-            logger.setLevel(level)
-            logger.propagate = False
-
+        logger.setLevel(level)
+        # Use parent logger's configuration for consistent formatting
         return logger
 
     def _validate_config(self):

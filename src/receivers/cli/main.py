@@ -43,7 +43,7 @@ def setup_logging(level: int = logging.INFO) -> logging.Logger:
     """Set up logging for CLI commands."""
     logging.basicConfig(
         level=level,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S"
     )
     return logging.getLogger("receivers")
