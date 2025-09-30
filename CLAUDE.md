@@ -109,12 +109,35 @@ receivers download STATION --sync --archive  # Phase 1 is always active
 
 ### Scheduling System
 - **Time distribution**: Downloads spread across 10-minute windows to avoid network congestion
-- **Session types**: 
+- **Session types**:
   - `15s_24hr`: Daily downloads at 00:10-00:19
-  - `1Hz_1hr`: Hourly downloads at XX:15-XX:24  
+  - `1Hz_1hr`: Hourly downloads at XX:15-XX:24
   - `status_1hr`: Hourly status at XX:25-XX:29
 - **Persistence**: SQLite job store survives restarts
 - **Manual compatibility**: All manual operations remain fully functional
+- **Extensibility**: Task interface allows scheduling any operation type (status, health, validation)
+- **Testing**: 43+ comprehensive test cases (Phase 3C)
+
+#### Scheduler Extensibility (Phase 3C)
+
+**Task Interface Architecture**:
+```python
+from receivers.scheduling.task_interface import ScheduledTask, TaskType
+from receivers.scheduling.tasks import DownloadTask
+
+# Current: DownloadTask implements ScheduledTask
+# Future: StatusTask, HealthTask, ValidateTask
+```
+
+**Adding New Task Types** (Future):
+```python
+class StatusTask(ScheduledTask):
+    def execute(self) -> TaskResult:
+        # Check receiver status
+        ...
+```
+
+See `docs/scheduler/scheduler-guide.md` for complete details.
 
 ### Path Building System
 - **Unified approach**: Single `build_path()` method handles all path generation using gtimes templates
@@ -171,6 +194,9 @@ pip install apscheduler sqlalchemy  # For scheduler functionality
 ```bash
 # Test receiver communication
 python -m pytest tests/ -v
+
+# Test scheduler (Phase 3C)
+pytest tests/test_scheduler_basic.py tests/test_scheduler_execution.py -v
 
 # Test scheduler without starting
 receivers scheduler test --stations TEST
@@ -275,6 +301,8 @@ All receivers use Phase 1 utilities by default:
 - **Simplicity**: No feature flags, single code path
 
 ### Documentation
+- **Phase 3C completion**: `docs/phase3c_complete.md` - Scheduler testing and extensibility
+- **Scheduler guide**: `docs/scheduler/scheduler-guide.md` - Complete operational guide
 - Phase 3B completion: `docs/phase3b_complete.md`
 - Phase 2 completion: `docs/phase2_complete.md`
 - Architecture diagrams: `docs/receivers/diagrams/`
@@ -283,5 +311,5 @@ All receivers use Phase 1 utilities by default:
 
 **Last updated**: 2025-09-30
 **Package version**: Development (gpslibrary_new)
-**Phase Status**: Phase 3B Complete - Legacy code removed, Phase 1 is now default
+**Phase Status**: Phase 3C Partial Complete - Scheduler tested, extensible architecture ready
 **Maintainer**: Veðurstofan Íslands GPS Team
