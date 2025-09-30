@@ -6,7 +6,7 @@ handle errors, and integrate with production logging - all using mocks.
 
 import pytest
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock, call
 
@@ -27,10 +27,10 @@ except ImportError:
 class TestSchedulerDownloadExecution:
     """Test download execution logic with mocks."""
 
-    @patch('receivers.scheduling.bulk_scheduler.get_all_station_configs')
-    @patch('receivers.scheduling.bulk_scheduler.get_station_config')
-    @patch('receivers.scheduling.bulk_scheduler.create_receiver')
-    @patch('receivers.scheduling.bulk_scheduler.setup_production_logging')
+    @patch('receivers.cli.main.get_all_station_configs')
+    @patch('receivers.cli.main.get_station_config')
+    @patch('receivers.cli.main.create_receiver')
+    @patch('receivers.base.production_logging.setup_production_logging')
     def test_download_station_data_basic(
         self,
         mock_prod_logging,
@@ -86,10 +86,10 @@ class TestSchedulerDownloadExecution:
         assert isinstance(end_time, datetime)
         assert (end_time - start_time) == timedelta(hours=1)
 
-    @patch('receivers.scheduling.bulk_scheduler.get_all_station_configs')
-    @patch('receivers.scheduling.bulk_scheduler.get_station_config')
-    @patch('receivers.scheduling.bulk_scheduler.create_receiver')
-    @patch('receivers.scheduling.bulk_scheduler.setup_production_logging')
+    @patch('receivers.cli.main.get_all_station_configs')
+    @patch('receivers.cli.main.get_station_config')
+    @patch('receivers.cli.main.create_receiver')
+    @patch('receivers.base.production_logging.setup_production_logging')
     def test_download_daily_session_time_params(
         self,
         mock_prod_logging,
@@ -132,10 +132,10 @@ class TestSchedulerDownloadExecution:
         # Frequency should be daily
         assert call_kwargs['ffrequency'] == '1D'
 
-    @patch('receivers.scheduling.bulk_scheduler.get_all_station_configs')
-    @patch('receivers.scheduling.bulk_scheduler.get_station_config')
-    @patch('receivers.scheduling.bulk_scheduler.create_receiver')
-    @patch('receivers.scheduling.bulk_scheduler.setup_production_logging')
+    @patch('receivers.cli.main.get_all_station_configs')
+    @patch('receivers.cli.main.get_station_config')
+    @patch('receivers.cli.main.create_receiver')
+    @patch('receivers.base.production_logging.setup_production_logging')
     def test_download_error_handling(
         self,
         mock_prod_logging,
@@ -172,10 +172,10 @@ class TestSchedulerDownloadExecution:
         assert failure_args[0][0] == 'TEST1'  # station_id
         assert 'ConnectionError' in failure_args[0][1]['error_type']
 
-    @patch('receivers.scheduling.bulk_scheduler.get_all_station_configs')
-    @patch('receivers.scheduling.bulk_scheduler.get_station_config')
-    @patch('receivers.scheduling.bulk_scheduler.create_receiver')
-    @patch('receivers.scheduling.bulk_scheduler.setup_production_logging')
+    @patch('receivers.cli.main.get_all_station_configs')
+    @patch('receivers.cli.main.get_station_config')
+    @patch('receivers.cli.main.create_receiver')
+    @patch('receivers.base.production_logging.setup_production_logging')
     def test_download_audit_logging(
         self,
         mock_prod_logging,
@@ -223,7 +223,7 @@ class TestSchedulerDownloadExecution:
         assert session_data['bytes_downloaded'] == 50000
         assert session_data['scheduled'] is True
 
-    @patch('receivers.scheduling.bulk_scheduler.get_all_station_configs')
+    @patch('receivers.cli.main.get_all_station_configs')
     def test_running_jobs_tracking(self, mock_get_all_stations):
         """Test that running jobs are tracked correctly."""
         mock_get_all_stations.return_value = {
@@ -237,7 +237,7 @@ class TestSchedulerDownloadExecution:
 
         # Simulate job start
         job_id = '1Hz_1hr_TEST1'
-        scheduler.running_jobs[job_id] = datetime.utcnow()
+        scheduler.running_jobs[job_id] = datetime.now(timezone.utc)
 
         # Verify job is tracked
         assert len(scheduler.running_jobs) == 1
@@ -253,7 +253,7 @@ class TestSchedulerDownloadExecution:
 class TestSchedulerEventHandlers:
     """Test scheduler event handlers."""
 
-    @patch('receivers.scheduling.bulk_scheduler.get_all_station_configs')
+    @patch('receivers.cli.main.get_all_station_configs')
     def test_job_executed_event(self, mock_get_all_stations):
         """Test job execution event handler."""
         mock_get_all_stations.return_value = {}
@@ -266,7 +266,7 @@ class TestSchedulerEventHandlers:
         # Should not raise
         scheduler._job_executed(mock_event)
 
-    @patch('receivers.scheduling.bulk_scheduler.get_all_station_configs')
+    @patch('receivers.cli.main.get_all_station_configs')
     def test_job_error_event(self, mock_get_all_stations):
         """Test job error event handler."""
         mock_get_all_stations.return_value = {}
@@ -287,7 +287,7 @@ class TestSchedulerEventHandlers:
 class TestSchedulerConcurrentExecution:
     """Test concurrent execution behavior (mocked)."""
 
-    @patch('receivers.scheduling.bulk_scheduler.get_all_station_configs')
+    @patch('receivers.cli.main.get_all_station_configs')
     def test_max_instances_one_per_job(self, mock_get_all_stations):
         """Test that each job has max_instances=1."""
         mock_get_all_stations.return_value = {
@@ -305,7 +305,7 @@ class TestSchedulerConcurrentExecution:
             assert hasattr(job, 'max_instances')
             assert job.max_instances == 1
 
-    @patch('receivers.scheduling.bulk_scheduler.get_all_station_configs')
+    @patch('receivers.cli.main.get_all_station_configs')
     def test_multiple_workers(self, mock_get_all_stations):
         """Test scheduler can be configured with multiple workers."""
         mock_get_all_stations.return_value = {
@@ -325,7 +325,7 @@ class TestSchedulerConcurrentExecution:
 class TestSchedulerConfiguration:
     """Test scheduler configuration management."""
 
-    @patch('receivers.scheduling.bulk_scheduler.get_all_station_configs')
+    @patch('receivers.cli.main.get_all_station_configs')
     def test_disabled_session(self, mock_get_all_stations):
         """Test that disabled sessions are not scheduled."""
         mock_get_all_stations.return_value = {
@@ -342,13 +342,15 @@ class TestSchedulerConfiguration:
 
         # Should only have 2 sessions scheduled (15s_24hr and 1Hz_1hr)
         jobs = scheduler.get_scheduled_jobs()
-        session_types = set(job['id'].split('_')[0] for job in jobs)
+        # Job IDs are like: 15s_24hr_TEST1, 1Hz_1hr_TEST1
+        # Extract session type (everything before last underscore)
+        session_types = set('_'.join(job['id'].split('_')[:-1]) for job in jobs)
 
         assert '15s_24hr' in session_types
         assert '1Hz_1hr' in session_types
         assert 'status_1hr' not in session_types  # Disabled
 
-    @patch('receivers.scheduling.bulk_scheduler.get_all_station_configs')
+    @patch('receivers.cli.main.get_all_station_configs')
     def test_custom_schedule_config(self, mock_get_all_stations):
         """Test custom schedule configuration."""
         mock_get_all_stations.return_value = {
