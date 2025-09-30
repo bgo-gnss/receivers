@@ -72,19 +72,10 @@ class PolaRX5(BaseReceiver):
         # Initialize file validator for download integrity checking
         self.file_validator = FileValidator(self.logger)
 
-        # Phase 1 utilities (feature-flagged)
-        # Enable with environment variable: USE_PHASE1_UTILITIES=1
-        # Or pass use_phase1_utilities=True to download_data()
-        self.use_phase1_utilities = os.environ.get("USE_PHASE1_UTILITIES", "0") == "1"
-
-        if self.use_phase1_utilities:
-            self.logger.info("✨ Phase 1 utilities enabled")
-            self.archive_validator = ArchiveValidator(logger=self.logger)
-            self.time_processor = TimeParameterProcessor(logger=self.logger)
-            # FileArchiver will be created per-download with appropriate mode
-        else:
-            self.archive_validator = None
-            self.time_processor = None
+        # Phase 1 utilities (always enabled - Phase 3B)
+        self.archive_validator = ArchiveValidator(logger=self.logger)
+        self.time_processor = TimeParameterProcessor(logger=self.logger)
+        # FileArchiver will be created per-download with appropriate mode
 
         # Timeout configuration based on station network type
         self._setup_timeouts()
@@ -338,17 +329,10 @@ class PolaRX5(BaseReceiver):
         remote_path_dict = dict(zip(file_datetime_list, remote_path_list))
 
         # Find missing and invalid files using comprehensive validation
-        # Use Phase 1 ArchiveValidator if enabled
-        if self.use_phase1_utilities and self.archive_validator:
-            self.logger.debug("Using Phase 1 ArchiveValidator")
-            all_missing_files, validated_files, corrupted_files_removed, files_archived_from_tmp = self._validate_files_phase1(
-                file_date_dict, tmp_dir_path
-            )
-        else:
-            # Original validation implementation
-            all_missing_files, validated_files, corrupted_files_removed, files_archived_from_tmp = self._validate_files_original(
-                file_date_dict, tmp_dir_path, ffrequency
-            )
+        self.logger.debug("Using Phase 1 ArchiveValidator")
+        all_missing_files, validated_files, corrupted_files_removed, files_archived_from_tmp = self._validate_files_phase1(
+            file_date_dict, tmp_dir_path
+        )
 
         # Common logging after validation
         if corrupted_files_removed > 0:
@@ -617,189 +601,10 @@ class PolaRX5(BaseReceiver):
 
         return all_missing_files, validated_count, 0, 0  # missing, validated, corrupted_removed, archived_from_tmp
 
-    def _validate_files_original(self, file_date_dict, tmp_dir_path, ffrequency):
-        """Original validation logic (fallback when Phase 1 disabled).
-
-        Args:
-            file_date_dict: Dict mapping datetime -> (archive_path, igs_filename)
-            tmp_dir_path: Path to temporary download directory
-            ffrequency: File frequency (1H or 1D)
-
-        Returns:
-            Tuple of (all_missing_files, validated_files, corrupted_files_removed, files_archived_from_tmp)
-        """
-        missing_file_dict = {}
-        incomplete_file_dict = {}
-        validated_files = 0
-        corrupted_files_removed = 0
-        files_archived_from_tmp = 0
-
-        for key, value in file_date_dict.items():
-            archive_file = value[0]
-            validated_files += 1
-
-            if not os.path.isfile(archive_file):
-                # Archive file doesn't exist at expected path - check for alternatives
-                igs_file = value[1]  # Remote filename format
-                tmp_file_path = tmp_dir_path / igs_file
-
-                # Check if file exists with .gz extension (in case original wasn't compressed)
-                archive_file_gz = (
-                    archive_file + ".gz" if not archive_file.endswith(".gz") else None
-                )
-                if archive_file_gz and os.path.isfile(archive_file_gz):
-                    self.logger.debug(
-                        f"File already archived with compression: {archive_file_gz}"
-                    )
-                    continue  # File exists in archive, skip download
-
-                # Check if file exists in tmp and can be archived
-                if tmp_file_path.exists():
-                    # Validate tmp file before archiving
-                    validation_result = self.file_validator.validate_file(
-                        str(tmp_file_path)
-                    )
-                    if validation_result["valid"]:
-                        # File exists in tmp and is valid - try to archive it
-                        self.logger.info(
-                            f"Found completed file in tmp, archiving: {tmp_file_path}"
-                        )
-                        if self._archive_single_file(
-                            str(tmp_file_path), key, {key: value}
-                        ):
-                            self.logger.info(
-                                f"✅ Successfully archived existing tmp file: {archive_file}"
-                            )
-                            files_archived_from_tmp += 1
-                            continue  # File is now archived, no need to download
-                        else:
-                            self.logger.warning(
-                                f"Failed to archive tmp file, will re-download: {tmp_file_path}"
-                            )
-                    else:
-                        self.logger.debug(
-                            f"Tmp file invalid ({validation_result['status']}), will re-download: {tmp_file_path}"
-                        )
-
-                # File doesn't exist in archive or tmp (or tmp file is invalid) - needs download
-                missing_file_dict[key] = value
-            else:
-                # File exists in archive - trust it unless obviously corrupted
-                # Only check for zero-size files, don't validate compression integrity
-                try:
-                    file_size = os.path.getsize(archive_file)
-                    if file_size == 0:
-                        self.logger.info(
-                            f"Removing zero-size archive file: {archive_file}"
-                        )
-                        try:
-                            os.unlink(archive_file)
-                            corrupted_files_removed += 1
-                            missing_file_dict[key] = value  # Need to download
-                        except OSError as e:
-                            self.logger.warning(
-                                f"Could not remove zero-size file {archive_file}: {e}"
-                            )
-                    else:
-                        # Archive file exists and has size > 0 - trust it
-                        self.logger.debug(
-                            f"Archive file exists: {archive_file} ({file_size} bytes)"
-                        )
-                except OSError as e:
-                    self.logger.warning(
-                        f"Could not check archive file {archive_file}: {e}"
-                    )
-                    missing_file_dict[key] = value  # Treat as missing
-
-        # Final check: search archive directory for any files that might match our date range
-        # This prevents re-downloading files that were archived with different naming
-        final_missing_files = {}
-        files_found_in_archive = 0
-        for key, value in missing_file_dict.items():
-            archive_file = value[0]
-            archive_dir = os.path.dirname(archive_file)
-
-            if os.path.isdir(archive_dir):
-                # Check if any files in the archive directory match this datetime
-                # For hourly sessions, include hour in pattern to avoid false matches
-                if ffrequency == "1H":
-                    # For hourly files, use full datetime pattern including hour
-                    datetime_str = key.strftime("%Y%m%d%H")
-                    station_pattern = f"{self.station_id}{datetime_str}"
-                else:
-                    # For daily files, use date pattern
-                    date_str = key.strftime("%Y%m%d")
-                    station_pattern = f"{self.station_id}{date_str}"
-
-                found_existing = False
-                try:
-                    for existing_file in os.listdir(archive_dir):
-                        if existing_file.startswith(station_pattern):
-                            self.logger.debug(
-                                f"Found existing archive file for pattern {station_pattern}: {existing_file}"
-                            )
-                            found_existing = True
-                            break
-                except OSError:
-                    pass  # Directory access error, treat as not found
-
-                if found_existing:
-                    files_found_in_archive += 1
-                    continue  # Skip this date - file already exists in archive
-
-            # No existing file found - add to final missing list
-            final_missing_files[key] = value
-
-        if files_found_in_archive > 0:
-            self.logger.info(
-                f"Found {files_found_in_archive} files already archived, skipping re-download"
-            )
-
-        # Combine missing and incomplete files for processing
-        all_missing_files = {**final_missing_files, **incomplete_file_dict}
-
-        return all_missing_files, validated_files, corrupted_files_removed, files_archived_from_tmp
-
     def _process_time_parameters(self, start, end, session, ffrequency):
-        """Process and validate time parameters."""
-        # Use Phase 1 TimeParameterProcessor if enabled
-        if self.use_phase1_utilities and self.time_processor:
-            self.logger.debug("Using Phase 1 TimeParameterProcessor")
-            return self.time_processor.process_time_parameters(start, end, session)
-
-        # Original implementation (fallback)
-        # Handle hourly vs daily sessions
-        hoursession = re.compile(r"1h", re.IGNORECASE)
-        is_hourly = hoursession.search(session)
-
-        if ffrequency.lower() == "1h" or is_hourly:
-            # Hourly data processing
-            if end is None:
-                end = datetime.now() - timedelta(hours=1)
-            if isinstance(end, str):
-                end = datetime.fromisoformat(end)
-            end = end.replace(minute=0, second=0, microsecond=0)
-
-            if start is None:
-                start = end - timedelta(hours=24)
-            if isinstance(start, str):
-                start = datetime.fromisoformat(start)
-            start = start.replace(minute=0, second=0, microsecond=0)
-        else:
-            # Daily data processing
-            if end is None:
-                end = currDatetime(-1)
-            if isinstance(end, str):
-                end = datetime.fromisoformat(end)
-            end = end.date()
-
-            if start is None:
-                start = end - timedelta(days=10)
-            if isinstance(start, str):
-                start = datetime.fromisoformat(start)
-            start = start.date()
-
-        return start, end
+        """Process and validate time parameters using Phase 1 TimeParameterProcessor."""
+        self.logger.debug("Using Phase 1 TimeParameterProcessor")
+        return self.time_processor.process_time_parameters(start, end, session)
 
     def make_file_name(self, day, session="15s_24hr", compression=".gz"):
         """Generate Septentrio file name using getSeptentrio3 logic.
@@ -1400,7 +1205,7 @@ class PolaRX5(BaseReceiver):
     def _archive_single_file(
         self, tmp_file_path: str, file_datetime, missing_file_dict
     ) -> bool:
-        """Archive a single file immediately after download.
+        """Archive a single file immediately after download using Phase 1 FileArchiver.
 
         Args:
             tmp_file_path: Path to the temporary downloaded file
@@ -1410,219 +1215,38 @@ class PolaRX5(BaseReceiver):
         Returns:
             True if archiving succeeded, False otherwise
         """
-        # Use Phase 1 FileArchiver if enabled
-        if self.use_phase1_utilities:
-            self.logger.debug("Using Phase 1 FileArchiver (IMMEDIATE mode)")
-            destination = missing_file_dict[file_datetime][0]
+        self.logger.debug("Using Phase 1 FileArchiver (IMMEDIATE mode)")
+        destination = missing_file_dict[file_datetime][0]
 
-            with FileArchiver(mode=ArchiveMode.IMMEDIATE, logger=self.logger) as archiver:
-                result = archiver.archive_file(
-                    Path(tmp_file_path),
+        with FileArchiver(mode=ArchiveMode.IMMEDIATE, logger=self.logger) as archiver:
+            result = archiver.archive_file(
+                Path(tmp_file_path),
+                Path(destination),
+                compress=True,
+                remove_tmp=True
+            )
+
+        return result.success
+
+    def _archive_files(self, downloaded_files_dict, missing_file_dict):
+        """Move downloaded files to archive locations using Phase 1 FileArchiver (BULK mode)."""
+        self.logger.debug("Using Phase 1 FileArchiver (BULK mode)")
+        with FileArchiver(mode=ArchiveMode.BULK, logger=self.logger) as archiver:
+            for ddate, tmp_file in downloaded_files_dict.items():
+                if not os.path.isfile(tmp_file):
+                    continue
+                destination = missing_file_dict[ddate][0]
+                archiver.archive_file(
+                    Path(tmp_file),
                     Path(destination),
                     compress=True,
                     remove_tmp=True
                 )
+            # Auto-flushes on context exit
 
-            return result.success
-
-        # Original implementation (fallback)
-        if not os.path.isfile(tmp_file_path):
-            self.logger.warning(f"Cannot archive - file not found: {tmp_file_path}")
-            return False
-
-        tmp_file_size = os.path.getsize(tmp_file_path)
-        destination = missing_file_dict[file_datetime][0]
-        archive_path, archive_filename = os.path.split(destination)
-
-        # Create archive directory
-        os.makedirs(archive_path, exist_ok=True)
-
-        # Check if archive file already exists
-        if os.path.isfile(destination):
-            archive_file_size = os.path.getsize(destination)
-            if tmp_file_size == archive_file_size:
-                self.logger.warning(
-                    f"Archive file already exists with same size ({tmp_file_size:,} bytes): {archive_filename}"
-                )
-                # Remove tmp file and consider this a success
-                os.unlink(tmp_file_path)
-                return True
-
-        # Check if file needs compression during archiving
-        validation_result = self.file_validator.validate_file(tmp_file_path)
-        needs_compression = validation_result.get("compression") == "none"
-
-        if needs_compression and not destination.endswith(".gz"):
-            # File is uncompressed and destination doesn't have .gz - add compression
-            destination_gz = destination + ".gz"
-            self.logger.info(
-                f"📦 Archiving with compression: {archive_filename} → {os.path.basename(destination_gz)} ({tmp_file_size:,} bytes)"
-            )
-
-            try:
-                import gzip
-                import shutil
-
-                # Compress file to destination
-                with open(tmp_file_path, "rb") as f_in:
-                    with gzip.open(destination_gz, "wb") as f_out:
-                        shutil.copyfileobj(f_in, f_out)
-
-                # Remove tmp file
-                os.unlink(tmp_file_path)
-
-                # Verify compressed archive
-                if os.path.isfile(destination_gz):
-                    compressed_size = os.path.getsize(destination_gz)
-                    compression_ratio = (
-                        (tmp_file_size - compressed_size) / tmp_file_size * 100
-                    )
-                    self.logger.info(
-                        f"✅ Compressed and archived to: {destination_gz} ({compressed_size:,} bytes, {compression_ratio:.1f}% reduction)"
-                    )
-                    return True
-                else:
-                    self.logger.error(
-                        f"❌ Compression failed: destination file not found"
-                    )
-                    return False
-
-            except Exception as e:
-                self.logger.error(f"❌ Compression failed: {e}")
-                return False
-        else:
-            # File is already compressed or destination expects uncompressed - just move
-            self.logger.info(
-                f"📦 Archiving {archive_filename} ({tmp_file_size:,} bytes)"
-            )
-            try:
-                os.rename(tmp_file_path, destination)
-
-                # Verify successful archive
-                if os.path.isfile(destination):
-                    archive_file_size = os.path.getsize(destination)
-                    if tmp_file_size == archive_file_size:
-                        self.logger.info(f"✅ Archived to: {destination}")
-                        return True
-                    else:
-                        self.logger.error(
-                            f"❌ Archive size mismatch: expected {tmp_file_size:,}, got {archive_file_size:,}"
-                        )
-                        return False
-                else:
-                    self.logger.error(f"❌ Archive failed: destination file not found")
-                    return False
-
-            except Exception as e:
-                self.logger.error(f"❌ Archive error: {e}")
-                return False
-            # Clean up tmp file on failure
-            if os.path.isfile(tmp_file_path):
-                os.unlink(tmp_file_path)
-            return False
-
-    def _archive_files(self, downloaded_files_dict, missing_file_dict):
-        """Move downloaded files to archive locations with getSeptentrio3 naming convention."""
-        # Use Phase 1 FileArchiver if enabled
-        if self.use_phase1_utilities:
-            self.logger.debug("Using Phase 1 FileArchiver (BULK mode)")
-            with FileArchiver(mode=ArchiveMode.BULK, logger=self.logger) as archiver:
-                for ddate, tmp_file in downloaded_files_dict.items():
-                    if not os.path.isfile(tmp_file):
-                        continue
-                    destination = missing_file_dict[ddate][0]
-                    archiver.archive_file(
-                        Path(tmp_file),
-                        Path(destination),
-                        compress=True,
-                        remove_tmp=True
-                    )
-                # Auto-flushes on context exit
-
-            stats = archiver.get_statistics()
-            self.logger.info(f"Phase 1 archiving: {stats['successful']}/{stats['total_files']} files archived")
-            return stats['successful']
-
-        # Original implementation (fallback)
-        archived_count = 0
-        for ddate, tmp_file in downloaded_files_dict.items():
-            if not os.path.isfile(tmp_file):
-                continue
-
-            tmp_file_size = os.path.getsize(tmp_file)
-            self.logger.info(
-                f"File to archive {os.path.basename(tmp_file)} ({tmp_file_size:,} bytes)"
-            )
-
-            destination = missing_file_dict[ddate][0]
-            archive_path, archive_filename = os.path.split(destination)
-
-            # Archive files use full SBF format like getSeptentrio3:
-            # ORFC2490.25_.gz -> ORFC202509060000a.sbf.gz
-            # The destination path is already correctly generated by gtimes.datepathlist
-
-            os.makedirs(archive_path, exist_ok=True)
-
-            if os.path.isfile(destination):
-                # Archive file already exists - check sizes (like getSeptentrio3)
-                archive_file_size = os.path.getsize(destination)
-                if tmp_file_size == archive_file_size:
-                    self.logger.warning(
-                        f"Files dated {ddate}:\n   {tmp_file} and {destination}\n"
-                        f"   have the same size {tmp_file_size:,} bytes. Aborting archive."
-                    )
-                    continue
-
-            # Atomic move to archive location (like getSeptentrio3)
-            self.logger.info(
-                f"Move file dated {ddate} from {tmp_file} to {destination}"
-            )
-            try:
-                os.rename(tmp_file, destination)
-
-                # Verify successful archive (like getSeptentrio3)
-                if os.path.isfile(destination):
-                    archive_file_size = os.path.getsize(destination)
-                    if tmp_file_size == archive_file_size:
-                        self.logger.info(
-                            f"✅ File successfully archived ({archive_file_size:,} bytes)"
-                        )
-                        self.logger.info(f"   Final location: {destination}")
-                        archived_count += 1
-                        # tmp file removed by os.rename (atomic move)
-                    else:
-                        self.logger.error(
-                            f"❌ Archive size mismatch: expected {tmp_file_size:,}, got {archive_file_size:,}"
-                        )
-                        # Try to clean up if archive failed
-                        if os.path.isfile(tmp_file):
-                            os.unlink(tmp_file)
-                            self.logger.info(
-                                f"🧹 Cleaned up failed tmp file: {tmp_file}"
-                            )
-                else:
-                    self.logger.error(f"❌ Archive failed: destination file not found")
-                    # Clean up tmp file on failure
-                    if os.path.isfile(tmp_file):
-                        os.unlink(tmp_file)
-                        self.logger.info(f"🧹 Cleaned up failed tmp file: {tmp_file}")
-
-            except Exception as e:
-                self.logger.error(f"❌ Failed to move {tmp_file} to {destination}: {e}")
-                # Clean up tmp file on failure
-                if os.path.isfile(tmp_file):
-                    try:
-                        os.unlink(tmp_file)
-                        self.logger.info(f"🧹 Cleaned up failed tmp file: {tmp_file}")
-                    except Exception as cleanup_e:
-                        self.logger.error(
-                            f"❌ Failed to cleanup tmp file {tmp_file}: {cleanup_e}"
-                        )
-
-        # Clean up empty tmp directories
-        self._cleanup_empty_tmp_directories()
-
-        return archived_count
+        stats = archiver.get_statistics()
+        self.logger.info(f"Archiving complete: {stats['successful']}/{stats['total_files']} files archived")
+        return stats['successful']
 
     def _cleanup_empty_tmp_directories(self):
         """Remove empty station directories from tmp download area."""
