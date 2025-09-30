@@ -84,15 +84,8 @@ class PolaRX5(BaseReceiver):
         """Set up logger for this receiver instance."""
         logger_name = f"{__name__}.{self.station_id}"
         logger = logging.getLogger(logger_name)
-
-        if not logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter("[%(levelname)s] %(name)s: %(message)s")
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-            logger.setLevel(level)
-            logger.propagate = False
-
+        logger.setLevel(level)
+        # Use parent logger's configuration for consistent formatting
         return logger
 
     def _setup_timeouts(self):
@@ -1219,14 +1212,14 @@ class PolaRX5(BaseReceiver):
         destination = missing_file_dict[file_datetime][0]
 
         with FileArchiver(mode=ArchiveMode.IMMEDIATE, logger=self.logger) as archiver:
-            result = archiver.archive_file(
+            success = archiver.archive_file(
                 Path(tmp_file_path),
                 Path(destination),
                 compress=True,
                 remove_tmp=True
             )
 
-        return result.success
+        return success
 
     def _archive_files(self, downloaded_files_dict, missing_file_dict):
         """Move downloaded files to archive locations using Phase 1 FileArchiver (BULK mode)."""
