@@ -62,7 +62,7 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
             raise ValueError(f"No configuration found for station {station_id}")
 
         # Create receiver instance
-        receiver = create_receiver(station_id, station_config, recv_logger)
+        receiver = create_receiver(station_id, station_config)
 
         # Determine time range based on session type
         if session_type == '15s_24hr':

@@ -114,8 +114,7 @@ class DownloadTask(ScheduledTask):
 
         self._receiver = create_receiver(
             self.station_id,
-            self._station_config,
-            self.logger
+            self._station_config
         )
         return self._receiver
 
