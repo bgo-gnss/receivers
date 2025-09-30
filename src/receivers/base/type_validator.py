@@ -61,7 +61,7 @@ class ReceiverTypeValidator:
                 'headers': ['server'],
                 'ports': [8060, 8061, 80]
             },
-            'Leica': {
+            'G10': {
                 'endpoints': ['/'],
                 'response_indicators': [
                     'leica',

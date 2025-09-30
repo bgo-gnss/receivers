@@ -129,7 +129,7 @@ class LeicaFTPDownloader:
         # Get timeout settings from configuration
         from ..config.receivers_config import get_receivers_config
         receivers_config = get_receivers_config()
-        leica_config = receivers_config.get_receiver_config("leica")
+        leica_config = receivers_config.get_receiver_config("g10")
         self.ftp_port = int(leica_config.get("ftp_port", 2160))
         self.connect_timeout = leica_config.get("ftp_timeout_connect", 30)
         self.data_timeout = leica_config.get("ftp_timeout_data", 120)
@@ -147,7 +147,7 @@ class LeicaFTPDownloader:
 
         if not logger.handlers:
             handler = logging.StreamHandler()
-            formatter = logging.Formatter("[%(levelname)s] %(name)s: %(message)s")
+            formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
             handler.setFormatter(formatter)
             logger.addHandler(handler)
             logger.setLevel(level)
@@ -330,16 +330,19 @@ class LeicaFTPDownloader:
         return False
 
     def download_files(self, files_dict: Dict[str, str], tmp_dir: Path,
-                      clean_tmp: bool = True) -> List[str]:
+                      clean_tmp: bool = True,
+                      process_callback: Optional[callable] = None) -> List[str]:
         """Download multiple files from Leica receiver.
 
         Args:
             files_dict: Dictionary mapping filename -> remote_directory
             tmp_dir: Temporary download directory
             clean_tmp: Whether to clean temporary directory first
+            process_callback: Optional callback function(zip_path) -> processed_path
+                            Called immediately after each successful download to unzip+archive
 
         Returns:
-            List of successfully downloaded file paths
+            List of successfully downloaded/processed file paths
         """
         if clean_tmp and tmp_dir.exists():
             self.logger.info(f"Cleaning temporary directory: {tmp_dir}")
@@ -379,7 +382,17 @@ class LeicaFTPDownloader:
             success = self.download_file(filename, local_file_path, remote_dir=remote_directory, expected_size=None)
 
             if success:
-                downloaded_files.append(str(local_file_path))
+                # If callback provided, process file immediately (unzip+archive)
+                if process_callback:
+                    processed_path = process_callback(str(local_file_path))
+                    if processed_path:
+                        downloaded_files.append(processed_path)
+                    else:
+                        # Callback failed, add original ZIP path
+                        downloaded_files.append(str(local_file_path))
+                else:
+                    # No immediate processing, add ZIP path
+                    downloaded_files.append(str(local_file_path))
             else:
                 self.logger.error(f"❌ Failed to download {filename}")
 

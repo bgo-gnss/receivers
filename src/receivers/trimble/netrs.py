@@ -21,6 +21,11 @@ from .http_client import TrimbleHTTPClient
 from .health_parser import TrimbleHealthParser
 from .netrs_http_download_client import NetRSHTTPDownloader
 
+# Phase 1 utilities (feature-flagged)
+from ..utils.archive_validator import ArchiveValidator
+from ..utils.time_processor import TimeParameterProcessor
+from ..utils.file_archiver import FileArchiver, ArchiveMode
+
 
 class NetRS(BaseReceiver):
     """Trimble NetRS receiver implementation.
@@ -58,6 +63,19 @@ class NetRS(BaseReceiver):
 
         # data_prepath is now handled by BaseReceiver via ConfigManager
         self.tmp_dir = "/home/bgo/tmp/download/"
+
+        # Phase 1 utilities (feature-flagged)
+        # Enable with environment variable: USE_PHASE1_UTILITIES=1
+        self.use_phase1_utilities = os.environ.get("USE_PHASE1_UTILITIES", "0") == "1"
+
+        if self.use_phase1_utilities:
+            self.logger.info("✨ Phase 1 utilities enabled")
+            self.archive_validator = ArchiveValidator(logger=self.logger)
+            self.time_processor = TimeParameterProcessor(logger=self.logger)
+            # FileArchiver will be created per-download with appropriate mode
+        else:
+            self.archive_validator = None
+            self.time_processor = None
 
         # NetRS HTTP API endpoints (similar to NetR9)
         self.endpoints = {
@@ -455,8 +473,13 @@ class NetRS(BaseReceiver):
             downloaded_files = []
             if sync:
                 if missing_files_dict:
+                    # Pass archive info for immediate archiving after each download
                     downloaded_files = self.http_downloader.download_files(
-                        missing_files_dict, tmp_dir_path, clean_tmp
+                        missing_files_dict,
+                        tmp_dir_path,
+                        clean_tmp,
+                        archive_files_dict=archive_files_dict if archive else None,
+                        use_phase1_utilities=self.use_phase1_utilities and archive
                     )
                 else:
                     self.logger.info("Archive is up to date - no files to download")
@@ -464,9 +487,13 @@ class NetRS(BaseReceiver):
                 self.logger.info("Sync disabled - skipping actual download")
 
             # Archive files if requested and files were downloaded
+            # Note: If Phase 1 immediate archiving is enabled, files are already archived
+            # and downloaded_files contains archive paths instead of tmp paths
             archived_files = []
             if archive and downloaded_files:
-                self._archive_files(downloaded_files, archive_files_dict)
+                # Only archive if files weren't already archived inline
+                if not (self.use_phase1_utilities and archive):
+                    self._archive_files(downloaded_files, archive_files_dict)
                 # After archiving, create list of archived file paths
                 for file_path in downloaded_files:
                     file_path_obj = Path(file_path)
@@ -542,6 +569,12 @@ class NetRS(BaseReceiver):
         Returns:
             Tuple of processed start and end datetime objects
         """
+        # Use Phase 1 TimeParameterProcessor if enabled
+        if self.use_phase1_utilities and self.time_processor:
+            self.logger.debug("Using Phase 1 TimeParameterProcessor")
+            return self.time_processor.process_time_parameters(start, end, session)
+
+        # Original implementation (fallback)
         # If already datetime objects, use them as-is (CLI has calculated correctly)
         if isinstance(start, datetime) and isinstance(end, datetime):
             return start, end
@@ -710,6 +743,50 @@ class NetRS(BaseReceiver):
             downloaded_files: List of downloaded file paths
             archive_files_dict: Dictionary mapping filename to archive path
         """
+        # Use Phase 1 FileArchiver if enabled (IMMEDIATE mode for fault tolerance)
+        if self.use_phase1_utilities:
+            self.logger.debug("Using Phase 1 FileArchiver (IMMEDIATE mode)")
+            archived_count = 0
+
+            for file_path in downloaded_files:
+                try:
+                    file_path_obj = Path(file_path)
+                    filename = file_path_obj.name
+
+                    if not file_path_obj.exists():
+                        self.logger.warning(
+                            f"Cannot archive - file not found: {file_path}"
+                        )
+                        continue
+
+                    if filename in archive_files_dict:
+                        archive_path = Path(archive_files_dict[filename])
+
+                        # Archive file immediately (one at a time for fault tolerance)
+                        with FileArchiver(mode=ArchiveMode.IMMEDIATE, logger=self.logger) as archiver:
+                            success = archiver.archive_file(
+                                file_path_obj,
+                                archive_path,
+                                compress=True,
+                                remove_tmp=True,
+                            )
+
+                        if success:
+                            archived_count += 1
+                        else:
+                            self.logger.error(f"❌ Failed to archive {filename}")
+
+                except Exception as e:
+                    self.logger.error(
+                        f"❌ Failed to archive {filename}: {e}"
+                    )
+
+            self.logger.info(
+                f"Phase 1 archiving: {archived_count}/{len(downloaded_files)} files archived"
+            )
+            return archived_count
+
+        # Original implementation (fallback)
         import gzip
         import shutil
 

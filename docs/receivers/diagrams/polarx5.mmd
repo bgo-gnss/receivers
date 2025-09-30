@@ -1,0 +1,49 @@
+classDiagram
+    class PolaRX5 {
+        -station_id: str
+        -station_info: dict
+        -septentrio_config: dict
+        -file_validator: FileValidator
+        -connection_timeout: int
+        -inactivity_timeout: int
+        -progress_timeout: int
+        +__init__(station_id, station_info)
+        +test_connection() dict
+        +download_data(start, end, session, sync, clean_tmp, archive) dict
+        +get_health_status() dict
+        +analyze_health_data(ascii_dir) dict
+        -_ftp_open_connection(timeout) FTP
+        -_ftp_download(files_dict, local_dir, ftp, archive, immediate_archive) list
+        -_download_with_progressbar(ftp, remote_file, local_file, remote_file_size, offset) int
+        -_download_with_progressbar_and_retry(ftp, remote_file, local_file, remote_file_size, offset) int
+        -_archive_single_file(tmp_file_path, file_datetime, missing_file_dict) bool
+        -_setup_timeouts() void
+        -_setup_connection_info() void
+    }
+
+    class BaseReceiver {
+        <<abstract>>
+        +station_id: str
+        +station_info: dict
+        +build_path(datetime_list, template, session, frequency) list
+        +get_file_extension() str
+        +test_connection()* dict
+        +download_data(start, end, session, sync, clean_tmp, archive)* dict
+    }
+
+    class FileValidator {
+        +validate_file(file_path) dict
+        +should_resume_download(file_path, expected_size) tuple
+        +clean_directory(directory_path) int
+    }
+
+    class DownloadDiagnosticsAnalyzer {
+        +classify_network_failure(ip_address) dict
+        +analyze_ftp_failure(error, connection_info) dict
+    }
+
+    PolaRX5 --|> BaseReceiver
+    PolaRX5 --> FileValidator
+    PolaRX5 --> DownloadDiagnosticsAnalyzer
+
+    note for PolaRX5 "Septentrio PolaRX5 receiver\nFTP downloads (passive/active)\nSBF binary format (.sbf → .sbf.gz)\nAdvanced timeout handling\nIntelligent diagnostics\nImmediate archiving support\nHealth data analysis"

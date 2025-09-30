@@ -43,11 +43,9 @@ class ReceiverFactory:
 
             try:
                 from ..leica.g10 import LeicaG10
-                self._receiver_types["Leica"] = LeicaG10
-                self._receiver_types["LeicaG10"] = LeicaG10
-                self._receiver_types["G10"] = LeicaG10  # Support G10 from station config
+                self._receiver_types["G10"] = LeicaG10
             except ImportError:
-                self.logger.debug("LeicaG10 receiver type not available")
+                self.logger.debug("G10 receiver type not available")
 
             self.logger.debug(f"Discovered receiver types: {list(self._receiver_types.keys())}")
 

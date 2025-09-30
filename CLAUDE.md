@@ -49,6 +49,9 @@ receivers download ELDC --sync --archive --production --json-log
 
 # Test connection before downloading
 receivers download ELDC --test-connection --sync
+
+# Enable Phase 1 utilities (recommended for production)
+USE_PHASE1_UTILITIES=1 receivers download ELDC --sync --archive
 ```
 
 ### Bulk Scheduler
@@ -72,6 +75,39 @@ receivers scheduler config --show
 ```
 
 ## Architecture
+
+### Phase 1 Utilities (Modular Components)
+**Status**: ✅ Integrated in all receiver types (PolaRX5, NetR9, NetRS, G10)
+**Feature Flag**: `USE_PHASE1_UTILITIES=1`
+
+The receivers package uses modular Phase 1 utilities for core functionality:
+
+#### Time Parameter Processor
+- **Purpose**: Parse and validate session parameters (start, end, session type)
+- **Usage**: Converts user input to datetime lists for file generation
+- **Benefits**: Single source of truth for time processing, comprehensive validation
+
+#### Archive Validator
+- **Purpose**: Validate archive file integrity (gzip, size, corruption)
+- **Usage**: Check files before/after archiving operations
+- **Benefits**: Detect corrupt archives, validate downloads
+
+#### File Archiver (IMMEDIATE Mode)
+- **Purpose**: Archive files immediately after download/processing
+- **Mode**: IMMEDIATE - archive one file at a time for fault tolerance
+- **Benefits**: Prevents data loss on crashes, incremental progress tracking
+
+**Enable Phase 1 utilities**:
+```bash
+export USE_PHASE1_UTILITIES=1
+receivers download STATION --sync --archive
+```
+
+**Why immediate archiving?**
+- **Fault tolerance**: Already-downloaded files are safely archived if process crashes
+- **Slow connections**: Progress saved incrementally during long downloads
+- **Production reliability**: Minimizes data loss during network issues
+- **Better monitoring**: Clear file-by-file progress tracking
 
 ### Scheduling System
 - **Time distribution**: Downloads spread across 10-minute windows to avoid network congestion
@@ -191,6 +227,58 @@ receivers download STATION --test-connection --verbose
 
 # Scheduler debugging
 receivers scheduler test --stations STATION --verbose
+
+# Enable Phase 1 utilities for debugging
+USE_PHASE1_UTILITIES=1 receivers download STATION --sync --archive -v
+
+# Check Phase 1 utilities are working (look for these log messages):
+# "✨ Phase 1 utilities enabled"
+# "Using Phase 1 TimeParameterProcessor"
+# "Using Phase 1 FileArchiver (IMMEDIATE mode)"
+
+# Disable Phase 1 utilities (fallback to legacy code)
+USE_PHASE1_UTILITIES=0 receivers download STATION --sync --archive
+```
+
+### Phase 1 Utilities Troubleshooting
+
+**Problem**: Phase 1 utilities not activating
+```bash
+# Verify environment variable is set correctly
+echo $USE_PHASE1_UTILITIES  # Should output: 1
+
+# Set it explicitly
+export USE_PHASE1_UTILITIES=1
+
+# Check logs for confirmation message
+receivers download STATION -D 1 --sync --archive -v | grep "Phase 1"
+```
+
+**Problem**: Files not archiving immediately
+```bash
+# Verify Phase 1 is enabled and archiving is requested
+USE_PHASE1_UTILITIES=1 receivers download STATION -D 3 --sync --archive -v
+
+# Look for these messages in logs:
+# "📦 Archiving immediately after download: FILENAME"
+# "✅ Successfully archived: FILENAME"
+
+# Check archive directory for .gz files
+ls -lh ~/.local/share/gps_data/archive/STATION/
+```
+
+**Problem**: Legacy code still running instead of Phase 1
+```bash
+# Check for Phase 1 confirmation logs
+# If you see "Using legacy implementation", Phase 1 is disabled
+
+# Verify PYTHONPATH includes Phase 1 utilities
+echo $PYTHONPATH | grep receivers/src
+
+# Full working environment setup:
+export USE_PHASE1_UTILITIES=1
+export PYTHONPATH=../gtimes/src:../gps_parser/src:src
+receivers download STATION --sync --archive -v
 ```
 
 ### Log Locations
@@ -207,8 +295,38 @@ receivers scheduler test --stations STATION --verbose
 - **Fault tolerance**: Immediate archiving prevents data loss on failures
 - **Resource usage**: Production logging optimized for automated systems
 
+## Phase 1 Integration Status
+
+**Status**: ✅ Complete - All 4 receiver types integrated and tested
+
+### Completed Receivers
+- ✅ **PolaRX5** - Tested with ELDC, OLKE, THOB (2025-09-27)
+- ✅ **NetR9** - Tested with MANA (2025-09-30)
+- ✅ **NetRS** - Tested with BLEI (2025-09-30)
+- ✅ **G10** - Tested with SKFC (2025-09-30)
+
+### Implementation Pattern
+All receivers follow this pattern when `USE_PHASE1_UTILITIES=1`:
+
+1. **Time Processing**: TimeParameterProcessor validates and parses session parameters
+2. **Download**: Protocol-specific clients (FTP/HTTP/TCP) download files
+3. **Immediate Archiving**: FileArchiver archives each file right after download/processing
+4. **Validation**: ArchiveValidator checks file integrity before and after archiving
+
+### Benefits
+- **Code Consolidation**: ~400 lines of duplicate code eliminated
+- **Fault Tolerance**: Immediate archiving prevents data loss on crashes
+- **Maintainability**: Single source of truth for common operations
+- **Testing**: 72 comprehensive unit tests for Phase 1 utilities
+
+### Documentation
+- Full details: `docs/phase2_complete.md`
+- Progress tracking: `docs/phase2_progress.md`
+- Architecture diagrams: `docs/receivers/diagrams/`
+
 ---
 
-**Last updated**: 2025-09-10  
-**Package version**: Development (gpslibrary_new)  
+**Last updated**: 2025-09-30
+**Package version**: Development (gpslibrary_new)
+**Phase 1 Status**: Complete - All receivers integrated
 **Maintainer**: Veðurstofan Íslands GPS Team
