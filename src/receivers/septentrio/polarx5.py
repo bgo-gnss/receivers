@@ -246,6 +246,10 @@ class PolaRX5(BaseReceiver):
         immediate_archive = kwargs.get("immediate_archive", True)
         predir = kwargs.get("predir", "/DSK2/SSN/")
 
+        # Immediate retry configuration (Level 1 retries)
+        max_retries = kwargs.get("max_retries", 3)
+        retry_initial_delay = kwargs.get("retry_initial_delay", 0.5)
+
         # Set logger level
         self.logger.setLevel(loglevel)
 
@@ -383,11 +387,13 @@ class PolaRX5(BaseReceiver):
                 )
             except Exception as e:
                 # Connection failed - now run diagnostics to understand why
-                from ..base.download_diagnostics import DownloadDiagnosticsAnalyzer
-
-                diagnostics = DownloadDiagnosticsAnalyzer(self.station_id, self.logger)
-
-                network_check = diagnostics.classify_network_failure(self.ip_number)
+                try:
+                    from ..base.download_diagnostics import DownloadDiagnosticsAnalyzer
+                    diagnostics = DownloadDiagnosticsAnalyzer(self.station_id, self.logger)
+                    network_check = diagnostics.classify_network_failure(self.ip_number)
+                except ImportError:
+                    # Diagnostics module not yet implemented - use basic error handling
+                    network_check = {"classification": "unknown"}
 
                 if network_check["classification"] == "invalid_ip":
                     self.logger.critical(
@@ -430,6 +436,8 @@ class PolaRX5(BaseReceiver):
                     immediate_archive,
                     compression,
                     remote_path_dict,
+                    max_retries,
+                    retry_initial_delay,
                 )
 
                 # Calculate total bytes downloaded
@@ -653,8 +661,10 @@ class PolaRX5(BaseReceiver):
         immediate_archive,
         compression=".gz",
         remote_path_dict=None,
+        max_retries=3,
+        retry_initial_delay=0.5,
     ):
-        """Sync missing files from receiver to local archive."""
+        """Sync missing files from receiver to local archive with retry configuration."""
         # Simple approach: use pre-built paths and extract IGS filenames
 
         # Sort missing_file_dict by datetime to ensure consistent ordering
@@ -688,6 +698,8 @@ class PolaRX5(BaseReceiver):
                 archive=archive,
                 immediate_archive=immediate_archive,
                 missing_file_dict=updated_missing_file_dict,
+                max_retries=max_retries,
+                retry_initial_delay=retry_initial_delay,
             )
 
             downloaded_files_dict = dict(
@@ -734,12 +746,15 @@ class PolaRX5(BaseReceiver):
                 f"Connection failed after {connection_time:.2f}s - running diagnostics..."
             )
 
-            from ..base.download_diagnostics import DownloadDiagnosticsAnalyzer
-
-            diagnostics = DownloadDiagnosticsAnalyzer(self.station_id, self.logger)
-
-            # Quick network classification to understand the failure
-            network_check = diagnostics.classify_network_failure(self.ip_number)
+            try:
+                from ..base.download_diagnostics import DownloadDiagnosticsAnalyzer
+                diagnostics = DownloadDiagnosticsAnalyzer(self.station_id, self.logger)
+                # Quick network classification to understand the failure
+                network_check = diagnostics.classify_network_failure(self.ip_number)
+            except ImportError:
+                # Diagnostics module not yet implemented - use basic error handling
+                self.logger.debug("Diagnostic module not available, using basic error handling")
+                network_check = {"classification": "unknown"}
 
             # If it's an invalid IP range, provide critical error immediately
             if network_check["classification"] == "invalid_ip":
@@ -802,8 +817,21 @@ class PolaRX5(BaseReceiver):
         archive=True,
         immediate_archive=True,
         missing_file_dict=None,
+        max_retries=3,
+        retry_initial_delay=0.5,
     ):
-        """Download files via FTP with progress tracking."""
+        """Download files via FTP with progress tracking and immediate retries.
+
+        Args:
+            files_dict: Dictionary of {filename: remote_dir}
+            local_dir: Local directory for downloads
+            ftp: FTP connection (optional, will create if None)
+            archive: Whether to archive downloaded files
+            immediate_archive: Whether to archive immediately after each file
+            missing_file_dict: Dictionary mapping datetimes to (archive_path, filename)
+            max_retries: Maximum immediate retries on transient failures (default: 3)
+            retry_initial_delay: Initial retry delay in seconds (default: 0.5)
+        """
         downloaded_files = []
 
         # Log station connection details once at the beginning
@@ -892,9 +920,10 @@ class PolaRX5(BaseReceiver):
                         )
 
                 if remote_file_size is not None:
-                    # Use progress bar download
-                    diff = self._download_with_progressbar_and_retry(
-                        ftp, remote_file, str(local_file), remote_file_size, offset
+                    # Use progress bar download with immediate retry logic
+                    diff = self._download_with_immediate_retry(
+                        ftp, remote_file, str(local_file), remote_file_size, offset,
+                        max_retries=max_retries, initial_delay=retry_initial_delay
                     )
 
                     # Validate download completeness (like getSeptentrio3)
@@ -1131,6 +1160,85 @@ class PolaRX5(BaseReceiver):
 
         local_file_size = os.path.getsize(local_file)
         return local_file_size - remote_file_size
+
+    def _download_with_immediate_retry(
+        self, ftp, remote_file, local_file, remote_file_size, offset=0,
+        max_retries=3, initial_delay=0.5
+    ):
+        """Download with immediate retries on transient failures.
+
+        Retries transient connection/timeout errors with increasing delays:
+        - Attempt 1: immediate
+        - Attempt 2: after 0.5s delay
+        - Attempt 3: after 1.0s delay
+        - Attempt 4: after 1.5s delay
+
+        Args:
+            ftp: FTP connection
+            remote_file: Remote file path
+            local_file: Local file path
+            remote_file_size: Remote file size in bytes
+            offset: Resume offset
+            max_retries: Maximum number of retries (default: 3)
+            initial_delay: Initial retry delay in seconds (default: 0.5)
+
+        Returns:
+            Download result (bytes difference)
+
+        Raises:
+            Non-retryable errors (AuthenticationError, file not found)
+        """
+        from ..base.exceptions import AuthenticationError
+
+        # Define non-retryable error patterns
+        non_retryable_patterns = [
+            "530",  # Authentication failed
+            "550",  # File not found
+            "not found",
+            "no such file",
+            "authentication",
+            "login"
+        ]
+
+        last_exception = None
+
+        for attempt in range(max_retries + 1):  # +1 for initial attempt
+            try:
+                # Delegate to existing FTP mode retry logic
+                return self._download_with_progressbar_and_retry(
+                    ftp, remote_file, local_file, remote_file_size, offset
+                )
+
+            except AuthenticationError:
+                # Don't retry authentication failures
+                raise
+
+            except Exception as e:
+                error_msg = str(e).lower()
+                last_exception = e
+
+                # Check if this is a non-retryable error
+                if any(pattern in error_msg for pattern in non_retryable_patterns):
+                    # File not found or authentication - don't retry
+                    raise
+
+                # This is a retryable error (connection, timeout, etc.)
+                if attempt < max_retries:
+                    # Calculate delay with increasing backoff
+                    delay = initial_delay * (attempt + 1)
+                    self.logger.warning(
+                        f"⚠️  Download attempt {attempt + 1} failed: {e}"
+                    )
+                    self.logger.info(
+                        f"🔄 Retrying in {delay:.1f}s (attempt {attempt + 2}/{max_retries + 1})..."
+                    )
+                    time.sleep(delay)
+                else:
+                    # Final attempt failed
+                    self.logger.error(
+                        f"❌ Download failed after {max_retries + 1} attempts: {e}"
+                    )
+                    raise last_exception
 
     def _download_with_progressbar_and_retry(
         self, ftp, remote_file, local_file, remote_file_size, offset=0
@@ -1579,8 +1687,13 @@ class PolaRX5(BaseReceiver):
             sys.path.append("../gps_parser/src")
             import gps_parser
 
-            parser = gps_parser.ConfigParser()
-            parser.record_performance_data(self.station_id, performance_metrics)
+            # NOTE: record_performance_data() method not yet implemented in gps_parser.ConfigParser
+            # This is reserved for future integration with adaptive timeout system
+            # For now, performance metrics are logged locally in receivers package
+            # parser = gps_parser.ConfigParser()
+            # parser.record_performance_data(self.station_id, performance_metrics)
+
+            self.logger.debug(f"Performance metrics for {self.station_id}: {performance_metrics}")
 
         except Exception as e:
             self.logger.debug(f"Could not record performance metrics: {e}")

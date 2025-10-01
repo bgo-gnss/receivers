@@ -17,12 +17,14 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Union
 from dataclasses import dataclass
+
+from .schedule_parser import parse_schedule, apply_distribution_window
 
 
 # Module-level download function for APScheduler serialization
-def _download_station_data_job(station_id: str, session_type: str, production_mode: bool = False):
+def _download_station_data_job(station_id: str, session_type: str, production_mode: bool = False, lookback_periods: int = 1):
     """Download data for a single station (standalone job function for APScheduler).
 
     This is a module-level function to allow APScheduler to serialize it to the database.
@@ -33,6 +35,7 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
         station_id: Station identifier
         session_type: Session type (15s_24hr, 1Hz_1hr, status_1hr)
         production_mode: Whether to use production logging
+        lookback_periods: Number of periods to check (1=last period only, 2=last 2 periods, etc.)
     """
     job_id = f"{session_type}_{station_id}"
     exec_start_time = datetime.now(timezone.utc)
@@ -64,20 +67,18 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
         # Create receiver instance
         receiver = create_receiver(station_id, station_config)
 
-        # Determine time range based on session type
+        # Determine time range based on session type and lookback_periods
         if session_type == '15s_24hr':
-            # Daily data - get yesterday's data
-            end_time = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-            start_time = end_time - timedelta(days=1)
+            # Daily data - get yesterday's data (or multiple days with lookback)
+            end_time = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
+            start_time = end_time - timedelta(days=lookback_periods - 1)
             frequency = '1D'
         else:
-            # Hourly data - get previous complete hour's data
-            # At 00:15, we want 23:00-23:00 (not 00:00-23:00)
-            # This matches CLI behavior with -D 1
+            # Hourly data - get previous complete hour's data (or multiple hours with lookback)
+            # At 00:15, we want 23:00 (end) and 22:00 (start) with lookback_periods=2
             now = datetime.now(timezone.utc)
-            last_complete_hour = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
-            end_time = last_complete_hour
-            start_time = last_complete_hour
+            end_time = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+            start_time = end_time - timedelta(hours=lookback_periods - 1)
             frequency = '1H'
 
         # Download data with all our enhanced features
@@ -141,74 +142,144 @@ except ImportError as e:
 
 @dataclass
 class ScheduleConfig:
-    """Configuration for scheduled downloads."""
+    """Configuration for scheduled downloads.
+
+    Supports both legacy format (schedule_minute + frequency) and new flexible format (schedule).
+
+    New flexible schedule formats:
+    - Single time: "00:10" (daily at 00:10)
+    - Hourly minute: ":15" (every hour at :15)
+    - Interval: "6h", "45m" (every N hours/minutes)
+    - Multiple times: ["00:10", "08:10", "16:10"]
+    - Cron expression: "cron: */15 * * * *"
+
+    Legacy format (still supported):
+    - schedule_minute + frequency: "daily" or "hourly"
+    """
     session_type: str
-    schedule_minute: int  # Minute past the hour/day
     distribution_window: int  # Minutes to spread downloads across
-    frequency: str  # 'daily' or 'hourly'
     enabled: bool = True
     max_concurrent: int = 3
     timeout_minutes: int = 30
+    lookback_periods: int = 1  # Number of periods to check (1=last period only, 2=last 2 periods, etc.)
+
+    # New flexible schedule format (preferred)
+    schedule: Optional[Union[str, List[str], Dict[str, Any]]] = None
+
+    # Legacy format fields (for backward compatibility)
+    schedule_minute: Optional[int] = None
+    frequency: Optional[str] = None
+
+    def __post_init__(self):
+        """Convert legacy format to new format if needed."""
+        if self.schedule is None:
+            # No new format specified, check for legacy format
+            if self.schedule_minute is not None and self.frequency is not None:
+                # Convert legacy to dict format for parsing
+                self.schedule = {
+                    'schedule_minute': self.schedule_minute,
+                    'frequency': self.frequency
+                }
+            else:
+                raise ValueError(
+                    f"Session {self.session_type}: Must specify either 'schedule' or "
+                    f"both 'schedule_minute' and 'frequency'"
+                )
 
 
 class BulkDownloadScheduler:
     """APScheduler-based bulk download system with full manual compatibility."""
-    
-    def __init__(self, 
+
+    def __init__(self,
                  database_url: str = None,
                  log_dir: Path = None,
                  production_mode: bool = True,
-                 max_workers: int = 5,
+                 max_workers: int = None,
                  station_filter: List[str] = None,
-                 max_stations_per_session: int = None):
-        
+                 max_stations_per_session: int = None,
+                 config_path: Path = None):
+
         if not HAS_APSCHEDULER:
             raise ImportError("APScheduler not available. Install with: pip install apscheduler")
-        
-        self.database_url = database_url or f"sqlite:///{Path.home()}/.cache/gps_receivers/scheduler.db"
-        self.log_dir = log_dir or Path.home() / '.cache' / 'gps_receivers' / 'logs'
+
+        # Load YAML configuration (with fallback to defaults)
+        from .config_loader import load_scheduler_config, get_session_config
+        self.yaml_config = load_scheduler_config(config_path)
+
+        # Apply configuration (CLI args override YAML)
+        scheduler_cfg = self.yaml_config['scheduler']
+
+        # Expand ~ in database path from YAML
+        db_path = scheduler_cfg.get('database', f"{Path.home()}/.cache/gps_receivers/scheduler.db")
+        if isinstance(db_path, str):
+            db_path = str(Path(db_path).expanduser())
+        self.database_url = database_url or f"sqlite:///{db_path}"
+
+        # Expand ~ in log_dir path from YAML
+        log_path = scheduler_cfg.get('log_dir', Path.home() / '.cache' / 'gps_receivers' / 'logs')
+        if isinstance(log_path, str):
+            log_path = Path(log_path).expanduser()
+        self.log_dir = log_dir or log_path
         self.production_mode = production_mode
-        self.max_workers = max_workers
+        self.max_workers = max_workers if max_workers is not None else scheduler_cfg.get('max_workers', 5)
         self.station_filter = [s.upper() for s in station_filter] if station_filter else None
         self.max_stations_per_session = max_stations_per_session
-        
+
         # Set up logging
         self._setup_logging()
-        
+
         # Initialize scheduler with persistent job store
         self._setup_scheduler()
-        
-        # Default schedule configurations
-        self.schedule_configs = {
-            '15s_24hr': ScheduleConfig(
-                session_type='15s_24hr',
-                schedule_minute=10,  # 00:10 daily
-                distribution_window=10,  # 00:10-00:19
-                frequency='daily',
-                max_concurrent=3,
-                timeout_minutes=45
-            ),
-            '1Hz_1hr': ScheduleConfig(
-                session_type='1Hz_1hr', 
-                schedule_minute=15,  # XX:15 hourly
-                distribution_window=10,  # XX:15-XX:24
-                frequency='hourly',
-                max_concurrent=4,
-                timeout_minutes=30
-            ),
-            'status_1hr': ScheduleConfig(
-                session_type='status_1hr',
-                schedule_minute=25,  # XX:25 hourly  
-                distribution_window=5,  # XX:25-XX:29
-                frequency='hourly',
-                max_concurrent=5,
-                timeout_minutes=15
-            )
-        }
-        
+
+        # Load schedule configurations from YAML (with defaults as fallback)
+        self.schedule_configs = {}
+        for session_type in ['15s_24hr', '1Hz_1hr', 'status_1hr']:
+            session_cfg = self.yaml_config['sessions'].get(session_type, {})
+
+            # Check for new flexible 'schedule' field first
+            schedule = session_cfg.get('schedule')
+
+            # If no new schedule field, use legacy format (schedule_minute + frequency)
+            if schedule is None:
+                schedule_minute = session_cfg.get('schedule_minute',
+                    10 if session_type == '15s_24hr' else 15 if session_type == '1Hz_1hr' else 25)
+                frequency = session_cfg.get('frequency',
+                    'daily' if session_type == '15s_24hr' else 'hourly')
+
+                self.schedule_configs[session_type] = ScheduleConfig(
+                    session_type=session_type,
+                    schedule_minute=schedule_minute,
+                    frequency=frequency,
+                    distribution_window=session_cfg.get('distribution_window',
+                        10 if session_type != 'status_1hr' else 5),
+                    enabled=session_cfg.get('enabled', True),
+                    max_concurrent=session_cfg.get('max_concurrent',
+                        3 if session_type == '15s_24hr' else 4 if session_type == '1Hz_1hr' else 5),
+                    timeout_minutes=session_cfg.get('timeout_minutes',
+                        45 if session_type == '15s_24hr' else 30 if session_type == '1Hz_1hr' else 15),
+                    lookback_periods=session_cfg.get('lookback_periods', 1)
+                )
+            else:
+                # New flexible schedule format
+                self.schedule_configs[session_type] = ScheduleConfig(
+                    session_type=session_type,
+                    schedule=schedule,
+                    distribution_window=session_cfg.get('distribution_window',
+                        10 if session_type != 'status_1hr' else 5),
+                    enabled=session_cfg.get('enabled', True),
+                    max_concurrent=session_cfg.get('max_concurrent',
+                        3 if session_type == '15s_24hr' else 4 if session_type == '1Hz_1hr' else 5),
+                    timeout_minutes=session_cfg.get('timeout_minutes',
+                        45 if session_type == '15s_24hr' else 30 if session_type == '1Hz_1hr' else 15),
+                    lookback_periods=session_cfg.get('lookback_periods', 1)
+                )
+
         # Load station configurations
         self.stations = self._load_station_configs()
-        
+
+        # Load receiver session capabilities from receivers.cfg
+        self.receiver_sessions = self._load_receiver_session_capabilities()
+
         # Track running jobs
         self.running_jobs = {}
         
@@ -298,7 +369,53 @@ class BulkDownloadScheduler:
             
         self.logger.info(f"Loaded {len(stations)} station configurations")
         return stations
-        
+
+    def _load_receiver_session_capabilities(self) -> Dict[str, List[str]]:
+        """Load session capabilities for each receiver type from receivers.cfg.
+
+        Returns:
+            Dict mapping receiver_type (lowercase) to list of supported sessions
+            Example: {'polarx5': ['15s_24hr', '1Hz_1hr', 'status_1hr'],
+                     'netr9': ['15s_24hr', '1Hz_1hr']}
+        """
+        import configparser
+        from pathlib import Path
+
+        capabilities = {}
+
+        try:
+            # Find receivers.cfg
+            config_path = Path.home() / '.config' / 'gpsconfig' / 'receivers.cfg'
+            if not config_path.exists():
+                self.logger.warning(f"receivers.cfg not found at {config_path}, all sessions will be attempted")
+                return {}
+
+            config = configparser.ConfigParser()
+            config.read(config_path)
+
+            # Check each receiver type section
+            for receiver_type in ['polarx5', 'netr9', 'netrs', 'g10']:
+                if receiver_type not in config:
+                    continue
+
+                sessions = []
+                # Check which session_map_* keys exist
+                # Note: Check both exact case and lowercase since config keys may vary
+                for session in ['15s_24hr', '1Hz_1hr', 'status_1hr']:
+                    key = f'session_map_{session}'
+                    if key in config[receiver_type]:
+                        sessions.append(session)
+
+                capabilities[receiver_type] = sessions
+                self.logger.debug(f"Receiver {receiver_type} supports sessions: {sessions}")
+
+            self.logger.info(f"Loaded session capabilities for {len(capabilities)} receiver types")
+
+        except Exception as e:
+            self.logger.error(f"Failed to load receiver session capabilities: {e}")
+
+        return capabilities
+
     def schedule_all_sessions(self):
         """Schedule all configured download sessions."""
         
@@ -318,69 +435,72 @@ class BulkDownloadScheduler:
         
     def _get_stations_for_session(self, session_type: str) -> List[str]:
         """Get list of stations that support a specific session type."""
-        
+
         stations = []
-        
+        skipped = []
+
         for station_id, config in self.stations.items():
             if not config.get('enabled', True):
                 continue
-                
+
             # Apply station filter if specified
             if self.station_filter and station_id not in self.station_filter:
                 continue
-                
+
+            # Check if receiver type supports this session
+            receiver_type = config.get('receiver_type', '').lower()
+            if self.receiver_sessions and receiver_type in self.receiver_sessions:
+                supported_sessions = self.receiver_sessions[receiver_type]
+                if session_type not in supported_sessions:
+                    skipped.append(f"{station_id}({receiver_type})")
+                    continue
+
             stations.append(station_id)
-        
+
+        # Log skipped stations
+        if skipped:
+            self.logger.info(f"Skipped {len(skipped)} stations for {session_type} (unsupported by receiver type): {', '.join(skipped[:5])}")
+
         # Apply max stations limit if specified
         if self.max_stations_per_session and len(stations) > self.max_stations_per_session:
             stations = stations[:self.max_stations_per_session]
             self.logger.info(f"Limited {session_type} to {self.max_stations_per_session} stations for testing")
-                
+
         return stations
         
-    def _schedule_session_downloads(self, 
-                                  session_type: str, 
-                                  config: ScheduleConfig, 
+    def _schedule_session_downloads(self,
+                                  session_type: str,
+                                  config: ScheduleConfig,
                                   stations: List[str]):
-        """Schedule downloads for a specific session type."""
-        
-        # Distribute stations across the time window
-        stations_per_minute = len(stations) / config.distribution_window
-        
+        """Schedule downloads for a specific session type using flexible schedule format."""
+
+        # Parse the schedule configuration
+        base_trigger = parse_schedule(config.schedule)
+
         for i, station_id in enumerate(stations):
-            # Calculate minute offset within distribution window
-            minute_offset = int(i / stations_per_minute)
-            schedule_minute = config.schedule_minute + minute_offset
-            
+            # Apply distribution window to spread stations across time
+            trigger_type, trigger_kwargs = apply_distribution_window(
+                base_trigger, i, len(stations), config.distribution_window
+            )
+
             # Create job ID
             job_id = f"{session_type}_{station_id}"
-            
-            # Schedule based on frequency
-            if config.frequency == 'daily':
-                self.scheduler.add_job(
-                    func=_download_station_data_job,
-                    trigger='cron',
-                    args=[station_id, session_type, self.production_mode],
-                    hour=0,
-                    minute=schedule_minute,
-                    id=job_id,
-                    replace_existing=True,
-                    max_instances=1
-                )
 
-            elif config.frequency == 'hourly':
-                self.scheduler.add_job(
-                    func=_download_station_data_job,
-                    trigger='cron',
-                    args=[station_id, session_type, self.production_mode],
-                    minute=schedule_minute,
-                    id=job_id,
-                    replace_existing=True,
-                    max_instances=1
-                )
-                
-        self.logger.info(f"Scheduled {len(stations)} stations for {session_type} "
-                        f"({config.frequency} at {config.schedule_minute:02d}:XX)")
+            # Schedule the job with parsed trigger
+            self.scheduler.add_job(
+                func=_download_station_data_job,
+                trigger=trigger_type,
+                args=[station_id, session_type, self.production_mode, config.lookback_periods],
+                id=job_id,
+                replace_existing=True,
+                max_instances=1,
+                **trigger_kwargs
+            )
+
+        self.logger.info(
+            f"Scheduled {len(stations)} stations for {session_type} "
+            f"({base_trigger.description})"
+        )
         
     def _download_station_data(self, station_id: str, session_type: str):
         """Download data for a single station (wrapper for backward compatibility).

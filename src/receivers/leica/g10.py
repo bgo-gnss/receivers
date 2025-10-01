@@ -736,10 +736,11 @@ class LeicaG10(BaseReceiver):
             session: Session type (e.g., '15s_24hr')
 
         Returns:
-            Session letter (e.g., 'a' for 15s_24hr)
+            Session letter (e.g., 'a' for 15s_24hr, 'b' for 1Hz_1hr)
         """
-        # Leica G10 only uses 'a' for daily files
-        session_map = self.leica_config.get(f"session_map_{session}", "a,15s_24hr")
+        # Normalize session name to lowercase for config lookup (1Hz_1hr -> 1hz_1hr)
+        session_key = session.lower()
+        session_map = self.leica_config.get(f"session_map_{session_key}", "a,15s_24hr")
         session_letter, _ = session_map.split(",", 1)
         return session_letter
 
