@@ -174,10 +174,57 @@ See `docs/scheduler/scheduler-guide.md` for complete details.
 # Create default configuration
 receivers scheduler config --create
 
-# Configuration location: ~/.config/gps_receivers/scheduler.json
+# Configuration location: ~/.config/gpsconfig/scheduler.yaml
 # Database: ~/.cache/gps_receivers/scheduler.db
 # Logs: ~/.cache/gps_receivers/logs/
 ```
+
+#### Flexible Schedule Syntax
+
+The scheduler now supports flexible schedule formats in addition to the legacy `schedule_minute` + `frequency` format:
+
+**Supported formats:**
+1. **Single time (daily)**: `schedule: "00:10"` - Runs daily at 00:10
+2. **Hourly at minute**: `schedule: ":15"` - Runs every hour at :15
+3. **Interval (hours)**: `schedule: "6h"` - Runs every 6 hours
+4. **Interval (minutes)**: `schedule: "45m"` - Runs every 45 minutes
+5. **Multiple times**: `schedule: ["06:00", "14:00", "22:00"]` - Runs 3 times daily
+6. **Raw cron**: `schedule: "cron: */15 * * * *"` - Full cron expression support
+
+**Examples:**
+```yaml
+sessions:
+  15s_24hr:
+    schedule: "00:10"              # Daily at 00:10
+    distribution_window: 10
+
+  1Hz_1hr:
+    schedule: ":15"                # Hourly at :15
+    distribution_window: 10
+
+  custom_6h:
+    schedule: "6h"                 # Every 6 hours
+    distribution_window: 10
+
+  rush_hour:
+    schedule: ["06:00", "12:00", "18:00"]  # Three times daily
+    distribution_window: 5
+
+  business_hours:
+    schedule: "cron: 0 8-17 * * 1-5"  # Every hour, 8am-5pm, Mon-Fri
+    distribution_window: 5
+```
+
+**Legacy format (still supported):**
+```yaml
+sessions:
+  15s_24hr:
+    schedule_minute: 10
+    frequency: daily
+    distribution_window: 10
+```
+
+**Note**: The `distribution_window` spreads stations evenly across time to avoid network congestion. For example, with 3 stations and a 10-minute window starting at :15, they schedule at :15, :18, and :21.
 
 ## Development
 
@@ -309,7 +356,7 @@ All receivers use Phase 1 utilities by default:
 
 ---
 
-**Last updated**: 2025-09-30
+**Last updated**: 2025-10-01
 **Package version**: Development (gpslibrary_new)
-**Phase Status**: Phase 3C Partial Complete - Scheduler tested, extensible architecture ready
+**Phase Status**: Phase 3C Partial Complete - Flexible scheduling implemented, extensible architecture ready
 **Maintainer**: Veðurstofan Íslands GPS Team

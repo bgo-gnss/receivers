@@ -29,8 +29,13 @@ def record_performance_metrics(station_id: str, metrics: Dict[str, Any], logger:
         sys.path.append('../gps_parser/src')
         import gps_parser
 
-        parser = gps_parser.ConfigParser()
-        parser.record_performance_data(station_id, metrics)
+        # NOTE: record_performance_data() method not yet implemented in gps_parser.ConfigParser
+        # This is reserved for future integration with adaptive timeout system
+        # For now, performance metrics are logged locally in receivers package
+        # parser = gps_parser.ConfigParser()
+        # parser.record_performance_data(station_id, metrics)
+
+        logger.debug(f"Performance metrics for {station_id}: {metrics}")
 
     except ImportError:
         logger.debug("gps_parser not available - skipping performance metrics")
