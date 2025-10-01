@@ -71,9 +71,13 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
             start_time = end_time - timedelta(days=1)
             frequency = '1D'
         else:
-            # Hourly data - get previous hour's data
-            end_time = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-            start_time = end_time - timedelta(hours=1)
+            # Hourly data - get previous complete hour's data
+            # At 00:15, we want 23:00-23:00 (not 00:00-23:00)
+            # This matches CLI behavior with -D 1
+            now = datetime.now(timezone.utc)
+            last_complete_hour = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+            end_time = last_complete_hour
+            start_time = last_complete_hour
             frequency = '1H'
 
         # Download data with all our enhanced features

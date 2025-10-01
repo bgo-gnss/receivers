@@ -80,11 +80,13 @@ class TestSchedulerDownloadExecution:
         assert call_kwargs['clean_tmp'] is True
 
         # Verify time parameters for hourly session
+        # Scheduler uses CLI -D 1 behavior: start and end are the same (last complete hour)
         start_time = call_kwargs['start']
         end_time = call_kwargs['end']
         assert isinstance(start_time, datetime)
         assert isinstance(end_time, datetime)
-        assert (end_time - start_time) == timedelta(hours=1)
+        assert start_time == end_time  # Both point to last complete hour
+        assert start_time.minute == 0  # Should be at hour boundary
 
     @patch('receivers.cli.main.get_all_station_configs')
     @patch('receivers.cli.main.get_station_config')
