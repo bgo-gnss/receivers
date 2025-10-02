@@ -1,0 +1,27 @@
+# Log rotation for GPS Receivers Scheduler
+# Location: /etc/logrotate.d/gps-receivers
+
+/var/cache/gps_receivers/logs/*.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0644 gpsops gpsops
+    sharedscripts
+    postrotate
+        systemctl reload gps-receivers-scheduler.service > /dev/null 2>&1 || true
+    endscript
+}
+
+/var/cache/gps_receivers/logs/*.jsonl {
+    daily
+    rotate 90
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0644 gpsops gpsops
+    maxsize 100M
+}

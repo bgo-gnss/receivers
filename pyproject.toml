@@ -1,7 +1,7 @@
 [project]
 name = "receivers"
 version = "0.1.0"
-description = "GPS/GNSS receiver management and data download toolkit for Veðurstofan Íslands"
+description = "GPS/GNSS receiver management and data download toolkit for Veðurstofa Íslands"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [

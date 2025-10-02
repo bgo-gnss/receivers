@@ -72,4 +72,4 @@ The receivers package implements a layered architecture supporting Iceland's 173
 
 **Last Updated**: 2025-09-25
 **Version**: Development (gpslibrary_new)
-**Maintainer**: Veðurstofan Íslands GPS Team
+**Maintainer**: Veðurstofa Íslands GPS Team

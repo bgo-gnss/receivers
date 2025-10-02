@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2024 Benedikt Gunnar Ófeigsson, Veðurstofan Íslands (Icelandic Met Office)
+Copyright (c) 2024 Benedikt Gunnar Ófeigsson, Veðurstofa Íslands (Icelandic Met Office)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -28,7 +28,7 @@ This software incorporates code and concepts from the following sources:
 
 ### GPS Receiver Communication
 Based on original implementations by:
-- Fjalar Sigurdsson (fjalar@vedur.is), Veðurstofan Íslands
+- Fjalar Sigurdsson (fjalar@vedur.is), Veðurstofa Íslands
 - FTP communication protocols for Septentrio PolaRX5 receivers
 - GPS data download and archiving workflows
 
@@ -50,7 +50,7 @@ If you use Receivers in operational or scientific applications, please consider 
 
 ```
 Ófeigsson, B. G., & Sigurdsson, F. (2024). Receivers: GPS/GNSS receiver 
-management and data download toolkit. Veðurstofan Íslands (Icelandic Met Office).
+management and data download toolkit. Veðurstofa Íslands (Icelandic Met Office).
 https://github.com/vedur-is/receivers
 ```
 
@@ -60,7 +60,7 @@ This software is provided for operational and scientific purposes. While every
 effort has been made to ensure reliability, users should validate functionality
 for their specific receiver configurations and network environments. 
 
-The authors and Veðurstofan Íslands assume no responsibility for any consequences 
+The authors and Veðurstofa Íslands assume no responsibility for any consequences 
 arising from the use of this software, including but not limited to data loss or 
 receiver malfunction.
 

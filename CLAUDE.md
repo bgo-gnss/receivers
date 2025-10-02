@@ -359,4 +359,4 @@ All receivers use Phase 1 utilities by default:
 **Last updated**: 2025-10-01
 **Package version**: Development (gpslibrary_new)
 **Phase Status**: Phase 3C Partial Complete - Flexible scheduling implemented, extensible architecture ready
-**Maintainer**: Veðurstofan Íslands GPS Team
+**Maintainer**: Veðurstofa Íslands GPS Team

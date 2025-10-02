@@ -2,7 +2,7 @@
 
 ## Overview
 
-Complete implementation of GPS receiver support for all 173 stations in the Veðurstofan Íslands GPS network. Achieved 100% receiver type coverage with dynamic discovery system.
+Complete implementation of GPS receiver support for all 173 stations in the Veðurstofa Íslands GPS network. Achieved 100% receiver type coverage with dynamic discovery system.
 
 ## Supported Receiver Types
 
