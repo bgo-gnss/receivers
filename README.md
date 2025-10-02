@@ -311,4 +311,4 @@ MIT License - See LICENSE file for details.
 
 - Based on original work by Fjalar Sigurdsson (fjalar@vedur.is)
 - Continued development by Benedikt Gunnar Ófeigsson (bgo@vedur.is)
-- Veðurstofan Íslands (Icelandic Met Office) for operational requirements
+- Veðurstofa Íslands (Icelandic Met Office) for operational requirements

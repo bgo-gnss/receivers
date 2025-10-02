@@ -1,0 +1,49 @@
+[Unit]
+Description=GPS Receivers Scheduler - Automated GNSS Data Download
+Documentation=https://github.com/bennigo/receivers
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gpsops
+Group=gpsops
+WorkingDirectory=/opt/receivers
+
+# Environment setup
+Environment="GPS_CONFIG_PATH=/etc/gpsconfig"
+Environment="GPS_CACHE_DIR=/var/cache/gps_receivers"
+
+# Command to run
+ExecStart=/opt/receivers/venv/bin/receivers scheduler start \
+    --max-workers 100 \
+    --config /etc/gpsconfig/scheduler.yaml
+
+# Restart policy
+Restart=always
+RestartSec=10s
+StartLimitInterval=5min
+StartLimitBurst=3
+
+# Resource limits
+LimitNOFILE=65536
+MemoryMax=2G
+CPUQuota=200%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gps-scheduler
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/cache/gps_receivers /mnt/gpsdata
+
+# Watchdog (restart if no keep-alive for 5 minutes)
+WatchdogSec=300s
+
+[Install]
+WantedBy=multi-user.target
