@@ -9,8 +9,11 @@ This module provides comprehensive health monitoring for GPS receivers including
 """
 
 from .connection_checker import ConnectionChecker, ConnectionStatus
+from .rxtools_extractor import RxToolsExtractor, RxToolsNotFoundError
 
 __all__ = [
     "ConnectionChecker",
     "ConnectionStatus",
+    "RxToolsExtractor",
+    "RxToolsNotFoundError",
 ]

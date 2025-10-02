@@ -1366,26 +1366,96 @@ class PolaRX5(BaseReceiver):
     def get_health_status(self) -> Dict[str, Any]:
         """Get health status of PolaRX5 receiver.
 
+        Uses standardized health checking from BaseReceiver with PolaRX5-specific
+        health data extraction via RxTools when available.
+
         Returns:
-            Dictionary with health status information
+            Dictionary with health status information following health-data-spec.md
         """
-        health = {
-            "station_id": self.station_id,
-            "receiver_type": "PolaRX5",
-            "timestamp": datetime.utcnow().isoformat(),
-            "connection": self.get_connection_status(),
-            "data_flow": "N/A",  # TODO: Implement data flow check
-            "storage": "N/A",  # TODO: Implement storage check
-            "overall_status": "unknown",
-        }
+        from ..health import RxToolsExtractor, RxToolsNotFoundError
 
-        # Determine overall status
-        if health["connection"]["receiver"]:
-            health["overall_status"] = "healthy"
-        else:
-            health["overall_status"] = "unhealthy"
+        # Step 1: Check connection health at all levels
+        connection_data = self.check_connection_health(
+            http_port=80,
+            protocol_type="ftp",
+            protocol_port=21,
+        )
 
-        return health
+        # Step 2: Extract instrument-specific health data from status_1hr session
+        metrics = None
+        data_quality = None
+        network = None
+        receiver_specific = None
+
+        try:
+            # Try to find latest status_1hr SBF file
+            status_file = self._find_latest_status_file()
+
+            if status_file:
+                # Extract health data using RxTools
+                extractor = RxToolsExtractor(station_id=self.station_id)
+
+                if extractor.check_rxtools_available():
+                    health_data = extractor.extract_health_from_sbf(status_file)
+
+                    # Map extracted data to standardized sections
+                    metrics = health_data.get("metrics", {})
+                    data_quality = health_data.get("data_quality", {})
+                    network = health_data.get("network", {})
+                    receiver_specific = health_data.get("receiver_specific", {})
+
+                    self.logger.info(
+                        f"Extracted health data from {status_file} using RxTools"
+                    )
+                else:
+                    self.logger.warning(
+                        "RxTools not available - connection health only. "
+                        "Install RxTools for comprehensive health monitoring."
+                    )
+            else:
+                self.logger.warning(
+                    f"No status_1hr SBF file found for {self.station_id} - "
+                    "connection health only"
+                )
+
+        except RxToolsNotFoundError as e:
+            self.logger.warning(f"RxTools not available: {e}")
+        except Exception as e:
+            self.logger.error(f"Error extracting health data: {e}")
+
+        # Step 3: Build standardized health status structure
+        return self.build_health_status(
+            connection_data=connection_data,
+            metrics=metrics,
+            data_quality=data_quality,
+            network=network,
+            receiver_specific=receiver_specific,
+        )
+
+    def _find_latest_status_file(self) -> Optional[Path]:
+        """Find the latest status_1hr SBF file for this station.
+
+        Returns:
+            Path to latest SBF file or None if not found
+        """
+        from pathlib import Path
+        from datetime import datetime
+
+        # Build status_1hr path using configuration
+        year = datetime.utcnow().year
+        month = datetime.utcnow().strftime("%b").lower()
+
+        status_dir = Path(self.data_prepath) / str(year) / month / self.station_id / "status_1hr" / "raw"
+
+        if not status_dir.exists():
+            return None
+
+        # Find most recent SBF file
+        sbf_files = sorted(status_dir.glob("*.sbf"), reverse=True)
+        if not sbf_files:
+            sbf_files = sorted(status_dir.glob("*.sbf.gz"), reverse=True)
+
+        return sbf_files[0] if sbf_files else None
 
     def analyze_health_data(self, ascii_dir: Optional[str] = None) -> Dict[str, Any]:
         """Analyze health data from converted ASCII status files.
