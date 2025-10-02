@@ -11,6 +11,7 @@ This module provides comprehensive health monitoring for GPS receivers including
 from .connection_checker import ConnectionChecker, ConnectionStatus
 from .rxtools_extractor import RxToolsExtractor, RxToolsNotFoundError
 from .trimble_http_extractor import TrimbleHTTPExtractor
+from .g10_ftp_inferrer import G10FTPHealthInferrer
 
 __all__ = [
     "ConnectionChecker",
@@ -18,4 +19,5 @@ __all__ = [
     "RxToolsExtractor",
     "RxToolsNotFoundError",
     "TrimbleHTTPExtractor",
+    "G10FTPHealthInferrer",
 ]
