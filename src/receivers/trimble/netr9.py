@@ -175,107 +175,58 @@ class NetR9(BaseReceiver):
     def get_health_status(self) -> Dict[str, Any]:
         """Get comprehensive health status from NetR9 receiver.
 
+        Uses standardized health checking from BaseReceiver with NetR9-specific
+        health data extraction via HTTP API.
+
         Returns:
-            Dictionary with health metrics and status information
+            Dictionary with health status information following health-data-spec.md
         """
-        health_data = {}
+        from ..health import TrimbleHTTPExtractor
+
+        # Step 1: Check connection health at all levels
+        connection_data = self.check_connection_health(
+            http_port=80,
+            protocol_type="http",
+            protocol_port=80,
+        )
+
+        # Step 2: Extract instrument-specific health data via HTTP API
+        metrics = None
+        data_quality = None
 
         try:
-            self.logger.debug(f"Collecting health data from {self.station_id}")
+            # Get receiver host from station info
+            host = self.station_info.get("ip", self.station_info.get("host"))
 
-            # Check connection first
-            connection_status = self.get_connection_status()
-            if not connection_status["receiver"]:
-                return {
-                    "station_id": self.station_id,
-                    "receiver_type": "NetR9",
-                    "timestamp": datetime.now(),
-                    "overall_status": "offline",
-                    "error": connection_status.get("error", "Receiver not accessible"),
-                }
-
-            # Collect voltage information
-            try:
-                success, response, error = self.http_client.get_url(
-                    self.endpoints["voltage"]
+            if host:
+                # Extract health data using HTTP API
+                extractor = TrimbleHTTPExtractor(
+                    host=host, station_id=self.station_id, port=80
                 )
-                if success and response:
-                    health_data["voltage"] = self.health_parser.parse_voltage_response(
-                        response
-                    )
-                else:
-                    health_data["voltage"] = {
-                        "status": "error",
-                        "error": error or "No response",
-                    }
-            except Exception as e:
-                health_data["voltage"] = {"status": "error", "error": str(e)}
+                health_data = extractor.extract_health_data()
 
-            # Collect temperature information
-            try:
-                success, response, error = self.http_client.get_url(
-                    self.endpoints["temperature"]
+                # Map extracted data to standardized sections
+                metrics = health_data.get("metrics", {})
+                data_quality = health_data.get("data_quality", {})
+
+                self.logger.info(
+                    f"Extracted health data from {host} via HTTP API"
                 )
-                if success and response:
-                    health_data["temperature"] = (
-                        self.health_parser.parse_temperature_response(response)
-                    )
-                else:
-                    health_data["temperature"] = {
-                        "status": "error",
-                        "error": error or "No response",
-                    }
-            except Exception as e:
-                health_data["temperature"] = {"status": "error", "error": str(e)}
-
-            # Collect session information
-            try:
-                success, response, error = self.http_client.get_url(
-                    self.endpoints["sessions"]
+            else:
+                self.logger.warning(
+                    f"No host/IP configured for {self.station_id} - "
+                    "connection health only"
                 )
-                if success and response:
-                    health_data["sessions"] = (
-                        self.health_parser.parse_sessions_response(response)
-                    )
-                else:
-                    health_data["sessions"] = {
-                        "status": "error",
-                        "error": error or "No response",
-                    }
-            except Exception as e:
-                health_data["sessions"] = {"status": "error", "error": str(e)}
-
-            # Collect tracking information
-            try:
-                success, response, error = self.http_client.get_url(
-                    self.endpoints["tracking"]
-                )
-                if success and response:
-                    health_data["tracking"] = (
-                        self.health_parser.parse_tracking_response(response)
-                    )
-                else:
-                    health_data["tracking"] = {
-                        "status": "error",
-                        "error": error or "No response",
-                    }
-            except Exception as e:
-                health_data["tracking"] = {"status": "error", "error": str(e)}
-
-            # Create standardized health report
-            return self.health_parser.create_standard_health_report(health_data)
 
         except Exception as e:
-            error_msg = f"Health data collection failed: {e}"
-            self.logger.error(error_msg)
+            self.logger.error(f"Error extracting health data via HTTP: {e}")
 
-            return {
-                "station_id": self.station_id,
-                "receiver_type": "NetR9",
-                "timestamp": datetime.now(),
-                "overall_status": "error",
-                "error": error_msg,
-            }
+        # Step 3: Build standardized health status structure
+        return self.build_health_status(
+            connection_data=connection_data,
+            metrics=metrics,
+            data_quality=data_quality,
+        )
 
     def download_data(
         self,
