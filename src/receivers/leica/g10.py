@@ -755,59 +755,68 @@ class LeicaG10(BaseReceiver):
     def get_health_status(self) -> Dict[str, Any]:
         """Get health status from Leica G10 receiver.
 
-        Note: Leica G10 has limited health monitoring capabilities via FTP.
+        Uses standardized health checking from BaseReceiver with G10-specific
+        health inference from FTP file availability.
+
+        Note: Leica G10 has no direct health API - status inferred from data flow.
 
         Returns:
-            Dictionary with basic health information
+            Dictionary with health status information following health-data-spec.md
         """
-        health_data = {}
+        from ..health import G10FTPHealthInferrer
+
+        # Step 1: Check connection health at all levels
+        connection_data = self.check_connection_health(
+            http_port=80,
+            protocol_type="ftp",
+            protocol_port=21,
+        )
+
+        # Step 2: Infer health data from FTP file availability
+        data_quality = None
+        receiver_specific = None
 
         try:
-            self.logger.debug(f"Collecting health data from {self.station_id}")
+            # Get receiver host from station info
+            host = self.station_info.get("ip", self.station_info.get("host"))
 
-            # Check connection first
-            connection_status = self.get_connection_status()
-            if not connection_status["receiver"]:
-                return {
-                    "station_id": self.station_id,
-                    "receiver_type": "G10",
-                    "timestamp": datetime.now(),
-                    "overall_status": "offline",
-                    "error": connection_status.get("error", "Receiver not accessible"),
-                }
+            if host:
+                # Infer health data from FTP file analysis
+                inferrer = G10FTPHealthInferrer(
+                    host=host, station_id=self.station_id, timeout=10
+                )
 
-            # Basic FTP connection health
-            ftp_test = connection_status.get("ftp_test", {})
-            health_data["connection"] = {
-                "status": "online" if ftp_test.get("success") else "offline",
-                "response_time": ftp_test.get("duration", 0),
-                "directory_accessible": ftp_test.get("directory_accessible", False),
-                "files_found": ftp_test.get("files_found", 0),
-            }
+                # Get FTP credentials
+                username = self.station_info.get("ftp_user", "anonymous")
+                password = self.station_info.get("ftp_pass", "")
+                ftp_path = self.station_info.get("ftp_path", "/data")
 
-            # Create standardized health report
-            overall_status = "online" if ftp_test.get("success") else "degraded"
+                health_data = inferrer.infer_health_from_ftp(
+                    ftp_path=ftp_path, username=username, password=password
+                )
 
-            return {
-                "station_id": self.station_id,
-                "receiver_type": "G10",
-                "timestamp": datetime.now(),
-                "overall_status": overall_status,
-                "connection": health_data["connection"],
-                "note": "Leica G10 health monitoring is limited to FTP connectivity",
-            }
+                # Map inferred data to standardized sections
+                data_quality = health_data.get("data_quality", {})
+                receiver_specific = health_data.get("receiver_specific", {})
+
+                self.logger.info(
+                    f"Inferred health status from FTP file analysis on {host}"
+                )
+            else:
+                self.logger.warning(
+                    f"No host/IP configured for {self.station_id} - "
+                    "connection health only"
+                )
 
         except Exception as e:
-            error_msg = f"Health data collection failed: {e}"
-            self.logger.error(error_msg)
+            self.logger.error(f"Error inferring health data from FTP: {e}")
 
-            return {
-                "station_id": self.station_id,
-                "receiver_type": "G10",
-                "timestamp": datetime.now(),
-                "overall_status": "error",
-                "error": error_msg,
-            }
+        # Step 3: Build standardized health status structure
+        return self.build_health_status(
+            connection_data=connection_data,
+            data_quality=data_quality,
+            receiver_specific=receiver_specific,
+        )
 
     def close(self):
         """Close connections to receiver."""
