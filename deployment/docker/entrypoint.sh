@@ -5,10 +5,9 @@ set -e
 echo "=== GPS Receivers Scheduler - Starting ==="
 echo ""
 
-# Ensure required directories exist with correct permissions
+# Ensure required directories exist
 # (bind mounts might not have subdirectories)
-mkdir -p /var/cache/gps_receivers/logs /var/cache/gps_receivers/tmp /mnt/gpsdata
-chmod 755 /var/cache/gps_receivers/logs /var/cache/gps_receivers/tmp /mnt/gpsdata
+mkdir -p /var/cache/gps_receivers/logs /var/cache/gps_receivers/tmp /mnt/gpsdata 2>/dev/null || true
 echo "✓ Directories verified"
 echo ""
 
