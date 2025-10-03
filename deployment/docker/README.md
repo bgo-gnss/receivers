@@ -8,18 +8,158 @@ Production Docker deployment for GPS receivers scheduler with automatic configur
 # From the receivers repository root
 cd deployment/docker
 
-# Build and start
-docker-compose up -d
+# Run installation script (recommended)
+./install.sh
 
-# View logs
-docker-compose logs -f
+# Or manually:
+docker compose build
+docker compose up -d
+```
 
-# Check status
-docker-compose ps
+## Installation Script
+
+The `install.sh` script automates the complete deployment:
+
+```bash
+cd deployment/docker
+./install.sh
+```
+
+**What it does:**
+1. Verifies Docker and Docker Compose are installed
+2. Creates required host directories (`/mnt/gpsdata`, `/var/cache/gps_receivers`)
+3. Builds the Docker image with all dependencies
+4. Starts the scheduler container
+5. Verifies the container is running
+
+## Accessing the Container
+
+### Interactive Shell
+
+Access the container to run commands or monitor activities:
+
+```bash
+# Access container shell
+docker exec -it gps-receivers-scheduler bash
+
+# Once inside, you can run:
+receivers scheduler status --show-jobs
+receivers health ELDC --json
+ls -la /mnt/gpsdata/
+tail -f /var/cache/gps_receivers/logs/scheduler.log
+```
+
+### Run Commands Without Shell
+
+Execute commands directly without entering the container:
+
+```bash
+# Check scheduler status
 docker exec gps-receivers-scheduler receivers scheduler status --show-jobs
 
+# Check specific station health
+docker exec gps-receivers-scheduler receivers health THOB --json
+
+# List downloaded files
+docker exec gps-receivers-scheduler ls -lh /mnt/gpsdata/
+
+# View logs
+docker exec gps-receivers-scheduler tail -100 /var/cache/gps_receivers/logs/scheduler.log
+```
+
+## Monitoring
+
+### View Live Logs
+
+```bash
+# All logs
+docker compose logs -f
+
+# Last 100 lines
+docker compose logs --tail=100
+
+# Scheduler logs only (inside container)
+docker exec gps-receivers-scheduler tail -f /var/cache/gps_receivers/logs/scheduler.log
+
+# Download audit log
+docker exec gps-receivers-scheduler tail -f /var/cache/gps_receivers/logs/download_audit.jsonl
+```
+
+### Check Container Status
+
+```bash
+# Container status
+docker compose ps
+
+# Detailed container info
+docker inspect gps-receivers-scheduler
+
+# Resource usage
+docker stats gps-receivers-scheduler
+
+# Health check status
+docker inspect gps-receivers-scheduler | jq '.[0].State.Health'
+```
+
+### Scheduler Status
+
+```bash
+# Show all scheduled jobs
+docker exec gps-receivers-scheduler receivers scheduler status --show-jobs
+
+# Count stations loaded
+docker exec gps-receivers-scheduler receivers scheduler status | grep "Loaded.*stations"
+```
+
+### Data Verification
+
+```bash
+# Check downloaded data
+docker exec gps-receivers-scheduler ls -lh /mnt/gpsdata/
+
+# Check today's downloads
+docker exec gps-receivers-scheduler ls -lh /mnt/gpsdata/$(date +%Y)/$(date +%b | tr '[:upper:]' '[:lower:]')/
+
+# Check specific station
+docker exec gps-receivers-scheduler ls -lh /mnt/gpsdata/$(date +%Y)/$(date +%b | tr '[:upper:]' '[:lower:]')/ELDC/
+
+# Count total files downloaded today
+docker exec gps-receivers-scheduler find /mnt/gpsdata/$(date +%Y)/$(date +%b | tr '[:upper:]' '[:lower:]')/ -name "*.gz" | wc -l
+```
+
+## Container Management
+
+### Start/Stop
+
+```bash
+# Start
+docker compose up -d
+
 # Stop
-docker-compose down
+docker compose down
+
+# Restart
+docker compose restart
+
+# Stop without removing
+docker compose stop
+
+# Start after stop
+docker compose start
+```
+
+### Update/Rebuild
+
+```bash
+# Pull latest code
+cd /path/to/receivers
+git pull
+
+# Rebuild and restart
+cd deployment/docker
+docker compose build --no-cache
+docker compose down
+docker compose up -d
 ```
 
 ## Configuration
@@ -200,6 +340,73 @@ deploy:
       memory: 512M      # Reserved memory
 ```
 
+## Troubleshooting
+
+### Container Won't Start
+
+```bash
+# Check logs
+docker compose logs gps-scheduler
+
+# Check if ports are in use (if not using host networking)
+sudo netstat -tulpn | grep LISTEN
+
+# Check if volumes exist
+ls -la /mnt/gpsdata /var/cache/gps_receivers
+```
+
+### No Stations Loaded
+
+```bash
+# Check if config files exist
+docker exec gps-receivers-scheduler ls -la /etc/gpsconfig/
+
+# Verify GPS_CONFIG_PATH
+docker exec gps-receivers-scheduler env | grep GPS
+
+# Check configuration
+docker exec gps-receivers-scheduler cat /etc/gpsconfig/stations.cfg | head -20
+```
+
+### Downloads Not Working
+
+```bash
+# Check scheduler is running
+docker exec gps-receivers-scheduler receivers scheduler status
+
+# Test single station download
+docker exec gps-receivers-scheduler receivers download ELDC -D 1 --session 1Hz_1hr --test-connection -v
+
+# Check network connectivity from container
+docker exec gps-receivers-scheduler ping -c 3 8.8.8.8
+```
+
+### Container Keeps Restarting
+
+```bash
+# Check last 50 log lines
+docker logs --tail=50 gps-receivers-scheduler
+
+# Check exit code
+docker inspect gps-receivers-scheduler | jq '.[0].State.ExitCode'
+
+# Check health status
+docker inspect gps-receivers-scheduler | jq '.[0].State.Health.Status'
+```
+
+### Permission Issues
+
+```bash
+# Fix host directory permissions
+sudo chown -R $USER:$USER /mnt/gpsdata /var/cache/gps_receivers
+
+# Verify container user
+docker exec gps-receivers-scheduler whoami  # Should be gpsops
+
+# Check directory ownership inside container
+docker exec gps-receivers-scheduler ls -la /mnt/gpsdata /var/cache/gps_receivers
+```
+
 ## Maintenance
 
 ### Update Scheduler Code
@@ -208,15 +415,22 @@ deploy:
 cd /path/to/receivers
 git pull
 cd deployment/docker
-docker-compose build --no-cache
-docker-compose up -d
+docker compose build --no-cache
+docker compose down
+docker compose up -d
 ```
 
 ### Update Configuration
 
 ```bash
+# If using mounted config
+cd /path/to/gps-config-data
+git pull
+docker compose restart
+
+# If config is inside container
 docker exec gps-receivers-scheduler bash -c 'cd /opt/gps-config-data && git pull'
-docker-compose restart
+docker compose restart
 ```
 
 ### Clean Up Old Data
@@ -227,4 +441,21 @@ docker exec gps-receivers-scheduler find /var/cache/gps_receivers/logs -type f -
 
 # Check disk usage
 docker exec gps-receivers-scheduler df -h /mnt/gpsdata
+
+# Remove stopped containers and unused images
+docker system prune -a
+```
+
+### Backup
+
+```bash
+# Backup downloaded data
+sudo rsync -av /mnt/gpsdata/ /backup/gpsdata/
+
+# Backup logs
+sudo rsync -av /var/cache/gps_receivers/logs/ /backup/gps_logs/
+
+# Backup configuration
+docker exec gps-receivers-scheduler tar czf /tmp/config-backup.tar.gz /etc/gpsconfig
+docker cp gps-receivers-scheduler:/tmp/config-backup.tar.gz ./config-backup.tar.gz
 ```
