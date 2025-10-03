@@ -12,6 +12,7 @@ from .connection_checker import ConnectionChecker, ConnectionStatus
 from .rxtools_extractor import RxToolsExtractor, RxToolsNotFoundError
 from .trimble_http_extractor import TrimbleHTTPExtractor
 from .g10_ftp_inferrer import G10FTPHealthInferrer
+from .json_writer import HealthJSONWriter
 
 __all__ = [
     "ConnectionChecker",
@@ -20,4 +21,5 @@ __all__ = [
     "RxToolsNotFoundError",
     "TrimbleHTTPExtractor",
     "G10FTPHealthInferrer",
+    "HealthJSONWriter",
 ]
