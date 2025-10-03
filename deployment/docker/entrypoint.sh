@@ -32,8 +32,11 @@ if [[ -d "$CONFIG_REPO_DIR" ]]; then
     if [[ -f "deploy.py" ]]; then
         python3 deploy.py --env "$ENVIRONMENT" --target /etc/gpsconfig
     else
-        echo "⚠️  No deploy.py found, copying files directly"
-        cp -r *.cfg /etc/gpsconfig/ 2>/dev/null || true
+        echo "⚠️  No deploy.py found, copying config files directly"
+        # Copy all config files (cfg and yaml)
+        cp -v *.cfg *.yaml /etc/gpsconfig/ 2>/dev/null || true
+        # Make sure permissions are correct
+        chmod 644 /etc/gpsconfig/* 2>/dev/null || true
     fi
 
     echo "✓ Configuration deployed"

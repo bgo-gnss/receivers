@@ -17,6 +17,7 @@ services:
     environment:
       - GPS_CONFIG_REPO_URL=https://git.vedur.is/bgo/gps-config-data.git
       - GPS_ENVIRONMENT=production
+      - GPS_CONFIG_PATH=/etc/gpsconfig
       - PYTHONUNBUFFERED=1
       - TZ=Atlantic/Reykjavik
 
@@ -26,10 +27,8 @@ services:
       - gps-data:/mnt/gpsdata
       # Cache and logs
       - gps-cache:/var/cache/gps_receivers
-      # Configuration (optional override)
-      - ./config:/etc/gpsconfig:ro
-      # Optional: Mount gps-config-data locally
-      # - ../../gps-config-data:/opt/gps-config-data:ro
+      # Mount gps-config-data locally (fallback when git.vedur.is unreachable)
+      - ../../../gps-config-data:/opt/gps-config-data:ro
 
     # Resource limits
     deploy:

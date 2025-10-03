@@ -18,6 +18,7 @@ RUN useradd --system --home-dir /opt/receivers --shell /bin/bash \
 
 # Create directory structure
 RUN mkdir -p /opt/receivers \
+    /opt/gps-config-data \
     /etc/gpsconfig \
     /var/cache/gps_receivers/{logs,tmp} \
     /mnt/gpsdata
@@ -31,10 +32,14 @@ COPY . /opt/receivers/
 # Install Python packages
 RUN python3 -m venv venv && \
     venv/bin/pip install --upgrade pip setuptools wheel && \
+    venv/bin/pip install gtimes && \
+    venv/bin/pip install git+https://github.com/bennigo/gps_parser.git && \
     venv/bin/pip install -e /opt/receivers
 
 # Set ownership
 RUN chown -R gpsops:gpsops /opt/receivers \
+    /opt/gps-config-data \
+    /etc/gpsconfig \
     /var/cache/gps_receivers \
     /mnt/gpsdata
 
