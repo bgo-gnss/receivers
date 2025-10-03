@@ -244,6 +244,30 @@ class BaseReceiver(ABC):
             self.logger.error(f"Failed to save health data to JSON: {e}")
             return None
 
+    def save_health_to_database(
+        self, health_data: Dict[str, Any], connection_string: Optional[str] = None
+    ) -> bool:
+        """Save health data to PostgreSQL database.
+
+        Helper method to save health data to checkcomm table.
+
+        Args:
+            health_data: Health data dictionary to save
+            connection_string: Optional PostgreSQL connection string
+
+        Returns:
+            True if save successful, False otherwise
+        """
+        from ..health import HealthDatabaseWriter
+
+        try:
+            with HealthDatabaseWriter(connection_string) as db:
+                return db.write_health_data(health_data)
+
+        except Exception as e:
+            self.logger.error(f"Failed to save health data to database: {e}")
+            return False
+
     @abstractmethod
     def get_station_info(self) -> Dict[str, Any]:
         """Get station information and configuration.
