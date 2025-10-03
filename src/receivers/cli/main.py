@@ -269,54 +269,80 @@ def cmd_health(args) -> int:
     """Health command - get receiver health information."""
     logger = setup_logging(args.loglevel)
     station_id = args.station.upper()
-    
+
     try:
         station_config = get_station_config(station_id)
         if station_config is None:
             logger.warning(f"⚠️  Station {station_id} not found in configuration")
             return 1
-            
+
         # Create receiver instance using factory pattern
         receiver = create_receiver(station_id, station_config)
-        
-        if args.analyze_status:
-            # Detailed health analysis from status session files
-            analysis = receiver.analyze_health_data()
-            
-            if 'error' in analysis:
-                print(f"❌ Error: {analysis['error']}")
-                if 'suggestion' in analysis:
-                    print(f"💡 Suggestion: {analysis['suggestion']}")
-                return 1
-            
-            print(analysis.get('health_report', 'No health report available'))
-            
-            # Save detailed analysis to CSV if requested
-            if args.save_csv and analysis.get('dataframe_available'):
-                from ..septentrio.health_analyzer import HealthDataAnalyzer
-                analyzer = HealthDataAnalyzer(analysis['ascii_directory'])
-                analyzer.load_all_files()
-                csv_path = f"{station_id}_health_analysis.csv"
-                analyzer.save_health_data_csv(csv_path)
-                print(f"\n📊 Detailed data saved to: {csv_path}")
-            
+
+        # Get comprehensive health status
+        health = receiver.get_health_status()
+
+        # Save to JSON if requested
+        if getattr(args, 'save_json', False):
+            json_path = receiver.save_health_to_json(health)
+            if json_path:
+                logger.info(f"Saved health data to {json_path}")
+
+        # Save to database if requested
+        if getattr(args, 'save_db', False):
+            success = receiver.save_health_to_database(health)
+            if success:
+                logger.info("Saved health data to database")
+            else:
+                logger.warning("Failed to save health data to database")
+
+        # Output format
+        if getattr(args, 'json', False):
+            # JSON output
+            import json
+            print(json.dumps(health, indent=2, default=str))
         else:
-            # Basic health check (connection status)
-            health = receiver.get_health_status()
-            
+            # Human-readable output
             print(f"Station: {health['station_id']}")
             print(f"Receiver Type: {health['receiver_type']}")
-            print(f"Overall Status: {health['overall_status']}")
-            print(f"Timestamp: {health['timestamp']}")
-            
-            # Connection details
-            conn = health.get('connection', {})
-            print(f"Connection: {'✅' if conn.get('receiver') else '❌'}")
-        
+            print(f"Timestamp: {health.get('timestamp', 'N/A')}")
+            print(f"Overall Status: {health.get('overall_status', 'unknown').upper()}")
+
+            # Connection summary
+            connection = health.get('connection', {})
+            if connection:
+                print(f"\nConnection Health:")
+                for level, data in connection.items():
+                    status = data.get('status', 'unknown')
+                    emoji = '✅' if status == 'ok' else '⚠️' if status == 'warning' else '❌'
+                    print(f"  {level}: {emoji} {status}")
+
+            # Metrics summary
+            metrics = health.get('metrics', {})
+            if metrics:
+                print(f"\nMetrics:")
+                for metric, data in metrics.items():
+                    if isinstance(data, dict):
+                        value = data.get('value', data.get('voltage', data.get('percent', 'N/A')))
+                        unit = data.get('unit', '')
+                        status = data.get('status', 'unknown')
+                        print(f"  {metric}: {value} {unit} [{status}]")
+
+            # Status summary
+            summary = health.get('status_summary', {})
+            if summary:
+                print(f"\nStatus Summary:")
+                print(f"  Healthy: {summary.get('healthy', 0)}")
+                print(f"  Warning: {summary.get('warning', 0)}")
+                print(f"  Critical: {summary.get('critical', 0)}")
+
         return 0
-        
+
     except Exception as e:
         logger.error(f"Health check failed: {e}")
+        if getattr(args, 'verbose', False):
+            import traceback
+            traceback.print_exc()
         return 1
 
 
@@ -744,14 +770,19 @@ Examples:
         help="Enable verbose output"
     )
     health_parser.add_argument(
-        "-a", "--analyze-status",
+        "--json",
         action="store_true",
-        help="Analyze detailed health data from status session ASCII files"
+        help="Output health data in JSON format"
     )
     health_parser.add_argument(
-        "--save-csv",
-        action="store_true", 
-        help="Save detailed health analysis to CSV file (requires --analyze-status)"
+        "--save-json",
+        action="store_true",
+        help="Save health data to JSON file in status_1hr/health/"
+    )
+    health_parser.add_argument(
+        "--save-db",
+        action="store_true",
+        help="Save health data to PostgreSQL database"
     )
     health_parser.set_defaults(func=cmd_health)
     
