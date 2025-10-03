@@ -59,9 +59,11 @@ echo ""
 # - All required repositories mounted
 # - Interactive terminal
 # - Privileged mode (needed for systemd)
+# - Host network (for internal git.vedur.is access)
 # - Remove container after exit
 docker run --rm \
     --privileged \
+    --network=host \
     -v "$RECEIVERS_DIR:/opt/receivers-source:ro" \
     -v "$GPS_PARSER_DIR:/opt/gps_parser-source:ro" \
     -v "$GTIMES_DIR:/opt/gtimes-source:ro" \
