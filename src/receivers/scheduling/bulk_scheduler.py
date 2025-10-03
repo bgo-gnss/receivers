@@ -384,8 +384,17 @@ class BulkDownloadScheduler:
         capabilities = {}
 
         try:
-            # Find receivers.cfg
-            config_path = Path.home() / '.config' / 'gpsconfig' / 'receivers.cfg'
+            # Find receivers.cfg using gps_parser (respects GPS_CONFIG_PATH)
+            try:
+                import gps_parser
+                parser_config = gps_parser.ConfigParser()
+                gps_config_dir = parser_config.config_path
+                config_path = Path(gps_config_dir) / 'receivers.cfg'
+            except (ImportError, Exception) as e:
+                self.logger.debug(f"Could not get config dir from gps_parser: {e}")
+                # Fallback to standard location
+                config_path = Path.home() / '.config' / 'gpsconfig' / 'receivers.cfg'
+
             if not config_path.exists():
                 self.logger.warning(f"receivers.cfg not found at {config_path}, all sessions will be attempted")
                 return {}

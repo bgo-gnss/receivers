@@ -55,7 +55,7 @@ class ReceiversConfig:
         if HAS_GPS_PARSER:
             try:
                 parser_config = gps_parser.ConfigParser()
-                gps_config_dir = parser_config.get_config_dir()
+                gps_config_dir = parser_config.config_path
                 receivers_cfg = os.path.join(gps_config_dir, "receivers.cfg")
                 if os.path.isfile(receivers_cfg):
                     return receivers_cfg
