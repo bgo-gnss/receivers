@@ -211,6 +211,39 @@ class BaseReceiver(ABC):
 
         return health_status
 
+    def save_health_to_json(self, health_data: Dict[str, Any]) -> Optional[str]:
+        """Save health data to JSON file.
+
+        Helper method to save health data to status_1hr/health/ directory.
+
+        Args:
+            health_data: Health data dictionary to save
+
+        Returns:
+            Path to saved JSON file or None if save failed
+        """
+        from ..health import HealthJSONWriter
+        from datetime import datetime
+
+        try:
+            # Build base path for current year/month
+            year = datetime.utcnow().year
+            month = datetime.utcnow().strftime("%b").lower()
+            base_path = f"{self.data_prepath}/{year}/{month}"
+
+            # Write JSON file
+            writer = HealthJSONWriter(base_path=base_path, station_id=self.station_id)
+            json_path = writer.write_health_data(health_data)
+
+            # Update latest.json symlink
+            writer.write_latest_symlink(json_path)
+
+            return str(json_path)
+
+        except Exception as e:
+            self.logger.error(f"Failed to save health data to JSON: {e}")
+            return None
+
     @abstractmethod
     def get_station_info(self) -> Dict[str, Any]:
         """Get station information and configuration.
