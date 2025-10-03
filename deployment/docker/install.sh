@@ -27,10 +27,14 @@ echo ""
 
 # Create required host directories
 echo "Step 1: Creating required directories..."
-sudo mkdir -p /mnt/gpsdata /var/cache/gps_receivers
+sudo mkdir -p /mnt/gpsdata \
+    /var/cache/gps_receivers/logs \
+    /var/cache/gps_receivers/tmp
 sudo chown -R $USER:$USER /mnt/gpsdata /var/cache/gps_receivers
+sudo chmod -R 777 /var/cache/gps_receivers  # Allow container user to write
 echo "  ✓ Created /mnt/gpsdata"
-echo "  ✓ Created /var/cache/gps_receivers"
+echo "  ✓ Created /var/cache/gps_receivers/logs"
+echo "  ✓ Created /var/cache/gps_receivers/tmp"
 echo ""
 
 # Check for local config

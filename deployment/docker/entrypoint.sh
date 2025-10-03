@@ -5,6 +5,13 @@ set -e
 echo "=== GPS Receivers Scheduler - Starting ==="
 echo ""
 
+# Ensure required directories exist with correct permissions
+# (bind mounts might not have subdirectories)
+mkdir -p /var/cache/gps_receivers/logs /var/cache/gps_receivers/tmp /mnt/gpsdata
+chmod 755 /var/cache/gps_receivers/logs /var/cache/gps_receivers/tmp /mnt/gpsdata
+echo "✓ Directories verified"
+echo ""
+
 # Clone or update gps-config-data
 CONFIG_REPO_DIR="/opt/gps-config-data"
 CONFIG_REPO_URL="${GPS_CONFIG_REPO_URL:-https://git.vedur.is/bgo/gps-config-data.git}"
@@ -40,6 +47,15 @@ if [[ -d "$CONFIG_REPO_DIR" ]]; then
     fi
 
     echo "✓ Configuration deployed"
+fi
+
+# Fix paths in receivers.cfg for Docker environment
+echo "Fixing paths for Docker environment..."
+if [[ -f "/etc/gpsconfig/receivers.cfg" ]]; then
+    # Replace development paths with Docker paths
+    sed -i 's|prepath = /home/bgo/.*|prepath = /mnt/gpsdata|' /etc/gpsconfig/receivers.cfg
+    sed -i 's|tmp_dir = /home/bgo/.*|tmp_dir = /var/cache/gps_receivers/tmp|' /etc/gpsconfig/receivers.cfg
+    echo "✓ Paths configured for Docker"
 fi
 
 echo ""

@@ -1,7 +1,7 @@
 # GPS Receivers Scheduler - Production Docker Image
 FROM ubuntu:24.04
 
-# Install system dependencies
+# Install system dependencies and basic tools
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
@@ -10,6 +10,14 @@ RUN apt-get update && apt-get install -y \
     git \
     sudo \
     curl \
+    vim \
+    nano \
+    less \
+    iputils-ping \
+    net-tools \
+    dnsutils \
+    htop \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
 # Create gpsops user
@@ -20,7 +28,8 @@ RUN useradd --system --home-dir /opt/receivers --shell /bin/bash \
 RUN mkdir -p /opt/receivers \
     /opt/gps-config-data \
     /etc/gpsconfig \
-    /var/cache/gps_receivers/{logs,tmp} \
+    /var/cache/gps_receivers/logs \
+    /var/cache/gps_receivers/tmp \
     /mnt/gpsdata
 
 # Set working directory
