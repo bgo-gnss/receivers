@@ -169,36 +169,36 @@ def cmd_scheduler_config(args) -> int:
 
 def cmd_scheduler_test(args) -> int:
     """Test scheduler setup without starting."""
-    
+
     if not HAS_APSCHEDULER:
         print("❌ APScheduler not available. Install with: pip install apscheduler")
         return 1
-        
+
     try:
         print("🧪 Testing scheduler setup...")
-        
+
         # Create scheduler with filtering options
         scheduler = BulkDownloadScheduler(
             production_mode=True,
             station_filter=getattr(args, 'stations', None),
             max_stations_per_session=getattr(args, 'max_stations', None)
         )
-        
+
         # Load stations
         print(f"✅ Loaded {len(scheduler.stations)} station configurations")
-        
+
         # Show filtering info
         if scheduler.station_filter:
             print(f"🔍 Station filter: {', '.join(scheduler.station_filter)}")
         if scheduler.max_stations_per_session:
             print(f"🔢 Max stations per session: {scheduler.max_stations_per_session}")
-        
+
         # Test scheduling (without starting)
         scheduler.schedule_all_sessions()
         jobs = scheduler.get_scheduled_jobs()
-        
+
         print(f"✅ Successfully scheduled {len(jobs)} jobs")
-        
+
         # Show distribution by session
         by_session = {}
         station_list = {}
@@ -209,7 +209,7 @@ def cmd_scheduler_test(args) -> int:
             if session not in station_list:
                 station_list[session] = []
             station_list[session].append(station)
-            
+
         print("\\n📊 Job distribution:")
         for session, count in sorted(by_session.items()):
             config = scheduler.schedule_configs.get(session, {})
@@ -220,10 +220,10 @@ def cmd_scheduler_test(args) -> int:
                 stations += f" +{len(station_list[session])-5} more"
             print(f"  {session}: {count} stations ({frequency} at {schedule_time})")
             print(f"           Stations: {stations}")
-            
+
         # Test next run times
         if jobs:
-            next_jobs = sorted([j for j in jobs if j['next_run']], 
+            next_jobs = sorted([j for j in jobs if j['next_run']],
                              key=lambda x: x['next_run'])[:3]
             print("\\n⏰ Next few scheduled runs:")
             for job in next_jobs:
@@ -231,15 +231,115 @@ def cmd_scheduler_test(args) -> int:
                 session = job['id'].split('_')[0]
                 next_run = datetime.fromisoformat(job['next_run']).strftime('%Y-%m-%d %H:%M:%S')
                 print(f"  {station} ({session}): {next_run}")
-                
+
         print("\\n✅ Scheduler test completed successfully")
         print("   Use 'receivers scheduler start' to run the scheduler")
-        
+
         return 0
-        
+
     except Exception as e:
         print(f"❌ Scheduler test failed: {e}")
         return 1
+
+
+def cmd_scheduler_stop(args) -> int:
+    """Stop the running scheduler."""
+
+    if not HAS_APSCHEDULER:
+        print("❌ APScheduler not available. Install with: pip install apscheduler")
+        return 1
+
+    try:
+        import os
+        import psutil
+
+        # Find running scheduler process
+        current_pid = os.getpid()
+        scheduler_pids = []
+
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                cmdline = proc.info.get('cmdline', [])
+                if cmdline and 'receivers' in ' '.join(cmdline) and 'scheduler' in ' '.join(cmdline) and 'start' in ' '.join(cmdline):
+                    if proc.info['pid'] != current_pid:
+                        scheduler_pids.append(proc.info['pid'])
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+
+        if not scheduler_pids:
+            print("ℹ️  No running scheduler found")
+            return 0
+
+        print(f"🛑 Found {len(scheduler_pids)} running scheduler process(es)")
+
+        for pid in scheduler_pids:
+            try:
+                proc = psutil.Process(pid)
+
+                if args.force:
+                    print(f"⚡ Force stopping scheduler (PID {pid})...")
+                    proc.kill()  # SIGKILL - immediate termination
+                    proc.wait(timeout=1)
+                    print(f"✅ Scheduler forcefully stopped (PID {pid})")
+                else:
+                    print(f"🛑 Gracefully stopping scheduler (PID {pid})...")
+                    print("   Waiting for active downloads to complete...")
+                    proc.terminate()  # SIGTERM - graceful shutdown
+                    proc.wait(timeout=30)
+                    print(f"✅ Scheduler stopped gracefully (PID {pid})")
+
+            except psutil.TimeoutExpired:
+                print(f"⚠️  Scheduler did not stop within timeout, force killing...")
+                proc.kill()
+                proc.wait(timeout=5)
+                print(f"✅ Scheduler forcefully stopped (PID {pid})")
+            except Exception as e:
+                print(f"❌ Failed to stop scheduler (PID {pid}): {e}")
+                return 1
+
+        return 0
+
+    except ImportError:
+        print("❌ psutil not available. Install with: pip install psutil")
+        print("   Or manually stop the scheduler with: pkill -f 'receivers scheduler start'")
+        return 1
+    except Exception as e:
+        print(f"❌ Failed to stop scheduler: {e}")
+        return 1
+
+
+def cmd_scheduler_restart(args) -> int:
+    """Restart the scheduler (stop and start)."""
+
+    if not HAS_APSCHEDULER:
+        print("❌ APScheduler not available. Install with: pip install apscheduler")
+        return 1
+
+    print("🔄 Restarting scheduler...")
+
+    # Stop the scheduler
+    stop_args = argparse.Namespace(force=args.force)
+    result = cmd_scheduler_stop(stop_args)
+
+    if result != 0:
+        print("❌ Failed to stop scheduler, cannot restart")
+        return result
+
+    # Brief pause to ensure clean shutdown
+    time.sleep(2)
+
+    # Start the scheduler with same options as before
+    # Note: This will use default settings. Users should manually start with custom options if needed.
+    start_args = argparse.Namespace(
+        max_workers=args.max_workers if hasattr(args, 'max_workers') else 5,
+        show_jobs=False,
+        verbose=args.verbose if hasattr(args, 'verbose') else False,
+        stations=getattr(args, 'stations', None),
+        max_stations=getattr(args, 'max_stations', None)
+    )
+
+    print("🚀 Starting scheduler...")
+    return cmd_scheduler_start(start_args)
 
 
 def create_scheduler_parser(subparsers):
@@ -335,19 +435,64 @@ def create_scheduler_parser(subparsers):
         help="Maximum number of stations per session (for testing)"
     )
     test_parser.set_defaults(func=cmd_scheduler_test)
-    
+
+    # Stop command
+    stop_parser = scheduler_subparsers.add_parser(
+        "stop",
+        help="Stop the running scheduler"
+    )
+    stop_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force immediate shutdown without waiting for active downloads"
+    )
+    stop_parser.set_defaults(func=cmd_scheduler_stop)
+
+    # Restart command
+    restart_parser = scheduler_subparsers.add_parser(
+        "restart",
+        help="Restart the scheduler (stop and start)"
+    )
+    restart_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force immediate shutdown without waiting for active downloads"
+    )
+    restart_parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=5,
+        help="Maximum number of concurrent downloads after restart (default: 5)"
+    )
+    restart_parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Enable verbose logging after restart"
+    )
+    restart_parser.add_argument(
+        "--stations",
+        nargs="+",
+        help="Only schedule these specific stations after restart"
+    )
+    restart_parser.add_argument(
+        "--max-stations",
+        type=int,
+        help="Maximum number of stations per session after restart"
+    )
+    restart_parser.set_defaults(func=cmd_scheduler_restart)
+
     return scheduler_parser
 
 
 # Handle scheduler subcommands
 def handle_scheduler_command(args) -> int:
     """Handle scheduler subcommands."""
-    
+
     if not hasattr(args, 'scheduler_command') or not args.scheduler_command:
         print("❌ No scheduler command specified")
-        print("Available commands: start, status, config, test")
+        print("Available commands: start, stop, restart, status, config, test")
         return 1
-        
+
     return args.func(args)
 
 

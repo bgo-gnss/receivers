@@ -64,8 +64,8 @@ class NetR9(BaseReceiver):
         # Initialize health parser
         self.health_parser = TrimbleHealthParser(station_id, "NetR9")
 
-        # data_prepath is now handled by BaseReceiver via ConfigManager
-        self.tmp_dir = "/home/bgo/tmp/download/"
+        # Get tmp_dir from centralized configuration
+        self.tmp_dir = self.receivers_config.get_tmp_dir()
 
         # Phase 1 utilities (always enabled - Phase 3B)
         self.archive_validator = ArchiveValidator(logger=self.logger)
@@ -476,13 +476,15 @@ class NetR9(BaseReceiver):
 
         except Exception as e:
             duration = time.time() - start_time
-            error_msg = f"Download failed: {e}"
-            self.logger.error(error_msg)
+            error_type = type(e).__name__
+            error_msg = f"{error_type}: {e}"
+            self.logger.error(f"❌ Download failed: {error_msg}")
 
             return {
                 "station_id": self.station_id,
                 "receiver_type": "NetR9",
-                "status": "error",
+                "status": "failed",
+                "error_message": error_msg,
                 "files_downloaded": 0,
                 "downloaded_files": [],
                 "error": error_msg,

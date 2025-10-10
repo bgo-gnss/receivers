@@ -25,13 +25,19 @@ def load_scheduler_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
     """Load scheduler configuration from YAML file.
 
     Args:
-        config_path: Path to scheduler.yaml (default: ~/.config/gpsconfig/scheduler.yaml)
+        config_path: Path to scheduler.yaml (default: GPS_CONFIG_PATH/scheduler.yaml or ~/.config/gpsconfig/scheduler.yaml)
 
     Returns:
         Dictionary with scheduler configuration
     """
     if config_path is None:
-        config_path = Path.home() / '.config' / 'gpsconfig' / 'scheduler.yaml'
+        # Check GPS_CONFIG_PATH environment variable first
+        import os
+        config_dir = os.getenv('GPS_CONFIG_PATH')
+        if config_dir:
+            config_path = Path(config_dir) / 'scheduler.yaml'
+        else:
+            config_path = Path.home() / '.config' / 'gpsconfig' / 'scheduler.yaml'
 
     # If YAML not available or file doesn't exist, return defaults
     if not HAS_YAML:

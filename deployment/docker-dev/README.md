@@ -1,6 +1,21 @@
-# GPS Receivers Scheduler - Docker Production Deployment
+# GPS Receivers Scheduler - Docker Development Setup
 
-Production Docker deployment for GPS receivers scheduler with automatic configuration from git.vedur.is.
+**🔧 DEVELOPMENT DOCKER SETUP** - Live code updates without rebuilds!
+
+This setup uses volume mounts to share source code between your laptop and the container.
+Changes to Python files are instantly available after a simple container restart.
+
+**Key Features**:
+- ✅ Edit code on laptop, run in production-like environment
+- ✅ Git branch switching - test branches by switching and restarting
+- ✅ No rebuild needed for code changes
+- ✅ Production parity (same OS, packages, network config)
+
+**📚 See [Development Workflow](../../docs/development/docker-workflow.md) for full documentation.**
+
+**For production deployment**, see [../docker-prod/](../docker-prod/) (future).
+
+---
 
 ## Quick Start
 
@@ -39,14 +54,26 @@ cd deployment/docker
 Access the container to run commands or monitor activities:
 
 ```bash
-# Access container shell
+# Access container shell (interactive mode)
 docker exec -it gps-receivers-scheduler bash
 
 # Once inside, you can run:
-receivers scheduler status --show-jobs
-receivers health ELDC --json
-ls -la /mnt/gpsdata/
-tail -f /var/cache/gps_receivers/logs/scheduler.log
+receivers scheduler status --show-jobs    # Check scheduler status
+receivers health ELDC --json              # Check station health
+ls -la /mnt/gpsdata/                      # List downloaded files
+tail -f /var/cache/gps_receivers/logs/scheduler.log  # Follow logs
+
+# Debug and inspection commands:
+ps aux | grep receivers                   # Check if scheduler is running
+cat /etc/gpsconfig/scheduler.yaml         # View configuration
+sqlite3 /var/cache/gps_receivers/scheduler.db ".tables"  # Inspect database
+receivers download ELDC --test-connection # Test station connectivity
+which python3                             # Check Python location
+pip list | grep receivers                 # Check installed packages
+
+# The gpsops user has sudo privileges if needed:
+sudo systemctl status something
+sudo apt update
 ```
 
 ### Run Commands Without Shell
@@ -132,20 +159,47 @@ docker exec gps-receivers-scheduler find /mnt/gpsdata/$(date +%Y)/$(date +%b | t
 ### Start/Stop
 
 ```bash
-# Start
+# Start container
 docker compose up -d
 
-# Stop
+# Stop container
 docker compose down
 
-# Restart
+# Restart container (stops and starts scheduler)
 docker compose restart
 
-# Stop without removing
+# Stop without removing container
 docker compose stop
 
 # Start after stop
 docker compose start
+```
+
+### Stop/Restart Scheduler
+
+You can now stop or restart the scheduler without restarting the entire container:
+
+```bash
+# Stop the scheduler gracefully (waits for active downloads)
+docker exec gps-receivers-scheduler receivers scheduler stop
+
+# Stop the scheduler immediately (force kill)
+docker exec gps-receivers-scheduler receivers scheduler stop --force
+
+# Restart the scheduler (reload configuration)
+docker exec gps-receivers-scheduler receivers scheduler restart
+
+# Restart with force stop
+docker exec gps-receivers-scheduler receivers scheduler restart --force
+
+# Restart with custom options
+docker exec gps-receivers-scheduler receivers scheduler restart --max-workers 10 --verbose
+```
+
+**Note**: The `stop` and `restart` commands require `psutil`. If not installed, restart the container instead:
+
+```bash
+docker compose restart
 ```
 
 ### Update/Rebuild
@@ -181,6 +235,10 @@ Data is stored in two main volumes:
 
 - `/mnt/gpsdata` - Downloaded GPS data files
 - `/var/cache/gps_receivers` - Logs and cache
+  - `logs/scheduler.log` - Main scheduler log
+  - `logs/download_audit.jsonl` - Download audit trail (if configured)
+  - `scheduler.db` - APScheduler job database
+  - `tmp/` - Temporary download files
 
 Update volume paths in `docker-compose.yml`:
 

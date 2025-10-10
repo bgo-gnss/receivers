@@ -51,6 +51,7 @@ class BaseReceiver(ABC):
         sync: bool = True,
         clean_tmp: bool = True,
         archive: bool = True,
+        reverse_chronological: bool = True,
         **kwargs,
     ) -> Dict[str, Any]:
         """Download data from receiver for specified time period.
@@ -62,6 +63,8 @@ class BaseReceiver(ABC):
             sync: Whether to sync missing files
             clean_tmp: Whether to clean temporary download directory
             archive: Whether to archive downloaded files
+            reverse_chronological: Download newest files first (True for -D flag routine downloads,
+                                  False for --start/--end backfilling). Default True.
             **kwargs: Additional receiver-specific parameters
 
         Returns:
