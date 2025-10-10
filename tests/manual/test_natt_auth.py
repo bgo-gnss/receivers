@@ -32,7 +32,7 @@ sys.path.insert(0, '/home/bgo/work/projects/gps/gpslibrary_new/gtimes/src')
 TEST_STATION = "ISAF"  # Ísafjörður
 
 # Credentials (these will be added to stations.cfg later)
-TEST_USERNAME = "IMO"
+TEST_USERNAME = "LMI"  # Corrected: LMI not IMO
 TEST_PASSWORD = "piene16"
 
 # Connection details
@@ -117,11 +117,11 @@ def test_directory_listing():
 
         station_config = {
             "router": {
-                "ip": get_station_ip(TEST_STATION),
+                "ip": TEST_IP,
                 "ftp_mode": "active"
             },
             "receiver": {
-                "httpport": 8060,
+                "httpport": TEST_PORT,
                 "user": TEST_USERNAME,
                 "pwd": TEST_PASSWORD,
                 "timeout_category": "mobile"
