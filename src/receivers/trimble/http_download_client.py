@@ -2,10 +2,15 @@
 
 This module provides HTTP-based file download functionality for NetR9 receivers,
 replacing FTP-based downloads with the receiver's HTTP API endpoints.
+
+Supports both NetR9 and NetR5 receivers with automatic detection of URL structure:
+- NetR9: /Internal/path/file.T02
+- NetR5: /CACHEDIR*/download/Internal/path/file.T02
 """
 
 import logging
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -123,6 +128,22 @@ class NetR9HTTPDownloader:
         # Track connection time for metrics
         self._last_connection_time = 0.0
 
+        # Base path handling for NetR5 CACHEDIR prefix (hybrid approach)
+        # Check if explicit base_path is configured in stations.cfg
+        receiver_config = station_config.get("receiver", {})
+        explicit_base_path = receiver_config.get("base_path")
+
+        if explicit_base_path:
+            # Explicit configuration - use directly
+            self.base_path = explicit_base_path
+            self._base_path_discovered = True
+            self.logger.info(f"Using explicit base_path from config: {self.base_path}")
+        else:
+            # Auto-discovery mode - will discover on first request
+            self.base_path = None
+            self._base_path_discovered = False
+            self.logger.debug("Base path will be auto-discovered on first request")
+
         self.logger.info(f"Initialized NetR9 HTTP downloader for {self.station_id}")
 
     def _get_logger(self, level: int = logging.INFO) -> logging.Logger:
@@ -140,8 +161,76 @@ class NetR9HTTPDownloader:
 
         return logger
 
+    def _discover_base_path(self) -> str:
+        """Auto-discover base path for NetR5 CACHEDIR prefix.
+
+        NetR9 receivers use standard /Internal/ paths, but NetR5 receivers
+        with downgraded firmware use /CACHEDIR*/download/ prefix.
+
+        This method attempts to detect which structure is in use:
+        1. Try standard /Internal/ path with directory listing
+        2. If that fails or returns error, fetch root page and parse for CACHEDIR links
+        3. Cache discovered path for subsequent requests
+
+        Returns:
+            Base path prefix (empty string for NetR9, CACHEDIR path for NetR5)
+        """
+        if self._base_path_discovered:
+            return self.base_path or ""
+
+        self.logger.debug("Auto-discovering base path for receiver...")
+
+        # Test 1: Try standard NetR9 path
+        test_path = "/Internal/"
+        endpoint = f"/prog/show?directory&path={quote(test_path)}"
+
+        success, response, error = self.http_client.get_url(endpoint)
+
+        # Check if NetR9 directory listing actually works
+        # NetR5 returns HTTP 200 but with "ERROR: Unknown Command" in the body
+        if success and response and "ERROR" not in response.upper():
+            # Standard NetR9 path works - no prefix needed
+            self.base_path = ""
+            self._base_path_discovered = True
+            self.logger.info("✅ Detected NetR9 receiver (standard /Internal/ paths)")
+            return ""
+
+        # Test 2: NetR9 path failed - likely NetR5 with CACHEDIR prefix
+        self.logger.debug("Standard /Internal/ path failed - checking for NetR5 CACHEDIR prefix...")
+
+        # Fetch root page to find CACHEDIR links
+        success, response, error = self.http_client.get_url("/")
+
+        if not success or not response:
+            self.logger.warning(f"Failed to discover base path: {error}")
+            # Fall back to no prefix
+            self.base_path = ""
+            self._base_path_discovered = True
+            return ""
+
+        # Parse HTML for CACHEDIR links
+        # Look for patterns like: href="CACHEDIR656804383/..." (relative paths without leading slash)
+        # NetR5 download URLs use: /CACHEDIR{number}/download/Internal/...
+        cachedir_pattern = r'CACHEDIR\d+'
+        match = re.search(cachedir_pattern, response)
+
+        if match:
+            cachedir_name = match.group(0)  # e.g., "CACHEDIR656804383"
+            # Build complete base path with /download suffix
+            discovered_path = f"/{cachedir_name}/download"
+            self.base_path = discovered_path
+            self._base_path_discovered = True
+            self.logger.info(f"✅ Detected NetR5 receiver with CACHEDIR prefix: {discovered_path}")
+            return discovered_path
+        else:
+            # No CACHEDIR found - fall back to standard path
+            self.logger.warning("Could not detect CACHEDIR prefix - using standard paths")
+            self.base_path = ""
+            self._base_path_discovered = True
+            return ""
+
     def get_directory_listing(self, remote_path: str) -> List[Tuple[str, int]]:
-        """Get directory listing from NetR9 receiver.
+        """Get directory listing from NetR9/NetR5 receiver.
 
         Args:
             remote_path: Remote directory path (e.g., '/Internal/202509/15s_24h')
@@ -149,9 +238,14 @@ class NetR9HTTPDownloader:
         Returns:
             List of (filename, filesize) tuples
         """
-        endpoint = f"/prog/show?directory&path={quote(remote_path)}"
+        # Discover base path if not yet done
+        base_path = self._discover_base_path()
 
-        self.logger.debug(f"Getting directory listing for {remote_path}")
+        # Build full path with base_path prefix for NetR5 support
+        full_path = f"{base_path}{remote_path}" if base_path else remote_path
+        endpoint = f"/prog/show?directory&path={quote(full_path)}"
+
+        self.logger.debug(f"Getting directory listing for {full_path}")
         success, response, error = self.http_client.get_url(endpoint)
 
         if not success or not response:
@@ -187,7 +281,7 @@ class NetR9HTTPDownloader:
 
     def download_file(self, remote_path: str, filename: str, local_path: Path,
                      expected_size: Optional[int] = None) -> bool:
-        """Download a single file from NetR9 receiver.
+        """Download a single file from NetR9/NetR5 receiver.
 
         Args:
             remote_path: Remote directory path
@@ -198,9 +292,17 @@ class NetR9HTTPDownloader:
         Returns:
             True if download successful, False otherwise
         """
+        # Discover base path if not yet done
+        base_path = self._discover_base_path()
+
+        # Build full path with base_path prefix for NetR5 support
         full_remote_path = f"{remote_path.rstrip('/')}/{filename}"
-        # NetR9 uses direct download path format: /download/Internal/path/file.T02
-        endpoint = f"/download{full_remote_path}"
+        if base_path:
+            # NetR5 with CACHEDIR: use base_path directly (already includes /download)
+            endpoint = f"{base_path}{full_remote_path}"
+        else:
+            # NetR9: use standard /download prefix
+            endpoint = f"/download{full_remote_path}"
 
         # Check if we should resume download
         should_resume, resume_offset = self.file_validator.should_resume_download(
@@ -432,7 +534,7 @@ class NetR9HTTPDownloader:
         return downloaded_files
 
     def test_connection(self) -> Dict[str, Any]:
-        """Test HTTP connection to NetR9 receiver.
+        """Test HTTP connection to NetR9/NetR5 receiver.
 
         Returns:
             Dictionary with connection test results
@@ -444,11 +546,17 @@ class NetR9HTTPDownloader:
         basic_test = self.http_client.test_connection()
 
         if basic_test["success"]:
-            # Test specific NetR9 endpoints
+            # Discover base path (will be cached for future use)
+            base_path = self._discover_base_path()
+
+            # Test specific NetR9/NetR5 endpoints
+            # Build Internal path with discovered base_path
+            internal_path = f"{base_path}/Internal/" if base_path else "/Internal/"
+
             endpoints_to_test = [
                 "/prog/show?temperature",
                 "/prog/show?voltages",
-                "/prog/show?directory&path=/Internal/"
+                f"/prog/show?directory&path={quote(internal_path)}"
             ]
 
             endpoint_results = {}
@@ -472,6 +580,8 @@ class NetR9HTTPDownloader:
 
         if basic_test["success"]:
             result["endpoint_tests"] = endpoint_results
+            # Include discovered base path in results
+            result["base_path"] = self.base_path
 
         return result
 

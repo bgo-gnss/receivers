@@ -197,6 +197,31 @@ black src/ tests/
 mypy src/receivers/
 ```
 
+### Docker Development Workflow
+
+For development with live code updates and git branch testing:
+
+**🔧 Development Setup** - Edit code on your laptop, run in production-like Docker container:
+
+```bash
+cd deployment/docker-dev
+./install.sh
+
+# Edit code locally → Save → Restart container → Test
+docker restart gps-receivers-scheduler-dev
+```
+
+**Key Features**:
+- ✅ Live code updates without rebuilds
+- ✅ Git branch switching - test branches instantly
+- ✅ Production parity (same OS, packages, network config)
+- ✅ Auto-start after system reboot
+
+**📚 Complete Documentation**:
+- [Docker Development Workflow](docs/development/docker-workflow.md) - Comprehensive development guide
+- [Git Branch Testing](docs/development/git-branch-testing.md) - Branch testing workflows
+- [Docker Dev Setup](deployment/docker-dev/README.md) - Installation and monitoring
+
 ## 📦 Dependencies
 
 ### Core Dependencies

@@ -315,7 +315,7 @@ class BaseDownloadManager(ABC):
         clean_tmp: bool = True,
         archive: bool = True,
         immediate_archive: bool = True,
-        tmp_dir: str = "/home/bgo/tmp/download/"
+        tmp_dir: str = "/tmp/gps_receivers/download/"
     ) -> Dict[str, Any]:
         """Download data session with common logic.
 

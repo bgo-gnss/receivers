@@ -76,6 +76,7 @@ local = [
 scheduler = [
     "apscheduler>=3.10.0",
     "sqlalchemy>=2.0.0",
+    "psutil>=5.9.0",  # For scheduler stop/restart commands
 ]
 all = [
     "receivers[dev,test,docs,local,scheduler]",
