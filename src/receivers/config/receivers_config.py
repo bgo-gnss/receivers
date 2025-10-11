@@ -90,26 +90,33 @@ class ReceiversConfig:
             self.logger.error(f"Failed to load receivers config: {e}")
             raise
 
-    def get_prepath(self) -> str:
+    def get_data_prepath(self) -> str:
         """Get base data directory path.
 
         Returns:
             Base directory path for data storage
         """
         try:
-            prepath = self.config.get("archive_paths", "prepath")
+            data_prepath = self.config.get("archive_paths", "data_prepath")
             # Convert relative paths to absolute from project root
-            if prepath.startswith("./"):
+            if data_prepath.startswith("./"):
                 # Get project root (where this config is being called from)
                 project_root = os.getcwd()
-                prepath = os.path.join(project_root, prepath[2:])
-                prepath = os.path.abspath(prepath)
-            return prepath
+                data_prepath = os.path.join(project_root, data_prepath[2:])
+                data_prepath = os.path.abspath(data_prepath)
+            return data_prepath
         except (configparser.NoSectionError, configparser.NoOptionError):
             # Fallback to project-local tmp directory
             fallback = os.path.join(os.getcwd(), "tmp", "data")
-            self.logger.warning(f"Using fallback prepath: {fallback}")
+            self.logger.warning(f"Using fallback data_prepath: {fallback}")
             return fallback
+
+    def get_prepath(self) -> str:
+        """DEPRECATED: Use get_data_prepath() instead.
+
+        Kept for backward compatibility.
+        """
+        return self.get_data_prepath()
 
     def get_tmp_dir(self) -> str:
         """Get temporary download directory path.
@@ -141,7 +148,7 @@ class ReceiversConfig:
             return self.config.get("archive_paths", "archive_template")
         except (configparser.NoSectionError, configparser.NoOptionError):
             # Fallback template
-            return "{prepath}/%Y/#b/{station}/{session}/raw/{station}%Y%m%d%H00a{extension}"
+            return "{data_prepath}/%Y/#b/{station}/{session}/raw/{station}%Y%m%d%H00a{extension}"
 
     def get_session_types(self) -> Dict[str, Dict[str, Any]]:
         """Get session type definitions.
@@ -234,7 +241,7 @@ class ReceiversConfig:
             Complete archive path
         """
         template = self.get_archive_template()
-        prepath = self.get_prepath()
+        data_prepath = self.get_data_prepath()
 
         # Use gtimes to format the template with datetime
         try:
@@ -242,7 +249,7 @@ class ReceiversConfig:
 
             # Create template with our variables filled in
             filled_template = template.format(
-                prepath=prepath,
+                data_prepath=data_prepath,
                 station=station_id,
                 session=session,
                 extension=extension,
@@ -263,7 +270,7 @@ class ReceiversConfig:
             # Fallback without gtimes
             self.logger.warning("gtimes not available - using simple datetime formatting")
             filled_template = template.format(
-                prepath=prepath,
+                data_prepath=data_prepath,
                 station=station_id,
                 session=session,
                 extension=extension,

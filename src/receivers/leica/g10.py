@@ -60,7 +60,7 @@ class LeicaG10(BaseReceiver):
         self.logger.info(f"Initialized Leica G10 receiver for {station_id}")
 
         # Set up directories
-        self.tmp_dir = "/home/bgo/tmp/download/"
+        self.tmp_dir = self.receivers_config.get_tmp_dir()
 
         # Get G10-specific configuration
         self.leica_config = self.receivers_config.get_receiver_config("g10")
