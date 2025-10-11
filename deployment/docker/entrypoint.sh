@@ -7,7 +7,9 @@ echo ""
 
 # Ensure required directories exist
 # (bind mounts might not have subdirectories)
-mkdir -p /var/cache/gps_receivers/logs /var/cache/gps_receivers/tmp /mnt/gpsdata 2>/dev/null || true
+# Support both /mnt/gpsdata (production) and /tmp/gpsdata (dev)
+mkdir -p /var/cache/gps_receivers/logs /var/cache/gps_receivers/tmp 2>/dev/null || true
+mkdir -p /mnt/gpsdata /tmp/gpsdata 2>/dev/null || true
 echo "✓ Directories verified"
 echo ""
 
@@ -48,14 +50,8 @@ if [[ -d "$CONFIG_REPO_DIR" ]]; then
     echo "✓ Configuration deployed"
 fi
 
-# Fix paths in receivers.cfg for Docker environment
-echo "Fixing paths for Docker environment..."
-if [[ -f "/etc/gpsconfig/receivers.cfg" ]]; then
-    # Replace development paths with Docker paths
-    sed -i 's|prepath = /home/bgo/.*|prepath = /mnt/gpsdata|' /etc/gpsconfig/receivers.cfg
-    sed -i 's|tmp_dir = /home/bgo/.*|tmp_dir = /var/cache/gps_receivers/tmp|' /etc/gpsconfig/receivers.cfg
-    echo "✓ Paths configured for Docker"
-fi
+# Note: Paths are now configured via environment files (docker-dev.env, production.env)
+# No manual path fixing needed - deploy.py handles template rendering
 
 echo ""
 echo "=== Starting Scheduler ==="

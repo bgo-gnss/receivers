@@ -292,12 +292,12 @@ class PolaRX5(BaseReceiver):
 
         # Create archive paths using unified method
         archive_template = self.receivers_config.get_archive_template()
-        prepath = self.receivers_config.get_prepath()
+        data_prepath = self.receivers_config.get_data_prepath()
         extension = self.get_file_extension()
 
         # Build archive template
         full_archive_template = archive_template.format(
-            prepath=prepath,
+            data_prepath=data_prepath,
             station='{station}',
             session='{session}',
             extension=extension,
@@ -1352,7 +1352,7 @@ class PolaRX5(BaseReceiver):
     def _cleanup_empty_tmp_directories(self):
         """Remove empty station directories from tmp download area."""
         try:
-            tmp_base = Path("/home/bgo/tmp/download/")
+            tmp_base = Path(self.receivers_config.get_tmp_dir())
             if tmp_base.exists():
                 for station_dir in tmp_base.iterdir():
                     if station_dir.is_dir() and not any(station_dir.iterdir()):

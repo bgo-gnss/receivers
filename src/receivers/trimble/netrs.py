@@ -62,7 +62,7 @@ class NetRS(BaseReceiver):
         self.health_parser = TrimbleHealthParser(station_id, "NetRS")
 
         # data_prepath is now handled by BaseReceiver via ConfigManager
-        self.tmp_dir = "/home/bgo/tmp/download/"
+        self.tmp_dir = self.receivers_config.get_tmp_dir()
 
         # Phase 1 utilities (always enabled - Phase 3B)
         self.archive_validator = ArchiveValidator(logger=self.logger)
