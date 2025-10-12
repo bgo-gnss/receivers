@@ -518,7 +518,7 @@ class LeicaG10(BaseReceiver):
         archived_extension = raw_extension + ".gz"  # .m00.gz
 
         full_archive_template = archive_template.format(
-            prepath=self.data_prepath,
+            data_prepath=self.data_prepath,
             station="{station}",
             session="{session}",
             extension=archived_extension,

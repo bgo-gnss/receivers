@@ -61,7 +61,7 @@ class NetRS(BaseReceiver):
         # Initialize health parser
         self.health_parser = TrimbleHealthParser(station_id, "NetRS")
 
-        # Get tmp_dir from centralized configuration
+        # data_prepath is now handled by BaseReceiver via ConfigManager
         self.tmp_dir = self.receivers_config.get_tmp_dir()
 
         # Phase 1 utilities (always enabled - Phase 3B)
@@ -665,7 +665,7 @@ class NetRS(BaseReceiver):
         raw_extension = self.get_file_extension()  # .T00
         archived_extension = raw_extension + ".gz"  # .T00.gz
         full_archive_template = archive_template.format(
-            prepath=self.data_prepath,
+            data_prepath=self.data_prepath,
             station="{station}",
             session="{session}",
             extension=archived_extension,

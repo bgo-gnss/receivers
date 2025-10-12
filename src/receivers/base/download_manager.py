@@ -315,7 +315,7 @@ class BaseDownloadManager(ABC):
         clean_tmp: bool = True,
         archive: bool = True,
         immediate_archive: bool = True,
-        tmp_dir: str = "/tmp/gps_receivers/download/"
+        tmp_dir: Optional[str] = None
     ) -> Dict[str, Any]:
         """Download data session with common logic.
 
@@ -328,7 +328,7 @@ class BaseDownloadManager(ABC):
             clean_tmp: Whether to clean temporary files
             archive: Whether to archive files
             immediate_archive: Whether to archive immediately after each download
-            tmp_dir: Temporary download directory
+            tmp_dir: Temporary download directory (uses instance tmp_dir if not provided)
 
         Returns:
             Dictionary with download results
@@ -356,7 +356,9 @@ class BaseDownloadManager(ABC):
 
         self.logger.info(f"Missing files: {len(missing_files)}")
 
-        # Set up temporary directory
+        # Set up temporary directory - use instance tmp_dir if not provided
+        if tmp_dir is None:
+            tmp_dir = getattr(self, 'tmp_dir', '/tmp/download/')
         tmp_dir_path = Path(tmp_dir) / self.station_id
         tmp_dir_path.mkdir(parents=True, exist_ok=True)
 

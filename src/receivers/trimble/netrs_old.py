@@ -57,7 +57,7 @@ class NetRS(BaseReceiver):
         self.health_parser = TrimbleHealthParser(station_id, "NetRS")
 
         # data_prepath is now handled by BaseReceiver via ConfigManager
-        self.tmp_dir = "/tmp/gps_receivers/download/"
+        self.tmp_dir = self.receivers_config.get_tmp_dir()
 
         # NetRS HTTP API endpoints (similar to NetR9)
         self.endpoints = {
