@@ -31,7 +31,7 @@ class BaseReceiver(ABC):
         self.receivers_config = get_receivers_config()
 
         # Get common configuration values that all receivers need
-        self.data_prepath = self.receivers_config.get_prepath()
+        self.data_prepath = self.receivers_config.get_data_prepath()
 
     @abstractmethod
     def get_connection_status(self) -> Dict[str, Any]:
@@ -126,12 +126,12 @@ class BaseReceiver(ABC):
         """
         # Get archive template from configuration
         template = self.receivers_config.get_archive_template()
-        prepath = self.receivers_config.get_prepath()
+        data_prepath = self.receivers_config.get_data_prepath()
         extension = self.get_file_extension()
 
-        # Create template with prepath and extension
+        # Create template with data_prepath and extension
         full_template = template.format(
-            prepath=prepath,
+            data_prepath=data_prepath,
             station='{station}',
             session='{session}',
             extension=extension,

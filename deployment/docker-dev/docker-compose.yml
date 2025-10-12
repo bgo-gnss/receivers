@@ -1,64 +1,56 @@
 version: '3.8'
 
+# GPS Receivers - Development Docker Compose
+# Purpose: Local development and testing on laptop
+# Data: /tmp/gpsdata/ (ephemeral, shared between Docker and manual commands)
+
 services:
   gps-scheduler:
     build:
       context: ../..
-      dockerfile: deployment/docker-dev/Dockerfile
+      dockerfile: deployment/docker/Dockerfile
     image: gps-receivers-dev:latest
     container_name: gps-receivers-scheduler-dev
     hostname: gps-scheduler-dev
     restart: unless-stopped
 
-    # Network mode - use host for IMO internal network access
+    # Network mode - use host for simplicity in dev
     network_mode: host
-
-    # DNS configuration - use internal DNS servers for *.gps.vedur.is resolution
-    dns:
-      - 10.170.255.210
-      - 10.170.255.220
-      - 8.8.8.8
-      - 1.1.1.1
-    dns_search:
-      - vedur.is
-      - dyn.vedur.is
-      - vi.vedur.is
 
     # Environment variables
     environment:
       - GPS_CONFIG_REPO_URL=https://git.vedur.is/bgo/gps-config-data.git
-      - GPS_ENVIRONMENT=production
+      - GPS_ENVIRONMENT=docker-dev
       - GPS_CONFIG_PATH=/opt/gps-config-data
       - PYTHONUNBUFFERED=1
-      - PYTHONDONTWRITEBYTECODE=1
       - TZ=Atlantic/Reykjavik
 
-    # Volumes - mount local packages for live code updates
+    # Volumes for persistence
     volumes:
-      # Data directory (GPS files) - bind to host
-      - gps-data:/mnt/gpsdata
+      # Data directory - 1:1 bind mount (no path translation!)
+      # Both Docker and laptop manual commands write to /tmp/gpsdata/
+      - /tmp/gpsdata:/tmp/gpsdata
 
-      # Cache and logs - bind to host
+      # Cache and logs - using Docker volumes for isolation
       - gps-cache:/var/cache/gps_receivers
 
-      # Mount receivers source files (not /opt/receivers to preserve scripts)
+      # Mount gps-config-data from host for easy development
+      - ../../../gps-config-data:/opt/gps-config-data:ro
+
+      # Mount source code for live development
       - ../../src:/opt/receivers/src:ro
       - ../../pyproject.toml:/opt/receivers/pyproject.toml:ro
-      - ../../README.md:/opt/receivers/README.md:ro
 
-      # Mount sibling packages (read-only)
+      # Mount gtimes and gps_parser for development
       - ../../../gtimes:/opt/gtimes:ro
       - ../../../gps_parser:/opt/gps_parser:ro
 
-      # Mount config data (read-only)
-      - ../../../gps-config-data:/opt/gps-config-data:ro
-
-    # Resource limits
+    # Resource limits (generous for dev/testing)
     deploy:
       resources:
         limits:
           cpus: '4.0'
-          memory: 2G
+          memory: 4G
         reservations:
           cpus: '1.0'
           memory: 512M
@@ -68,22 +60,36 @@ services:
       driver: "json-file"
       options:
         max-size: "10m"
-        max-file: "5"
+        max-file: "3"
 
-    # Command - start scheduler with all stations
+    # Command - start scheduler with verbose output
     command: ["scheduler", "start", "--verbose", "--show-jobs"]
 
 volumes:
-  gps-data:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: /tmp/gpsdata
-
+  # Cache volume - separate from host for Docker isolation
   gps-cache:
     driver: local
     driver_opts:
       type: none
       o: bind
-      device: /var/cache/gps_receivers
+      device: /tmp/gps_receivers_cache
+
+# Notes:
+# ------
+# 1. Data directory (/tmp/gpsdata/) is 1:1 bind mounted
+#    - Docker writes: /tmp/gpsdata/ (inside container)
+#    - Appears at: /tmp/gpsdata/ (on host)
+#    - Manual commands write: /tmp/gpsdata/ (on host)
+#    - Result: Both see same files, no confusion!
+#
+# 2. Cache is isolated to avoid conflicts with manual runs
+#    - Docker: /var/cache/gps_receivers/ → /tmp/gps_receivers_cache/
+#    - Manual: ~/.cache/gps_receivers/
+#
+# 3. Source code is mounted read-only for development
+#    - Changes to Python code require container rebuild
+#    - For faster iteration, can mount rw and pip install -e
+#
+# 4. Configuration is deployed inside container to /etc/gpsconfig/
+#    - Uses docker-dev.env environment file
+#    - Entrypoint.sh handles deployment during startup
