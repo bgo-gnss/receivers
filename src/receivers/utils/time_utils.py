@@ -116,7 +116,7 @@ def generate_download_datetimes(
     # Generate datetime list
     datetimes = []
     current = start_time
-    while current <= end_time:
+    while current < end_time:  # Fixed: end_time is exclusive (don't include today)
         datetimes.append(current)
         current += freq
 

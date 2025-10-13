@@ -663,8 +663,16 @@ class NetR9(BaseReceiver):
                 "remote_filename_format", "{station}%Y%m%d%H%M{session_letter}.T02"
             )
 
+            # Handle firmware bug: some NetR5 receivers pad station ID with underscores
+            # Example: ISAF (4 chars) becomes ISAF______ (10 chars total)
+            station_id_for_filename = self.station_id
+            if self.station_info.get("receiver", {}).get("firmware_underscore_pad"):
+                # Pad to 10 characters with underscores
+                station_id_for_filename = self.station_id.ljust(10, '_')
+                self.logger.debug(f"Applying underscore padding: {self.station_id} -> {station_id_for_filename}")
+
             filename = file_dt.strftime(filename_format).format(
-                station=self.station_id, session_letter=letter_code
+                station=station_id_for_filename, session_letter=letter_code
             )
 
             # Remote directory format: /Internal/YYYYMM/session_directory/
