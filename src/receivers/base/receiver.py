@@ -173,24 +173,30 @@ class BaseReceiver(ABC):
 
         # Handle different input types
         if dt_input is None:
-            # Generate datetime list using start/end times and frequency
+            # Generate datetime list manually (gtimes closed parameter doesn't work reliably)
+            from datetime import timedelta
+            dt_list = []
+            current = start_time
+
             if frequency == "1H":
-                # Special handling for hourly sessions (from polarx5.py)
-                from datetime import timedelta
-                dt_list = []
-                current = start_time
-                while current <= end_time:
+                # Hourly sessions
+                while current < end_time:  # end_time is exclusive
                     dt_list.append(current)
                     current += timedelta(hours=1)
+            elif frequency == "1D":
+                # Daily sessions
+                while current < end_time:  # end_time is exclusive (don't include today)
+                    dt_list.append(current)
+                    current += timedelta(days=1)
             else:
-                # Use gtimes for other frequencies
+                # Fallback to gtimes for other frequencies
                 dt_list = gt.datepathlist(
                     "#datelist",
                     frequency,
                     starttime=start_time,
                     endtime=end_time,
                     datelist=[],
-                    closed="both",
+                    closed="left",
                 )
         elif isinstance(dt_input, list):
             dt_list = dt_input

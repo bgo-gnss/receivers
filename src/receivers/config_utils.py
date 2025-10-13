@@ -115,7 +115,12 @@ def get_station_config(station_id: str) -> Optional[Dict[str, Any]]:
                 'type': raw_config['receiver_type'],
                 'ftpport': raw_config['receiver_ftpport'],
                 'httpport': raw_config.get('receiver_httpport', '8060'),
-                'controlport': raw_config.get('receiver_controlport', '28784')
+                'controlport': raw_config.get('receiver_controlport', '28784'),
+                # Authentication credentials (for HTTP Basic Auth, FTP login, etc.)
+                'user': raw_config.get('receiver_user', ''),
+                'pwd': raw_config.get('receiver_pwd', ''),
+                # Firmware bug handling
+                'firmware_underscore_pad': raw_config.get('receiver_firmware_underscore_pad', '').lower() in ['true', '1', 'yes']
             },
 
             # Connection and timing configuration

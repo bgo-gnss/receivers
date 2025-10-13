@@ -42,6 +42,12 @@ class ReceiverFactory:
                 self.logger.debug("NetR9 receiver type not available")
 
             try:
+                from ..trimble.netr5 import NetR5
+                self._receiver_types["NetR5"] = NetR5
+            except ImportError:
+                self.logger.debug("NetR5 receiver type not available")
+
+            try:
                 from ..leica.g10 import LeicaG10
                 self._receiver_types["G10"] = LeicaG10
             except ImportError:
@@ -100,6 +106,13 @@ class ReceiverFactory:
                     "controlport": int(station_data.get("receiver_controlport", 28784))
                 }
             }
+
+            # Copy authentication credentials if present
+            if "receiver_user" in station_data:
+                adapted_config["receiver"]["user"] = station_data["receiver_user"]
+            if "receiver_pwd" in station_data:
+                adapted_config["receiver"]["pwd"] = station_data["receiver_pwd"]
+
             return adapted_config
 
         # Return original if no adaptation needed

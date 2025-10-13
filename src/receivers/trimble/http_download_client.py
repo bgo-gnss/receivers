@@ -238,14 +238,15 @@ class NetR9HTTPDownloader:
         Returns:
             List of (filename, filesize) tuples
         """
-        # Discover base path if not yet done
+        # Discover base path if not yet done (for file downloads)
         base_path = self._discover_base_path()
 
-        # Build full path with base_path prefix for NetR5 support
-        full_path = f"{base_path}{remote_path}" if base_path else remote_path
-        endpoint = f"/prog/show?directory&path={quote(full_path)}"
+        # IMPORTANT: Directory listings do NOT use CACHEDIR prefix (NetR5 firmware limitation)
+        # The /prog/show?directory endpoint only works with standard /Internal/ paths
+        # CACHEDIR prefix is only used for file downloads
+        endpoint = f"/prog/show?directory&path={quote(remote_path)}"
 
-        self.logger.debug(f"Getting directory listing for {full_path}")
+        self.logger.debug(f"Getting directory listing for {remote_path}")
         success, response, error = self.http_client.get_url(endpoint)
 
         if not success or not response:
@@ -328,15 +329,20 @@ class NetR9HTTPDownloader:
         self.logger.info(f"Downloading {filename} from {remote_path}")
 
         try:
-            # Use simple requests.get() like syncdata script - proven to work
+            # Use authenticated session from http_client
             import requests
             full_url = f"http://{self.http_client.ip}:{self.http_client.http_port}{endpoint}"
             self.logger.info(f"HTTP URL: {full_url}")
             self.logger.debug(f"Downloading from: {full_url}")
 
             # Use progress-based timeout: only timeout if no data received for stall_timeout seconds
-            # Simple streaming download like syncdata with progress-based timeout
-            response = requests.get(full_url, stream=True, timeout=(self.connect_timeout, None))  # No read timeout
+            # Use authenticated session with HTTP Basic Auth support
+            response = self.http_client.session.get(
+                full_url,
+                auth=self.http_client.auth,  # Include authentication credentials
+                stream=True,
+                timeout=(self.connect_timeout, None)  # No read timeout
+            )
             response.raise_for_status()
 
             # Write response to file
