@@ -52,16 +52,25 @@ class ConfigManager:
         return self._gps_parser
     
     def get_data_prepath(self) -> str:
-        """Get data prepath from gps_parser configuration.
+        """DEPRECATED: Use ReceiversConfig.get_prepath() instead.
+
+        This method reads from postprocess.cfg which is the WRONG config file.
+        The receivers package should use receivers.cfg as single source of truth.
 
         Returns:
-            Data prepath string from configuration
+            Data prepath string from receivers.cfg (not postprocess.cfg!)
 
         Raises:
-            Exception: If data_prepath not found in configuration
+            Exception: If prepath not found in receivers.cfg
         """
-        parser = self._get_parser()
-        return parser.getSystemPath("data_prepath")
+        self.logger.warning(
+            "ConfigManager.get_data_prepath() is DEPRECATED! "
+            "Reading from postprocess.cfg. Use ReceiversConfig.get_prepath() "
+            "from receivers.cfg instead for single source of truth."
+        )
+        # For backward compatibility during migration, use ReceiversConfig
+        from ..config.receivers_config import get_receivers_config
+        return get_receivers_config().get_prepath()
 
     def get_system_path(self, path_name: str) -> str:
         """Get system tool path from gps_parser configuration.

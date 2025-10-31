@@ -15,6 +15,7 @@ import logging
 import json
 import os
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple, Union
@@ -24,7 +25,7 @@ from .schedule_parser import parse_schedule, apply_distribution_window
 
 
 # Module-level download function for APScheduler serialization
-def _download_station_data_job(station_id: str, session_type: str, production_mode: bool = False, lookback_periods: int = 1):
+def _download_station_data_job(station_id: str, session_type: str, production_mode: bool = False, lookback_periods: int = 1, timeout_minutes: int = 30):
     """Download data for a single station (standalone job function for APScheduler).
 
     This is a module-level function to allow APScheduler to serialize it to the database.
@@ -36,6 +37,7 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
         session_type: Session type (15s_24hr, 1Hz_1hr, status_1hr)
         production_mode: Whether to use production logging
         lookback_periods: Number of periods to check (1=last period only, 2=last 2 periods, etc.)
+        timeout_minutes: Maximum job duration in minutes (for monitoring and eventual enforcement)
     """
     job_id = f"{session_type}_{station_id}"
     exec_start_time = datetime.now(timezone.utc)
@@ -44,6 +46,9 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
     logger = logging.getLogger(f'gps_scheduler.job.{station_id}')
 
     try:
+        # Track job start time for duration monitoring
+        job_start_time = time.time()
+
         logger.info(f"Starting download: {station_id} ({session_type})")
 
         # Import receiver management here to avoid circular imports
@@ -92,31 +97,64 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
             immediate_archive=True,  # Use fault-tolerant immediate archiving
             clean_tmp=True,
             compression='.gz',
+            reverse_chronological=True,  # Prioritize latest data (like -D flag)
             loglevel=logging.INFO
         )
+
+        # Check result status to determine success/failure
+        status = result.get('status', 'completed')
+        files_downloaded = result.get('files_downloaded', 0)
+        duration = result.get('duration', 0)
+
+        # Calculate total job duration for monitoring
+        job_duration_seconds = time.time() - job_start_time
+        job_duration_minutes = job_duration_seconds / 60
+
+        # Monitor job duration relative to configured timeout
+        timeout_threshold = timeout_minutes * 0.8  # 80% threshold for warnings
+        if job_duration_minutes > timeout_threshold:
+            percent_of_timeout = (job_duration_minutes / timeout_minutes) * 100
+            logger.warning(
+                f"⏱️  Long-running job: {station_id} ({session_type}) took {job_duration_minutes:.1f}min "
+                f"({percent_of_timeout:.0f}% of {timeout_minutes}min timeout, {files_downloaded} files)"
+            )
 
         # Log results to audit trail
         if audit_logger:
             audit_logger.log_download_session(station_id, {
                 'session': session_type,
-                'status': result.get('status', 'completed'),
-                'duration': result.get('duration', 0),
-                'files_downloaded': result.get('files_downloaded', 0),
+                'status': status,
+                'duration': duration,
+                'job_duration': job_duration_seconds,
+                'files_downloaded': files_downloaded,
                 'bytes_downloaded': result.get('total_bytes', 0),
                 'errors': result.get('errors', 0),
                 'scheduled': True,
                 'start_time': start_time.isoformat(),
-                'end_time': end_time.isoformat()
+                'end_time': end_time.isoformat(),
+                'timeout_minutes': timeout_minutes,
+                'timeout_percent': (job_duration_minutes / timeout_minutes) * 100 if timeout_minutes > 0 else 0
             })
 
-        # Report success
-        files_downloaded = result.get('files_downloaded', 0)
-        duration = result.get('duration', 0)
-        logger.info(f"Completed: {station_id} ({session_type}) - "
-                   f"{files_downloaded} files in {duration:.1f}s")
+        # Report based on actual status with emoji-based logging style
+        if status == 'failed':
+            # Download returned failed status (connection error, timeout, etc.)
+            error_msg = result.get('error_message', 'Unknown error')
+            logger.error(f"❌ Failed: {station_id} ({session_type}) - {error_msg} ({duration:.1f}s)")
+        elif status == 'up_to_date':
+            # All files already synced - this is success
+            logger.info(f"✅ Up-to-date: {station_id} ({session_type}) - {files_downloaded} files in {duration:.1f}s")
+        else:
+            # Completed with downloads or dry_run
+            if files_downloaded > 0:
+                logger.info(f"✅ Completed: {station_id} ({session_type}) - {files_downloaded} files in {duration:.1f}s")
+            else:
+                logger.info(f"✅ Completed: {station_id} ({session_type}) - 0 files (already synced) in {duration:.1f}s")
 
     except Exception as e:
-        logger.error(f"Download failed: {station_id} ({session_type}) - {e}")
+        # Unexpected exception during download
+        error_type = type(e).__name__
+        logger.error(f"❌ Exception: {station_id} ({session_type}) - {error_type}: {e}")
 
         # Log failure to audit trail
         if 'audit_logger' in locals() and audit_logger:
@@ -273,6 +311,7 @@ class BulkDownloadScheduler:
                         45 if session_type == '15s_24hr' else 30 if session_type == '1Hz_1hr' else 15),
                     lookback_periods=session_cfg.get('lookback_periods', 1)
                 )
+                print(f"  -> Created, schedule field = {repr(self.schedule_configs[session_type].schedule)}")
 
         # Load station configurations
         self.stations = self._load_station_configs()
@@ -327,7 +366,7 @@ class BulkDownloadScheduler:
         # Job defaults
         job_defaults = {
             'coalesce': False,  # Don't combine missed jobs
-            'max_instances': 1,  # Only one instance per job
+            'max_instances': 70,  # Allow 70 concurrent instances per job for stress testing
             'misfire_grace_time': 300  # 5 minute grace period
         }
         
@@ -384,8 +423,17 @@ class BulkDownloadScheduler:
         capabilities = {}
 
         try:
-            # Find receivers.cfg
-            config_path = Path.home() / '.config' / 'gpsconfig' / 'receivers.cfg'
+            # Find receivers.cfg using gps_parser (respects GPS_CONFIG_PATH)
+            try:
+                import gps_parser
+                parser_config = gps_parser.ConfigParser()
+                gps_config_dir = parser_config.config_path
+                config_path = Path(gps_config_dir) / 'receivers.cfg'
+            except (ImportError, Exception) as e:
+                self.logger.debug(f"Could not get config dir from gps_parser: {e}")
+                # Fallback to standard location
+                config_path = Path.home() / '.config' / 'gpsconfig' / 'receivers.cfg'
+
             if not config_path.exists():
                 self.logger.warning(f"receivers.cfg not found at {config_path}, all sessions will be attempted")
                 return {}
@@ -400,10 +448,16 @@ class BulkDownloadScheduler:
 
                 sessions = []
                 # Check which session_map_* keys exist
-                # Note: Check both exact case and lowercase since config keys may vary
+                # Note: ConfigParser keys are case-insensitive, but we need to check the actual keys
+                # because receivers.cfg uses lowercase 'hz' (session_map_1hz_1hr) while our
+                # session name uses mixed case 'Hz' (1Hz_1hr)
                 for session in ['15s_24hr', '1Hz_1hr', 'status_1hr']:
+                    # Try both the session name as-is and lowercase version
                     key = f'session_map_{session}'
-                    if key in config[receiver_type]:
+                    key_lower = f'session_map_{session.lower()}'
+
+                    # Check if either version exists in config
+                    if key in config[receiver_type] or key_lower in config[receiver_type]:
                         sessions.append(session)
 
                 capabilities[receiver_type] = sessions
@@ -417,21 +471,74 @@ class BulkDownloadScheduler:
         return capabilities
 
     def schedule_all_sessions(self):
-        """Schedule all configured download sessions."""
-        
+        """Schedule all configured download sessions with interleaved job creation.
+
+        Creates jobs in round-robin order by station to ensure all session types
+        are distributed evenly in the job queue when using interval triggers.
+
+        Order: AFST(15s, 1Hz, status) → ALFD(15s, 1Hz, status) → ...
+        Not: 15s(AFST,ALFD,...) → 1Hz(AFST,ALFD,...) → status(...)
+        """
+
+        # Build station lists for each session type
+        session_stations = {}
         for session_type, config in self.schedule_configs.items():
             if not config.enabled:
                 self.logger.info(f"Skipping disabled session: {session_type}")
                 continue
-                
+
             stations_for_session = self._get_stations_for_session(session_type)
             if not stations_for_session:
                 self.logger.warning(f"No stations configured for session: {session_type}")
                 continue
-                
-            self._schedule_session_downloads(session_type, config, stations_for_session)
-            
-        self.logger.info(f"Scheduled downloads for {len(self.schedule_configs)} session types")
+
+            session_stations[session_type] = stations_for_session
+
+        # Create jobs in interleaved order (all sessions for station1, then station2, etc.)
+        # This ensures when interval triggers fire all jobs simultaneously, the queue
+        # contains a mix of all session types, not just the first session type
+        all_stations = set()
+        for stations in session_stations.values():
+            all_stations.update(stations)
+        all_stations = sorted(all_stations)  # Consistent ordering
+
+        total_jobs = 0
+        for station_id in all_stations:
+            # Schedule all session types for this station
+            for session_type, stations in session_stations.items():
+                if station_id not in stations:
+                    continue
+
+                config = self.schedule_configs[session_type]
+                station_index = stations.index(station_id)
+
+                # Parse schedule and apply distribution window
+                base_trigger = parse_schedule(config.schedule)
+                trigger_type, trigger_kwargs = apply_distribution_window(
+                    base_trigger, station_index, len(stations), config.distribution_window
+                )
+
+                # Create job
+                job_id = f"{session_type}_{station_id}"
+                self.scheduler.add_job(
+                    func=_download_station_data_job,
+                    trigger=trigger_type,
+                    args=[station_id, session_type, self.production_mode, config.lookback_periods, config.timeout_minutes],
+                    id=job_id,
+                    replace_existing=True,
+                    **trigger_kwargs
+                )
+                total_jobs += 1
+
+        # Log summary
+        for session_type, stations in session_stations.items():
+            base_trigger = parse_schedule(self.schedule_configs[session_type].schedule)
+            self.logger.info(
+                f"Scheduled {len(stations)} stations for {session_type} "
+                f"({base_trigger.description})"
+            )
+
+        self.logger.info(f"Total: {total_jobs} jobs scheduled with interleaved ordering for stress testing")
         
     def _get_stations_for_session(self, session_type: str) -> List[str]:
         """Get list of stations that support a specific session type."""
@@ -486,14 +593,13 @@ class BulkDownloadScheduler:
             # Create job ID
             job_id = f"{session_type}_{station_id}"
 
-            # Schedule the job with parsed trigger
+            # Schedule the job with parsed trigger (uses job_defaults max_instances=70)
             self.scheduler.add_job(
                 func=_download_station_data_job,
                 trigger=trigger_type,
-                args=[station_id, session_type, self.production_mode, config.lookback_periods],
+                args=[station_id, session_type, self.production_mode, config.lookback_periods, config.timeout_minutes],
                 id=job_id,
                 replace_existing=True,
-                max_instances=1,
                 **trigger_kwargs
             )
 

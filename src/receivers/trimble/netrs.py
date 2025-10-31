@@ -62,7 +62,7 @@ class NetRS(BaseReceiver):
         self.health_parser = TrimbleHealthParser(station_id, "NetRS")
 
         # data_prepath is now handled by BaseReceiver via ConfigManager
-        self.tmp_dir = "/home/bgo/tmp/download/"
+        self.tmp_dir = self.receivers_config.get_tmp_dir()
 
         # Phase 1 utilities (always enabled - Phase 3B)
         self.archive_validator = ArchiveValidator(logger=self.logger)
@@ -475,13 +475,15 @@ class NetRS(BaseReceiver):
 
         except Exception as e:
             duration = time.time() - start_time
-            error_msg = f"Download failed: {e}"
-            self.logger.error(error_msg)
+            error_type = type(e).__name__
+            error_msg = f"{error_type}: {e}"
+            self.logger.error(f"❌ Download failed: {error_msg}")
 
             return {
                 "station_id": self.station_id,
                 "receiver_type": "NetRS",
-                "status": "error",
+                "status": "failed",
+                "error_message": error_msg,
                 "files_downloaded": 0,
                 "downloaded_files": [],
                 "error": error_msg,
@@ -614,7 +616,7 @@ class NetRS(BaseReceiver):
         raw_extension = self.get_file_extension()  # .T00
         archived_extension = raw_extension + ".gz"  # .T00.gz
         full_archive_template = archive_template.format(
-            prepath=self.data_prepath,
+            data_prepath=self.data_prepath,
             station="{station}",
             session="{session}",
             extension=archived_extension,

@@ -1,0 +1,66 @@
+version: '3.8'
+
+services:
+  gps-scheduler:
+    build:
+      context: ../..
+      dockerfile: deployment/docker/Dockerfile
+    image: gps-receivers:latest
+    container_name: gps-receivers-scheduler
+    hostname: gps-scheduler
+    restart: unless-stopped
+
+    # Network mode - use host for IMO internal network access
+    network_mode: host
+
+    # Environment variables
+    environment:
+      - GPS_CONFIG_REPO_URL=https://git.vedur.is/bgo/gps-config-data.git
+      - GPS_ENVIRONMENT=production
+      - GPS_CONFIG_PATH=/etc/gpsconfig
+      - PYTHONUNBUFFERED=1
+      - TZ=Atlantic/Reykjavik
+
+    # Volumes for persistence
+    volumes:
+      # Data directory (GPS files)
+      - gps-data:/mnt/gpsdata
+      # Cache and logs
+      - gps-cache:/var/cache/gps_receivers
+      # Mount gps-config-data locally (fallback when git.vedur.is unreachable)
+      - ../../../gps-config-data:/opt/gps-config-data:ro
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 2G
+        reservations:
+          cpus: '1.0'
+          memory: 512M
+
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+    # Command - start scheduler with all stations
+    command: ["scheduler", "start", "--verbose", "--show-jobs"]
+
+volumes:
+  gps-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /mnt/gpsdata
+
+  gps-cache:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/cache/gps_receivers

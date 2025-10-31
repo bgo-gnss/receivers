@@ -218,6 +218,7 @@ class PolaRX5(BaseReceiver):
         sync: bool = False,
         clean_tmp: bool = True,
         archive: bool = True,
+        reverse_chronological: bool = True,
         **kwargs,
     ) -> Dict[str, Any]:
         """Download data from PolaRX5 receiver with comprehensive validation.
@@ -233,6 +234,8 @@ class PolaRX5(BaseReceiver):
             sync: Whether to actually sync files (False for dry run)
             clean_tmp: Whether to clean temporary directory before download
             archive: Whether to archive downloaded files
+            reverse_chronological: Download newest files first (True for -D flag routine downloads,
+                                  False for --start/--end backfilling). Default True.
             **kwargs: Additional parameters (ffrequency, afrequency, etc.)
 
         Returns:
@@ -292,12 +295,12 @@ class PolaRX5(BaseReceiver):
 
         # Create archive paths using unified method
         archive_template = self.receivers_config.get_archive_template()
-        prepath = self.receivers_config.get_prepath()
+        data_prepath = self.receivers_config.get_data_prepath()
         extension = self.get_file_extension()
 
         # Build archive template
         full_archive_template = archive_template.format(
-            prepath=prepath,
+            data_prepath=data_prepath,
             station='{station}',
             session='{session}',
             extension=extension,
@@ -438,6 +441,7 @@ class PolaRX5(BaseReceiver):
                     remote_path_dict,
                     max_retries,
                     retry_initial_delay,
+                    reverse_chronological,
                 )
 
                 # Calculate total bytes downloaded
@@ -447,6 +451,7 @@ class PolaRX5(BaseReceiver):
 
         except Exception as e:
             sync_success = False
+            self._last_error = e  # Store error for status reporting
 
             # Handle ConfigurationError (like invalid IP) with concise output
             from ..base.exceptions import ConfigurationError
@@ -481,8 +486,9 @@ class PolaRX5(BaseReceiver):
                     "validation_triggered": True,
                 }
 
-            # For other errors, log normally
-            self.logger.error(f"Sync failed: {e}")
+            # For other errors, log normally with emoji style
+            error_type = type(e).__name__
+            self.logger.error(f"❌ Sync failed: {error_type}: {e}")
 
             # Check if this was a timeout-related error
             if any(
@@ -498,45 +504,9 @@ class PolaRX5(BaseReceiver):
                     performance_metrics["timeout_type"] = "progress"
 
             # Enhanced failure handling - analyze what went wrong
-            try:
-                # Get expected vs found files for analysis
-                expected_files = list(file_date_dict.keys())
-                found_files = (
-                    list(downloaded_files_dict.keys())
-                    if "downloaded_files_dict" in locals()
-                    else []
-                )
-
-                # Create receiver response context
-                receiver_response = {
-                    "connection_ok": getattr(self, "_last_connection_time", 0) > 0,
-                    "ftp_connected": False,  # Connection failed, so FTP never connected
-                    "performance_metrics": performance_metrics,
-                }
-
-                # Use enhanced failure handling
-                failure_result = self.handle_download_failure(
-                    expected_files=expected_files,
-                    found_files=found_files,
-                    session_type=session,
-                    date_range=f"{start} to {end}",
-                    error=e,
-                    receiver_response=receiver_response,
-                )
-
-                # Log the failure analysis
-                if failure_result and "failure_analysis" in failure_result:
-                    analysis = failure_result["failure_analysis"]
-                    self.logger.info(
-                        f"Failure analysis: {analysis.get('analysis', 'No analysis available')}"
-                    )
-                    if analysis.get("validation_trigger"):
-                        self.logger.warning(
-                            f"Validation triggered for {self.station_id}"
-                        )
-
-            except Exception as handler_error:
-                self.logger.debug(f"Failure handler error: {handler_error}")
+            # TODO: Implement handle_download_failure method
+            # For now, skip failure analysis to avoid errors
+            pass
 
         # Record final performance metrics
         final_duration = time.time() - start_time
@@ -552,6 +522,28 @@ class PolaRX5(BaseReceiver):
             }
         )
         self._record_performance_metrics(performance_metrics)
+
+        # Determine final status based on sync_success
+        if not sync_success:
+            # Sync failed - determine error category
+            error_msg = "Connection error"
+            if performance_metrics.get("had_timeout"):
+                timeout_type = performance_metrics.get("timeout_type", "unknown")
+                error_msg = f"Timeout ({timeout_type})"
+            elif hasattr(self, "_last_error"):
+                error_msg = str(self._last_error)
+
+            return {
+                "status": "failed",
+                "error_message": error_msg,
+                "files_checked": len(file_date_dict),
+                "files_missing": len(all_missing_files),
+                "files_downloaded": len(downloaded_files_dict),
+                "downloaded_files": list(downloaded_files_dict.values()),
+                "duration": final_duration,
+                "had_timeout": performance_metrics.get("had_timeout", False),
+                "timeout_type": performance_metrics.get("timeout_type"),
+            }
 
         return {
             "status": "completed" if sync else "dry_run",
@@ -663,12 +655,20 @@ class PolaRX5(BaseReceiver):
         remote_path_dict=None,
         max_retries=3,
         retry_initial_delay=0.5,
+        reverse_chronological=True,
     ):
-        """Sync missing files from receiver to local archive with retry configuration."""
+        """Sync missing files from receiver to local archive with retry configuration.
+
+        Args:
+            reverse_chronological: If True, download newest files first (for routine downloads).
+                                  If False, download oldest files first (for long-term backfilling).
+        """
         # Simple approach: use pre-built paths and extract IGS filenames
 
-        # Sort missing_file_dict by datetime to ensure consistent ordering
-        sorted_missing_items = sorted(missing_file_dict.items())
+        # Sort missing_file_dict by datetime - order depends on use case
+        # -D flag (routine): reverse=True downloads Oct 7 → Oct 1 (prioritize latest data)
+        # --start/--end (backfilling): reverse=False downloads Oct 1 → Oct 7 (chronological fill)
+        sorted_missing_items = sorted(missing_file_dict.items(), reverse=reverse_chronological)
 
         # Extract IGS filenames and get corresponding remote paths
         download_file_dict = {}
@@ -801,10 +801,11 @@ class PolaRX5(BaseReceiver):
                         f"💡 LIKELY ISSUE: Receiver down, ethernet broken, or firewall blocking FTP"
                     )
                 else:
-                    self.logger.error(f"⚠️ NETWORK TIMEOUT: {network_check['analysis']}")
+                    self.logger.error(f"⚠️ NETWORK TIMEOUT: {network_check.get('analysis', 'No analysis available')}")
             else:
                 self.logger.error(f"Connection failed: {e}")
-                self.logger.info(f"Network analysis: {network_check['analysis']}")
+                if network_check.get("analysis"):
+                    self.logger.info(f"Network analysis: {network_check['analysis']}")
 
             self._last_connection_time = connection_time
             return None
@@ -1352,7 +1353,7 @@ class PolaRX5(BaseReceiver):
     def _cleanup_empty_tmp_directories(self):
         """Remove empty station directories from tmp download area."""
         try:
-            tmp_base = Path("/home/bgo/tmp/download/")
+            tmp_base = Path(self.receivers_config.get_tmp_dir())
             if tmp_base.exists():
                 for station_dir in tmp_base.iterdir():
                     if station_dir.is_dir() and not any(station_dir.iterdir()):

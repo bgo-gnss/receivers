@@ -174,7 +174,9 @@ See `docs/scheduler/scheduler-guide.md` for complete details.
 # Create default configuration
 receivers scheduler config --create
 
-# Configuration location: ~/.config/gpsconfig/scheduler.yaml
+# Configuration location (respects GPS_CONFIG_PATH environment variable):
+# - If GPS_CONFIG_PATH is set: $GPS_CONFIG_PATH/scheduler.yaml
+# - Otherwise: ~/.config/gpsconfig/scheduler.yaml
 # Database: ~/.cache/gps_receivers/scheduler.db
 # Logs: ~/.cache/gps_receivers/logs/
 ```
