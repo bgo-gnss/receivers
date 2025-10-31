@@ -899,11 +899,61 @@ class PolaRX5(BaseReceiver):
                             continue  # No local, no remote - nothing to do
                     else:
                         # Connection/server error - can't determine file status
-                        self.logger.error(
-                            f"⚠️  Cannot check remote file {file_name}: {e}"
-                        )
-                        remote_file_exists = False
-                        remote_file_size = None
+                        error_str = str(e).lower()
+
+                        # Check if this is a connection timeout error
+                        if "timed out" in error_str or "cannot read from timed out" in error_str:
+                            self.logger.warning(
+                                f"⚠️  FTP connection timed out while checking {file_name}"
+                            )
+                            self.logger.info("🔄 Attempting to reconnect FTP session...")
+
+                            # Close dead connection
+                            try:
+                                ftp.close()
+                            except:
+                                pass
+
+                            # Reconnect
+                            ftp = self._ftp_open_connection()
+                            if not ftp:
+                                self.logger.error("❌ Failed to reconnect - skipping remaining files")
+                                break  # Exit the download loop
+
+                            self.logger.info("✅ FTP reconnected successfully")
+
+                            # Try to get file size again with new connection
+                            try:
+                                remote_file_size = ftp.size(remote_file)
+                                remote_file_exists = True
+                            except Exception as retry_e:
+                                retry_error_str = str(retry_e).lower()
+                                if "550" in retry_error_str or "not found" in retry_error_str:
+                                    # File really doesn't exist
+                                    remote_file_exists = False
+                                    remote_file_size = None
+                                    if local_file.exists():
+                                        local_size = local_file.stat().st_size
+                                        if local_size > 0:
+                                            self.logger.info(
+                                                f"📁 Remote file {file_name} missing, but local copy exists ({local_size:,} bytes)"
+                                            )
+                                            downloaded_files.append(str(local_file))
+                                        else:
+                                            self.logger.warning(f"🗑️ Removing zero-size local file: {local_file}")
+                                            local_file.unlink()
+                                    continue
+                                else:
+                                    self.logger.error(f"⚠️  Cannot check remote file after reconnect: {retry_e}")
+                                    remote_file_exists = False
+                                    remote_file_size = None
+                        else:
+                            # Other connection/server errors
+                            self.logger.error(
+                                f"⚠️  Cannot check remote file {file_name}: {e}"
+                            )
+                            remote_file_exists = False
+                            remote_file_size = None
 
                 # Now that we have remote file size, check if we should resume existing local file
                 if local_file.exists():
