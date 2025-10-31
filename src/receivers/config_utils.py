@@ -81,8 +81,13 @@ def get_station_config(station_id: str) -> Optional[Dict[str, Any]]:
         # Get FTP mode
         ftp_mode = config_parser.getStationFtpMode(station_id, router_ip)
 
-        # Get system paths
-        data_prepath = config_parser.getSystemPath('data_prepath')
+        # Get system paths - USE RECEIVERS.CFG AS SINGLE SOURCE OF TRUTH
+        # Import ReceiversConfig to read from receivers.cfg (not postprocess.cfg!)
+        from .config.receivers_config import get_receivers_config
+        receivers_config = get_receivers_config()
+        data_prepath = receivers_config.get_prepath()  # From receivers.cfg
+
+        # Tool paths still from gps_parser (postprocess.cfg) until migrated
         bin2asc_path = config_parser.getSystemPath('bin2asc_path')
         receiver_base_path = config_parser.getSystemPath('receiver_base_path')
 
@@ -110,7 +115,12 @@ def get_station_config(station_id: str) -> Optional[Dict[str, Any]]:
                 'type': raw_config['receiver_type'],
                 'ftpport': raw_config['receiver_ftpport'],
                 'httpport': raw_config.get('receiver_httpport', '8060'),
-                'controlport': raw_config.get('receiver_controlport', '28784')
+                'controlport': raw_config.get('receiver_controlport', '28784'),
+                # Authentication credentials (for HTTP Basic Auth, FTP login, etc.)
+                'user': raw_config.get('receiver_user', ''),
+                'pwd': raw_config.get('receiver_pwd', ''),
+                # Firmware bug handling
+                'firmware_underscore_pad': raw_config.get('receiver_firmware_underscore_pad', '').lower() in ['true', '1', 'yes']
             },
 
             # Connection and timing configuration

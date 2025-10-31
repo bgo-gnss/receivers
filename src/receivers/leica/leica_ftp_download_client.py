@@ -133,7 +133,12 @@ class LeicaFTPDownloader:
         self.ftp_port = int(leica_config.get("ftp_port", 2160))
         self.connect_timeout = leica_config.get("ftp_timeout_connect", 30)
         self.data_timeout = leica_config.get("ftp_timeout_data", 120)
-        self.use_passive = leica_config.get("ftp_passive", "false").lower() == "true"
+
+        # Get FTP mode from station config (active/passive)
+        # Station config has format: station_config['router']['ftp_mode'] = 'active'|'passive'|'auto'
+        ftp_mode = station_config.get("router", {}).get("ftp_mode", "active")
+        self.use_passive = (ftp_mode == "passive")
+        self.logger.debug(f"Leica FTP mode: {ftp_mode} (passive={self.use_passive})")
 
         # Track connection time for metrics
         self._last_connection_time = 0.0
@@ -155,15 +160,38 @@ class LeicaFTPDownloader:
 
         return logger
 
+    def _is_ftp_mode_error(self, error: Exception) -> bool:
+        """Check if error is related to FTP passive/active mode issues.
+
+        Common FTP mode errors:
+        - "I won't open a connection" (passive mode with unreachable data IP)
+        - "No route to host" (network routing issues)
+        - "Connection timed out" during data transfer (might be mode issue)
+        """
+        error_str = str(error).lower()
+        ftp_mode_indicators = [
+            "won't open a connection",
+            "only to",  # Part of "I won't open a connection to X (only to Y)"
+            "no route to host",
+            "connection refused",  # Can indicate passive mode port blocked
+        ]
+        return any(indicator in error_str for indicator in ftp_mode_indicators)
+
     def _download_file_single_attempt(self, remote_filename: str, local_path: Path,
                                     remote_dir: str = "/SD Card/Data/15s_24hr/",
                                     expected_size: Optional[int] = None) -> bool:
-        """Single attempt to download a file from Leica receiver via FTP."""
+        """Single attempt to download a file from Leica receiver via FTP.
+
+        Automatically retries with opposite FTP mode if connection fails
+        with FTP mode-related errors.
+        """
         # This is the original download logic without retry wrapper
         start_time = time.time()
+        original_mode = self.use_passive
+        mode_name = "passive" if self.use_passive else "active"
 
         # Log connection details for debugging - BEFORE attempting connection
-        self.logger.info(f"🔗 Attempting FTP connection to: {self.ip}:{self.ftp_port}")
+        self.logger.info(f"🔗 Attempting FTP connection to: {self.ip}:{self.ftp_port} (FTP {mode_name})")
         self.logger.info(f"📁 Target directory: {remote_dir}")
         self.logger.info(f"📄 Target filename: {remote_filename}")
         self.logger.info(f"⚙️  Connection settings: timeout={self.connect_timeout}s, passive={self.use_passive}")
@@ -270,8 +298,68 @@ class LeicaFTPDownloader:
         except Exception as e:
             if 'progress_bar' in locals() and progress_bar:
                 progress_bar.finish()
-            self.logger.error(f"FTP error downloading {remote_filename}: {e}")
-            return False
+
+            # Check if this is an FTP mode error and we should try fallback
+            if self._is_ftp_mode_error(e):
+                # Try opposite FTP mode
+                self.use_passive = not original_mode
+                fallback_mode = "passive" if self.use_passive else "active"
+
+                self.logger.warning(f"⚠️  FTP {mode_name} mode failed, retrying with {fallback_mode} mode...")
+
+                try:
+                    # Retry with opposite mode
+                    ftp = FTP()
+                    ftp.connect(self.ip, self.ftp_port, timeout=self.connect_timeout)
+                    ftp.login()
+                    ftp.set_pasv(self.use_passive)
+                    self.logger.info(f"✅ Connected with {fallback_mode} mode")
+
+                    # Set binary mode
+                    ftp.voidcmd('TYPE I')
+
+                    # Change to remote directory
+                    ftp.cwd(remote_dir)
+
+                    # Get file size if not provided
+                    if not expected_size:
+                        try:
+                            expected_size = ftp.size(remote_filename)
+                        except:
+                            expected_size = 0
+
+                    # Download file
+                    bytes_written = 0
+                    with open(local_path, 'wb') as f:
+                        def simple_callback(chunk):
+                            nonlocal bytes_written
+                            bytes_written += len(chunk)
+                            return chunk
+
+                        ftp.retrbinary(f'RETR {remote_filename}',
+                                     lambda chunk: f.write(simple_callback(chunk)))
+
+                    ftp.quit()
+
+                    # Validate download
+                    if bytes_written > 0:
+                        self.logger.info(f"✅ Downloaded {remote_filename} with {fallback_mode} mode ({bytes_written:,} bytes)")
+                        return True
+                    else:
+                        self.logger.error(f"❌ Download failed with {fallback_mode} mode: empty file")
+                        self.use_passive = original_mode
+                        return False
+
+                except Exception as fallback_error:
+                    # Both modes failed, restore original
+                    self.use_passive = original_mode
+                    self.logger.error(f"❌ Both FTP modes failed. Original error: {e}")
+                    self.logger.error(f"❌ Fallback error: {fallback_error}")
+                    return False
+            else:
+                # Not an FTP mode issue
+                self.logger.error(f"FTP error downloading {remote_filename}: {e}")
+                return False
 
     def download_file(self, remote_filename: str, local_path: Path,
                      remote_dir: str = "/SD Card/Data/15s_24hr/",

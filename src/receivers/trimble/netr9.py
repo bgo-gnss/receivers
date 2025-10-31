@@ -65,7 +65,7 @@ class NetR9(BaseReceiver):
         self.health_parser = TrimbleHealthParser(station_id, "NetR9")
 
         # data_prepath is now handled by BaseReceiver via ConfigManager
-        self.tmp_dir = "/home/bgo/tmp/download/"
+        self.tmp_dir = self.receivers_config.get_tmp_dir()
 
         # Phase 1 utilities (always enabled - Phase 3B)
         self.archive_validator = ArchiveValidator(logger=self.logger)
@@ -427,13 +427,15 @@ class NetR9(BaseReceiver):
 
         except Exception as e:
             duration = time.time() - start_time
-            error_msg = f"Download failed: {e}"
-            self.logger.error(error_msg)
+            error_type = type(e).__name__
+            error_msg = f"{error_type}: {e}"
+            self.logger.error(f"❌ Download failed: {error_msg}")
 
             return {
                 "station_id": self.station_id,
                 "receiver_type": "NetR9",
-                "status": "error",
+                "status": "failed",
+                "error_message": error_msg,
                 "files_downloaded": 0,
                 "downloaded_files": [],
                 "error": error_msg,
@@ -612,8 +614,16 @@ class NetR9(BaseReceiver):
                 "remote_filename_format", "{station}%Y%m%d%H%M{session_letter}.T02"
             )
 
+            # Handle firmware bug: some NetR5 receivers pad station ID with underscores
+            # Example: ISAF (4 chars) becomes ISAF______ (10 chars total)
+            station_id_for_filename = self.station_id
+            if self.station_info.get("receiver", {}).get("firmware_underscore_pad"):
+                # Pad to 10 characters with underscores
+                station_id_for_filename = self.station_id.ljust(10, '_')
+                self.logger.debug(f"Applying underscore padding: {self.station_id} -> {station_id_for_filename}")
+
             filename = file_dt.strftime(filename_format).format(
-                station=self.station_id, session_letter=letter_code
+                station=station_id_for_filename, session_letter=letter_code
             )
 
             # Remote directory format: /Internal/YYYYMM/session_directory/
@@ -628,7 +638,7 @@ class NetR9(BaseReceiver):
         raw_extension = self.get_file_extension()  # .T02
         archived_extension = raw_extension + ".gz"  # .T02.gz
         full_archive_template = archive_template.format(
-            prepath=self.data_prepath,
+            data_prepath=self.data_prepath,
             station="{station}",
             session="{session}",
             extension=archived_extension,

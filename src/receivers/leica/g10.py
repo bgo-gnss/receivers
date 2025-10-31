@@ -59,8 +59,8 @@ class LeicaG10(BaseReceiver):
         self.logger = self._get_logger(loglevel)
         self.logger.info(f"Initialized Leica G10 receiver for {station_id}")
 
-        # Set up directories
-        self.tmp_dir = "/home/bgo/tmp/download/"
+        # Get tmp_dir from centralized configuration
+        self.tmp_dir = self.receivers_config.get_tmp_dir()
 
         # Get G10-specific configuration
         self.leica_config = self.receivers_config.get_receiver_config("g10")
@@ -402,13 +402,15 @@ class LeicaG10(BaseReceiver):
 
         except Exception as e:
             duration = time.time() - start_time
-            error_msg = f"Download failed: {e}"
-            self.logger.error(error_msg)
+            error_type = type(e).__name__
+            error_msg = f"{error_type}: {e}"
+            self.logger.error(f"❌ Download failed: {error_msg}")
 
             return {
                 "station_id": self.station_id,
                 "receiver_type": "G10",
-                "status": "error",
+                "status": "failed",
+                "error_message": error_msg,
                 "files_downloaded": 0,
                 "downloaded_files": [],
                 "error": error_msg,
@@ -516,7 +518,7 @@ class LeicaG10(BaseReceiver):
         archived_extension = raw_extension + ".gz"  # .m00.gz
 
         full_archive_template = archive_template.format(
-            prepath=self.data_prepath,
+            data_prepath=self.data_prepath,
             station="{station}",
             session="{session}",
             extension=archived_extension,

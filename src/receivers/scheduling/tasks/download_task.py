@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, Tuple
 
 from ..task_interface import ScheduledTask, TaskResult, TaskType, TaskConfig
+from ...utils.time_utils import calculate_download_time_range
 
 
 class DownloadTask(ScheduledTask):
@@ -38,31 +39,31 @@ class DownloadTask(ScheduledTask):
         self._station_config = None
 
     def get_time_parameters(self) -> Tuple[datetime, datetime]:
-        """Calculate download time range based on session type.
+        """Calculate download time range based on session type and lookback_periods.
+
+        Uses shared time_utils module for consistent time calculation between
+        CLI and scheduler. Implements correct "previous complete period" logic.
 
         For hourly sessions (1Hz_1hr, status_1hr):
-            Downloads previous hour's data
-            Example: at 15:20, downloads 14:00-15:00
+            Downloads last N hours based on lookback_periods
+            Example: lookback_periods=24 downloads last 24 hours
+            IMPORTANT: Ends at previous complete hour (not current incomplete hour)
 
         For daily sessions (15s_24hr):
-            Downloads previous day's data
-            Example: at 00:15, downloads yesterday 00:00-00:00
+            Downloads last N days based on lookback_periods
+            Example: lookback_periods=7 downloads last 7 days
 
         Returns:
             Tuple of (start_time, end_time)
         """
-        now = datetime.utcnow()
+        # Get lookback_periods from config (default to 1 if not specified)
+        lookback_periods = getattr(self.config, 'lookback_periods', 1)
 
-        if self.config.session_type == '15s_24hr':
-            # Daily data - get yesterday
-            end_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            start_time = end_time - timedelta(days=1)
-        else:
-            # Hourly data - get previous hour
-            end_time = now.replace(minute=0, second=0, microsecond=0)
-            start_time = end_time - timedelta(hours=1)
-
-        return start_time, end_time
+        # Use shared time utility - single source of truth for time calculation
+        return calculate_download_time_range(
+            session_type=self.config.session_type,
+            lookback_periods=lookback_periods
+        )
 
     def validate_prerequisites(self) -> Tuple[bool, Optional[str]]:
         """Validate that download can be performed.

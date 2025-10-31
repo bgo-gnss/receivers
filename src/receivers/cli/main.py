@@ -24,6 +24,7 @@ from gtimes.timefunc import currDatetime
 from ..base.exceptions import ConfigurationError, ConnectionError
 from ..base.type_validator import ReceiverTypeValidator
 from ..base.receiver_factory import get_receiver_factory, create_receiver
+from ..utils.time_utils import calculate_download_time_range
 
 # Import gps_parser for centralized config
 try:
@@ -81,50 +82,40 @@ def cmd_download(args) -> int:
     # Process time arguments (from getSeptentrio3 logic)
     start_time = None
     end_time = None
-    
+    reverse_chronological = False  # Default for explicit --start/--end
+
     if args.start:
         start_time = parse_datetime(args.start)
-    
+
     if args.end:
         end_time = parse_datetime(args.end)
     
-    # Default to time periods back if no start/end specified (dynamic based on session frequency)
+    # Default to time periods back if no start/end specified (use shared time_utils)
     if not start_time and args.days:
-        # Get session frequency from configuration to determine time unit
-        from ..config.receivers_config import get_receivers_config
-        receivers_config = get_receivers_config()
-        session_frequency = receivers_config.get_session_frequency(args.session)
+        # -D flag used: prioritize latest data (reverse chronological)
+        reverse_chronological = True
 
-        if session_frequency == "1H":  # Hourly sessions
-            # For hourly sessions, -D N means the Nth complete hour back
-            # Example: -D 1 means 1 complete hour back (previous completed hour)
-            now = datetime.now()
-            # Get the start of the Nth complete hour back
-            target_hour = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=args.days)
-            start_time = target_hour
-        else:  # Daily sessions (1D) or fallback
-            # For daily sessions, -D N means N days back (existing behavior)
-            start_time = currDatetime(days=-args.days, refday=datetime.now())
+        # Use shared time utility - single source of truth for time calculation
+        # This implements correct "previous complete period" logic
+        start_time, end_time = calculate_download_time_range(
+            session_type=args.session,
+            lookback_periods=args.days
+        )
 
-    if not end_time:
-        # Default end time based on session frequency
-        if args.session and "1hr" in args.session:  # Hourly sessions
-            if args.days:  # -D parameter was used
-                # For hourly sessions with -D N, download N complete hours back
-                # -D 1 means 1 complete hour back (14:00 file when it's 15:24)
-                # -D 4 means 4 complete hours back (11:00, 12:00, 13:00, 14:00 files)
-                # End time should be exactly at the hour boundary
-                now = datetime.now()
-                last_complete_hour = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
-                end_time = last_complete_hour
-            else:
-                # No -D parameter, use single hour
-                end_time = start_time + timedelta(minutes=1)
-        else:  # Daily sessions
-            end_time = datetime.now() - timedelta(days=1)  # Default to yesterday
-    
-    # Note: Removed legacy end-of-day extension for status_1hr
-    # This was causing downloads of future/incomplete hours
+    # If explicit --start or --end provided, honor them
+    if args.start and not end_time:
+        # User provided start but no end - calculate reasonable end
+        if args.session and "1hr" in args.session:
+            end_time = start_time + timedelta(hours=1)
+        else:
+            end_time = start_time + timedelta(days=1)
+
+    if args.end and not start_time:
+        # User provided end but no start - calculate reasonable start
+        if args.session and "1hr" in args.session:
+            start_time = end_time - timedelta(hours=1)
+        else:
+            start_time = end_time - timedelta(days=1)
     
     # Process session frequency arguments (from getSeptentrio3)
     afrequency = args.afrequency or args.session.split("_")[0]
@@ -192,6 +183,7 @@ def cmd_download(args) -> int:
                 sync=args.sync,
                 clean_tmp=args.clean_tmp,
                 archive=args.archive,
+                reverse_chronological=reverse_chronological,
                 loglevel=args.loglevel
             )
             
@@ -225,7 +217,9 @@ def cmd_download(args) -> int:
             logger.error(f"Error processing {station_id}: {e}")
             total_errors += 1
         except Exception as e:
+            import traceback
             logger.error(f"Unexpected error processing {station_id}: {e}")
+            logger.debug(f"Traceback:\n{traceback.format_exc()}")
             total_errors += 1
     
     # Final summary

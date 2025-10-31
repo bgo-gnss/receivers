@@ -73,12 +73,35 @@ class SeptentrioDownloadManager(BaseDownloadManager):
                 "error": str(e)
             }
 
+    def _is_ftp_mode_error(self, error: Exception) -> bool:
+        """Check if error is related to FTP passive/active mode issues.
+
+        Common FTP mode errors:
+        - "I won't open a connection" (passive mode with unreachable data IP)
+        - "No route to host" (network routing issues)
+        - "Connection timed out" during data transfer (might be mode issue)
+        """
+        error_str = str(error).lower()
+        ftp_mode_indicators = [
+            "won't open a connection",
+            "only to",  # Part of "I won't open a connection to X (only to Y)"
+            "no route to host",
+            "connection refused",  # Can indicate passive mode port blocked
+        ]
+        return any(indicator in error_str for indicator in ftp_mode_indicators)
+
     def establish_connection(self) -> FTP:
-        """Establish FTP connection to Septentrio receiver."""
+        """Establish FTP connection to Septentrio receiver.
+
+        Automatically retries with opposite FTP mode if connection fails
+        with FTP mode-related errors.
+        """
         connection_start = time.time()
+        original_mode = self.use_passive_ftp
+        mode_name = "passive" if self.use_passive_ftp else "active"
 
         try:
-            self.logger.info(f"Connecting to {self.ip_address}:{self.port}...")
+            self.logger.info(f"Connecting to {self.ip_address}:{self.port} (FTP {mode_name})...")
             ftp = FTP()
             ftp.connect(self.ip_address, self.port, timeout=self.connection_timeout)
             ftp.login("anonymous")
@@ -91,8 +114,35 @@ class SeptentrioDownloadManager(BaseDownloadManager):
 
         except Exception as e:
             connection_time = time.time() - connection_start
-            self.logger.error(f"❌ Connection failed after {connection_time:.2f}s: {e}")
-            raise ConnectionError(f"Could not connect to {self.ip_address}:{self.port}: {e}")
+
+            # Check if this looks like an FTP mode issue
+            if self._is_ftp_mode_error(e):
+                # Try opposite FTP mode
+                self.use_passive_ftp = not self.use_passive_ftp
+                fallback_mode = "passive" if self.use_passive_ftp else "active"
+
+                self.logger.warning(f"⚠️  FTP {mode_name} mode failed, retrying with {fallback_mode} mode...")
+
+                try:
+                    ftp = FTP()
+                    ftp.connect(self.ip_address, self.port, timeout=self.connection_timeout)
+                    ftp.login("anonymous")
+                    ftp.set_pasv(self.use_passive_ftp)
+
+                    fallback_time = time.time() - connection_start
+                    self.logger.info(f"✅ Connected with {fallback_mode} mode in {fallback_time:.2f}s")
+                    return ftp
+
+                except Exception as fallback_error:
+                    # Both modes failed, restore original and raise
+                    self.use_passive_ftp = original_mode
+                    self.logger.error(f"❌ Both FTP modes failed. Original error: {e}")
+                    self.logger.error(f"❌ Fallback error: {fallback_error}")
+                    raise ConnectionError(f"Could not connect to {self.ip_address}:{self.port} (tried both FTP modes): {e}")
+            else:
+                # Not an FTP mode issue, raise original error
+                self.logger.error(f"❌ Connection failed after {connection_time:.2f}s: {e}")
+                raise ConnectionError(f"Could not connect to {self.ip_address}:{self.port}: {e}")
 
     def close_connection(self, connection: FTP) -> None:
         """Close FTP connection."""
