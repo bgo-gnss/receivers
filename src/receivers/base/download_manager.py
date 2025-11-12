@@ -1,4 +1,7 @@
-"""Base download manager with common download logic for all receiver types."""
+"""Base download manager with common download logic for all receiver types.
+
+Enhanced with Phase 1 utilities for unified validation, archiving, and retry logic.
+"""
 
 import logging
 import os
@@ -6,10 +9,15 @@ import time
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import gtimes.timefunc as gt
 from .exceptions import ConnectionError, ConfigurationError
+
+# Phase 1 utilities - unified validation and archiving
+from ..utils.archive_validator import ArchiveValidator
+from ..utils.time_processor import TimeParameterProcessor
+from ..utils.file_archiver import FileArchiver, ArchiveMode
 
 
 class BaseDownloadManager(ABC):
@@ -34,6 +42,10 @@ class BaseDownloadManager(ABC):
 
         # Initialize common configuration
         self._setup_common_config()
+
+        # Initialize Phase 1 utilities for unified validation and archiving
+        self.archive_validator = ArchiveValidator(logger=self.logger)
+        self.time_processor = TimeParameterProcessor(logger=self.logger)
 
     def _setup_common_config(self) -> None:
         """Set up common configuration shared across receivers."""
@@ -117,9 +129,115 @@ class BaseDownloadManager(ABC):
             resume_offset: Byte offset to resume from
 
         Returns:
-            Dictionary with download results
+            Dictionary with download results including 'success' key
         """
         pass
+
+    def download_with_retry(
+        self,
+        connection: Any,
+        remote_file_path: str,
+        local_file_path: str,
+        remote_file_size: Optional[int] = None,
+        resume_offset: int = 0,
+        max_retries: int = 3,
+        initial_delay: float = 0.5
+    ) -> Tuple[Any, Dict[str, Any]]:
+        """Download file with automatic retry and reconnection on timeout/connection errors.
+
+        This implements Fix #2: protocol-agnostic retry with reconnection.
+        When a timeout occurs, the connection is closed and re-established before retrying.
+
+        Args:
+            connection: Active connection object
+            remote_file_path: Full path to remote file
+            local_file_path: Full path for local file
+            remote_file_size: Optional remote file size for validation
+            resume_offset: Byte offset to resume from
+            max_retries: Maximum number of retry attempts (default: 3)
+            initial_delay: Initial retry delay in seconds (default: 0.5)
+
+        Returns:
+            Tuple of (connection, result_dict):
+            - connection: Connection object (may be reconnected)
+            - result_dict: Download result with 'success' key
+
+        Raises:
+            Non-retryable errors (authentication, file not found)
+        """
+        # Timeout/connection error patterns that need reconnection
+        timeout_patterns = [
+            "timed out",
+            "timeout",
+            "cannot read from timed out",
+            "connection reset",
+            "broken pipe",
+            "connection refused"
+        ]
+
+        # Non-retryable error patterns
+        non_retryable_patterns = [
+            "530",  # Authentication failed
+            "550",  # File not found
+            "not found",
+            "no such file",
+            "authentication",
+            "login"
+        ]
+
+        last_exception = None
+
+        for attempt in range(max_retries + 1):  # +1 for initial attempt
+            try:
+                # Attempt download
+                result = self.download_file(
+                    connection, remote_file_path, local_file_path, resume_offset
+                )
+
+                # Success - return connection and result
+                return connection, result
+
+            except Exception as e:
+                error_msg = str(e).lower()
+                last_exception = e
+
+                # Check if this is a non-retryable error
+                if any(pattern in error_msg for pattern in non_retryable_patterns):
+                    # File not found or authentication - don't retry
+                    raise
+
+                # This is a retryable error
+                if attempt < max_retries:
+                    # Calculate delay with increasing backoff
+                    delay = initial_delay * (attempt + 1)
+                    self.logger.warning(f"⚠️  Download attempt {attempt + 1} failed: {e}")
+
+                    # Check if we need to reconnect (timeout/connection errors)
+                    if any(pattern in error_msg for pattern in timeout_patterns):
+                        self.logger.info("🔄 Closing dead connection and reconnecting...")
+                        try:
+                            self.close_connection(connection)
+                        except:
+                            pass  # Ignore errors closing dead connection
+
+                        # Reconnect
+                        connection = self.establish_connection()
+                        if not connection:
+                            self.logger.error("❌ Failed to reconnect - aborting retries")
+                            raise ConnectionError("Could not reconnect to receiver")
+
+                        self.logger.info("✅ Reconnected successfully")
+
+                    self.logger.info(
+                        f"🔄 Retrying in {delay:.1f}s (attempt {attempt + 2}/{max_retries + 1})..."
+                    )
+                    time.sleep(delay)
+                else:
+                    # Final attempt failed
+                    self.logger.error(
+                        f"❌ Download failed after {max_retries + 1} attempts: {e}"
+                    )
+                    raise last_exception
 
     def process_time_parameters(
         self,
@@ -241,22 +359,92 @@ class BaseDownloadManager(ABC):
         """
         pass
 
-    def identify_missing_files(self, file_dict: Dict[datetime, tuple[str, str]]) -> Dict[datetime, tuple[str, str]]:
-        """Identify files that need to be downloaded.
+    def identify_missing_files(
+        self,
+        file_dict: Dict[datetime, Tuple[str, str]],
+        tmp_dir: Optional[Path] = None
+    ) -> Tuple[Dict[datetime, Tuple[str, str]], Dict[str, Path], int]:
+        """Identify files that need to be downloaded using Phase 1 validation.
+
+        This method uses the Phase 1 ArchiveValidator to check for files in:
+        1. Archive directory (properly archived)
+        2. Archive directory with compression (.gz)
+        3. Tmp directory (downloaded but not archived)
 
         Args:
-            file_dict: Dictionary of all files with archive paths
+            file_dict: Dictionary mapping datetime -> (archive_path, remote_filename)
+            tmp_dir: Optional tmp directory to check for unarchived files
 
         Returns:
-            Dictionary of missing files that need download
+            Tuple of (missing_files, files_in_tmp, files_found):
+            - missing_files: Files that need to be downloaded
+            - files_in_tmp: Files in tmp that need archiving (filename -> path)
+            - files_found: Count of files found in archive
         """
-        missing_files = {}
-        for dt, (archive_path, remote_filename) in file_dict.items():
-            if not os.path.isfile(archive_path):
-                missing_files[dt] = (archive_path, remote_filename)
-            # TODO: Add incomplete file detection logic
+        # Convert to format expected by ArchiveValidator
+        files_dict = {}  # filename -> archive_path
+        archive_paths_dict = {}  # filename -> archive_path
 
-        return missing_files
+        for dt, (archive_path, remote_filename) in file_dict.items():
+            files_dict[remote_filename] = archive_path
+            archive_paths_dict[remote_filename] = archive_path
+
+        # Use Phase 1 batch validation
+        missing_files_dict, found_count, validated_count, files_in_tmp_dict = \
+            self.archive_validator.batch_validate_archives(
+                files_dict,
+                archive_paths_dict,
+                tmp_dir
+            )
+
+        # Convert back to datetime-keyed format
+        missing_files = {}
+        for remote_filename in missing_files_dict.keys():
+            for dt, (arch_path, remote_file) in file_dict.items():
+                if remote_file == remote_filename:
+                    missing_files[dt] = (arch_path, remote_file)
+                    break
+
+        self.logger.info(
+            f"Phase 1 validation: {validated_count} files checked, "
+            f"{found_count} found, {len(missing_files_dict)} missing"
+        )
+
+        return missing_files, files_in_tmp_dict, found_count
+
+    def archive_tmp_files(
+        self,
+        files_in_tmp_dict: Dict[str, Path],
+        archive_paths_dict: Dict[str, str]
+    ) -> int:
+        """Archive files from tmp directory using Phase 1 FileArchiver.
+
+        Args:
+            files_in_tmp_dict: Mapping of filename -> tmp_path for files to archive
+            archive_paths_dict: Mapping of filename -> archive_path destinations
+
+        Returns:
+            Number of files successfully archived
+        """
+        if not files_in_tmp_dict:
+            return 0
+
+        self.logger.info(f"Archiving {len(files_in_tmp_dict)} files from tmp directory...")
+
+        with FileArchiver(mode=ArchiveMode.BULK, logger=self.logger) as archiver:
+            for filename, tmp_path in files_in_tmp_dict.items():
+                archive_dest = archive_paths_dict.get(filename)
+                if archive_dest:
+                    archiver.archive_file(
+                        tmp_path,
+                        Path(archive_dest),
+                        compress=False,  # Files are already compressed
+                        remove_tmp=True
+                    )
+
+        stats = archiver.get_statistics()
+        self.logger.info(f"Archived {stats['successful']}/{len(files_in_tmp_dict)} files from tmp to archive")
+        return stats['successful']
 
     def archive_file(self, tmp_file_path: str, archive_path: str) -> bool:
         """Archive downloaded file to final location.
@@ -340,9 +528,31 @@ class BaseDownloadManager(ABC):
         start_dt, end_dt = self.process_time_parameters(start, end, session, frequency)
         self.logger.info(f"Time range: {start_dt} to {end_dt}")
 
+        # Set up temporary directory - use instance tmp_dir if not provided
+        if tmp_dir is None:
+            tmp_dir = getattr(self, 'tmp_dir', '/tmp/download/')
+        tmp_dir_path = Path(tmp_dir) / self.station_id
+        tmp_dir_path.mkdir(parents=True, exist_ok=True)
+
         # Generate file list
         file_dict = self.generate_file_list(start_dt, end_dt, session, frequency)
-        missing_files = self.identify_missing_files(file_dict)
+
+        # Use Phase 1 validation - returns missing files AND files in tmp
+        missing_files, files_in_tmp_dict, files_found = self.identify_missing_files(
+            file_dict, tmp_dir_path
+        )
+
+        # Archive files from tmp if found and archive flag is set
+        files_archived_from_tmp = 0
+        if files_in_tmp_dict and archive:
+            # Build archive paths dict for tmp files
+            archive_paths_dict = {
+                filename: file_dict[dt][0]  # archive_path from file_dict
+                for filename, tmp_path in files_in_tmp_dict.items()
+                for dt, (arch_path, remote_file) in file_dict.items()
+                if remote_file == filename
+            }
+            files_archived_from_tmp = self.archive_tmp_files(files_in_tmp_dict, archive_paths_dict)
 
         if not missing_files:
             self.logger.info("All files up to date")
@@ -351,16 +561,11 @@ class BaseDownloadManager(ABC):
                 "files_checked": len(file_dict),
                 "files_missing": 0,
                 "files_downloaded": 0,
+                "files_archived_from_tmp": files_archived_from_tmp,
                 "duration": time.time() - start_time
             }
 
         self.logger.info(f"Missing files: {len(missing_files)}")
-
-        # Set up temporary directory - use instance tmp_dir if not provided
-        if tmp_dir is None:
-            tmp_dir = getattr(self, 'tmp_dir', '/tmp/download/')
-        tmp_dir_path = Path(tmp_dir) / self.station_id
-        tmp_dir_path.mkdir(parents=True, exist_ok=True)
 
         downloaded_files = []
         total_bytes = 0

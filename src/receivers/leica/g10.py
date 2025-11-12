@@ -225,64 +225,36 @@ class LeicaG10(BaseReceiver):
                     "duration": time.time() - start_time,
                 }
 
-            # Filter out files that already exist in archive
-            missing_files_dict = {}
-            validated_files = 0
-            files_found_in_archive = 0
+            # Use Phase 1 batch validation - checks archive AND tmp directory
+            missing_files_dict, files_found_in_archive, validated_files, files_in_tmp_dict = \
+                self.archive_validator.batch_validate_archives(
+                    files_dict,
+                    archive_files_dict,
+                    tmp_dir_path
+                )
 
-            for filename, remote_dir in files_dict.items():
-                validated_files += 1
-                archive_path = archive_files_dict.get(filename)
-                if archive_path:
-                    # Check if file already exists in archive (raw or compressed)
-                    archive_path_obj = Path(archive_path)
-                    if archive_path_obj.exists():
-                        if self._validate_archived_file(archive_path_obj):
-                            self.logger.debug(
-                                f"Archive file exists: {archive_path_obj.name} ({archive_path_obj.stat().st_size} bytes)"
+            # Archive files from tmp if found and archive flag is set
+            files_archived_from_tmp = 0
+            if files_in_tmp_dict and archive:
+                self.logger.info(f"Found {len(files_in_tmp_dict)} files in tmp directory that need archiving")
+                self.logger.info(f"Archiving {len(files_in_tmp_dict)} files from tmp directory...")
+
+                from ..utils.file_archiver import FileArchiver, ArchiveMode
+
+                with FileArchiver(mode=ArchiveMode.BULK, logger=self.logger) as archiver:
+                    for filename, tmp_path in files_in_tmp_dict.items():
+                        archive_dest = archive_files_dict.get(filename)
+                        if archive_dest:
+                            archiver.archive_file(
+                                tmp_path,
+                                Path(archive_dest),
+                                compress=False,  # Files already compressed (.m00.zip format)
+                                remove_tmp=True
                             )
-                            files_found_in_archive += 1
-                            continue
-                        else:
-                            self.logger.warning(
-                                f"Archived file failed sanity check, will re-download: {archive_path_obj}"
-                            )
-                            missing_files_dict[filename] = remote_dir
-                            continue
 
-                    # Check if compressed version exists (.m00.gz)
-                    if not str(archive_path).endswith(".gz"):
-                        archive_path_gz = archive_path + ".gz"
-                        archive_path_gz_obj = Path(archive_path_gz)
-                        if archive_path_gz_obj.exists():
-                            if self._validate_archived_file(archive_path_gz_obj):
-                                self.logger.debug(
-                                    f"Archive file exists with compression: {archive_path_gz_obj.name} ({archive_path_gz_obj.stat().st_size} bytes)"
-                                )
-                                files_found_in_archive += 1
-                                continue
-                            else:
-                                self.logger.warning(
-                                    f"Compressed archived file failed sanity check, will re-download: {archive_path_gz}"
-                                )
-                                missing_files_dict[filename] = remote_dir
-                                continue
-
-                # Check if file exists in temporary directory first (as zip or uncompressed)
-                tmp_zip_path = tmp_dir_path / filename  # .zip file
-                tmp_m00_path = tmp_dir_path / filename.replace('.m00.zip', '.m00')  # .m00 file
-
-                if tmp_zip_path.exists() and self._validate_archived_file(tmp_zip_path):
-                    self.logger.debug(f"Zip file already exists in temp directory: {filename}")
-                    files_found_in_archive += 1  # Count as found even though it's in temp
-                    continue
-                elif tmp_m00_path.exists() and self._validate_archived_file(tmp_m00_path):
-                    self.logger.debug(f"Uncompressed file already exists in temp directory: {tmp_m00_path.name}")
-                    files_found_in_archive += 1  # Count as found even though it's in temp
-                    continue
-
-                # File is missing from both archive and temp, add to download list
-                missing_files_dict[filename] = remote_dir
+                stats = archiver.get_statistics()
+                files_archived_from_tmp = stats['successful']
+                self.logger.info(f"Archived {stats['successful']}/{len(files_in_tmp_dict)} files from tmp to archive")
 
             # Log validation results
             self.logger.info(f"Validated {validated_files} files total")
