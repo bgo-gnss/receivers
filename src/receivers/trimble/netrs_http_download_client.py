@@ -146,18 +146,27 @@ class NetRSHTTPDownloader:
         return logger
 
     def download_file(self, remote_path: str, filename: str, local_path: Path,
-                     expected_size: Optional[int] = None) -> bool:
-        """Download a single file from NetRS receiver.
+                     expected_size: Optional[int] = None, max_retries: int = 3) -> bool:
+        """Download a single file from NetRS receiver with retry and reconnection.
 
         Args:
             remote_path: Remote directory path (e.g., '/download/202509/a')
             filename: Filename to download
             local_path: Local file path to save to
             expected_size: Expected file size for validation
+            max_retries: Maximum number of retry attempts (default: 3)
 
         Returns:
             True if download successful, False otherwise
         """
+        # Timeout/connection error patterns that require reconnection
+        timeout_patterns = [
+            "timed out", "timeout", "cannot read from timed out",
+            "connection reset", "broken pipe", "connection refused"
+        ]
+
+        initial_delay = 0.5
+
         # NetRS uses direct download path format: /download/YYYYMM/session_letter/filename.T00
         full_url = f"http://{self.http_client.ip}:{self.http_client.http_port}{remote_path}/{filename}"
 
@@ -180,120 +189,152 @@ class NetRSHTTPDownloader:
             except OSError as e:
                 self.logger.warning(f"Could not remove partial file {local_path}: {e}")
 
-        # Download the file
-        start_time = time.time()
-        self.logger.info(f"Downloading {filename}")
+        # Retry loop with reconnection on timeout
+        for attempt in range(max_retries + 1):
+            # Download the file
+            start_time = time.time()
+            if attempt == 0:
+                self.logger.info(f"Downloading {filename}")
+            else:
+                self.logger.info(f"Downloading {filename} (attempt {attempt + 1}/{max_retries + 1})")
 
-        try:
-            # Use simple requests.get() like NetR9 - proven to work
-            import requests
-            self.logger.debug(f"HTTP URL: {full_url}")
+            try:
+                # Use simple requests.get() like NetR9 - proven to work
+                import requests
+                self.logger.debug(f"HTTP URL: {full_url}")
 
-            # Use progress-based timeout: only timeout if no data received for stall_timeout seconds
-            response = requests.get(full_url, stream=True, timeout=(self.connect_timeout, None))
-            response.raise_for_status()
+                # Use progress-based timeout: only timeout if no data received for stall_timeout seconds
+                response = requests.get(full_url, stream=True, timeout=(self.connect_timeout, None))
+                response.raise_for_status()
 
-            # Get expected size from headers if not provided
-            if not expected_size:
-                expected_size = int(response.headers.get('content-length', 0))
+                # Get expected size from headers if not provided
+                if not expected_size:
+                    expected_size = int(response.headers.get('content-length', 0))
 
-            # Write response to file
-            local_path.parent.mkdir(parents=True, exist_ok=True)
-            bytes_written = 0
-            last_progress_time = time.time()
+                # Write response to file
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                bytes_written = 0
+                last_progress_time = time.time()
 
-            # Initialize progress bar if we have expected size
-            progress_bar = None
-            if expected_size and expected_size > 0:
-                progress_bar = ProgressBar(expected_size, filename)
+                # Initialize progress bar if we have expected size
+                progress_bar = None
+                if expected_size and expected_size > 0:
+                    progress_bar = ProgressBar(expected_size, filename)
 
-            with open(local_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=1024):
-                    if chunk:
-                        f.write(chunk)
-                        f.flush()
-                        bytes_written += len(chunk)
-                        current_time = time.time()
+                with open(local_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=1024):
+                        if chunk:
+                            f.write(chunk)
+                            f.flush()
+                            bytes_written += len(chunk)
+                            current_time = time.time()
 
-                        # Reset progress timer when data is received
-                        last_progress_time = current_time
+                            # Reset progress timer when data is received
+                            last_progress_time = current_time
 
-                        # Update progress bar
-                        if progress_bar:
-                            progress_bar.update(bytes_written)
-
-                    else:
-                        # Check for stall timeout (no data received)
-                        current_time = time.time()
-                        if current_time - last_progress_time > self.stall_timeout:
-                            # Clean up progress bar before raising error
+                            # Update progress bar
                             if progress_bar:
-                                progress_bar.finish()
-                            raise TimeoutError(
-                                f"Download stalled: no data received for {self.stall_timeout}s "
-                                f"(downloaded {bytes_written:,} bytes)"
-                            )
+                                progress_bar.update(bytes_written)
 
-            # Complete progress bar
-            if progress_bar:
-                progress_bar.finish()
+                        else:
+                            # Check for stall timeout (no data received)
+                            current_time = time.time()
+                            if current_time - last_progress_time > self.stall_timeout:
+                                # Clean up progress bar before raising error
+                                if progress_bar:
+                                    progress_bar.finish()
+                                raise TimeoutError(
+                                    f"Download stalled: no data received for {self.stall_timeout}s "
+                                    f"(downloaded {bytes_written:,} bytes)"
+                                )
 
-            # Validate downloaded file and log detailed size comparison (like NetR9)
-            download_time = time.time() - start_time
-            local_file_size = bytes_written
+                # Complete progress bar
+                if progress_bar:
+                    progress_bar.finish()
 
-            if expected_size is not None:
-                # Log file size comparison (matching NetR9 pattern)
-                self.logger.info(f"Remote file size: {expected_size} bytes, Local file size: {local_file_size} bytes")
-                size_diff = local_file_size - expected_size
-                self.logger.info(f"Difference between remote and downloaded file: {size_diff} bytes")
+                # Validate downloaded file and log detailed size comparison (like NetR9)
+                download_time = time.time() - start_time
+                local_file_size = bytes_written
 
-                if size_diff == 0:
-                    self.logger.info(f"✅ Successfully downloaded {filename} ({local_file_size:,} bytes)")
+                if expected_size is not None:
+                    # Log file size comparison (matching NetR9 pattern)
+                    self.logger.info(f"Remote file size: {expected_size} bytes, Local file size: {local_file_size} bytes")
+                    size_diff = local_file_size - expected_size
+                    self.logger.info(f"Difference between remote and downloaded file: {size_diff} bytes")
 
-                    # Validate file integrity
-                    validation = self.file_validator.validate_file(str(local_path), expected_size)
-                    if not validation['valid']:
-                        self.logger.warning(f"Downloaded file failed validation: {validation['error']}")
-                        self.logger.info(f"Removing invalid downloaded file: {local_path}")
+                    if size_diff == 0:
+                        self.logger.info(f"✅ Successfully downloaded {filename} ({local_file_size:,} bytes)")
+
+                        # Validate file integrity
+                        validation = self.file_validator.validate_file(str(local_path), expected_size)
+                        if not validation['valid']:
+                            self.logger.warning(f"Downloaded file failed validation: {validation['error']}")
+                            self.logger.info(f"Removing invalid downloaded file: {local_path}")
+                            try:
+                                local_path.unlink()
+                                return False
+                            except OSError as e:
+                                self.logger.error(f"Could not remove invalid file {local_path}: {e}")
+                                return False
+                        else:
+                            self.logger.debug(f"Downloaded file validated: {validation['compression']} compression, {validation['size']} bytes")
+
+                        return True
+                    else:
+                        self.logger.error(f"❌ Download incomplete for {filename}: size mismatch of {size_diff} bytes")
+                        self.logger.error(f"   Expected: {expected_size:,} bytes, Got: {local_file_size:,} bytes")
+                        self.logger.info(f"   Partial file kept for resume: {local_path}")
+                        return False
+                else:
+                    # No expected size - just validate what we can
+                    validation = self.file_validator.validate_file(str(local_path))
+                    if validation['valid']:
+                        self.logger.info(f"✅ Downloaded {filename} ({local_file_size:,} bytes) - integrity validated")
+                        return True
+                    else:
+                        self.logger.error(f"❌ Download validation failed for {filename}: {validation['error']}")
                         try:
                             local_path.unlink()
-                            return False
-                        except OSError as e:
-                            self.logger.error(f"Could not remove invalid file {local_path}: {e}")
-                            return False
-                    else:
-                        self.logger.debug(f"Downloaded file validated: {validation['compression']} compression, {validation['size']} bytes")
+                        except OSError:
+                            pass
+                        return False
 
-                    return True
-                else:
-                    self.logger.error(f"❌ Download incomplete for {filename}: size mismatch of {size_diff} bytes")
-                    self.logger.error(f"   Expected: {expected_size:,} bytes, Got: {local_file_size:,} bytes")
-                    self.logger.info(f"   Partial file kept for resume: {local_path}")
+            except (TimeoutError, requests.exceptions.RequestException, Exception) as e:
+                error_msg = str(e).lower()
+
+                # If this was the last attempt, give up
+                if attempt >= max_retries:
+                    self.logger.error(f"❌ Download failed after {max_retries + 1} attempts: {e}")
                     return False
-            else:
-                # No expected size - just validate what we can
-                validation = self.file_validator.validate_file(str(local_path))
-                if validation['valid']:
-                    self.logger.info(f"✅ Downloaded {filename} ({local_file_size:,} bytes) - integrity validated")
-                    return True
-                else:
-                    self.logger.error(f"❌ Download validation failed for {filename}: {validation['error']}")
+
+                # Log the failure
+                self.logger.warning(f"⚠️  Download attempt {attempt + 1} failed: {e}")
+
+                # Check if we need to reconnect (timeout/connection errors)
+                if any(pattern in error_msg for pattern in timeout_patterns):
+                    self.logger.info("🔄 Reconnecting HTTP client...")
                     try:
-                        local_path.unlink()
-                    except OSError:
-                        pass
-                    return False
+                        # Reinitialize the HTTP client to get fresh session
+                        from .netrs_http_client import NetRSHTTPClient
+                        self.http_client = NetRSHTTPClient(
+                            self.station_id,
+                            self.ip,
+                            self.http_port,
+                            self.logger
+                        )
+                        self.logger.info("✅ HTTP client reconnected")
+                    except Exception as reconnect_error:
+                        self.logger.error(f"❌ Reconnection failed: {reconnect_error}")
+                        # Continue anyway - might recover on next attempt
 
-        except TimeoutError as e:
-            self.logger.error(f"Download stalled for {filename}: {e}")
-            return False
-        except requests.exceptions.RequestException as e:
-            self.logger.error(f"HTTP error downloading {filename}: {e}")
-            return False
-        except Exception as e:
-            self.logger.error(f"Error downloading {filename}: {e}")
-            return False
+                # Exponential backoff
+                delay = initial_delay * (attempt + 1)
+                self.logger.info(f"🔄 Retrying in {delay:.1f}s...")
+                time.sleep(delay)
+
+        # All retries exhausted
+        self.logger.error(f"❌ Download failed for {filename} after {max_retries + 1} attempts")
+        return False
 
     def download_files(self, files_dict: Dict[str, str], tmp_dir: Path,
                       clean_tmp: bool = True,

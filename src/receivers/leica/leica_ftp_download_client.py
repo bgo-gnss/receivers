@@ -363,19 +363,27 @@ class LeicaFTPDownloader:
 
     def download_file(self, remote_filename: str, local_path: Path,
                      remote_dir: str = "/SD Card/Data/15s_24hr/",
-                     expected_size: Optional[int] = None, retry_count: int = 1) -> bool:
-        """Download a single file from Leica receiver via FTP with retry logic.
+                     expected_size: Optional[int] = None, retry_count: int = 3) -> bool:
+        """Download a single file from Leica receiver via FTP with retry and reconnection logic.
 
         Args:
             remote_filename: Remote filename to download (e.g., 'SKFC265a.m00.zip')
             local_path: Local file path to save to
             remote_dir: Remote directory path (e.g., '/SD Card/Data/1s_1hr/')
             expected_size: Expected file size for validation (optional)
-            retry_count: Number of retries on timeout (default: 1)
+            retry_count: Number of retries on timeout (default: 3)
 
         Returns:
             True if download successful, False otherwise
         """
+        # Timeout/connection error patterns that require reconnection
+        timeout_patterns = [
+            "timed out", "timeout", "cannot read from timed out",
+            "connection reset", "broken pipe", "connection refused"
+        ]
+
+        initial_delay = 0.5
+
         # Ensure local_path is a Path object
         if isinstance(local_path, str):
             local_path = Path(local_path)
@@ -383,37 +391,57 @@ class LeicaFTPDownloader:
         # Create parent directory
         local_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Try download with retries
+        # Try download with retries and reconnection
         for attempt in range(retry_count + 1):
-            if attempt > 0:
-                self.logger.info(f"🔄 Retry attempt {attempt}/{retry_count} for {remote_filename}")
-                time.sleep(10)  # Wait before retrying
+            if attempt == 0:
+                self.logger.info(f"Downloading {remote_filename}")
+            else:
+                delay = initial_delay * attempt
+                self.logger.info(f"🔄 Retrying in {delay:.1f}s...")
+                time.sleep(delay)
+                self.logger.info(f"Downloading {remote_filename} (attempt {attempt + 1}/{retry_count + 1})")
 
             try:
-                # Attempt single download
+                # Attempt single download (this creates fresh FTP connection)
                 success = self._download_file_single_attempt(remote_filename, local_path, remote_dir, expected_size)
                 if success:
                     return True
                 elif attempt < retry_count:
-                    self.logger.warning(f"⚠️ Download failed, retrying {remote_filename} (attempt {attempt + 1}/{retry_count})...")
+                    self.logger.warning(f"⚠️ Download attempt {attempt + 1} failed, retrying {remote_filename}...")
                     continue
                 else:
+                    self.logger.error(f"❌ Download failed after {retry_count + 1} attempts: {remote_filename}")
                     return False
 
             except (TimeoutError, ConnectionError) as e:
-                if attempt < retry_count:
-                    self.logger.warning(f"⚠️ Connection error for {remote_filename} (attempt {attempt + 1}), retrying: {e}")
-                    continue
-                else:
-                    self.logger.error(f"❌ Final attempt failed for {remote_filename}: {e}")
+                error_msg = str(e).lower()
+
+                # If this was the last attempt, give up
+                if attempt >= retry_count:
+                    self.logger.error(f"❌ Download failed after {retry_count + 1} attempts: {e}")
                     return False
+
+                # Log the failure
+                self.logger.warning(f"⚠️ Download attempt {attempt + 1} failed: {e}")
+
+                # Check if timeout pattern - always reconnect for FTP
+                if any(pattern in error_msg for pattern in timeout_patterns):
+                    self.logger.info("🔄 Connection timeout detected - fresh connection will be established on retry")
+
             except Exception as e:
-                if attempt < retry_count:
-                    self.logger.warning(f"⚠️ Unexpected error for {remote_filename} (attempt {attempt + 1}), retrying: {e}")
-                    continue
-                else:
-                    self.logger.error(f"❌ Final attempt failed for {remote_filename}: {e}")
+                error_msg = str(e).lower()
+
+                # If this was the last attempt, give up
+                if attempt >= retry_count:
+                    self.logger.error(f"❌ Download failed after {retry_count + 1} attempts: {e}")
                     return False
+
+                # Log the failure
+                self.logger.warning(f"⚠️ Download attempt {attempt + 1} failed: {e}")
+
+                # Check if timeout/connection error
+                if any(pattern in error_msg for pattern in timeout_patterns):
+                    self.logger.info("🔄 Connection error detected - fresh connection will be established on retry")
 
         return False
 
