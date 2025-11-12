@@ -574,12 +574,35 @@ class PolaRX5(BaseReceiver):
             files_dict[igs_filename] = archive_path  # Use archive path as "remote" for validation
             archive_paths_dict[igs_filename] = archive_path
 
-        # Use batch validation
-        missing_files_dict, found_count, validated_count = self.archive_validator.batch_validate_archives(
+        # Use batch validation (now returns files_in_tmp_dict as 4th element)
+        missing_files_dict, found_count, validated_count, files_in_tmp_dict = self.archive_validator.batch_validate_archives(
             files_dict,
             archive_paths_dict,
             tmp_dir_path
         )
+
+        # Archive files from tmp if found
+        files_archived_from_tmp = 0
+        if files_in_tmp_dict:
+            self.logger.info(f"Archiving {len(files_in_tmp_dict)} files from tmp directory...")
+            from ..utils.file_archiver import FileArchiver, ArchiveMode
+
+            with FileArchiver(mode=ArchiveMode.BULK, logger=self.logger) as archiver:
+                for igs_filename, tmp_path in files_in_tmp_dict.items():
+                    # Find the archive destination
+                    archive_dest = archive_paths_dict.get(igs_filename)
+                    if archive_dest:
+                        success = archiver.archive_file(
+                            tmp_path,
+                            Path(archive_dest),
+                            compress=False,  # Already compressed
+                            remove_tmp=True
+                        )
+                        if success:
+                            files_archived_from_tmp += 1
+
+            stats = archiver.get_statistics()
+            self.logger.info(f"Archived {stats['successful']}/{len(files_in_tmp_dict)} files from tmp to archive")
 
         # Convert back to expected format: datetime -> (archive_path, igs_filename)
         all_missing_files = {}
@@ -592,7 +615,7 @@ class PolaRX5(BaseReceiver):
 
         self.logger.info(f"Phase 1 validation: {validated_count} files checked, {found_count} found, {len(missing_files_dict)} missing")
 
-        return all_missing_files, validated_count, 0, 0  # missing, validated, corrupted_removed, archived_from_tmp
+        return all_missing_files, validated_count, 0, files_archived_from_tmp  # missing, validated, corrupted_removed, archived_from_tmp
 
     def _process_time_parameters(self, start, end, session, ffrequency):
         """Process and validate time parameters using Phase 1 TimeParameterProcessor."""
@@ -972,7 +995,7 @@ class PolaRX5(BaseReceiver):
 
                 if remote_file_size is not None:
                     # Use progress bar download with immediate retry logic
-                    diff = self._download_with_immediate_retry(
+                    diff, ftp = self._download_with_immediate_retry(
                         ftp, remote_file, str(local_file), remote_file_size, offset,
                         max_retries=max_retries, initial_delay=retry_initial_delay
                     )
@@ -1220,12 +1243,12 @@ class PolaRX5(BaseReceiver):
 
         Retries transient connection/timeout errors with increasing delays:
         - Attempt 1: immediate
-        - Attempt 2: after 0.5s delay
-        - Attempt 3: after 1.0s delay
-        - Attempt 4: after 1.5s delay
+        - Attempt 2: after 0.5s delay (with reconnection)
+        - Attempt 3: after 1.0s delay (with reconnection)
+        - Attempt 4: after 1.5s delay (with reconnection)
 
         Args:
-            ftp: FTP connection
+            ftp: FTP connection (will be reconnected on timeout)
             remote_file: Remote file path
             local_file: Local file path
             remote_file_size: Remote file size in bytes
@@ -1234,7 +1257,9 @@ class PolaRX5(BaseReceiver):
             initial_delay: Initial retry delay in seconds (default: 0.5)
 
         Returns:
-            Download result (bytes difference)
+            Tuple of (download_result, ftp_connection):
+            - download_result: Bytes difference between remote and local file
+            - ftp_connection: FTP connection (may be reconnected)
 
         Raises:
             Non-retryable errors (AuthenticationError, file not found)
@@ -1251,14 +1276,24 @@ class PolaRX5(BaseReceiver):
             "login"
         ]
 
+        # Timeout/connection error patterns that need reconnection
+        timeout_patterns = [
+            "timed out",
+            "timeout",
+            "cannot read from timed out",
+            "connection reset",
+            "broken pipe"
+        ]
+
         last_exception = None
 
         for attempt in range(max_retries + 1):  # +1 for initial attempt
             try:
                 # Delegate to existing FTP mode retry logic
-                return self._download_with_progressbar_and_retry(
+                result = self._download_with_progressbar_and_retry(
                     ftp, remote_file, local_file, remote_file_size, offset
                 )
+                return result, ftp  # Return both result and (potentially new) connection
 
             except AuthenticationError:
                 # Don't retry authentication failures
@@ -1280,6 +1315,23 @@ class PolaRX5(BaseReceiver):
                     self.logger.warning(
                         f"⚠️  Download attempt {attempt + 1} failed: {e}"
                     )
+
+                    # Check if we need to reconnect (timeout/connection errors)
+                    if any(pattern in error_msg for pattern in timeout_patterns):
+                        self.logger.info("🔄 Closing dead FTP connection and reconnecting...")
+                        try:
+                            ftp.close()
+                        except:
+                            pass  # Ignore errors closing dead connection
+
+                        # Reconnect
+                        ftp = self._ftp_open_connection()
+                        if not ftp:
+                            self.logger.error("❌ Failed to reconnect - aborting retries")
+                            raise ConnectionError("Could not reconnect to FTP server")
+
+                        self.logger.info("✅ FTP reconnected successfully")
+
                     self.logger.info(
                         f"🔄 Retrying in {delay:.1f}s (attempt {attempt + 2}/{max_retries + 1})..."
                     )

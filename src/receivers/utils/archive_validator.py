@@ -252,7 +252,7 @@ class ArchiveValidator:
         files_dict: Dict[str, str],
         archive_files_dict: Dict[str, str],
         tmp_dir: Optional[Path] = None
-    ) -> Tuple[Dict[str, str], int, int]:
+    ) -> Tuple[Dict[str, str], int, int, Dict[str, Path]]:
         """Batch validation of archive files.
 
         This method consolidates the file filtering logic that was duplicated
@@ -265,12 +265,14 @@ class ArchiveValidator:
             tmp_dir: Optional temporary directory to check
 
         Returns:
-            Tuple of (missing_files_dict, files_found_count, files_validated_count):
+            Tuple of (missing_files_dict, files_found_count, files_validated_count, files_in_tmp_dict):
             - missing_files_dict: Dict of files that need to be downloaded
-            - files_found_count: Number of files found in archive
+            - files_found_count: Number of files found in archive (not tmp)
             - files_validated_count: Total number of files validated
+            - files_in_tmp_dict: Dict mapping filename -> tmp_path for files in tmp that need archiving
         """
         missing_files_dict = {}
+        files_in_tmp_dict = {}
         files_found_in_archive = 0
         validated_files = 0
 
@@ -285,11 +287,19 @@ class ArchiveValidator:
                 )
 
                 if found:
-                    files_found_in_archive += 1
-                    self.logger.debug(
-                        f"File found in {location.value}: {filename}"
-                    )
-                    continue  # Skip this file - already have it
+                    if location == ArchiveLocation.TMP:
+                        # File exists in tmp but needs archiving
+                        files_in_tmp_dict[filename] = path
+                        self.logger.debug(
+                            f"File found in tmp (needs archiving): {filename}"
+                        )
+                    else:
+                        # File is properly archived
+                        files_found_in_archive += 1
+                        self.logger.debug(
+                            f"File found in {location.value}: {filename}"
+                        )
+                    continue  # Skip download in both cases
 
             # File is missing - add to download list
             missing_files_dict[filename] = remote_dir
@@ -301,7 +311,12 @@ class ArchiveValidator:
                 f"skipping re-download"
             )
 
-        return missing_files_dict, files_found_in_archive, validated_files
+        if files_in_tmp_dict:
+            self.logger.info(
+                f"Found {len(files_in_tmp_dict)} files in tmp directory that need archiving"
+            )
+
+        return missing_files_dict, files_found_in_archive, validated_files, files_in_tmp_dict
 
     def get_compression_extensions(self) -> List[str]:
         """Get list of supported compression extensions.

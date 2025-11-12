@@ -294,60 +294,38 @@ class NetR9(BaseReceiver):
                     "duration": time.time() - start_time,
                 }
 
-            # Filter out files that already exist in archive (like PolaRX5 does)
-            missing_files_dict = {}
-            validated_files = 0
-            files_found_in_archive = 0
+            # Use Phase 1 batch validation - checks archive AND tmp (Fix #1)
+            missing_files_dict, files_found_in_archive, validated_files, files_in_tmp_dict = \
+                self.archive_validator.batch_validate_archives(
+                    files_dict,
+                    archive_files_dict,
+                    tmp_dir_path
+                )
 
-            for filename, remote_dir in files_dict.items():
-                validated_files += 1
-                archive_path = archive_files_dict.get(filename)
-                if archive_path:
-                    # Check if file already exists in archive (raw or compressed)
-                    archive_path_obj = Path(archive_path)
-                    if archive_path_obj.exists():
-                        # Basic sanity check: ensure file is not zero or tiny
-                        if self._validate_archived_file(archive_path_obj):
-                            self.logger.debug(
-                                f"Archive file exists: {archive_path_obj.name} ({archive_path_obj.stat().st_size} bytes)"
+            # Archive files from tmp if found and archive flag is set (Fix #1)
+            files_archived_from_tmp = 0
+            if files_in_tmp_dict and archive:
+                self.logger.info(f"Archiving {len(files_in_tmp_dict)} files from tmp directory...")
+
+                with FileArchiver(mode=ArchiveMode.BULK, logger=self.logger) as archiver:
+                    for filename, tmp_path in files_in_tmp_dict.items():
+                        archive_dest = archive_files_dict.get(filename)
+                        if archive_dest:
+                            archiver.archive_file(
+                                tmp_path,
+                                Path(archive_dest),
+                                compress=False,  # Files already compressed
+                                remove_tmp=True
                             )
-                            files_found_in_archive += 1
-                            continue
-                        else:
-                            self.logger.warning(
-                                f"Archived file failed sanity check, will re-download: {archive_path_obj}"
-                            )
-                            missing_files_dict[filename] = remote_dir
-                            continue
 
-                    # Check if compressed version exists (.T02.gz)
-                    if not str(archive_path).endswith(".gz"):
-                        archive_path_gz = archive_path + ".gz"
-                        archive_path_gz_obj = Path(archive_path_gz)
-                        if archive_path_gz_obj.exists():
-                            # Basic sanity check: ensure compressed file is valid
-                            if self._validate_archived_file(archive_path_gz_obj):
-                                self.logger.debug(
-                                    f"Archive file exists with compression: {archive_path_gz_obj.name} ({archive_path_gz_obj.stat().st_size} bytes)"
-                                )
-                                files_found_in_archive += 1
-                                continue
-                            else:
-                                self.logger.warning(
-                                    f"Compressed archived file failed sanity check, will re-download: {archive_path_gz}"
-                                )
-                                missing_files_dict[filename] = remote_dir
-                                continue
-
-                # File is missing from archive, add to download list
-                missing_files_dict[filename] = remote_dir
+                stats = archiver.get_statistics()
+                files_archived_from_tmp = stats['successful']
+                self.logger.info(f"Archived {stats['successful']}/{len(files_in_tmp_dict)} files from tmp to archive")
 
             # Log validation results (matching PolaRX5 pattern)
             self.logger.info(f"Validated {validated_files} existing files")
-            if files_found_in_archive > 0:
-                self.logger.info(
-                    f"Found {files_found_in_archive} files already archived, skipping re-download"
-                )
+            if files_archived_from_tmp > 0:
+                self.logger.info(f"Archived {files_archived_from_tmp} files from tmp directory")
 
             if not missing_files_dict:
                 self.logger.info("Archive is up to date")
