@@ -300,7 +300,8 @@ class NetRS(BaseReceiver):
             self.logger.info(f"Checking {session} sessions from {start} to {end}")
 
             # Set up directories
-            tmp_dir_path = Path(self.tmp_dir) / self.station_id
+            # Include session in tmp path to prevent filename collisions between sessions
+            tmp_dir_path = Path(self.tmp_dir) / self.station_id / session
             tmp_dir_path.mkdir(parents=True, exist_ok=True)
 
             # Generate file list based on session type and time range

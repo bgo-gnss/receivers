@@ -257,8 +257,9 @@ class PolaRX5(BaseReceiver):
         self.logger.setLevel(loglevel)
 
         # Get centralized configuration paths
+        # Include session in tmp path to prevent filename collisions between sessions
         tmp_dir = self.receivers_config.get_tmp_dir()
-        tmp_dir_path = Path(tmp_dir) / self.station_id
+        tmp_dir_path = Path(tmp_dir) / self.station_id / session
         tmp_dir_path.mkdir(parents=True, exist_ok=True)
 
         # Clean tmp directory if requested
