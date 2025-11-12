@@ -67,11 +67,12 @@ def calculate_download_time_range(
         end_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
         start_time = end_time - timedelta(days=lookback_periods)
     else:
-        # Hourly data - end at PREVIOUS complete hour
-        # At 22:41, the current hour (22:00-23:00) is incomplete, so we use 21:00
-        # This ensures we only download files that exist
-        end_time = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
-        start_time = end_time - timedelta(hours=lookback_periods - 1)
+        # Hourly data - end at START of current incomplete hour
+        # At 23:35, current hour is 23:00-00:00 (incomplete), so end_time = 23:00
+        # This means we download up to (but not including) 23:00
+        # With -D 2: download 21:00 and 22:00 (2 complete hours)
+        end_time = now.replace(minute=0, second=0, microsecond=0)
+        start_time = end_time - timedelta(hours=lookback_periods)
 
     return start_time, end_time
 
