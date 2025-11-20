@@ -259,6 +259,204 @@ def cmd_status(args) -> int:
         return 1
 
 
+def cmd_health_timeseries_extract(
+    args,
+    station_id: str,
+    station_config: Dict[str, Any],
+    logger: logging.Logger
+) -> int:
+    """Extract time-series health data from SBF files and save to JSON.
+
+    Args:
+        args: Command-line arguments
+        station_id: Station identifier
+        station_config: Station configuration dictionary
+        logger: Logger instance
+
+    Returns:
+        0 on success, 1 on failure
+    """
+    from ..health.timeseries_extractor import TimeSeriesHealthExtractor
+    from ..health.json_writer import HealthJSONWriter
+
+    try:
+        # Parse dates to extract
+        dates_to_extract = []
+
+        if getattr(args, 'extract_day', None):
+            # Single day extraction
+            try:
+                date_str = args.extract_day
+                date = datetime.strptime(date_str, '%Y%m%d')
+                dates_to_extract.append(date)
+                logger.info(f"Extracting data for {date.strftime('%Y-%m-%d')}")
+            except ValueError as e:
+                logger.error(f"Invalid date format: {args.extract_day} (expected YYYYMMDD)")
+                return 1
+
+        elif getattr(args, 'extract_range', None):
+            # Date range extraction
+            try:
+                start_str, end_str = args.extract_range
+                start_date = datetime.strptime(start_str, '%Y%m%d')
+                end_date = datetime.strptime(end_str, '%Y%m%d')
+
+                if start_date > end_date:
+                    logger.error("Start date must be before end date")
+                    return 1
+
+                # Generate list of dates
+                current_date = start_date
+                while current_date <= end_date:
+                    dates_to_extract.append(current_date)
+                    current_date += timedelta(days=1)
+
+                logger.info(f"Extracting data for {len(dates_to_extract)} days: "
+                           f"{start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+            except ValueError as e:
+                logger.error(f"Invalid date format in range (expected YYYYMMDD)")
+                return 1
+
+        elif getattr(args, 'extract_all', False):
+            # Extract all available data
+            logger.error("--extract-all not yet implemented (requires scanning archive directory)")
+            return 1
+
+        if not dates_to_extract:
+            logger.error("No dates to extract")
+            return 1
+
+        # Get receiver type
+        receiver_type = station_config.get('receiver', {}).get('type', 'PolaRX5')
+
+        # Get data paths from receivers_config
+        from ..config.receivers_config import get_receivers_config
+        receivers_config = get_receivers_config()
+        data_prepath = receivers_config.get_prepath()
+
+        logger.debug(f"Using data_prepath: {data_prepath}")
+        logger.debug(f"Receiver type: {receiver_type}")
+
+        # Initialize extractors
+        extractor = TimeSeriesHealthExtractor(station_id, receiver_type)
+
+        # Process each date
+        success_count = 0
+        skip_count = 0
+        error_count = 0
+
+        for date in dates_to_extract:
+            try:
+                # Build path to status_1hr directory for this date
+                year = date.strftime('%Y')
+                month = date.strftime('%b').lower()
+                base_path = Path(data_prepath) / year / month
+
+                # Check both status_1hr/ and status_1hr/raw/ subdirectories
+                status_dir = base_path / station_id / 'status_1hr'
+                status_raw_dir = status_dir / 'raw'
+
+                if not status_dir.exists():
+                    logger.warning(f"Status directory not found for {date.strftime('%Y-%m-%d')}: {status_dir}")
+                    error_count += 1
+                    continue
+
+                # Find all SBF files for this date
+                date_str = date.strftime('%Y%m%d')
+                sbf_files = []
+
+                # Look for hourly status files: STATION{YYYYMMDD}{HH}00c.sbf.gz
+                # Try both status_1hr/ and status_1hr/raw/ subdirectories
+                search_dirs = [status_dir]
+                if status_raw_dir.exists():
+                    search_dirs.append(status_raw_dir)
+
+                for hour in range(24):
+                    filename = f"{station_id}{date_str}{hour:02d}00c.sbf.gz"
+
+                    # Check each potential directory
+                    for search_dir in search_dirs:
+                        filepath = search_dir / filename
+                        if filepath.exists() and filepath not in sbf_files:
+                            sbf_files.append(filepath)
+                            break  # Found in this dir, don't check others
+
+                if not sbf_files:
+                    logger.warning(f"No SBF files found for {date.strftime('%Y-%m-%d')} in {status_dir}")
+                    error_count += 1
+                    continue
+
+                logger.info(f"Found {len(sbf_files)} SBF files for {date.strftime('%Y-%m-%d')}")
+
+                # Extract daily health data
+                health_data = extractor.extract_daily_health(sbf_files, date)
+
+                # Write to JSON
+                json_writer = HealthJSONWriter(str(base_path), station_id)
+                force = getattr(args, 'force', False)
+
+                json_path = json_writer.write_daily_health_data(
+                    health_data,
+                    date,
+                    force=force
+                )
+
+                if json_path:
+                    logger.info(f"✅ Wrote {json_path.name}")
+
+                    # Update latest symlink
+                    json_writer.write_daily_latest_symlink(json_path)
+
+                    # Extract per-block JSONs for exploration (unless disabled)
+                    if not getattr(args, 'skip_blocks', False):
+                        logger.info(f"Extracting per-block JSONs for exploration...")
+                        from ..health.block_json_writer import BlockJsonWriter
+
+                        block_writer = BlockJsonWriter(station_id, status_dir / 'json')
+                        try:
+                            block_stats = block_writer.extract_all_blocks(sbf_files, date.date())
+                            if block_stats:
+                                logger.info(f"✅ Extracted {len(block_stats)} block types:")
+                                for block_name, count in block_stats.items():
+                                    logger.info(f"   - {block_name}: {count} samples")
+                            else:
+                                logger.debug("No additional blocks found")
+                        except Exception as e:
+                            logger.warning(f"Per-block extraction failed: {e}")
+                            if args.loglevel == logging.DEBUG:
+                                import traceback
+                                traceback.print_exc()
+
+                    success_count += 1
+                else:
+                    logger.info(f"⏭️  Skipped {date.strftime('%Y-%m-%d')} (no source changes)")
+                    skip_count += 1
+
+            except Exception as e:
+                logger.error(f"Failed to extract {date.strftime('%Y-%m-%d')}: {e}")
+                if args.loglevel == logging.DEBUG:
+                    import traceback
+                    traceback.print_exc()
+                error_count += 1
+
+        # Summary
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Extraction complete:")
+        logger.info(f"  ✅ Extracted: {success_count}")
+        logger.info(f"  ⏭️  Skipped: {skip_count}")
+        logger.info(f"  ❌ Errors: {error_count}")
+        logger.info(f"{'='*60}")
+
+        return 0 if error_count == 0 else 1
+
+    except Exception as e:
+        logger.error(f"Time-series extraction failed: {e}")
+        if args.loglevel == logging.DEBUG:
+            import traceback
+            traceback.print_exc()
+        return 1
+
+
 def cmd_health(args) -> int:
     """Health command - get receiver health information."""
     logger = setup_logging(args.loglevel)
@@ -269,6 +467,14 @@ def cmd_health(args) -> int:
         if station_config is None:
             logger.warning(f"⚠️  Station {station_id} not found in configuration")
             return 1
+
+        # Check if time-series extraction requested
+        if any([
+            getattr(args, 'extract_day', None),
+            getattr(args, 'extract_range', None),
+            getattr(args, 'extract_all', False)
+        ]):
+            return cmd_health_timeseries_extract(args, station_id, station_config, logger)
 
         # Create receiver instance using factory pattern
         receiver = create_receiver(station_id, station_config)
@@ -777,6 +983,32 @@ Examples:
         "--save-db",
         action="store_true",
         help="Save health data to PostgreSQL database"
+    )
+    health_parser.add_argument(
+        "--extract-day",
+        metavar="YYYYMMDD",
+        help="Extract complete time-series health data for a specific day"
+    )
+    health_parser.add_argument(
+        "--extract-range",
+        nargs=2,
+        metavar=("START", "END"),
+        help="Extract time-series health data for date range (YYYYMMDD YYYYMMDD)"
+    )
+    health_parser.add_argument(
+        "--extract-all",
+        action="store_true",
+        help="Extract time-series health data for all available SBF files"
+    )
+    health_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force overwrite even if source data unchanged"
+    )
+    health_parser.add_argument(
+        "--skip-blocks",
+        action="store_true",
+        help="Skip per-block JSON extraction (only extract main health JSON)"
     )
     health_parser.set_defaults(func=cmd_health)
     
