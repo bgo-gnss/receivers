@@ -104,11 +104,14 @@ class PolaRX5(BaseReceiver):
             self.inactivity_timeout = timeout_config["inactivity_timeout"]
             self.progress_timeout = timeout_config["progress_timeout"]
             self.min_speed_threshold = timeout_config["min_speed_threshold"]
+            # Data transfer timeout - how long to wait for initial data before failing
+            # Can be per-station in future via gps_parser config
+            self.data_transfer_timeout = timeout_config.get("data_transfer_timeout", 2)
 
             self.logger.info(
                 f"Timeout config from gps_parser - Connection: {self.connection_timeout}s, "
                 f"Inactivity: {self.inactivity_timeout}s, Progress: {self.progress_timeout}s, "
-                f"Min speed: {self.min_speed_threshold} B/s"
+                f"Data transfer: {self.data_transfer_timeout}s, Min speed: {self.min_speed_threshold} B/s"
             )
 
         except Exception as e:
@@ -121,10 +124,12 @@ class PolaRX5(BaseReceiver):
             self.inactivity_timeout = 60
             self.progress_timeout = 300
             self.min_speed_threshold = 2048
+            self.data_transfer_timeout = 2  # Fast-fail on data transfer stalls
 
             self.logger.info(
                 f"Fallback timeout config - Connection: {self.connection_timeout}s, "
-                f"Inactivity: {self.inactivity_timeout}s, Progress: {self.progress_timeout}s"
+                f"Inactivity: {self.inactivity_timeout}s, Progress: {self.progress_timeout}s, "
+                f"Data transfer: {self.data_transfer_timeout}s"
             )
 
     def _setup_connection_info(self):
@@ -156,35 +161,55 @@ class PolaRX5(BaseReceiver):
     def get_connection_status(self) -> Dict[str, Any]:
         """Check connection status to receiver.
 
+        Tests router connectivity (ping) and receiver HTTP web interface (port 8060).
+        This is consistent with Icinga monitoring which uses HTTP as the primary
+        receiver test since all receivers have web interfaces.
+
         Returns:
             Dictionary with router and receiver connection status
         """
+        import subprocess
+        import socket
+
+        router_ok = False
+        receiver_ok = False
+        error_msg = None
+
+        # Test 1: Router connectivity (ping)
         try:
-            # Simple connection test
-            ftp = FTP()
-            ftp.connect(self.ip_number, self.ip_port, timeout=self.connection_timeout)
-            ftp.login("anonymous")
-            ftp.set_pasv(self.pasv)
-            ftp.quit()
-
-            status = {
-                "router": True,
-                "receiver": True,
-                "ip": self.ip_number,
-                "port": self.ip_port,
-                "timestamp": datetime.utcnow().isoformat(),
-                "error": None,
-            }
-
+            # Ping with 2 second timeout, 1 packet
+            result = subprocess.run(
+                ['ping', '-c', '1', '-W', '2', self.ip_number],
+                capture_output=True,
+                timeout=3
+            )
+            router_ok = (result.returncode == 0)
         except Exception as e:
-            status = {
-                "router": False,
-                "receiver": False,
-                "ip": self.ip_number,
-                "port": self.ip_port,
-                "timestamp": datetime.utcnow().isoformat(),
-                "error": str(e),
-            }
+            error_msg = f"Router ping failed: {e}"
+
+        # Test 2: Receiver HTTP web interface (port 8060)
+        try:
+            # Try to connect to HTTP port 8060
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+            result = sock.connect_ex((self.ip_number, 8060))
+            sock.close()
+            receiver_ok = (result == 0)
+            if not receiver_ok and not error_msg:
+                error_msg = f"HTTP port 8060 not responding"
+        except Exception as e:
+            if not error_msg:
+                error_msg = f"Receiver test failed: {e}"
+
+        status = {
+            "router": router_ok,
+            "receiver": receiver_ok,
+            "ip": self.ip_number,
+            "port": self.ip_port,  # Keep original FTP port in config
+            "http_port": 8060,  # Add HTTP port
+            "timestamp": datetime.utcnow().isoformat(),
+            "error": error_msg if not (router_ok and receiver_ok) else None,
+        }
 
         self.connection_status = status
         return status
@@ -739,23 +764,73 @@ class PolaRX5(BaseReceiver):
         finally:
             ftp.close()
 
-    def _ftp_open_connection(self, timeout: Optional[int] = None) -> Optional[FTP]:
-        """Open FTP connection to receiver with optimistic approach - try first, diagnose on failure."""
+    def _ftp_open_connection(self, timeout: Optional[int] = None, skip_ping_check: bool = False) -> Optional[FTP]:
+        """Open FTP connection to receiver with fast-fail checks.
+
+        Args:
+            timeout: Optional connection timeout override
+            skip_ping_check: If True, skip the initial connectivity checks (for retries where we already know network is up)
+        """
         connection_start = time.time()
 
-        # Optimistic approach: Try connection directly first
+        if not skip_ping_check:
+            # Fast-fail check 1: Ping (detect unreachable hosts in 2s)
+            self.logger.info(f"Checking connectivity to {self.ip_number}...")
+            try:
+                import subprocess
+                ping_result = subprocess.run(
+                    ['ping', '-c', '1', '-W', '2', self.ip_number],
+                    capture_output=True,
+                    timeout=3
+                )
+                if ping_result.returncode != 0:
+                    self.logger.error(f"❌ Network unreachable: {self.ip_number} - ping failed")
+                    self.logger.error("💡 Check network connectivity or wait for receiver to come online")
+                    self._last_connection_time = time.time() - connection_start
+                    return None
+            except subprocess.TimeoutExpired:
+                self.logger.error(f"❌ Network unreachable: {self.ip_number} - ping timeout")
+                self.logger.error("💡 Router/receiver appears to be offline")
+                self._last_connection_time = time.time() - connection_start
+                return None
+            except Exception as e:
+                self.logger.debug(f"Ping check skipped: {e}")
+
+            # Fast-fail check 2: TCP port check (detect FTP port issues in 3s)
+            try:
+                import socket
+                self.logger.info(f"Checking FTP port {self.ip_port}...")
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(3)
+                result = sock.connect_ex((self.ip_number, self.ip_port))
+                sock.close()
+                if result != 0:
+                    self.logger.error(f"❌ FTP port {self.ip_port} not responding on {self.ip_number}")
+                    self.logger.error("💡 Receiver may be down or FTP port misconfigured")
+                    self._last_connection_time = time.time() - connection_start
+                    return None
+            except socket.timeout:
+                self.logger.error(f"❌ FTP port {self.ip_port} timeout on {self.ip_number}")
+                self.logger.error("💡 Receiver FTP service not responding")
+                self._last_connection_time = time.time() - connection_start
+                return None
+            except Exception as e:
+                self.logger.debug(f"Port check skipped: {e}")
+
+        # Proceed with FTP connection (should be fast now since port is verified)
+        if timeout is None:
+            timeout = self.connection_timeout
+        self.logger.info(
+            f"Connecting to FTP {self.ip_number}:{self.ip_port}..."
+        )
+
         try:
-            self.logger.info(
-                f"Attempting FTP connection to {self.ip_number}:{self.ip_port}..."
-            )
             ftp = FTP()
-            if timeout is None:
-                timeout = self.connection_timeout
             ftp.connect(self.ip_number, self.ip_port, timeout=timeout)
             ftp.login("anonymous")
             ftp.set_pasv(self.pasv)
             connection_time = time.time() - connection_start
-            self.logger.info(f"Connection successful in {connection_time:.2f}s!")
+            self.logger.info(f"✅ Connected in {connection_time:.2f}s")
 
             # Store connection time in instance variable for performance tracking
             self._last_connection_time = connection_time
@@ -938,8 +1013,8 @@ class PolaRX5(BaseReceiver):
                             except:
                                 pass
 
-                            # Reconnect
-                            ftp = self._ftp_open_connection()
+                            # Reconnect (skip ping check - we know network was up)
+                            ftp = self._ftp_open_connection(skip_ping_check=True)
                             if not ftp:
                                 self.logger.error("❌ Failed to reconnect - skipping remaining files")
                                 break  # Exit the download loop
@@ -1084,6 +1159,7 @@ class PolaRX5(BaseReceiver):
                 else:
                     # Fallback to simple download without progress
                     file_mode = "ab" if offset > 0 else "wb"
+                    ftp.timeout = self.data_transfer_timeout
                     with open(local_file, file_mode) as f:
                         ftp.retrbinary(f"RETR {remote_file}", f.write, rest=offset)
 
@@ -1171,6 +1247,8 @@ class PolaRX5(BaseReceiver):
         if not progressbar_available:
             # Fallback without progress bar
             file_mode = "ab" if offset > 0 else "wb"
+            # Set timeout for data socket (used when creating PASV connection)
+            ftp.timeout = self.data_transfer_timeout
             with open(local_file, file_mode) as f:
                 ftp.retrbinary(f"RETR {remote_file}", f.write, rest=offset)
         else:
@@ -1183,6 +1261,13 @@ class PolaRX5(BaseReceiver):
             last_bytes = offset
             start_time = time.time()
 
+            # Shared state for watchdog thread
+            import threading
+            bytes_received = [0]  # Mutable container for thread communication
+            download_done = threading.Event()
+            watchdog_killed = [False]
+            data_socket = [None]  # Store data socket so watchdog can close it
+
             with tqdm(
                 total=remote_file_size,
                 initial=offset,
@@ -1194,44 +1279,128 @@ class PolaRX5(BaseReceiver):
                 file_mode = "ab" if offset > 0 else "wb"
                 with open(local_file, file_mode) as f:
 
-                    def callback(chunk):
-                        nonlocal last_progress_time, last_bytes
+                    def watchdog():
+                        """Kill connection if stuck at 0% for too long."""
+                        timeout = self.data_transfer_timeout
+                        check_interval = 0.5  # Check every 500ms
+                        elapsed = 0
 
-                        # Write chunk and update progress
-                        f.write(chunk)
-                        pbar.update(len(chunk))
+                        while not download_done.is_set():
+                            if download_done.wait(timeout=check_interval):
+                                break  # Download completed normally
 
-                        # Check timeout conditions
-                        current_bytes = pbar.n
-                        current_time = time.time()
-                        time_since_last_progress = current_time - last_progress_time
-                        bytes_since_last_check = current_bytes - last_bytes
+                            elapsed += check_interval
 
-                        # If we made progress, reset progress timer
-                        if bytes_since_last_check > 0:
-                            last_progress_time = current_time
-                            last_bytes = current_bytes
+                            # Only kill if stuck at initial offset (0% progress)
+                            if bytes_received[0] <= offset and elapsed >= timeout:
+                                self.logger.warning(
+                                    f"⚠️  Watchdog: No data received in {elapsed:.1f}s, killing connection"
+                                )
+                                watchdog_killed[0] = True
+                                # Close DATA socket (this is what actually unblocks recv)
+                                try:
+                                    if data_socket[0]:
+                                        data_socket[0].close()
+                                except:
+                                    pass
+                                # Also close control socket
+                                try:
+                                    ftp.close()
+                                except:
+                                    pass
+                                break
 
-                        # Check for inactivity timeout (no progress at all)
-                        elif time_since_last_progress > self.inactivity_timeout:
-                            raise ConnectionError(
-                                f"Download timed out: no progress for {time_since_last_progress:.1f}s"
-                            )
+                    # Start watchdog thread for 0% stall detection
+                    watchdog_thread = threading.Thread(target=watchdog, daemon=True)
+                    watchdog_thread.start()
 
-                        # Check for overall progress timeout (making progress but too slow)
-                        total_time = current_time - start_time
-                        if total_time > self.progress_timeout:
-                            avg_speed = (
-                                (current_bytes - offset) / total_time
-                                if total_time > 0
-                                else 0
-                            )
-                            if avg_speed < self.min_speed_threshold:
-                                raise ConnectionError(
-                                    f"Download timed out: speed {avg_speed:.0f} B/s below minimum {self.min_speed_threshold} B/s"
+                    try:
+                        import select
+
+                        # Use transfercmd directly so we have access to the data socket
+                        # Set short timeout on BOTH control and data sockets
+                        ftp.timeout = self.data_transfer_timeout
+                        if ftp.sock:
+                            ftp.sock.settimeout(self.data_transfer_timeout)  # Control socket too!
+                        ftp.voidcmd('TYPE I')  # Set binary mode
+                        conn = ftp.transfercmd(f"RETR {remote_file}", rest=offset)
+                        data_socket[0] = conn  # Store for watchdog access
+                        conn.setblocking(False)  # Non-blocking for select()
+
+                        # Manual recv loop with select() for fast timeout
+                        while True:
+                            # Check if watchdog killed us
+                            if watchdog_killed[0]:
+                                raise TimeoutError(
+                                    f"No data received within {self.data_transfer_timeout}s - connection killed by watchdog"
                                 )
 
-                    ftp.retrbinary(f"RETR {remote_file}", callback, rest=offset)
+                            # Use select with short timeout to poll socket
+                            ready, _, _ = select.select([conn], [], [], 0.5)
+
+                            if ready:
+                                try:
+                                    chunk = conn.recv(8192)
+                                except (OSError, ConnectionError):
+                                    # Socket was closed by watchdog
+                                    if watchdog_killed[0]:
+                                        raise TimeoutError(
+                                            f"No data received within {self.data_transfer_timeout}s - connection killed by watchdog"
+                                        )
+                                    raise
+
+                                if not chunk:
+                                    break
+
+                                # Write chunk and update progress
+                                f.write(chunk)
+                                pbar.update(len(chunk))
+                                bytes_received[0] = pbar.n
+
+                                # Check timeout conditions
+                                current_bytes = pbar.n
+                                current_time = time.time()
+                                time_since_last_progress = current_time - last_progress_time
+                                bytes_since_last_check = current_bytes - last_bytes
+
+                                # If we made progress, reset progress timer
+                                if bytes_since_last_check > 0:
+                                    last_progress_time = current_time
+                                    last_bytes = current_bytes
+                                # Check for inactivity timeout (no progress at all)
+                                elif time_since_last_progress > self.inactivity_timeout:
+                                    raise ConnectionError(
+                                        f"Download timed out: no progress for {time_since_last_progress:.1f}s"
+                                    )
+
+                                # Check for overall progress timeout (making progress but too slow)
+                                total_time = current_time - start_time
+                                if total_time > self.progress_timeout:
+                                    avg_speed = (
+                                        (current_bytes - offset) / total_time
+                                        if total_time > 0
+                                        else 0
+                                    )
+                                    if avg_speed < self.min_speed_threshold:
+                                        raise ConnectionError(
+                                            f"Download timed out: speed {avg_speed:.0f} B/s below minimum {self.min_speed_threshold} B/s"
+                                        )
+
+                        conn.close()
+                        ftp.voidresp()  # Get transfer complete response
+
+                    except Exception as e:
+                        download_done.set()
+                        watchdog_thread.join(timeout=1)
+                        # If watchdog killed the connection, raise TimeoutError instead
+                        if watchdog_killed[0]:
+                            raise TimeoutError(
+                                f"No data received within {self.data_transfer_timeout}s - connection killed by watchdog"
+                            ) from None
+                        raise  # Re-raise original error if not watchdog-related
+                    else:
+                        download_done.set()
+                        watchdog_thread.join(timeout=1)
 
         local_file_size = os.path.getsize(local_file)
         return local_file_size - remote_file_size
@@ -1283,7 +1452,8 @@ class PolaRX5(BaseReceiver):
             "timeout",
             "cannot read from timed out",
             "connection reset",
-            "broken pipe"
+            "broken pipe",
+            "watchdog",  # Watchdog killed stalled connection
         ]
 
         last_exception = None
@@ -1325,8 +1495,8 @@ class PolaRX5(BaseReceiver):
                         except:
                             pass  # Ignore errors closing dead connection
 
-                        # Reconnect
-                        ftp = self._ftp_open_connection()
+                        # Reconnect (skip ping check - we know network was up)
+                        ftp = self._ftp_open_connection(skip_ping_check=True)
                         if not ftp:
                             self.logger.error("❌ Failed to reconnect - aborting retries")
                             raise ConnectionError("Could not reconnect to FTP server")

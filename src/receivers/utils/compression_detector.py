@@ -220,6 +220,24 @@ class CompressionConverter:
 
             decompressor(source, destination)
             self.logger.debug(f"✅ Decompressed to: {destination}")
+
+            # Check if result is still compressed (double-compression case)
+            inner_compression = self.detector.detect_compression(destination)
+            if inner_compression:
+                inner_format, _ = inner_compression
+                self.logger.debug(f"Detected double-compression, inner format: {inner_format}")
+                # Decompress again to a temp file then replace
+                import tempfile
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.sbf') as tmp:
+                    tmp_path = Path(tmp.name)
+                inner_decompressor = self._decompressors.get(inner_format)
+                if inner_decompressor:
+                    inner_decompressor(destination, tmp_path)
+                    # Replace destination with fully decompressed file
+                    import shutil
+                    shutil.move(str(tmp_path), str(destination))
+                    self.logger.debug(f"✅ Double-decompressed to: {destination}")
+
             return True
 
         except Exception as e:
