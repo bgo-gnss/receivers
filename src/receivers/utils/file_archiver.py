@@ -18,6 +18,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Protocol, Tuple
 
+from .compression_detector import CompressionDetector
 from .file_validator import FileValidator
 
 
@@ -341,14 +342,35 @@ class FileArchiver:
                 else:
                     # Default to gzip
                     strategy = self._compression_strategies['.gz']
+                    archive_ext = '.gz'
                     # Adjust archive path to have .gz extension
                     if not str(archive_path).endswith('.gz'):
                         archive_path = Path(str(archive_path) + '.gz')
 
-                self.logger.info(
-                    f"📦 Archiving with compression: {filename} → {archive_path.name} "
-                    f"({tmp_file_size:,} bytes)"
-                )
+                # Check if source file is already compressed in target format
+                # This prevents double-compression (e.g., gzipping an already gzipped file)
+                detector = CompressionDetector(self.logger)
+                source_compression = detector.detect_compression(tmp_file)
+
+                if source_compression:
+                    source_format, source_ext = source_compression
+                    if source_ext == archive_ext:
+                        # Source already in target format - just copy, don't re-compress
+                        self.logger.info(
+                            f"📦 Source already {source_format} compressed, copying: "
+                            f"{filename} → {archive_path.name} ({tmp_file_size:,} bytes)"
+                        )
+                        strategy = self._compression_strategies['']  # NoCompression (copy)
+                    else:
+                        self.logger.info(
+                            f"📦 Archiving with compression: {filename} → {archive_path.name} "
+                            f"({tmp_file_size:,} bytes)"
+                        )
+                else:
+                    self.logger.info(
+                        f"📦 Archiving with compression: {filename} → {archive_path.name} "
+                        f"({tmp_file_size:,} bytes)"
+                    )
             else:
                 strategy = self._compression_strategies['']
                 self.logger.info(
