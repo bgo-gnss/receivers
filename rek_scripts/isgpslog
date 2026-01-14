@@ -1,3 +1,0 @@
-#!/bin/sh
-#ssh dump "testisgpslog $1"
-ssh sil@frumgogn "isgpslog $1"

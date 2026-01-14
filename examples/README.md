@@ -1,31 +1,28 @@
-# Examples and Sample Data
+# Examples
 
-This directory contains example scripts, sample data, and usage demonstrations for the receivers package.
+Usage examples for the `receivers` package.
 
-## Files
-
-- **jord.csv** - Sample GPS station data for testing and examples
-- **extract_health_bin2asc.py** - Example script for SBF health data extraction
-
-## Usage Examples
-
-### Health Data Extraction
+## Quick Start
 
 ```bash
-# Extract health data from SBF files
-python docs/examples/extract_health_bin2asc.py --station ORFC
+# Download data
+receivers download ELDC --sync --archive
 
-# Extract from specific session type
-python docs/examples/extract_health_bin2asc.py --station ELDC --session status_1hr
+# Check status
+receivers status ISFS
+
+# Get health info (live)
+receivers health ISFS --json
+
+# Extract health history
+receivers health ISFS -s 20260110 -e 20260113
+receivers health ISFS -d 7  # Last 7 days
 ```
 
-### Sample Data
+## CLI Reference
 
-The `jord.csv` file contains sample station configuration data that can be used for:
-- Testing receiver type detection
-- Validating configuration parsing
-- Development and debugging
+See `receivers --help` and `receivers <command> --help` for full options.
 
-## Integration
+## Development & Exploration
 
-These examples demonstrate real-world usage patterns that are integrated into the main receivers package functionality.
+For exploration scripts and prototypes, see the `dev/` directory.

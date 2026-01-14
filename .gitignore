@@ -148,3 +148,11 @@ docs/diagrams/*.pdf
 docs/diagrams/*.png
 docs/diagrams/*.svg
 docs/diagrams/*_combined.pdf
+
+# Generated plots and images
+*.png
+*.jpg
+*.jpeg
+
+# Legacy/archived scripts
+.legacy/
