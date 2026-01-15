@@ -175,6 +175,59 @@ class ArchiveValidator:
             self.logger.debug(f"Error validating archived file {file_path}: {e}")
             return False
 
+    def _validate_tmp_file_integrity(self, file_path: Path) -> bool:
+        """Validate tmp file with FULL integrity check.
+
+        For tmp files (potential partial downloads), we need to verify the
+        entire file is readable, not just check magic bytes. A partial gzip
+        will have valid magic bytes but fail when reading to the end.
+
+        Args:
+            file_path: Path to tmp file to validate
+
+        Returns:
+            True if file is complete and valid, False otherwise
+        """
+        try:
+            # Check 1: File must exist and meet minimum size
+            if not file_path.exists():
+                return False
+
+            file_size = file_path.stat().st_size
+            if file_size < self.min_file_size:
+                self.logger.debug(
+                    f"Tmp file too small ({file_size} bytes): {file_path.name}"
+                )
+                return False
+
+            # Check 2: For compressed files, do FULL integrity check
+            file_extension = ''.join(file_path.suffixes[-1:])
+            if file_extension == '.gz':
+                # Try to read entire gzip file - this will fail for partial downloads
+                try:
+                    with gzip.open(file_path, 'rb') as gz_file:
+                        # Read in chunks to avoid memory issues
+                        while True:
+                            chunk = gz_file.read(1024 * 1024)  # 1MB chunks
+                            if not chunk:
+                                break
+                    self.logger.debug(
+                        f"Tmp file gzip integrity verified: {file_path.name}"
+                    )
+                    return True
+                except (OSError, gzip.BadGzipFile) as e:
+                    self.logger.debug(
+                        f"Tmp file gzip integrity FAILED (partial?): {file_path.name} - {e}"
+                    )
+                    return False
+            else:
+                # Non-gzip file - just check basic validity
+                return self.validate_archived_file(file_path)
+
+        except Exception as e:
+            self.logger.debug(f"Error validating tmp file {file_path}: {e}")
+            return False
+
     def find_existing_archive(
         self,
         filename: str,
@@ -230,18 +283,21 @@ class ArchiveValidator:
                     )
 
         # Check 3: Temporary directory
+        # For tmp files, we need FULL integrity check (not just magic bytes)
+        # because tmp files might be partial/incomplete downloads
         if tmp_dir:
             tmp_file_path = tmp_dir / filename
             if tmp_file_path.exists():
-                if self.validate_archived_file(tmp_file_path):
+                # Use full integrity validation for tmp files
+                if self._validate_tmp_file_integrity(tmp_file_path):
                     self.logger.debug(
-                        f"File exists in tmp: {tmp_file_path.name} "
+                        f"File exists in tmp (integrity verified): {tmp_file_path.name} "
                         f"({tmp_file_path.stat().st_size} bytes)"
                     )
                     return True, tmp_file_path, ArchiveLocation.TMP
                 else:
-                    self.logger.warning(
-                        f"Tmp file failed validation: {tmp_file_path}"
+                    self.logger.debug(
+                        f"Tmp file exists but incomplete/invalid: {tmp_file_path}"
                     )
 
         # Not found in any location
