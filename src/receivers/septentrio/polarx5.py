@@ -943,7 +943,9 @@ class PolaRX5(BaseReceiver):
         # For immediate archiving, we need to track which datetime each file corresponds to
         # This will be populated from the calling code
 
-        for file_name, remote_dir in sorted(files_dict.items(), reverse=True):
+        # Iterate in the order provided by _sync_missing_files (already sorted by datetime)
+        # DO NOT re-sort here - filename-based sorting breaks year boundary ordering
+        for file_name, remote_dir in files_dict.items():
             # Log remote directory path only once per unique path
             if remote_dir not in logged_paths:
                 self.logger.info(f"Remote path: {remote_dir}")
@@ -1357,34 +1359,34 @@ class PolaRX5(BaseReceiver):
                                 pbar.update(len(chunk))
                                 bytes_received[0] = pbar.n
 
-                                # Check timeout conditions
-                                current_bytes = pbar.n
-                                current_time = time.time()
-                                time_since_last_progress = current_time - last_progress_time
-                                bytes_since_last_check = current_bytes - last_bytes
+                                # Reset progress timer when we receive data
+                                last_progress_time = time.time()
+                                last_bytes = pbar.n
 
-                                # If we made progress, reset progress timer
-                                if bytes_since_last_check > 0:
-                                    last_progress_time = current_time
-                                    last_bytes = current_bytes
-                                # Check for inactivity timeout (no progress at all)
-                                elif time_since_last_progress > self.inactivity_timeout:
+                            # ALWAYS check timeout conditions (even when no data received)
+                            # This ensures we detect stalls at any progress level
+                            current_time = time.time()
+                            time_since_last_progress = current_time - last_progress_time
+
+                            # Check for inactivity timeout (no progress)
+                            if time_since_last_progress > self.inactivity_timeout:
+                                raise ConnectionError(
+                                    f"Download timed out: no progress for {time_since_last_progress:.1f}s"
+                                )
+
+                            # Check for overall progress timeout (too slow)
+                            total_time = current_time - start_time
+                            if total_time > self.progress_timeout:
+                                current_bytes = bytes_received[0]
+                                avg_speed = (
+                                    (current_bytes - offset) / total_time
+                                    if total_time > 0
+                                    else 0
+                                )
+                                if avg_speed < self.min_speed_threshold:
                                     raise ConnectionError(
-                                        f"Download timed out: no progress for {time_since_last_progress:.1f}s"
+                                        f"Download timed out: speed {avg_speed:.0f} B/s below minimum {self.min_speed_threshold} B/s"
                                     )
-
-                                # Check for overall progress timeout (making progress but too slow)
-                                total_time = current_time - start_time
-                                if total_time > self.progress_timeout:
-                                    avg_speed = (
-                                        (current_bytes - offset) / total_time
-                                        if total_time > 0
-                                        else 0
-                                    )
-                                    if avg_speed < self.min_speed_threshold:
-                                        raise ConnectionError(
-                                            f"Download timed out: speed {avg_speed:.0f} B/s below minimum {self.min_speed_threshold} B/s"
-                                        )
 
                         conn.close()
                         ftp.voidresp()  # Get transfer complete response
