@@ -678,11 +678,17 @@ def cmd_health_json_export(args, station_id: str, logger: logging.Logger) -> int
         return 1
 
 
-def cmd_health(args) -> int:
-    """Health command - get receiver health information."""
-    logger = setup_logging(args.loglevel)
-    station_id = args.station.upper()
+def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
+    """Process health command for a single station.
 
+    Args:
+        args: Command-line arguments
+        station_id: Station identifier
+        logger: Logger instance
+
+    Returns:
+        0 on success, 1 on failure
+    """
     try:
         # Check if JSON export requested (database -> JSON)
         if getattr(args, "export_json", False):
@@ -784,6 +790,42 @@ def cmd_health(args) -> int:
 
             traceback.print_exc()
         return 1
+
+
+def cmd_health(args) -> int:
+    """Health command - get receiver health information for one or more stations."""
+    logger = setup_logging(args.loglevel)
+
+    # Get list of stations (now supports multiple)
+    stations = [s.upper() for s in args.stations]
+
+    if len(stations) > 1:
+        logger.info(f"Processing {len(stations)} stations: {', '.join(stations)}")
+
+    # Track results
+    success_count = 0
+    error_count = 0
+
+    for station_id in stations:
+        if len(stations) > 1:
+            logger.info(f"\n{'='*60}")
+            logger.info(f"Processing station: {station_id}")
+            logger.info(f"{'='*60}")
+
+        result = cmd_health_single(args, station_id, logger)
+
+        if result == 0:
+            success_count += 1
+        else:
+            error_count += 1
+
+    # Summary for multiple stations
+    if len(stations) > 1:
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Summary: {success_count} succeeded, {error_count} failed")
+        logger.info(f"{'='*60}")
+
+    return 0 if error_count == 0 else 1
 
 
 def cmd_validate_web_accuracy(args) -> int:
