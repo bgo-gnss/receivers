@@ -123,8 +123,9 @@ def get_station_ip(station_id: str) -> Optional[str]:
 
     try:
         config = ConfigParser()
-        station_info = config.get_station_info(station_id)
-        return station_info.get('router_ip')
+        station_info = config.getStationInfo(station_id)
+        # getStationInfo returns {'station': {...}}
+        return station_info.get('station', {}).get('router_ip')
     except Exception as e:
         print(f"Warning: Could not get IP for {station_id}: {e}")
         return None
@@ -138,9 +139,11 @@ def get_all_polarx5_stations() -> List[str]:
     try:
         config = ConfigParser()
         stations = []
-        for station_id in config.get_all_stations():
-            info = config.get_station_info(station_id)
-            if info.get('receiver_type', '').lower() == 'polarx5':
+        # config.config is the underlying ConfigParser with station sections
+        for station_id in config.config.sections():
+            info = config.getStationInfo(station_id)
+            station_data = info.get('station', {})
+            if station_data.get('receiver_type', '').lower() == 'polarx5':
                 stations.append(station_id)
         return stations
     except Exception as e:
