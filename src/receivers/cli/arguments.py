@@ -274,6 +274,19 @@ Extract historical data:
         help='Extract all available SBF files'
     )
 
+    date_group.add_argument(
+        '--import-json',
+        action='store_true',
+        help='Import existing JSON health files to database'
+    )
+
+    date_group.add_argument(
+        '--json-dir',
+        type=str,
+        metavar='PATH',
+        help='Directory with JSON health files (auto-detected if not specified)'
+    )
+
     # Output options
     output_group = parser.add_argument_group('output options')
     output_group.add_argument(

@@ -512,12 +512,93 @@ def cmd_health_timeseries_extract(
         return 1
 
 
+def cmd_health_json_import(args, station_id: str, logger: logging.Logger) -> int:
+    """Import JSON health files to database.
+
+    Args:
+        args: Command-line arguments
+        station_id: Station identifier
+        logger: Logger instance
+
+    Returns:
+        0 on success, 1 on failure
+    """
+    from pathlib import Path
+    from ..health.json_importer import HealthJsonImporter
+
+    # Determine JSON directory
+    if getattr(args, "json_dir", None):
+        json_dir = Path(args.json_dir)
+    else:
+        # Auto-detect from data path
+        from ..config.receivers_config import get_receivers_config
+        from datetime import datetime
+
+        config = get_receivers_config()
+        data_prepath = config.get_data_prepath()
+
+        now = datetime.now()
+        month_abbr = now.strftime("%b").lower()
+        year = now.strftime("%Y")
+
+        json_dir = Path(data_prepath) / year / month_abbr / station_id / "status_1hr" / "json"
+
+    if not json_dir.exists():
+        logger.error(f"JSON directory not found: {json_dir}")
+        return 1
+
+    logger.info(f"Importing JSON health data for {station_id} from {json_dir}")
+
+    # Parse date filters
+    start_date = None
+    end_date = None
+
+    if getattr(args, "start", None):
+        try:
+            start_date = datetime.strptime(args.start, "%Y%m%d")
+        except ValueError:
+            logger.error(f"Invalid start date format: {args.start}")
+            return 1
+
+    if getattr(args, "end", None):
+        try:
+            end_date = datetime.strptime(args.end, "%Y%m%d")
+        except ValueError:
+            logger.error(f"Invalid end date format: {args.end}")
+            return 1
+
+    # Import
+    try:
+        with HealthJsonImporter() as importer:
+            if not importer.connect(database="gps_health"):
+                logger.error("Failed to connect to database")
+                return 1
+
+            files, rows, skipped = importer.import_directory(
+                json_dir,
+                station_id=station_id,
+                start_date=start_date,
+                end_date=end_date,
+            )
+
+            logger.info(f"Import complete: {files} files, {rows} rows imported, {skipped} skipped")
+            return 0
+
+    except Exception as e:
+        logger.error(f"Import failed: {e}")
+        return 1
+
+
 def cmd_health(args) -> int:
     """Health command - get receiver health information."""
     logger = setup_logging(args.loglevel)
     station_id = args.station.upper()
 
     try:
+        # Check if JSON import requested
+        if getattr(args, "import_json", False):
+            return cmd_health_json_import(args, station_id, logger)
+
         station_config = get_station_config(station_id)
         if station_config is None:
             logger.warning(f"⚠️  Station {station_id} not found in configuration")
