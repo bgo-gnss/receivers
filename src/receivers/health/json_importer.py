@@ -6,7 +6,7 @@ checkcomm table for Grafana visualization.
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -85,12 +85,12 @@ class HealthJsonImporter:
         Thresholds:
         - OK: 11.8V - 15.0V
         - Warning: < 11.8V or > 15.0V
-        - Critical: < 11.0V
+        - Critical: < 11.0V or > 16.0V
         """
         if voltage is None:
             return "unknown"
 
-        if voltage < 11.0:
+        if voltage < 11.0 or voltage > 16.0:
             return "critical"
         elif voltage < 11.8 or voltage > 15.0:
             return "warning"
@@ -267,6 +267,200 @@ class HealthJsonImporter:
         )
 
         return files_processed, total_rows, total_skipped
+
+    def import_health_data(
+        self,
+        health_data: Dict[str, Any],
+        station_id: str,
+        receiver_type: str = "Unknown"
+    ) -> int:
+        """Import health data dictionary directly to database.
+
+        Args:
+            health_data: Health data dictionary with timeseries
+            station_id: Station identifier
+            receiver_type: Receiver type string
+
+        Returns:
+            Number of rows imported
+        """
+        if not self._conn:
+            if not self.connect():
+                return 0
+
+        timeseries = health_data.get("timeseries", [])
+        if not timeseries:
+            logger.warning(f"No timeseries data to import for {station_id}")
+            return 0
+
+        rows_imported = 0
+
+        try:
+            with self._conn.cursor() as cur:
+                for sample in timeseries:
+                    try:
+                        timestamp = self._parse_timestamp(sample["time"])
+
+                        # Extract metrics
+                        voltage = sample.get("voltage", {}).get("value")
+                        temperature = sample.get("temperature", {}).get("value")
+                        cpu_load = sample.get("cpu_load", {}).get("value")
+                        disk_usage = sample.get("disk_usage", {}).get("value")
+                        satellites = sample.get("satellites", {})
+
+                        # Build recv_metrics JSONB
+                        recv_metrics = {
+                            "power": {"voltage": voltage, "unit": "V"} if voltage else {},
+                            "temperature": {"value": temperature, "unit": "C"} if temperature else {},
+                            "cpu_load": {"percent": cpu_load} if cpu_load else {},
+                            "disk": {"usage_percent": disk_usage} if disk_usage else {},
+                            "satellites": satellites,
+                        }
+
+                        # Determine status
+                        overall_status = self._determine_status(voltage)
+
+                        # Insert with UPSERT
+                        cur.execute("""
+                            INSERT INTO checkcomm (
+                                sid, timestamp, recv_temp, recv_volt,
+                                recv_metrics, overall_status
+                            ) VALUES (
+                                %s, %s, %s, %s, %s, %s
+                            )
+                            ON CONFLICT (sid, timestamp)
+                            DO UPDATE SET
+                                recv_temp = EXCLUDED.recv_temp,
+                                recv_volt = EXCLUDED.recv_volt,
+                                recv_metrics = EXCLUDED.recv_metrics,
+                                overall_status = EXCLUDED.overall_status
+                        """, (
+                            station_id,
+                            timestamp,
+                            temperature,
+                            voltage,
+                            json.dumps(recv_metrics),
+                            overall_status,
+                        ))
+
+                        rows_imported += 1
+
+                    except Exception as e:
+                        logger.debug(f"Skipped sample: {e}")
+
+            self._conn.commit()
+            return rows_imported
+
+        except Exception as e:
+            logger.error(f"Failed to import health data: {e}")
+            if self._conn:
+                self._conn.rollback()
+            return 0
+
+    def export_to_json(
+        self,
+        output_dir: Path,
+        station_id: str,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+    ) -> Tuple[int, int]:
+        """Export health data from database to JSON files.
+
+        Creates daily JSON files in the v2.0 format.
+
+        Args:
+            output_dir: Directory to write JSON files
+            station_id: Station identifier
+            start_date: Start date for export
+            end_date: End date for export
+
+        Returns:
+            Tuple of (files_written, total_rows)
+        """
+        if not self._conn:
+            if not self.connect():
+                return 0, 0
+
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Build query
+        query = """
+            SELECT timestamp, recv_volt, recv_temp, recv_metrics, overall_status
+            FROM checkcomm
+            WHERE sid = %s
+        """
+        params: List[Any] = [station_id]
+
+        if start_date:
+            query += " AND timestamp >= %s"
+            params.append(start_date)
+        if end_date:
+            query += " AND timestamp <= %s"
+            params.append(end_date + timedelta(days=1))  # Include end date
+
+        query += " ORDER BY timestamp"
+
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(query, params)
+                rows = cur.fetchall()
+
+            if not rows:
+                logger.warning(f"No data found for {station_id}")
+                return 0, 0
+
+            # Group by date
+            from collections import defaultdict
+            daily_data: Dict[str, List[Dict]] = defaultdict(list)
+
+            for row in rows:
+                timestamp, voltage, temperature, metrics, status = row
+                date_str = timestamp.strftime("%Y%m%d")
+
+                # Parse metrics JSON if it's a string
+                if isinstance(metrics, str):
+                    metrics = json.loads(metrics)
+
+                sample = {
+                    "time": timestamp.isoformat() + "Z",
+                    "voltage": {"value": voltage, "unit": "V", "status": "ok"} if voltage else {},
+                    "temperature": {"value": temperature, "unit": "C"} if temperature else {},
+                    "cpu_load": metrics.get("cpu_load", {}),
+                    "disk_usage": metrics.get("disk", {}),
+                    "satellites": metrics.get("satellites", {}),
+                }
+                daily_data[date_str].append(sample)
+
+            # Write daily files
+            files_written = 0
+            total_rows = 0
+
+            for date_str, samples in sorted(daily_data.items()):
+                # Get receiver type from first sample's metrics or default
+                receiver_type = "PolaRX5"  # Default
+
+                output = {
+                    "schema_version": "2.0",
+                    "station_id": station_id,
+                    "receiver_type": receiver_type,
+                    "date": f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}",
+                    "timeseries": samples,
+                }
+
+                output_file = output_dir / f"{station_id}_{date_str}_health.json"
+                with open(output_file, 'w') as f:
+                    json.dump(output, f, indent=2, default=str)
+
+                logger.info(f"Wrote {output_file.name} ({len(samples)} samples)")
+                files_written += 1
+                total_rows += len(samples)
+
+            return files_written, total_rows
+
+        except Exception as e:
+            logger.error(f"Export failed: {e}")
+            return 0, 0
 
     def __enter__(self):
         """Context manager entry."""
