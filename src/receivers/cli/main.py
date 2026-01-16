@@ -485,6 +485,22 @@ def cmd_health_timeseries_extract(
                     )
                     skip_count += 1
 
+                # Save to database if requested
+                if getattr(args, "save_db", False) and health_data:
+                    try:
+                        from ..health.json_importer import HealthJsonImporter
+
+                        with HealthJsonImporter() as importer:
+                            if importer.connect(database="gps_health"):
+                                rows_imported = importer.import_health_data(
+                                    health_data, station_id, receiver_type
+                                )
+                                logger.info(f"💾 Saved {rows_imported} rows to database for {date.strftime('%Y-%m-%d')}")
+                            else:
+                                logger.warning("Failed to connect to database")
+                    except Exception as e:
+                        logger.warning(f"Database save failed: {e}")
+
             except Exception as e:
                 logger.error(f"Failed to extract {date.strftime('%Y-%m-%d')}: {e}")
                 if args.loglevel == logging.DEBUG:
@@ -589,13 +605,90 @@ def cmd_health_json_import(args, station_id: str, logger: logging.Logger) -> int
         return 1
 
 
+def cmd_health_json_export(args, station_id: str, logger: logging.Logger) -> int:
+    """Export health data from database to JSON files.
+
+    Args:
+        args: Command-line arguments
+        station_id: Station identifier
+        logger: Logger instance
+
+    Returns:
+        0 on success, 1 on failure
+    """
+    from pathlib import Path
+    from datetime import datetime
+    from ..health.json_importer import HealthJsonImporter
+
+    # Determine output directory
+    if getattr(args, "json_dir", None):
+        output_dir = Path(args.json_dir)
+    else:
+        # Auto-detect from data path
+        from ..config.receivers_config import get_receivers_config
+
+        config = get_receivers_config()
+        data_prepath = config.get_data_prepath()
+
+        now = datetime.now()
+        month_abbr = now.strftime("%b").lower()
+        year = now.strftime("%Y")
+
+        output_dir = Path(data_prepath) / year / month_abbr / station_id / "status_1hr" / "json"
+
+    # Parse date filters
+    start_date = None
+    end_date = None
+
+    if getattr(args, "start", None):
+        try:
+            start_date = datetime.strptime(args.start, "%Y%m%d")
+        except ValueError:
+            logger.error(f"Invalid start date format: {args.start}")
+            return 1
+
+    if getattr(args, "end", None):
+        try:
+            end_date = datetime.strptime(args.end, "%Y%m%d")
+        except ValueError:
+            logger.error(f"Invalid end date format: {args.end}")
+            return 1
+
+    logger.info(f"Exporting health data for {station_id} to {output_dir}")
+
+    # Export
+    try:
+        with HealthJsonImporter() as exporter:
+            if not exporter.connect(database="gps_health"):
+                logger.error("Failed to connect to database")
+                return 1
+
+            files, rows = exporter.export_to_json(
+                output_dir,
+                station_id=station_id,
+                start_date=start_date,
+                end_date=end_date,
+            )
+
+            logger.info(f"Export complete: {files} files, {rows} rows exported")
+            return 0
+
+    except Exception as e:
+        logger.error(f"Export failed: {e}")
+        return 1
+
+
 def cmd_health(args) -> int:
     """Health command - get receiver health information."""
     logger = setup_logging(args.loglevel)
     station_id = args.station.upper()
 
     try:
-        # Check if JSON import requested
+        # Check if JSON export requested (database -> JSON)
+        if getattr(args, "export_json", False):
+            return cmd_health_json_export(args, station_id, logger)
+
+        # Check if JSON import requested (JSON -> database)
         if getattr(args, "import_json", False):
             return cmd_health_json_import(args, station_id, logger)
 

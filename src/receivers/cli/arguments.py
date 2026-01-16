@@ -281,10 +281,16 @@ Extract historical data:
     )
 
     date_group.add_argument(
+        '--export-json',
+        action='store_true',
+        help='Export health data from database to JSON files'
+    )
+
+    date_group.add_argument(
         '--json-dir',
         type=str,
         metavar='PATH',
-        help='Directory with JSON health files (auto-detected if not specified)'
+        help='Directory for JSON health files (auto-detected if not specified)'
     )
 
     # Output options
