@@ -5,7 +5,7 @@
       "label": "gps_health",
       "description": "PostgreSQL database with GPS health data",
       "type": "datasource",
-      "pluginId": "postgres",
+      "pluginId": "grafana-postgresql-datasource",
       "pluginName": "PostgreSQL"
     }
   ],
@@ -86,7 +86,7 @@
     },
     {
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "${DS_GPS_HEALTH}"
       },
       "fieldConfig": {
@@ -130,13 +130,13 @@
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "${DS_GPS_HEALTH}"
           },
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(DISTINCT sid) as \"Stations\" FROM checkcomm WHERE timestamp > NOW() - INTERVAL '24 hours'",
+          "rawSql": "SELECT COUNT(DISTINCT sid) as \"Stations\" FROM checkcomm WHERE $__timeFilter(timestamp)",
           "refId": "A"
         }
       ],
@@ -145,7 +145,7 @@
     },
     {
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "${DS_GPS_HEALTH}"
       },
       "fieldConfig": {
@@ -197,13 +197,13 @@
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "${DS_GPS_HEALTH}"
           },
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(DISTINCT sid) as \"Critical\" FROM checkcomm WHERE overall_status = 'critical' AND timestamp > NOW() - INTERVAL '1 hour'",
+          "rawSql": "SELECT COUNT(DISTINCT sid) as \"Critical\" FROM checkcomm WHERE overall_status = 'critical' AND $__timeFilter(timestamp)",
           "refId": "A"
         }
       ],
@@ -212,7 +212,7 @@
     },
     {
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "${DS_GPS_HEALTH}"
       },
       "fieldConfig": {
@@ -260,13 +260,13 @@
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "${DS_GPS_HEALTH}"
           },
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(DISTINCT sid) as \"Warnings\" FROM checkcomm WHERE overall_status = 'warning' AND timestamp > NOW() - INTERVAL '1 hour'",
+          "rawSql": "SELECT COUNT(DISTINCT sid) as \"Warnings\" FROM checkcomm WHERE overall_status = 'warning' AND $__timeFilter(timestamp)",
           "refId": "A"
         }
       ],
@@ -275,7 +275,7 @@
     },
     {
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "${DS_GPS_HEALTH}"
       },
       "fieldConfig": {
@@ -406,13 +406,13 @@
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "${DS_GPS_HEALTH}"
           },
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT DISTINCT ON (sid)\n  sid as \"Station\",\n  recv_volt as \"Voltage\",\n  overall_status as \"Status\",\n  timestamp as \"Last Update\"\nFROM checkcomm\nWHERE timestamp > NOW() - INTERVAL '24 hours'\nORDER BY sid, timestamp DESC",
+          "rawSql": "SELECT DISTINCT ON (sid)\n  sid as \"Station\",\n  recv_volt as \"Voltage\",\n  overall_status as \"Status\",\n  timestamp as \"Last Update\"\nFROM checkcomm\nWHERE $__timeFilter(timestamp)\nORDER BY sid, timestamp DESC",
           "refId": "A"
         }
       ],
@@ -434,7 +434,7 @@
     },
     {
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "${DS_GPS_HEALTH}"
       },
       "fieldConfig": {
@@ -525,7 +525,7 @@
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "${DS_GPS_HEALTH}"
           },
           "editorMode": "code",
@@ -553,7 +553,7 @@
     },
     {
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "${DS_GPS_HEALTH}"
       },
       "fieldConfig": {
@@ -611,13 +611,13 @@
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "${DS_GPS_HEALTH}"
           },
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT recv_volt as \"Voltage\"\nFROM checkcomm\nWHERE sid = '$station'\nORDER BY timestamp DESC\nLIMIT 1",
+          "rawSql": "SELECT recv_volt as \"Voltage\"\nFROM checkcomm\nWHERE sid = '$station'\n  AND $__timeFilter(timestamp)\nORDER BY timestamp DESC\nLIMIT 1",
           "refId": "A"
         }
       ],
@@ -626,7 +626,7 @@
     },
     {
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "${DS_GPS_HEALTH}"
       },
       "fieldConfig": {
@@ -717,7 +717,7 @@
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "${DS_GPS_HEALTH}"
           },
           "editorMode": "code",
@@ -732,7 +732,7 @@
     },
     {
       "datasource": {
-        "type": "postgres",
+        "type": "grafana-postgresql-datasource",
         "uid": "${DS_GPS_HEALTH}"
       },
       "fieldConfig": {
@@ -840,7 +840,7 @@
       "targets": [
         {
           "datasource": {
-            "type": "postgres",
+            "type": "grafana-postgresql-datasource",
             "uid": "${DS_GPS_HEALTH}"
           },
           "editorMode": "code",
@@ -863,7 +863,7 @@
       {
         "current": {},
         "datasource": {
-          "type": "postgres",
+          "type": "grafana-postgresql-datasource",
           "uid": "${DS_GPS_HEALTH}"
         },
         "definition": "SELECT DISTINCT sid FROM checkcomm ORDER BY sid",
