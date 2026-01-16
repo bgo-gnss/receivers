@@ -820,6 +820,123 @@ def cmd_validate(args) -> int:
         return 1
 
 
+def cmd_push_config(args) -> int:
+    """Push configuration command - send commands to Septentrio receivers."""
+    logger = setup_logging(args.loglevel)
+
+    from pathlib import Path
+    from ..septentrio.push_config import (
+        send_commands_to_receiver,
+        load_config_file,
+        DEFAULT_CONTROL_PORT
+    )
+    from ..config.receivers_config import get_receivers_config
+
+    # Load config file
+    config_path = Path(args.config_file)
+    try:
+        commands = load_config_file(config_path)
+    except FileNotFoundError as e:
+        logger.error(str(e))
+        return 1
+
+    # Add save-to-boot command unless --no-save is specified
+    if not args.no_save:
+        commands = commands + ['eccf, Current, Boot']
+
+    logger.info(f"Loaded {len(commands)} commands from {config_path.name}")
+    if not args.no_save:
+        logger.info("Will save to Boot config after applying")
+
+    # Parse station list
+    station_list = [s.strip().upper() for s in args.stations.split(',')]
+
+    # Get receiver config for default port
+    receivers_config = get_receivers_config()
+    polarx5_config = receivers_config.get_receiver_config('polarx5')
+    default_port = args.port or polarx5_config.get('control_port', DEFAULT_CONTROL_PORT)
+    if isinstance(default_port, str):
+        default_port = int(default_port)
+
+    # Build targets list with IPs and ports
+    targets = []
+    for station_id in station_list:
+        station_config = get_station_config(station_id)
+        if station_config is None:
+            logger.warning(f"Station {station_id} not found in configuration - SKIPPING")
+            continue
+
+        # Get IP
+        ip = station_config.get('router', {}).get('ip')
+        if not ip:
+            logger.warning(f"Station {station_id} has no IP configured - SKIPPING")
+            continue
+
+        # Get port (station override > cli arg > config default)
+        port = station_config.get('receiver', {}).get('control_port')
+        if port:
+            port = int(port)
+        else:
+            port = default_port
+
+        targets.append((station_id, ip, port))
+
+    if not targets:
+        logger.error("No valid targets found")
+        return 1
+
+    logger.info(f"Targets: {', '.join(f'{s} ({ip}:{p})' for s, ip, p in targets)}")
+
+    # Dry run - show commands and exit
+    if args.dry_run:
+        print("\n--- DRY RUN - Commands to send ---")
+        for cmd in commands:
+            if cmd.strip() and not cmd.strip().startswith('#'):
+                print(f"  {cmd}")
+        print("--- End of commands ---\n")
+        print("Dry run complete. Use without --dry-run to execute.")
+        return 0
+
+    # Send to each target
+    results = []
+    for station_id, ip, port in targets:
+        print(f"\n{'='*50}")
+        print(f"  {station_id} ({ip}:{port})")
+        print('='*50)
+
+        success, responses = send_commands_to_receiver(
+            ip, port, commands,
+            timeout=args.timeout,
+            verbose=(args.loglevel == logging.DEBUG)
+        )
+
+        if success:
+            print(f"  {station_id}: Configuration sent successfully")
+        else:
+            error_msg = responses[0] if responses else 'Unknown error'
+            print(f"  {station_id}: Failed - {error_msg}")
+
+        results.append((station_id, success))
+
+    # Summary
+    print(f"\n{'='*50}")
+    print("SUMMARY")
+    print('='*50)
+    succeeded = sum(1 for _, s in results if s)
+    failed = len(results) - succeeded
+    print(f"  Succeeded: {succeeded}")
+    print(f"  Failed: {failed}")
+
+    if failed > 0:
+        print("\nFailed stations:")
+        for station_id, success in results:
+            if not success:
+                print(f"  - {station_id}")
+        return 1
+
+    return 0
+
+
 def get_all_station_configs() -> Dict[str, Dict[str, Any]]:
     """Get configurations for all stations.
 
@@ -884,6 +1001,7 @@ def create_parser() -> argparse.ArgumentParser:
         setup_status_parser,
         setup_health_parser,
         setup_validate_parser,
+        setup_push_config_parser,
     )
 
     parser = create_argument_parser()
@@ -901,6 +1019,8 @@ def create_parser() -> argparse.ArgumentParser:
                 subparsers_map["health"].set_defaults(func=cmd_health)
             if "validate" in subparsers_map:
                 subparsers_map["validate"].set_defaults(func=cmd_validate)
+            if "push-config" in subparsers_map:
+                subparsers_map["push-config"].set_defaults(func=cmd_push_config)
             break
 
     return parser

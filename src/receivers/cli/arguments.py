@@ -362,6 +362,67 @@ Examples:
     return parser
 
 
+def setup_push_config_parser(subparsers) -> argparse.ArgumentParser:
+    """Set up the push-config subcommand parser."""
+    parser = subparsers.add_parser(
+        'push-config',
+        help='Push configuration to Septentrio receivers',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description='''
+Push configuration commands to Septentrio PolaRx5 receivers via TCP.
+
+Examples:
+  receivers push-config THOB config_file.txt
+  receivers push-config THOB,ISFS config_file.txt
+  receivers push-config THOB config_file.txt --dry-run
+  receivers push-config THOB config_file.txt --no-save
+        '''
+    )
+
+    parser.add_argument(
+        'stations',
+        metavar='STATIONS',
+        help='Station ID(s), comma-separated (e.g., THOB or THOB,ISFS)'
+    )
+
+    parser.add_argument(
+        'config_file',
+        metavar='CONFIG_FILE',
+        help='Configuration file with receiver commands'
+    )
+
+    parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='Show what would be sent without actually sending'
+    )
+
+    parser.add_argument(
+        '--no-save',
+        action='store_true',
+        help='Do not save config to boot (default: saves to both Current and Boot)'
+    )
+
+    parser.add_argument(
+        '--port',
+        type=int,
+        metavar='PORT',
+        help='Override control port (default from config: 28784)'
+    )
+
+    parser.add_argument(
+        '--timeout',
+        type=float,
+        default=10,
+        metavar='SECONDS',
+        help='Connection timeout in seconds (default: 10)'
+    )
+
+    add_verbose_flag(parser)
+
+    return parser
+
+
 def create_argument_parser() -> argparse.ArgumentParser:
     """Create the main argument parser with all subcommands."""
     parser = argparse.ArgumentParser(
@@ -394,6 +455,7 @@ For subcommand help: receivers <command> --help
     setup_status_parser(subparsers)
     setup_health_parser(subparsers)
     setup_validate_parser(subparsers)
+    setup_push_config_parser(subparsers)
 
     # Scheduler (optional - requires APScheduler)
     try:
