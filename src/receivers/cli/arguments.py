@@ -248,13 +248,19 @@ Extract historical data:
   receivers health ISFS -s 20260113              # Single day
   receivers health ISFS -s 20260110 -e 20260113  # Date range
   receivers health ISFS -d 7                     # Last 7 days
+
+Multiple stations:
+  receivers health ELDC THOB ISFS --import-json  # Import all
+  receivers health ELDC ELEY --export-json       # Export all
+  receivers health ELDC THOB -s 20260101 -e 20260115 --save-db
         '''
     )
 
     parser.add_argument(
-        'station',
+        'stations',
         metavar='STATION',
-        help='Station ID to check'
+        nargs='+',
+        help='Station ID(s) to process (e.g., ISFS or ELDC THOB ISFS)'
     )
 
     # Date options for extraction (same as download command)
