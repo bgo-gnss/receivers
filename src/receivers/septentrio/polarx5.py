@@ -1642,71 +1642,93 @@ class PolaRX5(BaseReceiver):
     def get_health_status(self) -> Dict[str, Any]:
         """Get health status of PolaRX5 receiver.
 
-        Uses standardized health checking from BaseReceiver with PolaRX5-specific
-        health data extraction via RxTools when available.
+        Tries live TCP extraction first, falls back to local SBF file extraction
+        if TCP is unavailable.
 
         Returns:
             Dictionary with health status information following health-data-spec.md
         """
-        from ..health import RxToolsExtractor, RxToolsNotFoundError
+        from ..health.polarx5_tcp_extractor import PolaRX5TCPExtractor
 
-        # Step 1: Check connection health at all levels
-        connection_data = self.check_connection_health(
-            http_port=80,
-            protocol_type="ftp",
-            protocol_port=21,
-        )
-
-        # Step 2: Extract instrument-specific health data from status_1hr session
+        # Step 1: Try live health extraction via TCP
         metrics = None
         data_quality = None
-        network = None
-        receiver_specific = None
+        connection_data = {}
+        extraction_source = None
 
         try:
-            # Try to find latest status_1hr SBF file
+            host = self.ip_number
+            if host:
+                extractor = PolaRX5TCPExtractor(host, self.station_id)
+
+                if extractor.test_connection():
+                    live_data = extractor.extract_health_data()
+
+                    if live_data.get("metrics"):
+                        metrics = live_data["metrics"]
+                        data_quality = live_data.get("data_quality")
+                        connection_data = {"tcp": {"status": "ok", "host": host}}
+                        extraction_source = "tcp_live"
+                        self.logger.info(f"Extracted live health data via TCP from {host}")
+
+        except Exception as e:
+            self.logger.debug(f"TCP health extraction failed: {e}")
+
+        # Step 2: Fall back to SBF file extraction if TCP failed
+        if not metrics:
+            self.logger.debug("Falling back to SBF file extraction")
+            sbf_result = self._get_health_from_sbf_files()
+            if sbf_result:
+                metrics = sbf_result.get("metrics")
+                data_quality = sbf_result.get("data_quality")
+                extraction_source = "sbf_file"
+
+        # Step 3: Build standardized health status structure
+        health_status = self.build_health_status(
+            connection_data=connection_data,
+            metrics=metrics,
+            data_quality=data_quality,
+        )
+
+        # Add extraction source info
+        if extraction_source:
+            health_status["extraction_metadata"] = {
+                "extraction_time": health_status.get("timestamp"),
+                "data_source": extraction_source,
+                "tool_version": "0.2.0",
+            }
+
+        return health_status
+
+    def _get_health_from_sbf_files(self) -> Optional[Dict[str, Any]]:
+        """Extract health data from local SBF files.
+
+        Returns:
+            Dictionary with health data or None if not available
+        """
+        from ..health import RxToolsExtractor, RxToolsNotFoundError
+
+        try:
             status_file = self._find_latest_status_file()
 
             if status_file:
-                # Extract health data using RxTools
                 extractor = RxToolsExtractor(station_id=self.station_id)
 
                 if extractor.check_rxtools_available():
                     health_data = extractor.extract_health_from_sbf(status_file)
-
-                    # Map extracted data to standardized sections
-                    metrics = health_data.get("metrics", {})
-                    data_quality = health_data.get("data_quality", {})
-                    network = health_data.get("network", {})
-                    receiver_specific = health_data.get("receiver_specific", {})
-
-                    self.logger.info(
-                        f"Extracted health data from {status_file} using RxTools"
-                    )
+                    self.logger.info(f"Extracted health data from {status_file}")
+                    return health_data
                 else:
-                    self.logger.warning(
-                        "RxTools not available - connection health only. "
-                        "Install RxTools for comprehensive health monitoring."
-                    )
+                    self.logger.warning("RxTools not available for SBF extraction")
             else:
-                self.logger.warning(
-                    f"No status_1hr SBF file found for {self.station_id} - "
-                    "connection health only"
-                )
+                self.logger.warning(f"No status_1hr SBF file found for {self.station_id}")
 
         except RxToolsNotFoundError as e:
             self.logger.warning(f"RxTools not available: {e}")
         except Exception as e:
-            self.logger.error(f"Error extracting health data: {e}")
+            self.logger.error(f"Error extracting from SBF: {e}")
 
-        # Step 3: Build standardized health status structure
-        return self.build_health_status(
-            connection_data=connection_data,
-            metrics=metrics,
-            data_quality=data_quality,
-            network=network,
-            receiver_specific=receiver_specific,
-        )
+        return None
 
     def _find_latest_status_file(self) -> Optional[Path]:
         """Find the latest status_1hr SBF file for this station.
