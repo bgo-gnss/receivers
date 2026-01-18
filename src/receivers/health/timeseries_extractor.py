@@ -11,7 +11,7 @@ Version: 2.0
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 import statistics
 
@@ -572,7 +572,7 @@ class TimeSeriesHealthExtractor:
         has_wifi = any('wifi_enabled' in s for s in samples)
 
         return {
-            'extracted_at': datetime.utcnow().isoformat() + 'Z',
+            'extracted_at': datetime.now(timezone.utc).isoformat() + 'Z',
             'extractor_version': '2.0',
             'missing_hours': missing_hours,
             'data_quality': {

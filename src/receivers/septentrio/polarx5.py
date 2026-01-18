@@ -5,7 +5,7 @@ import logging
 import os
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from ftplib import FTP
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
@@ -207,7 +207,7 @@ class PolaRX5(BaseReceiver):
             "ip": self.ip_number,
             "port": self.ip_port,  # Keep original FTP port in config
             "http_port": 8060,  # Add HTTP port
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "error": error_msg if not (router_ok and receiver_ok) else None,
         }
 
@@ -1740,8 +1740,8 @@ class PolaRX5(BaseReceiver):
         from datetime import datetime
 
         # Build status_1hr path using configuration
-        year = datetime.utcnow().year
-        month = datetime.utcnow().strftime("%b").lower()
+        year = datetime.now(timezone.utc).year
+        month = datetime.now(timezone.utc).strftime("%b").lower()
 
         status_dir = Path(self.data_prepath) / str(year) / month / self.station_id / "status_1hr" / "raw"
 
@@ -1802,7 +1802,7 @@ class PolaRX5(BaseReceiver):
 
         return {
             "station_id": self.station_id,
-            "analysis_timestamp": datetime.utcnow().isoformat(),
+            "analysis_timestamp": datetime.now(timezone.utc).isoformat(),
             "ascii_directory": ascii_dir,
             "data_summary": {
                 "total_records": len(analyzer.health_data),
@@ -1948,7 +1948,7 @@ class PolaRX5(BaseReceiver):
                 "ascii_file": str(ascii_output),
                 "sbf2rin_success": result1.returncode == 0,
                 "teqc_success": result2.returncode == 0,
-                "processing_time": datetime.utcnow().isoformat(),
+                "processing_time": datetime.now(timezone.utc).isoformat(),
             }
 
         except Exception as e:
@@ -2008,7 +2008,7 @@ class PolaRX5(BaseReceiver):
         if storage_path is None:
             # Use gtimes pattern for health storage
             timestamp = datetime.fromisoformat(
-                health_data.get("timestamp", datetime.utcnow().isoformat())
+                health_data.get("timestamp", datetime.now(timezone.utc).isoformat())
             )
             health_dir_format = (
                 f"{self.data_prepath}%Y/#b/{self.station_id}/status/health/"
@@ -2022,7 +2022,7 @@ class PolaRX5(BaseReceiver):
         Path(health_dir).mkdir(parents=True, exist_ok=True)
 
         # Create daily health file with timestamp
-        timestamp_str = health_data.get("timestamp", datetime.utcnow().isoformat())
+        timestamp_str = health_data.get("timestamp", datetime.now(timezone.utc).isoformat())
         date_str = datetime.fromisoformat(timestamp_str).strftime("%Y%m%d")
         json_file = (
             Path(health_dir) / f"{self.station_id.lower()}_health_{date_str}.json"

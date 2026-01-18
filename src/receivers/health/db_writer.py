@@ -6,7 +6,7 @@ Writes health data to checkcomm table with backward compatibility.
 import logging
 import json
 from typing import Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class HealthDatabaseWriter:
@@ -77,7 +77,7 @@ class HealthDatabaseWriter:
 
         try:
             station_id = health_data.get("station_id", "UNKN")
-            timestamp = health_data.get("timestamp", datetime.utcnow().isoformat())
+            timestamp = health_data.get("timestamp", datetime.now(timezone.utc).isoformat())
 
             # Parse timestamp if string
             if isinstance(timestamp, str):

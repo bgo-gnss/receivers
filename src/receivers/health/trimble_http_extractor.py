@@ -15,7 +15,7 @@ HTTP Endpoints Used:
 import logging
 import requests
 from typing import Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class TrimbleHTTPExtractor:
@@ -61,7 +61,7 @@ class TrimbleHTTPExtractor:
         )
 
         health_data = {
-            "extraction_time": datetime.utcnow().isoformat() + "Z",
+            "extraction_time": datetime.now(timezone.utc).isoformat() + "Z",
             "metrics": {},
             "data_quality": {},
             "network": {},
