@@ -159,12 +159,12 @@ export POSTGRES_PASSWORD=secret
 
 When using `--save-json`, health data is saved to:
 ```
-/data/YYYY/mmm/STATION/status_1hr/health/STATION_YYYYMMDD_HHMMSS.json
+/data/YYYY/mmm/STATION/status_1hr/json/STATION_YYYYMMDD_HHMMSS.json
 ```
 
 Latest symlink:
 ```
-/data/YYYY/mmm/STATION/status_1hr/health/latest.json
+/data/YYYY/mmm/STATION/status_1hr/json/latest.json
 ```
 
 ## Troubleshooting

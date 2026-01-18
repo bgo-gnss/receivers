@@ -1,8 +1,9 @@
 """JSON file writer for GPS receiver health data.
 
-Saves health data to JSON files:
-- status_1hr/health/ - Single sample snapshots (v1.0, legacy)
-- status_1hr/json/   - Daily time-series data (v2.0, current)
+Saves health data to JSON files in status_1hr/json/:
+- Live snapshots: STATION_YYYYMMDD_HHMMSS.json
+- Daily timeseries: STATION_YYYYMMDD_health.json
+- latest.json symlink for monitoring
 """
 
 import json
@@ -29,7 +30,7 @@ class HealthJSONWriter:
     def write_health_data(self, health_data: Dict[str, Any]) -> Path:
         """Write health data to JSON file.
 
-        Creates directory structure: base_path/station/status_1hr/health/
+        Creates directory structure: base_path/station/status_1hr/json/
         Filename format: station_YYYYMMDD_HHMMSS.json
 
         Args:
@@ -41,14 +42,14 @@ class HealthJSONWriter:
         Raises:
             OSError: If file write fails
         """
-        # Create health directory
-        health_dir = self.base_path / self.station_id / "status_1hr" / "health"
-        health_dir.mkdir(parents=True, exist_ok=True)
+        # Create json directory (unified location for all health JSON)
+        json_dir = self.base_path / self.station_id / "status_1hr" / "json"
+        json_dir.mkdir(parents=True, exist_ok=True)
 
         # Generate filename with timestamp
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         filename = f"{self.station_id}_{timestamp}.json"
-        filepath = health_dir / filename
+        filepath = json_dir / filename
 
         # Write JSON file
         try:

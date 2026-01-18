@@ -130,12 +130,13 @@ INSERT INTO checkcomm (
 ) VALUES (...);
 ```
 
-**JSON Files** (`status_1hr/health/`):
+**JSON Files** (`status_1hr/json/`):
 ```
 status_1hr/
-└── health/
-    ├── ELDC_20251002_1200.health.json
-    ├── ELDC_20251002_1300.health.json
+└── json/
+    ├── ELDC_20251002_120000.json      # Live snapshot
+    ├── ELDC_20251002_health.json      # Daily timeseries
+    ├── latest.json -> ...             # Symlink to latest
     └── ...
 ```
 
