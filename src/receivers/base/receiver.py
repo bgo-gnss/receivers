@@ -1,7 +1,7 @@
 """Abstract base class for GPS/GNSS receivers."""
 
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Union, Optional
 
 from .config_manager import get_config_manager
@@ -185,16 +185,17 @@ class BaseReceiver(ABC):
         }
 
         # Build health status structure
+        now = datetime.now(timezone.utc)
         health_status = {
             "station_id": self.station_id,
             "receiver_type": self.get_receiver_type(),
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": now.isoformat().replace("+00:00", "Z"),
             "schema_version": "1.0",
             "connection": connection_data,
             "overall_status": overall_status,
             "status_summary": status_summary,
             "extraction_metadata": {
-                "extraction_time": datetime.utcnow().isoformat() + "Z",
+                "extraction_time": now.isoformat().replace("+00:00", "Z"),
                 "data_source": "receiver_direct",
                 "tool_version": "0.1.0",
             },
@@ -226,12 +227,12 @@ class BaseReceiver(ABC):
             Path to saved JSON file or None if save failed
         """
         from ..health import HealthJSONWriter
-        from datetime import datetime
 
         try:
             # Build base path for current year/month
-            year = datetime.utcnow().year
-            month = datetime.utcnow().strftime("%b").lower()
+            now = datetime.now(timezone.utc)
+            year = now.year
+            month = now.strftime("%b").lower()
             base_path = f"{self.data_prepath}/{year}/{month}"
 
             # Write JSON file

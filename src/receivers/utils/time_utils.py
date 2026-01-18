@@ -21,7 +21,7 @@ Example:
     >>> datetimes = generate_download_datetimes('1Hz_1hr', 24, reverse_chronological=True)
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Tuple
 
 
@@ -59,7 +59,7 @@ def calculate_download_time_range(
         >>> # start: 2025-10-02 00:00:00 (7 days before today)
         >>> # end:   2025-10-09 00:00:00 (start of current day)
     """
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     if session_type == '15s_24hr':
         # Daily data - end at start of current day (00:00:00)

@@ -3,7 +3,7 @@
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from ftplib import FTP
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -60,7 +60,7 @@ class SeptentrioDownloadManager(BaseDownloadManager):
                 "success": True,
                 "ip": self.ip_address,
                 "port": self.port,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "error": None
             }
 
@@ -69,7 +69,7 @@ class SeptentrioDownloadManager(BaseDownloadManager):
                 "success": False,
                 "ip": self.ip_address,
                 "port": self.port,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "error": str(e)
             }
 
