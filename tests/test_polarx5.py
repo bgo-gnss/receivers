@@ -42,30 +42,41 @@ class TestPolaRX5:
         assert info["ip"] == "10.4.1.100"
         assert info["port"] == 21
 
-    @patch("receivers.septentrio.polarx5.FTP")
-    def test_connection_status_success(self, mock_ftp):
+    @patch("socket.socket")
+    @patch("subprocess.run")
+    def test_connection_status_success(self, mock_run, mock_socket):
         """Test successful connection status check."""
-        mock_ftp_instance = Mock()
-        mock_ftp.return_value = mock_ftp_instance
+        # Mock successful ping
+        mock_run.return_value = Mock(returncode=0)
+        # Mock successful HTTP port check
+        mock_sock_instance = Mock()
+        mock_sock_instance.connect_ex.return_value = 0
+        mock_socket.return_value = mock_sock_instance
 
         status = self.receiver.get_connection_status()
 
         assert status["router"] is True
         assert status["receiver"] is True
         assert status["ip"] == "10.4.1.100"
-        assert status["port"] == 21
+        assert status["http_port"] == 8060
         assert status["error"] is None
 
-    @patch("receivers.septentrio.polarx5.FTP")
-    def test_connection_status_failure(self, mock_ftp):
+    @patch("socket.socket")
+    @patch("subprocess.run")
+    def test_connection_status_failure(self, mock_run, mock_socket):
         """Test failed connection status check."""
-        mock_ftp.side_effect = Exception("Connection failed")
+        # Mock failed ping
+        mock_run.return_value = Mock(returncode=1)
+        # Mock failed HTTP port check
+        mock_sock_instance = Mock()
+        mock_sock_instance.connect_ex.return_value = 1
+        mock_socket.return_value = mock_sock_instance
 
         status = self.receiver.get_connection_status()
 
         assert status["router"] is False
         assert status["receiver"] is False
-        assert "Connection failed" in status["error"]
+        assert status["error"] is not None
 
     def test_get_health_status(self):
         """Test health status reporting."""

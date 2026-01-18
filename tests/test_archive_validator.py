@@ -295,7 +295,7 @@ class TestBatchValidation:
             archive_files_dict[filename] = str(archive_path)
 
         validator = ArchiveValidator()
-        missing, found, validated = validator.batch_validate_archives(
+        missing, found, validated, in_tmp = validator.batch_validate_archives(
             files_dict,
             archive_files_dict,
             self.tmp_dir
@@ -304,6 +304,7 @@ class TestBatchValidation:
         assert len(missing) == 0  # No files missing
         assert found == 3  # All 3 files found
         assert validated == 3  # All 3 validated
+        assert len(in_tmp) == 0  # No files in tmp
 
     def test_batch_with_some_files_missing(self):
         """Test batch validation with some files missing."""
@@ -326,7 +327,7 @@ class TestBatchValidation:
                 archive_files_dict[filename] = str(self.archive_dir / filename)
 
         validator = ArchiveValidator()
-        missing, found, validated = validator.batch_validate_archives(
+        missing, found, validated, in_tmp = validator.batch_validate_archives(
             files_dict,
             archive_files_dict,
             self.tmp_dir
@@ -335,6 +336,7 @@ class TestBatchValidation:
         assert len(missing) == 2  # 2 files missing
         assert found == 1  # 1 file found
         assert validated == 3  # All 3 validated
+        assert len(in_tmp) == 0  # No files in tmp
         assert 'ELDC202509250000a.sbf' in missing
         assert 'ELDC202509260000a.sbf' in missing
 
