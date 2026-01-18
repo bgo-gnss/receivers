@@ -250,7 +250,11 @@ def cmd_download(args) -> int:
 
 
 def cmd_status(args) -> int:
-    """Status command - check receiver connection status."""
+    """Status command - quick receiver status check.
+
+    Uses the same health extraction as the 'health' command but provides
+    a simplified, compact output format for quick operational checks.
+    """
     logger = setup_logging(args.loglevel)
     station_id = args.station.upper()
 
@@ -263,42 +267,113 @@ def cmd_status(args) -> int:
         # Create receiver instance using factory pattern
         receiver = create_receiver(station_id, station_config)
 
-        status = receiver.get_connection_status()
+        # Use the same health extraction as health command
+        health = receiver.get_health_status()
 
-        print(f"Station: {station_id}")
-        print(f"IP: {status.get('ip')}")
-        print(f"HTTP Port: {status.get('http_port', 8060)}")
-        print(f"Router Status: {'✅' if status.get('router') else '❌'}")
-        print(
-            f"Receiver Status: {'✅' if status.get('receiver') else '❌'} (port {status.get('http_port', 8060)})"
-        )
+        # JSON output if requested (same format as health command)
+        if getattr(args, "json", False):
+            import json
+            print(json.dumps(health, indent=2, default=str))
+            return 0
 
-        # Query voltage for PolaRX5 receivers if reachable
-        if receiver.get_receiver_type() == "PolaRX5" and status.get("receiver"):
-            try:
-                from ..health.polarx5_tcp_extractor import PolaRX5TCPExtractor
+        # Compact human-readable output for quick checks
+        _print_quick_status(health, station_config)
 
-                ip = status.get("ip")
-                extractor = PolaRX5TCPExtractor(ip, station_id)
-                health_data = extractor.extract_health_data()
-                power = health_data.get("metrics", {}).get("power", {})
-                voltage = power.get("voltage")
-                if voltage is not None:
-                    voltage_status = power.get("status", "ok")
-                    status_icon = "✅" if voltage_status == "ok" else "⚠️" if voltage_status == "warning" else "❌"
-                    print(f"Voltage: {status_icon} {voltage:.2f} V")
-            except Exception as e:
-                logger.debug(f"Could not query voltage: {e}")
-
-        if status.get("error"):
-            print(f"Error: {status['error']}")
-            return 1
-
-        return 0
+        # Return non-zero if critical status
+        overall = health.get("overall_status", "unknown")
+        return 1 if overall == "critical" else 0
 
     except Exception as e:
         logger.error(f"Status check failed: {e}")
+        if getattr(args, "verbose", False):
+            import traceback
+            traceback.print_exc()
         return 1
+
+
+def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) -> None:
+    """Print compact status output for quick checks.
+
+    Args:
+        health: Health status dictionary from get_health_status()
+        station_config: Station configuration dictionary
+    """
+    station_id = health.get("station_id", "UNKN")
+    receiver_type = health.get("receiver_type", "Unknown")
+    overall = health.get("overall_status", "unknown")
+
+    # Get IP from connection data or station config
+    ip = station_config.get("ip", "N/A")
+    connection = health.get("connection", {})
+    for level_data in connection.values():
+        if isinstance(level_data, dict) and "host" in level_data:
+            ip = level_data["host"]
+            break
+
+    # Overall status with emoji
+    status_emoji = {
+        "healthy": "✅",
+        "warning": "⚠️",
+        "critical": "❌",
+        "unknown": "❓",
+    }
+
+    # Header line: station, type, IP, overall status
+    print(f"{station_id} ({receiver_type}) @ {ip}  {status_emoji.get(overall, '❓')} {overall.upper()}")
+
+    # Connection status (compact)
+    connection = health.get("connection", {})
+    conn_parts = []
+    for level, data in connection.items():
+        status = data.get("status", "unknown")
+        emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+        conn_parts.append(f"{level}:{emoji}")
+    if conn_parts:
+        print(f"  Connection: {' '.join(conn_parts)}")
+
+    # Key metrics on one line each
+    metrics = health.get("metrics", {})
+    if metrics:
+        metric_lines = []
+
+        # Power/Voltage
+        power = metrics.get("power", {})
+        if power:
+            voltage = power.get("voltage")
+            if voltage is not None:
+                status = power.get("status", "ok")
+                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                metric_lines.append(f"Voltage: {emoji} {voltage:.2f} V")
+
+        # Temperature
+        temp = metrics.get("temperature", {})
+        if temp:
+            value = temp.get("value")
+            if value is not None:
+                status = temp.get("status", "ok")
+                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                metric_lines.append(f"Temp: {emoji} {value}°C")
+
+        # CPU load
+        cpu = metrics.get("cpu_load", {})
+        if cpu:
+            value = cpu.get("value", cpu.get("percent"))
+            if value is not None:
+                status = cpu.get("status", "ok")
+                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                metric_lines.append(f"CPU: {emoji} {value}%")
+
+        # Disk usage
+        disk = metrics.get("disk", {})
+        if disk:
+            value = disk.get("usage_percent")
+            if value is not None:
+                status = disk.get("status", "ok")
+                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                metric_lines.append(f"Disk: {emoji} {value:.0f}%")
+
+        if metric_lines:
+            print(f"  Metrics: {' | '.join(metric_lines)}")
 
 
 def cmd_health_timeseries_extract(
