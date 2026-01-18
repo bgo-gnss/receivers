@@ -218,7 +218,7 @@ class BaseReceiver(ABC):
     def save_health_to_json(self, health_data: Dict[str, Any]) -> Optional[str]:
         """Save health data to JSON file.
 
-        Helper method to save health data to status_1hr/health/ directory.
+        Helper method to save health data to status_1hr/json/ directory.
 
         Args:
             health_data: Health data dictionary to save
