@@ -273,6 +273,23 @@ def cmd_status(args) -> int:
             f"Receiver Status: {'✅' if status.get('receiver') else '❌'} (port {status.get('http_port', 8060)})"
         )
 
+        # Query voltage for PolaRX5 receivers if reachable
+        if receiver.get_receiver_type() == "PolaRX5" and status.get("receiver"):
+            try:
+                from ..health.polarx5_tcp_extractor import PolaRX5TCPExtractor
+
+                ip = status.get("ip")
+                extractor = PolaRX5TCPExtractor(ip, station_id)
+                health_data = extractor.extract_health_data()
+                power = health_data.get("metrics", {}).get("power", {})
+                voltage = power.get("voltage")
+                if voltage is not None:
+                    voltage_status = power.get("status", "ok")
+                    status_icon = "✅" if voltage_status == "ok" else "⚠️" if voltage_status == "warning" else "❌"
+                    print(f"Voltage: {status_icon} {voltage:.2f} V")
+            except Exception as e:
+                logger.debug(f"Could not query voltage: {e}")
+
         if status.get("error"):
             print(f"Error: {status['error']}")
             return 1

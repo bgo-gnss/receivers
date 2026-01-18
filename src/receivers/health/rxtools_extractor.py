@@ -18,7 +18,7 @@ import logging
 import subprocess
 import shutil
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 from datetime import datetime
 import re
 
@@ -31,16 +31,16 @@ class RxToolsNotFoundError(Exception):
 class RxToolsExtractor:
     """Extract health data from SBF files using RxTools bin2asc."""
 
-    # SBF block IDs for health messages
+    # SBF block names for health messages (used with bin2asc -m flag)
     HEALTH_BLOCKS = {
-        "4101": "PowerStatus",
-        "4059": "DiskStatus",
-        "4014": "ReceiverStatus",
-        "4054": "WiFiAPStatus",
-        "4102": "LogStatus",
-        "4122": "NTRIPServerStatus",
-        "4053": "NTRIPClientStatus",
-        "4027": "ReceiverSetup",
+        "PowerStatus": "PowerStatus",
+        "DiskStatus": "DiskStatus",
+        "ReceiverStatus2": "ReceiverStatus",  # Use ReceiverStatus2 for PolaRX5
+        "WiFiAPStatus": "WiFiAPStatus",
+        "LogStatus": "LogStatus",
+        "NTRIPServerStatus": "NTRIPServerStatus",
+        "NTRIPClientStatus": "NTRIPClientStatus",
+        "ReceiverSetup1": "ReceiverSetup",
     }
 
     def __init__(self, station_id: str = "UNKNOWN"):
@@ -115,26 +115,32 @@ class RxToolsExtractor:
             output_dir: Directory for ASCII output files
 
         Returns:
-            Dictionary mapping block IDs to ASCII file paths
+            Dictionary mapping block names to ASCII file paths
         """
         ascii_files = {}
 
-        # Convert each health block type separately for easier parsing
-        for block_id, block_name in self.HEALTH_BLOCKS.items():
-            output_file = output_dir / f"{sbf_file.stem}_{block_name}.txt"
+        # Ensure bin2asc path is set
+        if self._bin2asc_path is None:
+            self._bin2asc_path = shutil.which("bin2asc")
+        if self._bin2asc_path is None:
+            self.logger.error("bin2asc not found in PATH")
+            return ascii_files
 
+        # Convert each health block type separately for easier parsing
+        for block_name, friendly_name in self.HEALTH_BLOCKS.items():
             try:
-                # bin2asc command: extract specific block type
-                # -f <input> -s -o <output> -b <block_id>
+                # bin2asc command: extract specific message type
+                # -f <input> -m <message_name> -t -x -p <output_dir>
                 cmd = [
                     self._bin2asc_path,
                     "-f",
                     str(sbf_file),
-                    "-s",  # Skip non-matching blocks
-                    "-b",
-                    block_id,  # Block ID to extract
-                    "-o",
-                    str(output_file),
+                    "-m",
+                    block_name,  # Message name (e.g., PowerStatus, ReceiverStatus2)
+                    "-t",  # Include column titles
+                    "-x",  # Include file header
+                    "-p",
+                    str(output_dir),
                 ]
 
                 self.logger.debug(f"Running: {' '.join(cmd)}")
@@ -144,23 +150,26 @@ class RxToolsExtractor:
                     capture_output=True,
                     text=True,
                     timeout=60,
+                    cwd=str(output_dir),
                 )
 
+                # bin2asc creates output file with pattern: inputname.sbf_SBF_BlockName.txt
+                output_file = output_dir / f"{sbf_file.name}_SBF_{block_name}.txt"
+
                 if result.returncode == 0 and output_file.exists():
-                    ascii_files[block_id] = output_file
+                    ascii_files[block_name] = output_file
                     self.logger.debug(
-                        f"Extracted {block_name} (block {block_id}) to {output_file}"
+                        f"Extracted {friendly_name} ({block_name}) to {output_file}"
                     )
                 else:
-                    self.logger.warning(
-                        f"Failed to extract {block_name} (block {block_id}): "
-                        f"{result.stderr}"
+                    self.logger.debug(
+                        f"No {friendly_name} ({block_name}) data in file"
                     )
 
             except subprocess.TimeoutExpired:
-                self.logger.error(f"bin2asc timeout for block {block_id}")
+                self.logger.error(f"bin2asc timeout for {block_name}")
             except Exception as e:
-                self.logger.error(f"Error extracting block {block_id}: {e}")
+                self.logger.error(f"Error extracting {block_name}: {e}")
 
         return ascii_files
 
@@ -168,13 +177,15 @@ class RxToolsExtractor:
         """Parse ASCII files to extract health metrics.
 
         Args:
-            ascii_files: Dictionary mapping block IDs to ASCII file paths
+            ascii_files: Dictionary mapping block names to ASCII file paths
 
         Returns:
             Dictionary with structured health data
         """
+        from datetime import timezone
+
         health_data = {
-            "extraction_time": datetime.utcnow().isoformat() + "Z",
+            "extraction_time": datetime.now(timezone.utc).isoformat(),
             "metrics": {},
             "data_quality": {},
             "network": {},
@@ -182,63 +193,134 @@ class RxToolsExtractor:
         }
 
         # Parse each block type
-        for block_id, ascii_file in ascii_files.items():
-            block_name = self.HEALTH_BLOCKS[block_id]
+        for block_name, ascii_file in ascii_files.items():
+            friendly_name = self.HEALTH_BLOCKS.get(block_name, block_name)
 
             try:
-                if block_id == "4101":  # PowerStatus
+                if block_name == "PowerStatus":
                     health_data["metrics"].update(
                         self._parse_power_status(ascii_file)
                     )
-                elif block_id == "4059":  # DiskStatus
+                elif block_name == "DiskStatus":
                     health_data["data_quality"].update(
                         self._parse_disk_status(ascii_file)
                     )
-                elif block_id == "4014":  # ReceiverStatus
+                elif block_name == "ReceiverStatus2":
                     health_data["metrics"].update(
                         self._parse_receiver_status(ascii_file)
                     )
-                elif block_id == "4054":  # WiFiAPStatus
+                elif block_name == "WiFiAPStatus":
                     health_data["network"].update(
                         self._parse_wifi_status(ascii_file)
                     )
-                elif block_id == "4102":  # LogStatus
+                elif block_name == "LogStatus":
                     health_data["data_quality"].update(
                         self._parse_log_status(ascii_file)
                     )
-                elif block_id == "4122":  # NTRIPServerStatus
+                elif block_name == "NTRIPServerStatus":
                     health_data["network"].update(
                         self._parse_ntrip_server_status(ascii_file)
                     )
-                elif block_id == "4053":  # NTRIPClientStatus
+                elif block_name == "NTRIPClientStatus":
                     health_data["network"].update(
                         self._parse_ntrip_client_status(ascii_file)
                     )
-                elif block_id == "4027":  # ReceiverSetup
+                elif block_name == "ReceiverSetup1":
                     health_data["receiver_specific"].update(
                         self._parse_receiver_setup(ascii_file)
                     )
 
             except Exception as e:
-                self.logger.error(f"Error parsing {block_name}: {e}")
+                self.logger.error(f"Error parsing {friendly_name}: {e}")
 
         return health_data
 
-    def _parse_power_status(self, ascii_file: Path) -> Dict[str, Any]:
-        """Parse PowerStatus block (4101).
+    def _read_csv_file(self, ascii_file: Path) -> list:
+        """Read bin2asc CSV output file and return list of row dictionaries.
+
+        bin2asc output format:
+            - Header lines (file info, block name) starting with '-' or text
+            - Column header line (comma-separated field names)
+            - Separator line (dashes)
+            - Data rows (comma-separated values)
+
+        Args:
+            ascii_file: Path to bin2asc output file
 
         Returns:
-            Dictionary with power metrics (voltage, source, battery status)
+            List of dictionaries, each representing a data row
+        """
+        rows = []
+        try:
+            lines = ascii_file.read_text().strip().split('\n')
+
+            # Find the header line (contains column names with commas)
+            header_idx = None
+            for i, line in enumerate(lines):
+                # Skip header info lines and separator lines
+                if line.startswith('-') or line.startswith('File') or line.startswith('Block'):
+                    continue
+                # Found a line with commas that's not a separator
+                if ',' in line and not line.startswith('-'):
+                    header_idx = i
+                    break
+
+            if header_idx is None:
+                return rows
+
+            # Parse header
+            headers = [h.strip() for h in lines[header_idx].split(',')]
+
+            # Parse data rows (skip separator line after header)
+            for line in lines[header_idx + 1:]:
+                # Skip separator lines
+                if line.startswith('-') or not line.strip():
+                    continue
+
+                values = line.split(',')
+                if len(values) >= len(headers):
+                    row = {}
+                    for j, header in enumerate(headers):
+                        if j < len(values):
+                            row[header] = values[j].strip()
+                    rows.append(row)
+
+        except Exception as e:
+            self.logger.error(f"Error reading CSV file {ascii_file}: {e}")
+
+        return rows
+
+    def _parse_power_status(self, ascii_file: Path) -> Dict[str, Any]:
+        """Parse PowerStatus block from bin2asc CSV output.
+
+        CSV format:
+            TOW [s],WNc [w],PowerSource,VinVoltage [V],...
+            342000.000,2393,Vin,12.50,...
+
+        Returns:
+            Dictionary with power metrics (voltage, source)
         """
         power_data = {}
 
         try:
-            content = ascii_file.read_text()
+            rows = self._read_csv_file(ascii_file)
+            if not rows:
+                return power_data
 
-            # Extract voltage (example: "ExtSupply: 12.3 V")
-            voltage_match = re.search(r"ExtSupply:\s*([\d.]+)\s*V", content)
-            if voltage_match:
-                voltage = float(voltage_match.group(1))
+            # Get the last row (most recent reading)
+            last_row = rows[-1]
+
+            # Extract voltage from "VinVoltage [V]" or "Vin Voltage [V]" column
+            voltage = None
+            for key in ["VinVoltage [V]", "Vin Voltage [V]"]:
+                if key in last_row:
+                    try:
+                        voltage = float(last_row[key])
+                        break
+                    except (ValueError, TypeError):
+                        pass
+
+            if voltage is not None:
                 power_data["power"] = {
                     "voltage": voltage,
                     "unit": "V",
@@ -246,9 +328,10 @@ class RxToolsExtractor:
                 }
 
             # Extract power source
-            source_match = re.search(r"PowerSource:\s*(\w+)", content)
-            if source_match:
-                power_data["power_source"] = source_match.group(1)
+            for key in ["PowerSource", "Power Source"]:
+                if key in last_row:
+                    power_data["power_source"] = last_row[key]
+                    break
 
         except Exception as e:
             self.logger.error(f"Error parsing PowerStatus: {e}")
@@ -286,39 +369,56 @@ class RxToolsExtractor:
         return disk_data
 
     def _parse_receiver_status(self, ascii_file: Path) -> Dict[str, Any]:
-        """Parse ReceiverStatus block (4014).
+        """Parse ReceiverStatus2 block from bin2asc CSV output.
+
+        CSV format:
+            TOW [s],WNc [w],CPULoad [%],...,UpTime [s],...,Temperature_degC [°C],...
+            342000.000,2393,37,...,673011,...,26.00,...
 
         Returns:
-            Dictionary with receiver metrics (CPU, uptime, errors)
+            Dictionary with receiver metrics (CPU, uptime, temperature)
         """
         receiver_data = {}
 
         try:
-            content = ascii_file.read_text()
+            rows = self._read_csv_file(ascii_file)
+            if not rows:
+                return receiver_data
 
-            # Extract CPU load (example: "CPULoad: 25%")
-            cpu_match = re.search(r"CPULoad:\s*([\d]+)%", content)
-            if cpu_match:
-                cpu_load = int(cpu_match.group(1))
-                receiver_data["cpu_load"] = {
-                    "percent": cpu_load,
-                    "status": self._check_cpu_status(cpu_load),
-                }
+            # Get the last row (most recent reading)
+            last_row = rows[-1]
 
-            # Extract temperature (example: "Temperature: 45.2 C")
-            temp_match = re.search(r"Temperature:\s*([\d.]+)\s*C", content)
-            if temp_match:
-                temperature = float(temp_match.group(1))
-                receiver_data["temperature"] = {
-                    "value": temperature,
-                    "unit": "C",
-                    "status": self._check_temperature_status(temperature),
-                }
+            # Extract CPU load
+            if "CPULoad [%]" in last_row:
+                try:
+                    cpu_load = int(last_row["CPULoad [%]"])
+                    receiver_data["cpu_load"] = {
+                        "percent": cpu_load,
+                        "status": self._check_cpu_status(cpu_load),
+                    }
+                except (ValueError, TypeError):
+                    pass
 
-            # Extract uptime (example: "UpTime: 123456 s")
-            uptime_match = re.search(r"UpTime:\s*([\d]+)\s*s", content)
-            if uptime_match:
-                receiver_data["uptime_seconds"] = int(uptime_match.group(1))
+            # Extract temperature
+            for key in ["Temperature_degC [°C]", "Temperature [°C]", "Temperature"]:
+                if key in last_row:
+                    try:
+                        temperature = float(last_row[key])
+                        receiver_data["temperature"] = {
+                            "value": temperature,
+                            "unit": "C",
+                            "status": self._check_temperature_status(temperature),
+                        }
+                        break
+                    except (ValueError, TypeError):
+                        pass
+
+            # Extract uptime
+            if "UpTime [s]" in last_row:
+                try:
+                    receiver_data["uptime_seconds"] = int(last_row["UpTime [s]"])
+                except (ValueError, TypeError):
+                    pass
 
         except Exception as e:
             self.logger.error(f"Error parsing ReceiverStatus: {e}")
