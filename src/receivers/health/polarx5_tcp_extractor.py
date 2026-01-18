@@ -53,6 +53,7 @@ class PolaRX5TCPExtractor:
         self.port = port
         self.timeout = timeout
         self.logger = logging.getLogger(f"receivers.health.tcp.{station_id}")
+        self._connection_id = None  # Will be detected from prompt (e.g., "IP11")
 
     def extract_health_data(self) -> Dict[str, Any]:
         """Extract health data from all available SBF blocks.
@@ -112,15 +113,16 @@ class PolaRX5TCPExtractor:
                 return None
 
             # PowerStatus structure (16 bytes total):
-            # Bytes 0-7: SBF header
-            # Bytes 8-11: TOW
-            # Bytes 12-13: WNc
-            # Bytes 14-15: PowerSource + VinVoltage
+            # Bytes 0-7: SBF header (sync, CRC, ID+Rev, Length)
+            # Bytes 8-11: TOW (Time of Week)
+            # Bytes 12-13: WNc (Week Number)
+            # Byte 14: PowerSource (uint8)
+            # Byte 15: VinVoltage (uint8, scaled)
             if length >= 16 and len(sbf_data) >= 16:
                 # Byte 15: Voltage in scaled format
                 vin_raw = sbf_data[15]
-                # Formula: voltage = (raw + 100) / 10
-                voltage = (vin_raw + 100) / 10.0
+                # Formula: voltage = 10 + raw * 0.125 (verified against RxControl)
+                voltage = 10.0 + vin_raw * 0.125
 
                 return {
                     "voltage": round(voltage, 2),
@@ -151,11 +153,20 @@ class PolaRX5TCPExtractor:
 
             result = {}
 
-            # ReceiverStatus structure (56 bytes typical):
-            # Bytes 14: CPULoad (uint8, %)
+            # ReceiverStatus structure (56 bytes typical for PolaRX5):
+            # Bytes 0-7: SBF header (sync, CRC, ID+Rev, Length)
+            # Bytes 8-11: TOW (Time of Week)
+            # Bytes 12-13: WNc (Week Number)
+            # Byte 14: CPULoad (uint8, %)
+            # Byte 15: ExtError (uint8)
             # Bytes 16-19: UpTime (uint32, seconds)
-            # Bytes 20-21: Temperature (int16, 0.01°C scale)
-            if length >= 22 and len(sbf_data) >= 22:
+            # Bytes 20-23: RxStatus (uint32)
+            # Bytes 24-27: RxError (uint32)
+            # Byte 28: N (number of AGCState entries)
+            # Byte 29: SBLength (size of AGCState)
+            # Byte 30: CmdCount (uint8)
+            # Byte 31: Temperature (int8, offset by 100°C)
+            if length >= 32 and len(sbf_data) >= 32:
                 # CPU Load at offset 14
                 cpu_load = sbf_data[14]
                 result["cpu_load"] = {
@@ -167,11 +178,12 @@ class PolaRX5TCPExtractor:
                 uptime = struct.unpack('<I', sbf_data[16:20])[0]
                 result["uptime_seconds"] = uptime
 
-                # Temperature at offset 20-21 (signed, 0.01°C)
-                temp_raw = struct.unpack('<h', sbf_data[20:22])[0]
-                temperature = temp_raw / 100.0
+                # Temperature at offset 31 (int8, formula: temp = raw - 100)
+                # Verified against RxControl display
+                temp_raw = sbf_data[31]
+                temperature = temp_raw - 100
                 result["temperature"] = {
-                    "value": round(temperature, 1),
+                    "value": temperature,
                     "unit": "C",
                     "status": self._check_temperature_status(temperature),
                 }
@@ -227,16 +239,17 @@ class PolaRX5TCPExtractor:
             sock.settimeout(self.timeout)
             sock.connect((self.host, self.port))
 
-            # Read initial prompt
-            sock.recv(1024)
+            # Read initial prompt to detect connection ID (e.g., "IP11>")
+            prompt = sock.recv(1024)
+            conn_id = self._parse_connection_id(prompt)
 
-            # Send SBF once request
-            # IP10 is the default connection identifier for TCP port 10
-            cmd = f"esoc, IP10, {block_name}\n"
+            # Send SBF once request using detected connection ID
+            # The esoc command streams SBF data to the specified connection
+            cmd = f"esoc, {conn_id}, {block_name}\n"
             sock.send(cmd.encode())
 
             # Wait for response
-            time.sleep(0.3)
+            time.sleep(0.5)
             response = sock.recv(4096)
 
             # Find SBF sync pattern ($@)
@@ -259,6 +272,25 @@ class PolaRX5TCPExtractor:
         finally:
             if sock:
                 sock.close()
+
+    def _parse_connection_id(self, prompt: bytes) -> str:
+        """Parse connection ID from receiver prompt.
+
+        Args:
+            prompt: Initial prompt bytes from receiver (e.g., b'IP11>')
+
+        Returns:
+            Connection identifier string (e.g., "IP11")
+        """
+        # Prompt format is typically "IPxx>" where xx is connection number
+        try:
+            prompt_str = prompt.decode('ascii', errors='ignore').strip()
+            if prompt_str.startswith('IP') and prompt_str.endswith('>'):
+                return prompt_str[:-1]  # Remove trailing '>'
+        except Exception:
+            pass
+        # Default fallback
+        return "IP11"
 
     def _parse_sbf_header(self, sbf_data: bytes) -> Tuple[int, int]:
         """Parse SBF message header.
