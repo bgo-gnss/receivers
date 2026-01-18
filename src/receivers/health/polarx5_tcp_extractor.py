@@ -116,13 +116,15 @@ class PolaRX5TCPExtractor:
             # Bytes 0-7: SBF header (sync, CRC, ID+Rev, Length)
             # Bytes 8-11: TOW (Time of Week)
             # Bytes 12-13: WNc (Week Number)
-            # Byte 14: PowerSource (uint8)
-            # Byte 15: VinVoltage (uint8, scaled)
+            # Bytes 14-15: PowerInfo (uint16, little-endian)
+            #   - Lower 4 bits: PowerSource (1=Vin, 2=Vbat, etc.)
+            #   - Upper 12 bits: VinVoltage (value / 40 = volts)
+            # Formula verified against Septentrio bin2asc official output
             if length >= 16 and len(sbf_data) >= 16:
-                # Byte 15: Voltage in scaled format
-                vin_raw = sbf_data[15]
-                # Formula: voltage = 10 + raw * 0.125 (verified against RxControl)
-                voltage = 10.0 + vin_raw * 0.125
+                # Read bytes 14-15 as 16-bit little-endian
+                power_info = struct.unpack('<H', sbf_data[14:16])[0]
+                # Voltage = upper 12 bits / 40
+                voltage = (power_info >> 4) / 40.0
 
                 return {
                     "voltage": round(voltage, 2),
