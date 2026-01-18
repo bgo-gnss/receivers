@@ -14,6 +14,7 @@ from .trimble_http_extractor import TrimbleHTTPExtractor
 from .g10_ftp_inferrer import G10FTPHealthInferrer
 from .json_writer import HealthJSONWriter
 from .db_writer import HealthDatabaseWriter
+from .file_tracker import FileTracker, compute_checksum
 
 __all__ = [
     "ConnectionChecker",
@@ -24,4 +25,6 @@ __all__ = [
     "G10FTPHealthInferrer",
     "HealthJSONWriter",
     "HealthDatabaseWriter",
+    "FileTracker",
+    "compute_checksum",
 ]

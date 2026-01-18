@@ -498,8 +498,22 @@ def cmd_health_timeseries_extract(
         skip_count = 0
         error_count = 0
 
+        # Initialize file tracker for import tracking
+        from ..health import FileTracker, compute_checksum
+        file_tracker = FileTracker()
+        tracker_connected = file_tracker.connect()
+
         for date in dates_to_extract:
             try:
+                # Check if already imported (skip if --save-db and already in DB, unless --force)
+                if getattr(args, "save_db", False) and tracker_connected and not getattr(args, "force", False):
+                    # Convert datetime to date for tracking check
+                    check_date = date.date() if hasattr(date, 'date') else date
+                    if file_tracker.is_health_imported(station_id, check_date):
+                        logger.info(f"⏭️  Skipping {date.strftime('%Y-%m-%d')} (already imported to database)")
+                        skip_count += 1
+                        continue
+
                 # Build path to status_1hr directory for this date
                 year = date.strftime("%Y")
                 month = date.strftime("%b").lower()
@@ -607,6 +621,15 @@ def cmd_health_timeseries_extract(
                                     health_data, station_id, receiver_type
                                 )
                                 logger.info(f"💾 Saved {rows_imported} rows to database for {date.strftime('%Y-%m-%d')}")
+
+                                # Mark as imported in file tracker
+                                if tracker_connected and rows_imported > 0:
+                                    checksum = compute_checksum(health_data)
+                                    # Convert datetime to date for tracking
+                                    track_date = date.date() if hasattr(date, 'date') else date
+                                    file_tracker.mark_health_imported(
+                                        station_id, track_date, rows_imported, checksum, str(json_path) if json_path else None
+                                    )
                             else:
                                 logger.warning("Failed to connect to database")
                     except Exception as e:
@@ -619,6 +642,9 @@ def cmd_health_timeseries_extract(
 
                     traceback.print_exc()
                 error_count += 1
+
+        # Cleanup file tracker
+        file_tracker.close()
 
         # Summary
         logger.info(f"\n{'=' * 60}")
