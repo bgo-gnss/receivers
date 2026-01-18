@@ -86,15 +86,19 @@ class TestRxToolsExtractor:
     @patch("shutil.which")
     @patch("subprocess.run")
     def test_parse_power_status(self, mock_run, mock_which, tmp_path):
-        """Test PowerStatus parsing."""
+        """Test PowerStatus parsing with CSV format from bin2asc."""
         mock_which.return_value = "/usr/local/bin/bin2asc"
 
-        # Create test ASCII file
+        # Create test CSV file in bin2asc format
         power_file = tmp_path / "test_PowerStatus.txt"
         power_file.write_text(
-            """PowerStatus:
-ExtSupply: 12.3 V
-PowerSource: External
+            """------------------------------------------------------------------------------
+File Creation Date/Time: 18 Jan 2026 12:13:29
+Block Name: PowerStatus (SBF)
+
+Sync1,Sync2,CRC,ID,BlockNumber,Revision,Length [B],TOW [s],WNc [w],TOWc [s],PowerInfo,PowerSource,VinVoltage [V],Power Source,Vin Voltage [V]
+---------------------------------------------------------------------------------------------------------------------------------------------
+$,@,48617,4101,4101,0,16,342000.000,2393,342000.000,8001,Vin,12.30,Vin,12.30
 """
         )
 
@@ -105,7 +109,7 @@ PowerSource: External
         assert result["power"]["voltage"] == 12.3
         assert result["power"]["unit"] == "V"
         assert result["power"]["status"] == "ok"
-        assert result["power_source"] == "External"
+        assert result["power_source"] == "Vin"
 
     @patch("shutil.which")
     def test_parse_disk_status(self, mock_which, tmp_path):
@@ -131,16 +135,19 @@ DiskUsage: 45678/102400 MB
 
     @patch("shutil.which")
     def test_parse_receiver_status(self, mock_which, tmp_path):
-        """Test ReceiverStatus parsing."""
+        """Test ReceiverStatus parsing with CSV format from bin2asc."""
         mock_which.return_value = "/usr/local/bin/bin2asc"
 
-        # Create test ASCII file
+        # Create test CSV file in bin2asc format (ReceiverStatus2)
         receiver_file = tmp_path / "test_ReceiverStatus.txt"
         receiver_file.write_text(
-            """ReceiverStatus:
-CPULoad: 35%
-Temperature: 45.2 C
-UpTime: 123456 s
+            """------------------------------------------------------------------------------
+File Creation Date/Time: 18 Jan 2026 12:13:29
+Block Name: ReceiverStatus (SBF)
+
+Sync1,Sync2,CRC,ID,BlockNumber,Revision,Length [B],TOW [s],WNc [w],CPULoad [%],ExtError,UpTime [s],RxStatus,RxError,N,SBLength,CmdCount,Temperature_degC [°C]
+---------------------------------------------------------------------------------------------------------------------------------------------
+$,@,12345,4014,4014,2,56,342000.000,2393,35,0,123456,0,0,4,4,0,45.00
 """
         )
 
@@ -152,7 +159,7 @@ UpTime: 123456 s
         assert result["cpu_load"]["status"] == "ok"
 
         assert "temperature" in result
-        assert result["temperature"]["value"] == 45.2
+        assert result["temperature"]["value"] == 45.0
         assert result["temperature"]["unit"] == "C"
         assert result["temperature"]["status"] == "ok"
 
