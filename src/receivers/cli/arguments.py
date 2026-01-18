@@ -216,14 +216,33 @@ def setup_status_parser(subparsers) -> argparse.ArgumentParser:
     """Set up the status subcommand parser."""
     parser = subparsers.add_parser(
         'status',
-        help='Check receiver connection status',
-        description='Quick connectivity check for a GPS receiver.'
+        help='Quick receiver status check',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description='''Quick status check for a GPS receiver.
+
+Shows a compact overview of receiver health including connection status,
+voltage, temperature, and CPU load. Uses the same data source as the
+'health' command but with simplified output for quick checks.
+
+Examples:
+  # Quick status check
+  receivers status ISFS
+
+  # JSON output for scripting
+  receivers status ISFS --json
+'''
     )
 
     parser.add_argument(
         'station',
         metavar='STATION',
         help='Station ID to check'
+    )
+
+    parser.add_argument(
+        '--json',
+        action='store_true',
+        help='Output as JSON (same format as health command)'
     )
 
     add_verbose_flag(parser)
