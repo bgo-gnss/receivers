@@ -234,15 +234,22 @@ Examples:
     )
 
     parser.add_argument(
-        'station',
+        'stations',
         metavar='STATION',
-        help='Station ID to check'
+        nargs='+',
+        help='Station ID(s) to check'
     )
 
     parser.add_argument(
         '--json',
         action='store_true',
         help='Output as JSON (same format as health command)'
+    )
+
+    parser.add_argument(
+        '--save-db',
+        action='store_true',
+        help='Save health data to database'
     )
 
     add_verbose_flag(parser)

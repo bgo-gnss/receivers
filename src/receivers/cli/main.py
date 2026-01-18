@@ -256,39 +256,58 @@ def cmd_status(args) -> int:
     a simplified, compact output format for quick operational checks.
     """
     logger = setup_logging(args.loglevel)
-    station_id = args.station.upper()
+    stations = [s.upper() for s in args.stations]
 
-    try:
-        station_config = get_station_config(station_id)
-        if station_config is None:
-            logger.warning(f"⚠️  Station {station_id} not found in configuration")
-            return 1
+    results = []
+    has_critical = False
 
-        # Create receiver instance using factory pattern
-        receiver = create_receiver(station_id, station_config)
+    for station_id in stations:
+        try:
+            station_config = get_station_config(station_id)
+            if station_config is None:
+                logger.warning(f"⚠️  Station {station_id} not found in configuration")
+                continue
 
-        # Use the same health extraction as health command
-        health = receiver.get_health_status()
+            # Create receiver instance using factory pattern
+            receiver = create_receiver(station_id, station_config)
 
-        # JSON output if requested (same format as health command)
-        if getattr(args, "json", False):
-            import json
-            print(json.dumps(health, indent=2, default=str))
-            return 0
+            # Use the same health extraction as health command
+            health = receiver.get_health_status()
+            results.append((health, station_config))
 
-        # Compact human-readable output for quick checks
+            # Track critical status
+            if health.get("overall_status") == "critical":
+                has_critical = True
+
+            # Save to database if requested
+            if getattr(args, "save_db", False):
+                success = receiver.save_health_to_database(health)
+                if success:
+                    logger.debug(f"Saved health data to database for {station_id}")
+
+        except Exception as e:
+            logger.error(f"Status check failed for {station_id}: {e}")
+            if getattr(args, "verbose", False):
+                import traceback
+                traceback.print_exc()
+
+    if not results:
+        return 1
+
+    # JSON output if requested
+    if getattr(args, "json", False):
+        import json
+        if len(results) == 1:
+            print(json.dumps(results[0][0], indent=2, default=str))
+        else:
+            print(json.dumps([r[0] for r in results], indent=2, default=str))
+        return 1 if has_critical else 0
+
+    # Compact human-readable output for quick checks
+    for health, station_config in results:
         _print_quick_status(health, station_config)
 
-        # Return non-zero if critical status
-        overall = health.get("overall_status", "unknown")
-        return 1 if overall == "critical" else 0
-
-    except Exception as e:
-        logger.error(f"Status check failed: {e}")
-        if getattr(args, "verbose", False):
-            import traceback
-            traceback.print_exc()
-        return 1
+    return 1 if has_critical else 0
 
 
 def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) -> None:
