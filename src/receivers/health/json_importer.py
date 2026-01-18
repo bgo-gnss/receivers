@@ -276,6 +276,8 @@ class HealthJsonImporter:
     ) -> int:
         """Import health data dictionary directly to database.
 
+        Uses HealthDatabaseWriter to write to block-aligned tables.
+
         Args:
             health_data: Health data dictionary with timeseries
             station_id: Station identifier
@@ -284,78 +286,23 @@ class HealthJsonImporter:
         Returns:
             Number of rows imported
         """
-        if not self._conn:
-            if not self.connect():
-                return 0
+        from .db_writer import HealthDatabaseWriter
 
         timeseries = health_data.get("timeseries", [])
         if not timeseries:
             logger.warning(f"No timeseries data to import for {station_id}")
             return 0
 
-        rows_imported = 0
+        # Use HealthDatabaseWriter for block-aligned tables
+        with HealthDatabaseWriter() as writer:
+            rows_imported = writer.write_timeseries_batch(
+                station_id=station_id,
+                samples=timeseries,
+                receiver_type=receiver_type,
+                commit_interval=100
+            )
 
-        try:
-            with self._conn.cursor() as cur:
-                for sample in timeseries:
-                    try:
-                        timestamp = self._parse_timestamp(sample["time"])
-
-                        # Extract metrics
-                        voltage = sample.get("voltage", {}).get("value")
-                        temperature = sample.get("temperature", {}).get("value")
-                        cpu_load = sample.get("cpu_load", {}).get("value")
-                        disk_usage = sample.get("disk_usage", {}).get("value")
-                        satellites = sample.get("satellites", {})
-
-                        # Build recv_metrics JSONB
-                        recv_metrics = {
-                            "power": {"voltage": voltage, "unit": "V"} if voltage else {},
-                            "temperature": {"value": temperature, "unit": "C"} if temperature else {},
-                            "cpu_load": {"percent": cpu_load} if cpu_load else {},
-                            "disk": {"usage_percent": disk_usage} if disk_usage else {},
-                            "satellites": satellites,
-                        }
-
-                        # Determine status
-                        overall_status = self._determine_status(voltage)
-
-                        # Insert with UPSERT
-                        cur.execute("""
-                            INSERT INTO checkcomm (
-                                sid, timestamp, recv_temp, recv_volt,
-                                recv_metrics, overall_status
-                            ) VALUES (
-                                %s, %s, %s, %s, %s, %s
-                            )
-                            ON CONFLICT (sid, timestamp)
-                            DO UPDATE SET
-                                recv_temp = EXCLUDED.recv_temp,
-                                recv_volt = EXCLUDED.recv_volt,
-                                recv_metrics = EXCLUDED.recv_metrics,
-                                overall_status = EXCLUDED.overall_status
-                        """, (
-                            station_id,
-                            timestamp,
-                            temperature,
-                            voltage,
-                            json.dumps(recv_metrics),
-                            overall_status,
-                        ))
-
-                        rows_imported += 1
-
-                    except Exception as e:
-                        logger.debug(f"Skipped sample: {e}")
-
-            self._conn.commit()
-            return rows_imported
-
-        except Exception as e:
-            logger.error(f"Failed to import health data: {e}")
-            if self._conn:
-                self._conn.rollback()
-            return 0
+        return rows_imported
 
     def export_to_json(
         self,
