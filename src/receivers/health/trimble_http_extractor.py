@@ -29,7 +29,7 @@ class TrimbleHTTPExtractor:
     outputting data in the same standardized format as PolaRX5 health extraction.
     """
 
-    # Real Trimble /prog/show? API endpoints
+    # Real Trimble /prog/show? API endpoints (NetR9/NetR5)
     HEALTH_ENDPOINTS = {
         "voltages": "/prog/show?Voltages",
         "temperature": "/prog/show?Temperature",
@@ -39,6 +39,17 @@ class TrimbleHTTPExtractor:
         "gpstime": "/prog/show?GpsTime",
         "refstation": "/prog/show?RefStation",
         "antenna": "/prog/show?Antenna",
+    }
+
+    # NetRS uses different parameter format for voltage API
+    NETRS_VOLTAGE_ENDPOINTS = [
+        "/prog/show?voltage&input=1",  # Primary voltage
+        "/prog/show?voltage&input=2",  # Secondary voltage
+    ]
+
+    # NetRS CGI page as fallback for additional data (uptime, etc.)
+    NETRS_ENDPOINTS = {
+        "activity": "/perl-scripts/rstatusActivity.cgi",  # Uptime, extra info
     }
 
     # Voltage thresholds (same as PolaRX5 for consistency)
@@ -279,19 +290,23 @@ class TrimbleHTTPExtractor:
     def _fetch_and_parse_voltages(self) -> Optional[Dict[str, Any]]:
         """Fetch and parse voltage data.
 
-        Response format:
+        For NetR9/NetR5 - Response format:
             <Show Voltages>
             port=0 B1 volts=8.36 cap=100%
             port=1 ETH volts=0.00 cap=0%
             port=2 P2 volts=15.06 cap=100%
             <end of Show Voltages>
 
+        For NetRS - Fetched from Activity CGI page (HTML format).
+
         Returns:
             Parsed voltage data or None
         """
         response = self._fetch_endpoint("voltages")
-        if not response:
-            return None
+
+        # If /prog/show?Voltages fails or returns error, try NetRS Activity page
+        if not response or "ERROR" in response:
+            return self._fetch_voltages_from_activity_page()
 
         try:
             # Parse voltage readings: port=X NAME volts=XX.XX cap=XX%
@@ -313,7 +328,8 @@ class TrimbleHTTPExtractor:
                         "threshold_warning": self.VOLTAGE_WARNING,
                         "threshold_critical": self.VOLTAGE_CRITICAL,
                     }
-                return None
+                # Try NetRS Activity page as fallback
+                return self._fetch_voltages_from_activity_page()
 
             # Parse all port readings
             ports = []
@@ -344,6 +360,115 @@ class TrimbleHTTPExtractor:
 
         except Exception as e:
             self.logger.error(f"Error parsing voltage response: {e}")
+            return self._fetch_voltages_from_activity_page()
+
+    def _fetch_voltages_from_activity_page(self) -> Optional[Dict[str, Any]]:
+        """Fetch voltage data from NetRS using input-specific API endpoints.
+
+        NetRS uses different API format: /prog/show?voltage&input=X
+        Response format: Voltage input=X volts=XX.XX
+
+        Returns:
+            Parsed voltage data or None
+        """
+        try:
+            ports = []
+            max_voltage = 0.0
+            port_names = ["Primary", "Secondary"]
+
+            for i, endpoint in enumerate(self.NETRS_VOLTAGE_ENDPOINTS):
+                url = f"{self.base_url}{endpoint}"
+                self.logger.debug(f"Fetching NetRS voltage from: {url}")
+
+                try:
+                    response = requests.get(url, auth=self.auth, timeout=self.timeout)
+
+                    if response.status_code != 200:
+                        continue
+
+                    text = response.text.strip()
+                    # Parse: "Voltage input=X volts=XX.XX"
+                    match = re.search(r"volts=([\d.]+)", text)
+
+                    if match:
+                        voltage = float(match.group(1))
+                        ports.append({
+                            "port": i,
+                            "name": port_names[i] if i < len(port_names) else f"Input{i+1}",
+                            "voltage": voltage,
+                        })
+                        if voltage > max_voltage:
+                            max_voltage = voltage
+
+                        self.logger.debug(f"NetRS voltage input {i+1}: {voltage}V")
+
+                except requests.Timeout:
+                    self.logger.debug(f"Timeout fetching voltage input {i+1}")
+                except Exception as e:
+                    self.logger.debug(f"Error fetching voltage input {i+1}: {e}")
+
+            if not ports:
+                self.logger.debug("No voltage readings from NetRS API")
+                return None
+
+            status = self._voltage_status(max_voltage)
+
+            return {
+                "voltage": max_voltage,
+                "unit": "V",
+                "status": status,
+                "ports": ports,
+                "threshold_warning": self.VOLTAGE_WARNING,
+                "threshold_critical": self.VOLTAGE_CRITICAL,
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error fetching NetRS voltage: {e}")
+            return None
+
+    def _fetch_uptime_from_activity_page(self) -> Optional[Dict[str, Any]]:
+        """Fetch uptime data from NetRS Activity CGI page.
+
+        Response format (HTML):
+            <b>Run Time:</b><br />System has been running for 159 days 1 hour 31 minutes
+
+        Returns:
+            Parsed uptime data or None
+        """
+        url = f"{self.base_url}{self.NETRS_ENDPOINTS['activity']}"
+
+        try:
+            response = requests.get(url, auth=self.auth, timeout=self.timeout)
+
+            if response.status_code != 200:
+                return None
+
+            html = response.text
+
+            # Parse uptime: "running for X days Y hour Z minutes"
+            uptime_match = re.search(
+                r"running for (\d+) days? (\d+) hours? (\d+) minutes?", html
+            )
+
+            if not uptime_match:
+                return None
+
+            days = int(uptime_match.group(1))
+            hours = int(uptime_match.group(2))
+            minutes = int(uptime_match.group(3))
+
+            total_seconds = (days * 86400) + (hours * 3600) + (minutes * 60)
+
+            return {
+                "seconds": total_seconds,
+                "days": days,
+                "hours": hours,
+                "minutes": minutes,
+                "formatted": f"{days}d {hours}h {minutes}m",
+                "source": "activity_page",
+            }
+
+        except Exception:
             return None
 
     def _fetch_and_parse_temperature(self) -> Optional[Dict[str, Any]]:
