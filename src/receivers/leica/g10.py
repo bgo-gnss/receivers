@@ -33,6 +33,7 @@ from .leica_ftp_download_client import LeicaFTPDownloader
 from ..utils.archive_validator import ArchiveValidator
 from ..utils.time_processor import TimeParameterProcessor
 from ..utils.file_archiver import FileArchiver, ArchiveMode
+from ..utils.download_tracker import DownloadTracker
 
 
 class LeicaG10(BaseReceiver):
@@ -278,6 +279,34 @@ class LeicaG10(BaseReceiver):
 
             self.logger.info(f"Missing files: {len(missing_files_dict)} (out of {len(files_dict)} total)")
 
+            # Filter out known missing files using download tracker
+            import re
+            from datetime import date, timedelta
+            try:
+                with DownloadTracker(self.station_id, session) as tracker:
+                    if tracker._connected:
+                        filtered_missing = {}
+                        skipped_count = 0
+                        for filename, remote_dir in missing_files_dict.items():
+                            # Parse date from filename
+                            match = re.match(rf"^{self.station_id}(\d{{3}})([a-x])", filename, re.IGNORECASE)
+                            if match:
+                                day_of_year = int(match.group(1))
+                                session_letter = match.group(2).lower()
+                                file_year = start.year if hasattr(start, 'year') else datetime.now().year
+                                file_date = date(file_year, 1, 1) + timedelta(days=day_of_year - 1)
+                                file_hour = None if session_letter == 'a' else ord(session_letter) - ord('a')
+                                if tracker.is_file_missing(file_date, file_hour):
+                                    self.logger.info(f"⏭️  Skipping {filename} (known missing, not retrying)")
+                                    skipped_count += 1
+                                    continue
+                            filtered_missing[filename] = remote_dir
+                        if skipped_count > 0:
+                            self.logger.info(f"Skipped {skipped_count} known missing files")
+                        missing_files_dict = filtered_missing
+            except Exception as e:
+                self.logger.debug(f"File tracking check failed: {e}")
+
             # Download files if sync is enabled
             downloaded_files = []
             if sync:
@@ -360,6 +389,63 @@ class LeicaG10(BaseReceiver):
             record_performance_metrics(
                 self.station_id, performance_metrics, self.logger
             )
+
+            # Track downloaded files in database
+            try:
+                with DownloadTracker(self.station_id, session) as tracker:
+                    if tracker._connected:
+                        import re
+                        from datetime import date, timedelta
+
+                        # Track successful downloads and collect downloaded dates
+                        downloaded_dates = set()  # Set of (date, hour) tuples
+                        for file_path in final_files:
+                            filename = Path(file_path).name
+
+                            # Try archive format first: SKFC202601180000a.m00.gz (YYYYMMDDHHMM + session)
+                            match = re.match(
+                                rf"^{self.station_id}(\d{{4}})(\d{{2}})(\d{{2}})(\d{{4}})([a-x])",
+                                filename,
+                                re.IGNORECASE,
+                            )
+                            if match:
+                                year = int(match.group(1))
+                                month = int(match.group(2))
+                                day = int(match.group(3))
+                                session_letter = match.group(5).lower()
+                                file_date = date(year, month, day)
+                                file_hour = None if session_letter == 'a' else ord(session_letter) - ord('a')
+                                file_size = Path(file_path).stat().st_size if Path(file_path).exists() else None
+                                tracker.mark_downloaded(file_date, file_hour, filename, file_size)
+                                downloaded_dates.add((file_date, file_hour))
+                            else:
+                                # Try original Leica format: SKFC018a.m00 (DOY + session)
+                                match = re.match(rf"^{self.station_id}(\d{{3}})([a-x])", filename, re.IGNORECASE)
+                                if match:
+                                    day_of_year = int(match.group(1))
+                                    session_letter = match.group(2).lower()
+                                    file_year = start.year if hasattr(start, 'year') else datetime.now().year
+                                    file_date = date(file_year, 1, 1) + timedelta(days=day_of_year - 1)
+                                    file_hour = None if session_letter == 'a' else ord(session_letter) - ord('a')
+                                    file_size = Path(file_path).stat().st_size if Path(file_path).exists() else None
+                                    tracker.mark_downloaded(file_date, file_hour, filename, file_size)
+                                    downloaded_dates.add((file_date, file_hour))
+
+                        # Track missing files (requested but not downloaded) - compare by date/hour
+                        for req_filename in missing_files_dict.keys():
+                            # Parse date from original Leica format: SKFC016a.m00
+                            match = re.match(rf"^{self.station_id}(\d{{3}})([a-x])", req_filename, re.IGNORECASE)
+                            if match:
+                                day_of_year = int(match.group(1))
+                                session_letter = match.group(2).lower()
+                                file_year = start.year if hasattr(start, 'year') else datetime.now().year
+                                file_date = date(file_year, 1, 1) + timedelta(days=day_of_year - 1)
+                                file_hour = None if session_letter == 'a' else ord(session_letter) - ord('a')
+                                # Only mark as missing if this date/hour wasn't downloaded
+                                if (file_date, file_hour) not in downloaded_dates:
+                                    tracker.mark_missing(file_date, file_hour, req_filename)
+            except Exception as e:
+                self.logger.debug(f"File tracking failed: {e}")
 
             return {
                 "station_id": self.station_id,
