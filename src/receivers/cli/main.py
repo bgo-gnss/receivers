@@ -414,14 +414,31 @@ def cmd_health_timeseries_extract(
 
     try:
         # Parse dates to extract using unified flags: -s/--start, -e/--end, -d/--days
+        # For status_1hr (hourly session), -d counts hours not days (consistent with download)
+        from ..utils.time_utils import calculate_download_time_range
+
         dates_to_extract = []
         start_date = None
         end_date = None
+        session_type = "status_1hr"  # Health extraction uses status_1hr session
+        is_hourly = True  # status_1hr is hourly data
 
-        # Handle -d/--days: N days back from today
+        # Handle -d/--days: N periods back (hours for hourly, days for daily)
         if getattr(args, "days", None):
-            end_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-            start_date = end_date - timedelta(days=args.days - 1)
+            # Use same time range calculation as download command for consistency
+            start_time, end_time = calculate_download_time_range(
+                session_type=session_type,
+                lookback_periods=args.days
+            )
+            # Convert to dates for directory-based extraction
+            # For hourly data, we need unique dates that span the hour range
+            start_date = start_time.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+            end_date = end_time.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+            # Make sure we include end_date's day if end_time has hours
+            if end_time.hour > 0 or end_time == start_time:
+                pass  # end_date is correct
+            logger.info(f"Period range: {args.days} {'hours' if is_hourly else 'days'} "
+                       f"({start_time.strftime('%Y-%m-%d %H:%M')} to {end_time.strftime('%Y-%m-%d %H:%M')})")
 
         # Handle -s/--start
         if getattr(args, "start", None):
@@ -503,16 +520,23 @@ def cmd_health_timeseries_extract(
         file_tracker = FileTracker()
         tracker_connected = file_tracker.connect()
 
+        today = datetime.now().date()
+
         for date in dates_to_extract:
             try:
                 # Check if already imported (skip if --save-db and already in DB, unless --force)
+                # For hourly data, never skip today since new hours keep arriving
                 if getattr(args, "save_db", False) and tracker_connected and not getattr(args, "force", False):
                     # Convert datetime to date for tracking check
                     check_date = date.date() if hasattr(date, 'date') else date
-                    if file_tracker.is_health_imported(station_id, check_date):
+                    # Don't skip today for hourly sessions - new data may have arrived
+                    is_today = check_date == today
+                    if not is_today and file_tracker.is_health_imported(station_id, check_date):
                         logger.info(f"⏭️  Skipping {date.strftime('%Y-%m-%d')} (already imported to database)")
                         skip_count += 1
                         continue
+                    elif is_today:
+                        logger.debug(f"Re-processing today ({date.strftime('%Y-%m-%d')}) for latest hourly data")
 
                 # Build path to status_1hr directory for this date
                 year = date.strftime("%Y")
