@@ -633,6 +633,10 @@
           },
           "decimals": 2,
           "mappings": [],
+          "min": null,
+          "max": null,
+          "softMin": 11,
+          "softMax": 14,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -831,6 +835,10 @@
           },
           "decimals": 2,
           "mappings": [],
+          "min": null,
+          "max": null,
+          "softMin": 11,
+          "softMax": 14,
           "thresholds": {
             "mode": "absolute",
             "steps": [
