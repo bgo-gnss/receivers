@@ -91,6 +91,7 @@ class BaseReceiver(ABC):
         http_port: int = 80,
         protocol_type: str = "ftp",
         protocol_port: Optional[int] = None,
+        host: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Check connection health at all levels using ConnectionChecker.
 
@@ -101,15 +102,25 @@ class BaseReceiver(ABC):
             http_port: HTTP port to test (default: 80)
             protocol_type: Protocol type (ftp, http, tcp)
             protocol_port: Protocol-specific port (if different from http_port)
+            host: Receiver IP/hostname (if not provided, attempts to get from station_info)
 
         Returns:
             Dictionary with connection health data in standardized format
         """
-        # Get receiver IP/hostname from station info
-        host = self.station_info.get("ip", self.station_info.get("host", "unknown"))
+        # Get receiver IP/hostname - use provided host or try common station_info locations
+        if host is None:
+            host = (
+                self.station_info.get("ip")
+                or self.station_info.get("host")
+                or self.station_info.get("router", {}).get("ip")
+                or "unknown"
+            )
+
+        # Ensure host is always a string for ConnectionChecker
+        resolved_host: str = host if host else "unknown"
 
         # Create connection checker
-        checker = ConnectionChecker(host=host, station_id=self.station_id)
+        checker = ConnectionChecker(host=resolved_host, station_id=self.station_id)
 
         # Run all connection checks
         results = checker.check_all_levels(

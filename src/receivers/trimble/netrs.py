@@ -205,45 +205,52 @@ class NetRS(BaseReceiver):
         """Get comprehensive health status from NetRS receiver.
 
         Uses standardized health checking from BaseReceiver with NetRS-specific
-        health data extraction via HTTP API.
+        health data extraction via HTTP API (/prog/show? endpoints).
 
         Returns:
             Dictionary with health status information following health-data-spec.md
         """
         from ..health import TrimbleHTTPExtractor
 
+        # Get configuration from station_info
+        host = self.station_info.get("router", {}).get("ip")
+        http_port = self.station_info.get("receiver", {}).get("httpport", 8060)
+
         # Step 1: Check connection health at all levels
         connection_data = self.check_connection_health(
-            http_port=80,
+            http_port=http_port,
             protocol_type="http",
-            protocol_port=80,
+            protocol_port=http_port,
+            host=host,
         )
 
         # Step 2: Extract instrument-specific health data via HTTP API
         metrics = None
         data_quality = None
+        network = None
 
         try:
-            # Get receiver host from station info
-            host = self.station_info.get("ip", self.station_info.get("host"))
-
             if host:
-                # Extract health data using HTTP API
+                # Extract health data using TrimbleHTTPExtractor
                 extractor = TrimbleHTTPExtractor(
-                    host=host, station_id=self.station_id, port=80
+                    host=host,
+                    station_id=self.station_id,
+                    port=http_port,
+                    receiver_type="NetRS",
                 )
                 health_data = extractor.extract_health_data()
 
                 # Map extracted data to standardized sections
                 metrics = health_data.get("metrics", {})
                 data_quality = health_data.get("data_quality", {})
+                network = health_data.get("network", {})
 
                 self.logger.info(
-                    f"Extracted health data from {host} via HTTP API"
+                    f"Extracted health data from {host}:{http_port} via HTTP API"
                 )
             else:
                 self.logger.warning(
-                    f"No host/IP configured for {self.station_id} - "
+                    f"No router IP configured for {self.station_id} - "
                     "connection health only"
                 )
 
@@ -255,6 +262,7 @@ class NetRS(BaseReceiver):
             connection_data=connection_data,
             metrics=metrics,
             data_quality=data_quality,
+            network=network,
         )
 
     def download_data(
