@@ -273,7 +273,7 @@ Live health check (no date flags):
 Extract historical data:
   receivers health ISFS -s 20260113              # Single day
   receivers health ISFS -s 20260110 -e 20260113  # Date range
-  receivers health ISFS -d 7                     # Last 7 days
+  receivers health ISFS -d 24                    # Last 24 hours (spans 1-2 days)
 
 Multiple stations:
   receivers health ELDC THOB ISFS --import-json  # Import all
@@ -297,7 +297,7 @@ Multiple stations:
         '-d', '--days',
         type=int,
         metavar='N',
-        help='Extract N days back from today'
+        help='Extract N periods back (hours for status_1hr, consistent with download)'
     )
 
     date_group.add_argument(
