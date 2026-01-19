@@ -1,126 +1,232 @@
-"""HTTP-based health data extractor for Trimble NetR9/NetRS receivers.
+"""HTTP-based health data extractor for Trimble NetR9/NetRS/NetR5 receivers.
 
-This module fetches health data from Trimble receivers via HTTP API endpoints
-and converts it to the standardized health data format.
+This module fetches health data from Trimble receivers via the /prog/show? HTTP API
+and converts it to the standardized health data format matching PolaRX5 output.
 
-HTTP Endpoints Used:
-- /status: Overall receiver status
-- /voltage: Power supply voltage
-- /temperature: Internal temperature
-- /tracking: Satellite tracking information
-- /logging: Logging session status
-- /sessions: Active session information
+Trimble API Endpoints:
+- /prog/show?Voltages: Power supply voltage readings
+- /prog/show?Temperature: Internal temperature
+- /prog/show?TrackingStatus: Satellite tracking information
+- /prog/show?Position: Position solution and DOP values
+- /prog/show?SerialNumber: Device serial number
+- /prog/show?GpsTime: Current GPS time
+- /prog/show?RefStation: Reference station configuration
+- /prog/show?Antenna: Antenna information
 """
 
 import logging
+import re
 import requests
-from typing import Dict, Any, Optional
 from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+from requests.auth import HTTPBasicAuth
 
 
 class TrimbleHTTPExtractor:
-    """Extract health data from Trimble receivers via HTTP API."""
+    """Extract health data from Trimble receivers via /prog/show? HTTP API.
 
-    # HTTP endpoints for health data
+    Provides unified health data extraction for NetR9, NetRS, and NetR5 receivers,
+    outputting data in the same standardized format as PolaRX5 health extraction.
+    """
+
+    # Real Trimble /prog/show? API endpoints
     HEALTH_ENDPOINTS = {
-        "status": "/status",
-        "voltage": "/voltage",
-        "temperature": "/temperature",
-        "tracking": "/tracking",
-        "logging": "/logging",
-        "sessions": "/sessions",
+        "voltages": "/prog/show?Voltages",
+        "temperature": "/prog/show?Temperature",
+        "tracking": "/prog/show?TrackingStatus",
+        "position": "/prog/show?Position",
+        "serial": "/prog/show?SerialNumber",
+        "gpstime": "/prog/show?GpsTime",
+        "refstation": "/prog/show?RefStation",
+        "antenna": "/prog/show?Antenna",
     }
 
-    def __init__(self, host: str, station_id: str = "UNKNOWN", port: int = 80):
+    # Voltage thresholds (same as PolaRX5 for consistency)
+    VOLTAGE_WARNING = 11.5
+    VOLTAGE_CRITICAL = 10.0
+
+    # Temperature thresholds (Celsius)
+    TEMP_WARNING = 60.0
+    TEMP_CRITICAL = 70.0
+
+    # Satellite tracking thresholds
+    SAT_WARNING = 4
+    SAT_CRITICAL = 2
+
+    def __init__(
+        self,
+        host: str,
+        station_id: str = "UNKNOWN",
+        port: int = 8060,
+        receiver_type: str = "NetR9",
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        timeout: int = 10,
+    ):
         """Initialize HTTP health extractor.
 
         Args:
             host: Receiver hostname or IP address
             station_id: Station identifier for logging
-            port: HTTP port (default: 80)
+            port: HTTP port (default: 8060 for Trimble receivers)
+            receiver_type: Receiver type (NetR9, NetRS, NetR5)
+            username: HTTP Basic Auth username (optional)
+            password: HTTP Basic Auth password (optional)
+            timeout: Request timeout in seconds
         """
         self.host = host
-        self.station_id = station_id
+        self.station_id = station_id.upper()
         self.port = port
+        self.receiver_type = receiver_type
         self.base_url = f"http://{host}:{port}"
+        self.timeout = timeout
         self.logger = logging.getLogger(f"receivers.health.trimble.{station_id}")
-        self.timeout = 10  # seconds
+
+        # HTTP Basic Auth if credentials provided
+        self.auth = None
+        if username and password:
+            self.auth = HTTPBasicAuth(username, password)
 
     def extract_health_data(self) -> Dict[str, Any]:
         """Extract health data from all available HTTP endpoints.
 
         Returns:
             Dictionary with extracted health data in standardized format
+            matching the PolaRX5 health data schema.
         """
-        from ..trimble.health_parser import TrimbleHealthParser
+        start_time = datetime.now(timezone.utc)
 
-        # Determine receiver type (will be set by caller, defaulting to NetR9)
-        receiver_type = "NetR9"
-        parser = TrimbleHealthParser(
-            station_id=self.station_id, receiver_type=receiver_type
-        )
-
+        # Initialize health data structure (matching PolaRX5 format)
         health_data = {
-            "extraction_time": datetime.now(timezone.utc).isoformat() + "Z",
+            "station_id": self.station_id,
+            "receiver_type": self.receiver_type,
+            "timestamp": start_time.isoformat().replace("+00:00", "Z"),
+            "schema_version": "1.0",
+            "connection": {},
             "metrics": {},
             "data_quality": {},
             "network": {},
+            "overall_status": "unknown",
+            "status_summary": {"healthy": 0, "warning": 0, "critical": 0, "unknown": 0},
+            "extraction_metadata": {
+                "extraction_time": start_time.isoformat().replace("+00:00", "Z"),
+                "data_source": "trimble_http_api",
+                "tool_version": "1.0.0",
+            },
         }
 
-        # Fetch and parse voltage
-        voltage_response = self._fetch_endpoint("voltage")
-        if voltage_response:
-            voltage_data = parser.parse_voltage_response(voltage_response)
-            if voltage_data.get("status") != "error":
-                health_data["metrics"]["power"] = {
-                    "voltage": voltage_data.get("value"),
-                    "unit": voltage_data.get("unit", "V"),
-                    "status": self._map_status(voltage_data.get("status")),
-                }
+        statuses = []
+
+        # Test HTTP connection
+        conn_status = self._test_connection()
+        health_data["connection"]["http_port"] = conn_status
+        statuses.append(conn_status.get("status", "unknown"))
+
+        # Fetch and parse voltages
+        voltage_data = self._fetch_and_parse_voltages()
+        if voltage_data:
+            health_data["metrics"]["power"] = voltage_data
+            statuses.append(voltage_data.get("status", "unknown"))
 
         # Fetch and parse temperature
-        temp_response = self._fetch_endpoint("temperature")
-        if temp_response:
-            temp_data = parser.parse_temperature_response(temp_response)
-            if temp_data.get("status") != "error":
-                health_data["metrics"]["temperature"] = {
-                    "value": temp_data.get("value"),
-                    "unit": temp_data.get("unit", "C"),
-                    "status": self._map_status(temp_data.get("status")),
-                }
+        temp_data = self._fetch_and_parse_temperature()
+        if temp_data:
+            health_data["metrics"]["temperature"] = temp_data
+            statuses.append(temp_data.get("status", "unknown"))
 
-        # Fetch and parse tracking
-        tracking_response = self._fetch_endpoint("tracking")
-        if tracking_response:
-            tracking_data = parser.parse_tracking_response(tracking_response)
-            if tracking_data.get("status") != "error":
-                health_data["data_quality"]["satellite_tracking"] = {
-                    "satellites": tracking_data.get("satellites"),
-                    "status": self._map_tracking_status(tracking_data.get("status")),
-                }
+        # Fetch and parse tracking status
+        tracking_data = self._fetch_and_parse_tracking()
+        if tracking_data:
+            health_data["metrics"]["satellites"] = tracking_data
+            statuses.append(tracking_data.get("status", "unknown"))
 
-        # Fetch and parse logging
-        logging_response = self._fetch_endpoint("logging")
-        if logging_response:
-            logging_data = parser.parse_logging_response(logging_response)
-            if logging_data.get("status") != "error":
-                health_data["data_quality"]["logging"] = {
-                    "active": logging_data.get("logging_active", False),
-                    "has_errors": logging_data.get("has_errors", False),
-                    "status": self._map_logging_status(logging_data.get("status")),
-                }
+        # Fetch and parse position
+        position_data = self._fetch_and_parse_position()
+        if position_data:
+            health_data["metrics"]["position"] = position_data
+            # Position quality affects status
+            if position_data.get("fix_type") and "3D" not in position_data.get(
+                "fix_type", ""
+            ):
+                statuses.append("warning")
 
-        # Fetch and parse sessions
-        sessions_response = self._fetch_endpoint("sessions")
-        if sessions_response:
-            sessions_data = parser.parse_sessions_response(sessions_response)
-            if sessions_data.get("status") != "error":
-                health_data["data_quality"]["sessions"] = {
-                    "active_count": sessions_data.get("active_sessions", 0),
-                    "status": self._map_status(sessions_data.get("status")),
-                }
+        # Fetch system info (serial, firmware)
+        system_data = self._fetch_system_info()
+        if system_data:
+            health_data["metrics"]["system"] = system_data
+
+        # Trimble doesn't provide these metrics - mark as unavailable
+        health_data["metrics"]["cpu_load"] = {"available": False}
+        health_data["metrics"]["memory"] = {"available": False}
+        health_data["metrics"]["disk"] = {"available": False}
+        health_data["metrics"]["uptime"] = {"available": False}
+
+        # Network features not available on Trimble
+        health_data["network"]["ntrip_client"] = {"available": False}
+        health_data["network"]["ntrip_server"] = {"available": False}
+
+        # Calculate overall status
+        health_data["overall_status"] = self._calculate_overall_status(statuses)
+        health_data["status_summary"] = self._count_statuses(statuses)
+
+        # Calculate extraction duration
+        end_time = datetime.now(timezone.utc)
+        duration_ms = int((end_time - start_time).total_seconds() * 1000)
+        health_data["extraction_metadata"]["extraction_duration_ms"] = duration_ms
 
         return health_data
+
+    def _test_connection(self) -> Dict[str, Any]:
+        """Test HTTP connection to receiver.
+
+        Returns:
+            Connection status dictionary
+        """
+        start = datetime.now()
+        try:
+            response = requests.get(
+                f"{self.base_url}/prog/show?SerialNumber",
+                auth=self.auth,
+                timeout=self.timeout,
+            )
+            duration_ms = int((datetime.now() - start).total_seconds() * 1000)
+
+            if response.status_code == 200:
+                return {
+                    "status": "ok",
+                    "port": self.port,
+                    "response_time_ms": duration_ms,
+                    "accessible": True,
+                }
+            else:
+                return {
+                    "status": "warning",
+                    "port": self.port,
+                    "response_time_ms": duration_ms,
+                    "accessible": False,
+                    "error": f"HTTP {response.status_code}",
+                }
+        except requests.Timeout:
+            return {
+                "status": "critical",
+                "port": self.port,
+                "accessible": False,
+                "error": f"Timeout after {self.timeout}s",
+            }
+        except requests.ConnectionError as e:
+            return {
+                "status": "critical",
+                "port": self.port,
+                "accessible": False,
+                "error": str(e),
+            }
+        except Exception as e:
+            return {
+                "status": "critical",
+                "port": self.port,
+                "accessible": False,
+                "error": str(e),
+            }
 
     def _fetch_endpoint(self, endpoint_name: str) -> Optional[str]:
         """Fetch data from HTTP endpoint.
@@ -140,8 +246,7 @@ class TrimbleHTTPExtractor:
 
         try:
             self.logger.debug(f"Fetching {endpoint_name} from {url}")
-
-            response = requests.get(url, timeout=self.timeout)
+            response = requests.get(url, auth=self.auth, timeout=self.timeout)
 
             if response.status_code == 200:
                 self.logger.debug(
@@ -149,7 +254,7 @@ class TrimbleHTTPExtractor:
                 )
                 return response.text
             elif response.status_code == 404:
-                self.logger.warning(
+                self.logger.debug(
                     f"Endpoint not found: {endpoint_name} (404) - "
                     f"receiver may not support this endpoint"
                 )
@@ -162,9 +267,7 @@ class TrimbleHTTPExtractor:
                 return None
 
         except requests.Timeout:
-            self.logger.error(
-                f"Timeout fetching {endpoint_name} after {self.timeout}s"
-            )
+            self.logger.error(f"Timeout fetching {endpoint_name} after {self.timeout}s")
             return None
         except requests.ConnectionError as e:
             self.logger.error(f"Connection error fetching {endpoint_name}: {e}")
@@ -173,52 +276,440 @@ class TrimbleHTTPExtractor:
             self.logger.error(f"Error fetching {endpoint_name}: {e}")
             return None
 
-    @staticmethod
-    def _map_status(status: str) -> str:
-        """Map parser status to standardized status.
+    def _fetch_and_parse_voltages(self) -> Optional[Dict[str, Any]]:
+        """Fetch and parse voltage data.
 
-        Args:
-            status: Status from parser (ok, warning, critical, error, unknown)
-
-        Returns:
-            Standardized status (ok, warning, critical, unknown)
-        """
-        status_map = {
-            "ok": "ok",
-            "warning": "warning",
-            "critical": "critical",
-            "error": "critical",
-            "unknown": "unknown",
-            "active": "ok",
-            "inactive": "warning",
-            "good": "ok",
-            "fair": "warning",
-            "poor": "critical",
-        }
-        return status_map.get(status.lower(), "unknown")
-
-    @staticmethod
-    def _map_tracking_status(status: str) -> str:
-        """Map tracking status to standardized status.
-
-        Args:
-            status: Tracking status (good, fair, poor)
+        Response format:
+            <Show Voltages>
+            port=0 B1 volts=8.36 cap=100%
+            port=1 ETH volts=0.00 cap=0%
+            port=2 P2 volts=15.06 cap=100%
+            <end of Show Voltages>
 
         Returns:
-            Standardized status
+            Parsed voltage data or None
         """
-        tracking_map = {"good": "ok", "fair": "ok", "poor": "warning", "error": "critical"}
-        return tracking_map.get(status.lower(), "unknown")
+        response = self._fetch_endpoint("voltages")
+        if not response:
+            return None
 
-    @staticmethod
-    def _map_logging_status(status: str) -> str:
-        """Map logging status to standardized status.
+        try:
+            # Parse voltage readings: port=X NAME volts=XX.XX cap=XX%
+            voltage_pattern = r"port=(\d+)\s+(\w+)\s+volts=([\d.]+)\s+cap=(\d+)%"
+            matches = re.findall(voltage_pattern, response)
 
-        Args:
-            status: Logging status (active, inactive, error)
+            if not matches:
+                # Try simpler pattern
+                simple_pattern = r"([\d.]+)\s*V"
+                simple_matches = re.findall(simple_pattern, response)
+                if simple_matches:
+                    voltages = [float(v) for v in simple_matches]
+                    max_voltage = max(voltages)
+                    status = self._voltage_status(max_voltage)
+                    return {
+                        "voltage": max_voltage,
+                        "unit": "V",
+                        "status": status,
+                        "threshold_warning": self.VOLTAGE_WARNING,
+                        "threshold_critical": self.VOLTAGE_CRITICAL,
+                    }
+                return None
+
+            # Parse all port readings
+            ports = []
+            max_voltage = 0.0
+            for port_num, port_name, volts, cap in matches:
+                voltage = float(volts)
+                ports.append(
+                    {
+                        "port": int(port_num),
+                        "name": port_name,
+                        "voltage": voltage,
+                        "capacity_percent": int(cap),
+                    }
+                )
+                if voltage > max_voltage:
+                    max_voltage = voltage
+
+            status = self._voltage_status(max_voltage)
+
+            return {
+                "voltage": max_voltage,
+                "unit": "V",
+                "status": status,
+                "ports": ports,
+                "threshold_warning": self.VOLTAGE_WARNING,
+                "threshold_critical": self.VOLTAGE_CRITICAL,
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error parsing voltage response: {e}")
+            return None
+
+    def _fetch_and_parse_temperature(self) -> Optional[Dict[str, Any]]:
+        """Fetch and parse temperature data.
+
+        Response format:
+            Temperature temp=15.3
 
         Returns:
-            Standardized status
+            Parsed temperature data or None
         """
-        logging_map = {"active": "ok", "inactive": "warning", "error": "critical"}
-        return logging_map.get(status.lower(), "unknown")
+        response = self._fetch_endpoint("temperature")
+        if not response:
+            return None
+
+        try:
+            # Parse: Temperature temp=XX.X
+            match = re.search(r"temp=([\d.]+)", response, re.IGNORECASE)
+            if not match:
+                # Try alternative patterns
+                match = re.search(r"([\d.]+)\s*°?C", response)
+
+            if not match:
+                return None
+
+            temperature = float(match.group(1))
+            status = self._temperature_status(temperature)
+
+            return {
+                "value": temperature,
+                "unit": "C",
+                "status": status,
+                "threshold_warning": self.TEMP_WARNING,
+                "threshold_critical": self.TEMP_CRITICAL,
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error parsing temperature response: {e}")
+            return None
+
+    def _fetch_and_parse_tracking(self) -> Optional[Dict[str, Any]]:
+        """Fetch and parse satellite tracking status.
+
+        Response format:
+            <Show TrackingStatus>
+            Prn=9   Sys=GPS Elv=24 Azm=328 IODE=67  URA=2 L1snr=41 L2snr=38
+            Prn=31  Sys=GPS Elv=54 Azm=205 IODE=95  URA=2 L1snr=48 L2snr=46 L2Csnr=47
+            Prn=17  Sys=GLN Elv=-45 Azm=000 IODE=69  URA=4
+            ...
+            <end of Show TrackingStatus>
+
+        Returns:
+            Parsed tracking data or None
+        """
+        response = self._fetch_endpoint("tracking")
+        if not response:
+            return None
+
+        try:
+            # Parse satellite lines: Prn=XX Sys=XXX Elv=XX Azm=XXX ...snr=XX
+            sat_pattern = r"Prn=(\d+)\s+Sys=(\w+)\s+Elv=([-\d]+)\s+Azm=(\d+)"
+            matches = re.findall(sat_pattern, response)
+
+            if not matches:
+                return None
+
+            # Count satellites by system (only those with positive elevation = tracking)
+            gps_count = 0
+            glonass_count = 0
+            galileo_count = 0
+            beidou_count = 0
+            sbas_count = 0
+            total_tracking = 0
+
+            satellites = []
+            for prn, sys, elv, azm in matches:
+                elevation = int(elv)
+                # Only count satellites above horizon (elevation > 0)
+                if elevation > 0:
+                    total_tracking += 1
+                    sat_info = {
+                        "prn": int(prn),
+                        "system": sys,
+                        "elevation": elevation,
+                        "azimuth": int(azm),
+                    }
+
+                    # Try to get SNR for this satellite
+                    line_match = re.search(
+                        rf"Prn={prn}\s+.*?L1snr=(\d+)", response
+                    )
+                    if line_match:
+                        sat_info["l1_snr"] = int(line_match.group(1))
+
+                    satellites.append(sat_info)
+
+                    if sys == "GPS":
+                        gps_count += 1
+                    elif sys == "GLN":
+                        glonass_count += 1
+                    elif sys == "GAL":
+                        galileo_count += 1
+                    elif sys == "BDS":
+                        beidou_count += 1
+                    elif sys == "SBS":
+                        sbas_count += 1
+
+            status = self._satellite_status(total_tracking)
+
+            return {
+                "tracking": total_tracking,
+                "visible": len(matches),
+                "status": status,
+                "by_system": {
+                    "gps": gps_count,
+                    "glonass": glonass_count,
+                    "galileo": galileo_count,
+                    "beidou": beidou_count,
+                    "sbas": sbas_count,
+                },
+                "satellites": satellites[:20],  # Limit to 20 for JSON size
+                "threshold_warning": self.SAT_WARNING,
+                "threshold_critical": self.SAT_CRITICAL,
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error parsing tracking response: {e}")
+            return None
+
+    def _fetch_and_parse_position(self) -> Optional[Dict[str, Any]]:
+        """Fetch and parse position data.
+
+        Response format:
+            <Show Position>
+            GpsWeek     2402
+            WeekSeconds 137995.2
+            Latitude    66.1930960854 deg
+            Longitude   -17.1090319429 deg
+            Altitude    128.192 meters
+            Qualifiers  WGS84,3D,Autonomous
+            Satellites  4,5,9,11,16,18,21,25,26,28,29,31
+            ClockOffset 0.000005 msec
+            ClockDrift  -0.000041 ppm
+            VelNorth     0.06 m/sec
+            VelEast      0.01 m/sec
+            VelUp        0.07 m/sec
+            PDOP        1.8
+            HDOP        0.8
+            VDOP        1.6
+            TDOP        0.9
+            <end of Show Position>
+
+        Returns:
+            Parsed position data or None
+        """
+        response = self._fetch_endpoint("position")
+        if not response:
+            return None
+
+        try:
+            position_data = {}
+
+            # Parse latitude
+            lat_match = re.search(r"Latitude\s+([-\d.]+)", response)
+            if lat_match:
+                position_data["latitude"] = float(lat_match.group(1))
+
+            # Parse longitude
+            lon_match = re.search(r"Longitude\s+([-\d.]+)", response)
+            if lon_match:
+                position_data["longitude"] = float(lon_match.group(1))
+
+            # Parse altitude
+            alt_match = re.search(r"Altitude\s+([-\d.]+)", response)
+            if alt_match:
+                position_data["altitude"] = float(alt_match.group(1))
+
+            # Parse fix type/qualifiers
+            qual_match = re.search(r"Qualifiers\s+(\S+)", response)
+            if qual_match:
+                position_data["fix_type"] = qual_match.group(1)
+
+            # Parse DOP values
+            pdop_match = re.search(r"PDOP\s+([\d.]+)", response)
+            if pdop_match:
+                position_data["pdop"] = float(pdop_match.group(1))
+
+            hdop_match = re.search(r"HDOP\s+([\d.]+)", response)
+            if hdop_match:
+                position_data["hdop"] = float(hdop_match.group(1))
+
+            vdop_match = re.search(r"VDOP\s+([\d.]+)", response)
+            if vdop_match:
+                position_data["vdop"] = float(vdop_match.group(1))
+
+            tdop_match = re.search(r"TDOP\s+([\d.]+)", response)
+            if tdop_match:
+                position_data["tdop"] = float(tdop_match.group(1))
+
+            # Parse clock offset
+            clock_match = re.search(r"ClockOffset\s+([-\d.]+)", response)
+            if clock_match:
+                position_data["clock_offset_ms"] = float(clock_match.group(1))
+
+            # Parse satellite list
+            sats_match = re.search(r"Satellites\s+([\d,]+)", response)
+            if sats_match:
+                sat_list = sats_match.group(1).split(",")
+                position_data["satellites_used"] = len(sat_list)
+
+            return position_data if position_data else None
+
+        except Exception as e:
+            self.logger.error(f"Error parsing position response: {e}")
+            return None
+
+    def _fetch_system_info(self) -> Optional[Dict[str, Any]]:
+        """Fetch system information (serial number, antenna, etc).
+
+        Returns:
+            System info dictionary or None
+        """
+        system_info = {}
+
+        # Get serial number
+        serial_response = self._fetch_endpoint("serial")
+        if serial_response:
+            match = re.search(r"sn=(\S+)", serial_response)
+            if match:
+                system_info["serial_number"] = match.group(1)
+
+        # Get antenna info
+        antenna_response = self._fetch_endpoint("antenna")
+        if antenna_response:
+            name_match = re.search(r'name="([^"]+)"', antenna_response)
+            if name_match:
+                system_info["antenna_type"] = name_match.group(1)
+
+            height_match = re.search(r"height=([\d.]+)", antenna_response)
+            if height_match:
+                system_info["antenna_height"] = float(height_match.group(1))
+
+        # Get reference station info
+        refstation_response = self._fetch_endpoint("refstation")
+        if refstation_response:
+            name_match = re.search(r"Name='([^']+)'", refstation_response)
+            if name_match:
+                system_info["station_name"] = name_match.group(1)
+
+        return system_info if system_info else None
+
+    def _voltage_status(self, voltage: float) -> str:
+        """Determine voltage status.
+
+        Args:
+            voltage: Voltage reading in volts
+
+        Returns:
+            Status string (ok, warning, critical)
+        """
+        if voltage < self.VOLTAGE_CRITICAL:
+            return "critical"
+        elif voltage < self.VOLTAGE_WARNING:
+            return "warning"
+        return "ok"
+
+    def _temperature_status(self, temperature: float) -> str:
+        """Determine temperature status.
+
+        Args:
+            temperature: Temperature in Celsius
+
+        Returns:
+            Status string (ok, warning, critical)
+        """
+        if temperature > self.TEMP_CRITICAL:
+            return "critical"
+        elif temperature > self.TEMP_WARNING:
+            return "warning"
+        return "ok"
+
+    def _satellite_status(self, count: int) -> str:
+        """Determine satellite tracking status.
+
+        Args:
+            count: Number of satellites tracking
+
+        Returns:
+            Status string (good/ok, fair/warning, poor/critical)
+        """
+        if count < self.SAT_CRITICAL:
+            return "critical"
+        elif count < self.SAT_WARNING:
+            return "warning"
+        return "ok"
+
+    def _calculate_overall_status(self, statuses: List[str]) -> str:
+        """Calculate overall health status from individual statuses.
+
+        Args:
+            statuses: List of status strings
+
+        Returns:
+            Overall status (healthy, warning, critical, unknown)
+        """
+        if not statuses:
+            return "unknown"
+
+        if "critical" in statuses:
+            return "critical"
+        elif "warning" in statuses:
+            return "warning"
+        elif all(s == "ok" for s in statuses if s != "unknown"):
+            return "healthy"
+        return "unknown"
+
+    def _count_statuses(self, statuses: List[str]) -> Dict[str, int]:
+        """Count statuses by category.
+
+        Args:
+            statuses: List of status strings
+
+        Returns:
+            Dictionary with status counts
+        """
+        counts = {"healthy": 0, "warning": 0, "critical": 0, "unknown": 0}
+        for status in statuses:
+            if status == "ok":
+                counts["healthy"] += 1
+            elif status == "warning":
+                counts["warning"] += 1
+            elif status == "critical":
+                counts["critical"] += 1
+            else:
+                counts["unknown"] += 1
+        return counts
+
+
+# Convenience function for quick health check
+def extract_trimble_health(
+    host: str,
+    station_id: str,
+    port: int = 8060,
+    receiver_type: str = "NetR9",
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Extract health data from a Trimble receiver.
+
+    Args:
+        host: Receiver hostname or IP address
+        station_id: Station identifier
+        port: HTTP port (default: 8060)
+        receiver_type: Receiver type (NetR9, NetRS, NetR5)
+        username: HTTP Basic Auth username (optional)
+        password: HTTP Basic Auth password (optional)
+
+    Returns:
+        Health data dictionary in standardized format
+    """
+    extractor = TrimbleHTTPExtractor(
+        host=host,
+        station_id=station_id,
+        port=port,
+        receiver_type=receiver_type,
+        username=username,
+        password=password,
+    )
+    return extractor.extract_health_data()
