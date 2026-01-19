@@ -749,6 +749,7 @@ class PolaRX5(BaseReceiver):
                 missing_file_dict=updated_missing_file_dict,
                 max_retries=max_retries,
                 retry_initial_delay=retry_initial_delay,
+                session=session,
             )
 
             downloaded_files_dict = dict(
@@ -919,6 +920,7 @@ class PolaRX5(BaseReceiver):
         missing_file_dict=None,
         max_retries=3,
         retry_initial_delay=0.5,
+        session=None,
     ):
         """Download files via FTP with progress tracking and immediate retries.
 
@@ -931,8 +933,20 @@ class PolaRX5(BaseReceiver):
             missing_file_dict: Dictionary mapping datetimes to (archive_path, filename)
             max_retries: Maximum immediate retries on transient failures (default: 3)
             retry_initial_delay: Initial retry delay in seconds (default: 0.5)
+            session: Session type for file tracking (e.g., '15s_24hr', '1Hz_1hr')
         """
         downloaded_files = []
+
+        # Initialize file tracker for download tracking
+        file_tracker = None
+        try:
+            from ..health import FileTracker
+            file_tracker = FileTracker()
+            if not file_tracker.connect():
+                file_tracker = None
+                self.logger.debug("File tracking disabled (database unavailable)")
+        except ImportError:
+            self.logger.debug("File tracking disabled (psycopg2 not installed)")
 
         # Log station connection details once at the beginning
         self.logger.info(f"Station connection: {self.ip_number}:{self.ip_port}")
@@ -943,9 +957,32 @@ class PolaRX5(BaseReceiver):
         # For immediate archiving, we need to track which datetime each file corresponds to
         # This will be populated from the calling code
 
+        # Helper to find datetime for a file from missing_file_dict
+        def get_file_datetime(fname):
+            """Find datetime key for a file from missing_file_dict."""
+            if not missing_file_dict:
+                return None
+            for dt_key, (arch_path, igs_filename) in missing_file_dict.items():
+                if fname == igs_filename:
+                    return dt_key
+            return None
+
+        # Determine if session is hourly (for file_hour tracking)
+        is_hourly_session = session and "1hr" in session.lower()
+
         # Iterate in the order provided by _sync_missing_files (already sorted by datetime)
         # DO NOT re-sort here - filename-based sorting breaks year boundary ordering
         for file_name, remote_dir in files_dict.items():
+            # Check if file is known to be missing (skip download attempt)
+            if file_tracker and session:
+                file_dt = get_file_datetime(file_name)
+                if file_dt:
+                    file_date = file_dt.date() if hasattr(file_dt, 'date') else file_dt
+                    file_hour = file_dt.hour if is_hourly_session else None
+                    if file_tracker.is_file_missing(self.station_id, session, file_date, file_hour):
+                        self.logger.info(f"⏭️  Skipping {file_name} (known missing, not retrying)")
+                        continue
+
             # Log remote directory path only once per unique path
             if remote_dir not in logged_paths:
                 self.logger.info(f"Remote path: {remote_dir}")
@@ -997,6 +1034,15 @@ class PolaRX5(BaseReceiver):
                             self.logger.error(
                                 f"❌ Remote file {file_name} not found on server"
                             )
+                            # Mark file as missing in tracker
+                            if file_tracker and session:
+                                file_dt = get_file_datetime(file_name)
+                                if file_dt:
+                                    track_date = file_dt.date() if hasattr(file_dt, 'date') else file_dt
+                                    track_hour = file_dt.hour if is_hourly_session else None
+                                    file_tracker.mark_file_missing(
+                                        self.station_id, session, track_date, track_hour, file_name
+                                    )
                             continue  # No local, no remote - nothing to do
                     else:
                         # Connection/server error - can't determine file status
@@ -1043,6 +1089,17 @@ class PolaRX5(BaseReceiver):
                                         else:
                                             self.logger.warning(f"🗑️ Removing zero-size local file: {local_file}")
                                             local_file.unlink()
+                                    else:
+                                        self.logger.error(f"❌ Remote file {file_name} not found on server")
+                                        # Mark file as missing in tracker
+                                        if file_tracker and session:
+                                            file_dt = get_file_datetime(file_name)
+                                            if file_dt:
+                                                track_date = file_dt.date() if hasattr(file_dt, 'date') else file_dt
+                                                track_hour = file_dt.hour if is_hourly_session else None
+                                                file_tracker.mark_file_missing(
+                                                    self.station_id, session, track_date, track_hour, file_name
+                                                )
                                     continue
                                 else:
                                     self.logger.error(f"⚠️  Cannot check remote file after reconnect: {retry_e}")
@@ -1116,6 +1173,17 @@ class PolaRX5(BaseReceiver):
                                 f"Downloaded file validated: {validation_result['compression']} compression, {validation_result['size']} bytes"
                             )
 
+                            # Mark file as downloaded in tracker
+                            if file_tracker and session:
+                                file_dt = get_file_datetime(file_name)
+                                if file_dt:
+                                    track_date = file_dt.date() if hasattr(file_dt, 'date') else file_dt
+                                    track_hour = file_dt.hour if is_hourly_session else None
+                                    file_tracker.mark_file_downloaded(
+                                        self.station_id, session, track_date, track_hour,
+                                        file_name, local_file_size
+                                    )
+
                         # Immediate archiving if enabled
                         if immediate_archive and archive and missing_file_dict:
                             # Find the datetime key for this file by matching the downloaded filename
@@ -1187,6 +1255,18 @@ class PolaRX5(BaseReceiver):
                                 )
                                 continue
 
+                        # Mark file as downloaded in tracker (fallback path)
+                        if file_tracker and session:
+                            file_dt = get_file_datetime(file_name)
+                            if file_dt:
+                                track_date = file_dt.date() if hasattr(file_dt, 'date') else file_dt
+                                track_hour = file_dt.hour if is_hourly_session else None
+                                fallback_size = local_file.stat().st_size if local_file.exists() else None
+                                file_tracker.mark_file_downloaded(
+                                    self.station_id, session, track_date, track_hour,
+                                    file_name, fallback_size
+                                )
+
                         # Immediate archiving if enabled (same logic as progress bar path)
                         if immediate_archive and archive and missing_file_dict:
                             # Find the datetime key for this file by matching the downloaded filename
@@ -1232,6 +1312,10 @@ class PolaRX5(BaseReceiver):
             except Exception as e:
                 self.logger.error(f"Failed to download {file_name}: {e}")
                 continue
+
+        # Close file tracker connection
+        if file_tracker:
+            file_tracker.close()
 
         return downloaded_files
 
