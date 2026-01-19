@@ -51,8 +51,8 @@ def calculate_download_time_range(
     Example:
         >>> # At 2025-10-09 22:41:00 UTC
         >>> start, end = calculate_download_time_range('1Hz_1hr', lookback_periods=24)
-        >>> # start: 2025-10-08 21:00:00 (24 hours before previous complete hour)
-        >>> # end:   2025-10-09 21:00:00 (previous complete hour, not 22:00)
+        >>> # start: 2025-10-08 22:00:00 (24 hours before current hour)
+        >>> # end:   2025-10-09 22:00:00 (current hour start, excludes incomplete 22:00-23:00)
 
         >>> # Daily session
         >>> start, end = calculate_download_time_range('15s_24hr', lookback_periods=7)
@@ -68,12 +68,12 @@ def calculate_download_time_range(
         start_time = end_time - timedelta(days=lookback_periods)
     else:
         # Hourly data - end at START of CURRENT hour (excludes current incomplete hour)
-        # At 17:40, current hour is 17:00-18:00 (incomplete, being written, file named 1700)
-        # Last complete hour is 16:00-17:00 (complete, file named 1600)
-        # end_time = 17:00 means range [start, 17:00) includes files < 17:00 (i.e., the 1600 file)
-        # With -D 24 at 17:40: download from yesterday 17:00 to today 17:00 (24 complete hours)
+        # At 20:55, current hour is 20:00-21:00 (file being written, named 2000)
+        # Previous complete hour is 19:00-20:00 (complete, file named 1900)
+        # end_time = 20:00 means range [start, 20:00) includes files up to 1900
+        # With -D 2 at 20:55: download hours 18 and 19 (both complete)
         current_hour_start = now.replace(minute=0, second=0, microsecond=0)
-        end_time = current_hour_start  # Current hour start (exclusive, so previous hour included)
+        end_time = current_hour_start  # Current hour start (exclusive, so previous hour is last included)
         start_time = end_time - timedelta(hours=lookback_periods)  # Back from end_time
 
     return start_time, end_time
