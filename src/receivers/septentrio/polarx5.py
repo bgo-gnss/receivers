@@ -1743,7 +1743,20 @@ class PolaRX5(BaseReceiver):
         try:
             host = self.ip_number
             if host:
-                extractor = PolaRX5TCPExtractor(host, self.station_id)
+                # Build port configuration from station config
+                receiver_config = self.station_info.get("receiver", {})
+                port_config = {
+                    "ftp": int(receiver_config.get("ftpport", 2160)),
+                    "http": int(receiver_config.get("httpport", 8060)),
+                    "control": int(receiver_config.get("controlport", 28784)),
+                }
+                control_port = port_config["control"]
+
+                extractor = PolaRX5TCPExtractor(
+                    host, self.station_id,
+                    port=control_port,
+                    port_config=port_config
+                )
 
                 if extractor.test_connection():
                     live_data = extractor.extract_health_data()
