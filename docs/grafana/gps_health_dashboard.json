@@ -605,6 +605,8 @@
             "axisColorMode": "text",
             "axisLabel": "Voltage (V)",
             "axisPlacement": "auto",
+            "axisSoftMin": 11,
+            "axisSoftMax": 14,
             "barAlignment": 0,
             "drawStyle": "line",
             "fillOpacity": 10,
@@ -633,10 +635,6 @@
           },
           "decimals": 2,
           "mappings": [],
-          "min": null,
-          "max": null,
-          "softMin": 11,
-          "softMax": 14,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -807,6 +805,8 @@
             "axisColorMode": "text",
             "axisLabel": "Voltage (V)",
             "axisPlacement": "auto",
+            "axisSoftMin": 11,
+            "axisSoftMax": 14,
             "barAlignment": 0,
             "drawStyle": "line",
             "fillOpacity": 20,
@@ -835,10 +835,6 @@
           },
           "decimals": 2,
           "mappings": [],
-          "min": null,
-          "max": null,
-          "softMin": 11,
-          "softMax": 14,
           "thresholds": {
             "mode": "absolute",
             "steps": [
