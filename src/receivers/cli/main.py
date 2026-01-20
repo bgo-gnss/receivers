@@ -377,13 +377,13 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
     receiver_type = health.get("receiver_type", "Unknown")
     overall = health.get("overall_status", "unknown")
 
-    # Get IP from connection data or station config
-    ip = station_config.get("ip", "N/A")
-    connection = health.get("connection", {})
-    for level_data in connection.values():
-        if isinstance(level_data, dict) and "host" in level_data:
-            ip = level_data["host"]
-            break
+    # Get IP from station config (try common locations)
+    ip = (
+        station_config.get("ip")
+        or station_config.get("router", {}).get("ip")
+        or station_config.get("host")
+        or "N/A"
+    )
 
     # Overall status with emoji
     status_emoji = {
@@ -396,15 +396,30 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
     # Header line: station, type, IP, overall status
     print(f"{station_id} ({receiver_type}) @ {ip}  {status_emoji.get(overall, '❓')} {overall.upper()}")
 
-    # Connection status (compact)
-    connection = health.get("connection", {})
-    conn_parts = []
-    for level, data in connection.items():
-        status = data.get("status", "unknown")
-        emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
-        conn_parts.append(f"{level}:{emoji}")
-    if conn_parts:
-        print(f"  Connection: {' '.join(conn_parts)}")
+    # Port status from metrics.ports (aligns with Icinga Receiver status check)
+    metrics = health.get("metrics", {})
+    ports = metrics.get("ports", {})
+    if ports:
+        port_parts = []
+        for port_name in ["ftp", "http", "control"]:
+            port_data = ports.get(port_name, {})
+            if isinstance(port_data, dict) and "open" in port_data:
+                is_open = port_data.get("open", False)
+                port_num = port_data.get("port", "?")
+                emoji = "✅" if is_open else "❌"
+                port_parts.append(f"{port_name}:{port_num} {emoji}")
+        if port_parts:
+            print(f"  Ports: {' | '.join(port_parts)}")
+    else:
+        # Fallback to connection status if no port data
+        connection = health.get("connection", {})
+        conn_parts = []
+        for level, data in connection.items():
+            status = data.get("status", "unknown")
+            emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+            conn_parts.append(f"{level}:{emoji}")
+        if conn_parts:
+            print(f"  Connection: {' '.join(conn_parts)}")
 
     # Key metrics on one line each
     metrics = health.get("metrics", {})
@@ -449,6 +464,49 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
 
         if metric_lines:
             print(f"  Metrics: {' | '.join(metric_lines)}")
+
+        # Satellites (sent to Icinga as "Satellite status")
+        sats = metrics.get("satellites", {})
+        if sats:
+            total = sats.get("total")
+            if total is not None:
+                status = sats.get("status", "ok")
+                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                by_const = sats.get("by_constellation", {})
+                const_str = ", ".join(f"{k}:{v}" for k, v in by_const.items()) if by_const else ""
+                if const_str:
+                    print(f"  Satellites: {emoji} {total} ({const_str})")
+                else:
+                    print(f"  Satellites: {emoji} {total}")
+
+        # Position (sent to Icinga as "Station position")
+        pos = metrics.get("position", {})
+        if pos:
+            fix_mode = pos.get("fix_mode")
+            if fix_mode:
+                status = pos.get("status", "ok")
+                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                sats_used = pos.get("satellites_used", "")
+                lat = pos.get("latitude")
+                lon = pos.get("longitude")
+                height = pos.get("height")
+                pos_str = f"{fix_mode}"
+                if sats_used:
+                    pos_str += f", {sats_used} sats"
+                if lat is not None and lon is not None:
+                    pos_str += f" @ {lat:.5f}, {lon:.5f}"
+                    if height is not None:
+                        pos_str += f", {height:.1f}m"
+                print(f"  Position: {emoji} {pos_str}")
+
+    # Logging status (sent to Icinga as "Logging status")
+    data_quality = health.get("data_quality", {})
+    disk_status = data_quality.get("disk", {})
+    if disk_status:
+        status = disk_status.get("status", "unknown")
+        if status != "unknown":
+            emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+            print(f"  Logging: {emoji} {status}")
 
 
 def cmd_health_timeseries_extract(
