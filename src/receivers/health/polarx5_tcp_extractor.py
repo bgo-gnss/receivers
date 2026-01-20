@@ -574,14 +574,12 @@ class PolaRX5TCPExtractor:
                     continue
 
                 # Determine constellation from SVID ranges (Septentrio convention)
-                # GPS: 1-37
-                # GLONASS: 38-61
-                # Galileo: 71-102
-                # SBAS: 120-140
-                # BeiDou: 141-180
-                # QZSS: 181-187
-                # IRNSS/NavIC: 191-197
                 const_name = self._svid_to_constellation(svid)
+
+                # Skip invalid SVIDs (returns None)
+                if const_name is None:
+                    offset += sb_length
+                    continue
 
                 if const_name not in tracking_counts:
                     tracking_counts[const_name] = 0
@@ -602,37 +600,43 @@ class PolaRX5TCPExtractor:
         return None
 
     @staticmethod
-    def _svid_to_constellation(svid: int) -> str:
+    def _svid_to_constellation(svid: int) -> Optional[str]:
         """Convert Septentrio SVID to constellation name.
 
-        SVID ranges from Septentrio SBF Reference Guide:
+        SVID ranges from Septentrio SBF Reference Guide (v3.6+):
         - GPS: 1-37 (PRN 1-32 + reserved)
-        - GLONASS: 38-61
-        - Galileo: 71-102
-        - SBAS: 120-140
-        - BeiDou: 141-180
-        - QZSS: 181-187
+        - GLONASS: 38-62 (slot 1-24 + reserved)
+        - Galileo: 63-106 (E01-E36, some firmware uses 63-68 for E33-E36)
+        - SBAS: 120-158
+        - BeiDou: 141-180 (legacy) or 201-263 (newer firmware C01-C63)
+        - QZSS: 181-202
         - IRNSS/NavIC: 191-197
+        - Invalid: 0, 255
 
         Args:
             svid: Satellite Vehicle ID from ChannelStatus
 
         Returns:
-            Constellation name string
+            Constellation name string, or None for invalid SVIDs
         """
-        if 1 <= svid <= 37:
+        # Invalid SVIDs
+        if svid == 0 or svid == 255:
+            return None
+        elif 1 <= svid <= 37:
             return "GPS"
-        elif 38 <= svid <= 61:
+        elif 38 <= svid <= 62:
             return "GLONASS"
-        elif 71 <= svid <= 102:
+        elif 63 <= svid <= 106:
             return "Galileo"
-        elif 120 <= svid <= 140:
+        elif 120 <= svid <= 158:
             return "SBAS"
         elif 141 <= svid <= 180:
             return "BeiDou"
-        elif 181 <= svid <= 187:
+        elif 181 <= svid <= 202:
             return "QZSS"
         elif 191 <= svid <= 197:
             return "IRNSS"
+        elif 201 <= svid <= 263:
+            return "BeiDou"
         else:
             return f"Unknown_{svid}"
