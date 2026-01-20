@@ -294,6 +294,10 @@ def cmd_status(args) -> int:
     if not results:
         return 1
 
+    # Send to Icinga if requested
+    if getattr(args, "icinga", False):
+        return _send_status_to_icinga(results, logger)
+
     # JSON output if requested
     if getattr(args, "json", False):
         import json
@@ -308,6 +312,58 @@ def cmd_status(args) -> int:
         _print_quick_status(health, station_config)
 
     return 1 if has_critical else 0
+
+
+def _send_status_to_icinga(
+    results: list,
+    logger: logging.Logger
+) -> int:
+    """Send status check results to Icinga monitoring system.
+
+    Args:
+        results: List of (health_data, station_config) tuples
+        logger: Logger instance
+
+    Returns:
+        0 if all checks sent successfully, 1 otherwise
+    """
+    try:
+        from ..monitoring.icinga_client import IcingaClient
+    except ImportError:
+        logger.error("❌ Icinga client not available. Install requests: pip install requests")
+        return 1
+
+    client = IcingaClient()
+    all_success = True
+    has_critical = False
+
+    for health, station_config in results:
+        station_id = health.get("station_id", "UNKNOWN")
+
+        # Track critical status
+        if health.get("overall_status") == "critical":
+            has_critical = True
+
+        # Send all health-based checks
+        try:
+            responses = client.send_health_from_json(health)
+
+            # Print results
+            print(f"\n=== Icinga results for {station_id} ===")
+            for check_name, response in responses.items():
+                status = "✅" if response.get("success") else "❌"
+                code = response.get("code", "N/A")
+                if response.get("success"):
+                    print(f"{status} {check_name}: sent (HTTP {code})")
+                else:
+                    print(f"{status} {check_name}: FAILED - {response.get('message', 'Unknown error')}")
+                    all_success = False
+
+        except Exception as e:
+            logger.error(f"Failed to send checks for {station_id}: {e}")
+            all_success = False
+
+    return 0 if all_success and not has_critical else 1
 
 
 def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) -> None:
