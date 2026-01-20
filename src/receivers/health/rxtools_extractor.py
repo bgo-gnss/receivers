@@ -15,12 +15,12 @@ Health Messages Extracted (SBF blocks):
 """
 
 import logging
-import subprocess
-import shutil
-from pathlib import Path
-from typing import Dict, Any, Optional
-from datetime import datetime
 import re
+import shutil
+import subprocess
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 
 class RxToolsNotFoundError(Exception):
@@ -41,6 +41,8 @@ class RxToolsExtractor:
         "NTRIPServerStatus": "NTRIPServerStatus",
         "NTRIPClientStatus": "NTRIPClientStatus",
         "ReceiverSetup1": "ReceiverSetup",
+        "PVTGeodetic2": "Position",  # Position, accuracy, satellites used
+        "ChannelStatus": "Satellites",  # Satellite tracking per channel
     }
 
     def __init__(self, station_id: str = "UNKNOWN"):
@@ -228,6 +230,14 @@ class RxToolsExtractor:
                 elif block_name == "ReceiverSetup1":
                     health_data["receiver_specific"].update(
                         self._parse_receiver_setup(ascii_file)
+                    )
+                elif block_name == "PVTGeodetic2":
+                    health_data["metrics"].update(
+                        self._parse_pvt_geodetic(ascii_file)
+                    )
+                elif block_name == "ChannelStatus":
+                    health_data["metrics"].update(
+                        self._parse_channel_status(ascii_file)
                     )
 
             except Exception as e:
@@ -548,6 +558,299 @@ class RxToolsExtractor:
             self.logger.error(f"Error parsing ReceiverSetup: {e}")
 
         return setup_data
+
+    def _parse_pvt_geodetic(self, ascii_file: Path) -> Dict[str, Any]:
+        """Parse PVTGeodetic2 block from bin2asc CSV output.
+
+        CSV columns include:
+            TOW [s], WNc [w], Mode, Error, Latitude [deg], Longitude [deg],
+            Height [m], Undulation [m], ..., NrSV, ..., HAccuracy [m], VAccuracy [m]
+
+        Returns:
+            Dictionary with position metrics matching TCP extractor format
+        """
+        import math
+
+        position_data = {}
+
+        try:
+            rows = self._read_csv_file(ascii_file)
+            if not rows:
+                return position_data
+
+            # Get the last row (most recent reading)
+            last_row = rows[-1]
+
+            # Extract latitude (may be in radians or degrees)
+            lat = None
+            for key in ["Latitude [rad]", "Latitude [deg]", "Latitude"]:
+                if key in last_row:
+                    try:
+                        lat = float(last_row[key])
+                        if math.isnan(lat):
+                            lat = None
+                            break
+                        # Convert radians to degrees if needed
+                        if "[rad]" in key or abs(lat) < math.pi:
+                            lat = math.degrees(lat)
+                        if abs(lat) > 90:
+                            lat = None
+                        break
+                    except (ValueError, TypeError):
+                        pass
+
+            # Extract longitude (may be in radians or degrees)
+            lon = None
+            for key in ["Longitude [rad]", "Longitude [deg]", "Longitude"]:
+                if key in last_row:
+                    try:
+                        lon = float(last_row[key])
+                        if math.isnan(lon):
+                            lon = None
+                            break
+                        # Convert radians to degrees if needed
+                        if "[rad]" in key or abs(lon) < math.pi:
+                            lon = math.degrees(lon)
+                        if abs(lon) > 180:
+                            lon = None
+                        break
+                    except (ValueError, TypeError):
+                        pass
+
+            # Extract height
+            height = None
+            for key in ["Height [m]", "Height"]:
+                if key in last_row:
+                    try:
+                        height = float(last_row[key])
+                        if math.isnan(height):
+                            height = None
+                        break
+                    except (ValueError, TypeError):
+                        pass
+
+            # Extract horizontal accuracy
+            h_accuracy = None
+            for key in ["HAccuracy [m]", "HAccuracy"]:
+                if key in last_row:
+                    try:
+                        val = float(last_row[key])
+                        if not math.isnan(val) and val < 65535:
+                            h_accuracy = round(val, 3)
+                        break
+                    except (ValueError, TypeError):
+                        pass
+
+            # Extract vertical accuracy
+            v_accuracy = None
+            for key in ["VAccuracy [m]", "VAccuracy"]:
+                if key in last_row:
+                    try:
+                        val = float(last_row[key])
+                        if not math.isnan(val) and val < 65535:
+                            v_accuracy = round(val, 3)
+                        break
+                    except (ValueError, TypeError):
+                        pass
+
+            # Extract number of satellites
+            nr_sv = None
+            for key in ["NrSV", "NrSv"]:
+                if key in last_row:
+                    try:
+                        nr_sv = int(last_row[key])
+                        break
+                    except (ValueError, TypeError):
+                        pass
+
+            # Extract fix mode
+            fix_mode = None
+            mode_names = {
+                0: "no_fix",
+                1: "standalone",
+                2: "dgps",
+                3: "fixed",
+                4: "float",
+                5: "sbas",
+                6: "ppp"
+            }
+            if "Mode" in last_row:
+                try:
+                    mode_val = int(last_row["Mode"])
+                    fix_mode = mode_names.get(mode_val, f"unknown_{mode_val}")
+                except (ValueError, TypeError):
+                    pass
+
+            # Build position dict matching TCP extractor format
+            if lat is not None and lon is not None:
+                position_data["position"] = {
+                    "latitude": round(lat, 8),
+                    "longitude": round(lon, 8),
+                    "height": round(height, 3) if height is not None else None,
+                    "h_accuracy_m": h_accuracy,
+                    "v_accuracy_m": v_accuracy,
+                    "satellites_used": nr_sv,
+                    "fix_mode": fix_mode,
+                    "status": "ok" if fix_mode and fix_mode != "no_fix" else "warning"
+                }
+
+        except Exception as e:
+            self.logger.error(f"Error parsing PVTGeodetic2: {e}")
+
+        return position_data
+
+    def _parse_channel_status(self, ascii_file: Path) -> Dict[str, Any]:
+        """Parse ChannelStatus block from bin2asc CSV output.
+
+        Aggregates satellite counts by constellation.
+
+        CSV columns include:
+            TOW [s], WNc [w], SVID, FreqNr, ...
+
+        SVID format can be:
+            - Numeric (from TCP): 1-37 GPS, 38-61 GLONASS, etc.
+            - Alphanumeric (from bin2asc): G20, R08, E11, C14, etc.
+
+        Returns:
+            Dictionary with satellite counts matching TCP extractor format:
+            {"satellites": {"total": N, "by_constellation": {...}, "status": "ok"}}
+        """
+        satellite_data = {}
+
+        try:
+            rows = self._read_csv_file(ascii_file)
+            if not rows:
+                return satellite_data
+
+            # Count unique SVIDs by constellation
+            # Use a set to avoid double-counting satellites across multiple rows
+            svids_seen: set = set()
+            constellation_counts: Dict[str, int] = {}
+
+            for row in rows:
+                svid_str = None
+                for key in ["SVID", "Svid"]:
+                    if key in row and row[key]:
+                        svid_str = row[key].strip()
+                        break
+
+                if not svid_str or svid_str in svids_seen:
+                    continue
+
+                # Skip invalid entries like "Rxx"
+                if "xx" in svid_str.lower():
+                    continue
+
+                svids_seen.add(svid_str)
+
+                # Determine constellation from SVID format
+                const_name = self._svid_str_to_constellation(svid_str)
+                if const_name:
+                    if const_name not in constellation_counts:
+                        constellation_counts[const_name] = 0
+                    constellation_counts[const_name] += 1
+
+            total = sum(constellation_counts.values())
+
+            satellite_data["satellites"] = {
+                "total": total,
+                "by_constellation": constellation_counts,
+                "status": "ok" if total >= 4 else "warning"
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error parsing ChannelStatus: {e}")
+
+        return satellite_data
+
+    @staticmethod
+    def _svid_str_to_constellation(svid_str: str) -> Optional[str]:
+        """Convert SVID string to constellation name.
+
+        Handles both formats:
+            - Alphanumeric (bin2asc): G20, R08, E11, C14, S126, J01, I01
+            - Numeric (TCP binary): 1-37 GPS, 38-61 GLONASS, etc.
+
+        Args:
+            svid_str: SVID string from ChannelStatus
+
+        Returns:
+            Constellation name or None if invalid
+        """
+        if not svid_str:
+            return None
+
+        # Try alphanumeric format first (G20, R08, E11, etc.)
+        if svid_str[0].isalpha():
+            prefix = svid_str[0].upper()
+            const_map = {
+                "G": "GPS",
+                "R": "GLONASS",
+                "E": "Galileo",
+                "C": "BeiDou",
+                "S": "SBAS",
+                "J": "QZSS",
+                "I": "IRNSS",
+            }
+            return const_map.get(prefix)
+
+        # Try numeric format (from TCP binary extraction)
+        try:
+            svid = int(svid_str)
+            if 1 <= svid <= 37:
+                return "GPS"
+            elif 38 <= svid <= 61:
+                return "GLONASS"
+            elif 71 <= svid <= 102:
+                return "Galileo"
+            elif 120 <= svid <= 140:
+                return "SBAS"
+            elif 141 <= svid <= 180:
+                return "BeiDou"
+            elif 181 <= svid <= 187:
+                return "QZSS"
+            elif 191 <= svid <= 197:
+                return "IRNSS"
+        except (ValueError, TypeError):
+            pass
+
+        return None
+
+    @staticmethod
+    def _svid_to_constellation(svid: int) -> str:
+        """Convert Septentrio SVID to constellation name.
+
+        SVID ranges from Septentrio SBF Reference Guide:
+        - GPS: 1-37 (PRN 1-32 + reserved)
+        - GLONASS: 38-61
+        - Galileo: 71-102
+        - SBAS: 120-140
+        - BeiDou: 141-180
+        - QZSS: 181-187
+        - IRNSS/NavIC: 191-197
+
+        Args:
+            svid: Satellite Vehicle ID from ChannelStatus
+
+        Returns:
+            Constellation name string
+        """
+        if 1 <= svid <= 37:
+            return "GPS"
+        elif 38 <= svid <= 61:
+            return "GLONASS"
+        elif 71 <= svid <= 102:
+            return "Galileo"
+        elif 120 <= svid <= 140:
+            return "SBAS"
+        elif 141 <= svid <= 180:
+            return "BeiDou"
+        elif 181 <= svid <= 187:
+            return "QZSS"
+        elif 191 <= svid <= 197:
+            return "IRNSS"
+        else:
+            return f"Unknown_{svid}"
 
     # Status check helper methods
 
