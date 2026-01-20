@@ -22,7 +22,7 @@ import socket
 import struct
 import time
 from datetime import datetime, timezone
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class PolaRX5TCPExtractor:
@@ -36,6 +36,7 @@ class PolaRX5TCPExtractor:
     BLOCK_RECEIVER_STATUS = 4014
     BLOCK_DISK_STATUS = 4059
     BLOCK_PVT_GEODETIC2 = 4007
+    BLOCK_PVT_SAT_CARTESIAN = 4008  # Satellites used in PVT solution
     BLOCK_CHANNEL_STATUS = 4013
     BLOCK_QUALITY_IND = 4082
 
@@ -524,78 +525,74 @@ class PolaRX5TCPExtractor:
         return None
 
     def _query_satellite_tracking(self) -> Optional[Dict[str, Any]]:
-        """Query ChannelStatus SBF block for satellite tracking info.
+        """Query PVTSatCartesian SBF block for satellites used in position solution.
+
+        Uses PVTSatCartesian (4008) instead of ChannelStatus (4013) because
+        ChannelStatus reports ALL allocated channels including disabled constellations,
+        while PVTSatCartesian reports only satellites actually used in the PVT solution.
+        This matches what the receiver's web interface displays.
 
         Returns:
             Dictionary with satellite counts per constellation or None on failure
         """
-        sbf_data = self._send_sbf_request("ChannelStatus")
+        sbf_data = self._send_sbf_request("PVTSatCartesian")
         if not sbf_data:
             return None
 
         try:
             msg_id, length = self._parse_sbf_header(sbf_data)
-            if msg_id != self.BLOCK_CHANNEL_STATUS:
-                self.logger.warning(f"Unexpected block ID {msg_id}, expected {self.BLOCK_CHANNEL_STATUS}")
+            if msg_id != self.BLOCK_PVT_SAT_CARTESIAN:
+                self.logger.warning(f"Unexpected block ID {msg_id}, expected {self.BLOCK_PVT_SAT_CARTESIAN}")
                 return None
 
-            # ChannelStatus structure:
+            # PVTSatCartesian structure:
             # Bytes 0-7: SBF header
             # Bytes 8-11: TOW
             # Bytes 12-13: WNc
-            # Byte 14: N (number of channels)
-            # Byte 15: SBLength (size of each ChannelStateInfo)
-            # Followed by N ChannelStateInfo sub-blocks
+            # Byte 14: N (number of satellites used in PVT solution)
+            # Byte 15: SBLength (size of each SatInfo sub-block)
+            # Followed by N SatInfo sub-blocks
 
             if length < 16 or len(sbf_data) < 16:
                 return None
 
-            n_channels = sbf_data[14]
+            n_satellites = sbf_data[14]
             sb_length = sbf_data[15]
 
-            if sb_length == 0 or n_channels == 0:
-                return {"total": 0, "by_constellation": {}}
+            if n_satellites == 0:
+                return {"total": 0, "by_constellation": {}, "status": "warning"}
 
-            # Count satellites by constellation (using SVID ranges from Septentrio SBF Reference)
+            # Count satellites by constellation
             tracking_counts: Dict[str, int] = {}
-            total_tracked = 0
 
-            offset = 16  # Start of first ChannelStateInfo
+            offset = 16  # Start of first SatInfo
 
-            for _ in range(n_channels):
+            for _ in range(n_satellites):
                 if offset + sb_length > len(sbf_data):
                     break
 
-                # ChannelStateInfo structure:
+                # SatInfo structure:
                 # Byte 0: SVID (satellite vehicle ID)
                 svid = sbf_data[offset]
-                if svid == 0:  # No satellite on this channel
-                    offset += sb_length
-                    continue
 
-                # Determine constellation from SVID ranges (Septentrio convention)
+                # Determine constellation from SVID ranges
                 const_name = self._svid_to_constellation(svid)
 
-                # Skip invalid SVIDs (returns None)
-                if const_name is None:
-                    offset += sb_length
-                    continue
-
-                if const_name not in tracking_counts:
-                    tracking_counts[const_name] = 0
-                tracking_counts[const_name] += 1
-                total_tracked += 1
+                if const_name is not None:
+                    if const_name not in tracking_counts:
+                        tracking_counts[const_name] = 0
+                    tracking_counts[const_name] += 1
 
                 offset += sb_length
 
             return {
-                "total": total_tracked,
+                "total": n_satellites,
                 "by_constellation": tracking_counts,
-                "status": "ok" if total_tracked >= 4 else "warning"
+                "status": "ok" if n_satellites >= 4 else "warning"
             }
 
         except Exception as e:
-            self.logger.error(f"Error parsing ChannelStatus: {e}")
+            self.logger.error(f"Error parsing PVTSatCartesian: {e}")
 
         return None
 
