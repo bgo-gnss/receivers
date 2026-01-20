@@ -1800,15 +1800,35 @@ class PolaRX5(BaseReceiver):
                     port_config=port_config
                 )
 
-                if extractor.test_connection():
+                # Always check port status first (ftp, http, control independently)
+                port_status = extractor._check_port_status()
+                connection_data = {
+                    "tcp": {"status": "ok", "host": host},
+                }
+                # Add individual port status to metrics (will be included later)
+                port_metrics = port_status
+
+                # Only try full data extraction if control port is open
+                control_ok = port_status.get("control", {}).get("open", False)
+                if control_ok:
                     live_data = extractor.extract_health_data()
 
                     if live_data.get("metrics"):
                         metrics = live_data["metrics"]
+                        # Merge port status into metrics
+                        if "ports" not in metrics:
+                            metrics["ports"] = port_status
                         data_quality = live_data.get("data_quality")
-                        connection_data = {"tcp": {"status": "ok", "host": host}}
                         extraction_source = "tcp_live"
                         self.logger.info(f"Extracted live health data via TCP from {host}")
+                else:
+                    # Control port down - report port status but no live data
+                    metrics = {"ports": port_status}
+                    extraction_source = "port_check_only"
+                    self.logger.warning(
+                        f"Control port {control_port} not responding on {host} - "
+                        f"cannot extract live data"
+                    )
 
         except Exception as e:
             self.logger.debug(f"TCP health extraction failed: {e}")

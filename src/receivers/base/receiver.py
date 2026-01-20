@@ -169,9 +169,15 @@ class BaseReceiver(ABC):
 
         # Check metrics statuses if provided
         if metrics:
-            for metric_data in metrics.values():
-                if isinstance(metric_data, dict) and "status" in metric_data:
-                    statuses.append(HealthStatus(metric_data["status"]))
+            for metric_name, metric_data in metrics.items():
+                if isinstance(metric_data, dict):
+                    # Handle nested 'ports' structure specially
+                    if metric_name == "ports":
+                        for port_name, port_data in metric_data.items():
+                            if isinstance(port_data, dict) and "status" in port_data:
+                                statuses.append(HealthStatus(port_data["status"]))
+                    elif "status" in metric_data:
+                        statuses.append(HealthStatus(metric_data["status"]))
 
         # Determine overall status (worst status wins)
         if HealthStatus.CRITICAL in statuses:

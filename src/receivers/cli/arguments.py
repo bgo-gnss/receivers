@@ -252,6 +252,12 @@ Examples:
         help='Save health data to database'
     )
 
+    parser.add_argument(
+        '--icinga',
+        action='store_true',
+        help='Send check results to Icinga monitoring system'
+    )
+
     add_verbose_flag(parser)
 
     return parser

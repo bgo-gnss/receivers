@@ -287,6 +287,567 @@ class IcingaClient:
 
         return self.send_check_result(result)
 
+    def send_temperature_check(
+        self,
+        station: str,
+        temperature: Optional[float],
+        unit: str = "C",
+        warn_threshold: float = 50.0,
+        crit_threshold: float = 60.0
+    ) -> Dict[str, Any]:
+        """Send a Station temp check result.
+
+        Args:
+            station: Station ID (e.g., 'THOB')
+            temperature: Temperature value (None if unavailable)
+            unit: Temperature unit (default: 'C')
+            warn_threshold: Warning threshold (default: 50°C)
+            crit_threshold: Critical threshold (default: 60°C)
+
+        Returns:
+            API response dict
+        """
+        if temperature is None:
+            exit_status = EXIT_UNKNOWN
+            message = f"❓ Station temp UNKNOWN - {station} temperature unavailable"
+            performance_data = ""
+        elif temperature >= crit_threshold:
+            exit_status = EXIT_CRITICAL
+            message = f"❌ Station temp CRITICAL - {station}: {temperature}°{unit} (>={crit_threshold}°{unit})"
+            performance_data = f"temp={temperature}{unit};{warn_threshold};{crit_threshold};0;80"
+        elif temperature >= warn_threshold:
+            exit_status = EXIT_WARNING
+            message = f"⚠️  Station temp WARNING - {station}: {temperature}°{unit} (>={warn_threshold}°{unit})"
+            performance_data = f"temp={temperature}{unit};{warn_threshold};{crit_threshold};0;80"
+        else:
+            exit_status = EXIT_OK
+            message = f"✅ Station temp OK - {station}: {temperature}°{unit}"
+            performance_data = f"temp={temperature}{unit};{warn_threshold};{crit_threshold};0;80"
+
+        result = CheckResult(
+            station=station,
+            check_name="Station temp",
+            exit_status=exit_status,
+            plugin_output=message,
+            performance_data=performance_data,
+            check_source=self.check_source
+        )
+
+        return self.send_check_result(result)
+
+    def send_voltage_check(
+        self,
+        station: str,
+        voltage: Optional[float],
+        warn_low: float = 12.0,
+        crit_low: float = 11.0,
+        warn_high: float = 15.0,
+        crit_high: float = 16.0
+    ) -> Dict[str, Any]:
+        """Send a Station volt check result.
+
+        Args:
+            station: Station ID (e.g., 'THOB')
+            voltage: Voltage value in volts (None if unavailable)
+            warn_low: Low warning threshold (default: 12.0V)
+            crit_low: Low critical threshold (default: 11.0V)
+            warn_high: High warning threshold (default: 15.0V)
+            crit_high: High critical threshold (default: 16.0V)
+
+        Returns:
+            API response dict
+        """
+        if voltage is None:
+            exit_status = EXIT_UNKNOWN
+            message = f"❓ Station volt UNKNOWN - {station} voltage unavailable"
+            performance_data = ""
+        elif voltage <= crit_low or voltage >= crit_high:
+            exit_status = EXIT_CRITICAL
+            if voltage <= crit_low:
+                message = f"❌ Station volt CRITICAL - {station}: {voltage:.1f}V (LOW <={crit_low}V)"
+            else:
+                message = f"❌ Station volt CRITICAL - {station}: {voltage:.1f}V (HIGH >={crit_high}V)"
+            performance_data = f"voltage={voltage}V;{warn_low}:{warn_high};{crit_low}:{crit_high};10;18"
+        elif voltage <= warn_low or voltage >= warn_high:
+            exit_status = EXIT_WARNING
+            if voltage <= warn_low:
+                message = f"⚠️  Station volt WARNING - {station}: {voltage:.1f}V (LOW <={warn_low}V)"
+            else:
+                message = f"⚠️  Station volt WARNING - {station}: {voltage:.1f}V (HIGH >={warn_high}V)"
+            performance_data = f"voltage={voltage}V;{warn_low}:{warn_high};{crit_low}:{crit_high};10;18"
+        else:
+            exit_status = EXIT_OK
+            message = f"✅ Station volt OK - {station}: {voltage:.1f}V"
+            performance_data = f"voltage={voltage}V;{warn_low}:{warn_high};{crit_low}:{crit_high};10;18"
+
+        result = CheckResult(
+            station=station,
+            check_name="Station volt",
+            exit_status=exit_status,
+            plugin_output=message,
+            performance_data=performance_data,
+            check_source=self.check_source
+        )
+
+        return self.send_check_result(result)
+
+    def send_satellite_check(
+        self,
+        station: str,
+        total_satellites: Optional[int],
+        by_constellation: Optional[Dict[str, int]] = None,
+        warn_threshold: int = 8,
+        crit_threshold: int = 4
+    ) -> Dict[str, Any]:
+        """Send a Satellite status check result.
+
+        Args:
+            station: Station ID (e.g., 'THOB')
+            total_satellites: Total number of satellites tracked
+            by_constellation: Dict with counts per constellation (GPS, GLONASS, etc.)
+            warn_threshold: Warning if below this count (default: 8)
+            crit_threshold: Critical if below this count (default: 4)
+
+        Returns:
+            API response dict
+        """
+        if total_satellites is None:
+            exit_status = EXIT_UNKNOWN
+            message = f"❓ Satellite status UNKNOWN - {station} satellite data unavailable"
+            performance_data = ""
+        elif total_satellites <= crit_threshold:
+            exit_status = EXIT_CRITICAL
+            message = f"❌ Satellite status CRITICAL - {station}: {total_satellites} satellites (<={crit_threshold})"
+            performance_data = f"satellites={total_satellites};{warn_threshold}:;{crit_threshold}:;0;40"
+        elif total_satellites <= warn_threshold:
+            exit_status = EXIT_WARNING
+            message = f"⚠️  Satellite status WARNING - {station}: {total_satellites} satellites (<={warn_threshold})"
+            performance_data = f"satellites={total_satellites};{warn_threshold}:;{crit_threshold}:;0;40"
+        else:
+            exit_status = EXIT_OK
+            message = f"✅ Satellite status OK - {station}: {total_satellites} satellites"
+            performance_data = f"satellites={total_satellites};{warn_threshold}:;{crit_threshold}:;0;40"
+
+        # Add constellation breakdown to performance data
+        if by_constellation:
+            for const, count in by_constellation.items():
+                performance_data += f" {const.lower()}={count};;;0;20"
+
+        # Add constellation info to message
+        if by_constellation and exit_status != EXIT_UNKNOWN:
+            const_str = ", ".join(f"{k}:{v}" for k, v in by_constellation.items())
+            message += f" ({const_str})"
+
+        result = CheckResult(
+            station=station,
+            check_name="Satellite status",
+            exit_status=exit_status,
+            plugin_output=message,
+            performance_data=performance_data,
+            check_source=self.check_source
+        )
+
+        return self.send_check_result(result)
+
+    def send_position_check(
+        self,
+        station: str,
+        fix_mode: Optional[str],
+        satellites_used: Optional[int] = None,
+        h_accuracy_m: Optional[float] = None,
+        v_accuracy_m: Optional[float] = None,
+        latitude: Optional[float] = None,
+        longitude: Optional[float] = None,
+        height: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """Send a Station position check result.
+
+        Args:
+            station: Station ID (e.g., 'THOB')
+            fix_mode: Position fix mode ('fixed', 'float', 'single', 'none', etc.)
+            satellites_used: Number of satellites used in solution
+            h_accuracy_m: Horizontal accuracy in meters
+            v_accuracy_m: Vertical accuracy in meters
+            latitude: Latitude in degrees
+            longitude: Longitude in degrees
+            height: Height in meters
+
+        Returns:
+            API response dict
+        """
+        # Determine status based on fix_mode
+        good_fix_modes = {'fixed', 'rtk_fixed', '3d', '3d_fix'}
+        warn_fix_modes = {'float', 'rtk_float', 'dgps', 'single', '2d'}
+
+        if fix_mode is None:
+            exit_status = EXIT_UNKNOWN
+            message = f"❓ Station position UNKNOWN - {station} position data unavailable"
+            performance_data = ""
+        elif fix_mode.lower() in good_fix_modes:
+            exit_status = EXIT_OK
+            message = f"✅ Station position OK - {station}: {fix_mode}"
+            performance_data = f"fix_mode=1;;;0;1"  # 1 = good fix
+        elif fix_mode.lower() in warn_fix_modes:
+            exit_status = EXIT_WARNING
+            message = f"⚠️  Station position WARNING - {station}: {fix_mode} (not fixed)"
+            performance_data = f"fix_mode=0.5;;;0;1"  # 0.5 = degraded
+        elif fix_mode.lower() in {'none', 'no_fix', 'invalid'}:
+            exit_status = EXIT_CRITICAL
+            message = f"❌ Station position CRITICAL - {station}: no fix"
+            performance_data = f"fix_mode=0;;;0;1"  # 0 = no fix
+        else:
+            exit_status = EXIT_WARNING
+            message = f"⚠️  Station position WARNING - {station}: {fix_mode} (unknown mode)"
+            performance_data = f"fix_mode=0.5;;;0;1"
+
+        # Add satellites to performance data and message
+        if satellites_used is not None:
+            performance_data += f" sats_used={satellites_used};;;0;30"
+            if exit_status != EXIT_UNKNOWN:
+                message += f", {satellites_used} sats"
+
+        # Add accuracy to performance data
+        if h_accuracy_m is not None:
+            performance_data += f" h_acc={h_accuracy_m:.3f}m;;;0;10"
+        if v_accuracy_m is not None:
+            performance_data += f" v_acc={v_accuracy_m:.3f}m;;;0;20"
+
+        # Add position to message if available
+        if latitude is not None and longitude is not None and exit_status != EXIT_UNKNOWN:
+            message += f" @ {latitude:.5f}, {longitude:.5f}"
+            if height is not None:
+                message += f", {height:.1f}m"
+
+        result = CheckResult(
+            station=station,
+            check_name="Station position",
+            exit_status=exit_status,
+            plugin_output=message,
+            performance_data=performance_data,
+            check_source=self.check_source
+        )
+
+        return self.send_check_result(result)
+
+    def send_logging_check(
+        self,
+        station: str,
+        disk_status: Optional[str],
+        logging_active: bool = True,
+        disk_usage_percent: Optional[float] = None,
+        warn_disk: float = 80.0,
+        crit_disk: float = 90.0
+    ) -> Dict[str, Any]:
+        """Send a Logging status check result.
+
+        Args:
+            station: Station ID (e.g., 'THOB')
+            disk_status: Disk/logging status ('ok', 'warning', 'critical', 'error')
+            logging_active: Whether logging is currently active
+            disk_usage_percent: Disk usage percentage
+            warn_disk: Warning threshold for disk usage (default: 80%)
+            crit_disk: Critical threshold for disk usage (default: 90%)
+
+        Returns:
+            API response dict
+        """
+        if disk_status is None:
+            exit_status = EXIT_UNKNOWN
+            message = f"❓ Logging status UNKNOWN - {station} logging data unavailable"
+            performance_data = ""
+        elif not logging_active:
+            exit_status = EXIT_CRITICAL
+            message = f"❌ Logging status CRITICAL - {station}: logging INACTIVE"
+            performance_data = "logging=0;;;0;1"
+        elif disk_status.lower() in {'critical', 'error', 'full'}:
+            exit_status = EXIT_CRITICAL
+            message = f"❌ Logging status CRITICAL - {station}: disk {disk_status}"
+            performance_data = "logging=1;;;0;1"
+        elif disk_status.lower() in {'warning', 'warn'}:
+            exit_status = EXIT_WARNING
+            message = f"⚠️  Logging status WARNING - {station}: disk {disk_status}"
+            performance_data = "logging=1;;;0;1"
+        elif disk_status.lower() in {'ok', 'healthy', 'good'}:
+            exit_status = EXIT_OK
+            message = f"✅ Logging status OK - {station}: logging active"
+            performance_data = "logging=1;;;0;1"
+        else:
+            exit_status = EXIT_WARNING
+            message = f"⚠️  Logging status WARNING - {station}: unknown status '{disk_status}'"
+            performance_data = "logging=1;;;0;1"
+
+        # Add disk usage to performance data
+        if disk_usage_percent is not None:
+            performance_data += f" disk_used={disk_usage_percent}%;{warn_disk};{crit_disk};0;100"
+            if exit_status != EXIT_UNKNOWN:
+                message += f", disk {disk_usage_percent:.1f}%"
+
+        result = CheckResult(
+            station=station,
+            check_name="Logging status",
+            exit_status=exit_status,
+            plugin_output=message,
+            performance_data=performance_data,
+            check_source=self.check_source
+        )
+
+        return self.send_check_result(result)
+
+    def send_receiver_status_check(
+        self,
+        station: str,
+        ports_status: Optional[Dict[str, Dict[str, Any]]],
+        receiver_type: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Send a Receiver status check result.
+
+        Critical vs Warning ports by receiver type:
+        - PolaRX5: FTP (2160) or HTTP (8060) down = CRITICAL, control (28784) = WARNING
+        - Trimble (NetRS/NetR9/NetR5): HTTP down = CRITICAL
+        - Default: Any port down = WARNING, all ports down = CRITICAL
+
+        Args:
+            station: Station ID (e.g., 'THOB')
+            ports_status: Dict with port status info (ftp, http, control)
+                          Each port: {'port': int, 'open': bool, 'status': str}
+            receiver_type: Receiver type ('PolaRX5', 'NetRS', 'NetR9', etc.)
+
+        Returns:
+            API response dict
+        """
+        if ports_status is None:
+            exit_status = EXIT_UNKNOWN
+            message = f"❓ Receiver status UNKNOWN - {station} port data unavailable"
+            performance_data = ""
+        else:
+            # Define critical ports by receiver type
+            receiver_type_upper = (receiver_type or "").upper()
+            if "POLARX" in receiver_type_upper:
+                # PolaRX5: FTP and HTTP are critical for data downloads
+                critical_ports = {'ftp', 'http'}
+            elif any(t in receiver_type_upper for t in ['NETR', 'NETRS', 'NETR9', 'NETR5']):
+                # Trimble: HTTP is critical
+                critical_ports = {'http'}
+            else:
+                # Default: all ports are critical
+                critical_ports = {'ftp', 'http', 'control'}
+
+            # Categorize ports
+            ports_open = []
+            ports_closed_critical = []
+            ports_closed_warning = []
+            perf_parts = []
+
+            for port_name, port_info in ports_status.items():
+                if port_name == 'overall_status':
+                    continue
+                is_open = port_info.get('open', False)
+                port_num = port_info.get('port', 0)
+                port_str = f"{port_name}:{port_num}"
+
+                if is_open:
+                    ports_open.append(port_str)
+                    perf_parts.append(f"{port_name}=1;;;0;1")
+                else:
+                    perf_parts.append(f"{port_name}=0;;;0;1")
+                    if port_name in critical_ports:
+                        ports_closed_critical.append(port_str)
+                    else:
+                        ports_closed_warning.append(port_str)
+
+            performance_data = " ".join(perf_parts)
+
+            # Determine status based on critical vs warning ports
+            total_ports = len(ports_open) + len(ports_closed_critical) + len(ports_closed_warning)
+
+            if len(ports_closed_critical) == 0 and len(ports_closed_warning) == 0:
+                # All ports OK
+                exit_status = EXIT_OK
+                message = f"✅ Receiver status OK - {station}: all {total_ports} ports responding"
+            elif len(ports_closed_critical) > 0:
+                # Critical port(s) down
+                exit_status = EXIT_CRITICAL
+                closed_str = ", ".join(ports_closed_critical)
+                message = f"❌ Receiver status CRITICAL - {station}: {closed_str} not responding"
+            else:
+                # Only non-critical port(s) down (e.g., control port)
+                exit_status = EXIT_WARNING
+                closed_str = ", ".join(ports_closed_warning)
+                message = f"⚠️  Receiver status WARNING - {station}: {closed_str} not responding"
+
+            # Add open ports to message
+            if ports_open and exit_status != EXIT_CRITICAL:
+                open_str = ", ".join(ports_open)
+                message += f" (open: {open_str})"
+
+        result = CheckResult(
+            station=station,
+            check_name="Receiver status",
+            exit_status=exit_status,
+            plugin_output=message,
+            performance_data=performance_data,
+            check_source=self.check_source
+        )
+
+        return self.send_check_result(result)
+
+    def send_gps_ping_from_json(
+        self,
+        station: str,
+        health_data: Optional[Dict[str, Any]],
+        connection_error: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Send a GPS Ping check result - simple connectivity check.
+
+        GPS Ping only checks if the host is reachable (any port responds).
+        It does NOT check receiver status or overall health - that's for
+        the Receiver status check.
+
+        Args:
+            station: Station ID (e.g., 'THOB')
+            health_data: Health data dict if successful, None if failed
+            connection_error: Error message if connection failed
+
+        Returns:
+            API response dict
+        """
+        if health_data is None:
+            # No health data at all - host unreachable
+            exit_status = EXIT_CRITICAL
+            message = f"❌ GPS Ping CRITICAL - {station} unreachable"
+            if connection_error:
+                message += f": {connection_error}"
+            performance_data = "reachable=0;;;0;1"
+        else:
+            # Check if we have any connection to the host
+            connection = health_data.get('connection', {})
+            tcp_status = connection.get('tcp', {}).get('status', 'unknown')
+            host = connection.get('tcp', {}).get('host')
+
+            # Also check if any port responded (from metrics.ports)
+            metrics = health_data.get('metrics', {})
+            ports = metrics.get('ports', {})
+            any_port_open = any(
+                p.get('open', False) for p in ports.values()
+                if isinstance(p, dict)
+            )
+
+            if tcp_status == 'ok' or any_port_open:
+                # Host is reachable - GPS Ping is OK
+                exit_status = EXIT_OK
+                message = f"✅ GPS Ping OK - {station} responding"
+                performance_data = "reachable=1;;;0;1"
+                if host:
+                    message += f" @ {host}"
+            else:
+                # No connection at all
+                exit_status = EXIT_CRITICAL
+                message = f"❌ GPS Ping CRITICAL - {station} not responding"
+                performance_data = "reachable=0;;;0;1"
+
+        result = CheckResult(
+            station=station,
+            check_name="GPS Ping",
+            exit_status=exit_status,
+            plugin_output=message,
+            performance_data=performance_data,
+            check_source=self.check_source
+        )
+
+        return self.send_check_result(result)
+
+    def send_health_from_json(
+        self,
+        health_data: Dict[str, Any],
+        checks: Optional[list] = None
+    ) -> Dict[str, Dict[str, Any]]:
+        """Send multiple check results from health JSON data.
+
+        Extracts metrics from health JSON and sends the appropriate checks.
+
+        Args:
+            health_data: Health data dict from `receivers health --json`
+            checks: List of checks to send. If None, sends all available.
+                   Options: 'ping', 'temp', 'volt', 'satellites', 'position',
+                           'logging', 'receiver_status'
+
+        Returns:
+            Dict mapping check name to API response
+        """
+        station = health_data.get('station_id', 'UNKNOWN')
+        metrics = health_data.get('metrics', {})
+        data_quality = health_data.get('data_quality', {})
+
+        available_checks = checks or [
+            'ping', 'temp', 'satellites', 'position', 'logging', 'receiver_status'
+        ]
+        # Note: 'volt' not included by default as PolaRX5 doesn't report voltage
+
+        results = {}
+
+        if 'ping' in available_checks:
+            results['GPS Ping'] = self.send_gps_ping_from_json(
+                station=station,
+                health_data=health_data
+            )
+
+        if 'temp' in available_checks:
+            temp_data = metrics.get('temperature', {})
+            results['Station temp'] = self.send_temperature_check(
+                station=station,
+                temperature=temp_data.get('value'),
+                unit=temp_data.get('unit', 'C')
+            )
+
+        if 'volt' in available_checks:
+            # Voltage might not be available on all receivers
+            voltage = metrics.get('voltage', {}).get('value')
+            if voltage is not None:
+                results['Station volt'] = self.send_voltage_check(
+                    station=station,
+                    voltage=voltage
+                )
+
+        if 'satellites' in available_checks:
+            sat_data = metrics.get('satellites', {})
+            results['Satellite status'] = self.send_satellite_check(
+                station=station,
+                total_satellites=sat_data.get('total'),
+                by_constellation=sat_data.get('by_constellation')
+            )
+
+        if 'position' in available_checks:
+            pos_data = metrics.get('position', {})
+            results['Station position'] = self.send_position_check(
+                station=station,
+                fix_mode=pos_data.get('fix_mode'),
+                satellites_used=pos_data.get('satellites_used'),
+                h_accuracy_m=pos_data.get('h_accuracy_m'),
+                v_accuracy_m=pos_data.get('v_accuracy_m'),
+                latitude=pos_data.get('latitude'),
+                longitude=pos_data.get('longitude'),
+                height=pos_data.get('height')
+            )
+
+        if 'logging' in available_checks:
+            disk_data = data_quality.get('disk', {})
+            results['Logging status'] = self.send_logging_check(
+                station=station,
+                disk_status=disk_data.get('status'),
+                logging_active=True  # Assume active if we got health data
+            )
+
+        if 'receiver_status' in available_checks:
+            ports_data = metrics.get('ports', {})
+            receiver_type = health_data.get('receiver_type')
+            results['Receiver status'] = self.send_receiver_status_check(
+                station=station,
+                ports_status=ports_data if ports_data else None,
+                receiver_type=receiver_type
+            )
+
+        return results
+
     def send_health_check(
         self,
         station: str,
@@ -364,16 +925,45 @@ class IcingaClient:
 def main():
     """Command-line interface for testing Icinga client."""
     import argparse
+    import subprocess
 
-    parser = argparse.ArgumentParser(description="Send check results to Icinga")
-    parser.add_argument("station", help="Station ID (e.g., ORFC)")
-    parser.add_argument(
-        "--check-type",
-        choices=["ping", "health"],
-        default="ping",
-        help="Check type to send"
+    parser = argparse.ArgumentParser(
+        description="Send GPS receiver check results to Icinga",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Check types:
+  ping              GPS Ping - connectivity check (live data)
+  temp              Station temperature (live data)
+  volt              Station voltage (live data)
+  satellites        Satellite tracking status (live data)
+  position          Position fix status (live data)
+  logging           Logging/disk status (live data)
+  receiver_status   Port connectivity status (live data)
+  all               Send all checks using live health data
+  live              Send all checks using live health data (alias for 'all')
+  health            Overall health summary (test data only)
+
+Examples:
+  %(prog)s THOB --check-type all         # Send all checks with live data
+  %(prog)s THOB --check-type temp        # Send only temperature check
+  %(prog)s THOB --check-type satellites  # Send satellite status
+  %(prog)s THOB --check-type ping --status critical  # Test critical ping
+"""
     )
-    parser.add_argument("--status", default="ok", help="Status (ok, warning, critical)")
+    parser.add_argument("station", help="Station ID (e.g., THOB, ORFC)")
+    parser.add_argument(
+        "--check-type", "-c",
+        choices=["ping", "temp", "volt", "satellites", "position",
+                 "logging", "receiver_status", "all", "live", "health"],
+        default="all",
+        help="Check type to send (default: all)"
+    )
+    parser.add_argument(
+        "--status",
+        default="ok",
+        help="Status for test checks (ok, warning, critical)"
+    )
+    parser.add_argument("--dry-run", action="store_true", help="Show what would be sent without sending")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
 
     args = parser.parse_args()
@@ -387,7 +977,66 @@ def main():
     # Create client
     client = IcingaClient()
 
-    # Send check
+    # For live/all checks, fetch health data from receiver
+    if args.check_type in ('all', 'live', 'ping', 'temp', 'volt', 'satellites', 'position', 'logging', 'receiver_status'):
+        print(f"Fetching health data from {args.station}...")
+        try:
+            result = subprocess.run(
+                ['receivers', 'health', args.station, '--json'],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            if result.returncode != 0:
+                print(f"ERROR: Failed to get health data: {result.stderr}")
+                return 1
+
+            health_data = json.loads(result.stdout)
+            print(f"Got health data: overall_status={health_data.get('overall_status', 'unknown')}")
+
+            if args.dry_run:
+                print("\n=== DRY RUN - Would send the following checks ===")
+                print(f"Station: {health_data.get('station_id')}")
+                print(f"Temperature: {health_data.get('metrics', {}).get('temperature', {})}")
+                print(f"Satellites: {health_data.get('metrics', {}).get('satellites', {})}")
+                print(f"Position: {health_data.get('metrics', {}).get('position', {})}")
+                print(f"Ports: {health_data.get('metrics', {}).get('ports', {})}")
+                print(f"Disk: {health_data.get('data_quality', {}).get('disk', {})}")
+                return 0
+
+            # Determine which checks to send
+            if args.check_type in ('all', 'live'):
+                checks = ['ping', 'temp', 'satellites', 'position', 'logging', 'receiver_status']
+            else:
+                checks = [args.check_type]
+
+            # Send checks
+            responses = client.send_health_from_json(health_data, checks=checks)
+
+            # Print results
+            print(f"\n=== Results for {args.station} ===")
+            all_success = True
+            for check_name, response in responses.items():
+                status = "✅" if response.get("success") else "❌"
+                code = response.get("code", "N/A")
+                msg = response.get("message", "Unknown")
+                print(f"{status} {check_name}: {code} - {msg}")
+                if not response.get("success"):
+                    all_success = False
+
+            return 0 if all_success else 1
+
+        except subprocess.TimeoutExpired:
+            print("ERROR: Timeout fetching health data")
+            return 1
+        except json.JSONDecodeError as e:
+            print(f"ERROR: Failed to parse health JSON: {e}")
+            return 1
+        except FileNotFoundError:
+            print("ERROR: 'receivers' command not found")
+            return 1
+
+    # Test data for ping/health checks
     if args.check_type == "ping":
         is_ok = args.status.lower() == "ok"
         response = client.send_ping_check(
@@ -397,7 +1046,7 @@ def main():
             receiver_ok=is_ok,
             latency_ms=80.5 if is_ok else None
         )
-    else:
+    else:  # health
         response = client.send_health_check(
             station=args.station,
             overall_status=args.status,
