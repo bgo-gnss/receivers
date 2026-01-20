@@ -910,29 +910,85 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
             print(f"Timestamp: {health.get('timestamp', 'N/A')}")
             print(f"Overall Status: {health.get('overall_status', 'unknown').upper()}")
 
-            # Connection summary
+            # Connection summary (TCP + ports)
             connection = health.get("connection", {})
-            if connection:
-                print(f"\nConnection Health:")
-                for level, data in connection.items():
-                    status = data.get("status", "unknown")
-                    emoji = (
-                        "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
-                    )
-                    print(f"  {level}: {emoji} {status}")
+            metrics = health.get("metrics", {})
+            ports = metrics.get("ports", {})
+
+            print(f"\nConnection Health:")
+            # Show TCP status
+            if "tcp" in connection:
+                tcp = connection["tcp"]
+                status = tcp.get("status", "unknown")
+                host = tcp.get("host", "")
+                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                print(f"  tcp: {emoji} {status} ({host})")
+
+            # Show port status
+            if ports:
+                for port_name in ["http", "ftp", "control"]:
+                    if port_name in ports:
+                        port_data = ports[port_name]
+                        port_num = port_data.get("port", "?")
+                        is_open = port_data.get("open", False)
+                        status = port_data.get("status", "unknown")
+                        emoji = "✅" if is_open else "❌"
+                        print(f"  {port_name}: {emoji} port {port_num} [{status}]")
 
             # Metrics summary
-            metrics = health.get("metrics", {})
             if metrics:
                 print(f"\nMetrics:")
-                for metric, data in metrics.items():
-                    if isinstance(data, dict):
-                        value = data.get(
-                            "value", data.get("voltage", data.get("percent", "N/A"))
-                        )
-                        unit = data.get("unit", "")
-                        status = data.get("status", "unknown")
-                        print(f"  {metric}: {value} {unit} [{status}]")
+                # Power
+                if "power" in metrics:
+                    power = metrics["power"]
+                    voltage = power.get("voltage", "N/A")
+                    status = power.get("status", "unknown")
+                    print(f"  power: {voltage} V [{status}]")
+
+                # CPU
+                if "cpu_load" in metrics:
+                    cpu = metrics["cpu_load"]
+                    percent = cpu.get("percent", "N/A")
+                    status = cpu.get("status", "unknown")
+                    print(f"  cpu_load: {percent}% [{status}]")
+
+                # Temperature
+                if "temperature" in metrics:
+                    temp = metrics["temperature"]
+                    value = temp.get("value", "N/A")
+                    status = temp.get("status", "unknown")
+                    print(f"  temperature: {value} C [{status}]")
+
+                # Position
+                if "position" in metrics:
+                    pos = metrics["position"]
+                    lat = pos.get("latitude")
+                    lon = pos.get("longitude")
+                    height = pos.get("height")
+                    fix = pos.get("fix_mode", "unknown")
+                    status = pos.get("status", "unknown")
+                    if lat is not None and lon is not None:
+                        print(f"  position: {lat:.6f}, {lon:.6f}, {height:.1f}m ({fix}) [{status}]")
+                    else:
+                        print(f"  position: N/A [{status}]")
+
+                # Satellites
+                if "satellites" in metrics:
+                    sats = metrics["satellites"]
+                    total = sats.get("total", 0)
+                    by_const = sats.get("by_constellation", {})
+                    status = sats.get("status", "unknown")
+                    # Build constellation summary
+                    const_parts = []
+                    for const in ["GPS", "GLONASS", "Galileo", "BeiDou", "SBAS"]:
+                        count = by_const.get(const)
+                        if count:
+                            const_parts.append(f"{const}:{count}")
+                    const_str = ", ".join(const_parts) if const_parts else ""
+                    if const_str:
+                        print(f"  satellites: {total} ({const_str}) [{status}]")
+                    else:
+                        print(f"  satellites: {total} [{status}]")
 
             # Status summary
             summary = health.get("status_summary", {})
