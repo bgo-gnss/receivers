@@ -115,11 +115,8 @@ class NetRS(BaseReceiver):
                 else:
                     receiver_config["httpport"] = int(http_port)
 
-                if not receiver_config.get("ftpport"):
-                    self.logger.warning(
-                        f"Missing FTP port for {self.station_id}, using default 21"
-                    )
-                    receiver_config["ftpport"] = 21
+                # FTP port is optional for Trimble - downloads use HTTP
+                # If specified, it can be used for connection health checks
 
             elif "station" in self.station_info:
                 # Legacy gps_parser format - convert to expected format
@@ -137,11 +134,11 @@ class NetRS(BaseReceiver):
 
                 # Extract receiver config
                 http_port = station_config.get("receiver_httpport", "8060")
-                ftp_port = station_config.get("receiver_ftpport", "21")
+                ftp_port = station_config.get("receiver_ftpport")  # Optional for Trimble
 
                 self.station_info["receiver"] = {
                     "httpport": int(http_port),
-                    "ftpport": int(ftp_port)
+                    "ftpport": int(ftp_port) if ftp_port else None
                 }
 
                 self.logger.debug(f"Converted legacy config for {self.station_id}")
@@ -215,6 +212,7 @@ class NetRS(BaseReceiver):
         # Get configuration from station_info
         host = self.station_info.get("router", {}).get("ip")
         http_port = self.station_info.get("receiver", {}).get("httpport", 8060)
+        ftp_port = self.station_info.get("receiver", {}).get("ftpport")
 
         # Step 1: Check connection health at all levels
         connection_data = self.check_connection_health(
@@ -237,6 +235,7 @@ class NetRS(BaseReceiver):
                     station_id=self.station_id,
                     port=http_port,
                     receiver_type="NetRS",
+                    ftp_port=ftp_port,
                 )
                 health_data = extractor.extract_health_data()
 

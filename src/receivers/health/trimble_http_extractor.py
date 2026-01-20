@@ -16,6 +16,7 @@ Trimble API Endpoints:
 
 import logging
 import re
+import socket
 import requests
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -73,6 +74,7 @@ class TrimbleHTTPExtractor:
         username: Optional[str] = None,
         password: Optional[str] = None,
         timeout: int = 10,
+        ftp_port: Optional[int] = None,
     ):
         """Initialize HTTP health extractor.
 
@@ -84,10 +86,12 @@ class TrimbleHTTPExtractor:
             username: HTTP Basic Auth username (optional)
             password: HTTP Basic Auth password (optional)
             timeout: Request timeout in seconds
+            ftp_port: FTP port for connection checking (optional)
         """
         self.host = host
         self.station_id = station_id.upper()
         self.port = port
+        self.ftp_port = ftp_port
         self.receiver_type = receiver_type
         self.base_url = f"http://{host}:{port}"
         self.timeout = timeout
@@ -132,6 +136,18 @@ class TrimbleHTTPExtractor:
         conn_status = self._test_connection()
         health_data["connection"]["http_port"] = conn_status
         statuses.append(conn_status.get("status", "unknown"))
+
+        # Check port status and populate metrics["ports"] for CLI display
+        # Use HTTP connection test result for HTTP port (more reliable than raw socket)
+        port_status = self._check_port_status(http_accessible=conn_status.get("accessible", False))
+        if port_status:
+            health_data["metrics"]["ports"] = port_status
+            # Add port statuses to overall status calculation
+            for port_data in port_status.values():
+                if port_data.get("open"):
+                    statuses.append("ok")
+                else:
+                    statuses.append("warning")
 
         # Fetch and parse voltages
         voltage_data = self._fetch_and_parse_voltages()
@@ -238,6 +254,57 @@ class TrimbleHTTPExtractor:
                 "accessible": False,
                 "error": str(e),
             }
+
+    def _check_port_status(self, http_accessible: bool = False) -> Dict[str, Dict[str, Any]]:
+        """Check HTTP and FTP port status.
+
+        Args:
+            http_accessible: Whether HTTP API is accessible (from _test_connection result)
+
+        Returns:
+            Dictionary with port status for http and ftp (if configured)
+        """
+        ports = {}
+
+        # Use HTTP connection test result for HTTP port (more reliable than raw socket
+        # check when firewalls are involved)
+        http_open = http_accessible
+        ports["http"] = {
+            "port": self.port,
+            "open": http_open,
+            "status": "ok" if http_open else "critical",
+        }
+
+        # Check FTP port if configured
+        if self.ftp_port:
+            ftp_open = self._check_tcp_port(self.host, self.ftp_port)
+            ports["ftp"] = {
+                "port": self.ftp_port,
+                "open": ftp_open,
+                "status": "ok" if ftp_open else "critical",
+            }
+
+        return ports
+
+    def _check_tcp_port(self, host: str, port: int) -> bool:
+        """Check if a TCP port is reachable.
+
+        Args:
+            host: Host to check
+            port: Port number to check
+
+        Returns:
+            True if port is open, False otherwise
+        """
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5)
+            result = sock.connect_ex((host, port))
+            sock.close()
+            return result == 0
+        except Exception as e:
+            self.logger.debug(f"Port check failed for {host}:{port}: {e}")
+            return False
 
     def _fetch_endpoint(self, endpoint_name: str) -> Optional[str]:
         """Fetch data from HTTP endpoint.
@@ -641,10 +708,10 @@ class TrimbleHTTPExtractor:
             if lon_match:
                 position_data["longitude"] = float(lon_match.group(1))
 
-            # Parse altitude
+            # Parse altitude (stored as "height" for CLI compatibility)
             alt_match = re.search(r"Altitude\s+([-\d.]+)", response)
             if alt_match:
-                position_data["altitude"] = float(alt_match.group(1))
+                position_data["height"] = float(alt_match.group(1))
 
             # Parse fix type/qualifiers
             qual_match = re.search(r"Qualifiers\s+(\S+)", response)
@@ -815,6 +882,7 @@ def extract_trimble_health(
     receiver_type: str = "NetR9",
     username: Optional[str] = None,
     password: Optional[str] = None,
+    ftp_port: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Extract health data from a Trimble receiver.
 
@@ -825,6 +893,7 @@ def extract_trimble_health(
         receiver_type: Receiver type (NetR9, NetRS, NetR5)
         username: HTTP Basic Auth username (optional)
         password: HTTP Basic Auth password (optional)
+        ftp_port: FTP port for connection checking (optional)
 
     Returns:
         Health data dictionary in standardized format
@@ -836,5 +905,6 @@ def extract_trimble_health(
         receiver_type=receiver_type,
         username=username,
         password=password,
+        ftp_port=ftp_port,
     )
     return extractor.extract_health_data()
