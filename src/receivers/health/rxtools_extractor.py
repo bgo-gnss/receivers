@@ -795,62 +795,31 @@ class RxToolsExtractor:
             return const_map.get(prefix)
 
         # Try numeric format (from TCP binary extraction)
+        # Ranges from Septentrio SBF Reference Guide (v3.6+)
         try:
             svid = int(svid_str)
-            if 1 <= svid <= 37:
+            if svid == 0 or svid == 255:
+                return None  # Invalid SVID
+            elif 1 <= svid <= 37:
                 return "GPS"
-            elif 38 <= svid <= 61:
+            elif 38 <= svid <= 62:
                 return "GLONASS"
-            elif 71 <= svid <= 102:
+            elif 63 <= svid <= 106:
                 return "Galileo"
-            elif 120 <= svid <= 140:
+            elif 120 <= svid <= 158:
                 return "SBAS"
             elif 141 <= svid <= 180:
                 return "BeiDou"
-            elif 181 <= svid <= 187:
+            elif 181 <= svid <= 202:
                 return "QZSS"
             elif 191 <= svid <= 197:
                 return "IRNSS"
+            elif 201 <= svid <= 263:
+                return "BeiDou"
         except (ValueError, TypeError):
             pass
 
         return None
-
-    @staticmethod
-    def _svid_to_constellation(svid: int) -> str:
-        """Convert Septentrio SVID to constellation name.
-
-        SVID ranges from Septentrio SBF Reference Guide:
-        - GPS: 1-37 (PRN 1-32 + reserved)
-        - GLONASS: 38-61
-        - Galileo: 71-102
-        - SBAS: 120-140
-        - BeiDou: 141-180
-        - QZSS: 181-187
-        - IRNSS/NavIC: 191-197
-
-        Args:
-            svid: Satellite Vehicle ID from ChannelStatus
-
-        Returns:
-            Constellation name string
-        """
-        if 1 <= svid <= 37:
-            return "GPS"
-        elif 38 <= svid <= 61:
-            return "GLONASS"
-        elif 71 <= svid <= 102:
-            return "Galileo"
-        elif 120 <= svid <= 140:
-            return "SBAS"
-        elif 141 <= svid <= 180:
-            return "BeiDou"
-        elif 181 <= svid <= 187:
-            return "QZSS"
-        elif 191 <= svid <= 197:
-            return "IRNSS"
-        else:
-            return f"Unknown_{svid}"
 
     # Status check helper methods
 
