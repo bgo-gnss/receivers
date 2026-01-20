@@ -646,15 +646,15 @@ class TrimbleHTTPExtractor:
             status = self._satellite_status(total_tracking)
 
             return {
-                "tracking": total_tracking,
+                "total": total_tracking,  # CLI expects "total"
                 "visible": len(matches),
                 "status": status,
-                "by_system": {
-                    "gps": gps_count,
-                    "glonass": glonass_count,
-                    "galileo": galileo_count,
-                    "beidou": beidou_count,
-                    "sbas": sbas_count,
+                "by_constellation": {  # CLI expects "by_constellation" with proper case
+                    "GPS": gps_count,
+                    "GLONASS": glonass_count,
+                    "Galileo": galileo_count,
+                    "BeiDou": beidou_count,
+                    "SBAS": sbas_count,
                 },
                 "satellites": satellites[:20],  # Limit to 20 for JSON size
                 "threshold_warning": self.SAT_WARNING,
