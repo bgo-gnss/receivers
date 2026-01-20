@@ -775,48 +775,89 @@ class PolaRX5(BaseReceiver):
         connection_start = time.time()
 
         if not skip_ping_check:
-            # Fast-fail check 1: Ping (detect unreachable hosts in 2s)
+            # Fast-fail check 1: Ping with retries (detect unreachable hosts)
+            # Retry ping up to 3 times to handle momentary connectivity issues
+            import subprocess
             self.logger.info(f"Checking connectivity to {self.ip_number}...")
-            try:
-                import subprocess
-                ping_result = subprocess.run(
-                    ['ping', '-c', '1', '-W', '2', self.ip_number],
-                    capture_output=True,
-                    timeout=3
-                )
-                if ping_result.returncode != 0:
-                    self.logger.error(f"❌ Network unreachable: {self.ip_number} - ping failed")
-                    self.logger.error("💡 Check network connectivity or wait for receiver to come online")
-                    self._last_connection_time = time.time() - connection_start
-                    return None
-            except subprocess.TimeoutExpired:
-                self.logger.error(f"❌ Network unreachable: {self.ip_number} - ping timeout")
-                self.logger.error("💡 Router/receiver appears to be offline")
-                self._last_connection_time = time.time() - connection_start
-                return None
-            except Exception as e:
-                self.logger.debug(f"Ping check skipped: {e}")
+            ping_retries = 3
+            ping_delay = 1.0  # seconds between retries
+            ping_success = False
 
-            # Fast-fail check 2: TCP port check (detect FTP port issues in 3s)
-            try:
-                import socket
-                self.logger.info(f"Checking FTP port {self.ip_port}...")
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(3)
-                result = sock.connect_ex((self.ip_number, self.ip_port))
-                sock.close()
-                if result != 0:
-                    self.logger.error(f"❌ FTP port {self.ip_port} not responding on {self.ip_number}")
-                    self.logger.error("💡 Receiver may be down or FTP port misconfigured")
-                    self._last_connection_time = time.time() - connection_start
-                    return None
-            except socket.timeout:
-                self.logger.error(f"❌ FTP port {self.ip_port} timeout on {self.ip_number}")
-                self.logger.error("💡 Receiver FTP service not responding")
+            for ping_attempt in range(ping_retries):
+                try:
+                    ping_result = subprocess.run(
+                        ['ping', '-c', '1', '-W', '2', self.ip_number],
+                        capture_output=True,
+                        timeout=3
+                    )
+                    if ping_result.returncode == 0:
+                        ping_success = True
+                        break
+                    else:
+                        if ping_attempt < ping_retries - 1:
+                            self.logger.warning(
+                                f"⚠️  Ping attempt {ping_attempt + 1}/{ping_retries} failed, "
+                                f"retrying in {ping_delay}s..."
+                            )
+                            time.sleep(ping_delay)
+                except subprocess.TimeoutExpired:
+                    if ping_attempt < ping_retries - 1:
+                        self.logger.warning(
+                            f"⚠️  Ping attempt {ping_attempt + 1}/{ping_retries} timed out, "
+                            f"retrying in {ping_delay}s..."
+                        )
+                        time.sleep(ping_delay)
+                except Exception as e:
+                    self.logger.debug(f"Ping check error: {e}")
+                    ping_success = True  # Skip ping on error, let FTP handle it
+                    break
+
+            if not ping_success:
+                self.logger.error(f"❌ Network unreachable: {self.ip_number} - ping failed after {ping_retries} attempts")
+                self.logger.error("💡 Check network connectivity or wait for receiver to come online")
                 self._last_connection_time = time.time() - connection_start
                 return None
-            except Exception as e:
-                self.logger.debug(f"Port check skipped: {e}")
+
+            # Fast-fail check 2: TCP port check with retries
+            import socket
+            self.logger.info(f"Checking FTP port {self.ip_port}...")
+            port_retries = 3
+            port_delay = 1.0
+            port_success = False
+
+            for port_attempt in range(port_retries):
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(3)
+                    result = sock.connect_ex((self.ip_number, self.ip_port))
+                    sock.close()
+                    if result == 0:
+                        port_success = True
+                        break
+                    else:
+                        if port_attempt < port_retries - 1:
+                            self.logger.warning(
+                                f"⚠️  Port check attempt {port_attempt + 1}/{port_retries} failed, "
+                                f"retrying in {port_delay}s..."
+                            )
+                            time.sleep(port_delay)
+                except socket.timeout:
+                    if port_attempt < port_retries - 1:
+                        self.logger.warning(
+                            f"⚠️  Port check attempt {port_attempt + 1}/{port_retries} timed out, "
+                            f"retrying in {port_delay}s..."
+                        )
+                        time.sleep(port_delay)
+                except Exception as e:
+                    self.logger.debug(f"Port check error: {e}")
+                    port_success = True  # Skip on error, let FTP handle it
+                    break
+
+            if not port_success:
+                self.logger.error(f"❌ FTP port {self.ip_port} not responding after {port_retries} attempts")
+                self.logger.error("💡 Receiver may be down or FTP port misconfigured")
+                self._last_connection_time = time.time() - connection_start
+                return None
 
         # Proceed with FTP connection (should be fast now since port is verified)
         if timeout is None:
