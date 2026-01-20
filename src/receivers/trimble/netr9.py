@@ -117,11 +117,8 @@ class NetR9(BaseReceiver):
             else:
                 receiver_config["httpport"] = http_port
 
-            if not receiver_config.get("ftpport"):
-                self.logger.warning(
-                    f"Missing FTP port for {self.station_id}, using default 21"
-                )
-                receiver_config["ftpport"] = 21
+            # FTP port is optional for Trimble - downloads use HTTP
+            # If specified, it can be used for connection health checks
 
         except KeyError as e:
             raise ConfigurationError(
@@ -187,6 +184,7 @@ class NetR9(BaseReceiver):
         # Get configuration from station_info
         host = self.station_info.get("router", {}).get("ip")
         http_port = self.station_info.get("receiver", {}).get("httpport", 8060)
+        ftp_port = self.station_info.get("receiver", {}).get("ftpport")
 
         # Step 1: Check connection health at all levels
         connection_data = self.check_connection_health(
@@ -209,6 +207,7 @@ class NetR9(BaseReceiver):
                     station_id=self.station_id,
                     port=http_port,
                     receiver_type="NetR9",
+                    ftp_port=ftp_port,
                 )
                 health_data = extractor.extract_health_data()
 

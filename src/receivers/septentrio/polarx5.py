@@ -136,7 +136,8 @@ class PolaRX5(BaseReceiver):
         """Extract and validate connection information from station_info."""
         try:
             self.ip_number = self.station_info["router"]["ip"]
-            self.ip_port = int(self.station_info["receiver"]["ftpport"])
+            # Default to 2160 for PolaRX5 if not specified (standard Septentrio FTP port)
+            self.ip_port = int(self.station_info["receiver"].get("ftpport") or 2160)
 
             # Use gps_parser for FTP mode determination
             ftp_mode = self.station_info.get("receiver", {}).get("ftp_mode", "auto")

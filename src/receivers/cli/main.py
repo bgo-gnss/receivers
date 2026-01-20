@@ -924,16 +924,17 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
                 emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
                 print(f"  tcp: {emoji} {status} ({host})")
 
-            # Show port status
-            if ports:
-                for port_name in ["http", "ftp", "control"]:
-                    if port_name in ports:
-                        port_data = ports[port_name]
-                        port_num = port_data.get("port", "?")
-                        is_open = port_data.get("open", False)
-                        status = port_data.get("status", "unknown")
-                        emoji = "✅" if is_open else "❌"
-                        print(f"  {port_name}: {emoji} port {port_num} [{status}]")
+            # Show port status (always show all ports for consistency, N/A if not configured)
+            for port_name in ["http", "ftp", "control"]:
+                if port_name in ports:
+                    port_data = ports[port_name]
+                    port_num = port_data.get("port", "?")
+                    is_open = port_data.get("open", False)
+                    status = port_data.get("status", "unknown")
+                    emoji = "✅" if is_open else "❌"
+                    print(f"  {port_name}: {emoji} port {port_num} [{status}]")
+                else:
+                    print(f"  {port_name}: N/A")
 
             # Metrics summary
             if metrics:
@@ -965,10 +966,14 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
                     lat = pos.get("latitude")
                     lon = pos.get("longitude")
                     height = pos.get("height")
-                    fix = pos.get("fix_mode", "unknown")
+                    # Handle both PolaRX5 (fix_mode) and Trimble (fix_type) formats
+                    fix = pos.get("fix_mode") or pos.get("fix_type", "unknown")
                     status = pos.get("status", "unknown")
                     if lat is not None and lon is not None:
-                        print(f"  position: {lat:.6f}, {lon:.6f}, {height:.1f}m ({fix}) [{status}]")
+                        if height is not None:
+                            print(f"  position: {lat:.6f}, {lon:.6f}, {height:.1f}m ({fix}) [{status}]")
+                        else:
+                            print(f"  position: {lat:.6f}, {lon:.6f} ({fix}) [{status}]")
                     else:
                         print(f"  position: N/A [{status}]")
 

@@ -65,8 +65,8 @@ def get_station_config(station_id: str) -> Optional[Dict[str, Any]]:
 
         raw_config = station_info['station']
 
-        # Validate required fields
-        required_fields = ['router_ip', 'receiver_ftpport', 'receiver_type']
+        # Validate required fields (receiver_ftpport is optional - Trimble uses HTTP)
+        required_fields = ['router_ip', 'receiver_type']
         missing_fields = [field for field in required_fields if field not in raw_config]
         if missing_fields:
             logger.error(f"Station {station_id} missing required fields: {missing_fields}")
@@ -113,7 +113,7 @@ def get_station_config(station_id: str) -> Optional[Dict[str, Any]]:
             # Receiver configuration
             'receiver': {
                 'type': raw_config['receiver_type'],
-                'ftpport': raw_config['receiver_ftpport'],
+                'ftpport': raw_config.get('receiver_ftpport'),  # Optional, None if not configured
                 'httpport': raw_config.get('receiver_httpport', '8060'),
                 'controlport': raw_config.get('receiver_controlport', '28784'),
                 # Authentication credentials (for HTTP Basic Auth, FTP login, etc.)
