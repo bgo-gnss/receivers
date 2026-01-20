@@ -25,7 +25,8 @@ class HealthDatabaseWriter:
         - block_power_status: PowerStatus (SBF 4101)
         - block_receiver_status: ReceiverStatus2 (SBF 4014)
         - block_disk_status: DiskStatus (SBF 4105)
-        - block_pvt_geodetic: PVTGeodetic2 (SBF 4007)
+        - block_pvt_geodetic: PVTGeodetic2 (SBF 4007) - position and satellite count
+        - block_satellite_tracking: ChannelStatus (SBF 4013) - constellation breakdown
         - block_pos_covariance: PosCovGeodetic1 (SBF 5905)
         - block_ntrip_server: NTRIPServerStatus (SBF 4043)
         - agg_hourly: Hourly aggregates
@@ -188,6 +189,10 @@ class HealthDatabaseWriter:
             if "ntrip" in metrics:
                 self._write_ntrip_status(station_id, timestamp, metrics["ntrip"])
 
+            # Write to block_satellite_tracking (constellation breakdown)
+            if "satellites" in metrics:
+                self._write_satellite_tracking(station_id, timestamp, metrics["satellites"])
+
             self._conn.commit()
             self.logger.debug(f"Wrote health data for {station_id} at {timestamp}")
             return True
@@ -254,26 +259,35 @@ class HealthDatabaseWriter:
         self, sid: str, ts: datetime, data_quality: Dict[str, Any], metrics: Dict[str, Any]
     ) -> None:
         """Write to block_pvt_geodetic table."""
-        # Extract from data_quality (live health) or position metrics
-        fix_type = data_quality.get("fix_type")
-        nr_sv = data_quality.get("satellites_used") or data_quality.get("nr_sv")
-        h_accuracy = data_quality.get("h_accuracy")
-        v_accuracy = data_quality.get("v_accuracy")
+        # Extract from metrics.position (live TCP extraction) or data_quality (historical)
+        position = metrics.get("position", {})
+
+        # Prefer position metrics, fall back to data_quality
+        fix_type = position.get("fix_mode") or data_quality.get("fix_type")
+        nr_sv = position.get("satellites_used") or data_quality.get("satellites_used") or data_quality.get("nr_sv")
+        h_accuracy = position.get("h_accuracy_m") or data_quality.get("h_accuracy")
+        v_accuracy = position.get("v_accuracy_m") or data_quality.get("v_accuracy")
+        latitude = position.get("latitude")
+        longitude = position.get("longitude")
+        height = position.get("height")
 
         # Skip if no meaningful data
-        if not any([fix_type, nr_sv, h_accuracy, v_accuracy]):
+        if not any([fix_type, nr_sv, h_accuracy, v_accuracy, latitude, longitude]):
             return
 
         with self._conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO block_pvt_geodetic (sid, ts, fix_type, nr_sv, h_accuracy, v_accuracy)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                INSERT INTO block_pvt_geodetic (sid, ts, fix_type, nr_sv, h_accuracy, v_accuracy, latitude, longitude, height)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (sid, ts) DO UPDATE SET
                     fix_type = COALESCE(EXCLUDED.fix_type, block_pvt_geodetic.fix_type),
                     nr_sv = COALESCE(EXCLUDED.nr_sv, block_pvt_geodetic.nr_sv),
                     h_accuracy = COALESCE(EXCLUDED.h_accuracy, block_pvt_geodetic.h_accuracy),
-                    v_accuracy = COALESCE(EXCLUDED.v_accuracy, block_pvt_geodetic.v_accuracy)
-            """, (sid, ts, fix_type, nr_sv, h_accuracy, v_accuracy))
+                    v_accuracy = COALESCE(EXCLUDED.v_accuracy, block_pvt_geodetic.v_accuracy),
+                    latitude = COALESCE(EXCLUDED.latitude, block_pvt_geodetic.latitude),
+                    longitude = COALESCE(EXCLUDED.longitude, block_pvt_geodetic.longitude),
+                    height = COALESCE(EXCLUDED.height, block_pvt_geodetic.height)
+            """, (sid, ts, fix_type, nr_sv, h_accuracy, v_accuracy, latitude, longitude, height))
 
     def _write_ntrip_status(self, sid: str, ts: datetime, ntrip: Dict[str, Any]) -> None:
         """Write to block_ntrip_server table."""
@@ -289,6 +303,44 @@ class HealthDatabaseWriter:
                     status = EXCLUDED.status,
                     error_code = EXCLUDED.error_code
             """, (sid, ts, cd_index, status, error_code))
+
+    def _write_satellite_tracking(
+        self, sid: str, ts: datetime, satellites: Dict[str, Any]
+    ) -> None:
+        """Write to block_satellite_tracking table."""
+        total = satellites.get("total")
+        by_const = satellites.get("by_constellation", {})
+
+        if total is None and not by_const:
+            return
+
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO block_satellite_tracking
+                        (sid, ts, total, gps, glonass, galileo, beidou, sbas, qzss, irnss)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (sid, ts) DO UPDATE SET
+                        total = EXCLUDED.total,
+                        gps = EXCLUDED.gps,
+                        glonass = EXCLUDED.glonass,
+                        galileo = EXCLUDED.galileo,
+                        beidou = EXCLUDED.beidou,
+                        sbas = EXCLUDED.sbas,
+                        qzss = EXCLUDED.qzss,
+                        irnss = EXCLUDED.irnss
+                """, (
+                    sid, ts, total,
+                    by_const.get("GPS"),
+                    by_const.get("GLONASS"),
+                    by_const.get("Galileo"),
+                    by_const.get("BeiDou"),
+                    by_const.get("SBAS"),
+                    by_const.get("QZSS"),
+                    by_const.get("IRNSS")
+                ))
+        except Exception as e:
+            self.logger.debug(f"block_satellite_tracking write failed: {e}")
 
     def write_timeseries_sample(
         self,
@@ -362,17 +414,81 @@ class HealthDatabaseWriter:
                         ON CONFLICT (sid, ts) DO UPDATE SET usage_percent = EXCLUDED.usage_percent
                     """, (station_id, ts, disk))
 
-            # Satellite visibility (aggregated count only)
+            # Position data (from metrics.position)
+            position = sample.get("position")
+            if isinstance(position, dict):
+                lat = position.get("latitude")
+                lon = position.get("longitude")
+                height = position.get("height")
+                # Handle both live format (h_accuracy_m) and historical format (h_accuracy)
+                h_accuracy = position.get("h_accuracy_m") or position.get("h_accuracy")
+                v_accuracy = position.get("v_accuracy_m") or position.get("v_accuracy")
+                nr_sv = position.get("satellites_used")
+                # Handle both live format (fix_mode) and historical format (fix_type)
+                fix_mode = position.get("fix_mode") or position.get("fix_type")
+
+                if lat is not None or lon is not None or nr_sv is not None:
+                    with self._conn.cursor() as cur:
+                        cur.execute("""
+                            INSERT INTO block_pvt_geodetic (sid, ts, fix_type, nr_sv, latitude, longitude, height, h_accuracy, v_accuracy)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (sid, ts) DO UPDATE SET
+                                fix_type = COALESCE(EXCLUDED.fix_type, block_pvt_geodetic.fix_type),
+                                nr_sv = COALESCE(EXCLUDED.nr_sv, block_pvt_geodetic.nr_sv),
+                                latitude = COALESCE(EXCLUDED.latitude, block_pvt_geodetic.latitude),
+                                longitude = COALESCE(EXCLUDED.longitude, block_pvt_geodetic.longitude),
+                                height = COALESCE(EXCLUDED.height, block_pvt_geodetic.height),
+                                h_accuracy = COALESCE(EXCLUDED.h_accuracy, block_pvt_geodetic.h_accuracy),
+                                v_accuracy = COALESCE(EXCLUDED.v_accuracy, block_pvt_geodetic.v_accuracy)
+                        """, (station_id, ts, fix_mode, nr_sv, lat, lon, height, h_accuracy, v_accuracy))
+
+            # Satellite visibility (aggregated count and constellation breakdown)
             satellites = sample.get("satellites")
             if isinstance(satellites, dict):
                 nr_sv = satellites.get("total")
-                if nr_sv is not None:
+                # Handle both live format (by_constellation) and historical format (by_system)
+                by_const = satellites.get("by_constellation", {}) or satellites.get("by_system", {})
+
+                # Store total in block_pvt_geodetic if not already stored via position
+                if nr_sv is not None and not sample.get("position"):
                     with self._conn.cursor() as cur:
                         cur.execute("""
                             INSERT INTO block_pvt_geodetic (sid, ts, nr_sv)
                             VALUES (%s, %s, %s)
-                            ON CONFLICT (sid, ts) DO UPDATE SET nr_sv = EXCLUDED.nr_sv
+                            ON CONFLICT (sid, ts) DO UPDATE SET
+                                nr_sv = COALESCE(EXCLUDED.nr_sv, block_pvt_geodetic.nr_sv)
                         """, (station_id, ts, nr_sv))
+
+                # Store constellation breakdown in block_satellite_tracking if table exists
+                if by_const:
+                    try:
+                        with self._conn.cursor() as cur:
+                            cur.execute("""
+                                INSERT INTO block_satellite_tracking
+                                    (sid, ts, total, gps, glonass, galileo, beidou, sbas, qzss, irnss)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                ON CONFLICT (sid, ts) DO UPDATE SET
+                                    total = EXCLUDED.total,
+                                    gps = EXCLUDED.gps,
+                                    glonass = EXCLUDED.glonass,
+                                    galileo = EXCLUDED.galileo,
+                                    beidou = EXCLUDED.beidou,
+                                    sbas = EXCLUDED.sbas,
+                                    qzss = EXCLUDED.qzss,
+                                    irnss = EXCLUDED.irnss
+                            """, (
+                                station_id, ts, nr_sv,
+                                by_const.get("GPS"),
+                                by_const.get("GLONASS"),
+                                by_const.get("Galileo"),
+                                by_const.get("BeiDou"),
+                                by_const.get("SBAS"),
+                                by_const.get("QZSS"),
+                                by_const.get("IRNSS")
+                            ))
+                    except Exception as e:
+                        # Table may not exist yet, log and continue
+                        self.logger.debug(f"block_satellite_tracking not available: {e}")
 
             return True
 

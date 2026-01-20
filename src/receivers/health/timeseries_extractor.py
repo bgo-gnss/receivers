@@ -23,6 +23,7 @@ from ..utils.rxtools_extractor import (
     extract_quality_ind,
     extract_channel_status,
     extract_wifi_status,
+    extract_pvt_geodetic,
 )
 
 
@@ -155,6 +156,13 @@ class TimeSeriesHealthExtractor:
             self.logger.debug(f"No WiFiAPStatus data in {sbf_file.name}: {e}")
             wifi_data = []
 
+        # Extract PVTGeodetic2 (position data)
+        try:
+            pvt_data = extract_pvt_geodetic(sbf_file)
+        except Exception as e:
+            self.logger.debug(f"No PVTGeodetic2 data in {sbf_file.name}: {e}")
+            pvt_data = []
+
         # Create index by timestamp for merging
         data_by_time = defaultdict(dict)
 
@@ -226,6 +234,32 @@ class TimeSeriesHealthExtractor:
                 wifi_enabled = record.get('wifi_enabled')
                 if wifi_enabled is not None:
                     data_by_time[dt]['wifi_enabled'] = wifi_enabled
+
+        # Merge PVT (position) data
+        for record in pvt_data:
+            dt = record.get('datetime')
+            if dt:
+                lat = record.get('latitude')
+                lon = record.get('longitude')
+                height = record.get('height')
+
+                if lat is not None and lon is not None:
+                    data_by_time[dt]['position'] = {
+                        'latitude': lat,
+                        'longitude': lon,
+                        'height': height,
+                        'h_accuracy': record.get('h_accuracy'),
+                        'v_accuracy': record.get('v_accuracy'),
+                        'fix_type': record.get('fix_type')
+                    }
+
+                # Also store nr_sv for satellites if not already present
+                nr_sv = record.get('nr_sv')
+                if nr_sv is not None:
+                    if 'satellites' not in data_by_time[dt]:
+                        data_by_time[dt]['satellites'] = {}
+                    # Use nr_sv from PVT as it represents satellites used in solution
+                    data_by_time[dt]['satellites']['nr_sv'] = nr_sv
 
         # Convert to samples list
         for timestamp, metrics in sorted(data_by_time.items()):

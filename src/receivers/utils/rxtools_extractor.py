@@ -307,6 +307,136 @@ def extract_channel_status(sbf_file: Path) -> List[Dict]:
     return result
 
 
+def extract_pvt_geodetic(sbf_file: Path) -> List[Dict]:
+    """Extract PVTGeodetic2 position data from SBF file.
+
+    Returns:
+        List of dicts with datetime and position/accuracy info:
+        {
+            'datetime': datetime,
+            'latitude': float (degrees),
+            'longitude': float (degrees),
+            'height': float (meters),
+            'h_accuracy': float (meters),
+            'v_accuracy': float (meters),
+            'nr_sv': int (satellites used),
+            'fix_type': str ('Fixed', 'Float', etc.)
+        }
+    """
+    import math
+
+    csv_file = extract_sbf_message(sbf_file, 'PVTGeodetic2')
+    data = parse_csv_to_dict(csv_file)
+
+    result = []
+    for row in data:
+        if 'TOW [s]' not in row or 'WNc [w]' not in row:
+            continue
+
+        dt = gps_time_to_datetime(row['TOW [s]'], int(row['WNc [w]']))
+
+        # Extract latitude (convert from radians if needed)
+        lat = None
+        for key in ['Latitude [rad]', 'Latitude [deg]', 'Latitude']:
+            if key in row:
+                try:
+                    val = float(row[key])
+                    if math.isnan(val):
+                        break
+                    # Convert radians to degrees if needed
+                    if '[rad]' in key or abs(val) < math.pi:
+                        val = math.degrees(val)
+                    if abs(val) <= 90:
+                        lat = round(val, 8)
+                    break
+                except (ValueError, TypeError):
+                    pass
+
+        # Extract longitude (convert from radians if needed)
+        lon = None
+        for key in ['Longitude [rad]', 'Longitude [deg]', 'Longitude']:
+            if key in row:
+                try:
+                    val = float(row[key])
+                    if math.isnan(val):
+                        break
+                    # Convert radians to degrees if needed
+                    if '[rad]' in key or abs(val) < math.pi:
+                        val = math.degrees(val)
+                    if abs(val) <= 180:
+                        lon = round(val, 8)
+                    break
+                except (ValueError, TypeError):
+                    pass
+
+        # Extract height
+        height = None
+        for key in ['Height [m]', 'Height']:
+            if key in row:
+                try:
+                    val = float(row[key])
+                    if not math.isnan(val):
+                        height = round(val, 3)
+                    break
+                except (ValueError, TypeError):
+                    pass
+
+        # Extract accuracy
+        h_accuracy = None
+        for key in ['HAccuracy [m]', 'HAccuracy']:
+            if key in row:
+                try:
+                    val = float(row[key])
+                    if not math.isnan(val) and val < 65535:
+                        h_accuracy = round(val, 3)
+                    break
+                except (ValueError, TypeError):
+                    pass
+
+        v_accuracy = None
+        for key in ['VAccuracy [m]', 'VAccuracy']:
+            if key in row:
+                try:
+                    val = float(row[key])
+                    if not math.isnan(val) and val < 65535:
+                        v_accuracy = round(val, 3)
+                    break
+                except (ValueError, TypeError):
+                    pass
+
+        # Extract number of satellites
+        nr_sv = None
+        for key in ['NrSV', 'NrSv']:
+            if key in row:
+                try:
+                    nr_sv = int(row[key])
+                    break
+                except (ValueError, TypeError):
+                    pass
+
+        # Extract fix type
+        fix_type = None
+        for key in ['Type', 'Mode']:
+            if key in row:
+                fix_type = str(row[key]).strip()
+                break
+
+        record = {
+            'datetime': dt,
+            'latitude': lat,
+            'longitude': lon,
+            'height': height,
+            'h_accuracy': h_accuracy,
+            'v_accuracy': v_accuracy,
+            'nr_sv': nr_sv,
+            'fix_type': fix_type
+        }
+        result.append(record)
+
+    csv_file.unlink()
+    return result
+
+
 def extract_wifi_status(sbf_file: Path) -> List[Dict]:
     """Extract WiFi AP status (active/disabled) from SBF file.
 
