@@ -746,6 +746,17 @@ class TrimbleHTTPExtractor:
                 sat_list = sats_match.group(1).split(",")
                 position_data["satellites_used"] = len(sat_list)
 
+            # Determine status based on fix type (3D fix = ok)
+            fix_type = position_data.get("fix_type", "")
+            if "3D" in fix_type:
+                position_data["status"] = "ok"
+            elif "2D" in fix_type:
+                position_data["status"] = "warning"
+            elif fix_type:
+                position_data["status"] = "warning"
+            else:
+                position_data["status"] = "unknown"
+
             return position_data if position_data else None
 
         except Exception as e:
