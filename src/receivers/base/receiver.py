@@ -169,13 +169,30 @@ class BaseReceiver(ABC):
 
         # Check metrics statuses if provided
         if metrics:
+            # Determine critical ports based on receiver type
+            receiver_type = self.get_receiver_type().upper()
+            if "POLARX" in receiver_type:
+                # PolaRX5: FTP and HTTP are critical, control is just warning
+                critical_ports = {'ftp', 'http'}
+            elif any(t in receiver_type for t in ['NETR', 'NETRS', 'NETR9', 'NETR5']):
+                # Trimble: HTTP is critical
+                critical_ports = {'http'}
+            else:
+                # Default: all ports are critical
+                critical_ports = {'ftp', 'http', 'control'}
+
             for metric_name, metric_data in metrics.items():
                 if isinstance(metric_data, dict):
-                    # Handle nested 'ports' structure specially
+                    # Handle nested 'ports' structure with receiver-aware criticality
                     if metric_name == "ports":
                         for port_name, port_data in metric_data.items():
                             if isinstance(port_data, dict) and "status" in port_data:
-                                statuses.append(HealthStatus(port_data["status"]))
+                                port_status = port_data["status"]
+                                # Downgrade error to warning for non-critical ports
+                                if port_status == "error" and port_name not in critical_ports:
+                                    statuses.append(HealthStatus.WARNING)
+                                else:
+                                    statuses.append(HealthStatus(port_status))
                     elif "status" in metric_data:
                         statuses.append(HealthStatus(metric_data["status"]))
 
