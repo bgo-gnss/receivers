@@ -439,6 +439,247 @@ class FileTracker:
         self.close()
 
 
+class ArchiveFileChecker:
+    """Check archive file system for expected files.
+
+    Used by Icinga checks to verify files exist on the archive.
+    """
+
+    def __init__(self, data_prepath: Optional[str] = None):
+        """Initialize archive file checker.
+
+        Args:
+            data_prepath: Base archive path. If None, tries to load from config.
+        """
+        self.data_prepath = data_prepath
+        self._config = None
+
+    def _load_config(self):
+        """Load receivers configuration."""
+        if self._config is not None:
+            return
+
+        try:
+            from ..config.receivers_config import ReceiversConfig
+            self._config = ReceiversConfig()
+
+            if self.data_prepath is None:
+                self.data_prepath = self._config.get_data_prepath()
+        except Exception as e:
+            logger.debug(f"Could not load receivers config: {e}")
+            # Fall back to common paths
+            if self.data_prepath is None:
+                for path in ["/mnt/gpsdata", "/tmp/gpsdata"]:
+                    if os.path.isdir(path):
+                        self.data_prepath = path
+                        break
+
+    def _get_archive_template(self) -> str:
+        """Get archive template from config or use default."""
+        self._load_config()
+        if self._config:
+            try:
+                return self._config.get_archive_template()
+            except Exception:
+                pass
+        # Default template
+        return "{data_prepath}/%Y/#b/{station}/{session}/raw/{station}%Y%m%d%H00{session_letter}{extension}"
+
+    def _get_session_letter(self, session_type: str) -> str:
+        """Get session letter for session type."""
+        session_letters = {
+            "15s_24hr": "a",
+            "1Hz_1hr": "b",
+            "status_1hr": "c",
+        }
+        return session_letters.get(session_type, "a")
+
+    def _get_extension(self, receiver_type: Optional[str] = None) -> str:
+        """Get file extension based on receiver type."""
+        if receiver_type:
+            rt = receiver_type.lower()
+            if "polarx" in rt or "septentrio" in rt:
+                return ".sbf.gz"
+            elif "netr9" in rt:
+                return ".T02"
+            elif "netrs" in rt:
+                return ".T00"
+            elif "g10" in rt or "leica" in rt:
+                return ".m00.gz"
+        return ".sbf.gz"  # Default
+
+    def build_archive_path(
+        self,
+        station_id: str,
+        session_type: str,
+        dt: datetime,
+        receiver_type: Optional[str] = None,
+    ) -> str:
+        """Build expected archive path for a file.
+
+        Args:
+            station_id: Station ID (e.g., 'THOB')
+            session_type: Session type (e.g., '15s_24hr')
+            dt: Datetime for the file
+            receiver_type: Optional receiver type for extension
+
+        Returns:
+            Expected archive path
+        """
+        self._load_config()
+
+        template = self._get_archive_template()
+        session_letter = self._get_session_letter(session_type)
+        extension = self._get_extension(receiver_type)
+
+        # Substitute placeholders
+        path = template.format(
+            data_prepath=self.data_prepath or "/mnt/gpsdata",
+            station=station_id,
+            session=session_type,
+            session_letter=session_letter,
+            extension=extension,
+        )
+
+        # Use gtimes for date formatting
+        try:
+            import gtimes.timefunc as gt
+            paths = gt.datepathlist(path, "1D", datelist=[dt])
+            return paths[0] if paths else path
+        except Exception:
+            # Fallback: manual formatting
+            path = path.replace("%Y", dt.strftime("%Y"))
+            path = path.replace("%m", dt.strftime("%m"))
+            path = path.replace("%d", dt.strftime("%d"))
+            path = path.replace("%H", dt.strftime("%H"))
+            path = path.replace("%j", dt.strftime("%j"))
+            path = path.replace("#b", dt.strftime("%b"))
+            return path
+
+    def get_archive_directory(
+        self,
+        station_id: str,
+        session_type: str,
+        year: Optional[int] = None,
+        month: Optional[str] = None,
+    ) -> str:
+        """Get archive directory path for a station/session.
+
+        Args:
+            station_id: Station ID (e.g., 'THOB')
+            session_type: Session type (e.g., '15s_24hr')
+            year: Optional year (default: current year)
+            month: Optional month abbreviation (default: current month)
+
+        Returns:
+            Archive directory path
+        """
+        self._load_config()
+
+        now = datetime.now()
+        if year is None:
+            year = now.year
+        if month is None:
+            month = now.strftime("%b").lower()  # Use lowercase month (jan, feb, etc.)
+
+        # Build directory path: {data_prepath}/{year}/{month}/{station}/{session}/raw/
+        return os.path.join(
+            self.data_prepath or "/mnt/gpsdata",
+            str(year),
+            month,
+            station_id,
+            session_type,
+            "raw"
+        )
+
+    def check_file_status(
+        self,
+        station_id: str,
+        session_type: str,
+        days_back: int = 2,
+        receiver_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Check file status by searching archive directories.
+
+        Searches the archive directory structure for files and reports
+        on file count and age.
+
+        Args:
+            station_id: Station ID (e.g., 'THOB')
+            session_type: Session type (e.g., '15s_24hr')
+            days_back: Number of days to check for expected files
+            receiver_type: Optional receiver type (for future use)
+
+        Returns:
+            Dict with:
+            - files_found: Number of files found in recent directories
+            - files_expected: Expected files based on days_back
+            - latest_file: Path to most recent file found
+            - latest_mtime: Modification time of most recent file
+            - hours_since_file: Hours since most recent file
+            - archive_dir: Archive directory searched
+        """
+        from datetime import timedelta
+        import glob
+
+        self._load_config()
+
+        now = datetime.now()
+        files_found = 0
+        latest_file = None
+        latest_mtime = None
+        all_files = []
+
+        # Search current month and previous month directories
+        for month_offset in range(2):
+            check_date = now - timedelta(days=month_offset * 30)
+            archive_dir = self.get_archive_directory(
+                station_id,
+                session_type,
+                year=check_date.year,
+                month=check_date.strftime("%b").lower(),
+            )
+
+            if os.path.isdir(archive_dir):
+                # Find all files in the directory
+                pattern = os.path.join(archive_dir, f"{station_id}*")
+                for filepath in glob.glob(pattern):
+                    if os.path.isfile(filepath):
+                        mtime = datetime.fromtimestamp(os.path.getmtime(filepath))
+                        all_files.append((filepath, mtime))
+
+        # Sort by modification time (newest first)
+        all_files.sort(key=lambda x: x[1], reverse=True)
+
+        # Count files and find latest
+        files_found = len(all_files)
+        if all_files:
+            latest_file, latest_mtime = all_files[0]
+
+        # Calculate hours since latest file
+        hours_since_file = None
+        if latest_mtime:
+            hours_since_file = (now - latest_mtime).total_seconds() / 3600
+
+        # Expected files based on session type
+        if session_type in ("15s_24hr",):
+            files_expected = days_back  # 1 file per day
+        else:
+            files_expected = days_back * 24  # 1 file per hour
+
+        # Get current archive directory for reference
+        archive_dir = self.get_archive_directory(station_id, session_type)
+
+        return {
+            "files_found": files_found,
+            "files_expected": files_expected,
+            "latest_file": latest_file,
+            "latest_mtime": latest_mtime.isoformat() if latest_mtime else None,
+            "hours_since_file": hours_since_file,
+            "archive_dir": archive_dir,
+        }
+
+
 def compute_checksum(data: Dict[str, Any]) -> str:
     """Compute checksum for health data.
 
