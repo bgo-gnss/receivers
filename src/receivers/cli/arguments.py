@@ -428,13 +428,17 @@ def setup_rec_config_parser(subparsers) -> argparse.ArgumentParser:
         description='''
 Extract or push configuration for Septentrio PolaRx5 receivers via TCP.
 
-Extract saves configs with naming: {ReceiverType}_{StationID}_{ConfigType}_{Timestamp}.txt
+By default, extracted configs are printed to stdout (Unix convention).
+Use --save to store to file with naming: {ReceiverType}_{StationID}_{ConfigType}_{Timestamp}.txt
 
 Examples:
-  # Extract current config from receiver
+  # Extract config to stdout
   receivers rec-config THOB --extract
   receivers rec-config THOB --extract --config-type Boot
-  receivers rec-config THOB,ISFS --extract --output-dir ~/configs/
+
+  # Save config to file (uses rec_config_dir from receivers.cfg or /tmp/polarconfig/)
+  receivers rec-config THOB --extract --save
+  receivers rec-config THOB,ISFS --extract --save --output-dir ~/configs/
 
   # Push config to receiver
   receivers rec-config THOB --push config_file.txt
@@ -457,7 +461,7 @@ Examples:
     mode_group.add_argument(
         '--extract',
         action='store_true',
-        help='Extract configuration from receiver'
+        help='Extract configuration from receiver (prints to stdout by default)'
     )
     mode_group.add_argument(
         '--push',
@@ -473,9 +477,15 @@ Examples:
     )
 
     parser.add_argument(
+        '--save',
+        action='store_true',
+        help='Save extracted config to file (default: print to stdout)'
+    )
+
+    parser.add_argument(
         '--output-dir',
         metavar='DIR',
-        help='Output directory for extracted configs (default: current directory)'
+        help='Override output directory for --save (default: rec_config_dir from config or /tmp/polarconfig/)'
     )
 
     parser.add_argument(
