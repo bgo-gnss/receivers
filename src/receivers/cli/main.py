@@ -300,6 +300,50 @@ def cmd_status(args) -> int:
             except Exception as e:
                 logger.debug(f"RTK status check skipped for {station_id}: {e}")
 
+            # Add file status checks
+            try:
+                from ..health.file_tracker import ArchiveFileChecker, ProcessingStatusChecker
+
+                checker = ArchiveFileChecker()
+                health["file_status"] = {}
+
+                # Check daily files (15s_24hr)
+                stats = checker.check_file_status(station_id, "15s_24hr", days_back=7)
+                if stats:
+                    health["file_status"]["15s_24hr"] = stats
+
+                # Check hourly files (1Hz_1hr)
+                stats = checker.check_file_status(station_id, "1Hz_1hr", days_back=1)
+                if stats and stats.get("files_found", 0) > 0:
+                    health["file_status"]["1Hz_1hr"] = stats
+
+                # Check RINEX files if directory exists
+                stats = checker.check_file_status(station_id, "15s_24hr_rinex", days_back=7)
+                if stats and stats.get("dir_exists", False):
+                    health["file_status"]["15s_24hr_rinex"] = stats
+
+                stats = checker.check_file_status(station_id, "1Hz_1hr_rinex", days_back=1)
+                if stats and stats.get("dir_exists", False) and stats.get("files_found", 0) > 0:
+                    health["file_status"]["1Hz_1hr_rinex"] = stats
+
+                # Check high-rate files if directory exists
+                stats = checker.check_file_status(station_id, "20Hz_1hr", days_back=1)
+                if stats and stats.get("dir_exists", False) and stats.get("files_found", 0) > 0:
+                    health["file_status"]["20Hz_1hr"] = stats
+
+                stats = checker.check_file_status(station_id, "50Hz_1hr", days_back=1)
+                if stats and stats.get("dir_exists", False) and stats.get("files_found", 0) > 0:
+                    health["file_status"]["50Hz_1hr"] = stats
+
+                # Check 24hr processing status
+                proc_checker = ProcessingStatusChecker()
+                proc_result = proc_checker.check_24hr_processing(station_id)
+                if proc_result.get("file_exists", False):
+                    health["processing_24hr"] = proc_result
+
+            except Exception as e:
+                logger.debug(f"File status checks skipped for {station_id}: {e}")
+
             results.append((health, station_config))
 
             # Track critical status
@@ -763,6 +807,59 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
         if status != "unknown":
             emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
             print(f"  RTK: {emoji} {message}")
+
+    # File status checks
+    file_status = health.get("file_status", {})
+    if file_status:
+        file_parts = []
+        # Order: raw files first, then RINEX, then high-rate
+        session_order = ["15s_24hr", "1Hz_1hr", "15s_24hr_rinex", "1Hz_1hr_rinex", "20Hz_1hr", "50Hz_1hr"]
+        session_labels = {
+            "15s_24hr": "15s",
+            "1Hz_1hr": "1Hz",
+            "15s_24hr_rinex": "15s-rnx",
+            "1Hz_1hr_rinex": "1Hz-rnx",
+            "20Hz_1hr": "20Hz",
+            "50Hz_1hr": "50Hz",
+        }
+        # Thresholds (hours): daily=26h warn/50h crit, hourly=2h warn/4h crit
+        thresholds = {
+            "15s_24hr": (26, 50),
+            "1Hz_1hr": (2, 4),
+            "15s_24hr_rinex": (26, 50),
+            "1Hz_1hr_rinex": (2, 4),
+            "20Hz_1hr": (2, 4),
+            "50Hz_1hr": (2, 4),
+        }
+        for session in session_order:
+            stats = file_status.get(session)
+            if stats:
+                hours = stats.get("hours_since_file")
+                warn_h, crit_h = thresholds.get(session, (26, 50))
+                if hours is None:
+                    status = "critical"
+                elif hours >= crit_h:
+                    status = "critical"
+                elif hours >= warn_h:
+                    status = "warning"
+                else:
+                    status = "ok"
+                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                label = session_labels.get(session, session)
+                file_parts.append(f"{label}:{emoji}")
+        if file_parts:
+            print(f"  Files: {' '.join(file_parts)}")
+
+    # 24hr processing status
+    proc_status = health.get("processing_24hr", {})
+    if proc_status:
+        status = proc_status.get("status", "unknown")
+        message = proc_status.get("message", "")
+        if status != "unknown":
+            emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+            # Shorten the message for display
+            short_msg = message.replace("24hr processing ", "").replace("OK - ", "").replace("CRITICAL - ", "")
+            print(f"  Processing: {emoji} {short_msg}")
 
 
 def cmd_health_timeseries_extract(
