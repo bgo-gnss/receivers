@@ -553,6 +553,32 @@ def _send_status_to_icinga(
         except Exception as e:
             logger.debug(f"Could not send processing status for {station_id}: {e}")
 
+        # Send RTK status check (NTRIP stream health)
+        try:
+            from ..monitoring.ntrip_client import check_ntrip_status, NTRIPConfig
+            from ..config.receivers_config import ReceiversConfig
+
+            receivers_cfg = ReceiversConfig()
+            ntrip_status = check_ntrip_status(
+                station_id=station_id,
+                receivers_config=receivers_cfg,
+                station_config=station_config,
+            )
+
+            if ntrip_status:
+                response = client.send_rtk_check(
+                    station=station_id,
+                    ntrip_status=ntrip_status,
+                )
+                status = "✅" if response.get("success") else "❌"
+                code = response.get("code", "N/A")
+                if response.get("success"):
+                    print(f"{status} rtk status: sent (HTTP {code})")
+                else:
+                    print(f"{status} rtk status: FAILED - {response.get('message', 'Unknown error')}")
+        except Exception as e:
+            logger.debug(f"Could not send RTK status for {station_id}: {e}")
+
     # Close database connection
     if db_writer:
         db_writer.close()

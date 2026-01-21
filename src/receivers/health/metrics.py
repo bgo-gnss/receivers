@@ -762,6 +762,18 @@ class MetricChecker:
                     message=f"⚠️  Logging status WARNING - {station_prefix}disk {disk_status}",
                     performance_data=perf,
                 )
+            elif status_lower in {"ok", "good", "healthy"}:
+                # Explicit OK status from receiver
+                perf = "logging=1;;;0;1"
+                if disk_usage is not None:
+                    perf += f" disk_used={disk_usage}%;{cfg.disk_warning};{cfg.disk_critical};0;100"
+                return MetricResult(
+                    status=HealthStatus.OK,
+                    value=disk_usage,
+                    unit="%",
+                    message=f"✅ Logging status OK - {station_prefix}logging active",
+                    performance_data=perf,
+                )
 
         # Check disk usage percentage if available
         if disk_usage is None:
