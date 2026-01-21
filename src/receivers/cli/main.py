@@ -316,13 +316,18 @@ def cmd_status(args) -> int:
 
 def _send_status_to_icinga(
     results: list,
-    logger: logging.Logger
+    logger: logging.Logger,
+    save_to_db: bool = True
 ) -> int:
     """Send status check results to Icinga monitoring system.
+
+    Also saves health data to database for Grafana dashboards (same data,
+    single extraction).
 
     Args:
         results: List of (health_data, station_config) tuples
         logger: Logger instance
+        save_to_db: Also save health data to database (default: True)
 
     Returns:
         0 if all checks sent successfully, 1 otherwise
@@ -332,6 +337,19 @@ def _send_status_to_icinga(
     except ImportError:
         logger.error("❌ Icinga client not available. Install requests: pip install requests")
         return 1
+
+    # Initialize database writer if saving to DB
+    db_writer = None
+    if save_to_db:
+        try:
+            from ..health.db_writer import HealthDatabaseWriter
+            db_writer = HealthDatabaseWriter()
+            if not db_writer.connect():
+                logger.warning("Could not connect to database, skipping DB storage")
+                db_writer = None
+        except Exception as e:
+            logger.warning(f"Database not available: {e}")
+            db_writer = None
 
     client = IcingaClient()
     all_success = True
@@ -344,7 +362,15 @@ def _send_status_to_icinga(
         if health.get("overall_status") == "critical":
             has_critical = True
 
-        # Send all health-based checks
+        # Save to database (same data used for Icinga and Grafana)
+        if db_writer:
+            try:
+                db_writer.write_health_data(health)
+                logger.debug(f"Saved health data to database for {station_id}")
+            except Exception as e:
+                logger.warning(f"Failed to save to database for {station_id}: {e}")
+
+        # Send all health-based checks to Icinga
         try:
             responses = client.send_health_from_json(health)
 
@@ -362,6 +388,10 @@ def _send_status_to_icinga(
         except Exception as e:
             logger.error(f"Failed to send checks for {station_id}: {e}")
             all_success = False
+
+    # Close database connection
+    if db_writer:
+        db_writer.close()
 
     return 0 if all_success and not has_critical else 1
 
