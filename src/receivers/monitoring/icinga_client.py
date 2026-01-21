@@ -175,11 +175,53 @@ class IcingaClient:
             import urllib3
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+    def _get_ttl_for_check(self, check_name: str) -> int:
+        """Get the TTL value for a specific check type.
+
+        Args:
+            check_name: The check name (e.g., 'GPS Ping', 'Station temp')
+
+        Returns:
+            TTL value in seconds from config
+        """
+        # Map check names to TTL attribute names
+        ttl_map = {
+            "GPS Ping": "ttl_gps_ping",
+            "GPS Health": "ttl_gps_ping",  # Use same as ping for overall health
+            "Station temp": "ttl_station_temp",
+            "Station volt": "ttl_station_volt",
+            "CPU load": "ttl_cpu_load",
+            "Receiver uptime": "ttl_receiver_uptime",
+            "Satellite status": "ttl_satellite_status",
+            "Station position": "ttl_station_position",
+            "Logging status": "ttl_logging_status",
+            "Receiver status": "ttl_receiver_status",
+            "NTRIP status": "ttl_rtk_status",  # Use RTK TTL for NTRIP
+            "rtk status": "ttl_rtk_status",
+            "24hr processing status": "ttl_processing_status",
+        }
+
+        # Check for file status checks
+        if "file status" in check_name.lower():
+            if "15s" in check_name.lower() or "daily" in check_name.lower():
+                return self.thresholds.ttl_file_status_15s
+            else:
+                return self.thresholds.ttl_file_status_1hz
+
+        # Look up the TTL attribute
+        ttl_attr = ttl_map.get(check_name)
+        if ttl_attr and hasattr(self.thresholds, ttl_attr):
+            return getattr(self.thresholds, ttl_attr)
+
+        # Default to global TTL
+        return self.thresholds.ttl_default
+
     def _send_metric_check(
         self,
         station: str,
         check_name: str,
-        result: MetricResult
+        result: MetricResult,
+        ttl: Optional[int] = None
     ) -> Dict[str, Any]:
         """Send a metric check result to Icinga using MetricResult.
 
@@ -189,17 +231,23 @@ class IcingaClient:
             station: Station ID (e.g., 'ORFC')
             check_name: Check name (e.g., 'Station temp', 'Station volt')
             result: MetricResult from MetricChecker evaluation
+            ttl: Optional TTL override. If not provided, uses per-check TTL from config.
 
         Returns:
             API response dict
         """
+        # Get TTL from config if not provided
+        if ttl is None:
+            ttl = self._get_ttl_for_check(check_name)
+
         check_result = CheckResult(
             station=station,
             check_name=check_name,
             exit_status=result.exit_code,
             plugin_output=result.message,
             performance_data=result.performance_data,
-            check_source=self.check_source
+            check_source=self.check_source,
+            ttl=ttl
         )
         return self.send_check_result(check_result)
 
@@ -559,7 +607,8 @@ class IcingaClient:
                 exit_status=EXIT_UNKNOWN,
                 plugin_output=f"❓ Receiver uptime UNKNOWN - {station} uptime unavailable",
                 performance_data="",
-                check_source=self.check_source
+                check_source=self.check_source,
+                ttl=self._get_ttl_for_check("Receiver uptime")
             ))
 
         # Convert to human-readable
@@ -590,7 +639,8 @@ class IcingaClient:
             exit_status=exit_status,
             plugin_output=message,
             performance_data=performance_data,
-            check_source=self.check_source
+            check_source=self.check_source,
+            ttl=self._get_ttl_for_check("Receiver uptime")
         ))
 
     def send_ntrip_check(
@@ -618,7 +668,8 @@ class IcingaClient:
                 exit_status=EXIT_UNKNOWN,
                 plugin_output=f"❓ NTRIP status UNKNOWN - {station} NTRIP data unavailable",
                 performance_data="",
-                check_source=self.check_source
+                check_source=self.check_source,
+                ttl=self._get_ttl_for_check("NTRIP status")
             ))
 
         # Check server status (for stations that act as NTRIP casters)
@@ -681,7 +732,8 @@ class IcingaClient:
             exit_status=exit_status,
             plugin_output=message,
             performance_data=performance_data,
-            check_source=self.check_source
+            check_source=self.check_source,
+            ttl=self._get_ttl_for_check("NTRIP status")
         ))
 
     def send_download_check(
@@ -1016,7 +1068,8 @@ class IcingaClient:
             exit_status=exit_status,
             plugin_output=message,
             performance_data=performance_data,
-            check_source=self.check_source
+            check_source=self.check_source,
+            ttl=self._get_ttl_for_check("GPS Ping")
         )
 
         return self.send_check_result(result)
@@ -1206,7 +1259,8 @@ class IcingaClient:
             exit_status=exit_status,
             plugin_output=message,
             performance_data=performance_data,
-            check_source=self.check_source
+            check_source=self.check_source,
+            ttl=self._get_ttl_for_check("GPS Health")
         )
 
         return self.send_check_result(result)
