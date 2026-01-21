@@ -474,6 +474,81 @@ class IcingaClient:
         )
         return self._send_metric_check(station, "Receiver status", result)
 
+    def send_cpu_check(
+        self,
+        station: str,
+        cpu_load: Optional[int]
+    ) -> Dict[str, Any]:
+        """Send a CPU load check result.
+
+        Args:
+            station: Station ID (e.g., 'THOB')
+            cpu_load: CPU load percentage (None if unavailable)
+
+        Returns:
+            API response dict
+        """
+        result = self.metric_checker.check_cpu_load(cpu_load, station=station)
+        return self._send_metric_check(station, "CPU load", result)
+
+    def send_uptime_check(
+        self,
+        station: str,
+        uptime_seconds: Optional[int]
+    ) -> Dict[str, Any]:
+        """Send an uptime check result.
+
+        Useful for detecting receiver restarts. Warning if uptime < 1 hour,
+        OK otherwise.
+
+        Args:
+            station: Station ID (e.g., 'THOB')
+            uptime_seconds: Receiver uptime in seconds (None if unavailable)
+
+        Returns:
+            API response dict
+        """
+        if uptime_seconds is None:
+            return self.send_check_result(CheckResult(
+                station=station,
+                check_name="Receiver uptime",
+                exit_status=EXIT_UNKNOWN,
+                plugin_output=f"❓ Receiver uptime UNKNOWN - {station} uptime unavailable",
+                performance_data="",
+                check_source=self.check_source
+            ))
+
+        # Convert to human-readable
+        days = uptime_seconds // 86400
+        hours = (uptime_seconds % 86400) // 3600
+        minutes = (uptime_seconds % 3600) // 60
+
+        if days > 0:
+            uptime_str = f"{days}d {hours}h {minutes}m"
+        elif hours > 0:
+            uptime_str = f"{hours}h {minutes}m"
+        else:
+            uptime_str = f"{minutes}m"
+
+        # Warning if recently restarted (< 1 hour)
+        if uptime_seconds < 3600:
+            exit_status = EXIT_WARNING
+            message = f"⚠️  Receiver uptime WARNING - {station} recently restarted ({uptime_str})"
+        else:
+            exit_status = EXIT_OK
+            message = f"✅ Receiver uptime OK - {station} up {uptime_str}"
+
+        performance_data = f"uptime={uptime_seconds}s;3600:;0:;0"
+
+        return self.send_check_result(CheckResult(
+            station=station,
+            check_name="Receiver uptime",
+            exit_status=exit_status,
+            plugin_output=message,
+            performance_data=performance_data,
+            check_source=self.check_source
+        ))
+
     def send_gps_ping_from_json(
         self,
         station: str,
@@ -551,8 +626,8 @@ class IcingaClient:
         Args:
             health_data: Health data dict from `receivers health --json`
             checks: List of checks to send. If None, sends all available.
-                   Options: 'ping', 'temp', 'volt', 'satellites', 'position',
-                           'logging', 'receiver_status'
+                   Options: 'ping', 'temp', 'volt', 'cpu', 'uptime', 'satellites',
+                           'position', 'logging', 'receiver_status'
 
         Returns:
             Dict mapping check name to API response
@@ -562,9 +637,9 @@ class IcingaClient:
         data_quality = health_data.get('data_quality', {})
 
         available_checks = checks or [
-            'ping', 'temp', 'satellites', 'position', 'logging', 'receiver_status'
+            'ping', 'temp', 'volt', 'cpu', 'uptime', 'satellites',
+            'position', 'logging', 'receiver_status'
         ]
-        # Note: 'volt' not included by default as PolaRX5 doesn't report voltage
 
         results = {}
 
@@ -583,13 +658,29 @@ class IcingaClient:
             )
 
         if 'volt' in available_checks:
-            # Voltage might not be available on all receivers
-            voltage = metrics.get('voltage', {}).get('value')
+            # Voltage is in metrics.power.voltage (from PowerStatus SBF block)
+            power_data = metrics.get('power', {})
+            voltage = power_data.get('voltage')
             if voltage is not None:
                 results['Station volt'] = self.send_voltage_check(
                     station=station,
                     voltage=voltage
                 )
+
+        if 'cpu' in available_checks:
+            cpu_data = metrics.get('cpu_load', {})
+            cpu_percent = cpu_data.get('percent') if isinstance(cpu_data, dict) else None
+            results['CPU load'] = self.send_cpu_check(
+                station=station,
+                cpu_load=cpu_percent
+            )
+
+        if 'uptime' in available_checks:
+            uptime_seconds = metrics.get('uptime_seconds')
+            results['Receiver uptime'] = self.send_uptime_check(
+                station=station,
+                uptime_seconds=uptime_seconds
+            )
 
         if 'satellites' in available_checks:
             sat_data = metrics.get('satellites', {})
