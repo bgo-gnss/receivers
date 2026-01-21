@@ -839,9 +839,9 @@ class IcingaClient:
             if not active_mps and ntrip_status.mountpoints:
                 error_message = ntrip_status.mountpoints[0].error_message
 
-        # Default TTL to 5 minutes for RTK checks
+        # Default TTL to 4 hours for RTK checks (matches Icinga 2h interval with buffer)
         if ttl is None:
-            ttl = 300
+            ttl = 14400  # 4 hours in seconds
 
         # Build performance data
         perf_parts = []
