@@ -790,9 +790,9 @@ class IcingaClient:
                 else self.thresholds.file_daily_critical_hours
             )
 
-        # Default TTL from config
+        # Default TTL from config (use category-based TTL)
         if ttl is None:
-            ttl = self.thresholds.ttl_file_status
+            ttl = self.thresholds.get_ttl("file_hourly" if is_hourly else "file_daily")
 
         perf_parts = []
 
@@ -869,7 +869,7 @@ class IcingaClient:
         warn_days = self.thresholds.processing_warning_days
         crit_days = self.thresholds.processing_critical_days
         if ttl is None:
-            ttl = self.thresholds.ttl_processing_status
+            ttl = self.thresholds.get_ttl("processing")
 
         # Map status to exit code
         status_map = {
@@ -959,7 +959,7 @@ class IcingaClient:
         if latency_critical is None:
             latency_critical = self.thresholds.rtk_latency_critical
         if ttl is None:
-            ttl = self.thresholds.ttl_rtk_status
+            ttl = self.thresholds.get_ttl("rtk")
 
         # Build performance data
         perf_parts = []
