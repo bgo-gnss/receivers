@@ -606,7 +606,7 @@ class ArchiveFileChecker:
         """Check file status by searching archive directories.
 
         Searches the archive directory structure for files and reports
-        on file count and age.
+        on file count and age. Only counts files within the days_back period.
 
         Args:
             station_id: Station ID (e.g., 'THOB')
@@ -616,33 +616,38 @@ class ArchiveFileChecker:
 
         Returns:
             Dict with:
-            - files_found: Number of files found in recent directories
+            - files_found: Number of files found within days_back period
             - files_expected: Expected files based on days_back
             - latest_file: Path to most recent file found
             - latest_mtime: Modification time of most recent file
             - hours_since_file: Hours since most recent file
             - archive_dir: Archive directory searched
+            - dir_exists: Whether the archive directory exists
         """
-        from datetime import timedelta
         import glob
 
         self._load_config()
 
         now = datetime.now()
-        files_found = 0
-        latest_file = None
-        latest_mtime = None
+        cutoff_date = now - timedelta(days=days_back)
         all_files = []
+        searched_dirs = set()
 
-        # Search current month and previous month directories
-        for month_offset in range(2):
-            check_date = now - timedelta(days=month_offset * 30)
+        # Search all unique month directories that could contain files in the period
+        # Generate all dates in the range to find unique year/month combinations
+        unique_months = set()
+        for day_offset in range(days_back + 1):  # +1 to include today
+            check_date = now - timedelta(days=day_offset)
+            unique_months.add((check_date.year, check_date.strftime("%b").lower()))
+
+        for year, month in unique_months:
             archive_dir = self.get_archive_directory(
                 station_id,
                 session_type,
-                year=check_date.year,
-                month=check_date.strftime("%b").lower(),
+                year=year,
+                month=month,
             )
+            searched_dirs.add(archive_dir)
 
             if os.path.isdir(archive_dir):
                 # Find all files in the directory
@@ -650,13 +655,17 @@ class ArchiveFileChecker:
                 for filepath in glob.glob(pattern):
                     if os.path.isfile(filepath):
                         mtime = datetime.fromtimestamp(os.path.getmtime(filepath))
-                        all_files.append((filepath, mtime))
+                        # Only count files within the days_back period
+                        if mtime >= cutoff_date:
+                            all_files.append((filepath, mtime))
 
         # Sort by modification time (newest first)
         all_files.sort(key=lambda x: x[1], reverse=True)
 
         # Count files and find latest
         files_found = len(all_files)
+        latest_file = None
+        latest_mtime = None
         if all_files:
             latest_file, latest_mtime = all_files[0]
 
@@ -675,8 +684,7 @@ class ArchiveFileChecker:
         archive_dir = self.get_archive_directory(station_id, session_type)
 
         # Check if any archive directory was found
-        current_dir = self.get_archive_directory(station_id, session_type)
-        dir_exists = os.path.isdir(current_dir) or files_found > 0
+        dir_exists = any(os.path.isdir(d) for d in searched_dirs) or files_found > 0
 
         return {
             "files_found": files_found,
@@ -833,7 +841,7 @@ class ProcessingStatusChecker:
             # Convert year fraction to datetime using gtimes
             try:
                 import gtimes.timefunc as gt
-                latest_date = gt.TimefromYearf(latest_yearf)
+                latest_dt: datetime = gt.TimefromYearf(latest_yearf)  # type: ignore[assignment]
             except Exception as e:
                 logger.debug(f"Could not convert year fraction: {e}")
                 return {
@@ -846,40 +854,49 @@ class ProcessingStatusChecker:
                 }
 
             # Calculate how many days behind
+            # 24hr processing adds yesterday's point, so:
+            # - latest from yesterday (or today) = OK (on schedule)
+            # - latest from 2 days ago = 1 day late
+            # - latest from 3 days ago = 2 days late, etc.
             now = datetime.now()
-            yesterday = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
-            latest_day = latest_date.replace(hour=0, minute=0, second=0, microsecond=0)
+            today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            yesterday = today - timedelta(days=1)
+            latest_day = latest_dt.replace(hour=0, minute=0, second=0, microsecond=0)
 
-            days_behind = (yesterday - latest_day).days
+            # days_late: 0 = on schedule, 1 = 1 day late, etc.
+            days_late = (yesterday - latest_day).days
 
             # Determine status
-            if days_behind < 0:
-                # Latest data is from today or future - OK
+            latest_date_str = latest_dt.strftime('%Y-%m-%d')
+            if days_late <= 0:
+                # Latest data is from yesterday or more recent - OK (on schedule)
                 status = "ok"
-                message = f"24hr processing OK - latest: {latest_date.strftime('%Y-%m-%d')}"
-            elif days_behind == 0:
-                # Latest data is from yesterday - OK
-                status = "ok"
-                message = f"24hr processing OK - latest: {latest_date.strftime('%Y-%m-%d')}"
-            elif days_behind == 1:
-                # One day behind - check if we're past expected time
+                message = f"24hr processing OK - latest: {latest_date_str}"
+                days_behind = 0
+            elif days_late == 1:
+                # One day late - check if we're past expected time
                 if now.hour >= expected_by_hour:
                     status = "warning"
-                    message = f"24hr processing delayed - latest: {latest_date.strftime('%Y-%m-%d')} (1 day behind)"
+                    message = f"24hr processing delayed - latest: {latest_date_str} (1 day late)"
+                    days_behind = 1
                 else:
+                    # Still early, processing might be running
                     status = "ok"
-                    message = f"24hr processing OK - latest: {latest_date.strftime('%Y-%m-%d')} (processing may be in progress)"
-            elif days_behind <= 3:
+                    message = f"24hr processing OK - latest: {latest_date_str} (today's processing pending)"
+                    days_behind = 0
+            elif days_late <= 3:
                 status = "warning"
-                message = f"24hr processing behind - latest: {latest_date.strftime('%Y-%m-%d')} ({days_behind} days behind)"
+                message = f"24hr processing behind - latest: {latest_date_str} ({days_late} days late)"
+                days_behind = days_late
             else:
                 status = "critical"
-                message = f"24hr processing CRITICAL - latest: {latest_date.strftime('%Y-%m-%d')} ({days_behind} days behind)"
+                message = f"24hr processing CRITICAL - latest: {latest_date_str} ({days_late} days late)"
+                days_behind = days_late
 
             return {
                 "status": status,
                 "latest_yearf": latest_yearf,
-                "latest_date": latest_date.isoformat(),
+                "latest_date": latest_dt.isoformat(),
                 "days_behind": days_behind,
                 "file_exists": True,
                 "message": message,

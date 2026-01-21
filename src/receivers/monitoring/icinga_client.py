@@ -58,6 +58,8 @@ class CheckResult:
         plugin_output: Human-readable status message
         performance_data: Optional performance metrics in Nagios format
         check_source: Source host sending the check (default: 'eldey')
+        ttl: Optional time-to-live in seconds. If set, Icinga will mark the
+             check as stale after this many seconds without a new result.
     """
     station: str
     check_name: str
@@ -65,6 +67,7 @@ class CheckResult:
     plugin_output: str
     performance_data: str = ""
     check_source: str = "eldey"
+    ttl: Optional[int] = None
 
     def to_service_name(self) -> str:
         """Convert to Icinga service name format.
@@ -78,14 +81,18 @@ class CheckResult:
         """Convert to Icinga API payload format.
 
         Returns:
-            Dict with exit_status, plugin_output, performance_data, check_source
+            Dict with exit_status, plugin_output, performance_data, check_source,
+            and optionally ttl
         """
-        return {
+        payload = {
             "exit_status": self.exit_status,
             "plugin_output": self.plugin_output,
             "performance_data": self.performance_data,
             "check_source": self.check_source
         }
+        if self.ttl is not None:
+            payload["ttl"] = self.ttl
+        return payload
 
 
 class IcingaClient:
@@ -652,6 +659,7 @@ class IcingaClient:
         error_count: int = 0,
         warn_hours: float = 26.0,
         crit_hours: float = 50.0,
+        ttl: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Send a download status check result.
 
@@ -671,76 +679,52 @@ class IcingaClient:
             error_count: Number of download errors
             warn_hours: Warning threshold for hours since download (default: 26h for daily)
             crit_hours: Critical threshold for hours since download (default: 50h for daily)
+            ttl: Time-to-live in seconds for the check result. If not specified,
+                 defaults to 2x crit_hours (e.g., 100 hours for daily files)
 
         Returns:
             API response dict
         """
-        perf_parts = []
-        problems = []
-        warnings = []
+        # Default TTL to 2x critical threshold (with some buffer)
+        if ttl is None:
+            ttl = int(crit_hours * 2 * 3600)  # Convert hours to seconds
 
-        # Add performance data
+        perf_parts = []
+
+        # Add performance data (informational, not used for status)
         if hours_since_download is not None:
             perf_parts.append(f"hours_since_download={hours_since_download:.1f};{warn_hours};{crit_hours};0")
 
-        if downloads_expected > 0:
-            success_rate = (downloads_successful / downloads_expected) * 100
-            perf_parts.append(f"success_rate={success_rate:.1f}%;90;70;0;100")
-            perf_parts.append(f"successful={downloads_successful};;;0;{downloads_expected}")
+        perf_parts.append(f"successful={downloads_successful};;;0")
+        if downloads_missing > 0:
             perf_parts.append(f"missing={downloads_missing};;;0")
-        else:
-            perf_parts.append(f"successful={downloads_successful};;;0")
-            perf_parts.append(f"missing={downloads_missing};;;0")
-
         if error_count > 0:
             perf_parts.append(f"errors={error_count};;;0")
 
-        # Check time since last download
-        if hours_since_download is not None:
-            if hours_since_download >= crit_hours:
-                problems.append(f"no download in {hours_since_download:.0f}h")
-            elif hours_since_download >= warn_hours:
-                warnings.append(f"last download {hours_since_download:.0f}h ago")
-
-        # Check error count
-        if error_count >= 3:
-            problems.append(f"{error_count} errors")
-        elif error_count >= 1:
-            warnings.append(f"{error_count} error(s)")
-
-        # Check success rate
-        if downloads_expected > 0 and downloads_successful == 0:
-            problems.append("no successful downloads")
-        elif downloads_expected > 0:
-            success_rate = (downloads_successful / downloads_expected) * 100
-            if success_rate < 70:
-                problems.append(f"{success_rate:.0f}% success rate")
-            elif success_rate < 90:
-                warnings.append(f"{success_rate:.0f}% success rate")
-
         performance_data = " ".join(perf_parts)
 
-        # Determine overall status
-        # Use Icinga service naming convention: "15s_24hr file status", "1Hz_1hr file status"
+        # Determine status based ONLY on time since last download
+        # Success rate and error count are informational only
         check_name = f"{session_type} file status"
 
-        if problems:
+        if hours_since_download is None:
+            # No files found at all
             exit_status = EXIT_CRITICAL
-            message = f"❌ {check_name} CRITICAL - {station}: {', '.join(problems)}"
-        elif warnings:
+            message = f"❌ {check_name} CRITICAL - {station}: no files found"
+        elif hours_since_download >= crit_hours:
+            exit_status = EXIT_CRITICAL
+            message = f"❌ {check_name} CRITICAL - {station}: no file in {hours_since_download:.0f}h"
+        elif hours_since_download >= warn_hours:
             exit_status = EXIT_WARNING
-            message = f"⚠️  {check_name} WARNING - {station}: {', '.join(warnings)}"
+            message = f"⚠️  {check_name} WARNING - {station}: last file {hours_since_download:.0f}h ago"
         else:
             exit_status = EXIT_OK
-            if hours_since_download is not None:
-                message = f"✅ {check_name} OK - {station}: last {hours_since_download:.0f}h ago"
-                if latest_download:
-                    # Add timestamp for clarity
-                    message += f" ({latest_download[:16]})"
-            else:
-                message = f"✅ {check_name} OK - {station}"
+            message = f"✅ {check_name} OK - {station}: last {hours_since_download:.0f}h ago"
+            if latest_download:
+                # Add timestamp for clarity
+                message += f" ({latest_download[:16]})"
             if downloads_successful > 0:
-                message += f", {downloads_successful} successful"
+                message += f", {downloads_successful} files"
 
         return self.send_check_result(CheckResult(
             station=station,
@@ -748,7 +732,8 @@ class IcingaClient:
             exit_status=exit_status,
             plugin_output=message,
             performance_data=performance_data,
-            check_source=self.check_source
+            check_source=self.check_source,
+            ttl=ttl
         ))
 
     def send_processing_check(
@@ -804,6 +789,108 @@ class IcingaClient:
             plugin_output=message,
             performance_data=performance_data,
             check_source=self.check_source
+        ))
+
+    def send_rtk_check(
+        self,
+        station: str,
+        ntrip_status: Optional[Any] = None,
+        mountpoints_active: int = 0,
+        mountpoints_total: int = 0,
+        data_rate_bps: Optional[float] = None,
+        latency_seconds: Optional[float] = None,
+        error_message: Optional[str] = None,
+        latency_warning: float = 10.0,
+        latency_critical: float = 30.0,
+        ttl: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Send an RTK status check result.
+
+        Monitors NTRIP stream health for RTK corrections.
+
+        Args:
+            station: Station ID (e.g., 'THOB')
+            ntrip_status: Optional NTRIPStatus object (from ntrip_client)
+            mountpoints_active: Number of active mountpoints
+            mountpoints_total: Total number of configured mountpoints
+            data_rate_bps: Data rate in bytes per second
+            latency_seconds: Estimated stream latency
+            error_message: Error message if stream is down
+            latency_warning: Warning threshold for latency (seconds)
+            latency_critical: Critical threshold for latency (seconds)
+            ttl: Time-to-live for check result (seconds)
+
+        Returns:
+            API response dict
+        """
+        # If NTRIPStatus object provided, extract values
+        if ntrip_status is not None:
+            mountpoints_active = sum(
+                1 for mp in ntrip_status.mountpoints if mp.is_active
+            )
+            mountpoints_total = len(ntrip_status.mountpoints)
+
+            # Get max data rate and latency from active mountpoints
+            active_mps = [mp for mp in ntrip_status.mountpoints if mp.is_active]
+            if active_mps:
+                data_rate_bps = max(mp.data_rate_bps or 0 for mp in active_mps)
+                latency_seconds = max(mp.latency_seconds or 0 for mp in active_mps)
+
+            if not active_mps and ntrip_status.mountpoints:
+                error_message = ntrip_status.mountpoints[0].error_message
+
+        # Default TTL to 5 minutes for RTK checks
+        if ttl is None:
+            ttl = 300
+
+        # Build performance data
+        perf_parts = []
+        if mountpoints_total > 0:
+            perf_parts.append(f"active={mountpoints_active};;;0;{mountpoints_total}")
+        if data_rate_bps is not None:
+            perf_parts.append(f"data_rate={data_rate_bps:.0f}B/s;;;0")
+        if latency_seconds is not None:
+            perf_parts.append(
+                f"latency={latency_seconds:.1f}s;{latency_warning};{latency_critical};0"
+            )
+
+        performance_data = " ".join(perf_parts)
+
+        # Determine status
+        check_name = "rtk status"
+
+        if mountpoints_total == 0:
+            exit_status = EXIT_UNKNOWN
+            message = f"❓ rtk status UNKNOWN - {station}: not configured"
+        elif mountpoints_active == 0:
+            exit_status = EXIT_CRITICAL
+            error = error_message or "no active streams"
+            message = f"❌ rtk status CRITICAL - {station}: {error}"
+        elif mountpoints_active < mountpoints_total:
+            exit_status = EXIT_WARNING
+            message = f"⚠️  rtk status WARNING - {station}: {mountpoints_active}/{mountpoints_total} streams"
+        elif latency_seconds is not None and latency_seconds > latency_critical:
+            exit_status = EXIT_CRITICAL
+            message = f"❌ rtk status CRITICAL - {station}: latency {latency_seconds:.1f}s"
+        elif latency_seconds is not None and latency_seconds > latency_warning:
+            exit_status = EXIT_WARNING
+            message = f"⚠️  rtk status WARNING - {station}: latency {latency_seconds:.1f}s"
+        else:
+            exit_status = EXIT_OK
+            rate_str = f", {data_rate_bps:.0f} B/s" if data_rate_bps else ""
+            if mountpoints_total == 1:
+                message = f"✅ rtk status OK - {station}: stream active{rate_str}"
+            else:
+                message = f"✅ rtk status OK - {station}: {mountpoints_active}/{mountpoints_total} streams{rate_str}"
+
+        return self.send_check_result(CheckResult(
+            station=station,
+            check_name=check_name,
+            exit_status=exit_status,
+            plugin_output=message,
+            performance_data=performance_data,
+            check_source=self.check_source,
+            ttl=ttl
         ))
 
     def send_gps_ping_from_json(
