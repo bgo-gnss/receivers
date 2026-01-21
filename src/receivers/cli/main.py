@@ -822,10 +822,10 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
             "20Hz_1hr": "20Hz",
             "50Hz_1hr": "50Hz",
         }
-        # Get thresholds from config
+        # Get thresholds from icinga config
         try:
-            from ..config.receivers_config import get_receivers_config
-            icinga_thresholds = get_receivers_config().get_icinga_thresholds()
+            from ..config.icinga_config import get_icinga_config
+            icinga_thresholds = get_icinga_config().get_thresholds()
             daily_warn = icinga_thresholds.file_daily_warning_hours
             daily_crit = icinga_thresholds.file_daily_critical_hours
             hourly_warn = icinga_thresholds.file_hourly_warning_hours
