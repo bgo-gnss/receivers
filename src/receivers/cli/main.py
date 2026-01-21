@@ -273,6 +273,33 @@ def cmd_status(args) -> int:
 
             # Use the same health extraction as health command
             health = receiver.get_health_status()
+
+            # Add RTK status (NTRIP stream health) if configured
+            try:
+                from ..monitoring.ntrip_client import check_ntrip_status
+                from ..config.receivers_config import ReceiversConfig
+                receivers_cfg = ReceiversConfig()
+                ntrip_status = check_ntrip_status(
+                    station_id, receivers_cfg, station_config
+                )
+                if ntrip_status:
+                    health["rtk"] = {
+                        "status": ntrip_status.overall_status,
+                        "message": ntrip_status.message,
+                        "host": ntrip_status.host,
+                        "mountpoints": [
+                            {
+                                "name": mp.mountpoint,
+                                "active": mp.is_active,
+                                "data_rate": mp.data_rate_bps,
+                                "error": mp.error_message,
+                            }
+                            for mp in ntrip_status.mountpoints
+                        ],
+                    }
+            except Exception as e:
+                logger.debug(f"RTK status check skipped for {station_id}: {e}")
+
             results.append((health, station_config))
 
             # Track critical status
@@ -727,6 +754,15 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
         if status != "unknown":
             emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
             print(f"  Logging: {emoji} {status}")
+
+    # RTK status (NTRIP stream health)
+    rtk_status = health.get("rtk", {})
+    if rtk_status:
+        status = rtk_status.get("status", "unknown")
+        message = rtk_status.get("message", "")
+        if status != "unknown":
+            emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+            print(f"  RTK: {emoji} {message}")
 
 
 def cmd_health_timeseries_extract(

@@ -353,17 +353,13 @@ class NTRIPClient:
         Returns:
             NTRIPStatus with overall results
         """
-        # Get sourcetable first to check if mountpoints exist
-        streams = self.get_sourcetable()
-        available_mountpoints = (
-            [s["mountpoint"] for s in streams] if streams else None
-        )
-
+        # Try connecting directly to each mountpoint
+        # Don't rely on sourcetable - it may be incomplete/outdated
         mountpoint_statuses = []
 
         for mp in self.config.mountpoints:
             self.logger.debug(f"Checking NTRIP mountpoint: {mp}")
-            status = self.check_mountpoint(mp, available_mountpoints)
+            status = self.check_mountpoint(mp)
             mountpoint_statuses.append(status)
 
         # Determine overall status
