@@ -1372,33 +1372,18 @@ def cmd_validate(args) -> int:
         return 1
 
 
-def cmd_push_config(args) -> int:
-    """Push configuration command - send commands to Septentrio receivers."""
+def cmd_rec_config(args) -> int:
+    """Receiver configuration command - extract or push config for Septentrio receivers."""
     logger = setup_logging(args.loglevel)
 
     from pathlib import Path
-    from ..septentrio.push_config import (
-        send_commands_to_receiver,
-        load_config_file,
-        DEFAULT_CONTROL_PORT
+    from ..septentrio.tcp_client import (
+        PolaRX5TCPClient,
+        save_config_to_file,
+        load_config_from_file,
+        DEFAULT_CONTROL_PORT,
     )
     from ..config.receivers_config import get_receivers_config
-
-    # Load config file
-    config_path = Path(args.config_file)
-    try:
-        commands = load_config_file(config_path)
-    except FileNotFoundError as e:
-        logger.error(str(e))
-        return 1
-
-    # Add save-to-boot command unless --no-save is specified
-    if not args.no_save:
-        commands = commands + ['eccf, Current, Boot']
-
-    logger.info(f"Loaded {len(commands)} commands from {config_path.name}")
-    if not args.no_save:
-        logger.info("Will save to Boot config after applying")
 
     # Parse station list
     station_list = [s.strip().upper() for s in args.stations.split(',')]
@@ -1418,8 +1403,12 @@ def cmd_push_config(args) -> int:
             logger.warning(f"Station {station_id} not found in configuration - SKIPPING")
             continue
 
-        # Get IP
-        ip = station_config.get('router', {}).get('ip')
+        # Get IP - try multiple sources
+        ip = (
+            station_config.get('ip') or
+            station_config.get('router', {}).get('ip') or
+            station_config.get('host')
+        )
         if not ip:
             logger.warning(f"Station {station_id} has no IP configured - SKIPPING")
             continue
@@ -1439,6 +1428,103 @@ def cmd_push_config(args) -> int:
 
     logger.info(f"Targets: {', '.join(f'{s} ({ip}:{p})' for s, ip, p in targets)}")
 
+    # Handle extract mode
+    if args.extract:
+        return _extract_configs(args, targets, logger)
+
+    # Handle push mode
+    if args.push:
+        return _push_configs(args, targets, logger)
+
+    return 0
+
+
+def _extract_configs(args, targets, logger) -> int:
+    """Extract configurations from receivers."""
+    from pathlib import Path
+    from ..septentrio.tcp_client import PolaRX5TCPClient, save_config_to_file
+    import difflib
+
+    output_dir = Path(args.output_dir) if args.output_dir else None
+    config_type = args.config_type
+    diff_file = Path(args.diff_with) if args.diff_with else None
+
+    success_count = 0
+    for station_id, ip, port in targets:
+        print(f"\n{'='*50}")
+        print(f"Extracting config from {station_id} ({ip}:{port})")
+        print(f"{'='*50}")
+
+        if args.dry_run:
+            print(f"  [DRY RUN] Would extract {config_type} config")
+            print(f"  [DRY RUN] Would save to: PolaRx5_{station_id}_{config_type}_*.txt")
+            success_count += 1
+            continue
+
+        try:
+            client = PolaRX5TCPClient(ip, station_id, port, timeout=args.timeout)
+            config = client.extract_config(config_type)
+            client.disconnect()
+
+            if not config:
+                logger.error(f"  Failed to extract config from {station_id}")
+                continue
+
+            # Save to file
+            filepath = save_config_to_file(
+                config,
+                station_id,
+                config_type,
+                receiver_type="PolaRx5",
+                output_dir=output_dir
+            )
+            print(f"  ✓ Saved to: {filepath}")
+
+            # Show diff if requested
+            if diff_file and diff_file.exists():
+                old_config = diff_file.read_text().strip().split('\n')
+                new_config = config.strip().split('\n')
+                diff = list(difflib.unified_diff(
+                    old_config, new_config,
+                    fromfile=str(diff_file),
+                    tofile=str(filepath),
+                    lineterm=''
+                ))
+                if diff:
+                    print(f"\n  Differences from {diff_file.name}:")
+                    for line in diff[:50]:  # Limit output
+                        print(f"    {line}")
+                    if len(diff) > 50:
+                        print(f"    ... ({len(diff) - 50} more lines)")
+                else:
+                    print(f"  ✓ No differences from {diff_file.name}")
+
+            success_count += 1
+
+        except Exception as e:
+            logger.error(f"  Error extracting from {station_id}: {e}")
+
+    print(f"\n{'='*50}")
+    print(f"Extracted {success_count}/{len(targets)} configurations")
+    return 0 if success_count == len(targets) else 1
+
+
+def _push_configs(args, targets, logger) -> int:
+    """Push configuration to receivers."""
+    from pathlib import Path
+    from ..septentrio.tcp_client import PolaRX5TCPClient, load_config_from_file
+
+    config_path = Path(args.push)
+    try:
+        commands = load_config_from_file(config_path)
+    except FileNotFoundError as e:
+        logger.error(str(e))
+        return 1
+
+    logger.info(f"Loaded {len(commands)} commands from {config_path.name}")
+    if not args.no_save:
+        logger.info("Will save to Boot config after applying")
+
     # Dry run - show commands and exit
     if args.dry_run:
         print("\n--- DRY RUN - Commands to send ---")
@@ -1449,44 +1535,33 @@ def cmd_push_config(args) -> int:
         print("Dry run complete. Use without --dry-run to execute.")
         return 0
 
-    # Send to each target
-    results = []
+    success_count = 0
     for station_id, ip, port in targets:
         print(f"\n{'='*50}")
-        print(f"  {station_id} ({ip}:{port})")
-        print('='*50)
+        print(f"Pushing config to {station_id} ({ip}:{port})")
+        print(f"{'='*50}")
 
-        success, responses = send_commands_to_receiver(
-            ip, port, commands,
-            timeout=args.timeout,
-            verbose=(args.loglevel == logging.DEBUG)
-        )
+        try:
+            client = PolaRX5TCPClient(ip, station_id, port, timeout=args.timeout)
+            success, errors = client.push_config(commands, save_to_boot=not args.no_save)
+            client.disconnect()
 
-        if success:
-            print(f"  {station_id}: Configuration sent successfully")
-        else:
-            error_msg = responses[0] if responses else 'Unknown error'
-            print(f"  {station_id}: Failed - {error_msg}")
+            if success:
+                print(f"  ✓ Configuration applied successfully")
+                if not args.no_save:
+                    print(f"  ✓ Saved to Boot config")
+                success_count += 1
+            else:
+                print(f"  ✗ Errors occurred:")
+                for err in errors:
+                    print(f"    - {err}")
 
-        results.append((station_id, success))
+        except Exception as e:
+            logger.error(f"  Error pushing to {station_id}: {e}")
 
-    # Summary
     print(f"\n{'='*50}")
-    print("SUMMARY")
-    print('='*50)
-    succeeded = sum(1 for _, s in results if s)
-    failed = len(results) - succeeded
-    print(f"  Succeeded: {succeeded}")
-    print(f"  Failed: {failed}")
-
-    if failed > 0:
-        print("\nFailed stations:")
-        for station_id, success in results:
-            if not success:
-                print(f"  - {station_id}")
-        return 1
-
-    return 0
+    print(f"Successfully configured {success_count}/{len(targets)} receivers")
+    return 0 if success_count == len(targets) else 1
 
 
 def get_all_station_configs() -> Dict[str, Dict[str, Any]]:
@@ -1547,14 +1622,7 @@ def apply_receiver_type_corrections(
 
 def create_parser() -> argparse.ArgumentParser:
     """Create argument parser using standardized arguments module."""
-    from .arguments import (
-        create_argument_parser,
-        setup_download_parser,
-        setup_status_parser,
-        setup_health_parser,
-        setup_validate_parser,
-        setup_push_config_parser,
-    )
+    from .arguments import create_argument_parser
 
     parser = create_argument_parser()
 
@@ -1571,8 +1639,8 @@ def create_parser() -> argparse.ArgumentParser:
                 subparsers_map["health"].set_defaults(func=cmd_health)
             if "validate" in subparsers_map:
                 subparsers_map["validate"].set_defaults(func=cmd_validate)
-            if "push-config" in subparsers_map:
-                subparsers_map["push-config"].set_defaults(func=cmd_push_config)
+            if "rec-config" in subparsers_map:
+                subparsers_map["rec-config"].set_defaults(func=cmd_rec_config)
             break
 
     return parser
