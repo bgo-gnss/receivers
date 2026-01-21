@@ -721,7 +721,8 @@ class IcingaClient:
         performance_data = " ".join(perf_parts)
 
         # Determine overall status
-        check_name = f"Download {session_type}"
+        # Use Icinga service naming convention: "15s_24hr file status", "1Hz_1hr file status"
+        check_name = f"{session_type} file status"
 
         if problems:
             exit_status = EXIT_CRITICAL

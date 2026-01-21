@@ -412,9 +412,9 @@ def _send_status_to_icinga(
                     status = "✅" if response.get("success") else "❌"
                     code = response.get("code", "N/A")
                     if response.get("success"):
-                        print(f"{status} Download 15s_24hr: sent (HTTP {code})")
+                        print(f"{status} 15s_24hr file status: sent (HTTP {code})")
                     else:
-                        print(f"{status} Download 15s_24hr: FAILED - {response.get('message', 'Unknown error')}")
+                        print(f"{status} 15s_24hr file status: FAILED - {response.get('message', 'Unknown error')}")
 
                 # Check hourly downloads (1Hz_1hr)
                 stats = tracker.get_download_stats(station_id, "1Hz_1hr", days=3)
@@ -434,9 +434,9 @@ def _send_status_to_icinga(
                     status = "✅" if response.get("success") else "❌"
                     code = response.get("code", "N/A")
                     if response.get("success"):
-                        print(f"{status} Download 1Hz_1hr: sent (HTTP {code})")
+                        print(f"{status} 1Hz_1hr file status: sent (HTTP {code})")
                     else:
-                        print(f"{status} Download 1Hz_1hr: FAILED - {response.get('message', 'Unknown error')}")
+                        print(f"{status} 1Hz_1hr file status: FAILED - {response.get('message', 'Unknown error')}")
 
                 tracker.close()
         except Exception as e:
