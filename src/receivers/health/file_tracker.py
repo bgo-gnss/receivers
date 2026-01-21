@@ -674,6 +674,10 @@ class ArchiveFileChecker:
         # Get current archive directory for reference
         archive_dir = self.get_archive_directory(station_id, session_type)
 
+        # Check if any archive directory was found
+        current_dir = self.get_archive_directory(station_id, session_type)
+        dir_exists = os.path.isdir(current_dir) or files_found > 0
+
         return {
             "files_found": files_found,
             "files_expected": files_expected,
@@ -681,6 +685,7 @@ class ArchiveFileChecker:
             "latest_mtime": latest_mtime.isoformat() if latest_mtime else None,
             "hours_since_file": hours_since_file,
             "archive_dir": archive_dir,
+            "dir_exists": dir_exists,  # False if session not configured for station
         }
 
 
