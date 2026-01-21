@@ -419,20 +419,30 @@ Examples:
     return parser
 
 
-def setup_push_config_parser(subparsers) -> argparse.ArgumentParser:
-    """Set up the push-config subcommand parser."""
+def setup_rec_config_parser(subparsers) -> argparse.ArgumentParser:
+    """Set up the rec-config subcommand parser."""
     parser = subparsers.add_parser(
-        'push-config',
-        help='Push configuration to Septentrio receivers',
+        'rec-config',
+        help='Extract or push configuration for Septentrio receivers',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description='''
-Push configuration commands to Septentrio PolaRx5 receivers via TCP.
+Extract or push configuration for Septentrio PolaRx5 receivers via TCP.
+
+Extract saves configs with naming: {ReceiverType}_{StationID}_{ConfigType}_{Timestamp}.txt
 
 Examples:
-  receivers push-config THOB config_file.txt
-  receivers push-config THOB,ISFS config_file.txt
-  receivers push-config THOB config_file.txt --dry-run
-  receivers push-config THOB config_file.txt --no-save
+  # Extract current config from receiver
+  receivers rec-config THOB --extract
+  receivers rec-config THOB --extract --config-type Boot
+  receivers rec-config THOB,ISFS --extract --output-dir ~/configs/
+
+  # Push config to receiver
+  receivers rec-config THOB --push config_file.txt
+  receivers rec-config THOB --push config_file.txt --dry-run
+  receivers rec-config THOB --push config_file.txt --no-save
+
+  # Compare configs
+  receivers rec-config THOB --extract --diff-with ~/configs/old_config.txt
         '''
     )
 
@@ -442,22 +452,48 @@ Examples:
         help='Station ID(s), comma-separated (e.g., THOB or THOB,ISFS)'
     )
 
-    parser.add_argument(
-        'config_file',
+    # Operation mode (mutually exclusive)
+    mode_group = parser.add_mutually_exclusive_group(required=True)
+    mode_group.add_argument(
+        '--extract',
+        action='store_true',
+        help='Extract configuration from receiver'
+    )
+    mode_group.add_argument(
+        '--push',
         metavar='CONFIG_FILE',
-        help='Configuration file with receiver commands'
+        help='Push configuration file to receiver'
+    )
+
+    parser.add_argument(
+        '--config-type',
+        choices=['Current', 'Boot'],
+        default='Current',
+        help='Configuration type to extract (default: Current)'
+    )
+
+    parser.add_argument(
+        '--output-dir',
+        metavar='DIR',
+        help='Output directory for extracted configs (default: current directory)'
     )
 
     parser.add_argument(
         '--dry-run',
         action='store_true',
-        help='Show what would be sent without actually sending'
+        help='Show what would be done without executing'
     )
 
     parser.add_argument(
         '--no-save',
         action='store_true',
-        help='Do not save config to boot (default: saves to both Current and Boot)'
+        help='Do not save config to boot after push (default: saves to Boot)'
+    )
+
+    parser.add_argument(
+        '--diff-with',
+        metavar='FILE',
+        help='Compare extracted config with existing file'
     )
 
     parser.add_argument(
@@ -512,7 +548,7 @@ For subcommand help: receivers <command> --help
     setup_status_parser(subparsers)
     setup_health_parser(subparsers)
     setup_validate_parser(subparsers)
-    setup_push_config_parser(subparsers)
+    setup_rec_config_parser(subparsers)
 
     # Scheduler (optional - requires APScheduler)
     try:
