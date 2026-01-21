@@ -389,58 +389,57 @@ def _send_status_to_icinga(
             logger.error(f"Failed to send checks for {station_id}: {e}")
             all_success = False
 
-        # Send file download checks
+        # Send file status checks (check archive file system)
         try:
-            from ..health.file_tracker import FileTracker
-            tracker = FileTracker()
-            if tracker.connect():
-                # Check daily downloads (15s_24hr)
-                stats = tracker.get_download_stats(station_id, "15s_24hr", days=7)
-                if stats:
-                    response = client.send_download_check(
-                        station=station_id,
-                        session_type="15s_24hr",
-                        latest_download=stats.get("latest_download"),
-                        hours_since_download=stats.get("hours_since_download"),
-                        downloads_expected=stats.get("downloads_expected", 7),
-                        downloads_successful=stats.get("downloads_successful", 0),
-                        downloads_missing=stats.get("downloads_missing", 0),
-                        error_count=stats.get("error_count", 0),
-                        warn_hours=26.0,  # Warning after 26 hours for daily files
-                        crit_hours=50.0,  # Critical after 50 hours
-                    )
-                    status = "✅" if response.get("success") else "❌"
-                    code = response.get("code", "N/A")
-                    if response.get("success"):
-                        print(f"{status} 15s_24hr file status: sent (HTTP {code})")
-                    else:
-                        print(f"{status} 15s_24hr file status: FAILED - {response.get('message', 'Unknown error')}")
+            from ..health.file_tracker import ArchiveFileChecker
+            checker = ArchiveFileChecker()
 
-                # Check hourly downloads (1Hz_1hr)
-                stats = tracker.get_download_stats(station_id, "1Hz_1hr", days=3)
-                if stats and stats.get("downloads_successful", 0) > 0:
-                    response = client.send_download_check(
-                        station=station_id,
-                        session_type="1Hz_1hr",
-                        latest_download=stats.get("latest_download"),
-                        hours_since_download=stats.get("hours_since_download"),
-                        downloads_expected=stats.get("downloads_expected", 72),  # 24 * 3 days
-                        downloads_successful=stats.get("downloads_successful", 0),
-                        downloads_missing=stats.get("downloads_missing", 0),
-                        error_count=stats.get("error_count", 0),
-                        warn_hours=2.0,   # Warning after 2 hours for hourly files
-                        crit_hours=4.0,   # Critical after 4 hours
-                    )
-                    status = "✅" if response.get("success") else "❌"
-                    code = response.get("code", "N/A")
-                    if response.get("success"):
-                        print(f"{status} 1Hz_1hr file status: sent (HTTP {code})")
-                    else:
-                        print(f"{status} 1Hz_1hr file status: FAILED - {response.get('message', 'Unknown error')}")
+            # Check daily files (15s_24hr)
+            stats = checker.check_file_status(station_id, "15s_24hr", days_back=7)
+            if stats:
+                response = client.send_download_check(
+                    station=station_id,
+                    session_type="15s_24hr",
+                    latest_download=stats.get("latest_mtime"),
+                    hours_since_download=stats.get("hours_since_file"),
+                    downloads_expected=stats.get("files_expected", 7),
+                    downloads_successful=stats.get("files_found", 0),
+                    downloads_missing=max(0, stats.get("files_expected", 0) - stats.get("files_found", 0)),
+                    error_count=0,
+                    warn_hours=26.0,  # Warning after 26 hours for daily files
+                    crit_hours=50.0,  # Critical after 50 hours
+                )
+                status = "✅" if response.get("success") else "❌"
+                code = response.get("code", "N/A")
+                if response.get("success"):
+                    print(f"{status} 15s_24hr file status: sent (HTTP {code})")
+                else:
+                    print(f"{status} 15s_24hr file status: FAILED - {response.get('message', 'Unknown error')}")
 
-                tracker.close()
+            # Check hourly files (1Hz_1hr)
+            stats = checker.check_file_status(station_id, "1Hz_1hr", days_back=1)
+            if stats and stats.get("files_found", 0) > 0:
+                response = client.send_download_check(
+                    station=station_id,
+                    session_type="1Hz_1hr",
+                    latest_download=stats.get("latest_mtime"),
+                    hours_since_download=stats.get("hours_since_file"),
+                    downloads_expected=stats.get("files_expected", 24),
+                    downloads_successful=stats.get("files_found", 0),
+                    downloads_missing=max(0, stats.get("files_expected", 0) - stats.get("files_found", 0)),
+                    error_count=0,
+                    warn_hours=2.0,   # Warning after 2 hours for hourly files
+                    crit_hours=4.0,   # Critical after 4 hours
+                )
+                status = "✅" if response.get("success") else "❌"
+                code = response.get("code", "N/A")
+                if response.get("success"):
+                    print(f"{status} 1Hz_1hr file status: sent (HTTP {code})")
+                else:
+                    print(f"{status} 1Hz_1hr file status: FAILED - {response.get('message', 'Unknown error')}")
+
         except Exception as e:
-            logger.debug(f"Could not send download checks for {station_id}: {e}")
+            logger.debug(f"Could not send file status checks for {station_id}: {e}")
 
     # Close database connection
     if db_writer:
