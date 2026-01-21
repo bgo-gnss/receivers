@@ -18,41 +18,39 @@ class IcingaThresholds:
     """Icinga monitoring thresholds and TTL values.
 
     All values can be configured in icinga.cfg.
+    TTL (time-to-live) can be set globally in [ttl] section, and optionally
+    overridden per-category by adding 'ttl = value' to any threshold section.
     """
 
-    # TTL values (seconds)
-    # Global default TTL
+    # Global default TTL (seconds) - used when category doesn't specify its own
     ttl_default: int = 14400  # 4 hours
 
-    # Per-check TTL values (health checks)
-    ttl_gps_ping: int = 14400
-    ttl_station_temp: int = 14400
-    ttl_station_volt: int = 14400
-    ttl_cpu_load: int = 14400
-    ttl_receiver_uptime: int = 14400
-    ttl_satellite_status: int = 14400
-    ttl_station_position: int = 14400
-    ttl_logging_status: int = 14400
-    ttl_receiver_status: int = 14400
+    # Per-category TTL overrides (None = use default)
+    ttl_temperature: Optional[int] = None
+    ttl_voltage: Optional[int] = None
+    ttl_cpu: Optional[int] = None
+    ttl_satellites: Optional[int] = None
+    ttl_disk: Optional[int] = None
+    ttl_file_daily: Optional[int] = None
+    ttl_file_hourly: Optional[int] = None
+    ttl_rtk: Optional[int] = None
+    ttl_processing: Optional[int] = None
 
-    # File status TTLs
-    ttl_file_status_15s: int = 360000  # 100 hours for daily files
-    ttl_file_status_1hz: int = 14400  # 4 hours for hourly files
+    def get_ttl(self, category: str) -> int:
+        """Get TTL for a category, falling back to default if not set.
 
-    # RTK and processing TTLs
-    ttl_rtk_status: int = 14400  # 4 hours
-    ttl_processing_status: int = 14400  # 4 hours
+        Args:
+            category: Category name (e.g., 'temperature', 'voltage', 'file_daily')
 
-    # Legacy aliases (for backward compatibility)
-    @property
-    def ttl_health_checks(self) -> int:
-        """Legacy: use ttl_default instead."""
+        Returns:
+            TTL value in seconds
+        """
+        ttl_attr = f"ttl_{category}"
+        if hasattr(self, ttl_attr):
+            value = getattr(self, ttl_attr)
+            if value is not None:
+                return value
         return self.ttl_default
-
-    @property
-    def ttl_file_status(self) -> int:
-        """Legacy: use ttl_file_status_15s for daily files."""
-        return self.ttl_file_status_15s
 
     # Temperature thresholds (Celsius)
     temp_warning: float = 50.0
@@ -207,57 +205,17 @@ class IcingaConfig:
         thresholds = IcingaThresholds()
 
         try:
-            # TTL values
+            # Global default TTL
             if self.config.has_section("ttl"):
-                # Global default TTL
                 thresholds.ttl_default = self.config.getint(
                     "ttl", "default", fallback=thresholds.ttl_default
                 )
 
-                # Per-check TTL values (health checks)
-                thresholds.ttl_gps_ping = self.config.getint(
-                    "ttl", "gps_ping", fallback=thresholds.ttl_default
-                )
-                thresholds.ttl_station_temp = self.config.getint(
-                    "ttl", "station_temp", fallback=thresholds.ttl_default
-                )
-                thresholds.ttl_station_volt = self.config.getint(
-                    "ttl", "station_volt", fallback=thresholds.ttl_default
-                )
-                thresholds.ttl_cpu_load = self.config.getint(
-                    "ttl", "cpu_load", fallback=thresholds.ttl_default
-                )
-                thresholds.ttl_receiver_uptime = self.config.getint(
-                    "ttl", "receiver_uptime", fallback=thresholds.ttl_default
-                )
-                thresholds.ttl_satellite_status = self.config.getint(
-                    "ttl", "satellite_status", fallback=thresholds.ttl_default
-                )
-                thresholds.ttl_station_position = self.config.getint(
-                    "ttl", "station_position", fallback=thresholds.ttl_default
-                )
-                thresholds.ttl_logging_status = self.config.getint(
-                    "ttl", "logging_status", fallback=thresholds.ttl_default
-                )
-                thresholds.ttl_receiver_status = self.config.getint(
-                    "ttl", "receiver_status", fallback=thresholds.ttl_default
-                )
-
-                # File status TTLs
-                thresholds.ttl_file_status_15s = self.config.getint(
-                    "ttl", "file_status_15s", fallback=360000
-                )
-                thresholds.ttl_file_status_1hz = self.config.getint(
-                    "ttl", "file_status_1hz", fallback=thresholds.ttl_default
-                )
-
-                # RTK and processing TTLs
-                thresholds.ttl_rtk_status = self.config.getint(
-                    "ttl", "rtk_status", fallback=thresholds.ttl_default
-                )
-                thresholds.ttl_processing_status = self.config.getint(
-                    "ttl", "processing_status", fallback=thresholds.ttl_default
-                )
+            # Helper to read optional TTL from a section
+            def get_section_ttl(section: str, category: str) -> None:
+                if self.config.has_option(section, "ttl"):
+                    ttl_value = self.config.getint(section, "ttl")
+                    setattr(thresholds, f"ttl_{category}", ttl_value)
 
             # Temperature
             if self.config.has_section("thresholds.temperature"):
@@ -267,6 +225,7 @@ class IcingaConfig:
                 thresholds.temp_critical = self.config.getfloat(
                     "thresholds.temperature", "critical", fallback=thresholds.temp_critical
                 )
+                get_section_ttl("thresholds.temperature", "temperature")
 
             # Voltage
             if self.config.has_section("thresholds.voltage"):
@@ -282,6 +241,7 @@ class IcingaConfig:
                 thresholds.voltage_critical_high = self.config.getfloat(
                     "thresholds.voltage", "critical_high", fallback=thresholds.voltage_critical_high
                 )
+                get_section_ttl("thresholds.voltage", "voltage")
 
             # CPU
             if self.config.has_section("thresholds.cpu"):
@@ -291,6 +251,7 @@ class IcingaConfig:
                 thresholds.cpu_critical = self.config.getint(
                     "thresholds.cpu", "critical", fallback=thresholds.cpu_critical
                 )
+                get_section_ttl("thresholds.cpu", "cpu")
 
             # Satellites
             if self.config.has_section("thresholds.satellites"):
@@ -300,6 +261,7 @@ class IcingaConfig:
                 thresholds.satellites_critical = self.config.getint(
                     "thresholds.satellites", "critical", fallback=thresholds.satellites_critical
                 )
+                get_section_ttl("thresholds.satellites", "satellites")
 
             # Disk
             if self.config.has_section("thresholds.disk"):
@@ -309,6 +271,7 @@ class IcingaConfig:
                 thresholds.disk_critical = self.config.getfloat(
                     "thresholds.disk", "critical", fallback=thresholds.disk_critical
                 )
+                get_section_ttl("thresholds.disk", "disk")
 
             # File status - daily
             if self.config.has_section("thresholds.file_daily"):
@@ -318,6 +281,7 @@ class IcingaConfig:
                 thresholds.file_daily_critical_hours = self.config.getfloat(
                     "thresholds.file_daily", "critical_hours", fallback=thresholds.file_daily_critical_hours
                 )
+                get_section_ttl("thresholds.file_daily", "file_daily")
 
             # File status - hourly
             if self.config.has_section("thresholds.file_hourly"):
@@ -327,6 +291,7 @@ class IcingaConfig:
                 thresholds.file_hourly_critical_hours = self.config.getfloat(
                     "thresholds.file_hourly", "critical_hours", fallback=thresholds.file_hourly_critical_hours
                 )
+                get_section_ttl("thresholds.file_hourly", "file_hourly")
 
             # RTK latency
             if self.config.has_section("thresholds.rtk"):
@@ -336,6 +301,7 @@ class IcingaConfig:
                 thresholds.rtk_latency_critical = self.config.getfloat(
                     "thresholds.rtk", "latency_critical", fallback=thresholds.rtk_latency_critical
                 )
+                get_section_ttl("thresholds.rtk", "rtk")
 
             # Processing
             if self.config.has_section("thresholds.processing"):
@@ -345,6 +311,7 @@ class IcingaConfig:
                 thresholds.processing_critical_days = self.config.getint(
                     "thresholds.processing", "critical_days", fallback=thresholds.processing_critical_days
                 )
+                get_section_ttl("thresholds.processing", "processing")
 
         except Exception as e:
             logger.debug(f"Error reading thresholds, using defaults: {e}")

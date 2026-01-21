@@ -178,42 +178,45 @@ class IcingaClient:
     def _get_ttl_for_check(self, check_name: str) -> int:
         """Get the TTL value for a specific check type.
 
+        Uses category-based TTL lookup - each check maps to a threshold category,
+        and each category can have its own TTL or use the global default.
+
         Args:
             check_name: The check name (e.g., 'GPS Ping', 'Station temp')
 
         Returns:
             TTL value in seconds from config
         """
-        # Map check names to TTL attribute names
-        ttl_map = {
-            "GPS Ping": "ttl_gps_ping",
-            "GPS Health": "ttl_gps_ping",  # Use same as ping for overall health
-            "Station temp": "ttl_station_temp",
-            "Station volt": "ttl_station_volt",
-            "CPU load": "ttl_cpu_load",
-            "Receiver uptime": "ttl_receiver_uptime",
-            "Satellite status": "ttl_satellite_status",
-            "Station position": "ttl_station_position",
-            "Logging status": "ttl_logging_status",
-            "Receiver status": "ttl_receiver_status",
-            "NTRIP status": "ttl_rtk_status",  # Use RTK TTL for NTRIP
-            "rtk status": "ttl_rtk_status",
-            "24hr processing status": "ttl_processing_status",
+        # Map check names to threshold categories
+        category_map = {
+            "GPS Ping": None,  # Uses default
+            "GPS Health": None,  # Uses default
+            "Station temp": "temperature",
+            "Station volt": "voltage",
+            "CPU load": "cpu",
+            "Receiver uptime": None,  # Uses default
+            "Satellite status": "satellites",
+            "Station position": None,  # Uses default
+            "Logging status": "disk",
+            "Receiver status": None,  # Uses default
+            "NTRIP status": "rtk",
+            "rtk status": "rtk",
+            "24hr processing status": "processing",
         }
 
         # Check for file status checks
         if "file status" in check_name.lower():
             if "15s" in check_name.lower() or "daily" in check_name.lower():
-                return self.thresholds.ttl_file_status_15s
+                return self.thresholds.get_ttl("file_daily")
             else:
-                return self.thresholds.ttl_file_status_1hz
+                return self.thresholds.get_ttl("file_hourly")
 
-        # Look up the TTL attribute
-        ttl_attr = ttl_map.get(check_name)
-        if ttl_attr and hasattr(self.thresholds, ttl_attr):
-            return getattr(self.thresholds, ttl_attr)
+        # Look up the category and get TTL
+        category = category_map.get(check_name)
+        if category:
+            return self.thresholds.get_ttl(category)
 
-        # Default to global TTL
+        # Default TTL for checks without a category
         return self.thresholds.ttl_default
 
     def _send_metric_check(
