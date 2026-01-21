@@ -853,44 +853,74 @@ class ProcessingStatusChecker:
                     "message": f"Could not convert year fraction {latest_yearf}",
                 }
 
+            # Count data points in the last 7 days
+            now = datetime.now()
+            today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            week_ago = today - timedelta(days=7)
+
+            days_with_data = set()
+            try:
+                import gtimes.timefunc as gt
+                for line in lines:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        line_parts = line.split()
+                        if line_parts:
+                            try:
+                                yearf = float(line_parts[0])
+                                dt: datetime = gt.TimefromYearf(yearf)  # type: ignore[assignment]
+                                if dt >= week_ago:
+                                    days_with_data.add(dt.strftime('%Y-%m-%d'))
+                            except (ValueError, TypeError):
+                                continue
+            except Exception:
+                pass  # If we can't count, just continue with latest check
+
+            days_in_week = 7
+            days_missing = days_in_week - len(days_with_data)
+
             # Calculate how many days behind
             # 24hr processing adds yesterday's point, so:
             # - latest from yesterday (or today) = OK (on schedule)
             # - latest from 2 days ago = 1 day late
             # - latest from 3 days ago = 2 days late, etc.
-            now = datetime.now()
-            today = now.replace(hour=0, minute=0, second=0, microsecond=0)
             yesterday = today - timedelta(days=1)
             latest_day = latest_dt.replace(hour=0, minute=0, second=0, microsecond=0)
 
             # days_late: 0 = on schedule, 1 = 1 day late, etc.
             days_late = (yesterday - latest_day).days
 
-            # Determine status
+            # Determine status based on latest data point
             latest_date_str = latest_dt.strftime('%Y-%m-%d')
+
+            # Build gap info for message
+            gap_info = ""
+            if days_missing > 0:
+                gap_info = f", {days_missing} gaps in last 7 days"
+
             if days_late <= 0:
                 # Latest data is from yesterday or more recent - OK (on schedule)
                 status = "ok"
-                message = f"24hr processing OK - latest: {latest_date_str}"
+                message = f"24hr processing OK - latest: {latest_date_str}{gap_info}"
                 days_behind = 0
             elif days_late == 1:
                 # One day late - check if we're past expected time
                 if now.hour >= expected_by_hour:
                     status = "warning"
-                    message = f"24hr processing delayed - latest: {latest_date_str} (1 day late)"
+                    message = f"24hr processing delayed - latest: {latest_date_str} (1 day late){gap_info}"
                     days_behind = 1
                 else:
                     # Still early, processing might be running
                     status = "ok"
-                    message = f"24hr processing OK - latest: {latest_date_str} (today's processing pending)"
+                    message = f"24hr processing OK - latest: {latest_date_str} (pending){gap_info}"
                     days_behind = 0
             elif days_late <= 3:
                 status = "warning"
-                message = f"24hr processing behind - latest: {latest_date_str} ({days_late} days late)"
+                message = f"24hr processing behind - latest: {latest_date_str} ({days_late} days late){gap_info}"
                 days_behind = days_late
             else:
                 status = "critical"
-                message = f"24hr processing CRITICAL - latest: {latest_date_str} ({days_late} days late)"
+                message = f"24hr processing CRITICAL - latest: {latest_date_str} ({days_late} days late){gap_info}"
                 days_behind = days_late
 
             return {
@@ -898,6 +928,7 @@ class ProcessingStatusChecker:
                 "latest_yearf": latest_yearf,
                 "latest_date": latest_dt.isoformat(),
                 "days_behind": days_behind,
+                "days_missing_7d": days_missing,
                 "file_exists": True,
                 "message": message,
             }
