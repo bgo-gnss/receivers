@@ -438,9 +438,9 @@ def _send_status_to_icinga(
                 else:
                     print(f"{status} 1Hz_1hr file status: FAILED - {response.get('message', 'Unknown error')}")
 
-            # Check daily RINEX files (15s_24hr_rinex)
+            # Check daily RINEX files (15s_24hr_rinex) - only if directory exists
             stats = checker.check_file_status(station_id, "15s_24hr_rinex", days_back=7)
-            if stats:
+            if stats and stats.get("dir_exists", False):
                 response = client.send_download_check(
                     station=station_id,
                     session_type="15s_24hr rinex",  # Icinga service name with space
@@ -460,9 +460,9 @@ def _send_status_to_icinga(
                 else:
                     print(f"{status} 15s_24hr rinex file status: FAILED - {response.get('message', 'Unknown error')}")
 
-            # Check hourly RINEX files (1Hz_1hr_rinex)
+            # Check hourly RINEX files (1Hz_1hr_rinex) - only if directory exists
             stats = checker.check_file_status(station_id, "1Hz_1hr_rinex", days_back=1)
-            if stats and stats.get("files_found", 0) > 0:
+            if stats and stats.get("dir_exists", False) and stats.get("files_found", 0) > 0:
                 response = client.send_download_check(
                     station=station_id,
                     session_type="1Hz_1hr rinex",  # Icinga service name with space
@@ -482,9 +482,9 @@ def _send_status_to_icinga(
                 else:
                     print(f"{status} 1Hz_1hr rinex file status: FAILED - {response.get('message', 'Unknown error')}")
 
-            # Check 20Hz hourly files
+            # Check 20Hz hourly files - only if directory exists
             stats = checker.check_file_status(station_id, "20Hz_1hr", days_back=1)
-            if stats and stats.get("files_found", 0) > 0:
+            if stats and stats.get("dir_exists", False) and stats.get("files_found", 0) > 0:
                 response = client.send_download_check(
                     station=station_id,
                     session_type="20Hz_1hr",
@@ -504,9 +504,9 @@ def _send_status_to_icinga(
                 else:
                     print(f"{status} 20Hz_1hr file status: FAILED - {response.get('message', 'Unknown error')}")
 
-            # Check 50Hz hourly files
+            # Check 50Hz hourly files - only if directory exists
             stats = checker.check_file_status(station_id, "50Hz_1hr", days_back=1)
-            if stats and stats.get("files_found", 0) > 0:
+            if stats and stats.get("dir_exists", False) and stats.get("files_found", 0) > 0:
                 response = client.send_download_check(
                     station=station_id,
                     session_type="50Hz_1hr",
