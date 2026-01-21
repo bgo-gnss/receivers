@@ -751,6 +751,61 @@ class IcingaClient:
             check_source=self.check_source
         ))
 
+    def send_processing_check(
+        self,
+        station: str,
+        check_name: str,
+        status: str,
+        message: str,
+        days_behind: Optional[int] = None,
+        latest_date: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Send a processing status check result.
+
+        Args:
+            station: Station ID (e.g., 'THOB')
+            check_name: Check name (e.g., '24hr processing status')
+            status: Status string ('ok', 'warning', 'critical', 'unknown')
+            message: Human-readable status message
+            days_behind: Number of days behind (for perfdata)
+            latest_date: Latest processed date (for perfdata)
+
+        Returns:
+            API response dict
+        """
+        # Map status to exit code
+        status_map = {
+            "ok": EXIT_OK,
+            "warning": EXIT_WARNING,
+            "critical": EXIT_CRITICAL,
+            "unknown": EXIT_UNKNOWN,
+        }
+        exit_status = status_map.get(status.lower(), EXIT_UNKNOWN)
+
+        # Add emoji to message based on status
+        if exit_status == EXIT_OK:
+            message = f"✅ {message}"
+        elif exit_status == EXIT_WARNING:
+            message = f"⚠️  {message}"
+        elif exit_status == EXIT_CRITICAL:
+            message = f"❌ {message}"
+
+        # Build performance data
+        perf_parts = []
+        if days_behind is not None:
+            perf_parts.append(f"days_behind={days_behind};1;3;0")
+
+        performance_data = " ".join(perf_parts)
+
+        return self.send_check_result(CheckResult(
+            station=station,
+            check_name=check_name,
+            exit_status=exit_status,
+            plugin_output=message,
+            performance_data=performance_data,
+            check_source=self.check_source
+        ))
+
     def send_gps_ping_from_json(
         self,
         station: str,
