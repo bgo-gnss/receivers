@@ -491,6 +491,8 @@ class ArchiveFileChecker:
             "15s_24hr": "a",
             "1Hz_1hr": "b",
             "status_1hr": "c",
+            "15s_24hr_rinex": "a",
+            "1Hz_1hr_rinex": "b",
         }
         return session_letters.get(session_type, "a")
 
@@ -662,7 +664,7 @@ class ArchiveFileChecker:
             hours_since_file = (now - latest_mtime).total_seconds() / 3600
 
         # Expected files based on session type
-        if session_type in ("15s_24hr",):
+        if session_type in ("15s_24hr", "15s_24hr_rinex"):
             files_expected = days_back  # 1 file per day
         else:
             files_expected = days_back * 24  # 1 file per hour

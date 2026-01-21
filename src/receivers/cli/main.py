@@ -438,6 +438,50 @@ def _send_status_to_icinga(
                 else:
                     print(f"{status} 1Hz_1hr file status: FAILED - {response.get('message', 'Unknown error')}")
 
+            # Check daily RINEX files (15s_24hr_rinex)
+            stats = checker.check_file_status(station_id, "15s_24hr_rinex", days_back=7)
+            if stats:
+                response = client.send_download_check(
+                    station=station_id,
+                    session_type="15s_24hr rinex",  # Icinga service name with space
+                    latest_download=stats.get("latest_mtime"),
+                    hours_since_download=stats.get("hours_since_file"),
+                    downloads_expected=stats.get("files_expected", 7),
+                    downloads_successful=stats.get("files_found", 0),
+                    downloads_missing=max(0, stats.get("files_expected", 0) - stats.get("files_found", 0)),
+                    error_count=0,
+                    warn_hours=26.0,
+                    crit_hours=50.0,
+                )
+                status = "✅" if response.get("success") else "❌"
+                code = response.get("code", "N/A")
+                if response.get("success"):
+                    print(f"{status} 15s_24hr rinex file status: sent (HTTP {code})")
+                else:
+                    print(f"{status} 15s_24hr rinex file status: FAILED - {response.get('message', 'Unknown error')}")
+
+            # Check hourly RINEX files (1Hz_1hr_rinex)
+            stats = checker.check_file_status(station_id, "1Hz_1hr_rinex", days_back=1)
+            if stats and stats.get("files_found", 0) > 0:
+                response = client.send_download_check(
+                    station=station_id,
+                    session_type="1Hz_1hr rinex",  # Icinga service name with space
+                    latest_download=stats.get("latest_mtime"),
+                    hours_since_download=stats.get("hours_since_file"),
+                    downloads_expected=stats.get("files_expected", 24),
+                    downloads_successful=stats.get("files_found", 0),
+                    downloads_missing=max(0, stats.get("files_expected", 0) - stats.get("files_found", 0)),
+                    error_count=0,
+                    warn_hours=2.0,
+                    crit_hours=4.0,
+                )
+                status = "✅" if response.get("success") else "❌"
+                code = response.get("code", "N/A")
+                if response.get("success"):
+                    print(f"{status} 1Hz_1hr rinex file status: sent (HTTP {code})")
+                else:
+                    print(f"{status} 1Hz_1hr rinex file status: FAILED - {response.get('message', 'Unknown error')}")
+
         except Exception as e:
             logger.debug(f"Could not send file status checks for {station_id}: {e}")
 
