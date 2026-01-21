@@ -822,14 +822,25 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
             "20Hz_1hr": "20Hz",
             "50Hz_1hr": "50Hz",
         }
-        # Thresholds (hours): daily=26h warn/50h crit, hourly=2h warn/4h crit
+        # Get thresholds from config
+        try:
+            from ..config.receivers_config import get_receivers_config
+            icinga_thresholds = get_receivers_config().get_icinga_thresholds()
+            daily_warn = icinga_thresholds.file_daily_warning_hours
+            daily_crit = icinga_thresholds.file_daily_critical_hours
+            hourly_warn = icinga_thresholds.file_hourly_warning_hours
+            hourly_crit = icinga_thresholds.file_hourly_critical_hours
+        except Exception:
+            daily_warn, daily_crit = 26.0, 50.0
+            hourly_warn, hourly_crit = 2.0, 4.0
+
         thresholds = {
-            "15s_24hr": (26, 50),
-            "1Hz_1hr": (2, 4),
-            "15s_24hr_rinex": (26, 50),
-            "1Hz_1hr_rinex": (2, 4),
-            "20Hz_1hr": (2, 4),
-            "50Hz_1hr": (2, 4),
+            "15s_24hr": (daily_warn, daily_crit),
+            "1Hz_1hr": (hourly_warn, hourly_crit),
+            "15s_24hr_rinex": (daily_warn, daily_crit),
+            "1Hz_1hr_rinex": (hourly_warn, hourly_crit),
+            "20Hz_1hr": (hourly_warn, hourly_crit),
+            "50Hz_1hr": (hourly_warn, hourly_crit),
         }
         for session in session_order:
             stats = file_status.get(session)

@@ -33,11 +33,14 @@ API Documentation:
 import json
 import logging
 import requests
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, TYPE_CHECKING
 from dataclasses import dataclass
 from urllib.parse import quote
 
-from ..health.metrics import MetricChecker, MetricResult, HealthStatus
+from ..health.metrics import MetricChecker, MetricResult, HealthStatus, ThresholdConfig
+
+if TYPE_CHECKING:
+    from ..config.receivers_config import IcingaThresholds
 
 
 # Nagios/Icinga exit codes (kept for backward compatibility)
@@ -109,7 +112,8 @@ class IcingaClient:
         password: str = "ji5Aeb8oopieGoh",
         verify_ssl: bool = False,
         timeout: int = 10,
-        check_source: str = "eldey"
+        check_source: str = "eldey",
+        thresholds: Optional["IcingaThresholds"] = None
     ):
         """Initialize Icinga client.
 
@@ -121,6 +125,7 @@ class IcingaClient:
             verify_ssl: Verify SSL certificates (default: False)
             timeout: Request timeout in seconds
             check_source: Source hostname for check results
+            thresholds: Optional IcingaThresholds from receivers.cfg config
         """
         self.base_url = f"https://{host}:{port}/v1"
         self.auth = (username, password)
@@ -130,8 +135,31 @@ class IcingaClient:
 
         self.logger = logging.getLogger('receivers.monitoring.icinga')
 
-        # Initialize centralized metric checker for consistent threshold evaluation
-        self.metric_checker = MetricChecker()
+        # Store thresholds (load from config if not provided)
+        if thresholds is None:
+            try:
+                from ..config.receivers_config import get_receivers_config
+                self.thresholds = get_receivers_config().get_icinga_thresholds()
+            except Exception:
+                from ..config.receivers_config import IcingaThresholds
+                self.thresholds = IcingaThresholds()
+        else:
+            self.thresholds = thresholds
+
+        # Initialize centralized metric checker with thresholds from config
+        metric_config = ThresholdConfig(
+            voltage_critical_low=self.thresholds.voltage_critical_low,
+            voltage_warning_low=self.thresholds.voltage_warning_low,
+            voltage_warning_high=self.thresholds.voltage_warning_high,
+            voltage_critical_high=self.thresholds.voltage_critical_high,
+            temp_warning_high=self.thresholds.temp_warning,
+            temp_critical_high=self.thresholds.temp_critical,
+            cpu_warning=self.thresholds.cpu_warning,
+            cpu_critical=self.thresholds.cpu_critical,
+            sat_warning=self.thresholds.satellites_warning,
+            sat_critical=self.thresholds.satellites_critical,
+        )
+        self.metric_checker = MetricChecker(metric_config)
 
         # Suppress SSL warnings if not verifying
         if not verify_ssl:
@@ -657,8 +685,8 @@ class IcingaClient:
         downloads_successful: int = 0,
         downloads_missing: int = 0,
         error_count: int = 0,
-        warn_hours: float = 26.0,
-        crit_hours: float = 50.0,
+        warn_hours: Optional[float] = None,
+        crit_hours: Optional[float] = None,
         ttl: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Send a download status check result.
@@ -677,17 +705,30 @@ class IcingaClient:
             downloads_successful: Successful downloads in period
             downloads_missing: Known missing files in period
             error_count: Number of download errors
-            warn_hours: Warning threshold for hours since download (default: 26h for daily)
-            crit_hours: Critical threshold for hours since download (default: 50h for daily)
+            warn_hours: Warning threshold for hours since download (from config if not set)
+            crit_hours: Critical threshold for hours since download (from config if not set)
             ttl: Time-to-live in seconds for the check result. If not specified,
-                 defaults to 2x crit_hours (e.g., 100 hours for daily files)
+                 uses config value
 
         Returns:
             API response dict
         """
-        # Default TTL to 2x critical threshold (with some buffer)
+        # Get thresholds from config based on session type
+        is_hourly = "1hr" in session_type.lower() or "hz" in session_type.lower()
+        if warn_hours is None:
+            warn_hours = (
+                self.thresholds.file_hourly_warning_hours if is_hourly
+                else self.thresholds.file_daily_warning_hours
+            )
+        if crit_hours is None:
+            crit_hours = (
+                self.thresholds.file_hourly_critical_hours if is_hourly
+                else self.thresholds.file_daily_critical_hours
+            )
+
+        # Default TTL from config
         if ttl is None:
-            ttl = int(crit_hours * 2 * 3600)  # Convert hours to seconds
+            ttl = self.thresholds.ttl_file_status
 
         perf_parts = []
 
@@ -744,6 +785,7 @@ class IcingaClient:
         message: str,
         days_behind: Optional[int] = None,
         latest_date: Optional[str] = None,
+        ttl: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Send a processing status check result.
 
@@ -754,10 +796,17 @@ class IcingaClient:
             message: Human-readable status message
             days_behind: Number of days behind (for perfdata)
             latest_date: Latest processed date (for perfdata)
+            ttl: Time-to-live in seconds (from config if not set)
 
         Returns:
             API response dict
         """
+        # Get thresholds from config
+        warn_days = self.thresholds.processing_warning_days
+        crit_days = self.thresholds.processing_critical_days
+        if ttl is None:
+            ttl = self.thresholds.ttl_processing_status
+
         # Map status to exit code
         status_map = {
             "ok": EXIT_OK,
@@ -778,7 +827,7 @@ class IcingaClient:
         # Build performance data
         perf_parts = []
         if days_behind is not None:
-            perf_parts.append(f"days_behind={days_behind};1;3;0")
+            perf_parts.append(f"days_behind={days_behind};{warn_days};{crit_days};0")
 
         performance_data = " ".join(perf_parts)
 
@@ -788,7 +837,8 @@ class IcingaClient:
             exit_status=exit_status,
             plugin_output=message,
             performance_data=performance_data,
-            check_source=self.check_source
+            check_source=self.check_source,
+            ttl=ttl
         ))
 
     def send_rtk_check(
@@ -800,8 +850,8 @@ class IcingaClient:
         data_rate_bps: Optional[float] = None,
         latency_seconds: Optional[float] = None,
         error_message: Optional[str] = None,
-        latency_warning: float = 10.0,
-        latency_critical: float = 30.0,
+        latency_warning: Optional[float] = None,
+        latency_critical: Optional[float] = None,
         ttl: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Send an RTK status check result.
@@ -816,9 +866,9 @@ class IcingaClient:
             data_rate_bps: Data rate in bytes per second
             latency_seconds: Estimated stream latency
             error_message: Error message if stream is down
-            latency_warning: Warning threshold for latency (seconds)
-            latency_critical: Critical threshold for latency (seconds)
-            ttl: Time-to-live for check result (seconds)
+            latency_warning: Warning threshold for latency (from config if not set)
+            latency_critical: Critical threshold for latency (from config if not set)
+            ttl: Time-to-live for check result (from config if not set)
 
         Returns:
             API response dict
@@ -839,9 +889,13 @@ class IcingaClient:
             if not active_mps and ntrip_status.mountpoints:
                 error_message = ntrip_status.mountpoints[0].error_message
 
-        # Default TTL to 4 hours for RTK checks (matches Icinga 2h interval with buffer)
+        # Get thresholds from config
+        if latency_warning is None:
+            latency_warning = self.thresholds.rtk_latency_warning
+        if latency_critical is None:
+            latency_critical = self.thresholds.rtk_latency_critical
         if ttl is None:
-            ttl = 14400  # 4 hours in seconds
+            ttl = self.thresholds.ttl_rtk_status
 
         # Build performance data
         perf_parts = []
