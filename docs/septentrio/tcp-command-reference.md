@@ -116,20 +116,27 @@ Bytes 6-7:  Length (total block size)
 
 ### Extract Configuration
 ```bash
-# Extract current config
+# Extract current config to stdout (Unix convention)
 receivers rec-config STATION --extract
 
-# Extract boot config
+# Extract boot config to stdout
 receivers rec-config STATION --extract --config-type Boot
 
-# Extract to specific directory
-receivers rec-config STATION --extract --output-dir ~/configs/
+# Pipe to file
+receivers rec-config STATION --extract > my_config.txt
+
+# Save to file using configured directory (rec_config_dir in receivers.cfg)
+# Falls back to /tmp/polarconfig/ if not configured
+receivers rec-config STATION --extract --save
+
+# Save to specific directory
+receivers rec-config STATION --extract --save --output-dir ~/configs/
 
 # Extract and compare with existing file
 receivers rec-config STATION --extract --diff-with old_config.txt
 
-# Extract from multiple stations
-receivers rec-config THOB,ISFS,ELDC --extract --output-dir ~/configs/
+# Extract from multiple stations (saved to configured directory)
+receivers rec-config THOB,ISFS,ELDC --extract --save
 ```
 
 ### Push Configuration

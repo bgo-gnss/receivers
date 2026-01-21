@@ -1443,21 +1443,49 @@ def _extract_configs(args, targets, logger) -> int:
     """Extract configurations from receivers."""
     from pathlib import Path
     from ..septentrio.tcp_client import PolaRX5TCPClient, save_config_to_file
+    from ..config.receivers_config import get_receivers_config
     import difflib
+    import os
 
-    output_dir = Path(args.output_dir) if args.output_dir else None
     config_type = args.config_type
     diff_file = Path(args.diff_with) if args.diff_with else None
+    save_to_file = getattr(args, 'save', False)
+
+    # Determine output directory if saving
+    output_dir = None
+    if save_to_file:
+        if args.output_dir:
+            output_dir = Path(args.output_dir).expanduser()
+        else:
+            # Get from config or use default
+            try:
+                receivers_config = get_receivers_config()
+                polarx5_config = receivers_config.get_receiver_config('polarx5')
+                config_dir = polarx5_config.get('rec_config_dir')
+                if config_dir:
+                    output_dir = Path(os.path.expanduser(config_dir))
+                else:
+                    output_dir = Path('/tmp/polarconfig')
+            except Exception:
+                output_dir = Path('/tmp/polarconfig')
+
+        # Create directory if it doesn't exist
+        output_dir.mkdir(parents=True, exist_ok=True)
+        logger.debug(f"Output directory: {output_dir}")
 
     success_count = 0
     for station_id, ip, port in targets:
-        print(f"\n{'='*50}")
-        print(f"Extracting config from {station_id} ({ip}:{port})")
-        print(f"{'='*50}")
+        if save_to_file:
+            print(f"\n{'='*50}", file=sys.stderr)
+            print(f"Extracting config from {station_id} ({ip}:{port})", file=sys.stderr)
+            print(f"{'='*50}", file=sys.stderr)
 
         if args.dry_run:
-            print(f"  [DRY RUN] Would extract {config_type} config")
-            print(f"  [DRY RUN] Would save to: PolaRx5_{station_id}_{config_type}_*.txt")
+            if save_to_file:
+                print(f"  [DRY RUN] Would extract {config_type} config", file=sys.stderr)
+                print(f"  [DRY RUN] Would save to: {output_dir}/PolaRx5_{station_id}_{config_type}_*.txt", file=sys.stderr)
+            else:
+                print(f"# [DRY RUN] Would extract {config_type} config from {station_id}")
             success_count += 1
             continue
 
@@ -1467,45 +1495,54 @@ def _extract_configs(args, targets, logger) -> int:
             client.disconnect()
 
             if not config:
-                logger.error(f"  Failed to extract config from {station_id}")
+                logger.error(f"Failed to extract config from {station_id}")
                 continue
 
-            # Save to file
-            filepath = save_config_to_file(
-                config,
-                station_id,
-                config_type,
-                receiver_type="PolaRx5",
-                output_dir=output_dir
-            )
-            print(f"  ✓ Saved to: {filepath}")
+            if save_to_file:
+                # Save to file
+                filepath = save_config_to_file(
+                    config,
+                    station_id,
+                    config_type,
+                    receiver_type="PolaRx5",
+                    output_dir=output_dir
+                )
+                print(f"  ✓ Saved to: {filepath}", file=sys.stderr)
 
-            # Show diff if requested
-            if diff_file and diff_file.exists():
-                old_config = diff_file.read_text().strip().split('\n')
-                new_config = config.strip().split('\n')
-                diff = list(difflib.unified_diff(
-                    old_config, new_config,
-                    fromfile=str(diff_file),
-                    tofile=str(filepath),
-                    lineterm=''
-                ))
-                if diff:
-                    print(f"\n  Differences from {diff_file.name}:")
-                    for line in diff[:50]:  # Limit output
-                        print(f"    {line}")
-                    if len(diff) > 50:
-                        print(f"    ... ({len(diff) - 50} more lines)")
-                else:
-                    print(f"  ✓ No differences from {diff_file.name}")
+                # Show diff if requested
+                if diff_file and diff_file.exists():
+                    old_config = diff_file.read_text().strip().split('\n')
+                    new_config = config.strip().split('\n')
+                    diff = list(difflib.unified_diff(
+                        old_config, new_config,
+                        fromfile=str(diff_file),
+                        tofile=str(filepath),
+                        lineterm=''
+                    ))
+                    if diff:
+                        print(f"\n  Differences from {diff_file.name}:", file=sys.stderr)
+                        for line in diff[:50]:  # Limit output
+                            print(f"    {line}", file=sys.stderr)
+                        if len(diff) > 50:
+                            print(f"    ... ({len(diff) - 50} more lines)", file=sys.stderr)
+                    else:
+                        print(f"  ✓ No differences from {diff_file.name}", file=sys.stderr)
+            else:
+                # Print to stdout (Unix convention)
+                if len(targets) > 1:
+                    # Add header for multiple stations
+                    print(f"# Configuration for {station_id} ({config_type})")
+                    print(f"# Extracted from {ip}:{port}")
+                print(config)
 
             success_count += 1
 
         except Exception as e:
-            logger.error(f"  Error extracting from {station_id}: {e}")
+            logger.error(f"Error extracting from {station_id}: {e}")
 
-    print(f"\n{'='*50}")
-    print(f"Extracted {success_count}/{len(targets)} configurations")
+    if save_to_file:
+        print(f"\n{'='*50}", file=sys.stderr)
+        print(f"Extracted {success_count}/{len(targets)} configurations", file=sys.stderr)
     return 0 if success_count == len(targets) else 1
 
 
