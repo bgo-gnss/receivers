@@ -4,6 +4,9 @@ This module extracts real-time health data from PolaRX5 receivers via the TCP
 command interface (default port 28784). It queries SBF blocks on demand using
 the `esoc` (exeSBFOnce) command.
 
+Uses the centralized MetricChecker from receivers.health.metrics for consistent
+threshold evaluation across all health monitoring components.
+
 SBF Blocks Used:
 - 4101 PowerStatus: Power supply voltage
 - 4014 ReceiverStatus: CPU load, temperature, uptime
@@ -22,7 +25,9 @@ import socket
 import struct
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
+
+from .metrics import MetricChecker, load_thresholds
 
 
 class PolaRX5TCPExtractor:
@@ -64,6 +69,11 @@ class PolaRX5TCPExtractor:
         self.timeout = timeout
         self.logger = logging.getLogger(f"receivers.health.tcp.{station_id}")
         self._connection_id = None  # Will be detected from prompt (e.g., "IP11")
+
+        # Initialize centralized metric checker for consistent threshold evaluation
+        # Load thresholds with receiver-type-specific overrides if configured
+        config = load_thresholds(receiver_type="PolaRX5")
+        self.metric_checker = MetricChecker(config)
 
         # Port configuration for status checks
         self.port_config = port_config or {
@@ -133,16 +143,13 @@ class PolaRX5TCPExtractor:
         Returns:
             Dictionary with power metrics or None on failure
         """
-        sbf_data = self._send_sbf_request("PowerStatus")
+        sbf_data = self._send_sbf_request("PowerStatus", self.BLOCK_POWER_STATUS)
         if not sbf_data:
             return None
 
         try:
-            # Parse SBF header
-            msg_id, length = self._parse_sbf_header(sbf_data)
-            if msg_id != self.BLOCK_POWER_STATUS:
-                self.logger.warning(f"Unexpected block ID {msg_id}, expected {self.BLOCK_POWER_STATUS}")
-                return None
+            # Parse SBF header (block ID already verified in _send_sbf_request)
+            _, length = self._parse_sbf_header(sbf_data)
 
             # PowerStatus structure (16 bytes total):
             # Bytes 0-7: SBF header (sync, CRC, ID+Rev, Length)
@@ -175,15 +182,13 @@ class PolaRX5TCPExtractor:
         Returns:
             Dictionary with receiver metrics or None on failure
         """
-        sbf_data = self._send_sbf_request("ReceiverStatus")
+        sbf_data = self._send_sbf_request("ReceiverStatus", self.BLOCK_RECEIVER_STATUS)
         if not sbf_data:
             return None
 
         try:
-            msg_id, length = self._parse_sbf_header(sbf_data)
-            if msg_id != self.BLOCK_RECEIVER_STATUS:
-                self.logger.warning(f"Unexpected block ID {msg_id}, expected {self.BLOCK_RECEIVER_STATUS}")
-                return None
+            # Block ID already verified in _send_sbf_request
+            _, length = self._parse_sbf_header(sbf_data)
 
             result = {}
 
@@ -235,15 +240,13 @@ class PolaRX5TCPExtractor:
         Returns:
             Dictionary with disk metrics or None on failure
         """
-        sbf_data = self._send_sbf_request("DiskStatus")
+        sbf_data = self._send_sbf_request("DiskStatus", self.BLOCK_DISK_STATUS)
         if not sbf_data:
             return None
 
         try:
-            msg_id, length = self._parse_sbf_header(sbf_data)
-            if msg_id != self.BLOCK_DISK_STATUS:
-                self.logger.warning(f"Unexpected block ID {msg_id}, expected {self.BLOCK_DISK_STATUS}")
-                return None
+            # Block ID already verified in _send_sbf_request
+            _, length = self._parse_sbf_header(sbf_data)
 
             # DiskStatus has variable structure, extract what we can
             if length >= 28 and len(sbf_data) >= 28:
@@ -258,11 +261,16 @@ class PolaRX5TCPExtractor:
 
         return None
 
-    def _send_sbf_request(self, block_name: str) -> Optional[bytes]:
+    def _send_sbf_request(
+        self, block_name: str, expected_block_id: Optional[int] = None
+    ) -> Optional[bytes]:
         """Send SBF request and receive response.
 
         Args:
             block_name: Name of SBF block to request (e.g., "PowerStatus")
+            expected_block_id: Optional block ID to search for. If provided,
+                              scans the response for this specific block ID.
+                              This handles receivers with continuous SBF output.
 
         Returns:
             Raw SBF data bytes or None on failure
@@ -282,17 +290,51 @@ class PolaRX5TCPExtractor:
             cmd = f"esoc, {conn_id}, {block_name}\n"
             sock.send(cmd.encode())
 
-            # Wait for response
-            time.sleep(0.5)
-            response = sock.recv(4096)
+            # Collect data and scan for expected block
+            # Use overall timeout to avoid hanging on receivers with continuous output
+            response = b""
+            end_time = time.time() + 2.0  # 2 second total timeout
 
-            # Find SBF sync pattern ($@)
-            sync_pos = response.find(b'$@')
-            if sync_pos >= 0:
-                return response[sync_pos:]
+            while time.time() < end_time:
+                try:
+                    sock.settimeout(0.5)
+                    chunk = sock.recv(8192)
+                    if chunk:
+                        response += chunk
+
+                        # If we have a specific block to find, scan after each receive
+                        if expected_block_id is not None:
+                            result = self._find_sbf_block(response, expected_block_id)
+                            if result is not None:
+                                return result
+                        else:
+                            # No specific block, return first SBF found
+                            sync_pos = response.find(b"$@")
+                            if sync_pos >= 0:
+                                return response[sync_pos:]
+                except socket.timeout:
+                    # On receivers without continuous output, timeout means no more data
+                    if len(response) == 0:
+                        continue  # Keep waiting if we haven't received anything yet
+                    # If we've received data but no more coming, check what we have
+                    if expected_block_id is None:
+                        sync_pos = response.find(b"$@")
+                        if sync_pos >= 0:
+                            return response[sync_pos:]
+                    break
+
+            # Final check of accumulated data
+            if expected_block_id is not None:
+                result = self._find_sbf_block(response, expected_block_id)
+                if result is not None:
+                    return result
+                self.logger.warning(
+                    f"Block ID {expected_block_id} not found in response for {block_name}"
+                )
             else:
                 self.logger.warning(f"No SBF sync found in {block_name} response")
-                return None
+
+            return None
 
         except socket.timeout:
             self.logger.error(f"Timeout querying {block_name}")
@@ -306,6 +348,39 @@ class PolaRX5TCPExtractor:
         finally:
             if sock:
                 sock.close()
+
+    def _find_sbf_block(self, data: bytes, expected_block_id: int) -> Optional[bytes]:
+        """Scan data for a specific SBF block ID.
+
+        Args:
+            data: Raw bytes to scan
+            expected_block_id: The SBF block ID to find
+
+        Returns:
+            SBF data starting at the found block, or None if not found
+        """
+        pos = 0
+        while pos < len(data) - 8:
+            sync_pos = data.find(b"$@", pos)
+            if sync_pos < 0:
+                break
+
+            # Need at least 8 bytes for SBF header
+            if sync_pos + 8 > len(data):
+                break
+
+            # Parse block ID (lower 13 bits of bytes 4-5)
+            id_rev = struct.unpack("<H", data[sync_pos + 4 : sync_pos + 6])[0]
+            block_id = id_rev & 0x1FFF
+            length = struct.unpack("<H", data[sync_pos + 6 : sync_pos + 8])[0]
+
+            if block_id == expected_block_id:
+                return data[sync_pos:]
+
+            # Move to next potential SBF block
+            pos = sync_pos + max(length, 8)
+
+        return None
 
     def _parse_connection_id(self, prompt: bytes) -> str:
         """Parse connection ID from receiver prompt.
@@ -345,32 +420,20 @@ class PolaRX5TCPExtractor:
         length = struct.unpack('<H', sbf_data[6:8])[0]
         return message_id, length
 
-    @staticmethod
-    def _check_voltage_status(voltage: float) -> str:
-        """Check voltage status against thresholds."""
-        if voltage < 11.0 or voltage > 16.0:
-            return "critical"
-        elif voltage < 11.8 or voltage > 15.0:
-            return "warning"
-        return "ok"
+    def _check_voltage_status(self, voltage: float) -> str:
+        """Check voltage status against centralized thresholds."""
+        result = self.metric_checker.check_voltage(voltage)
+        return result.status.value
 
-    @staticmethod
-    def _check_cpu_status(cpu_load: int) -> str:
-        """Check CPU load status."""
-        if cpu_load > 90:
-            return "critical"
-        elif cpu_load > 75:
-            return "warning"
-        return "ok"
+    def _check_cpu_status(self, cpu_load: int) -> str:
+        """Check CPU load status against centralized thresholds."""
+        result = self.metric_checker.check_cpu_load(cpu_load)
+        return result.status.value
 
-    @staticmethod
-    def _check_temperature_status(temperature: float) -> str:
-        """Check temperature status."""
-        if temperature > 70 or temperature < -20:
-            return "critical"
-        elif temperature > 60 or temperature < -10:
-            return "warning"
-        return "ok"
+    def _check_temperature_status(self, temperature: float) -> str:
+        """Check temperature status against centralized thresholds."""
+        result = self.metric_checker.check_temperature(temperature)
+        return result.status.value
 
     def test_connection(self) -> bool:
         """Test if TCP connection to receiver works.
@@ -431,15 +494,13 @@ class PolaRX5TCPExtractor:
             Dictionary with position data or None on failure
         """
         # Note: Use "PVTGeodetic" command name (receiver responds to this, not "PVTGeodetic2")
-        sbf_data = self._send_sbf_request("PVTGeodetic")
+        sbf_data = self._send_sbf_request("PVTGeodetic", self.BLOCK_PVT_GEODETIC2)
         if not sbf_data:
             return None
 
         try:
-            msg_id, length = self._parse_sbf_header(sbf_data)
-            if msg_id != self.BLOCK_PVT_GEODETIC2:
-                self.logger.warning(f"Unexpected block ID {msg_id}, expected {self.BLOCK_PVT_GEODETIC2}")
-                return None
+            # Block ID already verified in _send_sbf_request
+            _, length = self._parse_sbf_header(sbf_data)
 
             # PVTGeodetic2 structure:
             # Bytes 0-7: SBF header
@@ -535,15 +596,13 @@ class PolaRX5TCPExtractor:
         Returns:
             Dictionary with satellite counts per constellation or None on failure
         """
-        sbf_data = self._send_sbf_request("PVTSatCartesian")
+        sbf_data = self._send_sbf_request("PVTSatCartesian", self.BLOCK_PVT_SAT_CARTESIAN)
         if not sbf_data:
             return None
 
         try:
-            msg_id, length = self._parse_sbf_header(sbf_data)
-            if msg_id != self.BLOCK_PVT_SAT_CARTESIAN:
-                self.logger.warning(f"Unexpected block ID {msg_id}, expected {self.BLOCK_PVT_SAT_CARTESIAN}")
-                return None
+            # Block ID already verified in _send_sbf_request
+            _, length = self._parse_sbf_header(sbf_data)
 
             # PVTSatCartesian structure:
             # Bytes 0-7: SBF header
