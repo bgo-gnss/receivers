@@ -44,6 +44,8 @@ class PolaRX5TCPExtractor:
     BLOCK_PVT_SAT_CARTESIAN = 4008  # Satellites used in PVT solution
     BLOCK_CHANNEL_STATUS = 4013
     BLOCK_QUALITY_IND = 4082
+    BLOCK_NTRIP_SERVER_STATUS = 4122  # NTRIP server connections
+    BLOCK_NTRIP_CLIENT_STATUS = 4053  # NTRIP client connection
 
     def __init__(
         self,
