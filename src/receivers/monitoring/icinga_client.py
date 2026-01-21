@@ -549,6 +549,207 @@ class IcingaClient:
             check_source=self.check_source
         ))
 
+    def send_ntrip_check(
+        self,
+        station: str,
+        ntrip_status: Optional[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Send an NTRIP server/client status check result.
+
+        Args:
+            station: Station ID (e.g., 'THOB')
+            ntrip_status: Dict with NTRIP status info, e.g.:
+                {
+                    'server': {'connected_clients': 3, 'status': 'ok'},
+                    'client': {'connected': True, 'age_seconds': 2.1, 'status': 'ok'}
+                }
+
+        Returns:
+            API response dict
+        """
+        if ntrip_status is None:
+            return self.send_check_result(CheckResult(
+                station=station,
+                check_name="NTRIP status",
+                exit_status=EXIT_UNKNOWN,
+                plugin_output=f"❓ NTRIP status UNKNOWN - {station} NTRIP data unavailable",
+                performance_data="",
+                check_source=self.check_source
+            ))
+
+        # Check server status (for stations that act as NTRIP casters)
+        server = ntrip_status.get('server', {})
+        # Check client status (for stations receiving corrections)
+        client = ntrip_status.get('client', {})
+
+        perf_parts = []
+        problems = []
+        warnings = []
+
+        # Server status
+        if server:
+            server_status = server.get('status', 'unknown').lower()
+            clients = server.get('connected_clients', 0)
+            perf_parts.append(f"ntrip_clients={clients};;;0")
+
+            if server_status == 'error':
+                problems.append("server error")
+            elif server_status == 'warning':
+                warnings.append("server warning")
+
+        # Client status
+        if client:
+            client_connected = client.get('connected', False)
+            age = client.get('age_seconds')
+            client_status = client.get('status', 'unknown').lower()
+
+            perf_parts.append(f"ntrip_connected={1 if client_connected else 0};;;0;1")
+            if age is not None:
+                perf_parts.append(f"correction_age={age}s;30;60;0")
+
+            if not client_connected:
+                problems.append("client disconnected")
+            elif client_status == 'error':
+                problems.append("client error")
+            elif client_status == 'warning' or (age is not None and age > 30):
+                warnings.append("corrections stale" if age and age > 30 else "client warning")
+
+        performance_data = " ".join(perf_parts)
+
+        # Determine overall status
+        if problems:
+            exit_status = EXIT_CRITICAL
+            message = f"❌ NTRIP status CRITICAL - {station}: {', '.join(problems)}"
+        elif warnings:
+            exit_status = EXIT_WARNING
+            message = f"⚠️  NTRIP status WARNING - {station}: {', '.join(warnings)}"
+        else:
+            exit_status = EXIT_OK
+            message = f"✅ NTRIP status OK - {station}"
+            if server:
+                message += f" server: {server.get('connected_clients', 0)} clients"
+            if client and client.get('connected'):
+                message += f" client: connected"
+
+        return self.send_check_result(CheckResult(
+            station=station,
+            check_name="NTRIP status",
+            exit_status=exit_status,
+            plugin_output=message,
+            performance_data=performance_data,
+            check_source=self.check_source
+        ))
+
+    def send_download_check(
+        self,
+        station: str,
+        session_type: str = "15s_24hr",
+        latest_download: Optional[str] = None,
+        hours_since_download: Optional[float] = None,
+        downloads_expected: int = 0,
+        downloads_successful: int = 0,
+        downloads_missing: int = 0,
+        error_count: int = 0,
+        warn_hours: float = 26.0,
+        crit_hours: float = 50.0,
+    ) -> Dict[str, Any]:
+        """Send a download status check result.
+
+        Monitors file download health based on:
+        - Time since last successful download
+        - Download success rate
+        - Error count
+
+        Args:
+            station: Station ID (e.g., 'THOB')
+            session_type: Session type ('15s_24hr', '1Hz_1hr', etc.)
+            latest_download: Timestamp of latest download (for display)
+            hours_since_download: Hours since last successful download
+            downloads_expected: Expected downloads in period
+            downloads_successful: Successful downloads in period
+            downloads_missing: Known missing files in period
+            error_count: Number of download errors
+            warn_hours: Warning threshold for hours since download (default: 26h for daily)
+            crit_hours: Critical threshold for hours since download (default: 50h for daily)
+
+        Returns:
+            API response dict
+        """
+        perf_parts = []
+        problems = []
+        warnings = []
+
+        # Add performance data
+        if hours_since_download is not None:
+            perf_parts.append(f"hours_since_download={hours_since_download:.1f};{warn_hours};{crit_hours};0")
+
+        if downloads_expected > 0:
+            success_rate = (downloads_successful / downloads_expected) * 100
+            perf_parts.append(f"success_rate={success_rate:.1f}%;90;70;0;100")
+            perf_parts.append(f"successful={downloads_successful};;;0;{downloads_expected}")
+            perf_parts.append(f"missing={downloads_missing};;;0")
+        else:
+            perf_parts.append(f"successful={downloads_successful};;;0")
+            perf_parts.append(f"missing={downloads_missing};;;0")
+
+        if error_count > 0:
+            perf_parts.append(f"errors={error_count};;;0")
+
+        # Check time since last download
+        if hours_since_download is not None:
+            if hours_since_download >= crit_hours:
+                problems.append(f"no download in {hours_since_download:.0f}h")
+            elif hours_since_download >= warn_hours:
+                warnings.append(f"last download {hours_since_download:.0f}h ago")
+
+        # Check error count
+        if error_count >= 3:
+            problems.append(f"{error_count} errors")
+        elif error_count >= 1:
+            warnings.append(f"{error_count} error(s)")
+
+        # Check success rate
+        if downloads_expected > 0 and downloads_successful == 0:
+            problems.append("no successful downloads")
+        elif downloads_expected > 0:
+            success_rate = (downloads_successful / downloads_expected) * 100
+            if success_rate < 70:
+                problems.append(f"{success_rate:.0f}% success rate")
+            elif success_rate < 90:
+                warnings.append(f"{success_rate:.0f}% success rate")
+
+        performance_data = " ".join(perf_parts)
+
+        # Determine overall status
+        check_name = f"Download {session_type}"
+
+        if problems:
+            exit_status = EXIT_CRITICAL
+            message = f"❌ {check_name} CRITICAL - {station}: {', '.join(problems)}"
+        elif warnings:
+            exit_status = EXIT_WARNING
+            message = f"⚠️  {check_name} WARNING - {station}: {', '.join(warnings)}"
+        else:
+            exit_status = EXIT_OK
+            if hours_since_download is not None:
+                message = f"✅ {check_name} OK - {station}: last {hours_since_download:.0f}h ago"
+                if latest_download:
+                    # Add timestamp for clarity
+                    message += f" ({latest_download[:16]})"
+            else:
+                message = f"✅ {check_name} OK - {station}"
+            if downloads_successful > 0:
+                message += f", {downloads_successful} successful"
+
+        return self.send_check_result(CheckResult(
+            station=station,
+            check_name=check_name,
+            exit_status=exit_status,
+            plugin_output=message,
+            performance_data=performance_data,
+            check_source=self.check_source
+        ))
+
     def send_gps_ping_from_json(
         self,
         station: str,
@@ -637,7 +838,7 @@ class IcingaClient:
         data_quality = health_data.get('data_quality', {})
 
         available_checks = checks or [
-            'ping', 'temp', 'volt', 'cpu', 'uptime', 'satellites',
+            'ping', 'temp', 'volt', 'cpu', 'uptime', 'ntrip', 'satellites',
             'position', 'logging', 'receiver_status'
         ]
 
@@ -681,6 +882,15 @@ class IcingaClient:
                 station=station,
                 uptime_seconds=uptime_seconds
             )
+
+        if 'ntrip' in available_checks:
+            ntrip_data = metrics.get('ntrip', {})
+            # Only send NTRIP check if we have NTRIP data
+            if ntrip_data:
+                results['NTRIP status'] = self.send_ntrip_check(
+                    station=station,
+                    ntrip_status=ntrip_data
+                )
 
         if 'satellites' in available_checks:
             sat_data = metrics.get('satellites', {})

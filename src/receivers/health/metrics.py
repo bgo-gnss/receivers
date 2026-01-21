@@ -1037,7 +1037,25 @@ class MetricChecker:
                     ports_closed_warning.append(port_str)
 
         performance_data = " ".join(perf_parts)
-        total_ports = len(ports_open) + len(ports_closed_critical) + len(ports_closed_warning)
+
+        # Build port status list for message
+        port_status_parts = []
+        for port_name, port_info in ports_status.items():
+            if port_name == "overall_status":
+                continue
+            if not isinstance(port_info, dict):
+                continue
+            is_open = port_info.get("open", False)
+            port_num = port_info.get("port", 0)
+            if is_open:
+                port_status_parts.append(f"{port_name}:{port_num} ✓")
+            else:
+                if port_name in critical_ports:
+                    port_status_parts.append(f"{port_name}:{port_num} ✗")
+                else:
+                    port_status_parts.append(f"{port_name}:{port_num} ⚠")
+
+        ports_summary = ", ".join(port_status_parts)
 
         # Determine status
         if len(ports_closed_critical) == 0 and len(ports_closed_warning) == 0:
@@ -1046,31 +1064,25 @@ class MetricChecker:
                 status=HealthStatus.OK,
                 value=ports_status,
                 unit="",
-                message=f"✅ Receiver status OK - {station_prefix}all {total_ports} ports responding",
+                message=f"✅ Receiver status OK - {station_prefix}{ports_summary}",
                 performance_data=performance_data,
             )
         elif len(ports_closed_critical) > 0:
             # Critical port(s) down
-            closed_str = ", ".join(ports_closed_critical)
             return MetricResult(
                 status=HealthStatus.CRITICAL,
                 value=ports_status,
                 unit="",
-                message=f"❌ Receiver status CRITICAL - {station_prefix}{closed_str} not responding",
+                message=f"❌ Receiver status CRITICAL - {station_prefix}{ports_summary}",
                 performance_data=performance_data,
             )
         else:
             # Only non-critical port(s) down (e.g., control port)
-            closed_str = ", ".join(ports_closed_warning)
-            open_str = ", ".join(ports_open)
-            message = f"⚠️  Receiver status WARNING - {station_prefix}{closed_str} not responding"
-            if ports_open:
-                message += f" (open: {open_str})"
             return MetricResult(
                 status=HealthStatus.WARNING,
                 value=ports_status,
                 unit="",
-                message=message,
+                message=f"⚠️  Receiver status WARNING - {station_prefix}{ports_summary}",
                 performance_data=performance_data,
             )
 

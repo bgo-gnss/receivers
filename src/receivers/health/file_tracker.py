@@ -337,6 +337,92 @@ class FileTracker:
             logger.debug(f"Error getting data availability: {e}")
             return {}
 
+    def get_download_stats(
+        self,
+        station_id: str,
+        session_type: str = "15s_24hr",
+        days: int = 7,
+    ) -> Dict[str, Any]:
+        """Get download statistics for Icinga check.
+
+        Args:
+            station_id: Station identifier
+            session_type: Session type ('15s_24hr', '1Hz_1hr', etc.)
+            days: Number of days to look back
+
+        Returns:
+            Dictionary with download stats:
+            - hours_since_download: Hours since last successful download
+            - latest_download: Timestamp of last download
+            - downloads_expected: Expected downloads in period
+            - downloads_successful: Successful downloads
+            - downloads_missing: Known missing files
+            - error_count: Total errors in period
+        """
+        if not self._conn:
+            if not self.connect():
+                return {}
+
+        try:
+            with self._conn.cursor() as cur:
+                # Get latest successful download
+                cur.execute(
+                    """
+                    SELECT
+                        last_checked,
+                        EXTRACT(EPOCH FROM (NOW() - last_checked)) / 3600 as hours_ago
+                    FROM file_tracking
+                    WHERE sid = %s
+                      AND session_type = %s
+                      AND status = 'downloaded'
+                    ORDER BY last_checked DESC
+                    LIMIT 1
+                    """,
+                    (station_id, session_type),
+                )
+                latest = cur.fetchone()
+
+                # Get counts for recent period
+                cur.execute(
+                    """
+                    SELECT
+                        COUNT(*) FILTER (WHERE status = 'downloaded') as successful,
+                        COUNT(*) FILTER (WHERE status = 'missing') as missing,
+                        COALESCE(SUM(error_count), 0) as total_errors,
+                        COUNT(*) as total_tracked
+                    FROM file_tracking
+                    WHERE sid = %s
+                      AND session_type = %s
+                      AND file_date >= CURRENT_DATE - %s
+                    """,
+                    (station_id, session_type, days),
+                )
+                counts = cur.fetchone()
+
+                result = {
+                    "hours_since_download": None,
+                    "latest_download": None,
+                    "downloads_expected": days,  # Rough estimate
+                    "downloads_successful": 0,
+                    "downloads_missing": 0,
+                    "error_count": 0,
+                }
+
+                if latest:
+                    result["latest_download"] = latest[0].isoformat() if latest[0] else None
+                    result["hours_since_download"] = float(latest[1]) if latest[1] else None
+
+                if counts:
+                    result["downloads_successful"] = counts[0] or 0
+                    result["downloads_missing"] = counts[1] or 0
+                    result["error_count"] = int(counts[2]) if counts[2] else 0
+
+                return result
+
+        except Exception as e:
+            logger.debug(f"Error getting download stats: {e}")
+            return {}
+
     def close(self):
         """Close database connection."""
         if self._conn:
