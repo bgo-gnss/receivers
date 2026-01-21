@@ -33,14 +33,12 @@ API Documentation:
 import json
 import logging
 import requests
-from typing import Optional, Dict, Any, TYPE_CHECKING
+from typing import Optional, Dict, Any
 from dataclasses import dataclass
 from urllib.parse import quote
 
 from ..health.metrics import MetricChecker, MetricResult, HealthStatus, ThresholdConfig
-
-if TYPE_CHECKING:
-    from ..config.receivers_config import IcingaThresholds
+from ..config.icinga_config import get_icinga_config, IcingaThresholds
 
 
 # Nagios/Icinga exit codes (kept for backward compatibility)
@@ -106,43 +104,54 @@ class IcingaClient:
 
     def __init__(
         self,
-        host: str = "ut-icinga-m-vip.vedur.is",
-        port: int = 5665,
-        username: str = "icingaweb",
-        password: str = "ji5Aeb8oopieGoh",
-        verify_ssl: bool = False,
-        timeout: int = 10,
-        check_source: str = "eldey",
+        host: Optional[str] = None,
+        port: Optional[int] = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        verify_ssl: Optional[bool] = None,
+        timeout: Optional[int] = None,
+        check_source: Optional[str] = None,
         thresholds: Optional["IcingaThresholds"] = None
     ):
         """Initialize Icinga client.
 
-        Args:
-            host: Icinga server hostname
-            port: Icinga API port (default: 5665)
-            username: API username
-            password: API password
-            verify_ssl: Verify SSL certificates (default: False)
-            timeout: Request timeout in seconds
-            check_source: Source hostname for check results
-            thresholds: Optional IcingaThresholds from receivers.cfg config
-        """
-        self.base_url = f"https://{host}:{port}/v1"
-        self.auth = (username, password)
-        self.verify_ssl = verify_ssl
-        self.timeout = timeout
-        self.check_source = check_source
+        Connection settings and thresholds are loaded from icinga.cfg by default.
+        Any explicitly provided parameters will override the config file values.
 
+        Args:
+            host: Icinga server hostname (from icinga.cfg if not provided)
+            port: Icinga API port (from icinga.cfg if not provided)
+            username: API username (from icinga.cfg if not provided)
+            password: API password (from icinga.cfg if not provided)
+            verify_ssl: Verify SSL certificates (from icinga.cfg if not provided)
+            timeout: Request timeout in seconds (from icinga.cfg if not provided)
+            check_source: Source hostname for check results (from icinga.cfg if not provided)
+            thresholds: Optional IcingaThresholds (from icinga.cfg if not provided)
+        """
         self.logger = logging.getLogger('receivers.monitoring.icinga')
+
+        # Load configuration from icinga.cfg
+        icinga_config = get_icinga_config()
+        conn = icinga_config.get_connection()
+
+        # Use provided values or fall back to config
+        _host = host if host is not None else conn.host
+        _port = port if port is not None else conn.port
+        _username = username if username is not None else conn.username
+        _password = password if password is not None else conn.password
+        _verify_ssl = verify_ssl if verify_ssl is not None else conn.verify_ssl
+        _timeout = timeout if timeout is not None else conn.timeout
+        _check_source = check_source if check_source is not None else conn.check_source
+
+        self.base_url = f"https://{_host}:{_port}/v1"
+        self.auth = (_username, _password)
+        self.verify_ssl = _verify_ssl
+        self.timeout = _timeout
+        self.check_source = _check_source
 
         # Store thresholds (load from config if not provided)
         if thresholds is None:
-            try:
-                from ..config.receivers_config import get_receivers_config
-                self.thresholds = get_receivers_config().get_icinga_thresholds()
-            except Exception:
-                from ..config.receivers_config import IcingaThresholds
-                self.thresholds = IcingaThresholds()
+            self.thresholds = icinga_config.get_thresholds()
         else:
             self.thresholds = thresholds
 
