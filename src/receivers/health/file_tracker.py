@@ -493,6 +493,8 @@ class ArchiveFileChecker:
             "status_1hr": "c",
             "15s_24hr_rinex": "a",
             "1Hz_1hr_rinex": "b",
+            "20Hz_1hr": "d",
+            "50Hz_1hr": "e",
         }
         return session_letters.get(session_type, "a")
 

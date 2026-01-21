@@ -482,6 +482,50 @@ def _send_status_to_icinga(
                 else:
                     print(f"{status} 1Hz_1hr rinex file status: FAILED - {response.get('message', 'Unknown error')}")
 
+            # Check 20Hz hourly files
+            stats = checker.check_file_status(station_id, "20Hz_1hr", days_back=1)
+            if stats and stats.get("files_found", 0) > 0:
+                response = client.send_download_check(
+                    station=station_id,
+                    session_type="20Hz_1hr",
+                    latest_download=stats.get("latest_mtime"),
+                    hours_since_download=stats.get("hours_since_file"),
+                    downloads_expected=stats.get("files_expected", 24),
+                    downloads_successful=stats.get("files_found", 0),
+                    downloads_missing=max(0, stats.get("files_expected", 0) - stats.get("files_found", 0)),
+                    error_count=0,
+                    warn_hours=2.0,
+                    crit_hours=4.0,
+                )
+                status = "✅" if response.get("success") else "❌"
+                code = response.get("code", "N/A")
+                if response.get("success"):
+                    print(f"{status} 20Hz_1hr file status: sent (HTTP {code})")
+                else:
+                    print(f"{status} 20Hz_1hr file status: FAILED - {response.get('message', 'Unknown error')}")
+
+            # Check 50Hz hourly files
+            stats = checker.check_file_status(station_id, "50Hz_1hr", days_back=1)
+            if stats and stats.get("files_found", 0) > 0:
+                response = client.send_download_check(
+                    station=station_id,
+                    session_type="50Hz_1hr",
+                    latest_download=stats.get("latest_mtime"),
+                    hours_since_download=stats.get("hours_since_file"),
+                    downloads_expected=stats.get("files_expected", 24),
+                    downloads_successful=stats.get("files_found", 0),
+                    downloads_missing=max(0, stats.get("files_expected", 0) - stats.get("files_found", 0)),
+                    error_count=0,
+                    warn_hours=2.0,
+                    crit_hours=4.0,
+                )
+                status = "✅" if response.get("success") else "❌"
+                code = response.get("code", "N/A")
+                if response.get("success"):
+                    print(f"{status} 50Hz_1hr file status: sent (HTTP {code})")
+                else:
+                    print(f"{status} 50Hz_1hr file status: FAILED - {response.get('message', 'Unknown error')}")
+
         except Exception as e:
             logger.debug(f"Could not send file status checks for {station_id}: {e}")
 
