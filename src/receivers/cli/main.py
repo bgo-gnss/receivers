@@ -529,6 +529,30 @@ def _send_status_to_icinga(
         except Exception as e:
             logger.debug(f"Could not send file status checks for {station_id}: {e}")
 
+        # Send 24hr processing status check
+        try:
+            from ..health.file_tracker import ProcessingStatusChecker
+            proc_checker = ProcessingStatusChecker()
+            result = proc_checker.check_24hr_processing(station_id)
+
+            if result.get("file_exists", False):
+                response = client.send_processing_check(
+                    station=station_id,
+                    check_name="24hr processing status",
+                    status=result.get("status", "unknown"),
+                    message=result.get("message", "Unknown status"),
+                    days_behind=result.get("days_behind"),
+                    latest_date=result.get("latest_date"),
+                )
+                status = "✅" if response.get("success") else "❌"
+                code = response.get("code", "N/A")
+                if response.get("success"):
+                    print(f"{status} 24hr processing status: sent (HTTP {code})")
+                else:
+                    print(f"{status} 24hr processing status: FAILED - {response.get('message', 'Unknown error')}")
+        except Exception as e:
+            logger.debug(f"Could not send processing status for {station_id}: {e}")
+
     # Close database connection
     if db_writer:
         db_writer.close()

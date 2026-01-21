@@ -9,7 +9,7 @@ Tracks file availability and import status to:
 import hashlib
 import logging
 import os
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -687,6 +687,214 @@ class ArchiveFileChecker:
             "archive_dir": archive_dir,
             "dir_exists": dir_exists,  # False if session not configured for station
         }
+
+
+class ProcessingStatusChecker:
+    """Check processing status from time series files.
+
+    Used by Icinga checks to verify 24hr processing has completed.
+    """
+
+    def __init__(self, timeseries_prepath: Optional[str] = None):
+        """Initialize processing status checker.
+
+        Args:
+            timeseries_prepath: Base path for time series files.
+                              If None, tries to load from config.
+        """
+        self.timeseries_prepath = timeseries_prepath
+        self._config = None
+
+    def _load_config(self):
+        """Load receivers configuration."""
+        if self._config is not None:
+            return
+
+        try:
+            from ..config.receivers_config import ReceiversConfig
+            self._config = ReceiversConfig()
+
+            if self.timeseries_prepath is None:
+                # Try to get from config
+                try:
+                    self.timeseries_prepath = self._config.config.get(
+                        "processing", "timeseries_prepath", fallback=None
+                    )
+                except Exception:
+                    pass
+
+            # Fallback to common paths
+            if self.timeseries_prepath is None:
+                for path in ["/mnt_data/gpsdata", "/mnt/gpsdata"]:
+                    if os.path.isdir(path):
+                        self.timeseries_prepath = path
+                        break
+        except Exception as e:
+            logger.debug(f"Could not load config: {e}")
+
+    def get_timeseries_path(self, station_id: str) -> str:
+        """Get time series file path for a station.
+
+        Args:
+            station_id: Station ID (e.g., 'THOB')
+
+        Returns:
+            Path to time series file
+        """
+        self._load_config()
+        prepath = self.timeseries_prepath or "/mnt_data/gpsdata"
+        return os.path.join(prepath, f"mb_{station_id}_TOT.dat1")
+
+    def check_24hr_processing(
+        self,
+        station_id: str,
+        expected_by_hour: int = 6,
+    ) -> Dict[str, Any]:
+        """Check if 24hr processing completed for yesterday.
+
+        Reads the time series file and checks if the latest entry
+        is from yesterday (or more recent).
+
+        Args:
+            station_id: Station ID (e.g., 'THOB')
+            expected_by_hour: Hour by which processing should complete
+
+        Returns:
+            Dict with:
+            - status: 'ok', 'warning', 'critical', 'unknown'
+            - latest_yearf: Latest year fraction in file
+            - latest_date: Latest date as datetime
+            - days_behind: How many days behind the processing is
+            - file_exists: Whether the time series file exists
+            - message: Human-readable status message
+        """
+        self._load_config()
+
+        filepath = self.get_timeseries_path(station_id)
+
+        # Check if file exists
+        if not os.path.exists(filepath):
+            return {
+                "status": "unknown",
+                "latest_yearf": None,
+                "latest_date": None,
+                "days_behind": None,
+                "file_exists": False,
+                "message": f"Time series file not found: {filepath}",
+            }
+
+        try:
+            # Read the last line of the file
+            with open(filepath, "r") as f:
+                lines = f.readlines()
+
+            if not lines:
+                return {
+                    "status": "unknown",
+                    "latest_yearf": None,
+                    "latest_date": None,
+                    "days_behind": None,
+                    "file_exists": True,
+                    "message": "Time series file is empty",
+                }
+
+            # Parse the last non-empty line
+            last_line = None
+            for line in reversed(lines):
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    last_line = line
+                    break
+
+            if not last_line:
+                return {
+                    "status": "unknown",
+                    "latest_yearf": None,
+                    "latest_date": None,
+                    "days_behind": None,
+                    "file_exists": True,
+                    "message": "No data in time series file",
+                }
+
+            # Parse year fraction from first column
+            parts = last_line.split()
+            if not parts:
+                return {
+                    "status": "unknown",
+                    "latest_yearf": None,
+                    "latest_date": None,
+                    "days_behind": None,
+                    "file_exists": True,
+                    "message": "Could not parse time series data",
+                }
+
+            latest_yearf = float(parts[0])
+
+            # Convert year fraction to datetime using gtimes
+            try:
+                import gtimes.timefunc as gt
+                latest_date = gt.TimefromYearf(latest_yearf)
+            except Exception as e:
+                logger.debug(f"Could not convert year fraction: {e}")
+                return {
+                    "status": "unknown",
+                    "latest_yearf": latest_yearf,
+                    "latest_date": None,
+                    "days_behind": None,
+                    "file_exists": True,
+                    "message": f"Could not convert year fraction {latest_yearf}",
+                }
+
+            # Calculate how many days behind
+            now = datetime.now()
+            yesterday = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
+            latest_day = latest_date.replace(hour=0, minute=0, second=0, microsecond=0)
+
+            days_behind = (yesterday - latest_day).days
+
+            # Determine status
+            if days_behind < 0:
+                # Latest data is from today or future - OK
+                status = "ok"
+                message = f"24hr processing OK - latest: {latest_date.strftime('%Y-%m-%d')}"
+            elif days_behind == 0:
+                # Latest data is from yesterday - OK
+                status = "ok"
+                message = f"24hr processing OK - latest: {latest_date.strftime('%Y-%m-%d')}"
+            elif days_behind == 1:
+                # One day behind - check if we're past expected time
+                if now.hour >= expected_by_hour:
+                    status = "warning"
+                    message = f"24hr processing delayed - latest: {latest_date.strftime('%Y-%m-%d')} (1 day behind)"
+                else:
+                    status = "ok"
+                    message = f"24hr processing OK - latest: {latest_date.strftime('%Y-%m-%d')} (processing may be in progress)"
+            elif days_behind <= 3:
+                status = "warning"
+                message = f"24hr processing behind - latest: {latest_date.strftime('%Y-%m-%d')} ({days_behind} days behind)"
+            else:
+                status = "critical"
+                message = f"24hr processing CRITICAL - latest: {latest_date.strftime('%Y-%m-%d')} ({days_behind} days behind)"
+
+            return {
+                "status": status,
+                "latest_yearf": latest_yearf,
+                "latest_date": latest_date.isoformat(),
+                "days_behind": days_behind,
+                "file_exists": True,
+                "message": message,
+            }
+
+        except Exception as e:
+            logger.debug(f"Error checking 24hr processing: {e}")
+            return {
+                "status": "unknown",
+                "latest_yearf": None,
+                "latest_date": None,
+                "days_behind": None,
+                "file_exists": True,
+                "message": f"Error reading time series: {e}",
+            }
 
 
 def compute_checksum(data: Dict[str, Any]) -> str:
