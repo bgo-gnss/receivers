@@ -3,6 +3,9 @@
 This module fetches health data from Trimble receivers via the /prog/show? HTTP API
 and converts it to the standardized health data format matching PolaRX5 output.
 
+Uses the centralized MetricChecker from receivers.health.metrics for consistent
+threshold evaluation across all health monitoring components.
+
 Trimble API Endpoints:
 - /prog/show?Voltages: Power supply voltage readings
 - /prog/show?Temperature: Internal temperature
@@ -22,12 +25,16 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from requests.auth import HTTPBasicAuth
 
+from .metrics import MetricChecker
+
 
 class TrimbleHTTPExtractor:
     """Extract health data from Trimble receivers via /prog/show? HTTP API.
 
     Provides unified health data extraction for NetR9, NetRS, and NetR5 receivers,
     outputting data in the same standardized format as PolaRX5 health extraction.
+
+    Uses the centralized MetricChecker for consistent threshold evaluation.
     """
 
     # Real Trimble /prog/show? API endpoints (NetR9/NetR5)
@@ -52,18 +59,6 @@ class TrimbleHTTPExtractor:
     NETRS_ENDPOINTS = {
         "activity": "/perl-scripts/rstatusActivity.cgi",  # Uptime, extra info
     }
-
-    # Voltage thresholds (same as PolaRX5 for consistency)
-    VOLTAGE_WARNING = 11.5
-    VOLTAGE_CRITICAL = 10.0
-
-    # Temperature thresholds (Celsius)
-    TEMP_WARNING = 60.0
-    TEMP_CRITICAL = 70.0
-
-    # Satellite tracking thresholds
-    SAT_WARNING = 4
-    SAT_CRITICAL = 2
 
     def __init__(
         self,
@@ -96,6 +91,12 @@ class TrimbleHTTPExtractor:
         self.base_url = f"http://{host}:{port}"
         self.timeout = timeout
         self.logger = logging.getLogger(f"receivers.health.trimble.{station_id}")
+
+        # Initialize centralized metric checker for consistent threshold evaluation
+        # Load thresholds with receiver-type-specific overrides if configured
+        from .metrics import load_thresholds
+        config = load_thresholds(receiver_type=receiver_type)
+        self.metric_checker = MetricChecker(config)
 
         # HTTP Basic Auth if credentials provided
         self.auth = None
@@ -392,8 +393,8 @@ class TrimbleHTTPExtractor:
                         "voltage": max_voltage,
                         "unit": "V",
                         "status": status,
-                        "threshold_warning": self.VOLTAGE_WARNING,
-                        "threshold_critical": self.VOLTAGE_CRITICAL,
+                        "threshold_warning": self.metric_checker.config.voltage_warning_low,
+                        "threshold_critical": self.metric_checker.config.voltage_critical_low,
                     }
                 # Try NetRS Activity page as fallback
                 return self._fetch_voltages_from_activity_page()
@@ -421,8 +422,8 @@ class TrimbleHTTPExtractor:
                 "unit": "V",
                 "status": status,
                 "ports": ports,
-                "threshold_warning": self.VOLTAGE_WARNING,
-                "threshold_critical": self.VOLTAGE_CRITICAL,
+                "threshold_warning": self.metric_checker.config.voltage_warning_low,
+                "threshold_critical": self.metric_checker.config.voltage_critical_low,
             }
 
         except Exception as e:
@@ -485,8 +486,8 @@ class TrimbleHTTPExtractor:
                 "unit": "V",
                 "status": status,
                 "ports": ports,
-                "threshold_warning": self.VOLTAGE_WARNING,
-                "threshold_critical": self.VOLTAGE_CRITICAL,
+                "threshold_warning": self.metric_checker.config.voltage_warning_low,
+                "threshold_critical": self.metric_checker.config.voltage_critical_low,
             }
 
         except Exception as e:
@@ -568,8 +569,8 @@ class TrimbleHTTPExtractor:
                 "value": temperature,
                 "unit": "C",
                 "status": status,
-                "threshold_warning": self.TEMP_WARNING,
-                "threshold_critical": self.TEMP_CRITICAL,
+                "threshold_warning": self.metric_checker.config.temp_warning_high,
+                "threshold_critical": self.metric_checker.config.temp_critical_high,
             }
 
         except Exception as e:
@@ -657,8 +658,8 @@ class TrimbleHTTPExtractor:
                     "SBAS": sbas_count,
                 },
                 "satellites": satellites[:20],  # Limit to 20 for JSON size
-                "threshold_warning": self.SAT_WARNING,
-                "threshold_critical": self.SAT_CRITICAL,
+                "threshold_warning": self.metric_checker.config.sat_warning,
+                "threshold_critical": self.metric_checker.config.sat_critical,
             }
 
         except Exception as e:
@@ -799,7 +800,7 @@ class TrimbleHTTPExtractor:
         return system_info if system_info else None
 
     def _voltage_status(self, voltage: float) -> str:
-        """Determine voltage status.
+        """Determine voltage status using centralized thresholds.
 
         Args:
             voltage: Voltage reading in volts
@@ -807,14 +808,11 @@ class TrimbleHTTPExtractor:
         Returns:
             Status string (ok, warning, critical)
         """
-        if voltage < self.VOLTAGE_CRITICAL:
-            return "critical"
-        elif voltage < self.VOLTAGE_WARNING:
-            return "warning"
-        return "ok"
+        result = self.metric_checker.check_voltage(voltage)
+        return result.status.value
 
     def _temperature_status(self, temperature: float) -> str:
-        """Determine temperature status.
+        """Determine temperature status using centralized thresholds.
 
         Args:
             temperature: Temperature in Celsius
@@ -822,26 +820,20 @@ class TrimbleHTTPExtractor:
         Returns:
             Status string (ok, warning, critical)
         """
-        if temperature > self.TEMP_CRITICAL:
-            return "critical"
-        elif temperature > self.TEMP_WARNING:
-            return "warning"
-        return "ok"
+        result = self.metric_checker.check_temperature(temperature)
+        return result.status.value
 
     def _satellite_status(self, count: int) -> str:
-        """Determine satellite tracking status.
+        """Determine satellite tracking status using centralized thresholds.
 
         Args:
             count: Number of satellites tracking
 
         Returns:
-            Status string (good/ok, fair/warning, poor/critical)
+            Status string (ok, warning, critical)
         """
-        if count < self.SAT_CRITICAL:
-            return "critical"
-        elif count < self.SAT_WARNING:
-            return "warning"
-        return "ok"
+        result = self.metric_checker.check_satellites(count)
+        return result.status.value
 
     def _calculate_overall_status(self, statuses: List[str]) -> str:
         """Calculate overall health status from individual statuses.

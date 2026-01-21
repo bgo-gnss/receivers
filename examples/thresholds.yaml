@@ -1,0 +1,77 @@
+# GPS Receiver Health Monitoring Thresholds Configuration
+#
+# This file configures thresholds for health status determination.
+# Copy to ~/.config/gpsconfig/thresholds.yaml (or $GPS_CONFIG_PATH/thresholds.yaml)
+#
+# All values are optional - missing values use built-in defaults.
+# Receiver-type-specific overrides can be defined in the receiver_types section.
+
+defaults:
+  # Voltage thresholds (V) - for receiver power supply monitoring
+  # Normal range: 11.8V - 15.0V
+  voltage:
+    critical_low: 11.0    # Below this is critical
+    warning_low: 11.8     # Below this is warning
+    warning_high: 15.0    # Above this is warning
+    critical_high: 16.0   # Above this is critical
+    min: 10.0             # Performance data range minimum
+    max: 18.0             # Performance data range maximum
+
+  # Temperature thresholds (Celsius)
+  # Normal range: -10C to 50C
+  temperature:
+    critical_low: -20.0   # Below this is critical (extreme cold)
+    warning_low: -10.0    # Below this is warning
+    warning_high: 50.0    # Above this is warning
+    critical_high: 60.0   # Above this is critical
+
+  # CPU load thresholds (%)
+  cpu:
+    warning: 75           # Above this is warning
+    critical: 90          # Above this is critical
+
+  # Satellite tracking count thresholds
+  # Note: These are "below" thresholds (fewer satellites = worse)
+  satellites:
+    warning: 8            # Below this is warning
+    critical: 4           # Below this is critical
+
+  # Disk usage thresholds (%)
+  disk:
+    warning: 80.0         # Above this is warning
+    critical: 90.0        # Above this is critical
+
+  # Ping latency thresholds (ms)
+  ping:
+    warning: 1000.0       # Above this is warning
+    critical: 5000.0      # Above this is critical
+
+  # Packet loss thresholds (%)
+  packet_loss:
+    warning: 20.0         # Above this is warning
+    critical: 50.0        # Above this is critical
+
+
+# Receiver-type-specific overrides
+# These values override the defaults for specific receiver types.
+# Receiver type names are case-insensitive.
+receiver_types:
+  # Septentrio PolaRX5 receivers
+  # Generally more tolerant of temperature variations
+  PolaRX5:
+    temperature:
+      critical_high: 70.0   # PolaRX5 can handle higher temps
+
+  # Trimble NetRS receivers (older models)
+  # May need different voltage thresholds due to age
+  NetRS:
+    voltage:
+      warning_low: 11.5     # Older power supplies may run lower
+
+  # Trimble NetR9 receivers
+  NetR9:
+    # Uses defaults
+
+  # Leica G10 receivers
+  G10:
+    # Uses defaults

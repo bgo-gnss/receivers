@@ -3,6 +3,9 @@
 
 Sends passive check results to Icinga monitoring system via REST API.
 
+This module uses the centralized MetricChecker from receivers.health.metrics
+for consistent threshold evaluation across all health monitoring components.
+
 Usage:
     from receivers.monitoring.icinga_client import IcingaClient, CheckResult
 
@@ -34,8 +37,10 @@ from typing import Optional, Dict, Any
 from dataclasses import dataclass
 from urllib.parse import quote
 
+from ..health.metrics import MetricChecker, MetricResult, HealthStatus
 
-# Nagios/Icinga exit codes
+
+# Nagios/Icinga exit codes (kept for backward compatibility)
 EXIT_OK = 0
 EXIT_WARNING = 1
 EXIT_CRITICAL = 2
@@ -118,10 +123,41 @@ class IcingaClient:
 
         self.logger = logging.getLogger('receivers.monitoring.icinga')
 
+        # Initialize centralized metric checker for consistent threshold evaluation
+        self.metric_checker = MetricChecker()
+
         # Suppress SSL warnings if not verifying
         if not verify_ssl:
             import urllib3
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    def _send_metric_check(
+        self,
+        station: str,
+        check_name: str,
+        result: MetricResult
+    ) -> Dict[str, Any]:
+        """Send a metric check result to Icinga using MetricResult.
+
+        This is the unified method for sending any metric-based check.
+
+        Args:
+            station: Station ID (e.g., 'ORFC')
+            check_name: Check name (e.g., 'Station temp', 'Station volt')
+            result: MetricResult from MetricChecker evaluation
+
+        Returns:
+            API response dict
+        """
+        check_result = CheckResult(
+            station=station,
+            check_name=check_name,
+            exit_status=result.exit_code,
+            plugin_output=result.message,
+            performance_data=result.performance_data,
+            check_source=self.check_source
+        )
+        return self.send_check_result(check_result)
 
     def send_check_result(
         self,
@@ -240,52 +276,15 @@ class IcingaClient:
         Returns:
             API response dict
         """
-        # Determine exit status
-        if is_reachable and router_ok and receiver_ok:
-            exit_status = EXIT_OK
-            status_icon = "✅"
-        elif is_reachable and (router_ok or receiver_ok):
-            exit_status = EXIT_WARNING
-            status_icon = "⚠️"
-        else:
-            exit_status = EXIT_CRITICAL
-            status_icon = "❌"
-
-        # Build message
-        if is_reachable and router_ok and receiver_ok:
-            message = f"{status_icon} GPS Ping OK"
-        elif not router_ok:
-            message = f"{status_icon} Router not responding"
-        elif not receiver_ok:
-            message = f"{status_icon} Receiver not responding"
-        else:
-            message = f"{status_icon} GPS Ping CRITICAL - not reachable"
-
-        # Add latency to message
-        if latency_ms is not None:
-            message += f": {latency_ms:.1f}ms"
-            if packet_loss is not None:
-                message += f", {packet_loss:.1f}% loss"
-
-        # Build performance data
-        perf_data_parts = []
-        if latency_ms is not None:
-            perf_data_parts.append(f"ping={latency_ms:.3f}ms;1000;5000")
-        if packet_loss is not None:
-            perf_data_parts.append(f"packet_loss={packet_loss:.1f}%;20;50")
-
-        performance_data = " ".join(perf_data_parts)
-
-        result = CheckResult(
-            station=station,
-            check_name="GPS Ping",
-            exit_status=exit_status,
-            plugin_output=message,
-            performance_data=performance_data,
-            check_source=self.check_source
+        result = self.metric_checker.check_ping(
+            is_reachable,
+            router_ok=router_ok,
+            receiver_ok=receiver_ok,
+            latency_ms=latency_ms,
+            packet_loss=packet_loss,
+            station=station
         )
-
-        return self.send_check_result(result)
+        return self._send_metric_check(station, "GPS Ping", result)
 
     def send_temperature_check(
         self,
@@ -301,39 +300,18 @@ class IcingaClient:
             station: Station ID (e.g., 'THOB')
             temperature: Temperature value (None if unavailable)
             unit: Temperature unit (default: 'C')
-            warn_threshold: Warning threshold (default: 50°C)
-            crit_threshold: Critical threshold (default: 60°C)
+            warn_threshold: Warning threshold (default: 50°C) - deprecated, uses centralized thresholds
+            crit_threshold: Critical threshold (default: 60°C) - deprecated, uses centralized thresholds
 
         Returns:
             API response dict
+
+        Note:
+            The warn_threshold and crit_threshold parameters are deprecated.
+            Thresholds are now managed by the centralized MetricChecker.
         """
-        if temperature is None:
-            exit_status = EXIT_UNKNOWN
-            message = f"❓ Station temp UNKNOWN - {station} temperature unavailable"
-            performance_data = ""
-        elif temperature >= crit_threshold:
-            exit_status = EXIT_CRITICAL
-            message = f"❌ Station temp CRITICAL - {station}: {temperature}°{unit} (>={crit_threshold}°{unit})"
-            performance_data = f"temp={temperature}{unit};{warn_threshold};{crit_threshold};0;80"
-        elif temperature >= warn_threshold:
-            exit_status = EXIT_WARNING
-            message = f"⚠️  Station temp WARNING - {station}: {temperature}°{unit} (>={warn_threshold}°{unit})"
-            performance_data = f"temp={temperature}{unit};{warn_threshold};{crit_threshold};0;80"
-        else:
-            exit_status = EXIT_OK
-            message = f"✅ Station temp OK - {station}: {temperature}°{unit}"
-            performance_data = f"temp={temperature}{unit};{warn_threshold};{crit_threshold};0;80"
-
-        result = CheckResult(
-            station=station,
-            check_name="Station temp",
-            exit_status=exit_status,
-            plugin_output=message,
-            performance_data=performance_data,
-            check_source=self.check_source
-        )
-
-        return self.send_check_result(result)
+        result = self.metric_checker.check_temperature(temperature, station=station, unit=unit)
+        return self._send_metric_check(station, "Station temp", result)
 
     def send_voltage_check(
         self,
@@ -349,47 +327,20 @@ class IcingaClient:
         Args:
             station: Station ID (e.g., 'THOB')
             voltage: Voltage value in volts (None if unavailable)
-            warn_low: Low warning threshold (default: 12.0V)
-            crit_low: Low critical threshold (default: 11.0V)
-            warn_high: High warning threshold (default: 15.0V)
-            crit_high: High critical threshold (default: 16.0V)
+            warn_low: Low warning threshold - deprecated, uses centralized thresholds
+            crit_low: Low critical threshold - deprecated, uses centralized thresholds
+            warn_high: High warning threshold - deprecated, uses centralized thresholds
+            crit_high: High critical threshold - deprecated, uses centralized thresholds
 
         Returns:
             API response dict
+
+        Note:
+            All threshold parameters are deprecated.
+            Thresholds are now managed by the centralized MetricChecker.
         """
-        if voltage is None:
-            exit_status = EXIT_UNKNOWN
-            message = f"❓ Station volt UNKNOWN - {station} voltage unavailable"
-            performance_data = ""
-        elif voltage <= crit_low or voltage >= crit_high:
-            exit_status = EXIT_CRITICAL
-            if voltage <= crit_low:
-                message = f"❌ Station volt CRITICAL - {station}: {voltage:.1f}V (LOW <={crit_low}V)"
-            else:
-                message = f"❌ Station volt CRITICAL - {station}: {voltage:.1f}V (HIGH >={crit_high}V)"
-            performance_data = f"voltage={voltage}V;{warn_low}:{warn_high};{crit_low}:{crit_high};10;18"
-        elif voltage <= warn_low or voltage >= warn_high:
-            exit_status = EXIT_WARNING
-            if voltage <= warn_low:
-                message = f"⚠️  Station volt WARNING - {station}: {voltage:.1f}V (LOW <={warn_low}V)"
-            else:
-                message = f"⚠️  Station volt WARNING - {station}: {voltage:.1f}V (HIGH >={warn_high}V)"
-            performance_data = f"voltage={voltage}V;{warn_low}:{warn_high};{crit_low}:{crit_high};10;18"
-        else:
-            exit_status = EXIT_OK
-            message = f"✅ Station volt OK - {station}: {voltage:.1f}V"
-            performance_data = f"voltage={voltage}V;{warn_low}:{warn_high};{crit_low}:{crit_high};10;18"
-
-        result = CheckResult(
-            station=station,
-            check_name="Station volt",
-            exit_status=exit_status,
-            plugin_output=message,
-            performance_data=performance_data,
-            check_source=self.check_source
-        )
-
-        return self.send_check_result(result)
+        result = self.metric_checker.check_voltage(voltage, station=station)
+        return self._send_metric_check(station, "Station volt", result)
 
     def send_satellite_check(
         self,
@@ -405,49 +356,22 @@ class IcingaClient:
             station: Station ID (e.g., 'THOB')
             total_satellites: Total number of satellites tracked
             by_constellation: Dict with counts per constellation (GPS, GLONASS, etc.)
-            warn_threshold: Warning if below this count (default: 8)
-            crit_threshold: Critical if below this count (default: 4)
+            warn_threshold: Warning if below this count - deprecated, uses centralized thresholds
+            crit_threshold: Critical if below this count - deprecated, uses centralized thresholds
 
         Returns:
             API response dict
+
+        Note:
+            Threshold parameters are deprecated.
+            Thresholds are now managed by the centralized MetricChecker.
         """
-        if total_satellites is None:
-            exit_status = EXIT_UNKNOWN
-            message = f"❓ Satellite status UNKNOWN - {station} satellite data unavailable"
-            performance_data = ""
-        elif total_satellites <= crit_threshold:
-            exit_status = EXIT_CRITICAL
-            message = f"❌ Satellite status CRITICAL - {station}: {total_satellites} satellites (<={crit_threshold})"
-            performance_data = f"satellites={total_satellites};{warn_threshold}:;{crit_threshold}:;0;40"
-        elif total_satellites <= warn_threshold:
-            exit_status = EXIT_WARNING
-            message = f"⚠️  Satellite status WARNING - {station}: {total_satellites} satellites (<={warn_threshold})"
-            performance_data = f"satellites={total_satellites};{warn_threshold}:;{crit_threshold}:;0;40"
-        else:
-            exit_status = EXIT_OK
-            message = f"✅ Satellite status OK - {station}: {total_satellites} satellites"
-            performance_data = f"satellites={total_satellites};{warn_threshold}:;{crit_threshold}:;0;40"
-
-        # Add constellation breakdown to performance data
-        if by_constellation:
-            for const, count in by_constellation.items():
-                performance_data += f" {const.lower()}={count};;;0;20"
-
-        # Add constellation info to message
-        if by_constellation and exit_status != EXIT_UNKNOWN:
-            const_str = ", ".join(f"{k}:{v}" for k, v in by_constellation.items())
-            message += f" ({const_str})"
-
-        result = CheckResult(
-            station=station,
-            check_name="Satellite status",
-            exit_status=exit_status,
-            plugin_output=message,
-            performance_data=performance_data,
-            check_source=self.check_source
+        result = self.metric_checker.check_satellites(
+            total_satellites,
+            by_constellation=by_constellation,
+            station=station
         )
-
-        return self.send_check_result(result)
+        return self._send_metric_check(station, "Satellite status", result)
 
     def send_position_check(
         self,
@@ -475,59 +399,17 @@ class IcingaClient:
         Returns:
             API response dict
         """
-        # Determine status based on fix_mode
-        good_fix_modes = {'fixed', 'rtk_fixed', '3d', '3d_fix'}
-        warn_fix_modes = {'float', 'rtk_float', 'dgps', 'single', '2d'}
-
-        if fix_mode is None:
-            exit_status = EXIT_UNKNOWN
-            message = f"❓ Station position UNKNOWN - {station} position data unavailable"
-            performance_data = ""
-        elif fix_mode.lower() in good_fix_modes:
-            exit_status = EXIT_OK
-            message = f"✅ Station position OK - {station}: {fix_mode}"
-            performance_data = f"fix_mode=1;;;0;1"  # 1 = good fix
-        elif fix_mode.lower() in warn_fix_modes:
-            exit_status = EXIT_WARNING
-            message = f"⚠️  Station position WARNING - {station}: {fix_mode} (not fixed)"
-            performance_data = f"fix_mode=0.5;;;0;1"  # 0.5 = degraded
-        elif fix_mode.lower() in {'none', 'no_fix', 'invalid'}:
-            exit_status = EXIT_CRITICAL
-            message = f"❌ Station position CRITICAL - {station}: no fix"
-            performance_data = f"fix_mode=0;;;0;1"  # 0 = no fix
-        else:
-            exit_status = EXIT_WARNING
-            message = f"⚠️  Station position WARNING - {station}: {fix_mode} (unknown mode)"
-            performance_data = f"fix_mode=0.5;;;0;1"
-
-        # Add satellites to performance data and message
-        if satellites_used is not None:
-            performance_data += f" sats_used={satellites_used};;;0;30"
-            if exit_status != EXIT_UNKNOWN:
-                message += f", {satellites_used} sats"
-
-        # Add accuracy to performance data
-        if h_accuracy_m is not None:
-            performance_data += f" h_acc={h_accuracy_m:.3f}m;;;0;10"
-        if v_accuracy_m is not None:
-            performance_data += f" v_acc={v_accuracy_m:.3f}m;;;0;20"
-
-        # Add position to message if available
-        if latitude is not None and longitude is not None and exit_status != EXIT_UNKNOWN:
-            message += f" @ {latitude:.5f}, {longitude:.5f}"
-            if height is not None:
-                message += f", {height:.1f}m"
-
-        result = CheckResult(
-            station=station,
-            check_name="Station position",
-            exit_status=exit_status,
-            plugin_output=message,
-            performance_data=performance_data,
-            check_source=self.check_source
+        result = self.metric_checker.check_position(
+            fix_mode,
+            satellites_used=satellites_used,
+            h_accuracy_m=h_accuracy_m,
+            v_accuracy_m=v_accuracy_m,
+            latitude=latitude,
+            longitude=longitude,
+            height=height,
+            station=station
         )
-
-        return self.send_check_result(result)
+        return self._send_metric_check(station, "Station position", result)
 
     def send_logging_check(
         self,
@@ -545,53 +427,23 @@ class IcingaClient:
             disk_status: Disk/logging status ('ok', 'warning', 'critical', 'error')
             logging_active: Whether logging is currently active
             disk_usage_percent: Disk usage percentage
-            warn_disk: Warning threshold for disk usage (default: 80%)
-            crit_disk: Critical threshold for disk usage (default: 90%)
+            warn_disk: Warning threshold for disk usage - deprecated, uses centralized thresholds
+            crit_disk: Critical threshold for disk usage - deprecated, uses centralized thresholds
 
         Returns:
             API response dict
+
+        Note:
+            Disk threshold parameters are deprecated.
+            Thresholds are now managed by the centralized MetricChecker.
         """
-        if disk_status is None:
-            exit_status = EXIT_UNKNOWN
-            message = f"❓ Logging status UNKNOWN - {station} logging data unavailable"
-            performance_data = ""
-        elif not logging_active:
-            exit_status = EXIT_CRITICAL
-            message = f"❌ Logging status CRITICAL - {station}: logging INACTIVE"
-            performance_data = "logging=0;;;0;1"
-        elif disk_status.lower() in {'critical', 'error', 'full'}:
-            exit_status = EXIT_CRITICAL
-            message = f"❌ Logging status CRITICAL - {station}: disk {disk_status}"
-            performance_data = "logging=1;;;0;1"
-        elif disk_status.lower() in {'warning', 'warn'}:
-            exit_status = EXIT_WARNING
-            message = f"⚠️  Logging status WARNING - {station}: disk {disk_status}"
-            performance_data = "logging=1;;;0;1"
-        elif disk_status.lower() in {'ok', 'healthy', 'good'}:
-            exit_status = EXIT_OK
-            message = f"✅ Logging status OK - {station}: logging active"
-            performance_data = "logging=1;;;0;1"
-        else:
-            exit_status = EXIT_WARNING
-            message = f"⚠️  Logging status WARNING - {station}: unknown status '{disk_status}'"
-            performance_data = "logging=1;;;0;1"
-
-        # Add disk usage to performance data
-        if disk_usage_percent is not None:
-            performance_data += f" disk_used={disk_usage_percent}%;{warn_disk};{crit_disk};0;100"
-            if exit_status != EXIT_UNKNOWN:
-                message += f", disk {disk_usage_percent:.1f}%"
-
-        result = CheckResult(
-            station=station,
-            check_name="Logging status",
-            exit_status=exit_status,
-            plugin_output=message,
-            performance_data=performance_data,
-            check_source=self.check_source
+        result = self.metric_checker.check_disk_usage(
+            disk_usage_percent,
+            logging_active=logging_active,
+            disk_status=disk_status,
+            station=station
         )
-
-        return self.send_check_result(result)
+        return self._send_metric_check(station, "Logging status", result)
 
     def send_receiver_status_check(
         self,
@@ -615,81 +467,12 @@ class IcingaClient:
         Returns:
             API response dict
         """
-        if ports_status is None:
-            exit_status = EXIT_UNKNOWN
-            message = f"❓ Receiver status UNKNOWN - {station} port data unavailable"
-            performance_data = ""
-        else:
-            # Define critical ports by receiver type
-            receiver_type_upper = (receiver_type or "").upper()
-            if "POLARX" in receiver_type_upper:
-                # PolaRX5: FTP and HTTP are critical for data downloads
-                critical_ports = {'ftp', 'http'}
-            elif any(t in receiver_type_upper for t in ['NETR', 'NETRS', 'NETR9', 'NETR5']):
-                # Trimble: HTTP is critical
-                critical_ports = {'http'}
-            else:
-                # Default: all ports are critical
-                critical_ports = {'ftp', 'http', 'control'}
-
-            # Categorize ports
-            ports_open = []
-            ports_closed_critical = []
-            ports_closed_warning = []
-            perf_parts = []
-
-            for port_name, port_info in ports_status.items():
-                if port_name == 'overall_status':
-                    continue
-                is_open = port_info.get('open', False)
-                port_num = port_info.get('port', 0)
-                port_str = f"{port_name}:{port_num}"
-
-                if is_open:
-                    ports_open.append(port_str)
-                    perf_parts.append(f"{port_name}=1;;;0;1")
-                else:
-                    perf_parts.append(f"{port_name}=0;;;0;1")
-                    if port_name in critical_ports:
-                        ports_closed_critical.append(port_str)
-                    else:
-                        ports_closed_warning.append(port_str)
-
-            performance_data = " ".join(perf_parts)
-
-            # Determine status based on critical vs warning ports
-            total_ports = len(ports_open) + len(ports_closed_critical) + len(ports_closed_warning)
-
-            if len(ports_closed_critical) == 0 and len(ports_closed_warning) == 0:
-                # All ports OK
-                exit_status = EXIT_OK
-                message = f"✅ Receiver status OK - {station}: all {total_ports} ports responding"
-            elif len(ports_closed_critical) > 0:
-                # Critical port(s) down
-                exit_status = EXIT_CRITICAL
-                closed_str = ", ".join(ports_closed_critical)
-                message = f"❌ Receiver status CRITICAL - {station}: {closed_str} not responding"
-            else:
-                # Only non-critical port(s) down (e.g., control port)
-                exit_status = EXIT_WARNING
-                closed_str = ", ".join(ports_closed_warning)
-                message = f"⚠️  Receiver status WARNING - {station}: {closed_str} not responding"
-
-            # Add open ports to message
-            if ports_open and exit_status != EXIT_CRITICAL:
-                open_str = ", ".join(ports_open)
-                message += f" (open: {open_str})"
-
-        result = CheckResult(
-            station=station,
-            check_name="Receiver status",
-            exit_status=exit_status,
-            plugin_output=message,
-            performance_data=performance_data,
-            check_source=self.check_source
+        result = self.metric_checker.check_ports(
+            ports_status,
+            receiver_type=receiver_type,
+            station=station
         )
-
-        return self.send_check_result(result)
+        return self._send_metric_check(station, "Receiver status", result)
 
     def send_gps_ping_from_json(
         self,
