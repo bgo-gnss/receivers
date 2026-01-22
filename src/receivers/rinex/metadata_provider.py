@@ -524,10 +524,22 @@ class MetadataProvider:
         # Check if observation date is covered by config validity period
         config_valid_from = config_metadata.time_from
         if config_valid_from is None:
-            # No valid_from date - config is valid for all dates
+            # No valid_from date - use TOS for all dates (config validity unknown)
+            if self.use_tos_for_historical:
+                self.logger.debug(
+                    f"Using TOS for {station_id} (no config_valid_from, "
+                    f"config validity period unknown)"
+                )
+                metadata = self._get_from_tos(station_id, observation_date)
+                if metadata is None:
+                    self.logger.debug(
+                        f"TOS lookup failed, falling back to config for {station_id}"
+                    )
+                    return config_metadata
+                return metadata
+            # TOS disabled, fall back to config
             self.logger.debug(
-                f"Using config for {station_id} (no config_valid_from, "
-                f"config valid for all dates)"
+                f"Using config for {station_id} (no config_valid_from, TOS disabled)"
             )
             return config_metadata
 
