@@ -1107,10 +1107,41 @@ def cmd_health_timeseries_extract(
 
                     success_count += 1
                 else:
-                    logger.info(
-                        f"⏭️  Skipped {date.strftime('%Y-%m-%d')} (no source changes)"
-                    )
-                    skip_count += 1
+                    # JSON was skipped (no source changes)
+                    # But if --save-db is requested, we need to check if data is in DB
+                    check_date = date.date() if hasattr(date, 'date') else date
+                    db_has_data = tracker_connected and file_tracker.is_health_imported(station_id, check_date)
+
+                    if getattr(args, "save_db", False) and not db_has_data:
+                        # JSON exists but DB is missing data - import from existing JSON
+                        logger.info(f"📥 JSON exists but DB missing - importing from existing JSON for {date.strftime('%Y-%m-%d')}")
+
+                        # Find and load the existing JSON file
+                        date_str = date.strftime("%Y%m%d")
+                        json_dir = base_path / station_id / "status_1hr" / "json"
+                        existing_json = json_dir / f"{station_id}_{date_str}_health.json"
+
+                        if existing_json.exists():
+                            try:
+                                import json
+                                with open(existing_json) as f:
+                                    health_data = json.load(f)
+                                logger.debug(f"Loaded existing JSON: {existing_json}")
+                            except Exception as e:
+                                logger.warning(f"Failed to load existing JSON: {e}")
+                                health_data = None
+                        else:
+                            logger.warning(f"Expected JSON not found: {existing_json}")
+                            health_data = None
+
+                        # Will be imported in the save_db block below
+                        success_count += 1
+                    else:
+                        logger.info(
+                            f"⏭️  Skipped {date.strftime('%Y-%m-%d')} (no source changes, data in DB: {db_has_data})"
+                        )
+                        skip_count += 1
+                        health_data = None  # Don't re-import to DB
 
                 # Save to database if requested
                 if getattr(args, "save_db", False) and health_data:
