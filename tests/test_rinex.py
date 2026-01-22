@@ -375,7 +375,7 @@ class TestMetadataProvider:
         assert provider.use_tos_for_historical is True
 
     def test_recent_vs_historical_threshold(self):
-        """Test date threshold logic."""
+        """Test date threshold logic - recent dates use config, not TOS."""
         provider = MetadataProvider(recent_days_threshold=30)
 
         # Mock the internal methods
@@ -384,13 +384,78 @@ class TestMetadataProvider:
         )
         provider._get_from_tos = Mock(return_value=None)
 
-        # Recent date (within threshold) - should use config
+        # Recent date (within threshold) - should use config directly, not TOS
         recent_date = datetime.now() - timedelta(days=5)
         result = provider.get_equipment_at_date("TEST", recent_date)
 
-        # For recent dates without force_tos and when use_tos_for_historical is True,
-        # it will try TOS first, then fall back to config
         assert result is not None
+        # Verify config was called
+        provider._get_from_config.assert_called_once_with("TEST")
+        # Verify TOS was NOT called (recent dates use config)
+        provider._get_from_tos.assert_not_called()
+
+    def test_historical_date_uses_tos(self):
+        """Test that historical dates (older than threshold) use TOS."""
+        provider = MetadataProvider(recent_days_threshold=30)
+
+        # Mock the internal methods
+        provider._get_from_config = Mock(
+            return_value=EquipmentMetadata(marker_name="TEST_CONFIG")
+        )
+        provider._get_from_tos = Mock(
+            return_value=EquipmentMetadata(marker_name="TEST_TOS")
+        )
+
+        # Historical date (beyond threshold) - should use TOS
+        historical_date = datetime.now() - timedelta(days=60)
+        result = provider.get_equipment_at_date("TEST", historical_date)
+
+        assert result is not None
+        assert result.marker_name == "TEST_TOS"
+        # Verify TOS was called for historical date
+        provider._get_from_tos.assert_called_once()
+        # Config should NOT have been called (TOS succeeded)
+        provider._get_from_config.assert_not_called()
+
+    def test_historical_date_fallback_to_config(self):
+        """Test that historical dates fall back to config if TOS fails."""
+        provider = MetadataProvider(recent_days_threshold=30)
+
+        # Mock: TOS returns None, config returns data
+        provider._get_from_config = Mock(
+            return_value=EquipmentMetadata(marker_name="TEST_CONFIG")
+        )
+        provider._get_from_tos = Mock(return_value=None)
+
+        # Historical date (beyond threshold)
+        historical_date = datetime.now() - timedelta(days=60)
+        result = provider.get_equipment_at_date("TEST", historical_date)
+
+        assert result is not None
+        assert result.marker_name == "TEST_CONFIG"
+        # TOS was tried first
+        provider._get_from_tos.assert_called_once()
+        # Config was used as fallback
+        provider._get_from_config.assert_called_once_with("TEST")
+
+    def test_force_config_overrides_all(self):
+        """Test that force_config=True always uses config."""
+        provider = MetadataProvider(recent_days_threshold=30)
+
+        provider._get_from_config = Mock(
+            return_value=EquipmentMetadata(marker_name="TEST_CONFIG")
+        )
+        provider._get_from_tos = Mock(return_value=None)
+
+        # Historical date with force_config
+        historical_date = datetime.now() - timedelta(days=60)
+        result = provider.get_equipment_at_date("TEST", historical_date, force_config=True)
+
+        assert result is not None
+        # Config was used despite historical date
+        provider._get_from_config.assert_called_once()
+        # TOS was never called
+        provider._get_from_tos.assert_not_called()
 
     def test_cache_clearing(self):
         """Test cache clearing functionality."""

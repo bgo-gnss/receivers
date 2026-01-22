@@ -30,6 +30,12 @@ class OutputFormat(Enum):
     LEGACY = "legacy"   # .D.Z (Hatanaka compressed)
 
 
+class NamingConvention(Enum):
+    """RINEX filename naming conventions."""
+    SHORT = "short"   # RINEX 2 style: SSSS0DDF.YYt
+    LONG = "long"     # IGS/RINEX 3+ style: SSSS00CCC_R_YYYYDDDHHMM_...
+
+
 class ConversionError(Exception):
     """Exception raised during RINEX conversion."""
 
@@ -121,6 +127,7 @@ class RawToRinexConverter(ABC):
         station_id: str,
         rinex_version: RinexVersion = RinexVersion.RINEX_3,
         output_format: OutputFormat = OutputFormat.MODERN,
+        naming_convention: Optional[NamingConvention] = None,
         apply_header_corrections: bool = True,
         loglevel: int = logging.INFO,
     ):
@@ -130,6 +137,9 @@ class RawToRinexConverter(ABC):
             station_id: Station identifier (e.g., 'ELDC')
             rinex_version: Target RINEX version (2, 3, or 4)
             output_format: Output format (modern .rnx.gz or legacy .D.Z)
+            naming_convention: Filename convention (SHORT or LONG).
+                              If None, defaults based on rinex_version:
+                              RINEX_2 -> SHORT, RINEX_3/4 -> LONG
             apply_header_corrections: Whether to apply TOS metadata corrections
             loglevel: Logging level
         """
@@ -139,6 +149,15 @@ class RawToRinexConverter(ABC):
         self.apply_header_corrections = apply_header_corrections
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.logger.setLevel(loglevel)
+
+        # Default naming convention based on RINEX version
+        if naming_convention is None:
+            if rinex_version == RinexVersion.RINEX_2:
+                self.naming_convention = NamingConvention.SHORT
+            else:
+                self.naming_convention = NamingConvention.LONG
+        else:
+            self.naming_convention = naming_convention
 
         # Load configuration
         self.config = get_receivers_config()
@@ -426,16 +445,16 @@ class RawToRinexConverter(ABC):
         """
         from gtimes import timefunc
 
-        # Generate filename based on output format
-        if self.output_format == OutputFormat.LEGACY:
-            # RINEX 2 short format
+        # Generate filename based on naming convention
+        if self.naming_convention == NamingConvention.SHORT:
+            # RINEX 2 short format: SSSS0DDF.YYo
             new_name = timefunc.rinex2_filename(
                 self.station_id,
                 observation_date,
                 file_type="o",  # observation
             )
         else:
-            # RINEX 3 long format
+            # RINEX 3 long format: ssss00CCC_R_YYYYDDD...
             new_name = timefunc.rinex3_filename(
                 self.station_id,
                 observation_date,

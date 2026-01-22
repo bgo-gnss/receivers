@@ -34,17 +34,9 @@ Long format (IGS/RINEX 3+):
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from enum import Enum
 from typing import Optional
 
-from .converter_base import RinexVersion
-
-
-class NamingConvention(Enum):
-    """RINEX filename naming conventions."""
-
-    SHORT = "short"  # RINEX 2 style: SSSS0DDF.YYt
-    LONG = "long"  # IGS/RINEX 3+ style: SSSS00CCC_R_YYYYDDDHHMM_...
+from .converter_base import NamingConvention, RinexVersion
 
 
 @dataclass
