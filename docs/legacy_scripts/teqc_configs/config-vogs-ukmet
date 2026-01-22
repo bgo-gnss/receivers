@@ -1,0 +1,17 @@
+-O.s[ystem] G
+-O.r[un_by] " "
+-O.o[perator] "Halldor Geirsson"
+-O.ag[ency] "IMO"
+-O.mo[nument] "VOGS"
+-O.rn "147817"
+-O.rt "TRIMBLE 4700"
+-O.rv "1.30"
+-O.an "148019"
+-O.at "TRM29659.00     SCIS"                     
+-O.int[erval,sec] 15.000000
+-O.px[WGS84xyz,m] 2618571.09 -1042249.09  5702561.20
+-O.pe[hEN,m] 0.9721 0.0000 0.0000
+-O.leap 0
+-O.mov[ing] 0
+-O.def_wf 1 1
+-O.obs[_types] C1+L1+L2+P2 

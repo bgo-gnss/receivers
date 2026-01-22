@@ -1,0 +1,507 @@
+"""
+Unit tests for the RINEX conversion module.
+
+Tests cover:
+- RinexNamer: Filename generation for short/long conventions
+- MetadataProvider: Equipment metadata lookup
+- EquipmentMetadata: TOS session parsing and correction generation
+- SBFConverter: Basic structure (without external tools)
+- TrimbleConverter: Basic structure (without external tools)
+"""
+
+import pytest
+from datetime import datetime, timedelta
+from pathlib import Path
+from unittest.mock import Mock, patch, MagicMock
+
+# Import module components
+from receivers.rinex import (
+    RinexNamer,
+    NamingConvention,
+    RinexVersion,
+    OutputFormat,
+    MetadataProvider,
+    EquipmentMetadata,
+    SBFConverter,
+    TrimbleConverter,
+    ConversionResult,
+    ConversionError,
+)
+
+
+class TestRinexNamer:
+    """Tests for RINEX filename generation."""
+
+    def test_short_name_daily(self):
+        """Test short (RINEX 2) naming for daily file."""
+        namer = RinexNamer("ELDC", RinexVersion.RINEX_2)
+        dt = datetime(2026, 1, 15)  # DOY 015
+
+        name = namer.generate_filename(
+            dt,
+            convention=NamingConvention.SHORT,
+            file_type="MO",
+        )
+
+        # Expected: ELDC0150.26o
+        assert name.startswith("ELDC")
+        assert "015" in name  # Day of year
+        assert ".26" in name  # Year
+        assert name.endswith("o")  # Observation file
+
+    def test_short_name_hourly(self):
+        """Test short naming for hourly file."""
+        namer = RinexNamer("THOB", RinexVersion.RINEX_2)
+        dt = datetime(2026, 3, 20, 14, 0)  # DOY 079, hour 14
+
+        name = namer.generate_filename(
+            dt,
+            convention=NamingConvention.SHORT,
+            file_type="MO",
+        )
+
+        # Expected: THOB0790.26o
+        assert name.startswith("THOB")
+        assert "079" in name  # Day of year
+        assert ".26o" in name
+
+    def test_long_name_daily(self):
+        """Test long (IGS) naming for daily file."""
+        namer = RinexNamer("ELDC", RinexVersion.RINEX_3, country_code="ISL")
+        dt = datetime(2026, 1, 15)  # DOY 015
+
+        name = namer.generate_filename(
+            dt,
+            convention=NamingConvention.LONG,
+            file_type="MO",
+            data_source="R",
+            file_period="01D",
+            data_frequency="15S",
+        )
+
+        # Expected: eldc00ISL_R_20260150000_01D_15S_MO.rnx
+        assert name.startswith("eldc")  # Lowercase for RINEX 3
+        assert "00ISL" in name  # Monument + country
+        assert "_R_" in name  # Receiver source
+        assert "2026015" in name  # Year + DOY
+        assert "_01D_" in name  # Daily period
+        assert "_15S_" in name  # 15-second data
+        assert "_MO" in name  # Mixed observation
+        assert name.endswith(".rnx")
+
+    def test_long_name_hourly(self):
+        """Test long naming for hourly file."""
+        namer = RinexNamer("MANA", RinexVersion.RINEX_3)
+        dt = datetime(2026, 6, 15, 10, 0)  # DOY 166, hour 10
+
+        name = namer.generate_filename(
+            dt,
+            convention=NamingConvention.LONG,
+            file_type="MO",
+            file_period="01H",
+            data_frequency="01S",
+        )
+
+        # Expected: mana00ISL_R_20261661000_01H_01S_MO.rnx
+        assert "2026166" in name  # Year + DOY
+        assert "1000" in name  # Hour and minute
+        assert "_01H_" in name  # Hourly period
+        assert "_01S_" in name  # 1-second data
+
+    def test_station_id_formatting(self):
+        """Test that station IDs are properly formatted."""
+        # Short station ID should be padded
+        namer = RinexNamer("ABC", RinexVersion.RINEX_3)
+        assert namer.station_id == "ABC "  # Padded to 4 chars
+
+        # Long station ID should be truncated
+        namer = RinexNamer("ABCDEFGH", RinexVersion.RINEX_3)
+        assert namer.station_id == "ABCD"  # Truncated to 4 chars
+
+    def test_parse_short_filename(self):
+        """Test parsing short RINEX filenames."""
+        namer = RinexNamer("TEST", RinexVersion.RINEX_2)
+
+        components = namer.parse_filename("ELDC0150.26o")
+
+        assert components is not None
+        assert components.station == "ELDC"
+        assert components.day_of_year == 15
+        assert components.year == 2026  # Converted from 26
+        assert components.file_type == "MO"
+
+    def test_parse_long_filename(self):
+        """Test parsing long RINEX filenames."""
+        namer = RinexNamer("TEST", RinexVersion.RINEX_3)
+
+        components = namer.parse_filename("eldc00ISL_R_20260150000_01D_15S_MO.rnx")
+
+        assert components is not None
+        assert components.station == "ELDC"
+        assert components.year == 2026
+        assert components.day_of_year == 15
+        assert components.file_period == "01D"
+        assert components.data_frequency == "15S"
+        assert components.file_type == "MO"
+
+    def test_session_file_period(self):
+        """Test getting file period from session type."""
+        assert RinexNamer.get_session_file_period("15s_24hr") == "01D"
+        assert RinexNamer.get_session_file_period("1Hz_1hr") == "01H"
+        assert RinexNamer.get_session_file_period("unknown") == "01D"  # Default
+
+    def test_session_data_frequency(self):
+        """Test getting data frequency from session type."""
+        assert RinexNamer.get_session_data_frequency("15s_24hr") == "15S"
+        assert RinexNamer.get_session_data_frequency("1Hz_1hr") == "01S"
+        assert RinexNamer.get_session_data_frequency("30s_daily") == "30S"
+
+
+class TestEquipmentMetadata:
+    """Tests for equipment metadata handling."""
+
+    def test_from_tos_session(self):
+        """Test creating metadata from TOS session."""
+        session = {
+            "time_from": "2024-01-01T00:00:00Z",
+            "time_to": "2024-12-31T23:59:59Z",
+            "gnss_receiver": {
+                "model": "SEPT POLARX5",
+                "serial_number": "1234567",
+                "firmware_version": "5.4.0",
+            },
+            "antenna": {
+                "model": "ASH701945C_M",
+                "serial_number": "CR620012345",
+                "antenna_height": 0.0,
+            },
+            "radome": {
+                "model": "SCIS",
+            },
+            "monument": {
+                "monument_height": 0.0,
+            },
+        }
+
+        metadata = EquipmentMetadata.from_tos_session(session)
+
+        assert metadata.receiver_model == "SEPT POLARX5"
+        assert metadata.receiver_serial == "1234567"
+        assert metadata.receiver_firmware == "5.4.0"
+        assert metadata.antenna_model == "ASH701945C_M"
+        assert metadata.radome_model == "SCIS"
+
+    def test_to_rinex_corrections(self):
+        """Test generating RINEX header corrections."""
+        metadata = EquipmentMetadata(
+            marker_name="ELDC",
+            receiver_model="SEPT POLARX5",
+            receiver_serial="1234567",
+            receiver_firmware="5.4.0",
+            antenna_model="ASH701945C_M",
+            antenna_serial="CR620012345",
+            radome_model="SCIS",
+            antenna_height=0.0,
+            monument_height=0.0,
+            observer="BGO",
+            agency="IMO",
+        )
+
+        corrections = metadata.to_rinex_corrections()
+
+        assert "MARKER NAME" in corrections
+        assert corrections["MARKER NAME"] == "ELDC"
+        assert "REC # / TYPE / VERS" in corrections
+        assert "1234567" in corrections["REC # / TYPE / VERS"]
+        assert "ANT # / TYPE" in corrections
+        assert "ANTENNA: DELTA H/E/N" in corrections
+
+    def test_from_station_config(self):
+        """Test creating metadata from station configuration.
+
+        Uses the new config structure with 'rinex' and 'antenna' sections
+        populated from teqc configs.
+        """
+        config = {
+            "station_id": "THOB",
+            "rinex": {
+                "marker_name": "THOB",
+                "marker_number": "12345M001",
+                "observer": "BGO/HMF",
+                "agency": "IMO",
+                "config_valid_from": "2020-01-29",
+            },
+            "receiver": {
+                "type": "SEPT POLARX5TR",
+                "serial": "9876543",
+                "firmware": "5.5.0",
+            },
+            "antenna": {
+                "type": "LEIAR25.R4",
+                "serial": "ANT12345",
+                "height": 0.0089,
+                "radome": "LEIT",
+            },
+        }
+
+        metadata = EquipmentMetadata.from_station_config(config)
+
+        assert metadata.marker_name == "THOB"
+        assert metadata.marker_number == "12345M001"
+        assert metadata.observer == "BGO/HMF"
+        assert metadata.agency == "IMO"
+        assert metadata.receiver_model == "SEPT POLARX5TR"
+        assert metadata.antenna_model == "LEIAR25.R4"
+        assert metadata.radome_model == "LEIT"
+        assert metadata.antenna_height == 0.0089
+
+
+class TestMetadataProvider:
+    """Tests for metadata provider functionality."""
+
+    def test_init_defaults(self):
+        """Test default initialization."""
+        provider = MetadataProvider()
+
+        assert provider.recent_days_threshold == 30
+        assert provider.use_tos_for_historical is True
+
+    def test_recent_vs_historical_threshold(self):
+        """Test date threshold logic."""
+        provider = MetadataProvider(recent_days_threshold=30)
+
+        # Mock the internal methods
+        provider._get_from_config = Mock(return_value=EquipmentMetadata(marker_name="TEST"))
+        provider._get_from_tos = Mock(return_value=None)
+
+        # Recent date (within threshold) - should use config
+        recent_date = datetime.now() - timedelta(days=5)
+        result = provider.get_equipment_at_date("TEST", recent_date)
+
+        # For recent dates without force_tos and when use_tos_for_historical is True,
+        # it will try TOS first, then fall back to config
+        assert result is not None
+
+    def test_cache_clearing(self):
+        """Test cache clearing functionality."""
+        provider = MetadataProvider()
+        provider._tos_cache = {"TEST": [{"data": "cached"}]}
+        provider._config_cache = {"TEST": EquipmentMetadata()}
+
+        provider.clear_cache()
+
+        assert len(provider._tos_cache) == 0
+        assert len(provider._config_cache) == 0
+
+
+class TestConverterBase:
+    """Tests for converter base functionality."""
+
+    def test_sbf_converter_properties(self):
+        """Test SBF converter properties."""
+        converter = SBFConverter("ELDC")
+
+        assert ".sbf" in converter.supported_extensions
+        assert ".sbf.gz" in converter.supported_extensions
+        assert converter.converter_name == "sbf2rin"
+        assert "sbf2rin" in converter._get_required_tools()
+
+    def test_trimble_converter_properties(self):
+        """Test Trimble converter properties."""
+        converter = TrimbleConverter("MANA")
+
+        assert ".t02" in converter.supported_extensions or ".T02" in converter.supported_extensions
+        assert ".t00" in converter.supported_extensions or ".T00" in converter.supported_extensions
+        assert converter.converter_name == "runpkr00"
+
+    def test_conversion_result_structure(self):
+        """Test ConversionResult data structure."""
+        result = ConversionResult(
+            raw_file=Path("/test/file.sbf"),
+            rinex_file=Path("/test/file.rnx"),
+            success=True,
+            message="Test conversion",
+            duration_seconds=1.5,
+            header_corrections_applied=5,
+            warnings=["warning1"],
+        )
+
+        result_dict = result.to_dict()
+
+        assert result_dict["success"] is True
+        assert result_dict["duration_seconds"] == 1.5
+        assert result_dict["header_corrections_applied"] == 5
+        assert len(result_dict["warnings"]) == 1
+
+    def test_conversion_error(self):
+        """Test ConversionError exception."""
+        error = ConversionError(
+            "Test error",
+            raw_file=Path("/test/file.sbf"),
+            details="Additional details",
+        )
+
+        assert "Test error" in str(error)
+        assert "file.sbf" in str(error)
+        assert "Additional details" in str(error)
+
+    def test_date_extraction_from_filename(self):
+        """Test extracting observation date from filename."""
+        converter = SBFConverter("ELDC")
+
+        # Test standard format: STATIONYYYYMMDDHHMM
+        path = Path("/test/ELDC202601150000a.sbf")
+        dt = converter._extract_date_from_filename(path)
+
+        assert dt.year == 2026
+        assert dt.month == 1
+        assert dt.day == 15
+        assert dt.hour == 0
+        assert dt.minute == 0
+
+    def test_date_extraction_simple_format(self):
+        """Test extracting date from simple YYYYMMDD format."""
+        converter = SBFConverter("ELDC")
+
+        path = Path("/test/ELDC20260315.sbf")
+        dt = converter._extract_date_from_filename(path)
+
+        assert dt.year == 2026
+        assert dt.month == 3
+        assert dt.day == 15
+
+    def test_version_configuration(self):
+        """Test RINEX version configuration."""
+        converter = SBFConverter("ELDC", rinex_version=RinexVersion.RINEX_2)
+        assert converter.rinex_version == RinexVersion.RINEX_2
+
+        converter = SBFConverter("ELDC", rinex_version=RinexVersion.RINEX_3)
+        assert converter.rinex_version == RinexVersion.RINEX_3
+
+    def test_output_format_configuration(self):
+        """Test output format configuration."""
+        converter = SBFConverter("ELDC", output_format=OutputFormat.MODERN)
+        assert converter.output_format == OutputFormat.MODERN
+
+        converter = SBFConverter("ELDC", output_format=OutputFormat.LEGACY)
+        assert converter.output_format == OutputFormat.LEGACY
+
+
+class TestSBFConverter:
+    """Tests for SBF converter specifics."""
+
+    def test_supported_extensions(self):
+        """Test supported file extensions."""
+        converter = SBFConverter("TEST")
+        extensions = converter.supported_extensions
+
+        assert ".sbf" in extensions
+        assert ".sbf.gz" in extensions
+
+    def test_has_supported_extension(self):
+        """Test extension checking."""
+        converter = SBFConverter("TEST")
+
+        assert converter._has_supported_extension(Path("/test/file.sbf"))
+        assert converter._has_supported_extension(Path("/test/file.sbf.gz"))
+        assert converter._has_supported_extension(Path("/test/file.SBF.GZ"))
+        assert not converter._has_supported_extension(Path("/test/file.T02"))
+
+    def test_tool_validation(self):
+        """Test tool validation returns expected structure."""
+        converter = SBFConverter("TEST")
+
+        # Mock get_tool_path to always fail
+        converter.get_tool_path = Mock(side_effect=ConversionError("Not found"))
+
+        tools = converter.validate_tools()
+
+        assert "sbf2rin" in tools
+        assert tools["sbf2rin"] is False
+
+
+class TestTrimbleConverter:
+    """Tests for Trimble converter specifics."""
+
+    def test_supported_extensions(self):
+        """Test supported file extensions."""
+        converter = TrimbleConverter("TEST")
+        extensions = converter.supported_extensions
+
+        assert any(ext.lower() == ".t02" for ext in extensions)
+        assert any(ext.lower() == ".t00" for ext in extensions)
+
+    def test_has_supported_extension(self):
+        """Test extension checking."""
+        converter = TrimbleConverter("TEST")
+
+        assert converter._has_supported_extension(Path("/test/file.T02"))
+        assert converter._has_supported_extension(Path("/test/file.t02"))
+        assert converter._has_supported_extension(Path("/test/file.T00"))
+        assert not converter._has_supported_extension(Path("/test/file.sbf"))
+
+    def test_keep_intermediate_option(self):
+        """Test keep intermediate files option."""
+        converter = TrimbleConverter("TEST", keep_intermediate=True)
+        assert converter.keep_intermediate is True
+
+        converter = TrimbleConverter("TEST", keep_intermediate=False)
+        assert converter.keep_intermediate is False
+
+
+# Integration-style tests (mocked)
+class TestConverterIntegration:
+    """Integration tests with mocked external tools."""
+
+    @patch("subprocess.run")
+    def test_sbf_conversion_subprocess_call(self, mock_run):
+        """Test that subprocess is called correctly for SBF conversion.
+
+        Uses simple workflow from mall_septentrio.sh:
+            sbf2rin -v -f input.sbf -o output.rnx
+        """
+        mock_run.return_value = Mock(returncode=0, stdout="", stderr="")
+
+        converter = SBFConverter("ELDC")
+
+        # Mock get_tool_path
+        converter.get_tool_path = Mock(return_value=Path("/opt/rxtools/bin/sbf2rin"))
+
+        # Build command with output file (not directory)
+        cmd = converter._build_sbf2rin_command(
+            Path("/opt/rxtools/bin/sbf2rin"),
+            Path("/test/ELDC202601150000a.sbf"),
+            Path("/test/output/ELDC0150.26oT"),  # Output file with T suffix
+        )
+
+        # Verify command structure (simple workflow)
+        assert "/opt/rxtools/bin/sbf2rin" in cmd
+        assert "-v" in cmd  # Verbose flag
+        assert "-f" in cmd  # Input file flag
+        assert "-o" in cmd  # Output file flag
+        assert "/test/output/ELDC0150.26oT" in cmd  # Output file path
+        # Note: RINEX 3 is default, no -R3 flag needed
+
+    def test_sbf_rinex2_command(self):
+        """Test RINEX 2 output adds version flag."""
+        converter = SBFConverter("ELDC", rinex_version=RinexVersion.RINEX_2)
+
+        cmd = converter._build_sbf2rin_command(
+            Path("/opt/rxtools/bin/sbf2rin"),
+            Path("/test/ELDC202601150000a.sbf"),
+            Path("/test/output/ELDC0150.26oT"),
+        )
+
+        assert "-R211" in cmd  # RINEX 2.11 flag
+
+    def test_sbf_rinex4_command(self):
+        """Test RINEX 4 output adds version flag."""
+        converter = SBFConverter("ELDC", rinex_version=RinexVersion.RINEX_4)
+
+        cmd = converter._build_sbf2rin_command(
+            Path("/opt/rxtools/bin/sbf2rin"),
+            Path("/test/ELDC202601150000a.sbf"),
+            Path("/test/output/ELDC0150.26oT"),
+        )
+
+        assert "-R4" in cmd  # RINEX 4 flag

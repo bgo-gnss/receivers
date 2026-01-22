@@ -141,6 +141,26 @@ def get_station_config(station_id: str) -> Optional[Dict[str, Any]]:
                 'session': default_session,
                 'compression': default_compression,
                 'days_back': default_days_back
+            },
+
+            # RINEX header metadata (from teqc configs)
+            'rinex': {
+                'marker_name': raw_config.get('rinex_marker_name', station_id),
+                'marker_number': raw_config.get('rinex_marker_number', station_id),
+                'observer': raw_config.get('rinex_observer', 'GNSS OPERATOR'),
+                'agency': raw_config.get('rinex_agency', 'IMO'),
+                'run_by': raw_config.get('rinex_run_by', ''),
+                'config_valid_from': raw_config.get('rinex_config_valid_from', ''),
+            },
+
+            # Antenna information (from teqc configs)
+            'antenna': {
+                'type': raw_config.get('antenna_type', ''),
+                'radome': raw_config.get('antenna_radome', 'NONE'),
+                'serial': raw_config.get('antenna_serial', ''),
+                'height': float(raw_config.get('antenna_height', 0) or 0),
+                'east': float(raw_config.get('antenna_east', 0) or 0),
+                'north': float(raw_config.get('antenna_north', 0) or 0),
             }
         }
 
