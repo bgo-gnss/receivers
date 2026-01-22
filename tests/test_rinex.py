@@ -417,26 +417,47 @@ class TestMetadataProvider:
         # TOS was called for historical date
         provider._get_from_tos.assert_called_once()
 
-    def test_no_config_valid_from_uses_config_for_all_dates(self):
-        """Test that if config_valid_from is missing, config is used for all dates."""
+    def test_no_config_valid_from_uses_tos_for_all_dates(self):
+        """Test that if config_valid_from is missing, TOS is used for all dates."""
+        provider = MetadataProvider()
+
+        # Config with NO time_from (None) - validity period unknown
+        config_metadata = EquipmentMetadata(
+            marker_name="TEST_CONFIG",
+            time_from=None,  # No validity date
+        )
+        tos_metadata = EquipmentMetadata(marker_name="TEST_TOS")
+
+        provider._get_from_config = Mock(return_value=config_metadata)
+        provider._get_from_tos = Mock(return_value=tos_metadata)
+
+        # When config_valid_from is missing, TOS should be used
+        obs_date = datetime(2020, 1, 1)
+        result = provider.get_equipment_at_date("TEST", obs_date)
+
+        assert result is not None
+        assert result.marker_name == "TEST_TOS"
+        # TOS should be called when config has no validity date
+        provider._get_from_tos.assert_called_once()
+
+    def test_no_config_valid_from_falls_back_to_config_if_tos_fails(self):
+        """Test that if config_valid_from is missing and TOS fails, config is used."""
         provider = MetadataProvider()
 
         # Config with NO time_from (None)
         config_metadata = EquipmentMetadata(
             marker_name="TEST_CONFIG",
-            time_from=None,  # No validity date
+            time_from=None,
         )
         provider._get_from_config = Mock(return_value=config_metadata)
-        provider._get_from_tos = Mock(return_value=None)
+        provider._get_from_tos = Mock(return_value=None)  # TOS fails
 
-        # Even old dates should use config when time_from is None
         obs_date = datetime(2020, 1, 1)
         result = provider.get_equipment_at_date("TEST", obs_date)
 
         assert result is not None
-        assert result.marker_name == "TEST_CONFIG"
-        # TOS should NOT be called when config has no validity restriction
-        provider._get_from_tos.assert_not_called()
+        assert result.marker_name == "TEST_CONFIG"  # Falls back to config
+        provider._get_from_tos.assert_called_once()
 
     def test_historical_date_fallback_to_config(self):
         """Test that historical dates fall back to config if TOS fails."""
