@@ -2021,6 +2021,240 @@ def apply_receiver_type_corrections(
     return 0
 
 
+def cmd_rinex(args) -> int:
+    """RINEX conversion command - convert raw GPS data to RINEX format."""
+    logger = setup_logging(args.loglevel)
+    stations = [s.upper() for s in args.stations]
+
+    # Import rinex module
+    try:
+        from ..rinex import (
+            SBFConverter,
+            TrimbleConverter,
+            RinexVersion,
+            OutputFormat,
+            MetadataProvider,
+        )
+    except ImportError as e:
+        logger.error(f"RINEX module not available: {e}")
+        return 1
+
+    # Parse RINEX version
+    version_map = {
+        2: RinexVersion.RINEX_2,
+        3: RinexVersion.RINEX_3,
+        4: RinexVersion.RINEX_4,
+    }
+    rinex_version = version_map.get(args.rinex_version, RinexVersion.RINEX_3)
+
+    # Parse output format
+    output_format = (
+        OutputFormat.LEGACY
+        if args.output_format == "legacy"
+        else OutputFormat.MODERN
+    )
+
+    # Parse observation types
+    observation_types = None
+    if getattr(args, "observation_types", None):
+        observation_types = [t.strip() for t in args.observation_types.split(",")]
+
+    # Parse date range
+    from datetime import timedelta
+    from ..utils.time_utils import calculate_download_time_range
+
+    start_time = None
+    end_time = None
+
+    if getattr(args, "start", None):
+        start_time = parse_datetime(args.start)
+
+    if getattr(args, "end", None):
+        end_time = parse_datetime(args.end)
+
+    if not start_time and getattr(args, "days", None):
+        # Calculate time range based on session type
+        start_time, end_time = calculate_download_time_range(
+            session_type=args.session, lookback_periods=args.days
+        )
+
+    if start_time and not end_time:
+        # Default to one period
+        if "1hr" in args.session.lower():
+            end_time = start_time + timedelta(hours=1)
+        else:
+            end_time = start_time + timedelta(days=1)
+
+    if not start_time:
+        logger.error("No date range specified. Use -s/--start, -e/--end, or -d/--days")
+        return 1
+
+    logger.info(f"RINEX conversion for {len(stations)} stations")
+    logger.info(f"Date range: {start_time} to {end_time}")
+    logger.info(f"RINEX version: {rinex_version.value}, Naming: {args.naming}")
+
+    # Track results
+    total_converted = 0
+    total_failed = 0
+    total_skipped = 0
+
+    for station_id in stations:
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Processing station: {station_id}")
+        logger.info(f"{'='*60}")
+
+        try:
+            # Get station configuration to determine receiver type
+            station_config = get_station_config(station_id)
+            if station_config is None:
+                logger.warning(f"Station {station_id} not found in configuration - SKIPPING")
+                total_skipped += 1
+                continue
+
+            # Determine receiver type
+            receiver_type = station_config.get("receiver", {}).get("type", "").lower()
+
+            # Select appropriate converter
+            if "polarx" in receiver_type or "septentrio" in receiver_type:
+                converter = SBFConverter(
+                    station_id=station_id,
+                    rinex_version=rinex_version,
+                    output_format=output_format,
+                    apply_header_corrections=not getattr(args, "no_header_correction", False),
+                    observation_types=observation_types,
+                    loglevel=args.loglevel,
+                )
+                raw_extension = ".sbf.gz"
+            elif "netr9" in receiver_type:
+                converter = TrimbleConverter(
+                    station_id=station_id,
+                    rinex_version=rinex_version,
+                    output_format=output_format,
+                    apply_header_corrections=not getattr(args, "no_header_correction", False),
+                    keep_intermediate=getattr(args, "keep_intermediate", False),
+                    loglevel=args.loglevel,
+                )
+                raw_extension = ".T02"
+            elif "netrs" in receiver_type:
+                converter = TrimbleConverter(
+                    station_id=station_id,
+                    rinex_version=rinex_version,
+                    output_format=output_format,
+                    apply_header_corrections=not getattr(args, "no_header_correction", False),
+                    keep_intermediate=getattr(args, "keep_intermediate", False),
+                    loglevel=args.loglevel,
+                )
+                raw_extension = ".T00"
+            else:
+                logger.warning(
+                    f"Unsupported receiver type '{receiver_type}' for {station_id} - SKIPPING"
+                )
+                total_skipped += 1
+                continue
+
+            # Validate tools
+            if not getattr(args, "dry_run", False):
+                tools = converter.validate_tools()
+                missing = [t for t, avail in tools.items() if not avail]
+                if missing:
+                    logger.error(f"Missing required tools: {', '.join(missing)}")
+                    logger.error("Install tools or configure paths in receivers.cfg [rinex_tools]")
+                    total_failed += 1
+                    continue
+
+            # Find raw files for date range
+            from ..config.receivers_config import get_receivers_config
+            config = get_receivers_config()
+            data_prepath = config.get_data_prepath()
+
+            # Generate list of dates to process
+            current_date = start_time
+            raw_files = []
+
+            while current_date < end_time:
+                # Build archive path for raw file
+                year = current_date.strftime("%Y")
+                month = current_date.strftime("%b").lower()
+                day = current_date.strftime("%d")
+
+                if "1hr" in args.session.lower():
+                    # Hourly files
+                    filename = f"{station_id}{current_date.strftime('%Y%m%d%H%M')}*.{raw_extension.lstrip('.')}"
+                    raw_dir = Path(data_prepath) / year / month / station_id / args.session / "raw"
+                    current_date += timedelta(hours=1)
+                else:
+                    # Daily files
+                    filename = f"{station_id}{current_date.strftime('%Y%m%d')}*{raw_extension}"
+                    raw_dir = Path(data_prepath) / year / month / station_id / args.session / "raw"
+                    current_date += timedelta(days=1)
+
+                if raw_dir.exists():
+                    matches = list(raw_dir.glob(filename))
+                    raw_files.extend(matches)
+
+            if not raw_files:
+                logger.warning(f"No raw files found for {station_id} in date range")
+                total_skipped += 1
+                continue
+
+            logger.info(f"Found {len(raw_files)} raw files to convert")
+
+            # Dry run - just show what would be done
+            if getattr(args, "dry_run", False):
+                for raw_file in raw_files:
+                    print(f"  [DRY RUN] Would convert: {raw_file.name}")
+                continue
+
+            # Convert files
+            for raw_file in raw_files:
+                # Determine output directory - create 'rinex' beside 'raw'
+                if getattr(args, "output_dir", None):
+                    output_dir = Path(args.output_dir)
+                else:
+                    # Create rinex dir beside raw dir
+                    raw_parent = raw_file.parent
+                    if raw_parent.name == "raw":
+                        output_dir = raw_parent.parent / "rinex"
+                    else:
+                        output_dir = raw_parent / "rinex"
+
+                output_dir.mkdir(parents=True, exist_ok=True)
+
+                result = converter.convert_file(
+                    raw_file,
+                    output_dir=output_dir,
+                    force=getattr(args, "force", False),
+                )
+
+                if result.success:
+                    logger.info(f"✅ {raw_file.name} -> {result.rinex_file.name}")
+                    if result.header_corrections_applied > 0:
+                        logger.debug(
+                            f"   Applied {result.header_corrections_applied} header corrections"
+                        )
+                    total_converted += 1
+                else:
+                    logger.error(f"❌ {raw_file.name}: {result.message}")
+                    total_failed += 1
+
+        except Exception as e:
+            logger.error(f"Error processing {station_id}: {e}")
+            if args.loglevel == logging.DEBUG:
+                import traceback
+                traceback.print_exc()
+            total_failed += 1
+
+    # Summary
+    logger.info(f"\n{'='*60}")
+    logger.info(f"RINEX Conversion Summary:")
+    logger.info(f"  ✅ Converted: {total_converted}")
+    logger.info(f"  ❌ Failed: {total_failed}")
+    logger.info(f"  ⏭️  Skipped: {total_skipped}")
+    logger.info(f"{'='*60}")
+
+    return 0 if total_failed == 0 else 1
+
+
 def create_parser() -> argparse.ArgumentParser:
     """Create argument parser using standardized arguments module."""
     from .arguments import create_argument_parser
@@ -2042,6 +2276,8 @@ def create_parser() -> argparse.ArgumentParser:
                 subparsers_map["validate"].set_defaults(func=cmd_validate)
             if "rec-config" in subparsers_map:
                 subparsers_map["rec-config"].set_defaults(func=cmd_rec_config)
+            if "rinex" in subparsers_map:
+                subparsers_map["rinex"].set_defaults(func=cmd_rinex)
             break
 
     return parser

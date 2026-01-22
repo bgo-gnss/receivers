@@ -526,6 +526,154 @@ Examples:
     return parser
 
 
+def setup_rinex_parser(subparsers) -> argparse.ArgumentParser:
+    """Set up the rinex subcommand parser."""
+    defaults = get_default_values()
+
+    parser = subparsers.add_parser(
+        'rinex',
+        help='Convert raw GPS data to RINEX format',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description='''
+Convert raw GPS receiver data (SBF, T02, T00) to RINEX format with proper
+header metadata from TOS database.
+
+Supported formats:
+  - Septentrio SBF (.sbf, .sbf.gz) - using sbf2rin
+  - Trimble T02 (.T02) - using runpkr00 + GFZRNX
+  - Trimble T00 (.T00) - using runpkr00 + GFZRNX
+
+Examples:
+  # Convert last 7 days of daily data
+  receivers rinex ELDC -d 7
+
+  # Convert specific date range
+  receivers rinex ELDC -s 20260101 -e 20260107
+
+  # RINEX 3 with long naming convention
+  receivers rinex ELDC -d 7 --version 3 --naming long
+
+  # RINEX 2 with short naming (legacy)
+  receivers rinex MANA --version 2 --naming short
+
+  # Validate existing RINEX headers against TOS
+  receivers rinex ELDC --validate-only -d 30
+
+  # Dry run - show what would be done
+  receivers rinex ELDC -d 7 --dry-run
+        '''
+    )
+
+    # Positional: stations (multiple)
+    parser.add_argument(
+        'stations',
+        nargs='+',
+        metavar='STATION',
+        help='Station IDs to convert (e.g., ELDC THOB MANA)'
+    )
+
+    # Date/time options
+    date_group = parser.add_argument_group('date options')
+    add_date_flags(date_group, include_days=True)
+
+    # Format options
+    format_group = parser.add_argument_group('format options')
+    format_group.add_argument(
+        '--session',
+        type=str,
+        default=defaults['session'],
+        choices=['15s_24hr', '1Hz_1hr'],
+        help=f"Data session type (default: {defaults['session']})"
+    )
+
+    format_group.add_argument(
+        '--version', '-V',
+        type=int,
+        default=3,
+        choices=[2, 3, 4],
+        dest='rinex_version',
+        help='RINEX version: 2, 3, or 4 (default: 3)'
+    )
+
+    format_group.add_argument(
+        '--naming',
+        type=str,
+        default='short',
+        choices=['short', 'long'],
+        help='Filename convention: short (RINEX 2 style) or long (IGS) (default: short)'
+    )
+
+    format_group.add_argument(
+        '--observation-types',
+        type=str,
+        metavar='TYPES',
+        help='Observation types to include (comma-separated, e.g., C1C,L1C,S1C)'
+    )
+
+    # Metadata options
+    meta_group = parser.add_argument_group('metadata options')
+    meta_group.add_argument(
+        '--no-header-correction',
+        action='store_true',
+        help='Skip TOS metadata header corrections'
+    )
+
+    meta_group.add_argument(
+        '--force-config-metadata',
+        action='store_true',
+        help='Use current station config even for old data (skip TOS lookup)'
+    )
+
+    # Output options
+    output_group = parser.add_argument_group('output options')
+    output_group.add_argument(
+        '--output-dir', '-o',
+        type=str,
+        metavar='DIR',
+        help='Override output directory (default: archive path)'
+    )
+
+    output_group.add_argument(
+        '--format',
+        type=str,
+        default='modern',
+        choices=['modern', 'legacy'],
+        dest='output_format',
+        help='Output format: modern (.rnx.gz) or legacy (.D.Z) (default: modern)'
+    )
+
+    output_group.add_argument(
+        '--keep-intermediate',
+        action='store_true',
+        help='Keep intermediate files (e.g., .tgd from runpkr00)'
+    )
+
+    # Operation modes
+    mode_group = parser.add_argument_group('operation modes')
+    mode_group.add_argument(
+        '--validate-only',
+        action='store_true',
+        help='Only validate existing RINEX headers against TOS (no conversion)'
+    )
+
+    mode_group.add_argument(
+        '--rename-only',
+        action='store_true',
+        help='Only rename existing RINEX files to new convention (no conversion)'
+    )
+
+    mode_group.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='Show what would be done without making changes'
+    )
+
+    add_force_flag(parser)
+    add_verbose_flag(parser)
+
+    return parser
+
+
 def create_argument_parser() -> argparse.ArgumentParser:
     """Create the main argument parser with all subcommands."""
     parser = argparse.ArgumentParser(
@@ -538,6 +686,7 @@ Examples:
   receivers status THOB
   receivers health ISFS --json
   receivers validate --web
+  receivers rinex ELDC -d 7
 
 For subcommand help: receivers <command> --help
         '''
@@ -559,6 +708,7 @@ For subcommand help: receivers <command> --help
     setup_health_parser(subparsers)
     setup_validate_parser(subparsers)
     setup_rec_config_parser(subparsers)
+    setup_rinex_parser(subparsers)
 
     # Scheduler (optional - requires APScheduler)
     try:
