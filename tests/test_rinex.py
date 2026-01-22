@@ -9,23 +9,27 @@ Tests cover:
 - TrimbleConverter: Basic structure (without external tools)
 """
 
-import pytest
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import MagicMock, Mock, patch
+
+import pytest
 
 # Import module components
 from receivers.rinex import (
-    RinexNamer,
-    NamingConvention,
-    RinexVersion,
-    OutputFormat,
-    MetadataProvider,
+    RINEX_FIELD_SPECS,
+    ConversionError,
+    ConversionResult,
     EquipmentMetadata,
+    MetadataProvider,
+    NamingConvention,
+    OutputFormat,
+    RinexNamer,
+    RinexVersion,
     SBFConverter,
     TrimbleConverter,
-    ConversionResult,
-    ConversionError,
+    format_antenna_type_with_radome,
+    format_rinex_field,
 )
 
 
@@ -192,12 +196,24 @@ class TestEquipmentMetadata:
         assert metadata.radome_model == "SCIS"
 
     def test_to_rinex_corrections(self):
-        """Test generating RINEX header corrections."""
+        """Test generating RINEX header corrections with fixed-width formatting.
+
+        RINEX header fields use fixed-width Fortran format:
+        - MARKER NAME: 60 chars
+        - MARKER NUMBER: 20 chars
+        - OBSERVER / AGENCY: A20 + A40
+        - ANT # / TYPE: A20 (serial) + A20 (type with radome)
+        - ANTENNA: DELTA H/E/N: F14.4 + F14.4 + F14.4
+
+        NOTE: REC # / TYPE / VERS is NOT included because converter tools (sbf2rin)
+        correctly extract receiver info from the raw data file.
+        """
         metadata = EquipmentMetadata(
             marker_name="ELDC",
-            receiver_model="SEPT POLARX5",
-            receiver_serial="1234567",
-            receiver_firmware="5.4.0",
+            marker_number="12345M001",
+            receiver_model="SEPT POLARX5",  # Not used in corrections
+            receiver_serial="1234567",  # Not used in corrections
+            receiver_firmware="5.4.0",  # Not used in corrections
             antenna_model="ASH701945C_M",
             antenna_serial="CR620012345",
             radome_model="SCIS",
@@ -209,12 +225,104 @@ class TestEquipmentMetadata:
 
         corrections = metadata.to_rinex_corrections()
 
+        # MARKER NAME: 60 chars, uppercase
         assert "MARKER NAME" in corrections
-        assert corrections["MARKER NAME"] == "ELDC"
-        assert "REC # / TYPE / VERS" in corrections
-        assert "1234567" in corrections["REC # / TYPE / VERS"]
+        assert corrections["MARKER NAME"] == "ELDC" + " " * 56  # 60 chars total
+        assert len(corrections["MARKER NAME"]) == 60
+
+        # MARKER NUMBER: 20 chars
+        assert "MARKER NUMBER" in corrections
+        assert corrections["MARKER NUMBER"].startswith("12345M001")
+        assert len(corrections["MARKER NUMBER"]) == 20
+
+        # REC # / TYPE / VERS should NOT be in corrections
+        # (sbf2rin gets this correct from the SBF file)
+        assert "REC # / TYPE / VERS" not in corrections
+
+        # ANT # / TYPE: A20 (serial) + A20 (type with radome) = 40 chars
         assert "ANT # / TYPE" in corrections
+        ant_field = corrections["ANT # / TYPE"]
+        assert len(ant_field) == 40
+        assert ant_field[:20].startswith("CR620012345")  # Serial in first 20 chars
+        assert "ASH701945C_M" in ant_field  # Antenna model
+        assert "SCIS" in ant_field  # Radome
+
+        # OBSERVER / AGENCY: A20 + A40 = 60 chars
+        assert "OBSERVER / AGENCY" in corrections
+        obs_field = corrections["OBSERVER / AGENCY"]
+        assert len(obs_field) == 60
+        assert obs_field[:20].startswith("BGO")  # Observer in first 20 chars
+        assert obs_field[20:].startswith("IMO")  # Agency in next 40 chars
+
+        # ANTENNA: DELTA H/E/N: F14.4 + F14.4 + F14.4 = 42 chars
         assert "ANTENNA: DELTA H/E/N" in corrections
+        delta_field = corrections["ANTENNA: DELTA H/E/N"]
+        assert len(delta_field) == 42
+        assert "0.0000" in delta_field
+
+    def test_to_rinex_corrections_without_antenna_serial(self):
+        """Test that ANT # / TYPE is not included if no antenna serial."""
+        metadata = EquipmentMetadata(
+            marker_name="TEST",
+            antenna_model="ASH701945C_M",
+            antenna_serial="",  # No serial
+            radome_model="SCIS",
+        )
+
+        corrections = metadata.to_rinex_corrections()
+
+        # ANT # / TYPE should NOT be included without serial
+        # (we don't want to overwrite the field if we don't have serial to fix)
+        assert "ANT # / TYPE" not in corrections
+
+    def test_to_rinex_corrections_with_receiver(self):
+        """Test including receiver info with include_receiver=True."""
+        metadata = EquipmentMetadata(
+            marker_name="ELDC",
+            receiver_model="SEPT POLARX5",
+            receiver_serial="1234567",
+            receiver_firmware="5.4.0",
+        )
+
+        # Default: no receiver
+        corrections = metadata.to_rinex_corrections()
+        assert "REC # / TYPE / VERS" not in corrections
+
+        # With include_receiver=True
+        corrections = metadata.to_rinex_corrections(include_receiver=True)
+        assert "REC # / TYPE / VERS" in corrections
+        rec_field = corrections["REC # / TYPE / VERS"]
+        assert len(rec_field) == 60  # A20 + A20 + A20
+        assert rec_field[:20].startswith("1234567")  # Serial
+        assert "SEPT POLARX5" in rec_field  # Model
+        assert "5.4.0" in rec_field  # Firmware
+
+    def test_to_rinex_corrections_with_overrides(self):
+        """Test override functionality in to_rinex_corrections."""
+        metadata = EquipmentMetadata(
+            marker_name="ELDC",
+            marker_number="DOMES001",
+            observer="BGO",
+            agency="IMO",
+        )
+
+        # Override marker name
+        corrections = metadata.to_rinex_corrections(overrides={"MARKER NAME": "CUSTOM"})
+        assert corrections["MARKER NAME"].startswith("CUSTOM")
+
+        # Add receiver via override (not from metadata)
+        corrections = metadata.to_rinex_corrections(
+            overrides={
+                "REC # / TYPE / VERS": ("SN123", "MODEL", "1.0"),
+            }
+        )
+        assert "REC # / TYPE / VERS" in corrections
+        assert corrections["REC # / TYPE / VERS"].startswith("SN123")
+
+        # Skip a field with None
+        corrections = metadata.to_rinex_corrections(overrides={"MARKER NUMBER": None})
+        assert "MARKER NUMBER" not in corrections
+        assert "MARKER NAME" in corrections  # Others still present
 
     def test_from_station_config(self):
         """Test creating metadata from station configuration.
@@ -271,7 +379,9 @@ class TestMetadataProvider:
         provider = MetadataProvider(recent_days_threshold=30)
 
         # Mock the internal methods
-        provider._get_from_config = Mock(return_value=EquipmentMetadata(marker_name="TEST"))
+        provider._get_from_config = Mock(
+            return_value=EquipmentMetadata(marker_name="TEST")
+        )
         provider._get_from_tos = Mock(return_value=None)
 
         # Recent date (within threshold) - should use config
@@ -310,8 +420,14 @@ class TestConverterBase:
         """Test Trimble converter properties."""
         converter = TrimbleConverter("MANA")
 
-        assert ".t02" in converter.supported_extensions or ".T02" in converter.supported_extensions
-        assert ".t00" in converter.supported_extensions or ".T00" in converter.supported_extensions
+        assert (
+            ".t02" in converter.supported_extensions
+            or ".T02" in converter.supported_extensions
+        )
+        assert (
+            ".t00" in converter.supported_extensions
+            or ".T00" in converter.supported_extensions
+        )
         assert converter.converter_name == "runpkr00"
 
     def test_conversion_result_structure(self):
@@ -505,3 +621,120 @@ class TestConverterIntegration:
         )
 
         assert "-R4" in cmd  # RINEX 4 flag
+
+
+class TestRinexFieldFormatting:
+    """Tests for RINEX field formatting utilities."""
+
+    def test_format_marker_name(self):
+        """Test MARKER NAME formatting: 60 chars, uppercase."""
+        result = format_rinex_field("MARKER NAME", "eldc")
+        assert result == "ELDC" + " " * 56
+        assert len(result) == 60
+
+        # Empty value returns None
+        assert format_rinex_field("MARKER NAME", "") is None
+        assert format_rinex_field("MARKER NAME", None) is None
+
+    def test_format_marker_number(self):
+        """Test MARKER NUMBER formatting: 20 chars."""
+        result = format_rinex_field("MARKER NUMBER", "12345M001")
+        assert result.startswith("12345M001")
+        assert len(result) == 20
+
+    def test_format_observer_agency_tuple(self):
+        """Test OBSERVER / AGENCY with tuple input."""
+        result = format_rinex_field("OBSERVER / AGENCY", ("BGO", "IMO"))
+        assert len(result) == 60
+        assert result[:20].startswith("BGO")
+        assert result[20:].startswith("IMO")
+
+    def test_format_observer_agency_string(self):
+        """Test OBSERVER / AGENCY with string input (splits on space)."""
+        result = format_rinex_field("OBSERVER / AGENCY", "BGO IMO")
+        assert len(result) == 60
+        assert result[:20].startswith("BGO")
+        assert result[20:].startswith("IMO")
+
+    def test_format_receiver(self):
+        """Test REC # / TYPE / VERS formatting: 3 x 20 chars."""
+        result = format_rinex_field(
+            "REC # / TYPE / VERS", ("1234567", "SEPT POLARX5", "5.4.0")
+        )
+        assert len(result) == 60
+        assert result[:20].startswith("1234567")
+        assert "SEPT POLARX5" in result
+        assert "5.4.0" in result
+
+    def test_format_receiver_string(self):
+        """Test REC # / TYPE / VERS with string input."""
+        result = format_rinex_field("REC # / TYPE / VERS", "1234567 SEPT 5.4.0")
+        assert len(result) == 60
+        assert result[:20].startswith("1234567")
+
+    def test_format_antenna(self):
+        """Test ANT # / TYPE formatting: 2 x 20 chars."""
+        result = format_rinex_field(
+            "ANT # / TYPE", ("CR620012345", "ASH701945C_M    SCIS")
+        )
+        assert len(result) == 40
+        assert result[:20].startswith("CR620012345")
+        assert "ASH701945C_M" in result
+
+        # No serial = None
+        assert format_rinex_field("ANT # / TYPE", ("", "TYPE")) is None
+
+    def test_format_antenna_delta(self):
+        """Test ANTENNA: DELTA H/E/N formatting: 3 x F14.4."""
+        result = format_rinex_field("ANTENNA: DELTA H/E/N", (0.0089, 0.0, 0.0))
+        assert len(result) == 42
+        assert "0.0089" in result
+
+        # Single value (height only)
+        result = format_rinex_field("ANTENNA: DELTA H/E/N", 1.5)
+        assert len(result) == 42
+        assert "1.5000" in result
+
+    def test_format_position_xyz(self):
+        """Test APPROX POSITION XYZ formatting: 3 x F14.4."""
+        result = format_rinex_field(
+            "APPROX POSITION XYZ", (2679689.5678, -727951.1234, 5722788.9012)
+        )
+        assert len(result) == 42
+        assert "2679689.5678" in result
+
+    def test_format_interval(self):
+        """Test INTERVAL formatting: F10.3."""
+        result = format_rinex_field("INTERVAL", 15.0)
+        assert len(result) == 10
+        assert "15.000" in result
+
+    def test_format_unknown_field(self):
+        """Test unknown field returns string as-is."""
+        result = format_rinex_field("CUSTOM FIELD", "value")
+        assert result == "value"
+
+        # Empty unknown field returns None
+        assert format_rinex_field("CUSTOM FIELD", "") is None
+
+    def test_format_antenna_type_with_radome(self):
+        """Test antenna type + radome formatting: 15 + space + 4 = 20 chars."""
+        result = format_antenna_type_with_radome("ASH701945C_M", "SCIS")
+        assert len(result) == 20
+        assert result == "ASH701945C_M    SCIS"
+
+        # Default radome is NONE
+        result = format_antenna_type_with_radome("SEPPOLANT_X_MF", "")
+        assert result.endswith("NONE")
+
+    def test_rinex_field_specs_defined(self):
+        """Test that RINEX_FIELD_SPECS contains expected fields."""
+        assert "MARKER NAME" in RINEX_FIELD_SPECS
+        assert "REC # / TYPE / VERS" in RINEX_FIELD_SPECS
+        assert "ANT # / TYPE" in RINEX_FIELD_SPECS
+        assert "ANTENNA: DELTA H/E/N" in RINEX_FIELD_SPECS
+
+        # Check format tuples
+        marker_format, marker_width = RINEX_FIELD_SPECS["MARKER NAME"]
+        assert marker_width == 60
+        assert "A60" in marker_format

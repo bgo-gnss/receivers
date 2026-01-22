@@ -13,17 +13,23 @@ Main Components:
 """
 
 from .converter_base import (
-    RawToRinexConverter,
-    ConversionResult,
-    ConversionError,
     BatchConversionResult,
-    RinexVersion,
+    ConversionError,
+    ConversionResult,
     OutputFormat,
+    RawToRinexConverter,
+    RinexVersion,
 )
-from .metadata_provider import MetadataProvider, EquipmentMetadata
-from .rinex_namer import RinexNamer, NamingConvention
+from .metadata_provider import (
+    RINEX_FIELD_SPECS,
+    EquipmentMetadata,
+    MetadataProvider,
+    format_antenna_type_with_radome,
+    format_rinex_field,
+)
+from .rinex_namer import NamingConvention, RinexNamer
 from .sbf_converter import SBFConverter
-from .trimble_converter import TrimbleConverter, NetR9Converter, NetRSConverter
+from .trimble_converter import NetR9Converter, NetRSConverter, TrimbleConverter
 
 __all__ = [
     # Base classes
@@ -36,6 +42,10 @@ __all__ = [
     # Metadata
     "MetadataProvider",
     "EquipmentMetadata",
+    # RINEX formatting utilities
+    "format_rinex_field",
+    "format_antenna_type_with_radome",
+    "RINEX_FIELD_SPECS",
     # Naming
     "RinexNamer",
     "NamingConvention",

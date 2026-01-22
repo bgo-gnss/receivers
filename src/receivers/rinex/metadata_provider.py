@@ -7,15 +7,176 @@ This module provides equipment metadata for RINEX files, supporting:
 
 The TOS database contains time-segmented equipment sessions, allowing
 accurate metadata for any observation date.
+
+RINEX Header Field Formatting:
+    RINEX uses fixed-width Fortran format. Field specifications are based on
+    RINEX 3.x standard and tostools/rinex/reader.py:
+
+    Field Name              Format          Width   Description
+    -----------------------------------------------------------------
+    MARKER NAME             A60             60      Station identifier
+    MARKER NUMBER           A20             20      IERS DOMES number
+    OBSERVER / AGENCY       A20,A40         60      Observer + Agency
+    REC # / TYPE / VERS     A20,A20,A20     60      Serial + Type + Version
+    ANT # / TYPE            A20,A20         40      Serial + Type (with radome)
+    APPROX POSITION XYZ     3F14.4          42      ECEF X, Y, Z
+    ANTENNA: DELTA H/E/N    3F14.4          42      Height, East, North offsets
+    INTERVAL                F10.3           10      Sampling interval
 """
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
 
 # Default threshold for using config vs TOS
 DEFAULT_RECENT_DAYS = 30
+
+# RINEX header field specifications: (Fortran format, total width)
+# Based on RINEX 3.x spec and tostools/rinex/reader.py
+RINEX_FIELD_SPECS: Dict[str, Tuple[str, int]] = {
+    "MARKER NAME": ("A60", 60),
+    "MARKER NUMBER": ("A20", 20),
+    "OBSERVER / AGENCY": ("A20,A40", 60),  # observer(20) + agency(40)
+    "REC # / TYPE / VERS": ("A20,A20,A20", 60),  # serial(20) + type(20) + vers(20)
+    "ANT # / TYPE": ("A20,A20", 40),  # serial(20) + type(20)
+    "APPROX POSITION XYZ": ("3F14.4", 42),
+    "ANTENNA: DELTA H/E/N": ("3F14.4", 42),
+    "INTERVAL": ("F10.3", 10),
+}
+
+
+def format_rinex_field(field_name: str, value: Any) -> Optional[str]:
+    """Format a value for a specific RINEX header field.
+
+    Uses fixed-width Fortran formatting per RINEX 3.x specification.
+
+    Args:
+        field_name: RINEX field name (e.g., "MARKER NAME", "ANT # / TYPE")
+        value: Value to format. Can be:
+               - str: Single value (will be parsed if multi-part field)
+               - tuple/list: Multi-part value (e.g., (observer, agency))
+               - float/int: Numeric value
+               - None: Returns None (skip this field)
+
+    Returns:
+        Formatted string with correct RINEX column widths, or None if empty/None
+
+    Examples:
+        >>> format_rinex_field("MARKER NAME", "ELDC")
+        'ELDC                                                        '  # 60 chars
+
+        >>> format_rinex_field("OBSERVER / AGENCY", ("BGO", "IMO"))
+        'BGO                 IMO                                     '  # 60 chars
+
+        >>> format_rinex_field("ANT # / TYPE", ("CR620012345", "ASH701945C_M    SCIS"))
+        'CR620012345         ASH701945C_M    SCIS'  # 40 chars
+    """
+    if value is None:
+        return None
+
+    if field_name == "MARKER NAME":
+        v = str(value).strip()
+        if not v:
+            return None
+        return v.upper().ljust(60)[:60]
+
+    elif field_name == "MARKER NUMBER":
+        v = str(value).strip()
+        if not v:
+            return None
+        return v.ljust(20)[:20]
+
+    elif field_name == "OBSERVER / AGENCY":
+        if isinstance(value, (list, tuple)) and len(value) >= 2:
+            obs, agency = str(value[0]).strip(), str(value[1]).strip()
+        else:
+            parts = str(value).split(None, 1)
+            obs = parts[0] if parts else ""
+            agency = parts[1] if len(parts) > 1 else ""
+        if not obs and not agency:
+            return None
+        return f"{obs.ljust(20)[:20]}{agency.ljust(40)[:40]}"
+
+    elif field_name == "REC # / TYPE / VERS":
+        if isinstance(value, (list, tuple)) and len(value) >= 3:
+            serial, model, version = (
+                str(value[0]).strip(),
+                str(value[1]).strip(),
+                str(value[2]).strip(),
+            )
+        elif isinstance(value, (list, tuple)) and len(value) == 2:
+            serial, model, version = str(value[0]).strip(), str(value[1]).strip(), ""
+        else:
+            parts = str(value).split(None, 2)
+            serial = parts[0] if len(parts) > 0 else ""
+            model = parts[1] if len(parts) > 1 else ""
+            version = parts[2] if len(parts) > 2 else ""
+        if not serial and not model:
+            return None
+        return f"{serial.ljust(20)[:20]}{model.ljust(20)[:20]}{version.ljust(20)[:20]}"
+
+    elif field_name == "ANT # / TYPE":
+        if isinstance(value, (list, tuple)) and len(value) >= 2:
+            serial, ant_type = str(value[0]).strip(), str(value[1]).strip()
+        else:
+            parts = str(value).split(None, 1)
+            serial = parts[0] if parts else ""
+            ant_type = parts[1] if len(parts) > 1 else ""
+        if not serial:
+            return None
+        return f"{serial.ljust(20)[:20]}{ant_type.ljust(20)[:20]}"
+
+    elif field_name == "ANTENNA: DELTA H/E/N":
+        if isinstance(value, (list, tuple)) and len(value) >= 3:
+            h, e, n = float(value[0]), float(value[1]), float(value[2])
+        elif isinstance(value, (int, float)):
+            # Single height value with 0.0 for E/N
+            h, e, n = float(value), 0.0, 0.0
+        else:
+            try:
+                parts = str(value).split()
+                h = float(parts[0]) if len(parts) > 0 else 0.0
+                e = float(parts[1]) if len(parts) > 1 else 0.0
+                n = float(parts[2]) if len(parts) > 2 else 0.0
+            except (ValueError, IndexError):
+                return None
+        return f"{h:14.4f}{e:14.4f}{n:14.4f}"
+
+    elif field_name == "APPROX POSITION XYZ":
+        if isinstance(value, (list, tuple)) and len(value) >= 3:
+            x, y, z = float(value[0]), float(value[1]), float(value[2])
+        else:
+            return None
+        return f"{x:14.4f}{y:14.4f}{z:14.4f}"
+
+    elif field_name == "INTERVAL":
+        try:
+            return f"{float(value):10.3f}"
+        except (ValueError, TypeError):
+            return None
+
+    else:
+        # Unknown field - return as string if not empty
+        v = str(value).strip()
+        return v if v else None
+
+
+def format_antenna_type_with_radome(antenna_model: str, radome: str = "NONE") -> str:
+    """Format antenna type with radome for ANT # / TYPE field.
+
+    IGS convention: 15 char antenna model + space + 4 char radome = 20 chars
+
+    Args:
+        antenna_model: Antenna model (e.g., "ASH701945C_M", "SEPPOLANT_X_MF")
+        radome: Radome code (e.g., "SCIS", "NONE")
+
+    Returns:
+        20-character formatted string: "ANT_MODEL       DOME"
+    """
+    model = antenna_model.ljust(15)[:15]
+    dome = (radome or "NONE").ljust(4)[:4]
+    return f"{model} {dome}"
 
 
 @dataclass
@@ -58,41 +219,96 @@ class EquipmentMetadata:
     # Additional fields
     extra: Dict[str, Any] = field(default_factory=dict)
 
-    def to_rinex_corrections(self) -> Dict[str, str]:
+    def to_rinex_corrections(
+        self,
+        overrides: Optional[Dict[str, Any]] = None,
+        include_receiver: bool = False,
+    ) -> Dict[str, str]:
         """Convert metadata to RINEX header correction dictionary.
 
+        Generates properly formatted RINEX header corrections using fixed-width
+        Fortran format per RINEX 3.x specification.
+
+        Args:
+            overrides: Optional dictionary of additional/override corrections.
+                       Keys are RINEX field names, values can be:
+                       - str: Single value
+                       - tuple/list: Multi-part value (e.g., (observer, agency))
+                       - None: Explicitly skip this field (remove from output)
+                       Any field in overrides replaces the auto-generated value.
+
+            include_receiver: If True, include REC # / TYPE / VERS from metadata.
+                              Default False because converter tools (sbf2rin)
+                              usually extract correct values from raw data files.
+
         Returns:
-            Dictionary mapping RINEX field names to corrected values
+            Dictionary mapping RINEX field names to formatted values.
+            Only fields with non-empty values are included.
+
+        Examples:
+            # Basic usage - auto-generates from metadata
+            >>> corrections = metadata.to_rinex_corrections()
+
+            # Include receiver info (if needed for tools that don't embed it)
+            >>> corrections = metadata.to_rinex_corrections(include_receiver=True)
+
+            # Override specific fields
+            >>> corrections = metadata.to_rinex_corrections(
+            ...     overrides={
+            ...         "REC # / TYPE / VERS": ("1234567", "SEPT POLARX5", "5.6.0"),
+            ...         "MARKER NAME": None,  # Skip this field
+            ...     }
+            ... )
         """
-        corrections = {}
+        # Build base values from metadata (unformatted)
+        base: Dict[str, Any] = {}
 
-        # Marker information
         if self.marker_name:
-            corrections["MARKER NAME"] = self.marker_name.upper()
+            base["MARKER NAME"] = self.marker_name
+
         if self.marker_number:
-            corrections["MARKER NUMBER"] = self.marker_number
+            base["MARKER NUMBER"] = self.marker_number
 
-        # Observer/Agency
-        corrections["OBSERVER / AGENCY"] = f"{self.observer} {self.agency}"
+        if self.observer or self.agency:
+            base["OBSERVER / AGENCY"] = (self.observer or "", self.agency or "")
 
-        # Receiver
-        if self.receiver_model:
-            rec_line = f"{self.receiver_serial} {self.receiver_model}"
-            if self.receiver_firmware:
-                rec_line += f" {self.receiver_firmware}"
-            corrections["REC # / TYPE / VERS"] = rec_line
+        # Receiver: only if explicitly requested
+        if include_receiver and (self.receiver_serial or self.receiver_model):
+            base["REC # / TYPE / VERS"] = (
+                self.receiver_serial or "",
+                self.receiver_model or "",
+                self.receiver_firmware or "",
+            )
 
-        # Antenna
-        if self.antenna_model:
-            # IGS convention: ANTENNA_MODEL + RADOME (20 chars each)
-            ant_model = self.antenna_model
-            if self.radome_model and self.radome_model != "NONE":
-                ant_model = f"{self.antenna_model} {self.radome_model}"
-            corrections["ANT # / TYPE"] = f"{self.antenna_serial} {ant_model}"
+        # Antenna: only if we have serial (to fix "Unknown" from converters)
+        if self.antenna_serial:
+            if self.antenna_model:
+                ant_type = format_antenna_type_with_radome(
+                    self.antenna_model, self.radome_model
+                )
+            else:
+                ant_type = ""
+            base["ANT # / TYPE"] = (self.antenna_serial, ant_type)
 
-        # Antenna height offsets (H/E/N)
+        # Antenna height (always include)
         total_height = self.antenna_height + self.monument_height
-        corrections["ANTENNA: DELTA H/E/N"] = f"{total_height:.4f} 0.0000 0.0000"
+        base["ANTENNA: DELTA H/E/N"] = (total_height, 0.0, 0.0)
+
+        # Apply overrides
+        if overrides:
+            for key, value in overrides.items():
+                if value is None:
+                    # None means explicitly skip this field
+                    base.pop(key, None)
+                else:
+                    base[key] = value
+
+        # Format all fields using the general formatter
+        corrections = {}
+        for field_name, value in base.items():
+            formatted = format_rinex_field(field_name, value)
+            if formatted is not None:
+                corrections[field_name] = formatted
 
         return corrections
 
@@ -194,8 +410,12 @@ class EquipmentMetadata:
         metadata.time_to = None  # Current config, no end date
 
         # RINEX header metadata (from teqc configs)
-        metadata.marker_name = rinex_config.get("marker_name", station_config.get("station_id", ""))
-        metadata.marker_number = rinex_config.get("marker_number", station_config.get("station_id", ""))
+        metadata.marker_name = rinex_config.get(
+            "marker_name", station_config.get("station_id", "")
+        )
+        metadata.marker_number = rinex_config.get(
+            "marker_number", station_config.get("station_id", "")
+        )
         metadata.observer = rinex_config.get("observer", "GNSS OPERATOR")
         metadata.agency = rinex_config.get("agency", "IMO")
 
@@ -274,7 +494,9 @@ class MetadataProvider:
         days_ago = (datetime.now() - observation_date).days
         is_recent = days_ago <= self.recent_days_threshold
 
-        if force_config or (is_recent and not force_tos and not self.use_tos_for_historical):
+        if force_config or (
+            is_recent and not force_tos and not self.use_tos_for_historical
+        ):
             # Use current configuration
             return self._get_from_config(station_id)
         else:
@@ -282,7 +504,9 @@ class MetadataProvider:
             metadata = self._get_from_tos(station_id, observation_date)
             if metadata is None and is_recent:
                 # Fallback to config if TOS lookup fails for recent data
-                self.logger.debug(f"TOS lookup failed, falling back to config for {station_id}")
+                self.logger.debug(
+                    f"TOS lookup failed, falling back to config for {station_id}"
+                )
                 return self._get_from_config(station_id)
             return metadata
 
