@@ -2034,7 +2034,6 @@ def cmd_rinex(args) -> int:
             RinexVersion,
             OutputFormat,
             NamingConvention,
-            MetadataProvider,
         )
     except ImportError as e:
         logger.error(f"RINEX module not available: {e}")

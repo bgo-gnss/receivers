@@ -1,12 +1,14 @@
 """
 Metadata provider for RINEX header corrections.
 
-This module provides equipment metadata for RINEX files, supporting:
-1. Historical metadata lookup from TOS database (for old data)
-2. Current station configuration (for recent data)
+This module provides:
+1. RINEX header formatting utilities (format_rinex_field, format_antenna_type_with_radome)
+2. EquipmentMetadata dataclass for representing station equipment
+3. MetadataProvider for config-based metadata lookup
 
-The TOS database contains time-segmented equipment sessions, allowing
-accurate metadata for any observation date.
+Note: TOS database queries for RINEX header correction are now handled by
+tostools.rinex.correct_rinex_from_tos(). This module focuses on formatting
+utilities and config-based metadata.
 
 RINEX Header Field Formatting:
     RINEX uses fixed-width Fortran format. Field specifications are based on
@@ -27,7 +29,7 @@ RINEX Header Field Formatting:
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 
 # RINEX header field specifications: (Fortran format, total width)
@@ -436,160 +438,46 @@ class EquipmentMetadata:
 
 
 class MetadataProvider:
-    """Provider for RINEX header metadata.
+    """Provider for RINEX header metadata from station configuration.
 
-    Handles lookup of equipment metadata for any observation date:
-    - Recent dates: Use current station configuration (faster)
-    - Historical dates: Query TOS database device_history
+    Note: TOS database queries are now handled by tostools.rinex.correct_rinex_from_tos().
+    This class only provides config-based metadata lookup for use with EquipmentMetadata.
 
-    The TOS database contains complete equipment history with time periods,
-    allowing accurate metadata for old data processing.
+    For RINEX header correction with TOS support, use:
+        from tostools.rinex import correct_rinex_from_tos
     """
 
     def __init__(
         self,
-        use_tos_for_historical: bool = True,
         loglevel: int = logging.INFO,
     ):
         """Initialize metadata provider.
 
         Args:
-            use_tos_for_historical: Use TOS database for dates before config_valid_from
             loglevel: Logging level
         """
-        self.use_tos_for_historical = use_tos_for_historical
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.logger.setLevel(loglevel)
-
-        # Cache for TOS data
-        self._tos_cache: Dict[str, List[Dict]] = {}
         self._config_cache: Dict[str, EquipmentMetadata] = {}
 
-    def get_equipment_at_date(
+    def get_equipment_from_config(
         self,
         station_id: str,
-        observation_date: datetime,
-        force_tos: bool = False,
-        force_config: bool = False,
     ) -> Optional[EquipmentMetadata]:
-        """Get equipment metadata for a specific observation date.
-
-        Logic:
-        1. Get config to determine config_valid_from date
-        2. If observation_date >= config_valid_from: use config
-        3. If observation_date < config_valid_from: use TOS (if enabled)
-        4. If config_valid_from is missing: use config for all dates
-        5. Fall back to config if TOS lookup fails
+        """Get equipment metadata from station configuration.
 
         Args:
             station_id: Station identifier (e.g., 'ELDC')
-            observation_date: Date of observation
-            force_tos: Always use TOS database (even for recent dates)
-            force_config: Always use current configuration (even for old dates)
 
         Returns:
-            EquipmentMetadata for the observation date, or None if not found
+            EquipmentMetadata from station config, or None if not found
         """
         station_id = station_id.upper()
 
-        # Priority logic:
-        # 1. force_config: always use config
-        # 2. force_tos: always use TOS (with config fallback)
-        # 3. Check config_valid_from to determine if config covers this date
-        # 4. Historical dates + use_tos_for_historical: use TOS (with config fallback)
-        # 5. Otherwise: use config
-
-        if force_config:
-            self.logger.debug(f"Using config for {station_id} (force_config=True)")
-            return self._get_from_config(station_id)
-
-        if force_tos:
-            self.logger.debug(f"Using TOS for {station_id} (force_tos=True)")
-            metadata = self._get_from_tos(station_id, observation_date)
-            if metadata is None:
-                self.logger.debug(
-                    f"TOS lookup failed, falling back to config for {station_id}"
-                )
-                return self._get_from_config(station_id)
-            return metadata
-
-        # Get config to check config_valid_from
-        config_metadata = self._get_from_config(station_id)
-        if config_metadata is None:
-            # No config available, try TOS
-            if self.use_tos_for_historical:
-                return self._get_from_tos(station_id, observation_date)
-            return None
-
-        # Check if observation date is covered by config validity period
-        config_valid_from = config_metadata.time_from
-        if config_valid_from is None:
-            # No valid_from date - use TOS for all dates (config validity unknown)
-            if self.use_tos_for_historical:
-                self.logger.debug(
-                    f"Using TOS for {station_id} (no config_valid_from, "
-                    f"config validity period unknown)"
-                )
-                metadata = self._get_from_tos(station_id, observation_date)
-                if metadata is None:
-                    self.logger.debug(
-                        f"TOS lookup failed, falling back to config for {station_id}"
-                    )
-                    return config_metadata
-                return metadata
-            # TOS disabled, fall back to config
-            self.logger.debug(
-                f"Using config for {station_id} (no config_valid_from, TOS disabled)"
-            )
-            return config_metadata
-
-        # Compare observation date to config_valid_from
-        # Use date comparison (ignore time component)
-        obs_date = observation_date.date() if hasattr(observation_date, 'date') else observation_date
-        valid_from_date = config_valid_from.date() if hasattr(config_valid_from, 'date') else config_valid_from
-
-        if obs_date >= valid_from_date:
-            # Observation date is within config validity period
-            self.logger.debug(
-                f"Using config for {station_id} (observation {obs_date} >= "
-                f"config_valid_from {valid_from_date})"
-            )
-            return config_metadata
-
-        # Observation date is before config validity - historical data
-        if self.use_tos_for_historical:
-            self.logger.debug(
-                f"Using TOS for {station_id} (observation {obs_date} < "
-                f"config_valid_from {valid_from_date})"
-            )
-            metadata = self._get_from_tos(station_id, observation_date)
-            if metadata is None:
-                self.logger.debug(
-                    f"TOS lookup failed, falling back to config for {station_id}"
-                )
-                return config_metadata
-            return metadata
-
-        # TOS disabled, use config even for historical
-        self.logger.debug(
-            f"Using config for {station_id} (TOS disabled for historical)"
-        )
-        return config_metadata
-
-    def _get_from_config(self, station_id: str) -> Optional[EquipmentMetadata]:
-        """Get metadata from current station configuration.
-
-        Args:
-            station_id: Station identifier
-
-        Returns:
-            EquipmentMetadata or None
-        """
         if station_id in self._config_cache:
             return self._config_cache[station_id]
 
         try:
-            # Import here to avoid circular imports
             from ..config_utils import get_station_config
 
             config = get_station_config(station_id)
@@ -598,7 +486,7 @@ class MetadataProvider:
                 return None
 
             metadata = EquipmentMetadata.from_station_config(config)
-            metadata.marker_name = station_id  # Ensure marker name is set
+            metadata.marker_name = station_id
             self._config_cache[station_id] = metadata
             return metadata
 
@@ -606,100 +494,6 @@ class MetadataProvider:
             self.logger.error(f"Failed to get config for {station_id}: {e}")
             return None
 
-    def _get_from_tos(
-        self,
-        station_id: str,
-        observation_date: datetime,
-    ) -> Optional[EquipmentMetadata]:
-        """Get metadata from TOS database for a specific date.
-
-        Args:
-            station_id: Station identifier
-            observation_date: Date to look up equipment
-
-        Returns:
-            EquipmentMetadata or None
-        """
-        # Get device history (cached)
-        device_history = self._get_device_history(station_id)
-
-        if not device_history:
-            return None
-
-        # Find session that covers the observation date
-        for session in device_history:
-            metadata = EquipmentMetadata.from_tos_session(session)
-
-            # Check if observation date falls within this session
-            if metadata.time_from and metadata.time_from > observation_date:
-                continue  # Session starts after observation
-
-            if metadata.time_to and metadata.time_to < observation_date:
-                continue  # Session ended before observation
-
-            # Found matching session
-            metadata.marker_name = station_id
-            self.logger.debug(
-                f"Found TOS metadata for {station_id} at {observation_date.date()}: "
-                f"{metadata.receiver_model}, {metadata.antenna_model}"
-            )
-            return metadata
-
-        self.logger.warning(
-            f"No TOS session found for {station_id} at {observation_date.date()}"
-        )
-        return None
-
-    def _get_device_history(self, station_id: str) -> List[Dict]:
-        """Get device history from TOS database (cached).
-
-        Args:
-            station_id: Station identifier
-
-        Returns:
-            List of device history sessions
-        """
-        if station_id in self._tos_cache:
-            return self._tos_cache[station_id]
-
-        try:
-            from tostools.api.tos_client import TOSClient
-
-            client = TOSClient()
-            station_data = client.get_complete_station_metadata(station_id)
-
-            if station_data and "device_history" in station_data:
-                device_history = station_data["device_history"]
-                self._tos_cache[station_id] = device_history
-                self.logger.info(
-                    f"Loaded {len(device_history)} TOS sessions for {station_id}"
-                )
-                return device_history
-            else:
-                self.logger.warning(f"No device history found in TOS for {station_id}")
-                return []
-
-        except ImportError:
-            self.logger.warning("tostools not available, cannot query TOS database")
-            return []
-
-        except Exception as e:
-            self.logger.error(f"TOS query failed for {station_id}: {e}")
-            return []
-
     def clear_cache(self) -> None:
-        """Clear all cached metadata."""
-        self._tos_cache.clear()
+        """Clear cached metadata."""
         self._config_cache.clear()
-
-    def preload_station(self, station_id: str) -> bool:
-        """Preload TOS data for a station into cache.
-
-        Args:
-            station_id: Station identifier
-
-        Returns:
-            True if data was loaded successfully
-        """
-        history = self._get_device_history(station_id.upper())
-        return len(history) > 0

@@ -377,53 +377,52 @@ class RawToRinexConverter(ABC):
     ) -> int:
         """Apply TOS metadata corrections to RINEX header.
 
+        Uses tostools.rinex.correct_rinex_from_tos() which:
+        - For recent dates (>= config_valid_from): Uses station.cfg (no TOS query)
+        - For historical dates (< config_valid_from): Queries TOS database
+
         Args:
             rinex_file: Path to RINEX file
             observation_date: Date of observation (for historical metadata lookup)
 
         Returns:
-            Number of corrections applied
+            Number of corrections applied (estimated from operation success)
         """
-        from .metadata_provider import MetadataProvider
+        try:
+            from tostools.rinex import correct_rinex_from_tos
+        except ImportError:
+            self.logger.warning("tostools not available, skipping header corrections")
+            return 0
 
         try:
-            # Get equipment metadata for observation date
-            provider = MetadataProvider()
-            metadata = provider.get_equipment_at_date(self.station_id, observation_date)
+            # Get station configuration (used for recent dates)
+            station_config = None
+            try:
+                from ..config_utils import get_station_config
+                station_config = get_station_config(self.station_id)
+            except Exception as e:
+                self.logger.debug(f"Could not load station config: {e}")
 
-            if not metadata:
+            # Apply corrections using tostools
+            # This function handles the config vs TOS decision internally
+            result = correct_rinex_from_tos(
+                rinex_file=rinex_file,
+                station_id=self.station_id,
+                observation_date=observation_date,
+                output_file=rinex_file,  # Overwrite in place
+                station_config=station_config,
+                loglevel=self.logger.level,
+            )
+
+            if result is None:
                 self.logger.warning(
-                    f"No TOS metadata found for {self.station_id} at {observation_date.date()}"
+                    f"Header correction failed for {self.station_id} at {observation_date.date()}"
                 )
                 return 0
 
-            # Build corrections dictionary
-            corrections = metadata.to_rinex_corrections()
-
-            if not corrections:
-                self.logger.debug("No corrections needed")
-                return 0
-
-            # Apply corrections using tostools editor
-            try:
-                from tostools.rinex.editor import fix_rinex_header
-            except ImportError:
-                self.logger.warning("tostools not available, skipping header corrections")
-                return 0
-
-            # Read RINEX file
-            with open(rinex_file, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
-
-            # Apply corrections
-            corrected_content = fix_rinex_header(content, corrections)
-
-            # Write corrected file
-            with open(rinex_file, 'w', encoding='utf-8') as f:
-                f.write(corrected_content)
-
-            self.logger.info(f"Applied {len(corrections)} header corrections")
-            return len(corrections)
+            # Success - return approximate count (tostools doesn't return exact count)
+            self.logger.info(f"Applied header corrections for {self.station_id}")
+            return 1  # Indicates success
 
         except Exception as e:
             self.logger.warning(f"Header correction failed: {e}")
