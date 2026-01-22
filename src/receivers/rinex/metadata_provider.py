@@ -479,36 +479,73 @@ class MetadataProvider:
     ) -> Optional[EquipmentMetadata]:
         """Get equipment metadata for a specific observation date.
 
+        Logic:
+        1. Recent dates (within threshold): Use config (station.cfg has current data)
+        2. Historical dates: Use TOS if enabled, otherwise config
+        3. Fall back to config if TOS lookup fails
+
         Args:
             station_id: Station identifier (e.g., 'ELDC')
             observation_date: Date of observation
-            force_tos: Always use TOS database
-            force_config: Always use current configuration
+            force_tos: Always use TOS database (even for recent dates)
+            force_config: Always use current configuration (even for old dates)
 
         Returns:
             EquipmentMetadata for the observation date, or None if not found
         """
         station_id = station_id.upper()
 
-        # Determine whether to use config or TOS
+        # Determine whether date is recent
         days_ago = (datetime.now() - observation_date).days
         is_recent = days_ago <= self.recent_days_threshold
 
-        if force_config or (
-            is_recent and not force_tos and not self.use_tos_for_historical
-        ):
-            # Use current configuration
+        # Priority logic:
+        # 1. force_config: always use config
+        # 2. force_tos: always use TOS (with config fallback)
+        # 3. Recent dates: use config (station.cfg has current valid data)
+        # 4. Historical dates + use_tos_for_historical: use TOS (with config fallback)
+        # 5. Otherwise: use config
+
+        if force_config:
+            self.logger.debug(f"Using config for {station_id} (force_config=True)")
             return self._get_from_config(station_id)
-        else:
-            # Use TOS database for historical lookup
+
+        if force_tos:
+            self.logger.debug(f"Using TOS for {station_id} (force_tos=True)")
             metadata = self._get_from_tos(station_id, observation_date)
-            if metadata is None and is_recent:
-                # Fallback to config if TOS lookup fails for recent data
+            if metadata is None:
                 self.logger.debug(
                     f"TOS lookup failed, falling back to config for {station_id}"
                 )
                 return self._get_from_config(station_id)
             return metadata
+
+        if is_recent:
+            # Recent dates: use config (station.cfg has current valid data)
+            self.logger.debug(
+                f"Using config for {station_id} ({days_ago} days ago is within "
+                f"{self.recent_days_threshold} day threshold)"
+            )
+            return self._get_from_config(station_id)
+
+        if self.use_tos_for_historical:
+            # Historical dates: try TOS first
+            self.logger.debug(
+                f"Using TOS for {station_id} ({days_ago} days ago is historical)"
+            )
+            metadata = self._get_from_tos(station_id, observation_date)
+            if metadata is None:
+                self.logger.debug(
+                    f"TOS lookup failed, falling back to config for {station_id}"
+                )
+                return self._get_from_config(station_id)
+            return metadata
+
+        # Historical dates, TOS disabled: use config
+        self.logger.debug(
+            f"Using config for {station_id} (TOS disabled for historical)"
+        )
+        return self._get_from_config(station_id)
 
     def _get_from_config(self, station_id: str) -> Optional[EquipmentMetadata]:
         """Get metadata from current station configuration.

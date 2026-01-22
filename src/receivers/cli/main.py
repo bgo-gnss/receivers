@@ -2033,6 +2033,7 @@ def cmd_rinex(args) -> int:
             TrimbleConverter,
             RinexVersion,
             OutputFormat,
+            NamingConvention,
             MetadataProvider,
         )
     except ImportError as e:
@@ -2052,6 +2053,13 @@ def cmd_rinex(args) -> int:
         OutputFormat.LEGACY
         if args.output_format == "legacy"
         else OutputFormat.MODERN
+    )
+
+    # Parse naming convention
+    naming_convention = (
+        NamingConvention.SHORT
+        if args.naming == "short"
+        else NamingConvention.LONG
     )
 
     # Parse observation types
@@ -2120,6 +2128,7 @@ def cmd_rinex(args) -> int:
                     station_id=station_id,
                     rinex_version=rinex_version,
                     output_format=output_format,
+                    naming_convention=naming_convention,
                     apply_header_corrections=not getattr(args, "no_header_correction", False),
                     observation_types=observation_types,
                     loglevel=args.loglevel,
@@ -2130,6 +2139,7 @@ def cmd_rinex(args) -> int:
                     station_id=station_id,
                     rinex_version=rinex_version,
                     output_format=output_format,
+                    naming_convention=naming_convention,
                     apply_header_corrections=not getattr(args, "no_header_correction", False),
                     keep_intermediate=getattr(args, "keep_intermediate", False),
                     loglevel=args.loglevel,
@@ -2140,6 +2150,7 @@ def cmd_rinex(args) -> int:
                     station_id=station_id,
                     rinex_version=rinex_version,
                     output_format=output_format,
+                    naming_convention=naming_convention,
                     apply_header_corrections=not getattr(args, "no_header_correction", False),
                     keep_intermediate=getattr(args, "keep_intermediate", False),
                     loglevel=args.loglevel,

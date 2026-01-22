@@ -29,6 +29,7 @@ from typing import List, Optional
 
 from .converter_base import (
     ConversionError,
+    NamingConvention,
     OutputFormat,
     RawToRinexConverter,
     RinexVersion,
@@ -55,6 +56,7 @@ class SBFConverter(RawToRinexConverter):
         station_id: str,
         rinex_version: RinexVersion = RinexVersion.RINEX_3,
         output_format: OutputFormat = OutputFormat.MODERN,
+        naming_convention: Optional["NamingConvention"] = None,
         apply_header_corrections: bool = True,
         observation_types: Optional[List[str]] = None,
         loglevel: int = logging.INFO,
@@ -65,6 +67,8 @@ class SBFConverter(RawToRinexConverter):
             station_id: Station identifier (e.g., 'ELDC')
             rinex_version: Target RINEX version (2, 3, or 4)
             output_format: Output format (modern or legacy)
+            naming_convention: Filename convention (SHORT or LONG).
+                              If None, defaults based on rinex_version.
             apply_header_corrections: Whether to apply TOS metadata corrections
             observation_types: List of observation types to include (default: all)
             loglevel: Logging level
@@ -73,6 +77,7 @@ class SBFConverter(RawToRinexConverter):
             station_id=station_id,
             rinex_version=rinex_version,
             output_format=output_format,
+            naming_convention=naming_convention,
             apply_header_corrections=apply_header_corrections,
             loglevel=loglevel,
         )
