@@ -365,150 +365,41 @@ class TestEquipmentMetadata:
 
 
 class TestMetadataProvider:
-    """Tests for metadata provider functionality."""
+    """Tests for metadata provider functionality.
+
+    Note: TOS database queries are now handled by tostools.rinex.correct_rinex_from_tos().
+    This class only tests config-based metadata lookup.
+    """
 
     def test_init_defaults(self):
         """Test default initialization."""
         provider = MetadataProvider()
+        assert hasattr(provider, "_config_cache")
+        assert len(provider._config_cache) == 0
 
-        assert provider.use_tos_for_historical is True
-
-    def test_date_within_config_validity_uses_config(self):
-        """Test that dates >= config_valid_from use config."""
+    def test_get_equipment_from_config_caches_result(self):
+        """Test that config lookup results are cached."""
         provider = MetadataProvider()
 
-        # Config with time_from set to 2025-01-01
+        # Mock the config loader
         config_metadata = EquipmentMetadata(
             marker_name="TEST",
             time_from=datetime(2025, 1, 1),
         )
-        provider._get_from_config = Mock(return_value=config_metadata)
-        provider._get_from_tos = Mock(return_value=None)
 
-        # Date after config_valid_from - should use config
-        obs_date = datetime(2025, 6, 15)
-        result = provider.get_equipment_at_date("TEST", obs_date)
-
-        assert result is not None
-        assert result.marker_name == "TEST"
-        # TOS should NOT be called for dates within config validity
-        provider._get_from_tos.assert_not_called()
-
-    def test_date_before_config_validity_uses_tos(self):
-        """Test that dates < config_valid_from use TOS."""
-        provider = MetadataProvider()
-
-        # Config with time_from set to 2025-01-01
-        config_metadata = EquipmentMetadata(
-            marker_name="TEST_CONFIG",
-            time_from=datetime(2025, 1, 1),
-        )
-        tos_metadata = EquipmentMetadata(marker_name="TEST_TOS")
-
-        provider._get_from_config = Mock(return_value=config_metadata)
-        provider._get_from_tos = Mock(return_value=tos_metadata)
-
-        # Date before config_valid_from - should use TOS
-        obs_date = datetime(2024, 6, 15)
-        result = provider.get_equipment_at_date("TEST", obs_date)
-
-        assert result is not None
-        assert result.marker_name == "TEST_TOS"
-        # TOS was called for historical date
-        provider._get_from_tos.assert_called_once()
-
-    def test_no_config_valid_from_uses_tos_for_all_dates(self):
-        """Test that if config_valid_from is missing, TOS is used for all dates."""
-        provider = MetadataProvider()
-
-        # Config with NO time_from (None) - validity period unknown
-        config_metadata = EquipmentMetadata(
-            marker_name="TEST_CONFIG",
-            time_from=None,  # No validity date
-        )
-        tos_metadata = EquipmentMetadata(marker_name="TEST_TOS")
-
-        provider._get_from_config = Mock(return_value=config_metadata)
-        provider._get_from_tos = Mock(return_value=tos_metadata)
-
-        # When config_valid_from is missing, TOS should be used
-        obs_date = datetime(2020, 1, 1)
-        result = provider.get_equipment_at_date("TEST", obs_date)
-
-        assert result is not None
-        assert result.marker_name == "TEST_TOS"
-        # TOS should be called when config has no validity date
-        provider._get_from_tos.assert_called_once()
-
-    def test_no_config_valid_from_falls_back_to_config_if_tos_fails(self):
-        """Test that if config_valid_from is missing and TOS fails, config is used."""
-        provider = MetadataProvider()
-
-        # Config with NO time_from (None)
-        config_metadata = EquipmentMetadata(
-            marker_name="TEST_CONFIG",
-            time_from=None,
-        )
-        provider._get_from_config = Mock(return_value=config_metadata)
-        provider._get_from_tos = Mock(return_value=None)  # TOS fails
-
-        obs_date = datetime(2020, 1, 1)
-        result = provider.get_equipment_at_date("TEST", obs_date)
-
-        assert result is not None
-        assert result.marker_name == "TEST_CONFIG"  # Falls back to config
-        provider._get_from_tos.assert_called_once()
-
-    def test_historical_date_fallback_to_config(self):
-        """Test that historical dates fall back to config if TOS fails."""
-        provider = MetadataProvider()
-
-        # Config with time_from
-        config_metadata = EquipmentMetadata(
-            marker_name="TEST_CONFIG",
-            time_from=datetime(2025, 1, 1),
-        )
-        provider._get_from_config = Mock(return_value=config_metadata)
-        provider._get_from_tos = Mock(return_value=None)  # TOS fails
-
-        # Historical date (before config_valid_from)
-        obs_date = datetime(2024, 6, 15)
-        result = provider.get_equipment_at_date("TEST", obs_date)
-
-        assert result is not None
-        assert result.marker_name == "TEST_CONFIG"  # Fell back to config
-        # TOS was tried first
-        provider._get_from_tos.assert_called_once()
-
-    def test_force_config_overrides_all(self):
-        """Test that force_config=True always uses config."""
-        provider = MetadataProvider()
-
-        config_metadata = EquipmentMetadata(
-            marker_name="TEST_CONFIG",
-            time_from=datetime(2025, 1, 1),
-        )
-        provider._get_from_config = Mock(return_value=config_metadata)
-        provider._get_from_tos = Mock(return_value=None)
-
-        # Historical date with force_config - should still use config
-        obs_date = datetime(2020, 1, 1)
-        result = provider.get_equipment_at_date("TEST", obs_date, force_config=True)
-
-        assert result is not None
-        assert result.marker_name == "TEST_CONFIG"
-        # TOS was never called because force_config=True
-        provider._get_from_tos.assert_not_called()
+        with patch.object(provider, "_config_cache", {"TEST": config_metadata}):
+            # Should return cached value
+            result = provider.get_equipment_from_config("TEST")
+            assert result is not None
+            assert result.marker_name == "TEST"
 
     def test_cache_clearing(self):
         """Test cache clearing functionality."""
         provider = MetadataProvider()
-        provider._tos_cache = {"TEST": [{"data": "cached"}]}
         provider._config_cache = {"TEST": EquipmentMetadata()}
 
         provider.clear_cache()
 
-        assert len(provider._tos_cache) == 0
         assert len(provider._config_cache) == 0
 
 
