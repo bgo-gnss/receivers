@@ -42,25 +42,27 @@ from .converter_base import RinexVersion
 
 class NamingConvention(Enum):
     """RINEX filename naming conventions."""
-    SHORT = "short"   # RINEX 2 style: SSSS0DDF.YYt
-    LONG = "long"     # IGS/RINEX 3+ style: SSSS00CCC_R_YYYYDDDHHMM_...
+
+    SHORT = "short"  # RINEX 2 style: SSSS0DDF.YYt
+    LONG = "long"  # IGS/RINEX 3+ style: SSSS00CCC_R_YYYYDDDHHMM_...
 
 
 @dataclass
 class FileNameComponents:
     """Components for RINEX filename generation."""
-    station: str               # 4-char marker
-    year: int                  # Full year
-    day_of_year: int          # 1-366
-    hour: int = 0             # 0-23
-    minute: int = 0           # 0-59
-    file_sequence: int = 0    # 0 for first file
+
+    station: str  # 4-char marker
+    year: int  # Full year
+    day_of_year: int  # 1-366
+    hour: int = 0  # 0-23
+    minute: int = 0  # 0-59
+    file_sequence: int = 0  # 0 for first file
     monument_number: str = "00"
     country_code: str = "ISL"
-    data_source: str = "R"    # R=receiver, S=stream, U=unknown
+    data_source: str = "R"  # R=receiver, S=stream, U=unknown
     file_period: str = "01D"  # 01D, 01H, 15M
     data_frequency: str = "15S"  # 15S, 01S, 30S
-    file_type: str = "MO"     # MO=Mixed Obs, GO=GPS Obs, etc.
+    file_type: str = "MO"  # MO=Mixed Obs, GO=GPS Obs, etc.
 
 
 class RinexNamer:
@@ -126,7 +128,7 @@ class RinexNamer:
     def generate_filename(
         self,
         observation_time: datetime,
-        convention: NamingConvention = NamingConvention.LONG,
+        convention: Optional[NamingConvention] = None,
         file_sequence: int = 0,
         data_source: str = "R",
         file_period: Optional[str] = None,
@@ -138,7 +140,8 @@ class RinexNamer:
 
         Args:
             observation_time: Start time of observation
-            convention: Naming convention to use
+            convention: Naming convention to use. If None, defaults based on
+                        RINEX version (SHORT for v2, LONG for v3+)
             file_sequence: File sequence number (0 for first)
             data_source: Data source (R=receiver, S=stream, U=unknown)
             file_period: File period (01D, 01H, 15M) - auto-detected if None
@@ -149,6 +152,13 @@ class RinexNamer:
         Returns:
             Generated filename
         """
+        # Default convention based on RINEX version
+        if convention is None:
+            if self.rinex_version == RinexVersion.RINEX_2:
+                convention = NamingConvention.SHORT
+            else:
+                convention = NamingConvention.LONG
+
         if convention == NamingConvention.SHORT:
             return self._generate_short_name(
                 observation_time,
@@ -189,7 +199,7 @@ class RinexNamer:
         elif file_sequence < 10:
             session = str(file_sequence)
         else:
-            session = chr(ord('a') + file_sequence - 10)
+            session = chr(ord("a") + file_sequence - 10)
 
         return timefunc.rinex2_filename(
             self.station_id,
@@ -282,7 +292,7 @@ class RinexNamer:
             if session.isdigit():
                 file_sequence = int(session)
             else:
-                file_sequence = ord(session.lower()) - ord('a') + 10
+                file_sequence = ord(session.lower()) - ord("a") + 10
 
             # Map file type char to full type
             type_mapping = {
