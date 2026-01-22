@@ -109,16 +109,19 @@ class FileTracker:
         station_id: str,
         file_date: date,
         checksum: Optional[str] = None,
+        min_completeness: float = 0.95,
     ) -> bool:
-        """Check if health data is already imported.
+        """Check if health data is already imported AND complete.
 
         Args:
             station_id: Station identifier
             file_date: Date of the health data
             checksum: Optional checksum to verify data hasn't changed
+            min_completeness: Minimum fraction of expected samples (default 0.95 = 95%)
+                             Expected samples = 24 hours * 60 samples/hour = 1440
 
         Returns:
-            True if data is already imported (skip reimport)
+            True if data is already imported AND has sufficient completeness
         """
         if not self._conn:
             if not self.connect():
@@ -126,12 +129,42 @@ class FileTracker:
 
         try:
             with self._conn.cursor() as cur:
+                # First check if marked as imported in tracking table
                 cur.execute(
                     "SELECT is_health_imported(%s, %s, %s)",
                     (station_id, file_date, checksum),
                 )
                 result = cur.fetchone()
-                return result[0] if result else False
+                is_marked_imported = result[0] if result else False
+
+                if not is_marked_imported:
+                    return False
+
+                # Also verify actual data completeness in block_power_status
+                # Expected: 24 hours * 60 samples = 1440 samples per day
+                expected_samples = 1440
+                min_samples = int(expected_samples * min_completeness)
+
+                cur.execute(
+                    """
+                    SELECT COUNT(*) FROM block_power_status
+                    WHERE sid = %s
+                    AND ts >= %s::date
+                    AND ts < %s::date + interval '1 day'
+                    """,
+                    (station_id, file_date, file_date),
+                )
+                count_result = cur.fetchone()
+                actual_samples = count_result[0] if count_result else 0
+
+                if actual_samples < min_samples:
+                    logger.info(
+                        f"Health data incomplete for {station_id}/{file_date}: "
+                        f"{actual_samples}/{expected_samples} samples ({100*actual_samples/expected_samples:.1f}%)"
+                    )
+                    return False
+
+                return True
         except Exception as e:
             logger.debug(f"Error checking import status: {e}")
             return False
