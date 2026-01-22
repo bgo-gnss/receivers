@@ -29,8 +29,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-# Default threshold for using config vs TOS
-DEFAULT_RECENT_DAYS = 30
 
 # RINEX header field specifications: (Fortran format, total width)
 # Based on RINEX 3.x spec and tostools/rinex/reader.py
@@ -450,18 +448,15 @@ class MetadataProvider:
 
     def __init__(
         self,
-        recent_days_threshold: int = DEFAULT_RECENT_DAYS,
         use_tos_for_historical: bool = True,
         loglevel: int = logging.INFO,
     ):
         """Initialize metadata provider.
 
         Args:
-            recent_days_threshold: Days back to consider "recent" (use config)
-            use_tos_for_historical: Use TOS database for old data
+            use_tos_for_historical: Use TOS database for dates before config_valid_from
             loglevel: Logging level
         """
-        self.recent_days_threshold = recent_days_threshold
         self.use_tos_for_historical = use_tos_for_historical
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.logger.setLevel(loglevel)
@@ -480,9 +475,11 @@ class MetadataProvider:
         """Get equipment metadata for a specific observation date.
 
         Logic:
-        1. Recent dates (within threshold): Use config (station.cfg has current data)
-        2. Historical dates: Use TOS if enabled, otherwise config
-        3. Fall back to config if TOS lookup fails
+        1. Get config to determine config_valid_from date
+        2. If observation_date >= config_valid_from: use config
+        3. If observation_date < config_valid_from: use TOS (if enabled)
+        4. If config_valid_from is missing: use config for all dates
+        5. Fall back to config if TOS lookup fails
 
         Args:
             station_id: Station identifier (e.g., 'ELDC')
@@ -495,14 +492,10 @@ class MetadataProvider:
         """
         station_id = station_id.upper()
 
-        # Determine whether date is recent
-        days_ago = (datetime.now() - observation_date).days
-        is_recent = days_ago <= self.recent_days_threshold
-
         # Priority logic:
         # 1. force_config: always use config
         # 2. force_tos: always use TOS (with config fallback)
-        # 3. Recent dates: use config (station.cfg has current valid data)
+        # 3. Check config_valid_from to determine if config covers this date
         # 4. Historical dates + use_tos_for_historical: use TOS (with config fallback)
         # 5. Otherwise: use config
 
@@ -520,32 +513,56 @@ class MetadataProvider:
                 return self._get_from_config(station_id)
             return metadata
 
-        if is_recent:
-            # Recent dates: use config (station.cfg has current valid data)
-            self.logger.debug(
-                f"Using config for {station_id} ({days_ago} days ago is within "
-                f"{self.recent_days_threshold} day threshold)"
-            )
-            return self._get_from_config(station_id)
+        # Get config to check config_valid_from
+        config_metadata = self._get_from_config(station_id)
+        if config_metadata is None:
+            # No config available, try TOS
+            if self.use_tos_for_historical:
+                return self._get_from_tos(station_id, observation_date)
+            return None
 
-        if self.use_tos_for_historical:
-            # Historical dates: try TOS first
+        # Check if observation date is covered by config validity period
+        config_valid_from = config_metadata.time_from
+        if config_valid_from is None:
+            # No valid_from date - config is valid for all dates
             self.logger.debug(
-                f"Using TOS for {station_id} ({days_ago} days ago is historical)"
+                f"Using config for {station_id} (no config_valid_from, "
+                f"config valid for all dates)"
+            )
+            return config_metadata
+
+        # Compare observation date to config_valid_from
+        # Use date comparison (ignore time component)
+        obs_date = observation_date.date() if hasattr(observation_date, 'date') else observation_date
+        valid_from_date = config_valid_from.date() if hasattr(config_valid_from, 'date') else config_valid_from
+
+        if obs_date >= valid_from_date:
+            # Observation date is within config validity period
+            self.logger.debug(
+                f"Using config for {station_id} (observation {obs_date} >= "
+                f"config_valid_from {valid_from_date})"
+            )
+            return config_metadata
+
+        # Observation date is before config validity - historical data
+        if self.use_tos_for_historical:
+            self.logger.debug(
+                f"Using TOS for {station_id} (observation {obs_date} < "
+                f"config_valid_from {valid_from_date})"
             )
             metadata = self._get_from_tos(station_id, observation_date)
             if metadata is None:
                 self.logger.debug(
                     f"TOS lookup failed, falling back to config for {station_id}"
                 )
-                return self._get_from_config(station_id)
+                return config_metadata
             return metadata
 
-        # Historical dates, TOS disabled: use config
+        # TOS disabled, use config even for historical
         self.logger.debug(
             f"Using config for {station_id} (TOS disabled for historical)"
         )
-        return self._get_from_config(station_id)
+        return config_metadata
 
     def _get_from_config(self, station_id: str) -> Optional[EquipmentMetadata]:
         """Get metadata from current station configuration.

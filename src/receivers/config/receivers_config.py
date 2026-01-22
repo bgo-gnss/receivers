@@ -315,6 +315,48 @@ class ReceiversConfig:
         """Reload configuration from file."""
         self._load_config()
 
+    def get_rinex_default_naming(self) -> str:
+        """Get default RINEX naming convention.
+
+        Returns:
+            'short' or 'long' naming convention (default: 'short')
+        """
+        try:
+            naming = self.config.get("rinex", "default_naming")
+            if naming.lower() in ("short", "long"):
+                return naming.lower()
+            self.logger.warning(f"Invalid rinex default_naming '{naming}', using 'short'")
+            return "short"
+        except (configparser.NoSectionError, configparser.NoOptionError):
+            return "short"  # Default to short naming
+
+    def get_rinex_config(self) -> Dict[str, Any]:
+        """Get all RINEX configuration settings.
+
+        Returns:
+            Dictionary with RINEX configuration options
+        """
+        rinex_config = {
+            "default_naming": "short",
+            "default_version": 3,
+            "apply_header_corrections": True,
+            "use_tos_for_historical": True,
+            "output_compression": "gz",
+        }
+
+        try:
+            for key, value in self.config.items("rinex"):
+                try:
+                    # Try to parse as Python literal (bool, int, etc.)
+                    rinex_config[key] = ast.literal_eval(value)
+                except (ValueError, SyntaxError):
+                    # Keep as string if not parseable
+                    rinex_config[key] = value
+        except configparser.NoSectionError:
+            self.logger.debug("No [rinex] section found, using defaults")
+
+        return rinex_config
+
 
 # Global configuration instance
 _global_config: Optional[ReceiversConfig] = None

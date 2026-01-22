@@ -2055,10 +2055,19 @@ def cmd_rinex(args) -> int:
         else OutputFormat.MODERN
     )
 
-    # Parse naming convention
+    # Parse naming convention (from args or config)
+    if args.naming is not None:
+        naming_str = args.naming
+    else:
+        # Get default from receivers.cfg
+        from ..config.receivers_config import get_receivers_config
+        try:
+            naming_str = get_receivers_config().get_rinex_default_naming()
+        except FileNotFoundError:
+            naming_str = "short"  # Fallback if no config
     naming_convention = (
         NamingConvention.SHORT
-        if args.naming == "short"
+        if naming_str == "short"
         else NamingConvention.LONG
     )
 
@@ -2099,7 +2108,7 @@ def cmd_rinex(args) -> int:
 
     logger.info(f"RINEX conversion for {len(stations)} stations")
     logger.info(f"Date range: {start_time} to {end_time}")
-    logger.info(f"RINEX version: {rinex_version.value}, Naming: {args.naming}")
+    logger.info(f"RINEX version: {rinex_version.value}, Naming: {naming_str}")
 
     # Track results
     total_converted = 0

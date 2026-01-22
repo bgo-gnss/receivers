@@ -101,6 +101,7 @@ class RinexNamer:
         station_id: str,
         rinex_version: RinexVersion = RinexVersion.RINEX_3,
         country_code: str = "ISL",
+        uppercase_station: bool = True,
         loglevel: int = logging.INFO,
     ):
         """Initialize RINEX namer.
@@ -109,11 +110,14 @@ class RinexNamer:
             station_id: 4-character station marker
             rinex_version: Target RINEX version
             country_code: 3-character country code (default: ISL for Iceland)
+            uppercase_station: Use uppercase station ID in long filenames (default: True)
+                               Note: IGS convention is lowercase, but we default to uppercase
             loglevel: Logging level
         """
         self.station_id = station_id.upper()[:4].ljust(4)  # Ensure 4 chars
         self.rinex_version = rinex_version
         self.country_code = country_code.upper()[:3]
+        self.uppercase_station = uppercase_station
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.logger.setLevel(loglevel)
 
@@ -239,6 +243,11 @@ class RinexNamer:
             data_frequency=data_frequency,
             file_type=file_type,
         )
+
+        # gtimes produces lowercase station ID per IGS convention
+        # Uppercase the station part (first 4 chars) if requested
+        if self.uppercase_station:
+            filename = filename[:4].upper() + filename[4:]
 
         # gtimes always includes .rnx extension, strip if not wanted
         if not include_extension and filename.endswith(".rnx"):

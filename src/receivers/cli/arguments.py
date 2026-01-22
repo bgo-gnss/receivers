@@ -598,9 +598,9 @@ Examples:
     format_group.add_argument(
         '--naming',
         type=str,
-        default='short',
+        default=None,
         choices=['short', 'long'],
-        help='Filename convention: short (RINEX 2 style) or long (IGS) (default: short)'
+        help='Filename convention: short (RINEX 2 style) or long (IGS) (default: from receivers.cfg)'
     )
 
     format_group.add_argument(
