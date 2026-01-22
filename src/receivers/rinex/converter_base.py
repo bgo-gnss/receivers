@@ -496,11 +496,67 @@ class RawToRinexConverter(ABC):
                 return compressed_path
 
         elif self.output_format == OutputFormat.LEGACY:
-            # TODO: Implement Hatanaka compression + .Z
-            # For now, just return as-is
-            pass
+            # Legacy format: Hatanaka compression + gzip (.YYd.gz or .YYd.Z)
+            # 1. Run rnx2crx to create Hatanaka compressed file
+            # 2. Compress with gzip (named .Z for compatibility)
+            hatanaka_file = self._apply_hatanaka_compression(rinex_file)
+            if hatanaka_file != rinex_file:
+                # Compress the Hatanaka file
+                compressed_path = hatanaka_file.parent / (hatanaka_file.name + '.Z')
+                with open(hatanaka_file, 'rb') as f_in:
+                    with gzip.open(compressed_path, 'wb') as f_out:
+                        shutil.copyfileobj(f_in, f_out)
+                hatanaka_file.unlink()
+                return compressed_path
 
         return rinex_file
+
+    def _apply_hatanaka_compression(self, rinex_file: Path) -> Path:
+        """Apply Hatanaka compression to RINEX observation file.
+
+        Uses rnx2crx to convert .YYo -> .YYd (compact RINEX format).
+        Only applies to observation files (.o extension).
+
+        Args:
+            rinex_file: Path to RINEX observation file
+
+        Returns:
+            Path to Hatanaka compressed file, or original if not applicable
+        """
+        # Check if this is an observation file (.YYo format)
+        suffix = rinex_file.suffix.lower()
+        if not (len(suffix) == 4 and suffix[1:3].isdigit() and suffix[3] == 'o'):
+            self.logger.debug(f"Skipping Hatanaka: not an observation file ({suffix})")
+            return rinex_file
+
+        try:
+            rnx2crx = self.get_tool_path("rnx2crx")
+        except ConversionError:
+            self.logger.warning("rnx2crx not found, skipping Hatanaka compression")
+            return rinex_file
+
+        # Generate output filename (.YYo -> .YYd)
+        hatanaka_suffix = suffix[:-1] + 'd'  # e.g., .26o -> .26d
+        hatanaka_file = rinex_file.with_suffix(hatanaka_suffix)
+
+        try:
+            # Run rnx2crx: reads input file, creates output file in same directory
+            # Output filename is automatically .YYd (e.g., .26o -> .26d)
+            cmd = [str(rnx2crx), str(rinex_file)]
+            self._run_subprocess(cmd, timeout=60)
+
+            # rnx2crx creates output file alongside input with changed extension
+            if hatanaka_file.exists() and hatanaka_file.stat().st_size > 0:
+                rinex_file.unlink()  # Remove original .26o file
+                self.logger.debug(f"Hatanaka compressed: {rinex_file.name} -> {hatanaka_file.name}")
+                return hatanaka_file
+            else:
+                self.logger.warning(f"rnx2crx did not create expected output: {hatanaka_file}")
+                return rinex_file
+
+        except Exception as e:
+            self.logger.warning(f"Hatanaka compression failed: {e}")
+            return rinex_file
 
     def _run_subprocess(
         self,
