@@ -636,10 +636,10 @@ Examples:
     output_group.add_argument(
         '--format',
         type=str,
-        default='modern',
+        default=None,
         choices=['modern', 'legacy'],
         dest='output_format',
-        help='Output format: modern (.rnx.gz) or legacy (.D.Z) (default: modern)'
+        help='Output format: modern (.rnx.gz) or legacy (.D.Z) (default: from config)'
     )
 
     output_group.add_argument(

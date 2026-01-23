@@ -25,9 +25,15 @@ class RinexVersion(Enum):
 
 
 class OutputFormat(Enum):
-    """Output file format options."""
-    MODERN = "modern"   # .rnx.gz
+    """Output file format options (legacy compatibility)."""
+    MODERN = "modern"   # .rnx.gz (no Hatanaka)
     LEGACY = "legacy"   # .D.Z (Hatanaka compressed)
+
+
+class CompressionFormat(Enum):
+    """File compression format options."""
+    GZ = "gz"     # gzip (.gz)
+    Z = "Z"       # Unix compress (.Z) - requires ncompress
 
 
 class NamingConvention(Enum):
@@ -126,9 +132,11 @@ class RawToRinexConverter(ABC):
         self,
         station_id: str,
         rinex_version: RinexVersion = RinexVersion.RINEX_3,
-        output_format: OutputFormat = OutputFormat.MODERN,
+        output_format: Optional[OutputFormat] = None,
         naming_convention: Optional[NamingConvention] = None,
         apply_header_corrections: bool = True,
+        apply_hatanaka: Optional[bool] = None,
+        compression_format: Optional[CompressionFormat] = None,
         loglevel: int = logging.INFO,
     ):
         """Initialize converter.
@@ -136,19 +144,63 @@ class RawToRinexConverter(ABC):
         Args:
             station_id: Station identifier (e.g., 'ELDC')
             rinex_version: Target RINEX version (2, 3, or 4)
-            output_format: Output format (modern .rnx.gz or legacy .D.Z)
+            output_format: Legacy parameter for backwards compatibility.
+                          Use apply_hatanaka and compression_format instead.
             naming_convention: Filename convention (SHORT or LONG).
                               If None, defaults based on rinex_version:
                               RINEX_2 -> SHORT, RINEX_3/4 -> LONG
             apply_header_corrections: Whether to apply TOS metadata corrections
+            apply_hatanaka: Apply Hatanaka compression (.YYd vs .YYo).
+                           If None, reads from config default_hatanaka.
+            compression_format: File compression (GZ or Z).
+                               If None, reads from config default_compression.
             loglevel: Logging level
         """
         self.station_id = station_id.upper()
         self.rinex_version = rinex_version
-        self.output_format = output_format
         self.apply_header_corrections = apply_header_corrections
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.logger.setLevel(loglevel)
+
+        # Load configuration
+        self.config = get_receivers_config()
+        self._tool_paths: Dict[str, Path] = {}
+
+        # Handle legacy output_format parameter
+        if output_format is not None:
+            if output_format == OutputFormat.LEGACY:
+                self.apply_hatanaka = True
+                self.compression_format = CompressionFormat.Z
+            else:
+                self.apply_hatanaka = False
+                self.compression_format = CompressionFormat.GZ
+        else:
+            # Read from config or use defaults
+            rinex_config = self.config.get_rinex_config()
+
+            if apply_hatanaka is not None:
+                self.apply_hatanaka = apply_hatanaka
+            else:
+                config_hatanaka = rinex_config.get("default_hatanaka", True)
+                if isinstance(config_hatanaka, str):
+                    self.apply_hatanaka = config_hatanaka.lower() in ("true", "yes", "1")
+                else:
+                    self.apply_hatanaka = bool(config_hatanaka)
+
+            if compression_format is not None:
+                self.compression_format = compression_format
+            else:
+                config_compression = str(rinex_config.get("default_compression", "gz"))
+                if config_compression.upper() == "Z":
+                    self.compression_format = CompressionFormat.Z
+                else:
+                    self.compression_format = CompressionFormat.GZ
+
+        # Keep output_format for backwards compatibility
+        if self.apply_hatanaka:
+            self.output_format = OutputFormat.LEGACY
+        else:
+            self.output_format = OutputFormat.MODERN
 
         # Default naming convention based on RINEX version
         if naming_convention is None:
@@ -158,10 +210,6 @@ class RawToRinexConverter(ABC):
                 self.naming_convention = NamingConvention.LONG
         else:
             self.naming_convention = naming_convention
-
-        # Load configuration
-        self.config = get_receivers_config()
-        self._tool_paths: Dict[str, Path] = {}
 
     @property
     @abstractmethod
@@ -477,6 +525,10 @@ class RawToRinexConverter(ABC):
     def _apply_compression(self, rinex_file: Path) -> Path:
         """Apply compression to RINEX file.
 
+        Uses apply_hatanaka and compression_format attributes:
+        - apply_hatanaka: True -> run rnx2crx (.YYo -> .YYd)
+        - compression_format: GZ -> .gz, Z -> .Z
+
         Args:
             rinex_file: Path to RINEX file
 
@@ -486,31 +538,27 @@ class RawToRinexConverter(ABC):
         import gzip
         import shutil
 
-        if self.output_format == OutputFormat.MODERN:
-            # .rnx.gz compression
-            if not rinex_file.suffix == '.gz':
-                compressed_path = rinex_file.with_suffix(rinex_file.suffix + '.gz')
-                with open(rinex_file, 'rb') as f_in:
-                    with gzip.open(compressed_path, 'wb') as f_out:
-                        shutil.copyfileobj(f_in, f_out)
-                rinex_file.unlink()
-                return compressed_path
+        # Step 1: Apply Hatanaka compression if enabled
+        if self.apply_hatanaka:
+            rinex_file = self._apply_hatanaka_compression(rinex_file)
 
-        elif self.output_format == OutputFormat.LEGACY:
-            # Legacy format: Hatanaka compression + gzip (.YYd.gz or .YYd.Z)
-            # 1. Run rnx2crx to create Hatanaka compressed file
-            # 2. Compress with gzip (named .Z for compatibility)
-            hatanaka_file = self._apply_hatanaka_compression(rinex_file)
-            if hatanaka_file != rinex_file:
-                # Compress the Hatanaka file
-                compressed_path = hatanaka_file.parent / (hatanaka_file.name + '.Z')
-                with open(hatanaka_file, 'rb') as f_in:
-                    with gzip.open(compressed_path, 'wb') as f_out:
-                        shutil.copyfileobj(f_in, f_out)
-                hatanaka_file.unlink()
-                return compressed_path
+        # Step 2: Apply file compression
+        if rinex_file.suffix == '.gz':
+            # Already compressed
+            return rinex_file
 
-        return rinex_file
+        # Determine compression extension
+        if self.compression_format == CompressionFormat.Z:
+            ext = '.Z'
+        else:
+            ext = '.gz'
+
+        compressed_path = rinex_file.parent / (rinex_file.name + ext)
+        with open(rinex_file, 'rb') as f_in:
+            with gzip.open(compressed_path, 'wb') as f_out:
+                shutil.copyfileobj(f_in, f_out)
+        rinex_file.unlink()
+        return compressed_path
 
     def _apply_hatanaka_compression(self, rinex_file: Path) -> Path:
         """Apply Hatanaka compression to RINEX observation file.
