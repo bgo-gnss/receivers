@@ -2132,6 +2132,13 @@ def cmd_rinex(args) -> int:
         else:
             end_time = start_time + timedelta(days=1)
 
+    # Handle same start/end date (inclusive range)
+    if start_time and end_time and start_time == end_time:
+        if "1hr" in args.session.lower():
+            end_time = start_time + timedelta(hours=1)
+        else:
+            end_time = start_time + timedelta(days=1)
+
     if not start_time:
         logger.error("No date range specified. Use -s/--start, -e/--end, or -d/--days")
         return 1

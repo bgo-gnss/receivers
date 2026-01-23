@@ -453,7 +453,7 @@ class RawToRinexConverter(ABC):
                 file_type="o",  # observation
             )
         else:
-            # RINEX 3 long format: ssss00CCC_R_YYYYDDD...
+            # RINEX 3 long format: SSSS00CCC_R_YYYYDDD...
             new_name = timefunc.rinex3_filename(
                 self.station_id,
                 observation_date,
@@ -462,6 +462,7 @@ class RawToRinexConverter(ABC):
                 file_period="01D",  # Will be updated based on session
                 data_frequency="15S",  # Will be updated based on session
                 file_type="MO",  # Mixed Observation
+                uppercase=True,  # Use uppercase station ID
             )
 
         # Rename file
