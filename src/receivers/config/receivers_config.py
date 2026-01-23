@@ -339,9 +339,10 @@ class ReceiversConfig:
         rinex_config = {
             "default_naming": "short",
             "default_version": 3,
+            "default_hatanaka": True,
+            "default_compression": "gz",
             "apply_header_corrections": True,
             "use_tos_for_historical": True,
-            "output_compression": "gz",
         }
 
         try:

@@ -2078,12 +2078,13 @@ def cmd_rinex(args) -> int:
     }
     rinex_version = version_map.get(args.rinex_version, RinexVersion.RINEX_3)
 
-    # Parse output format
-    output_format = (
-        OutputFormat.LEGACY
-        if args.output_format == "legacy"
-        else OutputFormat.MODERN
-    )
+    # Parse output format (None means use config defaults)
+    if args.output_format == "legacy":
+        output_format = OutputFormat.LEGACY
+    elif args.output_format == "modern":
+        output_format = OutputFormat.MODERN
+    else:
+        output_format = None  # Let converter use config defaults
 
     # Parse naming convention (from args or config)
     if args.naming is not None:
