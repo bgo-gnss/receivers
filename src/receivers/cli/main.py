@@ -1809,7 +1809,7 @@ def cmd_rec_config(args) -> int:
             continue
 
         # Get port (station override > cli arg > config default)
-        port = station_config.get('receiver', {}).get('control_port')
+        port = station_config.get('receiver', {}).get('controlport')
         if port:
             port = int(port)
         else:
