@@ -1,53 +1,4 @@
 {
-  "__inputs": [
-    {
-      "name": "DS_GPS_HEALTH",
-      "label": "gps_health",
-      "description": "PostgreSQL database with GPS health data",
-      "type": "datasource",
-      "pluginId": "grafana-postgresql-datasource",
-      "pluginName": "PostgreSQL"
-    }
-  ],
-  "__elements": {},
-  "__requires": [
-    {
-      "type": "grafana",
-      "id": "grafana",
-      "name": "Grafana",
-      "version": "10.0.0"
-    },
-    {
-      "type": "datasource",
-      "id": "postgres",
-      "name": "PostgreSQL",
-      "version": "1.0.0"
-    },
-    {
-      "type": "panel",
-      "id": "gauge",
-      "name": "Gauge",
-      "version": ""
-    },
-    {
-      "type": "panel",
-      "id": "stat",
-      "name": "Stat",
-      "version": ""
-    },
-    {
-      "type": "panel",
-      "id": "table",
-      "name": "Table",
-      "version": ""
-    },
-    {
-      "type": "panel",
-      "id": "timeseries",
-      "name": "Time series",
-      "version": ""
-    }
-  ],
   "annotations": {
     "list": [
       {
@@ -87,7 +38,7 @@
     {
       "datasource": {
         "type": "grafana-postgresql-datasource",
-        "uid": "${DS_GPS_HEALTH}"
+        "uid": "gps_health"
       },
       "fieldConfig": {
         "defaults": {
@@ -131,7 +82,7 @@
         {
           "datasource": {
             "type": "grafana-postgresql-datasource",
-            "uid": "${DS_GPS_HEALTH}"
+            "uid": "gps_health"
           },
           "editorMode": "code",
           "format": "table",
@@ -146,7 +97,7 @@
     {
       "datasource": {
         "type": "grafana-postgresql-datasource",
-        "uid": "${DS_GPS_HEALTH}"
+        "uid": "gps_health"
       },
       "fieldConfig": {
         "defaults": {
@@ -198,7 +149,7 @@
         {
           "datasource": {
             "type": "grafana-postgresql-datasource",
-            "uid": "${DS_GPS_HEALTH}"
+            "uid": "gps_health"
           },
           "editorMode": "code",
           "format": "table",
@@ -213,7 +164,7 @@
     {
       "datasource": {
         "type": "grafana-postgresql-datasource",
-        "uid": "${DS_GPS_HEALTH}"
+        "uid": "gps_health"
       },
       "fieldConfig": {
         "defaults": {
@@ -261,7 +212,7 @@
         {
           "datasource": {
             "type": "grafana-postgresql-datasource",
-            "uid": "${DS_GPS_HEALTH}"
+            "uid": "gps_health"
           },
           "editorMode": "code",
           "format": "table",
@@ -276,7 +227,7 @@
     {
       "datasource": {
         "type": "grafana-postgresql-datasource",
-        "uid": "${DS_GPS_HEALTH}"
+        "uid": "gps_health"
       },
       "fieldConfig": {
         "defaults": {
@@ -415,7 +366,7 @@
         {
           "datasource": {
             "type": "grafana-postgresql-datasource",
-            "uid": "${DS_GPS_HEALTH}"
+            "uid": "gps_health"
           },
           "editorMode": "code",
           "format": "table",
@@ -430,7 +381,7 @@
     {
       "datasource": {
         "type": "grafana-postgresql-datasource",
-        "uid": "${DS_GPS_HEALTH}"
+        "uid": "gps_health"
       },
       "fieldConfig": {
         "defaults": {
@@ -565,7 +516,7 @@
         {
           "datasource": {
             "type": "grafana-postgresql-datasource",
-            "uid": "${DS_GPS_HEALTH}"
+            "uid": "gps_health"
           },
           "editorMode": "code",
           "format": "table",
@@ -593,7 +544,7 @@
     {
       "datasource": {
         "type": "grafana-postgresql-datasource",
-        "uid": "${DS_GPS_HEALTH}"
+        "uid": "gps_health"
       },
       "fieldConfig": {
         "defaults": {
@@ -688,7 +639,7 @@
         {
           "datasource": {
             "type": "grafana-postgresql-datasource",
-            "uid": "${DS_GPS_HEALTH}"
+            "uid": "gps_health"
           },
           "editorMode": "code",
           "format": "time_series",
@@ -716,7 +667,7 @@
     {
       "datasource": {
         "type": "grafana-postgresql-datasource",
-        "uid": "${DS_GPS_HEALTH}"
+        "uid": "gps_health"
       },
       "fieldConfig": {
         "defaults": {
@@ -778,7 +729,7 @@
         {
           "datasource": {
             "type": "grafana-postgresql-datasource",
-            "uid": "${DS_GPS_HEALTH}"
+            "uid": "gps_health"
           },
           "editorMode": "code",
           "format": "table",
@@ -793,7 +744,7 @@
     {
       "datasource": {
         "type": "grafana-postgresql-datasource",
-        "uid": "${DS_GPS_HEALTH}"
+        "uid": "gps_health"
       },
       "fieldConfig": {
         "defaults": {
@@ -846,7 +797,7 @@
         {
           "datasource": {
             "type": "grafana-postgresql-datasource",
-            "uid": "${DS_GPS_HEALTH}"
+            "uid": "gps_health"
           },
           "editorMode": "code",
           "format": "table",
@@ -861,7 +812,7 @@
     {
       "datasource": {
         "type": "grafana-postgresql-datasource",
-        "uid": "${DS_GPS_HEALTH}"
+        "uid": "gps_health"
       },
       "fieldConfig": {
         "defaults": {
@@ -914,7 +865,7 @@
         {
           "datasource": {
             "type": "grafana-postgresql-datasource",
-            "uid": "${DS_GPS_HEALTH}"
+            "uid": "gps_health"
           },
           "editorMode": "code",
           "format": "table",
@@ -929,7 +880,7 @@
     {
       "datasource": {
         "type": "grafana-postgresql-datasource",
-        "uid": "${DS_GPS_HEALTH}"
+        "uid": "gps_health"
       },
       "fieldConfig": {
         "defaults": {
@@ -982,7 +933,7 @@
         {
           "datasource": {
             "type": "grafana-postgresql-datasource",
-            "uid": "${DS_GPS_HEALTH}"
+            "uid": "gps_health"
           },
           "editorMode": "code",
           "format": "table",
@@ -997,7 +948,7 @@
     {
       "datasource": {
         "type": "grafana-postgresql-datasource",
-        "uid": "${DS_GPS_HEALTH}"
+        "uid": "gps_health"
       },
       "fieldConfig": {
         "defaults": {
@@ -1049,7 +1000,7 @@
         {
           "datasource": {
             "type": "grafana-postgresql-datasource",
-            "uid": "${DS_GPS_HEALTH}"
+            "uid": "gps_health"
           },
           "editorMode": "code",
           "format": "table",
@@ -1064,7 +1015,7 @@
     {
       "datasource": {
         "type": "grafana-postgresql-datasource",
-        "uid": "${DS_GPS_HEALTH}"
+        "uid": "gps_health"
       },
       "fieldConfig": {
         "defaults": {
@@ -1129,7 +1080,7 @@
         {
           "datasource": {
             "type": "grafana-postgresql-datasource",
-            "uid": "${DS_GPS_HEALTH}"
+            "uid": "gps_health"
           },
           "editorMode": "code",
           "format": "table",
@@ -1144,7 +1095,7 @@
     {
       "datasource": {
         "type": "grafana-postgresql-datasource",
-        "uid": "${DS_GPS_HEALTH}"
+        "uid": "gps_health"
       },
       "fieldConfig": {
         "defaults": {
@@ -1215,7 +1166,7 @@
         {
           "datasource": {
             "type": "grafana-postgresql-datasource",
-            "uid": "${DS_GPS_HEALTH}"
+            "uid": "gps_health"
           },
           "editorMode": "code",
           "format": "table",
@@ -1230,7 +1181,7 @@
     {
       "datasource": {
         "type": "grafana-postgresql-datasource",
-        "uid": "${DS_GPS_HEALTH}"
+        "uid": "gps_health"
       },
       "fieldConfig": {
         "defaults": {
@@ -1276,7 +1227,7 @@
         {
           "datasource": {
             "type": "grafana-postgresql-datasource",
-            "uid": "${DS_GPS_HEALTH}"
+            "uid": "gps_health"
           },
           "editorMode": "code",
           "format": "table",
@@ -1291,7 +1242,7 @@
     {
       "datasource": {
         "type": "grafana-postgresql-datasource",
-        "uid": "${DS_GPS_HEALTH}"
+        "uid": "gps_health"
       },
       "fieldConfig": {
         "defaults": {
@@ -1337,7 +1288,7 @@
         {
           "datasource": {
             "type": "grafana-postgresql-datasource",
-            "uid": "${DS_GPS_HEALTH}"
+            "uid": "gps_health"
           },
           "editorMode": "code",
           "format": "table",
@@ -1352,7 +1303,7 @@
     {
       "datasource": {
         "type": "grafana-postgresql-datasource",
-        "uid": "${DS_GPS_HEALTH}"
+        "uid": "gps_health"
       },
       "fieldConfig": {
         "defaults": {
@@ -1398,7 +1349,7 @@
         {
           "datasource": {
             "type": "grafana-postgresql-datasource",
-            "uid": "${DS_GPS_HEALTH}"
+            "uid": "gps_health"
           },
           "editorMode": "code",
           "format": "table",
@@ -1413,7 +1364,7 @@
     {
       "datasource": {
         "type": "grafana-postgresql-datasource",
-        "uid": "${DS_GPS_HEALTH}"
+        "uid": "gps_health"
       },
       "fieldConfig": {
         "defaults": {
@@ -1508,7 +1459,7 @@
         {
           "datasource": {
             "type": "grafana-postgresql-datasource",
-            "uid": "${DS_GPS_HEALTH}"
+            "uid": "gps_health"
           },
           "editorMode": "code",
           "format": "time_series",
@@ -1523,7 +1474,7 @@
     {
       "datasource": {
         "type": "grafana-postgresql-datasource",
-        "uid": "${DS_GPS_HEALTH}"
+        "uid": "gps_health"
       },
       "fieldConfig": {
         "defaults": {
@@ -1631,7 +1582,7 @@
         {
           "datasource": {
             "type": "grafana-postgresql-datasource",
-            "uid": "${DS_GPS_HEALTH}"
+            "uid": "gps_health"
           },
           "editorMode": "code",
           "format": "table",
@@ -1654,7 +1605,7 @@
         "current": {},
         "datasource": {
           "type": "grafana-postgresql-datasource",
-          "uid": "${DS_GPS_HEALTH}"
+          "uid": "gps_health"
         },
         "definition": "SELECT DISTINCT sid FROM checkcomm ORDER BY sid",
         "hide": 0,
