@@ -199,6 +199,14 @@ class HealthDatabaseWriter:
             if "satellites" in metrics:
                 self._write_satellite_tracking(station_id, timestamp, metrics["satellites"])
 
+            # Write to block_health_summary (composite status + port checks)
+            overall_status = health_data.get("overall_status")
+            ports = metrics.get("ports")
+            if overall_status or ports:
+                self._write_health_summary(
+                    station_id, timestamp, overall_status, ports
+                )
+
             self._conn.commit()
             self.logger.debug(f"Wrote health data for {station_id} at {timestamp}")
             return True
@@ -365,6 +373,45 @@ class HealthDatabaseWriter:
                 ))
         except Exception as e:
             self.logger.debug(f"block_satellite_tracking write failed: {e}")
+
+    def _write_health_summary(
+        self,
+        sid: str,
+        ts: datetime,
+        overall_status: Optional[str],
+        ports: Optional[Dict[str, Any]],
+    ) -> None:
+        """Write to block_health_summary table.
+
+        Persists the composite overall_status (computed from all metrics by the
+        health parser) and port check results (FTP, HTTP, control).
+        """
+        ftp = ports.get("ftp", {}) if ports else {}
+        http = ports.get("http", {}) if ports else {}
+        control = ports.get("control", {}) if ports else {}
+
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO block_health_summary
+                        (sid, ts, overall_status, ftp_open, http_open, control_open,
+                         ftp_port, http_port, control_port)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (sid, ts) DO UPDATE SET
+                        overall_status = EXCLUDED.overall_status,
+                        ftp_open = EXCLUDED.ftp_open,
+                        http_open = EXCLUDED.http_open,
+                        control_open = EXCLUDED.control_open,
+                        ftp_port = EXCLUDED.ftp_port,
+                        http_port = EXCLUDED.http_port,
+                        control_port = EXCLUDED.control_port
+                """, (
+                    sid, ts, overall_status,
+                    ftp.get("open"), http.get("open"), control.get("open"),
+                    ftp.get("port"), http.get("port"), control.get("port"),
+                ))
+        except Exception as e:
+            self.logger.debug(f"block_health_summary write failed: {e}")
 
     def write_timeseries_sample(
         self,

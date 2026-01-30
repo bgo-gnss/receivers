@@ -1090,7 +1090,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT CASE overall_status\n  WHEN 'healthy' THEN 0\n  WHEN 'warning' THEN 1\n  WHEN 'critical' THEN 2\n  ELSE 3\nEND AS \"Status\"\nFROM checkcomm\nWHERE sid = '$station'\nORDER BY timestamp DESC LIMIT 1",
+          "rawSql": "SELECT CASE overall_status\n  WHEN 'healthy' THEN 0\n  WHEN 'warning' THEN 1\n  WHEN 'critical' THEN 2\n  ELSE 3\nEND AS \"Status\"\nFROM block_health_summary\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
           "refId": "A"
         }
       ],
@@ -1229,18 +1229,6 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Height (m)"
-            },
-            "properties": [
-              {
-                "id": "decimals",
-                "value": 3
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
               "options": "Fix"
             },
             "properties": [
@@ -1277,7 +1265,7 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 9,
+        "w": 6,
         "x": 6,
         "y": 25
       },
@@ -1302,12 +1290,97 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT latitude AS \"Lat\", longitude AS \"Lon\", height AS \"Height (m)\", fix_type AS \"Fix\"\nFROM block_pvt_geodetic\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
+          "rawSql": "SELECT latitude AS \"Lat\", longitude AS \"Lon\", fix_type AS \"Fix\"\nFROM block_pvt_geodetic\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
           "refId": "A"
         }
       ],
       "title": "Station Location",
       "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "options": {
+                "3": {
+                  "color": "green",
+                  "index": 0,
+                  "text": "3/3 Open"
+                },
+                "2": {
+                  "color": "yellow",
+                  "index": 1,
+                  "text": "2/3 Open"
+                },
+                "1": {
+                  "color": "orange",
+                  "index": 2,
+                  "text": "1/3 Open"
+                },
+                "0": {
+                  "color": "red",
+                  "index": 3,
+                  "text": "0/3 Open"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 12,
+        "y": 25
+      },
+      "id": 27,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT (CASE WHEN ftp_open THEN 1 ELSE 0 END +\n        CASE WHEN http_open THEN 1 ELSE 0 END +\n        CASE WHEN control_open THEN 1 ELSE 0 END) AS \"Ports\"\nFROM block_health_summary\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
+          "refId": "A"
+        }
+      ],
+      "title": "Port Status",
+      "type": "stat"
     },
     {
       "datasource": {
