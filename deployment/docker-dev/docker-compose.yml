@@ -65,7 +65,35 @@ services:
     # Command - start scheduler with verbose output
     command: ["scheduler", "start", "--verbose", "--show-jobs"]
 
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: gps-grafana-dev
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_DATASOURCE_HOST=host.docker.internal
+      - GF_DATASOURCE_PORT=5432
+      - GF_DATASOURCE_DB=gps_health
+      - GF_DATASOURCE_USER=grafana_reader
+      - GF_DATASOURCE_PASSWORD=
+    volumes:
+      - ../../docs/grafana/provisioning/dashboards/dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml:ro
+      - ../../docs/grafana/gps_health_dashboard.json:/etc/grafana/provisioning/dashboards/json/gps_health_dashboard.json:ro
+      - ../../docs/grafana/provisioning/datasources/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - grafana-data:/var/lib/grafana
+
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
+  grafana-data:
+
   # Cache volume - separate from host for Docker isolation
   gps-cache:
     driver: local
