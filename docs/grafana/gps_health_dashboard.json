@@ -1025,20 +1025,25 @@
           "mappings": [
             {
               "options": {
-                "critical": {
-                  "color": "red",
-                  "index": 2,
-                  "text": "CRITICAL"
-                },
-                "healthy": {
+                "0": {
                   "color": "green",
                   "index": 0,
                   "text": "HEALTHY"
                 },
-                "warning": {
+                "1": {
                   "color": "yellow",
                   "index": 1,
                   "text": "WARNING"
+                },
+                "2": {
+                  "color": "red",
+                  "index": 2,
+                  "text": "CRITICAL"
+                },
+                "3": {
+                  "color": "blue",
+                  "index": 3,
+                  "text": "UNKNOWN"
                 }
               },
               "type": "value"
@@ -1085,7 +1090,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT overall_status AS \"Status\"\nFROM checkcomm\nWHERE sid = '$station'\nORDER BY timestamp DESC LIMIT 1",
+          "rawSql": "SELECT CASE overall_status\n  WHEN 'healthy' THEN 0\n  WHEN 'warning' THEN 1\n  WHEN 'critical' THEN 2\n  ELSE 3\nEND AS \"Status\"\nFROM checkcomm\nWHERE sid = '$station'\nORDER BY timestamp DESC LIMIT 1",
           "refId": "A"
         }
       ],
@@ -1317,15 +1322,20 @@
           "mappings": [
             {
               "options": {
-                "downloaded": {
+                "0": {
                   "color": "green",
                   "index": 0,
                   "text": "OK"
                 },
-                "missing": {
+                "1": {
                   "color": "red",
                   "index": 1,
                   "text": "MISSING"
+                },
+                "2": {
+                  "color": "blue",
+                  "index": 2,
+                  "text": "UNKNOWN"
                 }
               },
               "type": "value"
@@ -1372,7 +1382,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT status AS \"Files\"\nFROM file_tracking\nWHERE sid = '$station'\n  AND file_date = current_date\nORDER BY last_checked DESC LIMIT 1",
+          "rawSql": "SELECT CASE status\n  WHEN 'downloaded' THEN 0\n  WHEN 'missing' THEN 1\n  ELSE 2\nEND AS \"Files\"\nFROM file_tracking\nWHERE sid = '$station'\n  AND file_date = current_date\nORDER BY last_checked DESC LIMIT 1",
           "refId": "A"
         }
       ],
@@ -1392,12 +1402,12 @@
           "mappings": [
             {
               "options": {
-                "Active": {
+                "1": {
                   "color": "green",
                   "index": 0,
                   "text": "Active"
                 },
-                "Unknown": {
+                "0": {
                   "color": "orange",
                   "index": 1,
                   "text": "Unknown"
@@ -1447,7 +1457,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT CASE WHEN rx_status IS NOT NULL THEN 'Active' ELSE 'Unknown' END AS \"Logging\"\nFROM block_receiver_status\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
+          "rawSql": "SELECT CASE WHEN rx_status IS NOT NULL THEN 1 ELSE 0 END AS \"Logging\"\nFROM block_receiver_status\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
           "refId": "A"
         }
       ],
@@ -1467,15 +1477,25 @@
           "mappings": [
             {
               "options": {
-                "connected": {
+                "0": {
                   "color": "green",
                   "index": 0,
                   "text": "Connected"
                 },
-                "disconnected": {
-                  "color": "red",
+                "1": {
+                  "color": "yellow",
                   "index": 1,
-                  "text": "Disconnected"
+                  "text": "Connecting"
+                },
+                "2": {
+                  "color": "orange",
+                  "index": 2,
+                  "text": "Idle"
+                },
+                "3": {
+                  "color": "red",
+                  "index": 3,
+                  "text": "Error"
                 }
               },
               "type": "value"
@@ -1522,11 +1542,11 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT status AS \"RTK\"\nFROM block_ntrip_server\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
+          "rawSql": "SELECT CASE status\n  WHEN 'connected' THEN 0\n  WHEN 'connecting' THEN 1\n  WHEN 'idle' THEN 2\n  WHEN 'error' THEN 3\n  ELSE 2\nEND AS \"RTK\"\nFROM (\n  SELECT status, ts FROM block_ntrip_client WHERE sid = '$station'\n  UNION ALL\n  SELECT status, ts FROM block_ntrip_server WHERE sid = '$station'\n) ntrip\nORDER BY ts DESC LIMIT 1",
           "refId": "A"
         }
       ],
-      "title": "RTK Status",
+      "title": "NTRIP Status",
       "type": "stat"
     },
     {
