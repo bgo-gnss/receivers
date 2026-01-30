@@ -186,8 +186,14 @@ class HealthDatabaseWriter:
                 self._write_pvt_geodetic(station_id, timestamp, data_quality, metrics)
 
             # Write to block_ntrip_server
-            if "ntrip" in metrics:
+            if "ntrip_server" in metrics:
+                self._write_ntrip_status(station_id, timestamp, metrics["ntrip_server"])
+            elif "ntrip" in metrics:
                 self._write_ntrip_status(station_id, timestamp, metrics["ntrip"])
+
+            # Write to block_ntrip_client
+            if "ntrip_client" in metrics:
+                self._write_ntrip_client(station_id, timestamp, metrics["ntrip_client"])
 
             # Write to block_satellite_tracking (constellation breakdown)
             if "satellites" in metrics:
@@ -222,22 +228,25 @@ class HealthDatabaseWriter:
         cpu_load = None
         temperature = None
         uptime = None
+        rx_status = None
 
         if "cpu_load" in metrics:
             cpu_load = metrics["cpu_load"].get("percent")
         if "temperature" in metrics:
             temperature = metrics["temperature"].get("value")
         uptime = metrics.get("uptime_seconds")
+        rx_status = metrics.get("rx_status")
 
         with self._conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO block_receiver_status (sid, ts, cpu_load, temperature, uptime_seconds)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO block_receiver_status (sid, ts, cpu_load, temperature, uptime_seconds, rx_status)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 ON CONFLICT (sid, ts) DO UPDATE SET
                     cpu_load = EXCLUDED.cpu_load,
                     temperature = EXCLUDED.temperature,
-                    uptime_seconds = EXCLUDED.uptime_seconds
-            """, (sid, ts, cpu_load, temperature, uptime))
+                    uptime_seconds = EXCLUDED.uptime_seconds,
+                    rx_status = EXCLUDED.rx_status
+            """, (sid, ts, cpu_load, temperature, uptime, rx_status))
 
     def _write_disk_status(self, sid: str, ts: datetime, disk: Dict[str, Any]) -> None:
         """Write to block_disk_status table."""
@@ -298,6 +307,21 @@ class HealthDatabaseWriter:
         with self._conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO block_ntrip_server (sid, ts, cd_index, status, error_code)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (sid, ts, cd_index) DO UPDATE SET
+                    status = EXCLUDED.status,
+                    error_code = EXCLUDED.error_code
+            """, (sid, ts, cd_index, status, error_code))
+
+    def _write_ntrip_client(self, sid: str, ts: datetime, ntrip: Dict[str, Any]) -> None:
+        """Write to block_ntrip_client table."""
+        cd_index = ntrip.get("cd_index", "NTR1")
+        status = ntrip.get("status")
+        error_code = ntrip.get("error_code")
+
+        with self._conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO block_ntrip_client (sid, ts, cd_index, status, error_code)
                 VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (sid, ts, cd_index) DO UPDATE SET
                     status = EXCLUDED.status,

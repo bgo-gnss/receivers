@@ -162,10 +162,20 @@ class BaseReceiver(ABC):
         # Calculate overall status from connection and metrics
         statuses = []
 
+        def _safe_health_status(value: str) -> HealthStatus:
+            """Convert status string to HealthStatus, defaulting to UNKNOWN."""
+            try:
+                return HealthStatus(value)
+            except ValueError:
+                return HealthStatus.UNKNOWN
+
         # Check connection statuses
         for level_data in connection_data.values():
             status_str = level_data.get("status", "unknown")
-            statuses.append(HealthStatus(status_str))
+            statuses.append(_safe_health_status(status_str))
+
+        # Metrics that carry NTRIP/network connection state, not health status
+        non_health_metrics = {"ntrip_client", "ntrip_server", "ntrip"}
 
         # Check metrics statuses if provided
         if metrics:
@@ -182,6 +192,8 @@ class BaseReceiver(ABC):
                 critical_ports = {'ftp', 'http', 'control'}
 
             for metric_name, metric_data in metrics.items():
+                if metric_name in non_health_metrics:
+                    continue
                 if isinstance(metric_data, dict):
                     # Handle nested 'ports' structure with receiver-aware criticality
                     if metric_name == "ports":
@@ -192,9 +204,9 @@ class BaseReceiver(ABC):
                                 if port_status == "error" and port_name not in critical_ports:
                                     statuses.append(HealthStatus.WARNING)
                                 else:
-                                    statuses.append(HealthStatus(port_status))
+                                    statuses.append(_safe_health_status(port_status))
                     elif "status" in metric_data:
-                        statuses.append(HealthStatus(metric_data["status"]))
+                        statuses.append(_safe_health_status(metric_data["status"]))
 
         # Determine overall status (worst status wins)
         if HealthStatus.CRITICAL in statuses:

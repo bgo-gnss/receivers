@@ -117,6 +117,8 @@ class PolaRX5TCPExtractor:
                     health_data["metrics"]["temperature"] = receiver_data["temperature"]
                 if "uptime_seconds" in receiver_data:
                     health_data["metrics"]["uptime_seconds"] = receiver_data["uptime_seconds"]
+                if "rx_status" in receiver_data:
+                    health_data["metrics"]["rx_status"] = receiver_data["rx_status"]
 
             # Query DiskStatus for disk usage
             disk_data = self._query_disk_status()
@@ -132,6 +134,16 @@ class PolaRX5TCPExtractor:
             satellite_data = self._query_satellite_tracking()
             if satellite_data:
                 health_data["metrics"]["satellites"] = satellite_data
+
+            # Query NTRIPClientStatus for RTK corrections
+            ntrip_client = self._query_ntrip_client_status()
+            if ntrip_client:
+                health_data["metrics"]["ntrip_client"] = ntrip_client
+
+            # Query NTRIPServerStatus for NTRIP caster
+            ntrip_server = self._query_ntrip_server_status()
+            if ntrip_server:
+                health_data["metrics"]["ntrip_server"] = ntrip_server
 
         except Exception as e:
             self.logger.error(f"Error extracting health data: {e}")
@@ -219,6 +231,10 @@ class PolaRX5TCPExtractor:
                 uptime = struct.unpack('<I', sbf_data[16:20])[0]
                 result["uptime_seconds"] = uptime
 
+                # RxStatus at offset 20-23 (uint32 bitfield)
+                rx_status = struct.unpack('<I', sbf_data[20:24])[0]
+                result["rx_status"] = rx_status
+
                 # Temperature at offset 31 (int8, formula: temp = raw - 100)
                 # Verified against RxControl display
                 temp_raw = sbf_data[31]
@@ -233,6 +249,102 @@ class PolaRX5TCPExtractor:
 
         except Exception as e:
             self.logger.error(f"Error parsing ReceiverStatus: {e}")
+
+        return None
+
+    def _query_ntrip_client_status(self) -> Optional[Dict[str, Any]]:
+        """Query NTRIPClientStatus SBF block for NTRIP client connection info.
+
+        NTRIPClientStatus (SBF 4053) reports RTK correction stream status.
+
+        Returns:
+            Dictionary with NTRIP client status or None on failure
+        """
+        sbf_data = self._send_sbf_request(
+            "NTRIPClientStatus", self.BLOCK_NTRIP_CLIENT_STATUS
+        )
+        if not sbf_data:
+            return None
+
+        try:
+            _, length = self._parse_sbf_header(sbf_data)
+
+            # NTRIPClientStatus structure:
+            # Bytes 0-7: SBF header (sync, CRC, ID+Rev, Length)
+            # Bytes 8-11: TOW (Time of Week)
+            # Bytes 12-13: WNc (Week Number)
+            # Byte 14: CDIndex (uint8) - connection descriptor index
+            # Byte 15: Status (uint8) - 0=Idle, 1=Connected, 2=Error
+            # Byte 16: ErrorCode (uint8)
+            if length >= 17 and len(sbf_data) >= 17:
+                cd_index = sbf_data[14]
+                status_byte = sbf_data[15]
+                error_code = sbf_data[16]
+                # Septentrio NTRIPClientStatus status values:
+                # 0=Idle, 1=Connecting, 2=Connected, 3=Error, 4=Sending
+                status_map = {
+                    0: "idle",
+                    1: "connecting",
+                    2: "connected",
+                    3: "error",
+                    4: "connected",  # Sending/receiving data = active connection
+                }
+                return {
+                    "cd_index": f"NTR{cd_index + 1}",
+                    "status": status_map.get(status_byte, f"unknown_{status_byte}"),
+                    "error_code": error_code if status_byte == 3 else None,
+                }
+
+        except Exception as e:
+            self.logger.error(f"Error parsing NTRIPClientStatus: {e}")
+
+        return None
+
+    def _query_ntrip_server_status(self) -> Optional[Dict[str, Any]]:
+        """Query NTRIPServerStatus SBF block for NTRIP server connection info.
+
+        NTRIPServerStatus (SBF 4122) reports NTRIP caster connection status.
+
+        Returns:
+            Dictionary with NTRIP server status or None on failure
+        """
+        sbf_data = self._send_sbf_request(
+            "NTRIPServerStatus", self.BLOCK_NTRIP_SERVER_STATUS
+        )
+        if not sbf_data:
+            return None
+
+        try:
+            _, length = self._parse_sbf_header(sbf_data)
+
+            # NTRIPServerStatus structure:
+            # Bytes 0-7: SBF header (sync, CRC, ID+Rev, Length)
+            # Bytes 8-11: TOW (Time of Week)
+            # Bytes 12-13: WNc (Week Number)
+            # Byte 14: CDIndex (uint8) - connection descriptor index
+            # Byte 15: Status (uint8) - 0=Idle, 1=Connected, 2=Error
+            # Byte 16: ErrorCode (uint8)
+            if length >= 17 and len(sbf_data) >= 17:
+                cd_index = sbf_data[14]
+                status_byte = sbf_data[15]
+                error_code = sbf_data[16]
+                # Septentrio NTRIPServerStatus status values:
+                # 0=Idle, 1=Connecting, 2=Connected, 3=Error, 4=Sending
+                status_map = {
+                    0: "idle",
+                    1: "connecting",
+                    2: "connected",
+                    3: "error",
+                    4: "connected",  # Sending/receiving data = active connection
+                }
+                return {
+                    "cd_index": f"NTR{cd_index + 1}",
+                    "status": status_map.get(status_byte, f"unknown_{status_byte}"),
+                    "error_code": error_code if status_byte == 3 else None,
+                }
+
+        except Exception as e:
+            self.logger.error(f"Error parsing NTRIPServerStatus: {e}")
 
         return None
 
