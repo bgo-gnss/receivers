@@ -775,8 +775,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 3,
-        "x": 6,
+        "w": 2,
+        "x": 18,
         "y": 21
       },
       "id": 13,
@@ -843,8 +843,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 3,
-        "x": 9,
+        "w": 2,
+        "x": 20,
         "y": 21
       },
       "id": 14,
@@ -911,8 +911,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 3,
-        "x": 12,
+        "w": 2,
+        "x": 22,
         "y": 21
       },
       "id": 15,
@@ -979,7 +979,7 @@
       "gridPos": {
         "h": 4,
         "w": 3,
-        "x": 15,
+        "x": 12,
         "y": 21
       },
       "id": 16,
@@ -1064,7 +1064,7 @@
       "gridPos": {
         "h": 4,
         "w": 3,
-        "x": 18,
+        "x": 9,
         "y": 21
       },
       "id": 17,
@@ -1132,7 +1132,7 @@
       "gridPos": {
         "h": 4,
         "w": 3,
-        "x": 21,
+        "x": 15,
         "y": 21
       },
       "id": 23,
@@ -1290,7 +1290,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT latitude AS \"Lat\", longitude AS \"Lon\", fix_type AS \"Fix\"\nFROM block_pvt_geodetic\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
+          "rawSql": "SELECT round(latitude::numeric, 4) AS \"Lat\", round(longitude::numeric, 4) AS \"Lon\", fix_type AS \"Fix\"\nFROM block_pvt_geodetic\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
           "refId": "A"
         }
       ],
@@ -1307,39 +1307,85 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [
-            {
-              "options": {
-                "3": {
-                  "color": "green",
-                  "index": 0,
-                  "text": "3/3 Open"
-                },
-                "2": {
-                  "color": "yellow",
-                  "index": 1,
-                  "text": "2/3 Open"
-                },
-                "1": {
-                  "color": "orange",
-                  "index": 2,
-                  "text": "1/3 Open"
-                },
-                "0": {
-                  "color": "red",
-                  "index": 3,
-                  "text": "0/3 Open"
-                }
-              },
-              "type": "value"
-            }
-          ],
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
                 "color": "green",
                 "value": null
+              },
+              {
+                "color": "#E0B400",
+                "value": 7200
+              },
+              {
+                "color": "red",
+                "value": 86400
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 6,
+        "y": 21
+      },
+      "id": 28,
+      "options": {
+        "colorMode": "background_solid",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [],
+          "fields": "",
+          "values": true
+        },
+        "textMode": "value"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT extract(epoch from now() - ts)::integer AS \"Age\"\nFROM block_health_summary\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
+          "refId": "A"
+        }
+      ],
+      "title": "Last Observation",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
               }
             ]
           }
@@ -1357,13 +1403,13 @@
         "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "auto",
-        "orientation": "auto",
+        "orientation": "vertical",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [],
           "fields": "",
-          "values": false
+          "values": true
         },
-        "textMode": "auto"
+        "textMode": "value_and_name"
       },
       "pluginVersion": "10.0.0",
       "targets": [
@@ -1375,11 +1421,11 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT (CASE WHEN ftp_open THEN 1 ELSE 0 END +\n        CASE WHEN http_open THEN 1 ELSE 0 END +\n        CASE WHEN control_open THEN 1 ELSE 0 END) AS \"Ports\"\nFROM block_health_summary\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
+          "rawSql": "SELECT CASE WHEN ftp_open THEN ftp_port ELSE 0 END AS \"FTP\",\n  CASE WHEN http_open THEN http_port ELSE 0 END AS \"HTTP\",\n  CASE WHEN control_open THEN control_port ELSE 0 END AS \"Ctrl\"\nFROM block_health_summary\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
           "refId": "A"
         }
       ],
-      "title": "Port Status",
+      "title": "Ports",
       "type": "stat"
     },
     {
