@@ -735,7 +735,7 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
         # Position (sent to Icinga as "Station position")
         pos = metrics.get("position", {})
         if pos:
-            fix_mode = pos.get("fix_mode")
+            fix_mode = pos.get("fix_mode") or pos.get("fix_type")
             if fix_mode:
                 status = pos.get("status", "ok")
                 emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
@@ -751,6 +751,25 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
                     if height is not None:
                         pos_str += f", {height:.1f}m"
                 print(f"  Position: {emoji} {pos_str}")
+
+            # DOP values (Trimble provides PDOP/HDOP/VDOP/TDOP)
+            pdop = pos.get("pdop")
+            if pdop is not None:
+                hdop = pos.get("hdop")
+                vdop = pos.get("vdop")
+                dop_parts = [f"PDOP:{pdop:.1f}"]
+                if hdop is not None:
+                    dop_parts.append(f"HDOP:{hdop:.1f}")
+                if vdop is not None:
+                    dop_parts.append(f"VDOP:{vdop:.1f}")
+                print(f"  DOP: {' '.join(dop_parts)}")
+
+        # Uptime
+        uptime = metrics.get("uptime", {})
+        if uptime and uptime.get("available") is not False:
+            formatted = uptime.get("formatted")
+            if formatted:
+                print(f"  Uptime: {formatted}")
 
     # Logging status (sent to Icinga as "Logging status")
     data_quality = health.get("data_quality", {})
@@ -1473,6 +1492,39 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
                             print(f"  position: {lat:.6f}, {lon:.6f} ({fix}) [{status}]")
                     else:
                         print(f"  position: N/A [{status}]")
+
+                    # DOP values (Trimble provides PDOP/HDOP/VDOP/TDOP)
+                    pdop = pos.get("pdop")
+                    if pdop is not None:
+                        dop_parts = [f"PDOP={pdop:.1f}"]
+                        for k in ["hdop", "vdop", "tdop"]:
+                            v = pos.get(k)
+                            if v is not None:
+                                dop_parts.append(f"{k.upper()}={v:.1f}")
+                        print(f"  dop: {', '.join(dop_parts)}")
+
+                # Uptime
+                uptime = metrics.get("uptime", {})
+                if uptime and uptime.get("available") is not False:
+                    formatted = uptime.get("formatted")
+                    seconds = uptime.get("seconds")
+                    if formatted:
+                        print(f"  uptime: {formatted}")
+                    elif seconds is not None:
+                        days = seconds // 86400
+                        hours = (seconds % 86400) // 3600
+                        print(f"  uptime: {days}d {hours}h")
+
+                # System info (serial number, antenna)
+                system = metrics.get("system", {})
+                if system:
+                    parts = []
+                    if system.get("serial_number"):
+                        parts.append(f"SN:{system['serial_number']}")
+                    if system.get("antenna_type"):
+                        parts.append(f"Ant:{system['antenna_type']}")
+                    if parts:
+                        print(f"  system: {', '.join(parts)}")
 
                 # Satellites
                 if "satellites" in metrics:

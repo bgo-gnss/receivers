@@ -187,7 +187,16 @@ class TrimbleHTTPExtractor:
         health_data["metrics"]["cpu_load"] = {"available": False}
         health_data["metrics"]["memory"] = {"available": False}
         health_data["metrics"]["disk"] = {"available": False}
-        health_data["metrics"]["uptime"] = {"available": False}
+
+        # Uptime: attempt for NetRS (has activity page), unavailable for others
+        if self.receiver_type == "NetRS":
+            uptime_data = self._fetch_uptime_from_activity_page()
+            if uptime_data:
+                health_data["metrics"]["uptime"] = uptime_data
+            else:
+                health_data["metrics"]["uptime"] = {"available": False}
+        else:
+            health_data["metrics"]["uptime"] = {"available": False}
 
         # Network features not available on Trimble
         health_data["network"]["ntrip_client"] = {"available": False}
