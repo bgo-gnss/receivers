@@ -287,6 +287,9 @@ class HealthDatabaseWriter:
         # Prefer position metrics, fall back to data_quality
         # Handle both PolaRX5 (fix_mode) and Trimble (fix_type) field names
         fix_type = position.get("fix_mode") or position.get("fix_type") or data_quality.get("fix_type")
+        # Truncate to fit VARCHAR column (apply migration 005 to widen to 50)
+        if fix_type and len(fix_type) > 50:
+            fix_type = fix_type[:50]
         nr_sv = position.get("satellites_used") or data_quality.get("satellites_used") or data_quality.get("nr_sv")
         h_accuracy = position.get("h_accuracy_m") or data_quality.get("h_accuracy")
         v_accuracy = position.get("v_accuracy_m") or data_quality.get("v_accuracy")
