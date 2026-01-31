@@ -76,7 +76,11 @@ def _validate_station_for_download(
 
     try:
         ip = station_config["router"]["ip"]
-        port = station_config["receiver"]["ftpport"]
+        # Accept either FTP or HTTP port — Trimble NetR9/NetR5 use HTTP downloads
+        port = (
+            station_config["receiver"].get("ftpport")
+            or station_config["receiver"].get("httpport")
+        )
         if not ip or not port:
             logger.warning(
                 f"⚠️  Station {station_id} missing IP ({ip}) or port ({port}) - SKIPPING"
