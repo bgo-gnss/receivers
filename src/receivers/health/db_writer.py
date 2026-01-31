@@ -242,7 +242,12 @@ class HealthDatabaseWriter:
             cpu_load = metrics["cpu_load"].get("percent")
         if "temperature" in metrics:
             temperature = metrics["temperature"].get("value")
+        # Support both PolaRX5 flat format and Trimble nested format
         uptime = metrics.get("uptime_seconds")
+        if uptime is None:
+            uptime_data = metrics.get("uptime", {})
+            if isinstance(uptime_data, dict) and uptime_data.get("seconds"):
+                uptime = uptime_data["seconds"]
         rx_status = metrics.get("rx_status")
 
         with self._conn.cursor() as cur:
@@ -280,7 +285,8 @@ class HealthDatabaseWriter:
         position = metrics.get("position", {})
 
         # Prefer position metrics, fall back to data_quality
-        fix_type = position.get("fix_mode") or data_quality.get("fix_type")
+        # Handle both PolaRX5 (fix_mode) and Trimble (fix_type) field names
+        fix_type = position.get("fix_mode") or position.get("fix_type") or data_quality.get("fix_type")
         nr_sv = position.get("satellites_used") or data_quality.get("satellites_used") or data_quality.get("nr_sv")
         h_accuracy = position.get("h_accuracy_m") or data_quality.get("h_accuracy")
         v_accuracy = position.get("v_accuracy_m") or data_quality.get("v_accuracy")
@@ -372,7 +378,7 @@ class HealthDatabaseWriter:
                     by_const.get("IRNSS")
                 ))
         except Exception as e:
-            self.logger.debug(f"block_satellite_tracking write failed: {e}")
+            self.logger.warning(f"block_satellite_tracking write failed: {e}")
 
     def _write_health_summary(
         self,

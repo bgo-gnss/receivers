@@ -602,6 +602,7 @@ class TrimbleHTTPExtractor:
         """
         response = self._fetch_endpoint("tracking")
         if not response:
+            self.logger.warning("TrackingStatus endpoint returned no data")
             return None
 
         try:
@@ -610,6 +611,10 @@ class TrimbleHTTPExtractor:
             matches = re.findall(sat_pattern, response)
 
             if not matches:
+                self.logger.warning(
+                    f"TrackingStatus response did not match expected format "
+                    f"(first 200 chars): {response[:200]}"
+                )
                 return None
 
             # Count satellites by system (only those with positive elevation = tracking)
