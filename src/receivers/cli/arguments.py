@@ -351,6 +351,32 @@ Multiple stations:
         help='Save health data to PostgreSQL database'
     )
 
+    # Live-mode options (no date flags)
+    live_group = parser.add_argument_group('live-mode options')
+    live_group.add_argument(
+        '--compact',
+        action='store_true',
+        help='Compact status display (same format as "status" command)'
+    )
+
+    live_group.add_argument(
+        '--icinga',
+        action='store_true',
+        help='Send check results to Icinga monitoring system'
+    )
+
+    live_group.add_argument(
+        '--no-files',
+        action='store_true',
+        help='Skip file system checks in live mode'
+    )
+
+    live_group.add_argument(
+        '--no-ntrip',
+        action='store_true',
+        help='Skip NTRIP/RTK checks in live mode'
+    )
+
     # Extraction behavior
     behavior_group = parser.add_argument_group('behavior options')
     add_force_flag(behavior_group)

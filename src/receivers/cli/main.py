@@ -24,7 +24,7 @@ from gtimes.timefunc import currDatetime
 from ..base.exceptions import ConfigurationError, ConnectionError
 from ..base.type_validator import ReceiverTypeValidator
 from ..base.receiver_factory import get_receiver_factory, create_receiver
-from ..utils.time_utils import calculate_download_time_range
+from ..utils.time_utils import calculate_download_time_range, generate_period_ranges
 
 # Import gps_parser for centralized config
 try:
@@ -61,6 +61,126 @@ def parse_datetime(date_str: str) -> datetime:
 
 
 # get_station_config function moved to config_utils.py to avoid circular imports
+
+
+def _validate_station_for_download(
+    station_id: str, logger: logging.Logger
+) -> Optional[Any]:
+    """Validate station config and return (receiver, station_config) or None on failure."""
+    station_config = get_station_config(station_id)
+    if station_config is None:
+        logger.warning(
+            f"⚠️  Station {station_id} not found in configuration - SKIPPING"
+        )
+        return None
+
+    try:
+        ip = station_config["router"]["ip"]
+        port = station_config["receiver"]["ftpport"]
+        if not ip or not port:
+            logger.warning(
+                f"⚠️  Station {station_id} missing IP ({ip}) or port ({port}) - SKIPPING"
+            )
+            return None
+    except KeyError as e:
+        logger.warning(
+            f"⚠️  Station {station_id} configuration missing required key {e} - SKIPPING"
+        )
+        return None
+
+    receiver = create_receiver(station_id, station_config)
+    return receiver
+
+
+def _download_station_period(
+    receiver,
+    station_id: str,
+    start: datetime,
+    end: datetime,
+    args,
+    logger: logging.Logger,
+    audit_logger=None,
+    ffrequency: str = "",
+    afrequency: str = "",
+    reverse_chronological: bool = False,
+) -> tuple:
+    """Download a single period for one station.
+
+    Returns:
+        Tuple of (files_downloaded, errors).
+    """
+    files_downloaded = 0
+    errors = 0
+
+    try:
+        # Test connection if requested
+        if args.test_connection:
+            status = receiver.get_connection_status()
+            if not status.get("receiver"):
+                logger.error(
+                    f"Connection test failed for {station_id}: {status.get('error')}"
+                )
+                return 0, 1
+            logger.info(f"Connection test successful for {station_id}")
+
+        # Download data
+        result = receiver.download_data(
+            start=start,
+            end=end,
+            session=args.session,
+            ffrequency=ffrequency,
+            afrequency=afrequency,
+            compression=args.compression,
+            sync=args.sync,
+            clean_tmp=args.clean_tmp,
+            archive=args.archive,
+            reverse_chronological=reverse_chronological,
+            loglevel=args.loglevel,
+        )
+
+        # Report results
+        files_downloaded = result.get("files_downloaded", 0)
+
+        # Log to audit trail if production logging enabled
+        if audit_logger:
+            audit_logger.log_download_session(
+                station_id,
+                {
+                    "session": args.session,
+                    "status": result.get("status", "unknown"),
+                    "duration": result.get("duration", 0),
+                    "files_downloaded": files_downloaded,
+                    "bytes_downloaded": result.get("total_bytes", 0),
+                    "errors": result.get("errors", 0),
+                    "start_time": start.isoformat() if start else None,
+                    "end_time": end.isoformat() if end else None,
+                    "connection_time": getattr(
+                        receiver, "_last_connection_time", None
+                    ),
+                },
+            )
+
+        logger.info(f"Station {station_id}: {files_downloaded} files downloaded")
+        logger.info(
+            f"Status: {result.get('status')}, Duration: {result.get('duration', 0):.2f}s"
+        )
+
+        if files_downloaded > 0:
+            logger.info("Downloaded files:")
+            for file_path in result.get("downloaded_files", []):
+                logger.info(f"  - {file_path}")
+
+    except (ConfigurationError, ConnectionError) as e:
+        logger.error(f"Error processing {station_id}: {e}")
+        errors += 1
+    except Exception as e:
+        import traceback
+
+        logger.error(f"Unexpected error processing {station_id}: {e}")
+        logger.debug(f"Traceback:\n{traceback.format_exc()}")
+        errors += 1
+
+    return files_downloaded, errors
 
 
 def cmd_download(args) -> int:
@@ -139,108 +259,63 @@ def cmd_download(args) -> int:
     total_downloaded = 0
     total_errors = 0
 
-    for station_id in args.stations:
-        station_id = station_id.upper()
-        logger.info(f"Processing station: {station_id}")
+    # Network-first mode: when using -d (reverse_chronological) with multiple stations,
+    # iterate day→station so all stations get the latest data first.
+    network_first = reverse_chronological and len(args.stations) > 1
 
-        try:
-            # Get station configuration
-            station_config = get_station_config(station_id)
-            if station_config is None:
-                logger.warning(
-                    f"⚠️  Station {station_id} not found in configuration - SKIPPING"
+    if network_first:
+        # Pre-validate all stations upfront
+        receivers_map: Dict[str, Any] = {}
+        for sid in args.stations:
+            sid = sid.upper()
+            receiver = _validate_station_for_download(sid, logger)
+            if receiver is None:
+                total_errors += 1
+                continue
+            receivers_map[sid] = receiver
+
+        if not receivers_map:
+            logger.error("No valid stations to download")
+            return 1
+
+        # Outer: periods (newest first), Inner: stations
+        periods = generate_period_ranges(
+            start_time, end_time, args.session, reverse=True
+        )
+        for period_start, period_end in periods:
+            if args.session == '15s_24hr':
+                logger.info(f"--- {period_start.strftime('%Y-%m-%d')} ---")
+            else:
+                logger.info(f"--- {period_start.strftime('%Y-%m-%d %H:%M')} ---")
+            for sid, receiver in receivers_map.items():
+                logger.info(f"Processing station: {sid}")
+                dl, err = _download_station_period(
+                    receiver, sid, period_start, period_end,
+                    args, logger, audit_logger,
+                    ffrequency=ffrequency, afrequency=afrequency,
+                    reverse_chronological=False,  # single period, no need to reverse
                 )
+                total_downloaded += dl
+                total_errors += err
+    else:
+        # Station-first: current behavior (single station or explicit -s/-e range)
+        for station_id in args.stations:
+            station_id = station_id.upper()
+            logger.info(f"Processing station: {station_id}")
+
+            receiver = _validate_station_for_download(station_id, logger)
+            if receiver is None:
                 total_errors += 1
                 continue
 
-            # Validate required configuration values
-            try:
-                ip = station_config["router"]["ip"]
-                port = station_config["receiver"]["ftpport"]
-                if not ip or not port:
-                    logger.warning(
-                        f"⚠️  Station {station_id} missing IP ({ip}) or port ({port}) - SKIPPING"
-                    )
-                    total_errors += 1
-                    continue
-            except KeyError as e:
-                logger.warning(
-                    f"⚠️  Station {station_id} configuration missing required key {e} - SKIPPING"
-                )
-                total_errors += 1
-                continue
-
-            # Create receiver instance using factory pattern
-            receiver = create_receiver(station_id, station_config)
-
-            # Test connection if requested
-            if args.test_connection:
-                status = receiver.get_connection_status()
-                if not status.get("receiver"):
-                    logger.error(
-                        f"Connection test failed for {station_id}: {status.get('error')}"
-                    )
-                    total_errors += 1
-                    continue
-                logger.info(f"Connection test successful for {station_id}")
-
-            # Download data
-            result = receiver.download_data(
-                start=start_time,
-                end=end_time,
-                session=args.session,
-                ffrequency=ffrequency,
-                afrequency=afrequency,
-                compression=args.compression,
-                sync=args.sync,
-                clean_tmp=args.clean_tmp,
-                archive=args.archive,
+            dl, err = _download_station_period(
+                receiver, station_id, start_time, end_time,
+                args, logger, audit_logger,
+                ffrequency=ffrequency, afrequency=afrequency,
                 reverse_chronological=reverse_chronological,
-                loglevel=args.loglevel,
             )
-
-            # Report results
-            files_downloaded = result.get("files_downloaded", 0)
-            total_downloaded += files_downloaded
-
-            # Log to audit trail if production logging enabled
-            if audit_logger:
-                audit_logger.log_download_session(
-                    station_id,
-                    {
-                        "session": args.session,
-                        "status": result.get("status", "unknown"),
-                        "duration": result.get("duration", 0),
-                        "files_downloaded": files_downloaded,
-                        "bytes_downloaded": result.get("total_bytes", 0),
-                        "errors": result.get("errors", 0),
-                        "start_time": start_time.isoformat() if start_time else None,
-                        "end_time": end_time.isoformat() if end_time else None,
-                        "connection_time": getattr(
-                            receiver, "_last_connection_time", None
-                        ),
-                    },
-                )
-
-            logger.info(f"Station {station_id}: {files_downloaded} files downloaded")
-            logger.info(
-                f"Status: {result.get('status')}, Duration: {result.get('duration', 0):.2f}s"
-            )
-
-            if files_downloaded > 0:
-                logger.info("Downloaded files:")
-                for file_path in result.get("downloaded_files", []):
-                    logger.info(f"  - {file_path}")
-
-        except (ConfigurationError, ConnectionError) as e:
-            logger.error(f"Error processing {station_id}: {e}")
-            total_errors += 1
-        except Exception as e:
-            import traceback
-
-            logger.error(f"Unexpected error processing {station_id}: {e}")
-            logger.debug(f"Traceback:\n{traceback.format_exc()}")
-            total_errors += 1
+            total_downloaded += dl
+            total_errors += err
 
     # Final summary
     logger.info(
@@ -250,139 +325,26 @@ def cmd_download(args) -> int:
 
 
 def cmd_status(args) -> int:
-    """Status command - quick receiver status check.
+    """Status command - thin wrapper around ``health --compact``.
 
-    Uses the same health extraction as the 'health' command but provides
-    a simplified, compact output format for quick operational checks.
+    Provides the same compact output as before by delegating to cmd_health
+    with appropriate defaults set.
     """
-    logger = setup_logging(args.loglevel)
-    stations = [s.upper() for s in args.stations]
-
-    results = []
-    has_critical = False
-
-    for station_id in stations:
-        try:
-            station_config = get_station_config(station_id)
-            if station_config is None:
-                logger.warning(f"⚠️  Station {station_id} not found in configuration")
-                continue
-
-            # Create receiver instance using factory pattern
-            receiver = create_receiver(station_id, station_config)
-
-            # Use the same health extraction as health command
-            health = receiver.get_health_status()
-
-            # Add RTK status (NTRIP stream health) if configured
-            try:
-                from ..monitoring.ntrip_client import check_ntrip_status
-                from ..config.receivers_config import ReceiversConfig
-                receivers_cfg = ReceiversConfig()
-                ntrip_status = check_ntrip_status(
-                    station_id, receivers_cfg, station_config
-                )
-                if ntrip_status:
-                    health["rtk"] = {
-                        "status": ntrip_status.overall_status,
-                        "message": ntrip_status.message,
-                        "host": ntrip_status.host,
-                        "mountpoints": [
-                            {
-                                "name": mp.mountpoint,
-                                "active": mp.is_active,
-                                "data_rate": mp.data_rate_bps,
-                                "error": mp.error_message,
-                            }
-                            for mp in ntrip_status.mountpoints
-                        ],
-                    }
-            except Exception as e:
-                logger.debug(f"RTK status check skipped for {station_id}: {e}")
-
-            # Add file status checks
-            try:
-                from ..health.file_tracker import ArchiveFileChecker, ProcessingStatusChecker
-
-                checker = ArchiveFileChecker()
-                health["file_status"] = {}
-
-                # Check daily files (15s_24hr)
-                stats = checker.check_file_status(station_id, "15s_24hr", days_back=7)
-                if stats:
-                    health["file_status"]["15s_24hr"] = stats
-
-                # Check hourly files (1Hz_1hr)
-                stats = checker.check_file_status(station_id, "1Hz_1hr", days_back=1)
-                if stats and stats.get("files_found", 0) > 0:
-                    health["file_status"]["1Hz_1hr"] = stats
-
-                # Check RINEX files if directory exists
-                stats = checker.check_file_status(station_id, "15s_24hr_rinex", days_back=7)
-                if stats and stats.get("dir_exists", False):
-                    health["file_status"]["15s_24hr_rinex"] = stats
-
-                stats = checker.check_file_status(station_id, "1Hz_1hr_rinex", days_back=1)
-                if stats and stats.get("dir_exists", False) and stats.get("files_found", 0) > 0:
-                    health["file_status"]["1Hz_1hr_rinex"] = stats
-
-                # Check high-rate files if directory exists
-                stats = checker.check_file_status(station_id, "20Hz_1hr", days_back=1)
-                if stats and stats.get("dir_exists", False) and stats.get("files_found", 0) > 0:
-                    health["file_status"]["20Hz_1hr"] = stats
-
-                stats = checker.check_file_status(station_id, "50Hz_1hr", days_back=1)
-                if stats and stats.get("dir_exists", False) and stats.get("files_found", 0) > 0:
-                    health["file_status"]["50Hz_1hr"] = stats
-
-                # Check 24hr processing status
-                proc_checker = ProcessingStatusChecker()
-                proc_result = proc_checker.check_24hr_processing(station_id)
-                if proc_result.get("file_exists", False):
-                    health["processing_24hr"] = proc_result
-
-            except Exception as e:
-                logger.debug(f"File status checks skipped for {station_id}: {e}")
-
-            results.append((health, station_config))
-
-            # Track critical status
-            if health.get("overall_status") == "critical":
-                has_critical = True
-
-            # Save to database if requested
-            if getattr(args, "save_db", False):
-                success = receiver.save_health_to_database(health)
-                if success:
-                    logger.debug(f"Saved health data to database for {station_id}")
-
-        except Exception as e:
-            logger.error(f"Status check failed for {station_id}: {e}")
-            if getattr(args, "verbose", False):
-                import traceback
-                traceback.print_exc()
-
-    if not results:
-        return 1
-
-    # Send to Icinga if requested
-    if getattr(args, "icinga", False):
-        return _send_status_to_icinga(results, logger)
-
-    # JSON output if requested
-    if getattr(args, "json", False):
-        import json
-        if len(results) == 1:
-            print(json.dumps(results[0][0], indent=2, default=str))
-        else:
-            print(json.dumps([r[0] for r in results], indent=2, default=str))
-        return 1 if has_critical else 0
-
-    # Compact human-readable output for quick checks
-    for health, station_config in results:
-        _print_quick_status(health, station_config)
-
-    return 1 if has_critical else 0
+    # Set health-command defaults that status doesn't expose
+    args.compact = True
+    args.no_files = False
+    args.no_ntrip = False
+    # Date flags — status is live-only
+    args.start = None
+    args.end = None
+    args.days = None
+    args.extract_all = False
+    args.import_json = False
+    args.export_json = False
+    args.save_json = False
+    args.skip_blocks = True
+    args.force = False
+    return cmd_health(args)
 
 
 def _send_status_to_icinga(
@@ -1386,11 +1348,21 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
                 args, station_id, station_config, logger
             )
 
+        # --- Live mode (no date flags) ---
         # Create receiver instance using factory pattern
         receiver = create_receiver(station_id, station_config)
 
-        # Get comprehensive health status
-        health = receiver.get_health_status()
+        # Get comprehensive health status (including files + NTRIP)
+        from ..health.live_health import gather_comprehensive_health
+
+        include_files = not getattr(args, "no_files", False)
+        include_ntrip = not getattr(args, "no_ntrip", False)
+
+        health = gather_comprehensive_health(
+            station_id, station_config, receiver,
+            include_files=include_files,
+            include_ntrip=include_ntrip,
+        )
 
         # Save to JSON if requested
         if getattr(args, "save_json", False):
@@ -1406,6 +1378,22 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
             else:
                 logger.warning("Failed to save health data to database")
 
+        # Return health + config for Icinga/compact handling in cmd_health
+        # Store on args for the caller to collect
+        if not hasattr(args, "_health_results"):
+            args._health_results = []
+        args._health_results.append((health, station_config))
+
+        # Compact output mode (used by 'status' command wrapper)
+        if getattr(args, "compact", False):
+            # Output handled by cmd_health after collecting all stations
+            return 0
+
+        # Icinga output mode
+        if getattr(args, "icinga", False):
+            # Output handled by cmd_health after collecting all stations
+            return 0
+
         # Output format
         if getattr(args, "json", False):
             # JSON output
@@ -1413,7 +1401,7 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
 
             print(json.dumps(health, indent=2, default=str))
         else:
-            # Human-readable output
+            # Human-readable output (detailed)
             print(f"Station: {health['station_id']}")
             print(f"Receiver Type: {health['receiver_type']}")
             print(f"Timestamp: {health.get('timestamp', 'N/A')}")
@@ -1527,28 +1515,112 @@ def cmd_health(args) -> int:
     """Health command - get receiver health information for one or more stations."""
     logger = setup_logging(args.loglevel)
 
+    # Initialize results collector for compact/icinga modes
+    args._health_results = []
+
     # Get list of stations (now supports multiple)
     stations = [s.upper() for s in args.stations]
 
     if len(stations) > 1:
         logger.info(f"Processing {len(stations)} stations: {', '.join(stations)}")
 
+    # Determine if this is a timeseries extraction with -d flag (network-first candidate)
+    has_date_flags = any([
+        getattr(args, "start", None),
+        getattr(args, "end", None),
+        getattr(args, "days", None),
+        getattr(args, "extract_all", False),
+    ])
+    # Network-first: -d with multiple stations → iterate day→station
+    use_days = getattr(args, "days", None)
+    network_first = (
+        has_date_flags
+        and use_days is not None
+        and not getattr(args, "start", None)
+        and len(stations) > 1
+    )
+
     # Track results
     success_count = 0
     error_count = 0
 
-    for station_id in stations:
-        if len(stations) > 1:
-            logger.info(f"\n{'='*60}")
-            logger.info(f"Processing station: {station_id}")
-            logger.info(f"{'='*60}")
+    if network_first:
+        # Network-first health extraction: day→station ordering
+        # Calculate the date range, then iterate per-day across all stations
+        from ..utils.time_utils import calculate_download_time_range as _calc_range
+        session_type = "status_1hr"
+        start_time, end_time = _calc_range(
+            session_type=session_type, lookback_periods=use_days
+        )
+        # Convert to dates
+        start_date = start_time.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+        end_date = end_time.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
 
-        result = cmd_health_single(args, station_id, logger)
+        # Generate day list (newest first)
+        dates = []
+        current = start_date
+        while current <= end_date:
+            dates.append(current)
+            current += timedelta(days=1)
+        dates.reverse()  # newest first
 
-        if result == 0:
-            success_count += 1
+        logger.info(f"Network-first mode: {len(dates)} days x {len(stations)} stations")
+
+        for date in dates:
+            logger.info(f"\n--- {date.strftime('%Y-%m-%d')} ---")
+            # Create single-day args for each station
+            day_str = date.strftime("%Y%m%d")
+            for station_id in stations:
+                logger.info(f"Processing station: {station_id}")
+                # Create a copy of args scoped to this single day
+                import copy
+                day_args = copy.copy(args)
+                day_args.start = day_str
+                day_args.end = day_str
+                day_args.days = None  # Use start/end instead
+                day_args._health_results = args._health_results  # Share collector
+
+                result = cmd_health_single(day_args, station_id, logger)
+                if result == 0:
+                    success_count += 1
+                else:
+                    error_count += 1
+    else:
+        # Station-first: current behavior
+        for station_id in stations:
+            if len(stations) > 1:
+                logger.info(f"\n{'='*60}")
+                logger.info(f"Processing station: {station_id}")
+                logger.info(f"{'='*60}")
+
+            result = cmd_health_single(args, station_id, logger)
+
+            if result == 0:
+                success_count += 1
+            else:
+                error_count += 1
+
+    # --- Post-collection output for compact/icinga modes ---
+    results = args._health_results
+
+    if results and getattr(args, "icinga", False):
+        return _send_status_to_icinga(results, logger)
+
+    if results and getattr(args, "compact", False):
+        has_critical = False
+        # JSON output if requested alongside compact
+        if getattr(args, "json", False):
+            import json
+            if len(results) == 1:
+                print(json.dumps(results[0][0], indent=2, default=str))
+            else:
+                print(json.dumps([r[0] for r in results], indent=2, default=str))
         else:
-            error_count += 1
+            for health, station_config in results:
+                _print_quick_status(health, station_config)
+                if health.get("overall_status") == "critical":
+                    has_critical = True
+        return 1 if has_critical else 0
 
     # Summary for multiple stations
     if len(stations) > 1:
@@ -2052,6 +2124,165 @@ def apply_receiver_type_corrections(
     return 0
 
 
+def _create_rinex_converter(
+    station_id: str, args, rinex_version, output_format, naming_convention,
+    observation_types, logger: logging.Logger,
+):
+    """Create appropriate RINEX converter for a station.
+
+    Returns:
+        Tuple of (converter, raw_extension) or (None, None) on failure.
+    """
+    from ..rinex import SBFConverter, TrimbleConverter
+
+    station_config = get_station_config(station_id)
+    if station_config is None:
+        logger.warning(f"Station {station_id} not found in configuration - SKIPPING")
+        return None, None, None
+
+    receiver_type = station_config.get("receiver", {}).get("type", "").lower()
+
+    if "polarx" in receiver_type or "septentrio" in receiver_type:
+        converter = SBFConverter(
+            station_id=station_id,
+            rinex_version=rinex_version,
+            output_format=output_format,
+            naming_convention=naming_convention,
+            apply_header_corrections=not getattr(args, "no_header_correction", False),
+            observation_types=observation_types,
+            loglevel=args.loglevel,
+        )
+        raw_extension = ".sbf.gz"
+    elif "netr9" in receiver_type:
+        converter = TrimbleConverter(
+            station_id=station_id,
+            rinex_version=rinex_version,
+            output_format=output_format,
+            naming_convention=naming_convention,
+            apply_header_corrections=not getattr(args, "no_header_correction", False),
+            keep_intermediate=getattr(args, "keep_intermediate", False),
+            loglevel=args.loglevel,
+        )
+        raw_extension = ".T02"
+    elif "netrs" in receiver_type:
+        converter = TrimbleConverter(
+            station_id=station_id,
+            rinex_version=rinex_version,
+            output_format=output_format,
+            naming_convention=naming_convention,
+            apply_header_corrections=not getattr(args, "no_header_correction", False),
+            keep_intermediate=getattr(args, "keep_intermediate", False),
+            loglevel=args.loglevel,
+        )
+        raw_extension = ".T00"
+    else:
+        logger.warning(
+            f"Unsupported receiver type '{receiver_type}' for {station_id} - SKIPPING"
+        )
+        return None, None, None
+
+    # Validate tools
+    if not getattr(args, "dry_run", False):
+        tools = converter.validate_tools()
+        missing = [t for t, avail in tools.items() if not avail]
+        if missing:
+            logger.error(f"Missing required tools: {', '.join(missing)}")
+            logger.error("Install tools or configure paths in receivers.cfg [rinex_tools]")
+            return None, None, None
+
+    return converter, raw_extension, station_config
+
+
+def _rinex_convert_station_period(
+    station_id: str, converter, raw_extension: str,
+    start_time: datetime, end_time: datetime,
+    args, logger: logging.Logger,
+) -> tuple:
+    """Convert raw files to RINEX for a single station and time period.
+
+    Returns:
+        Tuple of (converted, failed, skipped).
+    """
+    from ..config.receivers_config import get_receivers_config
+
+    converted = 0
+    failed = 0
+    skipped = 0
+
+    try:
+        config = get_receivers_config()
+        data_prepath = config.get_data_prepath()
+
+        current_date = start_time
+        raw_files = []
+
+        while current_date < end_time:
+            year = current_date.strftime("%Y")
+            month = current_date.strftime("%b").lower()
+
+            if "1hr" in args.session.lower():
+                filename = f"{station_id}{current_date.strftime('%Y%m%d%H%M')}*.{raw_extension.lstrip('.')}"
+                raw_dir = Path(data_prepath) / year / month / station_id / args.session / "raw"
+                current_date += timedelta(hours=1)
+            else:
+                filename = f"{station_id}{current_date.strftime('%Y%m%d')}*{raw_extension}"
+                raw_dir = Path(data_prepath) / year / month / station_id / args.session / "raw"
+                current_date += timedelta(days=1)
+
+            if raw_dir.exists():
+                matches = list(raw_dir.glob(filename))
+                raw_files.extend(matches)
+
+        if not raw_files:
+            logger.warning(f"No raw files found for {station_id} in date range")
+            return 0, 0, 1
+
+        logger.info(f"Found {len(raw_files)} raw files to convert")
+
+        if getattr(args, "dry_run", False):
+            for raw_file in raw_files:
+                print(f"  [DRY RUN] Would convert: {raw_file.name}")
+            return 0, 0, 0
+
+        for raw_file in raw_files:
+            if getattr(args, "output_dir", None):
+                output_dir = Path(args.output_dir)
+            else:
+                raw_parent = raw_file.parent
+                if raw_parent.name == "raw":
+                    output_dir = raw_parent.parent / "rinex"
+                else:
+                    output_dir = raw_parent / "rinex"
+
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            result = converter.convert_file(
+                raw_file,
+                output_dir=output_dir,
+                force=getattr(args, "force", False),
+            )
+
+            if result.success:
+                logger.info(f"✅ {raw_file.name} -> {result.rinex_file.name}")
+                if result.header_corrections_applied > 0:
+                    logger.debug(
+                        f"   Applied {result.header_corrections_applied} header corrections"
+                    )
+                converted += 1
+            else:
+                logger.error(f"❌ {raw_file.name}: {result.message}")
+                failed += 1
+
+    except Exception as e:
+        logger.error(f"Error processing {station_id}: {e}")
+        if args.loglevel == logging.DEBUG:
+            import traceback
+            traceback.print_exc()
+        failed += 1
+
+    return converted, failed, skipped
+
+
 def cmd_rinex(args) -> int:
     """RINEX conversion command - convert raw GPS data to RINEX format."""
     logger = setup_logging(args.loglevel)
@@ -2113,6 +2344,7 @@ def cmd_rinex(args) -> int:
 
     start_time = None
     end_time = None
+    reverse_chronological = False
 
     if getattr(args, "start", None):
         start_time = parse_datetime(args.start)
@@ -2121,13 +2353,12 @@ def cmd_rinex(args) -> int:
         end_time = parse_datetime(args.end)
 
     if not start_time and getattr(args, "days", None):
-        # Calculate time range based on session type
+        reverse_chronological = True
         start_time, end_time = calculate_download_time_range(
             session_type=args.session, lookback_periods=args.days
         )
 
     if start_time and not end_time:
-        # Default to one period
         if "1hr" in args.session.lower():
             end_time = start_time + timedelta(hours=1)
         else:
@@ -2153,154 +2384,66 @@ def cmd_rinex(args) -> int:
     total_failed = 0
     total_skipped = 0
 
-    for station_id in stations:
-        logger.info(f"\n{'='*60}")
-        logger.info(f"Processing station: {station_id}")
-        logger.info(f"{'='*60}")
+    # Network-first: -d with multiple stations → period→station ordering
+    network_first = reverse_chronological and len(stations) > 1
 
-        try:
-            # Get station configuration to determine receiver type
-            station_config = get_station_config(station_id)
-            if station_config is None:
-                logger.warning(f"Station {station_id} not found in configuration - SKIPPING")
-                total_skipped += 1
-                continue
-
-            # Determine receiver type
-            receiver_type = station_config.get("receiver", {}).get("type", "").lower()
-
-            # Select appropriate converter
-            if "polarx" in receiver_type or "septentrio" in receiver_type:
-                converter = SBFConverter(
-                    station_id=station_id,
-                    rinex_version=rinex_version,
-                    output_format=output_format,
-                    naming_convention=naming_convention,
-                    apply_header_corrections=not getattr(args, "no_header_correction", False),
-                    observation_types=observation_types,
-                    loglevel=args.loglevel,
-                )
-                raw_extension = ".sbf.gz"
-            elif "netr9" in receiver_type:
-                converter = TrimbleConverter(
-                    station_id=station_id,
-                    rinex_version=rinex_version,
-                    output_format=output_format,
-                    naming_convention=naming_convention,
-                    apply_header_corrections=not getattr(args, "no_header_correction", False),
-                    keep_intermediate=getattr(args, "keep_intermediate", False),
-                    loglevel=args.loglevel,
-                )
-                raw_extension = ".T02"
-            elif "netrs" in receiver_type:
-                converter = TrimbleConverter(
-                    station_id=station_id,
-                    rinex_version=rinex_version,
-                    output_format=output_format,
-                    naming_convention=naming_convention,
-                    apply_header_corrections=not getattr(args, "no_header_correction", False),
-                    keep_intermediate=getattr(args, "keep_intermediate", False),
-                    loglevel=args.loglevel,
-                )
-                raw_extension = ".T00"
+    if network_first:
+        # Pre-create converters for all stations
+        converters: Dict[str, tuple] = {}
+        for station_id in stations:
+            conv, ext, _ = _create_rinex_converter(
+                station_id, args, rinex_version, output_format,
+                naming_convention, observation_types, logger,
+            )
+            if conv is not None:
+                converters[station_id] = (conv, ext)
             else:
-                logger.warning(
-                    f"Unsupported receiver type '{receiver_type}' for {station_id} - SKIPPING"
+                total_skipped += 1
+
+        if not converters:
+            logger.error("No valid stations to convert")
+            return 1
+
+        # Outer: periods (newest first), Inner: stations
+        periods = generate_period_ranges(
+            start_time, end_time, args.session, reverse=True
+        )
+        for period_start, period_end in periods:
+            if args.session == '15s_24hr':
+                logger.info(f"\n--- {period_start.strftime('%Y-%m-%d')} ---")
+            else:
+                logger.info(f"\n--- {period_start.strftime('%Y-%m-%d %H:%M')} ---")
+            for station_id, (conv, ext) in converters.items():
+                logger.info(f"Processing station: {station_id}")
+                c, f, s = _rinex_convert_station_period(
+                    station_id, conv, ext, period_start, period_end,
+                    args, logger,
                 )
+                total_converted += c
+                total_failed += f
+                total_skipped += s
+    else:
+        # Station-first: current behavior
+        for station_id in stations:
+            logger.info(f"\n{'='*60}")
+            logger.info(f"Processing station: {station_id}")
+            logger.info(f"{'='*60}")
+
+            conv, ext, _ = _create_rinex_converter(
+                station_id, args, rinex_version, output_format,
+                naming_convention, observation_types, logger,
+            )
+            if conv is None:
                 total_skipped += 1
                 continue
 
-            # Validate tools
-            if not getattr(args, "dry_run", False):
-                tools = converter.validate_tools()
-                missing = [t for t, avail in tools.items() if not avail]
-                if missing:
-                    logger.error(f"Missing required tools: {', '.join(missing)}")
-                    logger.error("Install tools or configure paths in receivers.cfg [rinex_tools]")
-                    total_failed += 1
-                    continue
-
-            # Find raw files for date range
-            from ..config.receivers_config import get_receivers_config
-            config = get_receivers_config()
-            data_prepath = config.get_data_prepath()
-
-            # Generate list of dates to process
-            current_date = start_time
-            raw_files = []
-
-            while current_date < end_time:
-                # Build archive path for raw file
-                year = current_date.strftime("%Y")
-                month = current_date.strftime("%b").lower()
-                day = current_date.strftime("%d")
-
-                if "1hr" in args.session.lower():
-                    # Hourly files
-                    filename = f"{station_id}{current_date.strftime('%Y%m%d%H%M')}*.{raw_extension.lstrip('.')}"
-                    raw_dir = Path(data_prepath) / year / month / station_id / args.session / "raw"
-                    current_date += timedelta(hours=1)
-                else:
-                    # Daily files
-                    filename = f"{station_id}{current_date.strftime('%Y%m%d')}*{raw_extension}"
-                    raw_dir = Path(data_prepath) / year / month / station_id / args.session / "raw"
-                    current_date += timedelta(days=1)
-
-                if raw_dir.exists():
-                    matches = list(raw_dir.glob(filename))
-                    raw_files.extend(matches)
-
-            if not raw_files:
-                logger.warning(f"No raw files found for {station_id} in date range")
-                total_skipped += 1
-                continue
-
-            logger.info(f"Found {len(raw_files)} raw files to convert")
-
-            # Dry run - just show what would be done
-            if getattr(args, "dry_run", False):
-                for raw_file in raw_files:
-                    print(f"  [DRY RUN] Would convert: {raw_file.name}")
-                continue
-
-            # Convert files
-            for raw_file in raw_files:
-                # Determine output directory - create 'rinex' beside 'raw'
-                if getattr(args, "output_dir", None):
-                    output_dir = Path(args.output_dir)
-                else:
-                    # Create rinex dir beside raw dir
-                    raw_parent = raw_file.parent
-                    if raw_parent.name == "raw":
-                        output_dir = raw_parent.parent / "rinex"
-                    else:
-                        output_dir = raw_parent / "rinex"
-
-                output_dir.mkdir(parents=True, exist_ok=True)
-
-                result = converter.convert_file(
-                    raw_file,
-                    output_dir=output_dir,
-                    force=getattr(args, "force", False),
-                )
-
-                if result.success:
-                    logger.info(f"✅ {raw_file.name} -> {result.rinex_file.name}")
-                    if result.header_corrections_applied > 0:
-                        logger.debug(
-                            f"   Applied {result.header_corrections_applied} header corrections"
-                        )
-                    total_converted += 1
-                else:
-                    logger.error(f"❌ {raw_file.name}: {result.message}")
-                    total_failed += 1
-
-        except Exception as e:
-            logger.error(f"Error processing {station_id}: {e}")
-            if args.loglevel == logging.DEBUG:
-                import traceback
-                traceback.print_exc()
-            total_failed += 1
+            c, f, s = _rinex_convert_station_period(
+                station_id, conv, ext, start_time, end_time,
+                args, logger,
+            )
+            total_converted += c
+            total_failed += f
+            total_skipped += s
 
     # Summary
     logger.info(f"\n{'='*60}")
