@@ -151,3 +151,49 @@ def get_session_frequency(session_type: str) -> str:
         return '1D'
     else:
         return '1H'
+
+
+def generate_period_ranges(
+    start: datetime,
+    end: datetime,
+    session_type: str,
+    reverse: bool = False,
+) -> List[Tuple[datetime, datetime]]:
+    """Generate (period_start, period_end) pairs for single-period iteration.
+
+    Used by network-first download ordering: iterate over periods (days/hours)
+    and process all stations for each period before moving to the next.
+
+    Args:
+        start: Start of the overall time range.
+        end: End of the overall time range (exclusive).
+        session_type: Session type (15s_24hr, 1Hz_1hr, status_1hr).
+        reverse: If True, return newest-first order (network-first mode).
+
+    Returns:
+        List of (period_start, period_end) tuples, one per period.
+
+    Example:
+        >>> from datetime import datetime
+        >>> ranges = generate_period_ranges(
+        ...     datetime(2026, 1, 28), datetime(2026, 1, 31),
+        ...     '15s_24hr', reverse=True
+        ... )
+        >>> # [(2026-01-30, 2026-01-31), (2026-01-29, 2026-01-30), (2026-01-28, 2026-01-29)]
+    """
+    if session_type == '15s_24hr':
+        freq = timedelta(days=1)
+    else:
+        freq = timedelta(hours=1)
+
+    periods: List[Tuple[datetime, datetime]] = []
+    current = start
+    while current < end:
+        period_end = min(current + freq, end)
+        periods.append((current, period_end))
+        current += freq
+
+    if reverse:
+        periods.reverse()
+
+    return periods
