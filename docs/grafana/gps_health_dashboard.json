@@ -1544,7 +1544,7 @@
             }
           ],
           "noValue": "N/A",
-          "decimals": 0,
+          "unit": "s",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -1558,11 +1558,11 @@
               },
               {
                 "color": "yellow",
-                "value": 2
+                "value": 7200
               },
               {
                 "color": "red",
-                "value": 4
+                "value": 14400
               }
             ]
           }
@@ -1589,11 +1589,11 @@
                     },
                     {
                       "color": "yellow",
-                      "value": 36
+                      "value": 129600
                     },
                     {
                       "color": "red",
-                      "value": 60
+                      "value": 216000
                     }
                   ]
                 }
@@ -1635,7 +1635,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  (SELECT CASE\n    WHEN NOT EXISTS (SELECT 1 FROM file_tracking WHERE sid='$station' AND session_type='15s_24hr' AND status='downloaded') THEN -1\n    ELSE (SELECT ROUND(EXTRACT(EPOCH FROM NOW() - (file_date + INTERVAL '1 day')) / 3600)\n          FROM file_tracking WHERE sid='$station' AND session_type='15s_24hr'\n          AND status='downloaded' ORDER BY file_date DESC LIMIT 1)\n  END) AS \"24h\",\n  (SELECT CASE\n    WHEN NOT EXISTS (SELECT 1 FROM file_tracking WHERE sid='$station' AND session_type='1Hz_1hr' AND status='downloaded') THEN -1\n    ELSE (SELECT ROUND(EXTRACT(EPOCH FROM NOW() - (file_date + file_hour * INTERVAL '1 hour')) / 3600)\n          FROM file_tracking WHERE sid='$station' AND session_type='1Hz_1hr'\n          AND status='downloaded' ORDER BY file_date DESC, file_hour DESC NULLS LAST LIMIT 1)\n  END) AS \"1Hz\",\n  (SELECT CASE\n    WHEN NOT EXISTS (SELECT 1 FROM file_tracking WHERE sid='$station' AND session_type='status_1hr' AND status='downloaded') THEN -1\n    ELSE (SELECT ROUND(EXTRACT(EPOCH FROM NOW() - (file_date + file_hour * INTERVAL '1 hour')) / 3600)\n          FROM file_tracking WHERE sid='$station' AND session_type='status_1hr'\n          AND status='downloaded' ORDER BY file_date DESC, file_hour DESC NULLS LAST LIMIT 1)\n  END) AS \"Status\"",
+          "rawSql": "SELECT\n  (SELECT CASE\n    WHEN NOT EXISTS (SELECT 1 FROM file_tracking WHERE sid='$station' AND session_type='15s_24hr' AND status='downloaded') THEN -1\n    ELSE (SELECT ROUND(EXTRACT(EPOCH FROM NOW() - (file_date + INTERVAL '1 day')))\n          FROM file_tracking WHERE sid='$station' AND session_type='15s_24hr'\n          AND status='downloaded' ORDER BY file_date DESC LIMIT 1)\n  END) AS \"24h\",\n  (SELECT CASE\n    WHEN NOT EXISTS (SELECT 1 FROM file_tracking WHERE sid='$station' AND session_type='1Hz_1hr' AND status='downloaded') THEN -1\n    ELSE (SELECT ROUND(EXTRACT(EPOCH FROM NOW() - (file_date + file_hour * INTERVAL '1 hour')))\n          FROM file_tracking WHERE sid='$station' AND session_type='1Hz_1hr'\n          AND status='downloaded' ORDER BY file_date DESC, file_hour DESC NULLS LAST LIMIT 1)\n  END) AS \"1Hz\",\n  (SELECT CASE\n    WHEN NOT EXISTS (SELECT 1 FROM file_tracking WHERE sid='$station' AND session_type='status_1hr' AND status='downloaded') THEN -1\n    ELSE (SELECT ROUND(EXTRACT(EPOCH FROM NOW() - (file_date + file_hour * INTERVAL '1 hour')))\n          FROM file_tracking WHERE sid='$station' AND session_type='status_1hr'\n          AND status='downloaded' ORDER BY file_date DESC, file_hour DESC NULLS LAST LIMIT 1)\n  END) AS \"Status\"",
           "refId": "A"
         }
       ],
@@ -1695,7 +1695,7 @@
         "orientation": "vertical",
         "text": {
           "titleSize": 10,
-          "valueSize": 28
+          "valueSize": 18
         },
         "reduceOptions": {
           "calcs": [],
