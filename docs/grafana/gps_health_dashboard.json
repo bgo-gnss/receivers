@@ -1540,14 +1540,14 @@
                   "text": "OK"
                 },
                 "1": {
-                  "color": "red",
+                  "color": "yellow",
                   "index": 1,
-                  "text": "MISSING"
+                  "text": "WARNING"
                 },
                 "2": {
-                  "color": "blue",
+                  "color": "red",
                   "index": 2,
-                  "text": "UNKNOWN"
+                  "text": "CRITICAL"
                 }
               },
               "type": "value"
@@ -1564,12 +1564,32 @@
             ]
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Last DL"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": []
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "text",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 4,
-        "w": 3,
-        "x": 15,
+        "w": 4,
+        "x": 14,
         "y": 25
       },
       "id": 24,
@@ -1595,7 +1615,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  (SELECT CASE status WHEN 'downloaded' THEN 0 WHEN 'missing' THEN 1 ELSE 2 END\n   FROM file_tracking WHERE sid = '$station' AND session_type = '15s_24hr'\n   AND file_date >= current_date - 1 ORDER BY file_date DESC, last_checked DESC LIMIT 1) AS \"24h\",\n  (SELECT CASE status WHEN 'downloaded' THEN 0 WHEN 'missing' THEN 1 ELSE 2 END\n   FROM file_tracking WHERE sid = '$station' AND session_type = '1Hz_1hr'\n   AND file_date >= current_date - 1 ORDER BY file_date DESC, last_checked DESC LIMIT 1) AS \"1Hz\",\n  (SELECT CASE status WHEN 'downloaded' THEN 0 WHEN 'missing' THEN 1 ELSE 2 END\n   FROM file_tracking WHERE sid = '$station' AND session_type = 'status_1hr'\n   AND file_date >= current_date - 1 ORDER BY file_date DESC, last_checked DESC LIMIT 1) AS \"Status\"",
+          "rawSql": "SELECT\n  (SELECT CASE\n    WHEN (SELECT status FROM file_tracking WHERE sid='$station' AND session_type='15s_24hr' ORDER BY file_date DESC LIMIT 1) = 'downloaded' THEN 0\n    WHEN (SELECT status FROM file_tracking WHERE sid='$station' AND session_type='15s_24hr' ORDER BY file_date DESC LIMIT 1 OFFSET 1) = 'downloaded' THEN 1\n    ELSE 2 END) AS \"24h\",\n  (SELECT CASE\n    WHEN (SELECT status FROM file_tracking WHERE sid='$station' AND session_type='1Hz_1hr' ORDER BY file_date DESC LIMIT 1) = 'downloaded' THEN 0\n    WHEN (SELECT status FROM file_tracking WHERE sid='$station' AND session_type='1Hz_1hr' ORDER BY file_date DESC LIMIT 1 OFFSET 1) = 'downloaded' THEN 1\n    ELSE 2 END) AS \"1Hz\",\n  (SELECT CASE\n    WHEN (SELECT status FROM file_tracking WHERE sid='$station' AND session_type='status_1hr' ORDER BY file_date DESC LIMIT 1) = 'downloaded' THEN 0\n    WHEN (SELECT status FROM file_tracking WHERE sid='$station' AND session_type='status_1hr' ORDER BY file_date DESC LIMIT 1 OFFSET 1) = 'downloaded' THEN 1\n    ELSE 2 END) AS \"Status\",\n  (SELECT TO_CHAR(file_date, 'DD Mon') FROM file_tracking WHERE sid='$station' AND status='downloaded' ORDER BY file_date DESC LIMIT 1) AS \"Last DL\"",
           "refId": "A"
         }
       ],
