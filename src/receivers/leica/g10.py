@@ -185,6 +185,35 @@ class LeicaG10(BaseReceiver):
         """
         start_time = time.time()
 
+        # Quick reachability check to skip offline stations fast
+        if not self._quick_ping():
+            self.logger.warning(
+                f"Station {self.station_id} is unreachable (ping failed), skipping download"
+            )
+            return {
+                "station_id": self.station_id,
+                "receiver_type": "G10",
+                "status": "unreachable",
+                "files_downloaded": 0,
+                "downloaded_files": [],
+                "error": "Station unreachable (ping failed)",
+                "duration": time.time() - start_time,
+            }
+        ftp_port = self.station_info.get("receiver", {}).get("ftpport", 2160)
+        if not self._quick_tcp_check(ftp_port):
+            self.logger.warning(
+                f"Station {self.station_id} FTP port {ftp_port} not responding, skipping download"
+            )
+            return {
+                "station_id": self.station_id,
+                "receiver_type": "G10",
+                "status": "unreachable",
+                "files_downloaded": 0,
+                "downloaded_files": [],
+                "error": f"FTP port {ftp_port} not responding",
+                "duration": time.time() - start_time,
+            }
+
         # Check if loglevel was passed and create new FTP downloader with correct level
         loglevel = kwargs.get('loglevel', self.loglevel)
         if loglevel != self.loglevel:

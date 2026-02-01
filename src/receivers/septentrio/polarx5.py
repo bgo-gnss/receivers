@@ -297,6 +297,35 @@ class PolaRX5(BaseReceiver):
 
         # Handle time parameters and performance tracking
         start_time = time.time()
+
+        # Quick reachability check to skip offline stations fast
+        if not self._quick_ping():
+            self.logger.warning(
+                f"Station {self.station_id} is unreachable (ping failed), skipping download"
+            )
+            return {
+                "station_id": self.station_id,
+                "receiver_type": "PolaRX5",
+                "status": "unreachable",
+                "files_downloaded": 0,
+                "downloaded_files": [],
+                "error": "Station unreachable (ping failed)",
+                "duration": time.time() - start_time,
+            }
+        if not self._quick_tcp_check(self.ip_port):
+            self.logger.warning(
+                f"Station {self.station_id} FTP port {self.ip_port} not responding, skipping download"
+            )
+            return {
+                "station_id": self.station_id,
+                "receiver_type": "PolaRX5",
+                "status": "unreachable",
+                "files_downloaded": 0,
+                "downloaded_files": [],
+                "error": f"FTP port {self.ip_port} not responding",
+                "duration": time.time() - start_time,
+            }
+
         connection_start_time = 0
         start, end = self._process_time_parameters(start, end, session, ffrequency)
 
