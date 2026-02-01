@@ -663,8 +663,12 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
             if isinstance(port_data, dict) and "open" in port_data:
                 is_open = port_data.get("open", False)
                 port_num = port_data.get("port", "?")
-                emoji = "✅" if is_open else "❌"
-                port_parts.append(f"{port_name}:{port_num} {emoji}")
+                if is_open:
+                    port_parts.append(f"{port_name}:{port_num} ✅")
+                else:
+                    port_parts.append(f"{port_name}:{port_num} closed")
+            else:
+                port_parts.append(f"{port_name}: N/A")
         if port_parts:
             print(f"  Ports: {' | '.join(port_parts)}")
     else:
@@ -1450,9 +1454,10 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
                     port_data = ports[port_name]
                     port_num = port_data.get("port", "?")
                     is_open = port_data.get("open", False)
-                    status = port_data.get("status", "unknown")
-                    emoji = "✅" if is_open else "❌"
-                    print(f"  {port_name}: {emoji} port {port_num} [{status}]")
+                    if is_open:
+                        print(f"  {port_name}: ✅ port {port_num}")
+                    else:
+                        print(f"  {port_name}: ❌ port {port_num} closed")
                 else:
                     print(f"  {port_name}: N/A")
 
