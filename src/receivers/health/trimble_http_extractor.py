@@ -198,6 +198,20 @@ class TrimbleHTTPExtractor:
         else:
             health_data["metrics"]["uptime"] = {"available": False}
 
+        # Correct port status if any HTTP endpoint succeeded after initial test
+        # (receiver may be slow to respond initially but data extraction works)
+        http_data_fetched = any([
+            voltage_data, temp_data, tracking_data, position_data, system_data
+        ])
+        if http_data_fetched and "ports" in health_data["metrics"]:
+            http_port = health_data["metrics"]["ports"].get("http", {})
+            if not http_port.get("open"):
+                health_data["metrics"]["ports"]["http"]["open"] = True
+                health_data["metrics"]["ports"]["http"]["status"] = "ok"
+                # Also fix the connection status
+                health_data["connection"]["http_port"]["accessible"] = True
+                health_data["connection"]["http_port"]["status"] = "ok"
+
         # Network features not available on Trimble
         health_data["network"]["ntrip_client"] = {"available": False}
         health_data["network"]["ntrip_server"] = {"available": False}
