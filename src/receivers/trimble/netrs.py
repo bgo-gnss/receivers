@@ -371,6 +371,7 @@ class NetRS(BaseReceiver):
 
             if not missing_files_dict:
                 self.logger.info("Archive is up to date")
+                self._track_validated_files(files_dict, session)
                 return {
                     "station_id": self.station_id,
                     "receiver_type": "NetRS",
@@ -762,6 +763,30 @@ class NetRS(BaseReceiver):
         # Format: "letter_code,remote_directory"
         letter_code = session_mapping.split(",")[0]
         return letter_code
+
+    def _track_validated_files(self, files_dict: Dict, session: str) -> None:
+        """Track already-archived files as downloaded in file_tracking database."""
+        import re
+        try:
+            with DownloadTracker(self.station_id, session) as tracker:
+                if tracker._connected:
+                    from datetime import date
+                    tracked = 0
+                    for filename in files_dict.keys():
+                        match = re.match(
+                            rf"^{re.escape(self.station_id)}(\d{{4}})(\d{{2}})(\d{{2}})(\d{{4}})",
+                            filename, re.IGNORECASE
+                        )
+                        if match:
+                            file_date = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+                            file_hour = int(match.group(4)[:2])
+                            track_hour = file_hour if "1hr" in session.lower() else None
+                            tracker.mark_downloaded(file_date, track_hour, filename)
+                            tracked += 1
+                    if tracked:
+                        self.logger.debug(f"Tracked {tracked} validated files in database")
+        except Exception as e:
+            self.logger.debug(f"File tracking for validated files failed: {e}")
 
     def get_station_info(self) -> Dict[str, Any]:
         """Get station information and configuration.

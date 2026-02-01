@@ -267,6 +267,7 @@ class LeicaG10(BaseReceiver):
 
             if not missing_files_dict:
                 self.logger.info("Archive is up to date")
+                self._track_validated_files(files_dict, session, start)
                 return {
                     "station_id": self.station_id,
                     "receiver_type": "G10",
@@ -805,6 +806,42 @@ class LeicaG10(BaseReceiver):
         session_map = self.leica_config.get(f"session_map_{session_key}", "a,15s_24hr")
         session_letter, _ = session_map.split(",", 1)
         return session_letter
+
+    def _track_validated_files(self, files_dict: Dict, session: str, start: Any) -> None:
+        """Track already-archived files as downloaded in file_tracking database."""
+        import re
+        from datetime import date, datetime, timedelta
+        try:
+            with DownloadTracker(self.station_id, session) as tracker:
+                if tracker._connected:
+                    tracked = 0
+                    for filename in files_dict.keys():
+                        # Try archive format: SKFC202601180000a.m00.gz
+                        match = re.match(
+                            rf"^{self.station_id}(\d{{4}})(\d{{2}})(\d{{2}})(\d{{4}})([a-x])",
+                            filename, re.IGNORECASE
+                        )
+                        if match:
+                            file_date = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+                            session_letter = match.group(5).lower()
+                            file_hour = None if session_letter == 'a' else ord(session_letter) - ord('a')
+                        else:
+                            # Try Leica format: SKFC018a.m00
+                            match = re.match(rf"^{self.station_id}(\d{{3}})([a-x])", filename, re.IGNORECASE)
+                            if match:
+                                day_of_year = int(match.group(1))
+                                session_letter = match.group(2).lower()
+                                file_year = start.year if hasattr(start, 'year') else datetime.now().year
+                                file_date = date(file_year, 1, 1) + timedelta(days=day_of_year - 1)
+                                file_hour = None if session_letter == 'a' else ord(session_letter) - ord('a')
+                            else:
+                                continue
+                        tracker.mark_downloaded(file_date, file_hour, filename)
+                        tracked += 1
+                    if tracked:
+                        self.logger.debug(f"Tracked {tracked} validated files in database")
+        except Exception as e:
+            self.logger.debug(f"File tracking for validated files failed: {e}")
 
     def get_station_info(self) -> Dict[str, Any]:
         """Get station information for this receiver.

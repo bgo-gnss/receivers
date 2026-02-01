@@ -95,7 +95,7 @@ class FileTracker:
         try:
             with self._conn.cursor() as cur:
                 cur.execute(
-                    "SELECT is_file_missing(%s, %s, %s, %s)",
+                    "SELECT is_file_missing(%s, %s, %s, %s::smallint)",
                     (station_id, session_type, file_date, file_hour),
                 )
                 result = cur.fetchone()
@@ -196,7 +196,7 @@ class FileTracker:
         try:
             with self._conn.cursor() as cur:
                 cur.execute(
-                    """SELECT upsert_file_tracking(%s, %s, %s, %s, %s, 'missing')""",
+                    """SELECT upsert_file_tracking(%s, %s, %s, %s::smallint, %s, 'missing')""",
                     (station_id, session_type, file_date, file_hour, filename),
                 )
             self._conn.commit()
@@ -237,7 +237,7 @@ class FileTracker:
         try:
             with self._conn.cursor() as cur:
                 cur.execute(
-                    """SELECT upsert_file_tracking(%s, %s, %s, %s, %s, 'downloaded', %s)""",
+                    """SELECT upsert_file_tracking(%s, %s, %s, %s::smallint, %s, 'downloaded', %s)""",
                     (station_id, session_type, file_date, file_hour, filename, file_size),
                 )
             self._conn.commit()
