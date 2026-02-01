@@ -280,7 +280,7 @@ class TrimbleHTTPExtractor:
         # check when firewalls are involved)
         http_open = http_accessible
         ports["http"] = {
-            "port": self.port,
+            "port": int(self.port),
             "open": http_open,
             "status": "ok" if http_open else "critical",
         }
@@ -289,7 +289,7 @@ class TrimbleHTTPExtractor:
         if self.ftp_port:
             ftp_open = self._check_tcp_port(self.host, self.ftp_port)
             ports["ftp"] = {
-                "port": self.ftp_port,
+                "port": int(self.ftp_port),
                 "open": ftp_open,
                 "status": "ok" if ftp_open else "critical",
             }

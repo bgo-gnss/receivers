@@ -1497,7 +1497,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT CASE WHEN ftp_open THEN ftp_port ELSE 0 END AS \"FTP\",\n  CASE WHEN http_open THEN http_port ELSE 0 END AS \"HTTP\",\n  CASE WHEN control_open THEN control_port ELSE 0 END AS \"Ctrl\"\nFROM block_health_summary\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
+          "rawSql": "SELECT\n  CASE WHEN ftp_port IS NULL THEN NULL WHEN ftp_open THEN ftp_port ELSE 0 END AS \"FTP\",\n  CASE WHEN http_port IS NULL THEN NULL WHEN http_open THEN http_port ELSE 0 END AS \"HTTP\",\n  CASE WHEN control_port IS NULL THEN NULL WHEN control_open THEN control_port ELSE 0 END AS \"Ctrl\"\nFROM block_health_summary\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
           "refId": "A"
         }
       ],
