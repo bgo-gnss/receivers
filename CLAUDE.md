@@ -273,6 +273,12 @@ mkdir -p ~/.config/gpsconfig
 - **SQLAlchemy**: Database backend for job storage
 
 ### Monitoring Integration
+- **Grafana Dashboard**: GPS Receiver Health dashboard (`docs/grafana/`), see `docs/grafana/README.md`
+  - Runs via Docker Compose (`deployment/docker-dev/docker-compose.yml`) on port 3001
+  - Dashboard JSON: `docs/grafana/gps_health_dashboard.json`
+  - Datasource: PostgreSQL `gps_health` database
+  - Auto-provisioned dashboards and datasources via YAML configs
+  - To update: edit the JSON file and restart the Grafana container
 - **Icinga 2**: Health data can be sent to monitoring endpoints
 - **JSON logging**: Structured output for log aggregation systems
 - **Email alerts**: Integration with gps-validation@vedur.is

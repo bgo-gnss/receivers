@@ -59,7 +59,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 4,
+        "h": 5,
         "w": 4,
         "x": 0,
         "y": 1
@@ -71,7 +71,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -126,7 +128,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 4,
+        "h": 5,
         "w": 4,
         "x": 4,
         "y": 1
@@ -138,7 +140,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -189,7 +193,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 4,
+        "h": 5,
         "w": 4,
         "x": 8,
         "y": 1
@@ -201,7 +205,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -339,10 +345,10 @@
         ]
       },
       "gridPos": {
-        "h": 4,
+        "h": 5,
         "w": 12,
         "x": 0,
-        "y": 5
+        "y": 6
       },
       "id": 12,
       "options": {
@@ -350,7 +356,9 @@
         "footer": {
           "countRows": false,
           "fields": "",
-          "reducer": ["sum"],
+          "reducer": [
+            "sum"
+          ],
           "show": false
         },
         "showHeader": true,
@@ -489,7 +497,7 @@
         ]
       },
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 12,
         "y": 1
@@ -500,7 +508,9 @@
         "footer": {
           "countRows": false,
           "fields": "",
-          "reducer": ["sum"],
+          "reducer": [
+            "sum"
+          ],
           "show": false
         },
         "showHeader": true,
@@ -534,7 +544,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 9
+        "y": 12
       },
       "id": 6,
       "panels": [],
@@ -619,7 +629,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 10
+        "y": 13
       },
       "id": 7,
       "options": {
@@ -657,7 +667,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 20
+        "y": 23
       },
       "id": 8,
       "panels": [],
@@ -711,13 +721,15 @@
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 21
+        "y": 24
       },
       "id": 9,
       "options": {
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -777,7 +789,7 @@
         "h": 4,
         "w": 2,
         "x": 18,
-        "y": 21
+        "y": 24
       },
       "id": 13,
       "options": {
@@ -786,7 +798,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -846,7 +860,7 @@
         "h": 4,
         "w": 2,
         "x": 20,
-        "y": 21
+        "y": 24
       },
       "id": 14,
       "options": {
@@ -855,7 +869,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -914,7 +930,7 @@
         "h": 4,
         "w": 2,
         "x": 22,
-        "y": 21
+        "y": 24
       },
       "id": 15,
       "options": {
@@ -923,7 +939,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -981,7 +999,7 @@
         "h": 4,
         "w": 1,
         "x": 12,
-        "y": 21
+        "y": 24
       },
       "id": 16,
       "options": {
@@ -990,7 +1008,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -1050,7 +1070,7 @@
         "h": 4,
         "w": 2,
         "x": 13,
-        "y": 21
+        "y": 24
       },
       "id": 29,
       "options": {
@@ -1142,7 +1162,7 @@
         "h": 4,
         "w": 3,
         "x": 9,
-        "y": 21
+        "y": 24
       },
       "id": 17,
       "options": {
@@ -1151,7 +1171,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -1210,7 +1232,7 @@
         "h": 4,
         "w": 3,
         "x": 15,
-        "y": 21
+        "y": 24
       },
       "id": 23,
       "options": {
@@ -1219,7 +1241,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -1344,7 +1368,7 @@
         "h": 4,
         "w": 5,
         "x": 6,
-        "y": 25
+        "y": 28
       },
       "id": 22,
       "options": {
@@ -1352,7 +1376,9 @@
         "footer": {
           "countRows": false,
           "fields": "",
-          "reducer": ["sum"],
+          "reducer": [
+            "sum"
+          ],
           "show": false
         },
         "showHeader": true
@@ -1410,7 +1436,7 @@
         "h": 4,
         "w": 3,
         "x": 6,
-        "y": 21
+        "y": 24
       },
       "id": 28,
       "options": {
@@ -1489,7 +1515,7 @@
         "h": 4,
         "w": 3,
         "x": 11,
-        "y": 25
+        "y": 28
       },
       "id": 27,
       "options": {
@@ -1606,7 +1632,7 @@
         "h": 4,
         "w": 3,
         "x": 14,
-        "y": 25
+        "y": 28
       },
       "id": 24,
       "options": {
@@ -1685,7 +1711,7 @@
         "h": 4,
         "w": 3,
         "x": 17,
-        "y": 25
+        "y": 28
       },
       "id": 25,
       "options": {
@@ -1774,7 +1800,7 @@
         "h": 4,
         "w": 4,
         "x": 20,
-        "y": 25
+        "y": 28
       },
       "id": 26,
       "options": {
@@ -1783,7 +1809,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -1884,12 +1912,17 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 29
+        "y": 32
       },
       "id": 10,
       "options": {
         "legend": {
-          "calcs": ["mean", "min", "max", "lastNotNull"],
+          "calcs": [
+            "mean",
+            "min",
+            "max",
+            "lastNotNull"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -2003,7 +2036,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 37
+        "y": 40
       },
       "id": 11,
       "options": {
@@ -2011,7 +2044,9 @@
         "footer": {
           "countRows": false,
           "fields": "",
-          "reducer": ["sum"],
+          "reducer": [
+            "sum"
+          ],
           "show": false
         },
         "showHeader": true,
@@ -2043,7 +2078,11 @@
   "refresh": "5m",
   "schemaVersion": 38,
   "style": "dark",
-  "tags": ["gps", "health", "voltage"],
+  "tags": [
+    "gps",
+    "health",
+    "voltage"
+  ],
   "templating": {
     "list": [
       {

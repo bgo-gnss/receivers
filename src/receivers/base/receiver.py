@@ -1,5 +1,7 @@
 """Abstract base class for GPS/GNSS receivers."""
 
+import socket
+import subprocess
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Any, Dict, Union, Optional
@@ -33,6 +35,54 @@ class BaseReceiver(ABC):
 
         # Get common configuration values that all receivers need
         self.data_prepath = self.receivers_config.get_data_prepath()
+
+    def _quick_ping(self) -> bool:
+        """Quick ICMP ping to check if receiver is reachable (1 packet, 2s timeout).
+
+        Uses the router IP from station_info to perform a fast reachability check
+        before attempting downloads. This avoids wasting time on connection timeouts
+        when a station is completely offline.
+
+        Returns:
+            True if host responded to ping, False otherwise
+        """
+        host = self.station_info.get("router", {}).get("ip")
+        if not host:
+            # No IP configured, skip ping check
+            return True
+        try:
+            result = subprocess.run(
+                ["ping", "-c", "1", "-W", "2", host],
+                capture_output=True,
+                timeout=3,
+            )
+            return result.returncode == 0
+        except (subprocess.TimeoutExpired, Exception):
+            return False
+
+    def _quick_tcp_check(self, port: int) -> bool:
+        """Quick TCP connect check to verify service port is responding.
+
+        Catches the case where a host responds to ICMP ping but the actual
+        service (FTP/HTTP) is down or unresponsive.
+
+        Args:
+            port: TCP port number to check
+
+        Returns:
+            True if TCP connection succeeded, False otherwise
+        """
+        host = self.station_info.get("router", {}).get("ip")
+        if not host or not port:
+            return True
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(3)
+            sock.connect((host, port))
+            sock.close()
+            return True
+        except (socket.timeout, socket.error, OSError):
+            return False
 
     @abstractmethod
     def get_connection_status(self) -> Dict[str, Any]:
