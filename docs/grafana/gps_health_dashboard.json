@@ -1342,7 +1342,7 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 6,
+        "w": 5,
         "x": 6,
         "y": 25
       },
@@ -1488,7 +1488,7 @@
       "gridPos": {
         "h": 4,
         "w": 3,
-        "x": 12,
+        "x": 11,
         "y": 25
       },
       "id": 27,
@@ -1564,31 +1564,11 @@
             ]
           }
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Last DL"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": []
-              },
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "text",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
+        "w": 3,
         "x": 14,
         "y": 25
       },
@@ -1615,7 +1595,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  (SELECT CASE\n    WHEN (SELECT status FROM file_tracking WHERE sid='$station' AND session_type='15s_24hr' ORDER BY file_date DESC LIMIT 1) = 'downloaded' THEN 0\n    WHEN (SELECT status FROM file_tracking WHERE sid='$station' AND session_type='15s_24hr' ORDER BY file_date DESC LIMIT 1 OFFSET 1) = 'downloaded' THEN 1\n    ELSE 2 END) AS \"24h\",\n  (SELECT CASE\n    WHEN (SELECT status FROM file_tracking WHERE sid='$station' AND session_type='1Hz_1hr' ORDER BY file_date DESC LIMIT 1) = 'downloaded' THEN 0\n    WHEN (SELECT status FROM file_tracking WHERE sid='$station' AND session_type='1Hz_1hr' ORDER BY file_date DESC LIMIT 1 OFFSET 1) = 'downloaded' THEN 1\n    ELSE 2 END) AS \"1Hz\",\n  (SELECT CASE\n    WHEN (SELECT status FROM file_tracking WHERE sid='$station' AND session_type='status_1hr' ORDER BY file_date DESC LIMIT 1) = 'downloaded' THEN 0\n    WHEN (SELECT status FROM file_tracking WHERE sid='$station' AND session_type='status_1hr' ORDER BY file_date DESC LIMIT 1 OFFSET 1) = 'downloaded' THEN 1\n    ELSE 2 END) AS \"Status\",\n  (SELECT TO_CHAR(file_date, 'DD Mon') FROM file_tracking WHERE sid='$station' AND status='downloaded' ORDER BY file_date DESC LIMIT 1) AS \"Last DL\"",
+          "rawSql": "SELECT\n  (SELECT CASE\n    WHEN (SELECT status FROM file_tracking WHERE sid='$station' AND session_type='15s_24hr' ORDER BY file_date DESC LIMIT 1) = 'downloaded' THEN 0\n    WHEN (SELECT status FROM file_tracking WHERE sid='$station' AND session_type='15s_24hr' ORDER BY file_date DESC LIMIT 1 OFFSET 1) = 'downloaded' THEN 1\n    ELSE 2 END) AS \"24h\",\n  (SELECT CASE\n    WHEN (SELECT status FROM file_tracking WHERE sid='$station' AND session_type='1Hz_1hr' ORDER BY file_date DESC LIMIT 1) = 'downloaded' THEN 0\n    WHEN (SELECT status FROM file_tracking WHERE sid='$station' AND session_type='1Hz_1hr' ORDER BY file_date DESC LIMIT 1 OFFSET 1) = 'downloaded' THEN 1\n    ELSE 2 END) AS \"1Hz\",\n  (SELECT CASE\n    WHEN (SELECT status FROM file_tracking WHERE sid='$station' AND session_type='status_1hr' ORDER BY file_date DESC LIMIT 1) = 'downloaded' THEN 0\n    WHEN (SELECT status FROM file_tracking WHERE sid='$station' AND session_type='status_1hr' ORDER BY file_date DESC LIMIT 1 OFFSET 1) = 'downloaded' THEN 1\n    ELSE 2 END) AS \"Status\"",
           "refId": "A"
         }
       ],
@@ -1664,7 +1644,7 @@
       "gridPos": {
         "h": 4,
         "w": 3,
-        "x": 18,
+        "x": 17,
         "y": 25
       },
       "id": 25,
@@ -1748,8 +1728,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 3,
-        "x": 21,
+        "w": 4,
+        "x": 20,
         "y": 25
       },
       "id": 26,
