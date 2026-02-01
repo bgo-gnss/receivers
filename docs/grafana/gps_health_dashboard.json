@@ -1533,7 +1533,6 @@
           },
           "mappings": [],
           "noValue": "N/A",
-          "unit": "h",
           "decimals": 0,
           "thresholds": {
             "mode": "absolute",
