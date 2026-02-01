@@ -87,7 +87,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(DISTINCT sid) as \"Stations\" FROM checkcomm WHERE $__timeFilter(timestamp)",
+          "rawSql": "SELECT COUNT(DISTINCT sid) as \"Stations\" FROM block_power_status WHERE $__timeFilter(ts)",
           "refId": "A"
         }
       ],
@@ -154,7 +154,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(DISTINCT sid) as \"Critical\" FROM checkcomm WHERE overall_status = 'critical' AND $__timeFilter(timestamp)",
+          "rawSql": "SELECT COUNT(DISTINCT sid) as \"Critical\" FROM block_health_summary WHERE overall_status = 'critical' AND $__timeFilter(ts)",
           "refId": "A"
         }
       ],
@@ -217,7 +217,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(DISTINCT sid) as \"Warnings\" FROM checkcomm WHERE overall_status = 'warning' AND $__timeFilter(timestamp)",
+          "rawSql": "SELECT COUNT(DISTINCT sid) as \"Warnings\" FROM block_health_summary WHERE overall_status = 'warning' AND $__timeFilter(ts)",
           "refId": "A"
         }
       ],
@@ -371,7 +371,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT DISTINCT ON (sid)\n  sid as \"Station\",\n  recv_volt as \"Voltage\",\n  overall_status as \"Status\",\n  timestamp as \"Last Update\",\n  (SELECT MIN(recv_volt) FROM checkcomm c2 WHERE c2.sid = c1.sid AND $__timeFilter(c2.timestamp)) as \"Min Voltage\",\n  (SELECT MAX(recv_volt) FROM checkcomm c2 WHERE c2.sid = c1.sid AND $__timeFilter(c2.timestamp)) as \"Max Voltage\"\nFROM checkcomm c1\nWHERE $__timeFilter(timestamp)\n  AND overall_status IN ('critical', 'warning')\nORDER BY sid, timestamp DESC",
+          "rawSql": "SELECT DISTINCT ON (p.sid)\n  p.sid as \"Station\",\n  p.voltage as \"Voltage\",\n  hs.overall_status as \"Status\",\n  p.ts as \"Last Update\",\n  (SELECT MIN(p2.voltage) FROM block_power_status p2 WHERE p2.sid = p.sid AND $__timeFilter(p2.ts)) as \"Min Voltage\",\n  (SELECT MAX(p2.voltage) FROM block_power_status p2 WHERE p2.sid = p.sid AND $__timeFilter(p2.ts)) as \"Max Voltage\"\nFROM block_power_status p\nLEFT JOIN block_health_summary hs ON p.sid = hs.sid AND p.ts = hs.ts\nWHERE $__timeFilter(p.ts)\n  AND hs.overall_status IN ('critical', 'warning')\nORDER BY p.sid, p.ts DESC",
           "refId": "A"
         }
       ],
@@ -521,7 +521,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT DISTINCT ON (sid)\n  sid as \"Station\",\n  recv_volt as \"Voltage\",\n  overall_status as \"Status\",\n  timestamp as \"Last Update\"\nFROM checkcomm\nWHERE $__timeFilter(timestamp)\nORDER BY sid, timestamp DESC",
+          "rawSql": "SELECT DISTINCT ON (p.sid)\n  p.sid as \"Station\",\n  p.voltage as \"Voltage\",\n  hs.overall_status as \"Status\",\n  p.ts as \"Last Update\"\nFROM block_power_status p\nLEFT JOIN block_health_summary hs ON p.sid = hs.sid AND p.ts = hs.ts\nWHERE $__timeFilter(p.ts)\nORDER BY p.sid, p.ts DESC",
           "refId": "A"
         }
       ],
@@ -644,7 +644,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  timestamp AS time,\n  sid AS metric,\n  recv_volt AS value\nFROM checkcomm\nWHERE $__timeFilter(timestamp)\nORDER BY timestamp",
+          "rawSql": "SELECT\n  ts AS time,\n  sid AS metric,\n  voltage AS value\nFROM block_power_status\nWHERE $__timeFilter(ts)\nORDER BY ts",
           "refId": "A"
         }
       ],
@@ -734,7 +734,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT recv_volt as \"Voltage\"\nFROM checkcomm\nWHERE sid = '$station'\n  AND $__timeFilter(timestamp)\nORDER BY timestamp DESC\nLIMIT 1",
+          "rawSql": "SELECT voltage as \"Voltage\"\nFROM block_power_status\nWHERE sid = '$station'\n  AND $__timeFilter(ts)\nORDER BY ts DESC\nLIMIT 1",
           "refId": "A"
         }
       ],
@@ -1847,7 +1847,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  timestamp AS time,\n  recv_volt AS \"Voltage\"\nFROM checkcomm\nWHERE sid = '$station'\n  AND $__timeFilter(timestamp)\nORDER BY timestamp",
+          "rawSql": "SELECT\n  ts AS time,\n  voltage AS \"Voltage\"\nFROM block_power_status\nWHERE sid = '$station'\n  AND $__timeFilter(ts)\nORDER BY ts",
           "refId": "A"
         }
       ],
@@ -1970,7 +1970,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  timestamp AS \"Time\",\n  recv_volt AS \"Voltage\",\n  recv_temp AS \"Temperature\",\n  (recv_metrics->>'cpu_load')::jsonb->>'percent' AS \"CPU\",\n  (recv_metrics->>'disk')::jsonb->>'usage_percent' AS \"Disk\",\n  (recv_metrics->>'satellites')::jsonb->>'total' AS \"Satellites\",\n  overall_status AS \"Status\"\nFROM checkcomm\nWHERE sid = '$station'\n  AND $__timeFilter(timestamp)\nORDER BY timestamp DESC\nLIMIT 100",
+          "rawSql": "SELECT\n  p.ts AS \"Time\",\n  p.voltage AS \"Voltage\",\n  r.temperature AS \"Temperature\",\n  r.cpu_load AS \"CPU\",\n  d.usage_percent AS \"Disk\",\n  sat.total AS \"Satellites\",\n  hs.overall_status AS \"Status\"\nFROM block_power_status p\nLEFT JOIN block_receiver_status r ON p.sid = r.sid AND p.ts = r.ts\nLEFT JOIN block_disk_status d ON p.sid = d.sid AND p.ts = d.ts\nLEFT JOIN block_satellite_tracking sat ON p.sid = sat.sid AND p.ts = sat.ts\nLEFT JOIN block_health_summary hs ON p.sid = hs.sid AND p.ts = hs.ts\nWHERE p.sid = '$station'\n  AND $__timeFilter(p.ts)\nORDER BY p.ts DESC\nLIMIT 100",
           "refId": "A"
         }
       ],
@@ -1990,14 +1990,14 @@
           "type": "grafana-postgresql-datasource",
           "uid": "gps_health"
         },
-        "definition": "SELECT DISTINCT sid FROM checkcomm ORDER BY sid",
+        "definition": "SELECT sid FROM stations ORDER BY sid",
         "hide": 0,
         "includeAll": false,
         "label": "Station",
         "multi": false,
         "name": "station",
         "options": [],
-        "query": "SELECT DISTINCT sid FROM checkcomm ORDER BY sid",
+        "query": "SELECT sid FROM stations ORDER BY sid",
         "refresh": 1,
         "regex": "",
         "skipUrlSync": false,
