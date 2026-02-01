@@ -479,38 +479,39 @@ class NetRS(BaseReceiver):
                 self.station_id, performance_metrics, self.logger
             )
 
-            # Track downloaded files in database
-            try:
-                with DownloadTracker(self.station_id, session) as tracker:
-                    if tracker._connected:
-                        from datetime import date
+            # Track downloaded files in database (only when sync is enabled)
+            if sync:
+                try:
+                    with DownloadTracker(self.station_id, session) as tracker:
+                        if tracker._connected:
+                            from datetime import date
 
-                        # Track successful downloads and collect downloaded dates
-                        downloaded_dates = set()  # Set of (date, hour) tuples
-                        for file_path in final_files:
-                            filename = Path(file_path).name
-                            # Parse date from NetRS filename: BLEI202601170000A.T00 or .T00.gz
-                            match = re.match(rf"^{re.escape(self.station_id)}(\d{{4}})(\d{{2}})(\d{{2}})(\d{{4}})", filename, re.IGNORECASE)
-                            if match:
-                                file_date = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
-                                file_hour = int(match.group(4)[:2])  # First 2 digits are hour
-                                track_hour = file_hour if "1hr" in session.lower() else None
-                                file_size = Path(file_path).stat().st_size if Path(file_path).exists() else None
-                                tracker.mark_downloaded(file_date, track_hour, filename, file_size)
-                                downloaded_dates.add((file_date, track_hour))
+                            # Track successful downloads and collect downloaded dates
+                            downloaded_dates = set()  # Set of (date, hour) tuples
+                            for file_path in final_files:
+                                filename = Path(file_path).name
+                                # Parse date from NetRS filename: BLEI202601170000A.T00 or .T00.gz
+                                match = re.match(rf"^{re.escape(self.station_id)}(\d{{4}})(\d{{2}})(\d{{2}})(\d{{4}})", filename, re.IGNORECASE)
+                                if match:
+                                    file_date = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+                                    file_hour = int(match.group(4)[:2])  # First 2 digits are hour
+                                    track_hour = file_hour if "1hr" in session.lower() else None
+                                    file_size = Path(file_path).stat().st_size if Path(file_path).exists() else None
+                                    tracker.mark_downloaded(file_date, track_hour, filename, file_size)
+                                    downloaded_dates.add((file_date, track_hour))
 
-                        # Track missing files (requested but not downloaded) - compare by date/hour
-                        for req_filename in missing_files_dict.keys():
-                            match = re.match(rf"^{re.escape(self.station_id)}(\d{{4}})(\d{{2}})(\d{{2}})(\d{{4}})", req_filename, re.IGNORECASE)
-                            if match:
-                                file_date = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
-                                file_hour = int(match.group(4)[:2])
-                                track_hour = file_hour if "1hr" in session.lower() else None
-                                # Only mark as missing if this date/hour wasn't downloaded
-                                if (file_date, track_hour) not in downloaded_dates:
-                                    tracker.mark_missing(file_date, track_hour, req_filename)
-            except Exception as e:
-                self.logger.debug(f"File tracking failed: {e}")
+                            # Track missing files (requested but not downloaded) - compare by date/hour
+                            for req_filename in missing_files_dict.keys():
+                                match = re.match(rf"^{re.escape(self.station_id)}(\d{{4}})(\d{{2}})(\d{{2}})(\d{{4}})", req_filename, re.IGNORECASE)
+                                if match:
+                                    file_date = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+                                    file_hour = int(match.group(4)[:2])
+                                    track_hour = file_hour if "1hr" in session.lower() else None
+                                    # Only mark as missing if this date/hour wasn't downloaded
+                                    if (file_date, track_hour) not in downloaded_dates:
+                                        tracker.mark_missing(file_date, track_hour, req_filename)
+                except Exception as e:
+                    self.logger.debug(f"File tracking failed: {e}")
 
             return {
                 "station_id": self.station_id,

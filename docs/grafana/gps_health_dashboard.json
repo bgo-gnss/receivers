@@ -820,6 +820,7 @@
             "mode": "thresholds"
           },
           "mappings": [],
+          "noValue": "N/A",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -1552,6 +1553,7 @@
               "type": "value"
             }
           ],
+          "noValue": "N/A",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -1575,13 +1577,13 @@
         "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "auto",
-        "orientation": "auto",
+        "orientation": "vertical",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [],
           "fields": "",
-          "values": false
+          "values": true
         },
-        "textMode": "auto"
+        "textMode": "value_and_name"
       },
       "pluginVersion": "10.0.0",
       "targets": [
@@ -1593,11 +1595,11 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT CASE status\n  WHEN 'downloaded' THEN 0\n  WHEN 'missing' THEN 1\n  ELSE 2\nEND AS \"Files\"\nFROM file_tracking\nWHERE sid = '$station'\n  AND file_date = current_date\nORDER BY last_checked DESC LIMIT 1",
+          "rawSql": "SELECT\n  (SELECT CASE status WHEN 'downloaded' THEN 0 WHEN 'missing' THEN 1 ELSE 2 END\n   FROM file_tracking WHERE sid = '$station' AND session_type = '15s_24hr'\n   AND file_date >= current_date - 1 ORDER BY file_date DESC, last_checked DESC LIMIT 1) AS \"24h\",\n  (SELECT CASE status WHEN 'downloaded' THEN 0 WHEN 'missing' THEN 1 ELSE 2 END\n   FROM file_tracking WHERE sid = '$station' AND session_type = '1Hz_1hr'\n   AND file_date >= current_date - 1 ORDER BY file_date DESC, last_checked DESC LIMIT 1) AS \"1Hz\",\n  (SELECT CASE status WHEN 'downloaded' THEN 0 WHEN 'missing' THEN 1 ELSE 2 END\n   FROM file_tracking WHERE sid = '$station' AND session_type = 'status_1hr'\n   AND file_date >= current_date - 1 ORDER BY file_date DESC, last_checked DESC LIMIT 1) AS \"Status\"",
           "refId": "A"
         }
       ],
-      "title": "24h File Status",
+      "title": "File Status",
       "type": "stat"
     },
     {
