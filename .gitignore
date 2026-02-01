@@ -160,3 +160,4 @@ docs/diagrams/*_combined.pdf
 # Receiver data artifacts
 measasc.dat
 docs/legacy_scripts/config-*
+uv.lock
