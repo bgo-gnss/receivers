@@ -188,13 +188,12 @@ class TrimbleHTTPExtractor:
         health_data["metrics"]["memory"] = {"available": False}
         health_data["metrics"]["disk"] = {"available": False}
 
-        # Uptime: attempt for NetRS (has activity page), unavailable for others
-        if self.receiver_type == "NetRS":
+        # Uptime: try merge.xml (NetR9/NetR5), fall back to activity CGI (NetRS)
+        uptime_data = self._fetch_uptime_from_merge_xml()
+        if not uptime_data and self.receiver_type == "NetRS":
             uptime_data = self._fetch_uptime_from_activity_page()
-            if uptime_data:
-                health_data["metrics"]["uptime"] = uptime_data
-            else:
-                health_data["metrics"]["uptime"] = {"available": False}
+        if uptime_data:
+            health_data["metrics"]["uptime"] = uptime_data
         else:
             health_data["metrics"]["uptime"] = {"available": False}
 
@@ -515,6 +514,61 @@ class TrimbleHTTPExtractor:
 
         except Exception as e:
             self.logger.error(f"Error fetching NetRS voltage: {e}")
+            return None
+
+    def _fetch_uptime_from_merge_xml(self) -> Optional[Dict[str, Any]]:
+        """Fetch uptime from the web UI's merge.xml endpoint (NetR9/NetR5).
+
+        The Trimble web interface loads dynamic data from a merge.xml endpoint
+        under a CACHEDIR path. The XML contains uptime in day/hour/min/sec.
+
+        Returns:
+            Parsed uptime data or None
+        """
+        try:
+            # Discover CACHEDIR from root page
+            response = requests.get(self.base_url, timeout=self.timeout)
+            if response.status_code != 200:
+                return None
+
+            match = re.search(r"(CACHEDIR\d+)", response.text)
+            if not match:
+                return None
+
+            cache_dir = match.group(1)
+            url = f"{self.base_url}/{cache_dir}/xml/dynamic/merge.xml?powerData="
+            response = requests.get(url, auth=self.auth, timeout=self.timeout)
+            if response.status_code != 200:
+                return None
+
+            xml_text = response.text
+            # Parse uptime fields from XML: <uptime><day>N</day><hour>N</hour>...
+            day_m = re.search(r"<day>(\d+)</day>", xml_text)
+            hour_m = re.search(r"<hour>(\d+)</hour>", xml_text)
+            min_m = re.search(r"<min>(\d+)</min>", xml_text)
+            sec_m = re.search(r"<sec>(\d+)</sec>", xml_text)
+
+            if not day_m:
+                return None
+
+            days = int(day_m.group(1))
+            hours = int(hour_m.group(1)) if hour_m else 0
+            minutes = int(min_m.group(1)) if min_m else 0
+            seconds = int(sec_m.group(1)) if sec_m else 0
+
+            total_seconds = (days * 86400) + (hours * 3600) + (minutes * 60) + seconds
+
+            return {
+                "seconds": total_seconds,
+                "days": days,
+                "hours": hours,
+                "minutes": minutes,
+                "formatted": f"{days}d {hours}h {minutes}m",
+                "source": "merge_xml",
+            }
+
+        except Exception as e:
+            self.logger.debug(f"Could not fetch uptime from merge.xml: {e}")
             return None
 
     def _fetch_uptime_from_activity_page(self) -> Optional[Dict[str, Any]]:
