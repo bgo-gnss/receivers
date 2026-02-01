@@ -223,9 +223,13 @@ class StatusFormatter:
                 if isinstance(port_data, dict) and "open" in port_data:
                     is_open = port_data.get("open", False)
                     port_num = port_data.get("port", "?")
-                    emoji = "OK" if is_open else "X"
-                    port_parts.append(f"{port_name}:{port_num} {emoji}")
-            return "Ports: " + " | ".join(port_parts) if port_parts else "Ports: N/A"
+                    if is_open:
+                        port_parts.append(f"{port_name}:{port_num} OK")
+                    else:
+                        port_parts.append(f"{port_name}:{port_num} closed")
+                else:
+                    port_parts.append(f"{port_name}: N/A")
+            return "Ports: " + " | ".join(port_parts)
         else:
             return result.message
 
