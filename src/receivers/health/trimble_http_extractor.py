@@ -186,10 +186,20 @@ class TrimbleHTTPExtractor:
         # Trimble doesn't provide these metrics - mark as unavailable
         health_data["metrics"]["cpu_load"] = {"available": False}
         health_data["metrics"]["memory"] = {"available": False}
-        health_data["metrics"]["disk"] = {"available": False}
 
-        # Uptime: try merge.xml (NetR9/NetR5), fall back to activity CGI (NetRS)
-        uptime_data = self._fetch_uptime_from_merge_xml()
+        # Fetch merge.xml once for uptime + disk (NetR9/NetR5)
+        merge_xml = self._fetch_merge_xml()
+
+        # Disk usage from merge.xml dataLogger fileSystem
+        disk_data = self._parse_disk_from_merge_xml(merge_xml)
+        if disk_data:
+            health_data["metrics"]["disk"] = disk_data
+            statuses.append(disk_data.get("status", "unknown"))
+        else:
+            health_data["metrics"]["disk"] = {"available": False}
+
+        # Uptime from merge.xml, fall back to activity CGI (NetRS)
+        uptime_data = self._parse_uptime_from_merge_xml(merge_xml)
         if not uptime_data and self.receiver_type == "NetRS":
             uptime_data = self._fetch_uptime_from_activity_page()
         if uptime_data:
@@ -516,17 +526,16 @@ class TrimbleHTTPExtractor:
             self.logger.error(f"Error fetching NetRS voltage: {e}")
             return None
 
-    def _fetch_uptime_from_merge_xml(self) -> Optional[Dict[str, Any]]:
-        """Fetch uptime from the web UI's merge.xml endpoint (NetR9/NetR5).
+    def _fetch_merge_xml(self) -> Optional[str]:
+        """Fetch the merge.xml dynamic data from the Trimble web UI.
 
-        The Trimble web interface loads dynamic data from a merge.xml endpoint
-        under a CACHEDIR path. The XML contains uptime in day/hour/min/sec.
+        Discovers the CACHEDIR path from the root page, then fetches
+        merge.xml with powerData and dataLogger parameters.
 
         Returns:
-            Parsed uptime data or None
+            Raw XML text or None
         """
         try:
-            # Discover CACHEDIR from root page
             response = requests.get(self.base_url, timeout=self.timeout)
             if response.status_code != 200:
                 return None
@@ -536,40 +545,95 @@ class TrimbleHTTPExtractor:
                 return None
 
             cache_dir = match.group(1)
-            url = f"{self.base_url}/{cache_dir}/xml/dynamic/merge.xml?powerData="
+            url = f"{self.base_url}/{cache_dir}/xml/dynamic/merge.xml?powerData=&dataLogger="
             response = requests.get(url, auth=self.auth, timeout=self.timeout)
             if response.status_code != 200:
                 return None
 
-            xml_text = response.text
-            # Parse uptime fields from XML: <uptime><day>N</day><hour>N</hour>...
-            day_m = re.search(r"<day>(\d+)</day>", xml_text)
-            hour_m = re.search(r"<hour>(\d+)</hour>", xml_text)
-            min_m = re.search(r"<min>(\d+)</min>", xml_text)
-            sec_m = re.search(r"<sec>(\d+)</sec>", xml_text)
-
-            if not day_m:
-                return None
-
-            days = int(day_m.group(1))
-            hours = int(hour_m.group(1)) if hour_m else 0
-            minutes = int(min_m.group(1)) if min_m else 0
-            seconds = int(sec_m.group(1)) if sec_m else 0
-
-            total_seconds = (days * 86400) + (hours * 3600) + (minutes * 60) + seconds
-
-            return {
-                "seconds": total_seconds,
-                "days": days,
-                "hours": hours,
-                "minutes": minutes,
-                "formatted": f"{days}d {hours}h {minutes}m",
-                "source": "merge_xml",
-            }
+            return response.text
 
         except Exception as e:
-            self.logger.debug(f"Could not fetch uptime from merge.xml: {e}")
+            self.logger.debug(f"Could not fetch merge.xml: {e}")
             return None
+
+    def _parse_uptime_from_merge_xml(self, xml_text: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Parse uptime from merge.xml response.
+
+        XML format: <uptime><day>N</day><hour>N</hour><min>N</min><sec>N</sec></uptime>
+        """
+        if not xml_text:
+            return None
+
+        day_m = re.search(r"<day>(\d+)</day>", xml_text)
+        hour_m = re.search(r"<hour>(\d+)</hour>", xml_text)
+        min_m = re.search(r"<min>(\d+)</min>", xml_text)
+        sec_m = re.search(r"<sec>(\d+)</sec>", xml_text)
+
+        if not day_m:
+            return None
+
+        days = int(day_m.group(1))
+        hours = int(hour_m.group(1)) if hour_m else 0
+        minutes = int(min_m.group(1)) if min_m else 0
+        seconds = int(sec_m.group(1)) if sec_m else 0
+
+        total_seconds = (days * 86400) + (hours * 3600) + (minutes * 60) + seconds
+
+        return {
+            "seconds": total_seconds,
+            "days": days,
+            "hours": hours,
+            "minutes": minutes,
+            "formatted": f"{days}d {hours}h {minutes}m",
+            "source": "merge_xml",
+        }
+
+    def _parse_disk_from_merge_xml(self, xml_text: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Parse disk usage from merge.xml dataLogger fileSystem.
+
+        XML format:
+            <fileSystem><name>/Internal</name><size>8315994112</size>
+            <available>5763072</available><state>Mounted</state></fileSystem>
+        """
+        if not xml_text:
+            return None
+
+        # Find the /Internal filesystem block
+        fs_match = re.search(
+            r"<fileSystem>\s*<name>/Internal</name>\s*"
+            r"<size>(\d+)</size>\s*<available>(\d+)</available>",
+            xml_text,
+        )
+        if not fs_match:
+            return None
+
+        total_bytes = int(fs_match.group(1))
+        available_bytes = int(fs_match.group(2))
+
+        if total_bytes == 0:
+            return None
+
+        used_bytes = total_bytes - available_bytes
+        total_mb = round(total_bytes / (1024 * 1024), 1)
+        used_mb = round(used_bytes / (1024 * 1024), 1)
+        free_mb = round(available_bytes / (1024 * 1024), 1)
+        usage_percent = round((used_bytes / total_bytes) * 100, 1)
+
+        # Evaluate status using metric checker thresholds
+        status = "ok"
+        if usage_percent > 95:
+            status = "critical"
+        elif usage_percent > 85:
+            status = "warning"
+
+        return {
+            "usage_percent": usage_percent,
+            "used_mb": used_mb,
+            "total_mb": total_mb,
+            "free_mb": free_mb,
+            "status": status,
+            "source": "merge_xml",
+        }
 
     def _fetch_uptime_from_activity_page(self) -> Optional[Dict[str, Any]]:
         """Fetch uptime data from NetRS Activity CGI page.
