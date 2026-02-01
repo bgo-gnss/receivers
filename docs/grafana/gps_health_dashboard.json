@@ -1660,10 +1660,10 @@
                   "index": 0,
                   "text": "Active"
                 },
-                "0": {
-                  "color": "orange",
+                "-1": {
+                  "color": "text",
                   "index": 1,
-                  "text": "Unknown"
+                  "text": "N/A"
                 }
               },
               "type": "value"
@@ -1673,7 +1673,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "orange",
+                "color": "text",
                 "value": null
               }
             ]
@@ -1692,13 +1692,17 @@
         "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": ["lastNotNull"],
-          "fields": "",
-          "values": false
+        "orientation": "vertical",
+        "text": {
+          "titleSize": 10,
+          "valueSize": 28
         },
-        "textMode": "auto"
+        "reduceOptions": {
+          "calcs": [],
+          "fields": "",
+          "values": true
+        },
+        "textMode": "value_and_name"
       },
       "pluginVersion": "10.0.0",
       "targets": [
@@ -1710,11 +1714,11 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT CASE WHEN rx_status IS NOT NULL THEN 1 ELSE 0 END AS \"Logging\"\nFROM block_receiver_status\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
+          "rawSql": "SELECT\n  (SELECT CASE WHEN EXISTS (SELECT 1 FROM file_tracking WHERE sid='$station' AND session_type='15s_24hr' AND status='downloaded') THEN 1 ELSE -1 END) AS \"15s\",\n  (SELECT CASE WHEN EXISTS (SELECT 1 FROM file_tracking WHERE sid='$station' AND session_type='1Hz_1hr' AND status='downloaded') THEN 1 ELSE -1 END) AS \"1Hz\",\n  (SELECT CASE WHEN EXISTS (SELECT 1 FROM file_tracking WHERE sid='$station' AND session_type='status_1hr' AND status='downloaded') THEN 1 ELSE -1 END) AS \"Status\"",
           "refId": "A"
         }
       ],
-      "title": "SBF Logging",
+      "title": "Logging",
       "type": "stat"
     },
     {
