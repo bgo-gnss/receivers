@@ -1539,7 +1539,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "dark-grey",
+                "color": "text",
                 "value": null
               },
               {
@@ -1570,7 +1570,7 @@
                   "mode": "absolute",
                   "steps": [
                     {
-                      "color": "dark-grey",
+                      "color": "text",
                       "value": null
                     },
                     {
