@@ -156,3 +156,7 @@ docs/diagrams/*_combined.pdf
 
 # Legacy/archived scripts
 .legacy/
+
+# Receiver data artifacts
+measasc.dat
+docs/legacy_scripts/config-*
