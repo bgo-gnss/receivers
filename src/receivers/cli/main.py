@@ -1485,6 +1485,16 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
                     status = temp.get("status", "unknown")
                     print(f"  temperature: {value} C [{status}]")
 
+                # Disk usage
+                disk = metrics.get("disk", {})
+                if disk and disk.get("available") is not False:
+                    usage = disk.get("usage_percent")
+                    if usage is not None:
+                        total = disk.get("total_mb", 0)
+                        free = disk.get("free_mb", 0)
+                        status = disk.get("status", "unknown")
+                        print(f"  disk: {usage:.1f}% used ({free:.0f} MB free / {total:.0f} MB total) [{status}]")
+
                 # Position
                 if "position" in metrics:
                     pos = metrics["position"]
