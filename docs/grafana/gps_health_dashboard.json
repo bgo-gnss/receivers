@@ -345,7 +345,7 @@
         ]
       },
       "gridPos": {
-        "h": 5,
+        "h": 6,
         "w": 12,
         "x": 0,
         "y": 6
@@ -763,13 +763,28 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [],
+          "mappings": [
+            {
+              "options": {
+                "-1": {
+                  "color": "text",
+                  "index": 0,
+                  "text": "N/A"
+                }
+              },
+              "type": "value"
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "text",
                 "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
               },
               {
                 "color": "yellow",
@@ -781,7 +796,8 @@
               }
             ]
           },
-          "unit": "celsius"
+          "unit": "celsius",
+          "noValue": "N/A"
         },
         "overrides": []
       },
@@ -793,7 +809,7 @@
       },
       "id": 13,
       "options": {
-        "colorMode": "value",
+        "colorMode": "background_solid",
         "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
@@ -816,7 +832,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT temperature AS \"Temperature\"\nFROM block_receiver_status\nWHERE sid = '$station' AND temperature IS NOT NULL\nORDER BY ts DESC LIMIT 1",
+          "rawSql": "SELECT COALESCE((SELECT temperature FROM block_receiver_status WHERE sid = '$station' AND temperature IS NOT NULL ORDER BY ts DESC LIMIT 1), -1) AS \"Temperature\"",
           "refId": "A"
         }
       ],
@@ -833,14 +849,29 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [],
+          "mappings": [
+            {
+              "options": {
+                "-1": {
+                  "color": "text",
+                  "index": 0,
+                  "text": "N/A"
+                }
+              },
+              "type": "value"
+            }
+          ],
           "noValue": "N/A",
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "text",
                 "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
               },
               {
                 "color": "yellow",
@@ -864,7 +895,7 @@
       },
       "id": 14,
       "options": {
-        "colorMode": "value",
+        "colorMode": "background_solid",
         "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
@@ -887,7 +918,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT cpu_load AS \"CPU\"\nFROM block_receiver_status\nWHERE sid = '$station' AND cpu_load IS NOT NULL\nORDER BY ts DESC LIMIT 1",
+          "rawSql": "SELECT COALESCE((SELECT cpu_load FROM block_receiver_status WHERE sid = '$station' AND cpu_load IS NOT NULL ORDER BY ts DESC LIMIT 1), -1) AS \"CPU\"",
           "refId": "A"
         }
       ],
@@ -904,13 +935,28 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [],
+          "mappings": [
+            {
+              "options": {
+                "-1": {
+                  "color": "text",
+                  "index": 0,
+                  "text": "N/A"
+                }
+              },
+              "type": "value"
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "text",
                 "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
               },
               {
                 "color": "yellow",
@@ -922,7 +968,8 @@
               }
             ]
           },
-          "unit": "percent"
+          "unit": "percent",
+          "noValue": "N/A"
         },
         "overrides": []
       },
@@ -934,7 +981,7 @@
       },
       "id": 15,
       "options": {
-        "colorMode": "value",
+        "colorMode": "background_solid",
         "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
@@ -957,7 +1004,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT usage_percent AS \"Disk\"\nFROM block_disk_status\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
+          "rawSql": "SELECT COALESCE((SELECT usage_percent FROM block_disk_status WHERE sid = '$station' ORDER BY ts DESC LIMIT 1), -1) AS \"Disk\"",
           "refId": "A"
         }
       ],
