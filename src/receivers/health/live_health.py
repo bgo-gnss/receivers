@@ -87,8 +87,13 @@ def gather_comprehensive_health(
                     #   critical — station must stream RTK; down → overall CRITICAL
                     #   normal   — NTRIP expected; down → overall WARNING
                     #   none     — no NTRIP expected; not-found → "inactive" (no impact)
+                    # Per-station override, falling back to [ntrip_defaults]
+                    # importance in receivers.cfg, then hardcoded "none".
+                    default_importance = receivers_cfg.config.get(
+                        "ntrip_defaults", "importance", fallback="none"
+                    )
                     importance = station_config.get(
-                        "ntrip_importance", "none"
+                        "ntrip_importance", default_importance
                     ).lower()
 
                     if mp.is_active:
