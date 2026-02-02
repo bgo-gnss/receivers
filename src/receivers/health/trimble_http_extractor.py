@@ -721,13 +721,16 @@ class TrimbleHTTPExtractor:
     def _fetch_and_parse_tracking(self) -> Optional[Dict[str, Any]]:
         """Fetch and parse satellite tracking status.
 
-        Response format:
+        NetR9/NetR5 format:
             <Show TrackingStatus>
             Prn=9   Sys=GPS Elv=24 Azm=328 IODE=67  URA=2 L1snr=41 L2snr=38
-            Prn=31  Sys=GPS Elv=54 Azm=205 IODE=95  URA=2 L1snr=48 L2snr=46 L2Csnr=47
             Prn=17  Sys=GLN Elv=-45 Azm=000 IODE=69  URA=4
-            ...
             <end of Show TrackingStatus>
+
+        NetRS format (GPS-only, no Sys field):
+            <ShowTrackingStatus>
+            Chan=0  PRN=12  Elv=16   Azm=341 L1snr=40 L2snr=32 L2Csnr=0  IODE=39  URA=2.0
+            <end of ShowTrackingStatus>
 
         Returns:
             Parsed tracking data or None
@@ -738,9 +741,17 @@ class TrimbleHTTPExtractor:
             return None
 
         try:
-            # Parse satellite lines: Prn=XX Sys=XXX Elv=XX Azm=XXX ...snr=XX
+            # Try NetR9/NetR5 format first: Prn=XX Sys=XXX Elv=XX Azm=XXX
             sat_pattern = r"Prn=(\d+)\s+Sys=(\w+)\s+Elv=([-\d]+)\s+Azm=(\d+)"
             matches = re.findall(sat_pattern, response)
+
+            # Fall back to NetRS format: Chan=X PRN=Y Elv=Z Azm=W (GPS-only)
+            if not matches:
+                netrs_pattern = r"PRN=(\d+)\s+Elv=([-\d]+)\s+Azm=(\d+)"
+                netrs_matches = re.findall(netrs_pattern, response)
+                if netrs_matches:
+                    # Convert to same tuple format with "GPS" as system
+                    matches = [(prn, "GPS", elv, azm) for prn, elv, azm in netrs_matches]
 
             if not matches:
                 self.logger.warning(
@@ -770,9 +781,9 @@ class TrimbleHTTPExtractor:
                         "azimuth": int(azm),
                     }
 
-                    # Try to get SNR for this satellite
+                    # Try to get SNR for this satellite (case-insensitive PRN)
                     line_match = re.search(
-                        rf"Prn={prn}\s+.*?L1snr=(\d+)", response
+                        rf"PRN?={prn}\s+.*?L1snr=(\d+)", response, re.IGNORECASE
                     )
                     if line_match:
                         sat_info["l1_snr"] = int(line_match.group(1))
