@@ -1221,7 +1221,7 @@
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/Status/",
           "values": false
         },
         "textMode": "auto"
@@ -1236,11 +1236,12 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT CASE overall_status\n  WHEN 'healthy' THEN 0\n  WHEN 'warning' THEN 1\n  WHEN 'critical' THEN 2\n  ELSE 3\nEND AS \"Status\"\nFROM block_health_summary\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
+          "rawSql": "SELECT CASE overall_status\n  WHEN 'healthy' THEN 0\n  WHEN 'warning' THEN 1\n  WHEN 'critical' THEN 2\n  ELSE 3\nEND AS \"Status\",\nCASE WHEN status_details IS NOT NULL\n  THEN status_details\n  ELSE ''\nEND AS \"Details\"\nFROM block_health_summary\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
           "refId": "A"
         }
       ],
       "title": "Overall Status",
+      "description": "Details field shows what is causing non-healthy status (e.g. 'Voltage, FTP down')",
       "type": "stat"
     },
     {
@@ -1508,7 +1509,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT extract(epoch from now() - ts)::integer AS \"Age\"\nFROM block_health_summary\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
+          "rawSql": "SELECT extract(epoch from now() - max(latest_ts))::integer AS \"Age\"\nFROM (\n  SELECT max(ts) AS latest_ts FROM block_health_summary WHERE sid = '$station'\n  UNION ALL\n  SELECT max(ts) FROM block_power_status WHERE sid = '$station'\n  UNION ALL\n  SELECT max(ts) FROM block_receiver_status WHERE sid = '$station'\n  UNION ALL\n  SELECT max(ts) FROM block_pvt_geodetic WHERE sid = '$station'\n) t",
           "refId": "A"
         }
       ],
@@ -1826,6 +1827,11 @@
                   "color": "red",
                   "index": 3,
                   "text": "Error"
+                },
+                "4": {
+                  "color": "transparent",
+                  "index": 4,
+                  "text": "N/A"
                 }
               },
               "type": "value"
@@ -1874,7 +1880,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT CASE status\n  WHEN 'connected' THEN 0\n  WHEN 'connecting' THEN 1\n  WHEN 'idle' THEN 2\n  WHEN 'error' THEN 3\n  ELSE 2\nEND AS \"RTK\"\nFROM (\n  SELECT status, ts FROM block_ntrip_client WHERE sid = '$station'\n  UNION ALL\n  SELECT status, ts FROM block_ntrip_server WHERE sid = '$station'\n) ntrip\nORDER BY ts DESC LIMIT 1",
+          "rawSql": "SELECT CASE status\n  WHEN 'connected' THEN 0\n  WHEN 'connecting' THEN 1\n  WHEN 'idle' THEN 2\n  WHEN 'inactive' THEN 4\n  WHEN 'error' THEN 3\n  ELSE 2\nEND AS \"RTK\"\nFROM (\n  SELECT status, ts FROM block_ntrip_client WHERE sid = '$station'\n  UNION ALL\n  SELECT status, ts FROM block_ntrip_server WHERE sid = '$station'\n) ntrip\nORDER BY ts DESC LIMIT 1",
           "refId": "A"
         }
       ],
