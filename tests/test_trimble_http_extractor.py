@@ -58,6 +58,22 @@ SAMPLE_REFSTATION = """<RefStation
 Name='ARHO'
 >"""
 
+# Sample NetRS tracking response (GPS-only, different format from NetR9)
+SAMPLE_NETRS_TRACKING = """<ShowTrackingStatus>
+Chan=0  PRN=12  Elv=16   Azm=341 L1snr=40 L2snr=32 L2Csnr=0  IODE=39  URA=2.0
+Chan=1  PRN=22  Elv=17   Azm=238 L1snr=40 L2snr=21 L2Csnr=0  IODE=49  URA=2.0
+Chan=2  PRN=4   Elv=13   Azm=155 L1snr=37 L2snr=20 L2Csnr=0  IODE=0   URA=2.0
+Chan=3  PRN=1   Elv=48   Azm=114 L1snr=45 L2snr=34 L2Csnr=0  IODE=190 URA=2.0
+Chan=4  PRN=14  Elv=4    Azm=226 L1snr=37 L2snr=19 L2Csnr=0  IODE=207 URA=2.0
+Chan=5  PRN=6   Elv=22   Azm=273 L1snr=39 L2snr=34 L2Csnr=0  IODE=59  URA=2.0
+Chan=6  PRN=3   Elv=69   Azm=158 L1snr=49 L2snr=47 L2Csnr=0  IODE=58  URA=2.0
+Chan=7  PRN=32  Elv=16   Azm=28  L1snr=39 L2snr=32 L2Csnr=0  IODE=26  URA=2.0
+Chan=8  PRN=19  Elv=49   Azm=281 L1snr=46 L2snr=35 L2Csnr=0  IODE=47  URA=2.0
+Chan=9  PRN=17  Elv=59   Azm=235 L1snr=46 L2snr=44 L2Csnr=0  IODE=30  URA=2.0
+Chan=10 PRN=2   Elv=18   Azm=112 L1snr=40 L2snr=24 L2Csnr=0  IODE=78  URA=2.0
+Chan=11 PRN=28  Elv=12   Azm=61  L1snr=37 L2snr=19 L2Csnr=0  IODE=67  URA=2.0
+<end of ShowTrackingStatus>"""
+
 
 class MockResponse:
     """Mock HTTP response."""
@@ -505,6 +521,58 @@ class TestNetRSUptime:
         assert result["days"] == 10
         assert result["hours"] == 5
         assert result["source"] == "merge_xml"
+
+
+class TestNetRSTracking:
+    """Test NetRS tracking format parsing (Chan=X PRN=Y, GPS-only)."""
+
+    def test_netrs_tracking_format(self, netrs_extractor):
+        """Test parsing NetRS Chan/PRN tracking format."""
+        with patch.object(netrs_extractor, "_fetch_endpoint", return_value=SAMPLE_NETRS_TRACKING):
+            result = netrs_extractor._fetch_and_parse_tracking()
+
+        assert result is not None
+        assert result["total"] == 12  # All 12 satellites have positive elevation
+        assert result["visible"] == 12
+        assert result["by_constellation"]["GPS"] == 12
+        assert result["by_constellation"]["GLONASS"] == 0
+        assert len(result["satellites"]) == 12
+
+    def test_netrs_tracking_snr_parsed(self, netrs_extractor):
+        """Test that SNR values are parsed from NetRS format."""
+        with patch.object(netrs_extractor, "_fetch_endpoint", return_value=SAMPLE_NETRS_TRACKING):
+            result = netrs_extractor._fetch_and_parse_tracking()
+
+        # PRN=3 has L1snr=49 (highest)
+        sat3 = next(s for s in result["satellites"] if s["prn"] == 3)
+        assert sat3["l1_snr"] == 49
+        assert sat3["elevation"] == 69
+        assert sat3["azimuth"] == 158
+        assert sat3["system"] == "GPS"
+
+    def test_netrs_tracking_low_elevation_excluded(self, netrs_extractor):
+        """Test that satellites with zero/negative elevation are excluded."""
+        low_elv = """<ShowTrackingStatus>
+Chan=0  PRN=12  Elv=16   Azm=341 L1snr=40 L2snr=32
+Chan=1  PRN=22  Elv=0    Azm=238 L1snr=40 L2snr=21
+Chan=2  PRN=4   Elv=-5   Azm=155 L1snr=37 L2snr=20
+<end of ShowTrackingStatus>"""
+        with patch.object(netrs_extractor, "_fetch_endpoint", return_value=low_elv):
+            result = netrs_extractor._fetch_and_parse_tracking()
+
+        assert result is not None
+        assert result["total"] == 1  # Only PRN=12 (Elv=16) is above horizon
+        assert result["visible"] == 3  # All 3 parsed
+
+    def test_netr9_format_still_works(self, extractor):
+        """Verify the NetR9 Prn/Sys format still works after adding NetRS support."""
+        with patch.object(extractor, "_fetch_endpoint", return_value=SAMPLE_TRACKING):
+            result = extractor._fetch_and_parse_tracking()
+
+        assert result is not None
+        assert result["total"] == 6
+        assert result["by_constellation"]["GPS"] == 4
+        assert result["by_constellation"]["GLONASS"] == 2
 
 
 class TestFullExtractionNetRS:
