@@ -203,8 +203,9 @@ class HealthDatabaseWriter:
             overall_status = health_data.get("overall_status")
             ports = metrics.get("ports")
             if overall_status or ports:
+                status_details = self._build_status_details(metrics, overall_status)
                 self._write_health_summary(
-                    station_id, timestamp, overall_status, ports
+                    station_id, timestamp, overall_status, ports, status_details
                 )
 
             self._conn.commit()
@@ -389,6 +390,7 @@ class HealthDatabaseWriter:
         ts: datetime,
         overall_status: Optional[str],
         ports: Optional[Dict[str, Any]],
+        status_details: Optional[str] = None,
     ) -> None:
         """Write to block_health_summary table.
 
@@ -404,8 +406,8 @@ class HealthDatabaseWriter:
                 cur.execute("""
                     INSERT INTO block_health_summary
                         (sid, ts, overall_status, ftp_open, http_open, control_open,
-                         ftp_port, http_port, control_port)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         ftp_port, http_port, control_port, status_details)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (sid, ts) DO UPDATE SET
                         overall_status = EXCLUDED.overall_status,
                         ftp_open = EXCLUDED.ftp_open,
@@ -413,14 +415,65 @@ class HealthDatabaseWriter:
                         control_open = EXCLUDED.control_open,
                         ftp_port = EXCLUDED.ftp_port,
                         http_port = EXCLUDED.http_port,
-                        control_port = EXCLUDED.control_port
+                        control_port = EXCLUDED.control_port,
+                        status_details = EXCLUDED.status_details
                 """, (
                     sid, ts, overall_status,
                     ftp.get("open"), http.get("open"), control.get("open"),
                     ftp.get("port"), http.get("port"), control.get("port"),
+                    status_details,
                 ))
         except Exception as e:
             self.logger.debug(f"block_health_summary write failed: {e}")
+
+    def _build_status_details(
+        self,
+        metrics: Dict[str, Any],
+        overall_status: Optional[str],
+    ) -> Optional[str]:
+        """Build a short description of what is causing non-healthy status.
+
+        Scans individual metric statuses and port states to produce a
+        comma-separated list like ``"FTP down, NTRIP error"``.
+
+        Returns:
+            Detail string, or None when status is healthy/unknown.
+        """
+        if overall_status not in ("critical", "warning"):
+            return None
+
+        problems: List[str] = []
+
+        # Friendly labels for metric keys
+        labels = {
+            "power": "Voltage",
+            "temperature": "Temperature",
+            "cpu_load": "CPU",
+            "disk": "Disk",
+            "satellites": "Satellites",
+            "ntrip_server": "NTRIP",
+            "ntrip_client": "NTRIP client",
+            "data_streams": "Data streams",
+            "logging_sessions": "Logging",
+        }
+
+        for key, label in labels.items():
+            metric = metrics.get(key)
+            if not isinstance(metric, dict):
+                continue
+            status = metric.get("status", "").lower()
+            if status in ("critical", "warning"):
+                problems.append(label)
+
+        # Port checks
+        ports = metrics.get("ports")
+        if isinstance(ports, dict):
+            for name in ("ftp", "http", "control"):
+                port_info = ports.get(name, {})
+                if isinstance(port_info, dict) and not port_info.get("open", True):
+                    problems.append(f"{name.upper()} down")
+
+        return ", ".join(problems) if problems else None
 
     def write_timeseries_sample(
         self,

@@ -68,7 +68,15 @@ def gather_comprehensive_health(
                 metrics = health.setdefault("metrics", {})
                 if ntrip_status.mountpoints:
                     mp = ntrip_status.mountpoints[0]
-                    status_str = "connected" if mp.is_active else "error"
+                    if mp.is_active:
+                        status_str = "connected"
+                    elif mp.error_message and "not found" in mp.error_message.lower():
+                        # Mountpoint doesn't exist on the caster — station
+                        # simply has no NTRIP stream.  Report as inactive, not
+                        # as an error.
+                        status_str = "inactive"
+                    else:
+                        status_str = "error"
                     metrics["ntrip_server"] = {
                         "cd_index": mp.mountpoint,
                         "status": status_str,
