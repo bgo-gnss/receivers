@@ -174,6 +174,22 @@ class G10HTTPExtractor:
                 health_data["metrics"]["satellites"] = tracking_data
                 statuses.append(tracking_data.get("status", "unknown"))
 
+        # Correct port status if AJAX endpoints succeeded after initial test
+        # (BarracudaServer can be slow on initial unauthenticated GET but works
+        # fine for authenticated session requests)
+        http_data_fetched = status_xml is not None or tracking_json is not None
+        if http_data_fetched and "ports" in health_data["metrics"]:
+            http_port = health_data["metrics"]["ports"].get("http", {})
+            if not http_port.get("open"):
+                health_data["metrics"]["ports"]["http"]["open"] = True
+                health_data["metrics"]["ports"]["http"]["status"] = "ok"
+                health_data["connection"]["http_port"]["accessible"] = True
+                health_data["connection"]["http_port"]["status"] = "ok"
+                # Fix stale statuses from initial connection test timeout
+                statuses = [
+                    "ok" if s == "critical" else s for s in statuses
+                ]
+
         # Mark unavailable metrics
         health_data["metrics"]["temperature"] = {"available": False}
         health_data["metrics"]["cpu_load"] = {"available": False}
