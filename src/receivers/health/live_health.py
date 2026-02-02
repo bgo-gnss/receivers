@@ -58,6 +58,22 @@ def gather_comprehensive_health(
                         for mp in ntrip_status.mountpoints
                     ],
                 }
+
+                # Bridge caster NTRIP result to metrics so db_writer persists it.
+                # The caster check is the authoritative source — if the mountpoint
+                # is live on ntrcaster.vedur.is, the RTK service is working.
+                # This overrides any receiver-provided data (PolaRX5 SBF blocks
+                # show the receiver's outbound connection, but the caster is what
+                # downstream services actually consume).
+                metrics = health.setdefault("metrics", {})
+                if ntrip_status.mountpoints:
+                    mp = ntrip_status.mountpoints[0]
+                    status_str = "connected" if mp.is_active else "error"
+                    metrics["ntrip_server"] = {
+                        "cd_index": mp.mountpoint,
+                        "status": status_str,
+                        "error_code": mp.error_message,
+                    }
         except Exception as e:
             logger.debug(f"RTK status check skipped for {station_id}: {e}")
 
