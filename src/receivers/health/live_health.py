@@ -6,9 +6,22 @@ and ``cmd_status`` (thin wrapper).
 """
 
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
+
+
+def _recalculate_overall_status(statuses: List[str]) -> str:
+    """Recompute overall status from a list of individual metric statuses."""
+    if not statuses:
+        return "unknown"
+    if "critical" in statuses:
+        return "critical"
+    if "warning" in statuses:
+        return "warning"
+    if all(s == "ok" for s in statuses if s != "unknown"):
+        return "healthy"
+    return "unknown"
 
 
 def gather_comprehensive_health(
@@ -68,20 +81,61 @@ def gather_comprehensive_health(
                 metrics = health.setdefault("metrics", {})
                 if ntrip_status.mountpoints:
                     mp = ntrip_status.mountpoints[0]
+
+                    # Determine NTRIP metric status based on caster result
+                    # and station-level ntrip_importance setting.
+                    #   critical — station must stream RTK; down → overall CRITICAL
+                    #   normal   — NTRIP expected; down → overall WARNING
+                    #   none     — no NTRIP expected; not-found → "inactive" (no impact)
+                    importance = station_config.get(
+                        "ntrip_importance", "none"
+                    ).lower()
+
                     if mp.is_active:
                         status_str = "connected"
                     elif mp.error_message and "not found" in mp.error_message.lower():
-                        # Mountpoint doesn't exist on the caster — station
-                        # simply has no NTRIP stream.  Report as inactive, not
-                        # as an error.
-                        status_str = "inactive"
+                        # Mountpoint doesn't exist on the caster.
+                        if importance == "critical":
+                            status_str = "critical"
+                        elif importance == "normal":
+                            status_str = "warning"
+                        else:
+                            status_str = "inactive"
                     else:
-                        status_str = "error"
+                        # Real connectivity / auth error.
+                        if importance == "critical":
+                            status_str = "critical"
+                        elif importance == "normal":
+                            status_str = "warning"
+                        else:
+                            status_str = "error"
+
                     metrics["ntrip_server"] = {
                         "cd_index": mp.mountpoint,
                         "status": status_str,
                         "error_code": mp.error_message,
                     }
+
+                    # Recalculate overall_status when NTRIP importance
+                    # can affect it (critical or normal).
+                    if importance in ("critical", "normal") and status_str != "connected":
+                        # Collect existing metric statuses and append the NTRIP one.
+                        existing = []
+                        for key, val in metrics.items():
+                            if isinstance(val, dict) and "status" in val and key != "ports":
+                                s = val["status"]
+                                if s in ("ok", "warning", "critical"):
+                                    existing.append(s)
+                        new_overall = _recalculate_overall_status(existing)
+                        health["overall_status"] = new_overall
+
+                        # Update status_summary counts
+                        summary = health.get("status_summary", {})
+                        summary["healthy"] = sum(1 for s in existing if s == "ok")
+                        summary["warning"] = sum(1 for s in existing if s == "warning")
+                        summary["critical"] = sum(1 for s in existing if s == "critical")
+                        health["status_summary"] = summary
+
         except Exception as e:
             logger.debug(f"RTK status check skipped for {station_id}: {e}")
 
