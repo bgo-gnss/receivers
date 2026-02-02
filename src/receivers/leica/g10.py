@@ -199,7 +199,7 @@ class LeicaG10(BaseReceiver):
                 "error": "Station unreachable (ping failed)",
                 "duration": time.time() - start_time,
             }
-        ftp_port = self.station_info.get("receiver", {}).get("ftpport", 2160)
+        ftp_port = int(self.station_info.get("receiver", {}).get("ftpport", 2160))
         if not self._quick_tcp_check(ftp_port):
             self.logger.warning(
                 f"Station {self.station_id} FTP port {ftp_port} not responding, skipping download"
@@ -883,38 +883,61 @@ class LeicaG10(BaseReceiver):
     def get_health_status(self) -> Dict[str, Any]:
         """Get health status from Leica G10 receiver.
 
-        Uses standardized health checking from BaseReceiver with G10-specific
-        health inference from FTP file availability.
-
-        Note: Leica G10 has no direct health API - status inferred from data flow.
+        Tries HTTP extraction first (rich data from web interface AJAX endpoints),
+        then falls back to FTP-based health inference.
 
         Returns:
             Dictionary with health status information following health-data-spec.md
         """
+        # Get receiver host from station info
+        host = self.station_info.get("ip", self.station_info.get("host"))
+        if not host:
+            host = self.station_info.get("router", {}).get("ip")
+
+        http_port = int(self.station_info.get("receiver", {}).get("httpport", 8060))
+        ftp_port = int(self.station_info.get("receiver", {}).get("ftpport", 2160))
+
+        # Try HTTP extraction first (rich data from web interface)
+        if host:
+            try:
+                from ..health import G10HTTPExtractor
+
+                extractor = G10HTTPExtractor(
+                    host=host,
+                    station_id=self.station_id,
+                    port=http_port,
+                    timeout=10,
+                    ftp_port=ftp_port,
+                )
+                health_data = extractor.extract_health_data()
+                if health_data and health_data.get("metrics"):
+                    self.logger.info(
+                        f"Extracted health via HTTP from {host}:{http_port}"
+                    )
+                    return health_data
+            except Exception as e:
+                self.logger.warning(
+                    f"HTTP extraction failed, falling back to FTP: {e}"
+                )
+
+        # Fall back to FTP-based health inference
         from ..health import G10FTPHealthInferrer
 
-        # Step 1: Check connection health at all levels
         connection_data = self.check_connection_health(
-            http_port=80,
+            http_port=http_port,
             protocol_type="ftp",
-            protocol_port=21,
+            protocol_port=ftp_port,
         )
 
-        # Step 2: Infer health data from FTP file availability
         data_quality = None
         receiver_specific = None
 
         try:
-            # Get receiver host from station info
-            host = self.station_info.get("ip", self.station_info.get("host"))
-
             if host:
-                # Infer health data from FTP file analysis
                 inferrer = G10FTPHealthInferrer(
                     host=host, station_id=self.station_id, timeout=10
                 )
 
-                # Get FTP credentials
                 username = self.station_info.get("ftp_user", "anonymous")
                 password = self.station_info.get("ftp_pass", "")
                 ftp_path = self.station_info.get("ftp_path", "/data")
@@ -923,7 +946,6 @@ class LeicaG10(BaseReceiver):
                     ftp_path=ftp_path, username=username, password=password
                 )
 
-                # Map inferred data to standardized sections
                 data_quality = health_data.get("data_quality", {})
                 receiver_specific = health_data.get("receiver_specific", {})
 
@@ -939,7 +961,6 @@ class LeicaG10(BaseReceiver):
         except Exception as e:
             self.logger.error(f"Error inferring health data from FTP: {e}")
 
-        # Step 3: Build standardized health status structure
         return self.build_health_status(
             connection_data=connection_data,
             data_quality=data_quality,

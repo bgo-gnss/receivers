@@ -13,6 +13,7 @@ from .connection_checker import ConnectionChecker, ConnectionStatus
 from .rxtools_extractor import RxToolsExtractor, RxToolsNotFoundError
 from .trimble_http_extractor import TrimbleHTTPExtractor
 from .g10_ftp_inferrer import G10FTPHealthInferrer
+from .g10_http_extractor import G10HTTPExtractor
 from .json_writer import HealthJSONWriter
 from .db_writer import HealthDatabaseWriter
 from .file_tracker import FileTracker, compute_checksum
@@ -33,6 +34,7 @@ __all__ = [
     "RxToolsNotFoundError",
     "TrimbleHTTPExtractor",
     "G10FTPHealthInferrer",
+    "G10HTTPExtractor",
     "HealthJSONWriter",
     "HealthDatabaseWriter",
     "FileTracker",
