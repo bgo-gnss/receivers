@@ -443,9 +443,10 @@ class LeicaG10(BaseReceiver):
                                     year = int(match.group(1))
                                     month = int(match.group(2))
                                     day = int(match.group(3))
-                                    session_letter = match.group(5).lower()
+                                    hhmm = match.group(4)  # e.g., "2000" for hour 20
                                     file_date = date(year, month, day)
-                                    file_hour = None if session_letter == 'a' else ord(session_letter) - ord('a')
+                                    file_hour_from_name = int(hhmm[:2])
+                                    file_hour = None if file_hour_from_name == 0 else file_hour_from_name
                                     file_size = Path(file_path).stat().st_size if Path(file_path).exists() else None
                                     tracker.mark_downloaded(file_date, file_hour, filename, file_size)
                                     downloaded_dates.add((file_date, file_hour))
@@ -852,8 +853,10 @@ class LeicaG10(BaseReceiver):
                         )
                         if match:
                             file_date = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
-                            session_letter = match.group(5).lower()
-                            file_hour = None if session_letter == 'a' else ord(session_letter) - ord('a')
+                            hhmm = match.group(4)  # e.g., "2000" for hour 20
+                            file_hour_from_name = int(hhmm[:2])
+                            # Daily files have HHMM=0000; hourly files have actual hour
+                            file_hour = None if file_hour_from_name == 0 else file_hour_from_name
                         else:
                             # Try Leica format: SKFC018a.m00
                             match = re.match(rf"^{self.station_id}(\d{{3}})([a-x])", filename, re.IGNORECASE)
