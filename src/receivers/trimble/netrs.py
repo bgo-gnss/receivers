@@ -211,8 +211,9 @@ class NetRS(BaseReceiver):
 
         # Get configuration from station_info
         host = self.station_info.get("router", {}).get("ip")
-        http_port = self.station_info.get("receiver", {}).get("httpport", 8060)
-        ftp_port = self.station_info.get("receiver", {}).get("ftpport")
+        http_port = int(self.station_info.get("receiver", {}).get("httpport", 8060))
+        ftp_port_raw = self.station_info.get("receiver", {}).get("ftpport")
+        ftp_port = int(ftp_port_raw) if ftp_port_raw is not None else None
 
         # Step 1: Check connection health at all levels
         connection_data = self.check_connection_health(
