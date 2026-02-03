@@ -150,14 +150,22 @@ class TrimbleHTTPExtractor:
                 else:
                     statuses.append("warning")
 
-        # Fetch and parse voltages
+        # Fetch merge.xml early — used as fallback for voltage/temp and
+        # primary source for uptime + disk on all Trimble receivers.
+        merge_xml = self._fetch_merge_xml()
+
+        # Fetch and parse voltages (/prog/show? first, merge.xml fallback)
         voltage_data = self._fetch_and_parse_voltages()
+        if not voltage_data and merge_xml:
+            voltage_data = self._parse_voltage_from_merge_xml(merge_xml)
         if voltage_data:
             health_data["metrics"]["power"] = voltage_data
             statuses.append(voltage_data.get("status", "unknown"))
 
-        # Fetch and parse temperature
+        # Fetch and parse temperature (/prog/show? first, merge.xml fallback)
         temp_data = self._fetch_and_parse_temperature()
+        if not temp_data and merge_xml:
+            temp_data = self._parse_temperature_from_merge_xml(merge_xml)
         if temp_data:
             health_data["metrics"]["temperature"] = temp_data
             statuses.append(temp_data.get("status", "unknown"))
@@ -187,9 +195,6 @@ class TrimbleHTTPExtractor:
         health_data["metrics"]["cpu_load"] = {"available": False}
         health_data["metrics"]["memory"] = {"available": False}
 
-        # Fetch merge.xml once for uptime + disk (NetR9/NetR5)
-        merge_xml = self._fetch_merge_xml()
-
         # Disk usage from merge.xml dataLogger fileSystem
         disk_data = self._parse_disk_from_merge_xml(merge_xml)
         if disk_data:
@@ -210,7 +215,8 @@ class TrimbleHTTPExtractor:
         # Correct port status if any HTTP endpoint succeeded after initial test
         # (receiver may be slow to respond initially but data extraction works)
         http_data_fetched = any([
-            voltage_data, temp_data, tracking_data, position_data, system_data
+            voltage_data, temp_data, tracking_data, position_data,
+            system_data, merge_xml,
         ])
         if http_data_fetched and "ports" in health_data["metrics"]:
             http_port = health_data["metrics"]["ports"].get("http", {})
@@ -536,7 +542,9 @@ class TrimbleHTTPExtractor:
             Raw XML text or None
         """
         try:
-            response = requests.get(self.base_url, timeout=self.timeout)
+            response = requests.get(
+                self.base_url, auth=self.auth, timeout=self.timeout
+            )
             if response.status_code != 200:
                 return None
 
@@ -631,6 +639,71 @@ class TrimbleHTTPExtractor:
             "used_mb": used_mb,
             "total_mb": total_mb,
             "free_mb": free_mb,
+            "status": status,
+            "source": "merge_xml",
+        }
+
+    def _parse_voltage_from_merge_xml(
+        self, xml_text: Optional[str]
+    ) -> Optional[Dict[str, Any]]:
+        """Parse voltage from merge.xml <power> block.
+
+        XML format:
+            <power>
+              <P1><voltage>19.35</voltage><capacity>100</capacity><active>TRUE</active></P1>
+              <P2><voltage>0.60</voltage><capacity>0</capacity></P2>
+              <B1><voltage>8.37</voltage><capacity>100</capacity></B1>
+            </power>
+
+        Uses P1 (primary external power) as the main voltage reading.
+        """
+        if not xml_text:
+            return None
+
+        # Extract P1 (primary power input) voltage
+        p1_match = re.search(
+            r"<P1>\s*<voltage>([\d.]+)</voltage>", xml_text
+        )
+        if not p1_match:
+            return None
+
+        voltage = float(p1_match.group(1))
+        status = self._voltage_status(voltage)
+
+        self.logger.debug(
+            f"Voltage from merge.xml: {voltage:.1f}V (status: {status})"
+        )
+
+        return {
+            "voltage": voltage,
+            "status": status,
+            "source": "merge_xml",
+        }
+
+    def _parse_temperature_from_merge_xml(
+        self, xml_text: Optional[str]
+    ) -> Optional[Dict[str, Any]]:
+        """Parse temperature from merge.xml <power> block.
+
+        XML format:
+            <T1><celsius>48.91</celsius></T1>
+        """
+        if not xml_text:
+            return None
+
+        temp_match = re.search(r"<celsius>([\d.]+)</celsius>", xml_text)
+        if not temp_match:
+            return None
+
+        temperature = float(temp_match.group(1))
+        status = self._temperature_status(temperature)
+
+        self.logger.debug(
+            f"Temperature from merge.xml: {temperature:.1f}°C (status: {status})"
+        )
+
+        return {
+            "value": temperature,
             "status": status,
             "source": "merge_xml",
         }
@@ -904,6 +977,11 @@ class TrimbleHTTPExtractor:
                 sat_list = sats_match.group(1).split(",")
                 position_data["satellites_used"] = len(sat_list)
 
+            # If no parseable position data was found, return None
+            # (avoids injecting status=unknown that drags overall to unknown)
+            if "latitude" not in position_data and "fix_type" not in position_data:
+                return None
+
             # Determine status based on fix type (3D fix = ok)
             fix_type = position_data.get("fix_type", "")
             if "3D" in fix_type:
@@ -915,7 +993,7 @@ class TrimbleHTTPExtractor:
             else:
                 position_data["status"] = "unknown"
 
-            return position_data if position_data else None
+            return position_data
 
         except Exception as e:
             self.logger.error(f"Error parsing position response: {e}")
