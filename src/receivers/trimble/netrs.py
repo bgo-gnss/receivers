@@ -211,9 +211,12 @@ class NetRS(BaseReceiver):
 
         # Get configuration from station_info
         host = self.station_info.get("router", {}).get("ip")
-        http_port = int(self.station_info.get("receiver", {}).get("httpport", 8060))
-        ftp_port_raw = self.station_info.get("receiver", {}).get("ftpport")
+        receiver_config = self.station_info.get("receiver", {})
+        http_port = int(receiver_config.get("httpport", 8060))
+        ftp_port_raw = receiver_config.get("ftpport")
         ftp_port = int(ftp_port_raw) if ftp_port_raw is not None else None
+        http_user = receiver_config.get("user")
+        http_pass = receiver_config.get("pwd")
 
         # Step 1: Check connection health at all levels
         connection_data = self.check_connection_health(
@@ -236,6 +239,8 @@ class NetRS(BaseReceiver):
                     station_id=self.station_id,
                     port=http_port,
                     receiver_type="NetRS",
+                    username=http_user,
+                    password=http_pass,
                     ftp_port=ftp_port,
                 )
                 health_data = extractor.extract_health_data()
