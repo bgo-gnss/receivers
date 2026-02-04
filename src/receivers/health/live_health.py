@@ -46,6 +46,24 @@ def gather_comprehensive_health(
     # Base health from receiver (TCP/FTP probes, metrics extraction)
     health = receiver.get_health_status()
 
+    # Inject power_type from station config (used by db_writer for Grafana filtering)
+    power_type = station_config.get("power_type", "battery")
+    health["power_type"] = power_type
+
+    # For mains-powered stations, voltage thresholds don't apply —
+    # override voltage status to "ok" so it doesn't trigger alerts.
+    if power_type == "mains":
+        metrics = health.get("metrics", {})
+        power = metrics.get("power")
+        if isinstance(power, dict) and "voltage" in power:
+            if power.get("status") not in ("ok",):
+                old_status = power.get("status")
+                power["status"] = "ok"
+                logger.debug(
+                    f"Mains-powered {station_id}: voltage status "
+                    f"{old_status} -> ok"
+                )
+
     # NTRIP / RTK checks
     if include_ntrip:
         try:
@@ -92,8 +110,10 @@ def gather_comprehensive_health(
                     default_importance = receivers_cfg.config.get(
                         "ntrip_defaults", "importance", fallback="none"
                     )
-                    importance = station_config.get(
-                        "ntrip_importance", default_importance
+                    importance = (
+                        station_config.get("ntrip_importance")
+                        or default_importance
+                        or "none"
                     ).lower()
 
                     if mp.is_active:

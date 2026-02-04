@@ -85,12 +85,18 @@ class HealthDatabaseWriter:
             self.logger.error(f"Database connection failed: {e}")
             return False
 
-    def _ensure_station(self, station_id: str, receiver_type: str = "PolaRX5") -> bool:
+    def _ensure_station(
+        self,
+        station_id: str,
+        receiver_type: str = "PolaRX5",
+        power_type: Optional[str] = None,
+    ) -> bool:
         """Ensure station exists in stations table.
 
         Args:
             station_id: Station identifier (e.g., 'ISFS')
             receiver_type: Receiver type (e.g., 'PolaRX5')
+            power_type: Power supply type ('battery' or 'mains')
 
         Returns:
             True if station exists or was created
@@ -104,12 +110,14 @@ class HealthDatabaseWriter:
         try:
             with self._conn.cursor() as cur:
                 cur.execute("""
-                    INSERT INTO stations (sid, receiver_type)
-                    VALUES (%s, %s)
+                    INSERT INTO stations (sid, receiver_type, power_type)
+                    VALUES (%s, %s, %s)
                     ON CONFLICT (sid) DO UPDATE SET
+                        receiver_type = EXCLUDED.receiver_type,
+                        power_type = COALESCE(EXCLUDED.power_type, stations.power_type),
                         updated_at = NOW()
                     RETURNING sid
-                """, (station_id, receiver_type))
+                """, (station_id, receiver_type, power_type))
                 self._conn.commit()
                 self._station_cache.add(station_id)
                 return True
@@ -160,10 +168,11 @@ class HealthDatabaseWriter:
         try:
             station_id = health_data.get("station_id", "UNKN")
             receiver_type = health_data.get("receiver_type", "PolaRX5")
+            power_type = health_data.get("power_type")
             timestamp = self._parse_timestamp(health_data.get("timestamp"))
 
             # Ensure station exists
-            if not self._ensure_station(station_id, receiver_type):
+            if not self._ensure_station(station_id, receiver_type, power_type):
                 return False
 
             metrics = health_data.get("metrics", {})
