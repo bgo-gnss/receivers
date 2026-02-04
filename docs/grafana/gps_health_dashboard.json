@@ -345,10 +345,10 @@
         ]
       },
       "gridPos": {
-        "h": 6,
+        "h": 11,
         "w": 12,
-        "x": 0,
-        "y": 6
+        "x": 12,
+        "y": 1
       },
       "id": 12,
       "options": {
@@ -497,10 +497,10 @@
         ]
       },
       "gridPos": {
-        "h": 11,
+        "h": 6,
         "w": 12,
-        "x": 12,
-        "y": 1
+        "x": 0,
+        "y": 6
       },
       "id": 5,
       "options": {
@@ -566,8 +566,8 @@
             "axisColorMode": "text",
             "axisLabel": "Voltage (V)",
             "axisPlacement": "auto",
-            "axisSoftMin": 10,
-            "axisSoftMax": 22,
+            "axisSoftMin": 11,
+            "axisSoftMax": 14,
             "barAlignment": 0,
             "drawStyle": "line",
             "fillOpacity": 10,
@@ -613,11 +613,11 @@
               },
               {
                 "color": "yellow",
-                "value": 28
+                "value": 15
               },
               {
                 "color": "red",
-                "value": 30
+                "value": 16
               }
             ]
           },
@@ -686,7 +686,7 @@
           },
           "decimals": 2,
           "mappings": [],
-          "max": 30,
+          "max": 18,
           "min": 8,
           "thresholds": {
             "mode": "absolute",
@@ -705,11 +705,11 @@
               },
               {
                 "color": "yellow",
-                "value": 28
+                "value": 15
               },
               {
                 "color": "red",
-                "value": 30
+                "value": 16
               }
             ]
           },
@@ -746,11 +746,90 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT voltage as \"Voltage\"\nFROM block_power_status\nWHERE sid = '$station'\n  AND $__timeFilter(ts)\nORDER BY ts DESC\nLIMIT 1",
+          "rawSql": "SELECT p.voltage as \"Voltage\"\nFROM block_power_status p\nJOIN stations s ON s.sid = p.sid\nWHERE p.sid = '$station'\n  AND COALESCE(s.power_type, 'battery') != 'mains'\n  AND $__timeFilter(p.ts)\nORDER BY p.ts DESC\nLIMIT 1",
           "refId": "A"
         }
       ],
       "title": "Current Voltage - $station",
+      "type": "gauge"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2,
+          "mappings": [],
+          "max": 30,
+          "min": 12,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 15
+              },
+              {
+                "color": "green",
+                "value": 18
+              },
+              {
+                "color": "yellow",
+                "value": 28
+              },
+              {
+                "color": "red",
+                "value": 30
+              }
+            ]
+          },
+          "unit": "volt"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 24
+      },
+      "id": 30,
+      "options": {
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showThresholdLabels": true,
+        "showThresholdMarkers": true
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT p.voltage as \"Voltage\"\nFROM block_power_status p\nJOIN stations s ON s.sid = p.sid\nWHERE p.sid = '$station'\n  AND s.power_type = 'mains'\n  AND $__timeFilter(p.ts)\nORDER BY p.ts DESC\nLIMIT 1",
+          "refId": "A"
+        }
+      ],
+      "title": "Current Voltage (Mains) - $station",
       "type": "gauge"
     },
     {
@@ -1021,7 +1100,18 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [],
+          "mappings": [
+            {
+              "options": {
+                "-1": {
+                  "color": "text",
+                  "index": 0,
+                  "text": "N/A"
+                }
+              },
+              "type": "value"
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -1073,7 +1163,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT total AS \"Satellites\"\nFROM block_satellite_tracking\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
+          "rawSql": "SELECT COALESCE((SELECT total FROM block_satellite_tracking WHERE sid = '$station' ORDER BY ts DESC LIMIT 1), -1) AS \"Satellites\"",
           "refId": "A"
         }
       ],
@@ -1902,8 +1992,8 @@
             "axisColorMode": "text",
             "axisLabel": "Voltage (V)",
             "axisPlacement": "auto",
-            "axisSoftMin": 10,
-            "axisSoftMax": 22,
+            "axisSoftMin": 11,
+            "axisSoftMax": 14,
             "barAlignment": 0,
             "drawStyle": "line",
             "fillOpacity": 20,
@@ -1949,11 +2039,11 @@
               },
               {
                 "color": "yellow",
-                "value": 28
+                "value": 15
               },
               {
                 "color": "red",
-                "value": 30
+                "value": 16
               }
             ]
           },
