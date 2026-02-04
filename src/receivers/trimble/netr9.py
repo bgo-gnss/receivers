@@ -115,7 +115,7 @@ class NetR9(BaseReceiver):
                 )
                 receiver_config["httpport"] = 8060
             else:
-                receiver_config["httpport"] = http_port
+                receiver_config["httpport"] = int(http_port)
 
             # FTP port is optional for Trimble - downloads use HTTP
             # If specified, it can be used for connection health checks
