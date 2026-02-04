@@ -421,11 +421,11 @@
               },
               {
                 "color": "yellow",
-                "value": 15
+                "value": 28
               },
               {
                 "color": "red",
-                "value": 16
+                "value": 30
               }
             ]
           }
@@ -566,8 +566,8 @@
             "axisColorMode": "text",
             "axisLabel": "Voltage (V)",
             "axisPlacement": "auto",
-            "axisSoftMin": 11,
-            "axisSoftMax": 14,
+            "axisSoftMin": 10,
+            "axisSoftMax": 22,
             "barAlignment": 0,
             "drawStyle": "line",
             "fillOpacity": 10,
@@ -613,11 +613,11 @@
               },
               {
                 "color": "yellow",
-                "value": 15
+                "value": 28
               },
               {
                 "color": "red",
-                "value": 16
+                "value": 30
               }
             ]
           },
@@ -654,7 +654,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  ts AS time,\n  sid AS metric,\n  voltage AS value\nFROM block_power_status\nWHERE $__timeFilter(ts)\nORDER BY ts",
+          "rawSql": "SELECT\n  p.ts AS time,\n  p.sid AS metric,\n  p.voltage AS value\nFROM block_power_status p\nJOIN stations s ON s.sid = p.sid\nWHERE $__timeFilter(p.ts)\n  AND COALESCE(s.power_type, 'battery') != 'mains'\nORDER BY p.ts",
           "refId": "A"
         }
       ],
@@ -686,7 +686,7 @@
           },
           "decimals": 2,
           "mappings": [],
-          "max": 18,
+          "max": 30,
           "min": 8,
           "thresholds": {
             "mode": "absolute",
@@ -705,11 +705,11 @@
               },
               {
                 "color": "yellow",
-                "value": 15
+                "value": 28
               },
               {
                 "color": "red",
-                "value": 16
+                "value": 30
               }
             ]
           },
@@ -1902,8 +1902,8 @@
             "axisColorMode": "text",
             "axisLabel": "Voltage (V)",
             "axisPlacement": "auto",
-            "axisSoftMin": 11,
-            "axisSoftMax": 14,
+            "axisSoftMin": 10,
+            "axisSoftMax": 22,
             "barAlignment": 0,
             "drawStyle": "line",
             "fillOpacity": 20,
@@ -1949,11 +1949,11 @@
               },
               {
                 "color": "yellow",
-                "value": 15
+                "value": 28
               },
               {
                 "color": "red",
-                "value": 16
+                "value": 30
               }
             ]
           },

@@ -161,7 +161,11 @@ def get_station_config(station_id: str) -> Optional[Dict[str, Any]]:
                 'height': float(raw_config.get('antenna_height', 0) or 0),
                 'east': float(raw_config.get('antenna_east', 0) or 0),
                 'north': float(raw_config.get('antenna_north', 0) or 0),
-            }
+            },
+
+            # Station-level properties (unprefixed fields from stations.cfg)
+            'power_type': raw_config.get('power_type', 'battery'),
+            'ntrip_importance': raw_config.get('ntrip_importance'),
         }
 
         logger.debug(f"Successfully loaded configuration for {station_id}")
