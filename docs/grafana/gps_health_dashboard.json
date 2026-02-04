@@ -262,6 +262,24 @@
           {
             "matcher": {
               "id": "byName",
+              "options": "Station"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View station detail",
+                    "url": "/d/gps-health-voltage/gps-receiver-health-voltage?var-station=${__data.fields.Station}&${__url_time_range}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
               "options": "Status"
             },
             "properties": [
@@ -431,6 +449,24 @@
           }
         },
         "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Station"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View station detail",
+                    "url": "/d/gps-health-voltage/gps-receiver-health-voltage?var-station=${__data.fields.Station}&${__url_time_range}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
           {
             "matcher": {
               "id": "byName",
