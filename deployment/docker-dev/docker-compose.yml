@@ -74,7 +74,7 @@ services:
       - GF_SERVER_HTTP_PORT=3001
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_DATASOURCE_USER=${GF_DATASOURCE_USER:-bgo}
-      - GF_DATASOURCE_PASSWORD=${GF_DATASOURCE_PASSWORD:-}
+      - GF_DATASOURCE_PASSWORD=${GF_DATASOURCE_PASSWORD:-gps_health}
     volumes:
       - ../../docs/grafana/provisioning/dashboards/dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml:ro
       - ../../docs/grafana/gps_health_dashboard.json:/etc/grafana/provisioning/dashboards/json/gps_health_dashboard.json:ro
