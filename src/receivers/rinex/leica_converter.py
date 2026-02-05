@@ -198,8 +198,9 @@ class LeicaConverter(RawToRinexConverter):
         # We'll use a temp name and rename later
         temp_obs = output_dir / f"{m00_file.stem}.obs"
 
-        # Build teqc command
-        cmd = ["teqc"]
+        # Build teqc command using configured path
+        teqc_path = self.get_tool_path("teqc")
+        cmd = [str(teqc_path)]
 
         # Add config file if specified
         if self.teqc_config and self.teqc_config.exists():
@@ -261,12 +262,19 @@ class LeicaConverter(RawToRinexConverter):
         """
         rinex3_file = output_dir / f"{rinex2_file.stem}.rnx"
 
+        try:
+            gfzrnx_path = self.get_tool_path("gfzrnx")
+        except ConversionError:
+            self.logger.warning("gfzrnx not configured, keeping RINEX 2 output")
+            return rinex2_file
+
         cmd = [
-            "gfzrnx",
+            str(gfzrnx_path),
             "-finp", str(rinex2_file),
             "-fout", str(rinex3_file),
             "-vo", "3",  # Output RINEX version 3
             "-f",  # Force overwrite
+            "-q",  # Quiet mode - suppress warnings about RINEX 2→3 reformatting
         ]
 
         self.logger.info(f"Converting to RINEX 3: {' '.join(cmd)}")
