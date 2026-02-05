@@ -170,13 +170,17 @@ class ToolManager:
                 required_for=["NetR9", "NetRS", "NetR5", "Trimble"],
                 auto_install=False,
                 download_url=None,
-                version_cmd=["runpkr00", "-h"],
+                version_cmd=["runpkr00"],  # Outputs version on stderr with no args
+                version_pattern=r"Version (\d+\.\d+)",
                 manual_instructions=(
-                    "Trimble runpkr00 is proprietary software.\n"
-                    "Options:\n"
-                    "1. Install Trimble Business Center (includes runpkr00)\n"
-                    "2. Contact Trimble support for standalone tool\n"
-                    "3. Some Linux packages available from GNSS communities"
+                    "Trimble runpkr00 is available from UNAVCO:\n"
+                    "https://kb.unavco.org/article/trimble-runpkr00-latest-versions-744.html\n"
+                    "\n"
+                    "Download the Linux RPM and extract with:\n"
+                    "  pip install rpmfile\n"
+                    "  python -c \"import rpmfile; ...\"\n"
+                    "\n"
+                    "Or install via Trimble Business Center."
                 ),
             ),
             "sbf2rin": ToolInfo(
