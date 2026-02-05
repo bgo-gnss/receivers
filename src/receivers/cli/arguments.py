@@ -743,4 +743,11 @@ For subcommand help: receivers <command> --help
     except ImportError:
         pass
 
+    # TOS integration (optional - requires tostools)
+    try:
+        from .tos import create_tos_parser
+        create_tos_parser(subparsers)
+    except ImportError:
+        pass
+
     return parser
