@@ -169,6 +169,8 @@ class LeicaConverter(RawToRinexConverter):
             if self._use_mdb2rinex:
                 self.logger.info("Using mdb2rinex (native RINEX 3)")
                 final_obs = self._run_mdb2rinex(working_file, output_dir, observation_date)
+                # mdb2rinex also creates nav files - remove them (we only want obs)
+                self._cleanup_nav_files(output_dir)
             else:
                 self.logger.info("Using teqc + gfzrnx (RINEX 2 fallback)")
                 # Run teqc to get RINEX 2
@@ -333,6 +335,36 @@ class LeicaConverter(RawToRinexConverter):
                 return matches[0]
 
         return None
+
+    def _cleanup_nav_files(self, output_dir: Path) -> None:
+        """Remove navigation files created by mdb2rinex.
+
+        mdb2rinex creates both observation and navigation files, but we only
+        want the observation files. This removes GLONASS nav (.xxg) and
+        GPS nav (.xxn) files.
+
+        Args:
+            output_dir: Directory containing mdb2rinex output
+        """
+        # Navigation file patterns (RINEX 2/3 naming)
+        nav_patterns = [
+            "*.??n",  # GPS nav (e.g., skfc0340.26n)
+            "*.??g",  # GLONASS nav (e.g., skfc0340.26g)
+            "*.??l",  # Galileo nav
+            "*.??p",  # Mixed nav
+            "*_MN.rnx",  # RINEX 3 mixed nav
+            "*_GN.rnx",  # RINEX 3 GPS nav
+            "*_RN.rnx",  # RINEX 3 GLONASS nav
+            "*_EN.rnx",  # RINEX 3 Galileo nav
+        ]
+
+        for pattern in nav_patterns:
+            for nav_file in output_dir.glob(pattern):
+                try:
+                    nav_file.unlink()
+                    self.logger.debug(f"Removed nav file: {nav_file.name}")
+                except Exception as e:
+                    self.logger.warning(f"Could not remove {nav_file}: {e}")
 
     def _run_teqc(self, m00_file: Path, output_dir: Path) -> Path:
         """Run teqc to convert m00 to RINEX 2 (fallback).
