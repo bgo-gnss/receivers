@@ -104,20 +104,53 @@ chmod +x ~/.local/share/gps-rinex-tools/bin/teqc
 
 ### runpkr00
 
-**runpkr00** extracts raw data from Trimble T00/T02 files.
+**runpkr00** extracts raw data from Trimble T00/T02 files to DAT/TGD format for teqc processing.
 
-#### Options
+#### Download
 
-1. **Trimble Business Center** - Includes runpkr00
-2. **Contact Trimble** - Request standalone tool
-3. **Community packages** - Some Linux distributions have packages
+Available from [UNAVCO Knowledge Base](https://kb.unavco.org/article/trimble-runpkr00-latest-versions-744.html):
 
-#### Install (if you have the binary)
+- **Linux v5.40 RPM**: `runpkr00-5.40-1trmb.i586.rpm` (32-bit, statically linked)
+- **Linux v6.03 RPM**: `runpkr00-6.03-3trmb.i686.rpm` (requires libT01Utils8)
+
+#### Install from RPM
 
 ```bash
+# Download the RPM
+wget https://unavco.knowledgebase.co/assets/744/runpkr00-5.40-1trmb.i586.rpm
+
+# Install rpmfile Python package for extraction
+pip install rpmfile
+
+# Extract the binary
+python3 << 'EOF'
+import rpmfile
+import os
+with rpmfile.open('runpkr00-5.40-1trmb.i586.rpm') as rpm:
+    for member in rpm.getmembers():
+        if member.name.endswith('/runpkr00'):
+            with open('runpkr00', 'wb') as f:
+                f.write(rpm.extractfile(member.name).read())
+            os.chmod('runpkr00', 0o755)
+            print(f"Extracted: runpkr00")
+EOF
+
+# Install to tools directory
 cp runpkr00 ~/.local/share/gps-rinex-tools/bin/
-chmod +x ~/.local/share/gps-rinex-tools/bin/runpkr00
 receivers tools configure
+
+# Verify
+receivers tools list
+```
+
+#### Usage
+
+```bash
+# Extract T02 file to TGD format (for teqc)
+runpkr00 -g -d input.T02
+
+# Produces: input.TGD (or input.DAT if not RT27 format)
+# The -g flag is required for GNSS signals from RT27 files
 ```
 
 ---
