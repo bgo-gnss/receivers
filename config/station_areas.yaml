@@ -1,0 +1,280 @@
+# Station Area Configuration
+# Defines geographic and volcanic monitoring areas for GPS stations
+# Stations can belong to multiple areas (overlap allowed)
+#
+# Area types:
+#   - volcanic: Volcanic system monitoring networks
+#   - regional: Geographic regions
+#
+# Usage: Used by Grafana dashboard for filtering voltage/health plots by area
+
+# =============================================================================
+# VOLCANIC MONITORING AREAS
+# =============================================================================
+
+volcanic_areas:
+  svartsengi:
+    name: "Svartsengi"
+    description: "Svartsengi/Sundhnúkur volcanic system"
+    stations:
+      - GRIV   # Grindavík
+      - GRVM   # Grindavík miðja
+      - GRVV   # Grindavík vestur
+      - THOB   # Þorbjörn
+      - THNA   # ÞorbjörnNA
+      - THOC   # Þorvaldshraun
+      - SUND   # Suðurstrandavegur
+      - BLAL   # Bláa Lónið
+      - NBIO   # Blá Lónið Norður
+      - VOGC   # Vogar
+      - VOGS   # Vogsósar
+      - HAFC   # Hafnir
+      - FEFC   # Festarfjall
+      - GONH   # Gónhóll við Geldingadali
+
+  hengill:
+    name: "Hengill"
+    description: "Hengill volcanic system"
+    stations:
+      - HVER   # Hveragerði
+      - HVEH   # Hverahlíð
+      - KLVC   # Kleifarvatn
+      - HELF   # Helgafell
+      - NVEL   # Nesjavellir
+
+  hekla:
+    name: "Hekla"
+    description: "Hekla volcanic system"
+    stations:
+      - HESA   # Hestalda
+      - FJOC   # Fjórðungsalda
+      - BALD   # Búrfellsalda
+      - BUDH   # Búðarháls
+      - FEDG   # Feðgar
+      - NAMC   # Náma við Stapafell
+      - ISAK   # Ísakot
+
+  katla:
+    name: "Katla"
+    description: "Katla volcanic system (Mýrdalsjökull)"
+    stations:
+      - GOLA   # Goðaland við Mýrdalsjökul
+      - ENTC   # Enta
+      - HVOL   # Láguhvolar
+      - HRSC   # Hrafntinnusker
+      - AUST   # Austmannsbunga
+      - SOHO   # Sólheimaheiði
+
+  eyjafjallajokull:
+    name: "Eyjafjallajökull"
+    description: "Eyjafjallajökull volcanic system"
+    stations:
+      - FIM2   # Fimmvörðuháls
+      - THEY   # Þorvaldseyri
+      - GOLA   # Goðaland (shared with Katla)
+
+  torfajokull:
+    name: "Torfajökull"
+    description: "Torfajökull volcanic system"
+    stations:
+      - LAHC   # Landmannalaugar
+      - ALHV   # Álftavatnsheidi
+      - HRSC   # Hrafntinnusker (shared)
+
+  grimsvotn:
+    name: "Grímsvötn"
+    description: "Grímsvötn volcanic system"
+    stations:
+      - GFUM   # Grímsfjall
+      - GRFS   # Grænufjöll
+      - HAFS   # Hamarinn
+      - JOKU   # Jökulheimar
+      - SKHA   # Skaftafell (reference)
+
+  bardarbunga:
+    name: "Bárðarbunga"
+    description: "Bárðarbunga volcanic system (Holuhraun)"
+    stations:
+      - DYNA   # Dyngja
+      - DYNC   # Dyngjuháls
+      - DYNG   # Dyngja
+      - DYNY   # Dyngjufjöll ytri
+      - KISA   # Kista í Bárðarbungu
+      - VONC   # Vonarskard
+
+  oraefajokull:
+    name: "Öræfajökull"
+    description: "Öræfajökull volcanic system"
+    stations:
+      - KVSK   # Kvísker
+      - SVIE   # Svínafellsheiði Efri
+      - SVIN   # Svínafellsheiði Neðri
+      - SKHA   # Skaftafell
+      - GFEL   # Geitafell
+
+  askja:
+    name: "Askja"
+    description: "Askja volcanic system"
+    stations:
+      - DYNY   # Dyngjufjöll ytri (shared)
+      - OLAC   # Ólafsgígar
+      - INSK   # Innri Skúti
+
+  krafla:
+    name: "Krafla"
+    description: "Krafla volcanic system"
+    stations:
+      - HLFJ   # Hlíðarfjall
+      - KRAC   # Krafla
+      - MYVA   # Mývatn
+      - NAMC   # Náma
+      - KRIV   # Krísuvík area stations
+
+# =============================================================================
+# REGIONAL MONITORING AREAS
+# =============================================================================
+
+regional_areas:
+  reykjanes:
+    name: "Reykjanes"
+    description: "Reykjanes Peninsula"
+    stations:
+      - GRIV   # Grindavík
+      - GRVM   # Grindavík miðja
+      - GRVV   # Grindavík vestur
+      - THOB   # Þorbjörn
+      - THNA   # ÞorbjörnNA
+      - THOC   # Þorvaldshraun
+      - SUND   # Suðurstrandavegur
+      - BLAL   # Bláa Lónið
+      - NBIO   # Blá Lónið Norður
+      - VOGC   # Vogar
+      - VOGS   # Vogsósar
+      - HAFC   # Hafnir
+      - FEFC   # Festarfjall
+      - GONH   # Gónhóll
+      - KEIC   # Keilir
+      - ELDC   # Eldvorp
+      - KLVC   # Kleifarvatn
+      - HELF   # Helgafell
+      - HVER   # Hveragerði
+      - HVEH   # Hverahlíð
+      - GAKE   # Garður
+      - RIFC   # Reykjanesviti
+      - ELEY   # Eldey
+      - HVAS   # Hvassahraun
+      - AFST   # Afstapahraun
+
+  south:
+    name: "South Iceland"
+    description: "South Iceland coastal region"
+    stations:
+      - SELF   # Selfoss
+      - HELC   # Hella
+      - HVOL   # Láguhvolar
+      - VMEY   # Vestmannaeyjar
+      - THEY   # Þorvaldseyri
+      - STOR   # Stórólfshvoll
+      - KALT   # Kálfholt
+      - SKRO   # Skriða
+      - SKDA   # Skálholt
+      - LAVI   # Laugarvatn
+      - HAUD   # Haukadalur
+
+  north:
+    name: "North Iceland"
+    description: "North Iceland"
+    stations:
+      - AKUR   # Akureyri
+      - MYVA   # Mývatn
+      - HLFJ   # Hlíðarfjall
+      - GMEY   # Grímsey
+      - KOSK   # Kópasker
+      - RHOF   # Raufarhöfn
+      - HOTJ   # Hóll á Tjörnesi
+      - HUSM   # Húsmúli
+      - BLON   # Blönduós
+      - HRAC   # Hraun á Skaga
+      - GRAN   # Granastaðir
+      - SIFJ   # Siglufjörður
+      - SJUK   # Húsavík
+
+  east:
+    name: "East Iceland"
+    description: "East Iceland"
+    stations:
+      - VOFJ   # Vopnafjörður
+      - SEY1   # Seyðisfjörður stations
+      - SEY2
+      - SEY3
+      - SEY4
+      - SEY5
+      - SEY6
+      - SEY7
+      - SEY8
+      - SEY9
+      - SEYD   # Seyðisfjörður
+      - INTA   # Kárahnjúkar
+      - FAGD   # Fagridalur
+      - HAHV   # Hafrahvammagljúfur
+
+  west_westfjords:
+    name: "West / Westfjords"
+    description: "West Iceland and Westfjords"
+    stations:
+      - ISAF   # Ísafjörður
+      - ISFS   # Ísafjörður (Gleiðarhalli)
+      - HOLV   # Hólmavík
+      - BJTV   # Bjargtangaviti
+      - FTEY   # Flatey
+      - HITA   # Hítardalur
+      - FIHO   # Fíflholt
+
+  central_highlands:
+    name: "Central Highlands"
+    description: "Central highland interior"
+    stations:
+      - HVEL   # Hveravellir
+      - LAHC   # Landmannalaugar
+      - ALHV   # Álftavatnsheidi
+      - VONC   # Vonarskard
+      - JOKU   # Jökulheimar
+      - DYNA   # Dyngja
+      - DYNC   # Dyngjuháls
+      - EYVI   # Eyvindstungur
+
+  vatnajokull:
+    name: "Vatnajökull"
+    description: "Vatnajökull glacier region"
+    stations:
+      - GFUM   # Grímsfjall
+      - GRFS   # Grænufjöll
+      - HAFS   # Hamarinn
+      - DYNA   # Dyngja
+      - DYNC   # Dyngjuháls
+      - DYNG   # Dyngja
+      - DYNY   # Dyngjufjöll ytri
+      - KISA   # Kista
+      - VONC   # Vonarskard
+      - KVSK   # Kvísker
+      - SVIE   # Svínafellsheiði Efri
+      - SVIN   # Svínafellsheiði Neðri
+      - SKHA   # Skaftafell
+      - JOKU   # Jökulheimar
+      - GSIG   # Gengissigið (Kverkfjöll)
+      - KVEC   # Kverkfjöll
+      - OLAC   # Ólafsgígar
+      - INSK   # Innri Skúti
+
+# =============================================================================
+# NOTES
+# =============================================================================
+#
+# To add a station to an area, simply add its 4-letter ID to the stations list.
+# Stations can appear in multiple areas (volcanic + regional, or overlapping volcanic systems).
+#
+# For Grafana integration:
+# - This file is read to populate dropdown variables
+# - SQL queries filter by station lists from selected areas
+#
+# Map view coordinates are stored in stations.cfg or the database (lat/lon fields)
