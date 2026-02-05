@@ -1,0 +1,597 @@
+"""
+Tool manager for RINEX conversion tools.
+
+Handles downloading, installing, and configuring external tools required
+for converting GPS receiver data to RINEX format.
+"""
+
+import logging
+import os
+import platform
+import shutil
+import stat
+import subprocess
+import tempfile
+import zipfile
+from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
+from typing import Callable, Dict, List, Optional
+from urllib.request import urlretrieve
+
+logger = logging.getLogger(__name__)
+
+
+class InstallStatus(Enum):
+    """Tool installation status."""
+    NOT_INSTALLED = "not_installed"
+    INSTALLED = "installed"
+    OUTDATED = "outdated"
+    MANUAL_REQUIRED = "manual_required"
+    UNAVAILABLE = "unavailable"
+
+
+@dataclass
+class InstallResult:
+    """Result of a tool installation attempt."""
+    success: bool
+    tool_name: str
+    message: str
+    path: Optional[Path] = None
+    version: Optional[str] = None
+
+
+@dataclass
+class ToolInfo:
+    """Information about a RINEX conversion tool."""
+    name: str
+    description: str
+    required_for: List[str]  # Receiver types that need this tool
+    auto_install: bool  # Can be automatically installed
+    download_url: Optional[str] = None
+    manual_instructions: Optional[str] = None
+    version_cmd: Optional[List[str]] = None  # Command to check version
+    version_pattern: Optional[str] = None  # Regex to extract version
+    install_func: Optional[Callable] = None  # Custom install function
+
+
+# Default installation directory
+DEFAULT_TOOLS_DIR = Path.home() / ".local" / "share" / "gps-rinex-tools"
+
+
+class ToolManager:
+    """Manages installation and configuration of RINEX conversion tools."""
+
+    # Tool download URLs and metadata
+    TOOLS: Dict[str, ToolInfo] = {}
+
+    def __init__(self, tools_dir: Optional[Path] = None):
+        """Initialize tool manager.
+
+        Args:
+            tools_dir: Directory for tool installations.
+                      Defaults to ~/.local/share/gps-rinex-tools/
+        """
+        self.tools_dir = tools_dir or DEFAULT_TOOLS_DIR
+        self.tools_dir.mkdir(parents=True, exist_ok=True)
+        self.bin_dir = self.tools_dir / "bin"
+        self.bin_dir.mkdir(exist_ok=True)
+
+        # Initialize tool definitions
+        self._init_tool_definitions()
+
+        logger.debug(f"ToolManager initialized with tools_dir={self.tools_dir}")
+
+    def _init_tool_definitions(self):
+        """Initialize tool definitions with download URLs and metadata."""
+
+        # Detect platform for download URLs
+        system = platform.system().lower()
+        machine = platform.machine().lower()
+
+        if system == "linux" and machine in ("x86_64", "amd64"):
+            teqc_url = "https://www.unavco.org/software/data-processing/teqc/development/teqc_CentOSLx86_64d.zip"
+            # gfzrnx now requires registration - set to None for manual install
+            gfzrnx_url = None
+            rnx2crx_url = "https://terras.gsi.go.jp/ja/crx2rnx/RNXCMP_4.1.0_Linux_x86_64bit.tar.gz"
+        elif system == "darwin":
+            teqc_url = "https://www.unavco.org/software/data-processing/teqc/development/teqc_OSX_x86_64_Intel.zip"
+            gfzrnx_url = None
+            rnx2crx_url = "https://terras.gsi.go.jp/ja/crx2rnx/RNXCMP_4.1.0_MacOS_Intel.tar.gz"
+        else:
+            teqc_url = None
+            gfzrnx_url = None
+            rnx2crx_url = None
+
+        self.TOOLS = {
+            "teqc": ToolInfo(
+                name="teqc",
+                description="UNAVCO TEQC - converts Leica MDB/m00 and other formats to RINEX 2",
+                required_for=["G10", "Leica"],
+                auto_install=teqc_url is not None,
+                download_url=teqc_url,
+                version_cmd=["teqc", "-version"],
+                version_pattern=r"teqc\s+(\d{4}[A-Za-z]+\d+)",
+                manual_instructions=(
+                    "Download from https://www.unavco.org/software/data-processing/teqc/teqc.html\n"
+                    "Note: TEQC is end-of-life (final release 2019-02-25) but still works."
+                ),
+            ),
+            "gfzrnx": ToolInfo(
+                name="gfzrnx",
+                description="GFZ RINEX toolkit - format conversion, QC, splicing",
+                required_for=["all"],
+                auto_install=False,  # Now requires registration
+                download_url=gfzrnx_url,
+                version_cmd=["gfzrnx", "-h"],
+                version_pattern=r"gfzrnx\s+version\s+([\d.]+)",
+                manual_instructions=(
+                    "gfzrnx now requires registration (free for non-commercial use).\n"
+                    "1. Visit https://gnss.gfz-potsdam.de/services/gfzrnx\n"
+                    "2. Register for a free scientific license\n"
+                    "3. Download the Linux 64-bit binary\n"
+                    "4. Copy to ~/.local/share/gps-rinex-tools/bin/gfzrnx\n"
+                    "5. Run: chmod +x ~/.local/share/gps-rinex-tools/bin/gfzrnx"
+                ),
+            ),
+            "rnx2crx": ToolInfo(
+                name="rnx2crx",
+                description="Hatanaka compression - RINEX to compact RINEX",
+                required_for=["all"],
+                auto_install=rnx2crx_url is not None,
+                download_url=rnx2crx_url,
+                version_cmd=["RNX2CRX", "-h"],
+                version_pattern=r"ver\.?\s*([\d.]+)",
+                manual_instructions=(
+                    "Download from https://terras.gsi.go.jp/ja/crx2rnx.html\n"
+                    "Includes both RNX2CRX and CRX2RNX."
+                ),
+            ),
+            "mdb2rinex": ToolInfo(
+                name="mdb2rinex",
+                description="Leica MDB to RINEX 3 converter (official Leica tool)",
+                required_for=["G10", "Leica", "GR10", "GR25", "GR30", "GR50"],
+                auto_install=False,
+                download_url=None,
+                version_cmd=["mdb2rinex", "-h"],
+                manual_instructions=(
+                    "Download from Leica myWorld portal:\n"
+                    "1. Visit https://myworld.leica-geosystems.com/\n"
+                    "2. Navigate to your GNSS receiver product (GR10, GR25, etc.)\n"
+                    "3. Find 'Tools' section and download mdb2rinex for Linux\n"
+                    "4. Extract and copy to this tools directory\n"
+                    "\n"
+                    "Requires a Leica myWorld account (free with Leica hardware)."
+                ),
+            ),
+            "runpkr00": ToolInfo(
+                name="runpkr00",
+                description="Trimble T00/T02 raw data extractor",
+                required_for=["NetR9", "NetRS", "NetR5", "Trimble"],
+                auto_install=False,
+                download_url=None,
+                version_cmd=["runpkr00", "-h"],
+                manual_instructions=(
+                    "Trimble runpkr00 is proprietary software.\n"
+                    "Options:\n"
+                    "1. Install Trimble Business Center (includes runpkr00)\n"
+                    "2. Contact Trimble support for standalone tool\n"
+                    "3. Some Linux packages available from GNSS communities"
+                ),
+            ),
+            "sbf2rin": ToolInfo(
+                name="sbf2rin",
+                description="Septentrio SBF to RINEX converter",
+                required_for=["PolaRX5", "PolaRx5", "Septentrio"],
+                auto_install=False,
+                download_url=None,
+                version_cmd=["sbf2rin", "-h"],
+                manual_instructions=(
+                    "Part of Septentrio RxTools package.\n"
+                    "1. Download RxTools from https://www.septentrio.com/\n"
+                    "2. Requires Septentrio account (free)\n"
+                    "3. Install and add to PATH or copy sbf2rin binary"
+                ),
+            ),
+        }
+
+    def list_tools(self) -> Dict[str, Dict]:
+        """List all tools with their installation status.
+
+        Returns:
+            Dictionary of tool name -> status info
+        """
+        result = {}
+        for name, info in self.TOOLS.items():
+            installed_path = self._find_tool(name)
+            status = InstallStatus.INSTALLED if installed_path else InstallStatus.NOT_INSTALLED
+
+            if not info.auto_install and not installed_path:
+                status = InstallStatus.MANUAL_REQUIRED
+
+            version = None
+            if installed_path and info.version_cmd:
+                version = self._get_tool_version(name, installed_path)
+
+            result[name] = {
+                "name": name,
+                "description": info.description,
+                "status": status.value,
+                "installed_path": str(installed_path) if installed_path else None,
+                "version": version,
+                "auto_install": info.auto_install,
+                "required_for": info.required_for,
+            }
+
+        return result
+
+    def _find_tool(self, name: str) -> Optional[Path]:
+        """Find a tool in the tools directory or system PATH.
+
+        Args:
+            name: Tool name
+
+        Returns:
+            Path to tool if found, None otherwise
+        """
+        # Check our tools bin directory first
+        tool_path = self.bin_dir / name
+        if tool_path.exists() and os.access(tool_path, os.X_OK):
+            return tool_path
+
+        # Check for uppercase variants (RNX2CRX, CRX2RNX)
+        for variant in [name, name.upper(), name.lower()]:
+            tool_path = self.bin_dir / variant
+            if tool_path.exists() and os.access(tool_path, os.X_OK):
+                return tool_path
+
+        # Check system PATH
+        system_path = shutil.which(name)
+        if system_path:
+            return Path(system_path)
+
+        # Check uppercase in PATH
+        system_path = shutil.which(name.upper())
+        if system_path:
+            return Path(system_path)
+
+        return None
+
+    def _get_tool_version(self, name: str, path: Path) -> Optional[str]:
+        """Get version string for a tool.
+
+        Args:
+            name: Tool name
+            path: Path to tool executable
+
+        Returns:
+            Version string or None
+        """
+        info = self.TOOLS.get(name)
+        if not info or not info.version_cmd:
+            return None
+
+        try:
+            cmd = [str(path)] + info.version_cmd[1:]
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            output = result.stdout + result.stderr
+
+            if info.version_pattern:
+                import re
+                match = re.search(info.version_pattern, output)
+                if match:
+                    return match.group(1)
+
+            # Return first line as fallback
+            lines = output.strip().split('\n')
+            if lines:
+                return lines[0][:50]
+
+        except Exception as e:
+            logger.debug(f"Could not get version for {name}: {e}")
+
+        return None
+
+    def install(self, tool_name: str, force: bool = False) -> InstallResult:
+        """Install a specific tool.
+
+        Args:
+            tool_name: Name of tool to install
+            force: Force reinstall even if already installed
+
+        Returns:
+            InstallResult with success status and details
+        """
+        if tool_name not in self.TOOLS:
+            return InstallResult(
+                success=False,
+                tool_name=tool_name,
+                message=f"Unknown tool: {tool_name}. Available: {', '.join(self.TOOLS.keys())}",
+            )
+
+        info = self.TOOLS[tool_name]
+
+        # Check if already installed
+        existing = self._find_tool(tool_name)
+        if existing and not force:
+            return InstallResult(
+                success=True,
+                tool_name=tool_name,
+                message=f"Already installed at {existing}",
+                path=existing,
+            )
+
+        # Check if auto-install is available
+        if not info.auto_install:
+            return InstallResult(
+                success=False,
+                tool_name=tool_name,
+                message=f"Manual installation required:\n{info.manual_instructions}",
+            )
+
+        # Dispatch to specific installer
+        if tool_name == "teqc":
+            return self._install_teqc()
+        elif tool_name == "gfzrnx":
+            return self._install_gfzrnx()
+        elif tool_name == "rnx2crx":
+            return self._install_hatanaka()
+        else:
+            return InstallResult(
+                success=False,
+                tool_name=tool_name,
+                message=f"No installer implemented for {tool_name}",
+            )
+
+    def install_all(self, force: bool = False) -> List[InstallResult]:
+        """Install all auto-installable tools.
+
+        Args:
+            force: Force reinstall
+
+        Returns:
+            List of InstallResults
+        """
+        results = []
+        for name, info in self.TOOLS.items():
+            if info.auto_install:
+                result = self.install(name, force=force)
+                results.append(result)
+        return results
+
+    def _install_teqc(self) -> InstallResult:
+        """Install TEQC from UNAVCO."""
+        info = self.TOOLS["teqc"]
+
+        if not info.download_url:
+            return InstallResult(
+                success=False,
+                tool_name="teqc",
+                message="No download URL for this platform",
+            )
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmpdir = Path(tmpdir)
+                zip_path = tmpdir / "teqc.zip"
+
+                logger.info(f"Downloading teqc from {info.download_url}")
+                print(f"Downloading teqc...")
+                urlretrieve(info.download_url, zip_path)
+
+                # Extract
+                with zipfile.ZipFile(zip_path, 'r') as zf:
+                    zf.extractall(tmpdir)
+
+                # Find the teqc binary
+                teqc_bin = None
+                for f in tmpdir.iterdir():
+                    if f.name.startswith("teqc") and f.is_file():
+                        teqc_bin = f
+                        break
+
+                if not teqc_bin:
+                    return InstallResult(
+                        success=False,
+                        tool_name="teqc",
+                        message="Could not find teqc binary in downloaded archive",
+                    )
+
+                # Copy to bin directory
+                dest = self.bin_dir / "teqc"
+                shutil.copy2(teqc_bin, dest)
+                dest.chmod(dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+                logger.info(f"Installed teqc to {dest}")
+                print(f"✅ Installed teqc to {dest}")
+
+                return InstallResult(
+                    success=True,
+                    tool_name="teqc",
+                    message=f"Installed to {dest}",
+                    path=dest,
+                )
+
+        except Exception as e:
+            logger.error(f"Failed to install teqc: {e}")
+            return InstallResult(
+                success=False,
+                tool_name="teqc",
+                message=f"Installation failed: {e}",
+            )
+
+    def _install_gfzrnx(self) -> InstallResult:
+        """Install GFZRNX from GFZ Potsdam."""
+        info = self.TOOLS["gfzrnx"]
+
+        if not info.download_url:
+            return InstallResult(
+                success=False,
+                tool_name="gfzrnx",
+                message="No download URL for this platform",
+            )
+
+        try:
+            dest = self.bin_dir / "gfzrnx"
+
+            logger.info(f"Downloading gfzrnx from {info.download_url}")
+            print(f"Downloading gfzrnx...")
+            urlretrieve(info.download_url, dest)
+
+            # Make executable
+            dest.chmod(dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+            logger.info(f"Installed gfzrnx to {dest}")
+            print(f"✅ Installed gfzrnx to {dest}")
+
+            return InstallResult(
+                success=True,
+                tool_name="gfzrnx",
+                message=f"Installed to {dest}",
+                path=dest,
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to install gfzrnx: {e}")
+            return InstallResult(
+                success=False,
+                tool_name="gfzrnx",
+                message=f"Installation failed: {e}",
+            )
+
+    def _install_hatanaka(self) -> InstallResult:
+        """Install Hatanaka compression tools (RNX2CRX, CRX2RNX)."""
+        info = self.TOOLS["rnx2crx"]
+
+        if not info.download_url:
+            return InstallResult(
+                success=False,
+                tool_name="rnx2crx",
+                message="No download URL for this platform",
+            )
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmpdir = Path(tmpdir)
+                archive_path = tmpdir / "rnxcmp.tar.gz"
+
+                logger.info(f"Downloading Hatanaka tools from {info.download_url}")
+                print(f"Downloading Hatanaka compression tools...")
+                urlretrieve(info.download_url, archive_path)
+
+                # Extract tar.gz
+                import tarfile
+                with tarfile.open(archive_path, 'r:gz') as tf:
+                    tf.extractall(tmpdir)
+
+                # Find the binaries (they're in a subdirectory)
+                installed = []
+                for root, _dirs, files in os.walk(tmpdir):
+                    for fname in files:
+                        if fname in ("RNX2CRX", "CRX2RNX", "rnx2crx", "crx2rnx"):
+                            src = Path(root) / fname
+                            dest = self.bin_dir / fname
+                            shutil.copy2(src, dest)
+                            dest.chmod(dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+                            installed.append(fname)
+                            print(f"✅ Installed {fname} to {dest}")
+
+                if not installed:
+                    return InstallResult(
+                        success=False,
+                        tool_name="rnx2crx",
+                        message="Could not find RNX2CRX/CRX2RNX in archive",
+                    )
+
+                return InstallResult(
+                    success=True,
+                    tool_name="rnx2crx",
+                    message=f"Installed: {', '.join(installed)}",
+                    path=self.bin_dir / installed[0],
+                )
+
+        except Exception as e:
+            logger.error(f"Failed to install Hatanaka tools: {e}")
+            return InstallResult(
+                success=False,
+                tool_name="rnx2crx",
+                message=f"Installation failed: {e}",
+            )
+
+    def check_tools(self, receiver_type: Optional[str] = None) -> Dict[str, bool]:
+        """Check which tools are available.
+
+        Args:
+            receiver_type: Optional filter by receiver type
+
+        Returns:
+            Dictionary of tool name -> available status
+        """
+        result = {}
+        for name, info in self.TOOLS.items():
+            if receiver_type:
+                # Check if tool is needed for this receiver type
+                if receiver_type not in info.required_for and "all" not in info.required_for:
+                    continue
+
+            path = self._find_tool(name)
+            result[name] = path is not None
+
+        return result
+
+    def get_tool_path(self, name: str) -> Optional[Path]:
+        """Get path to a tool if installed.
+
+        Args:
+            name: Tool name
+
+        Returns:
+            Path to tool or None
+        """
+        return self._find_tool(name)
+
+    def configure_receivers_cfg(self, config_path: Optional[Path] = None) -> bool:
+        """Update receivers.cfg with tool paths.
+
+        Args:
+            config_path: Path to receivers.cfg (default: ~/.config/gpsconfig/receivers.cfg)
+
+        Returns:
+            True if config was updated
+        """
+        if config_path is None:
+            config_path = Path.home() / ".config" / "gpsconfig" / "receivers.cfg"
+
+        if not config_path.exists():
+            logger.warning(f"Config file not found: {config_path}")
+            return False
+
+        import configparser
+        config = configparser.ConfigParser()
+        config.read(config_path)
+
+        if "rinex_tools" not in config:
+            config["rinex_tools"] = {}
+
+        updated = False
+        for name in self.TOOLS:
+            path = self._find_tool(name)
+            if path:
+                key = f"{name}_path"
+                current = config.get("rinex_tools", key, fallback=None)
+                if current != str(path):
+                    config["rinex_tools"][key] = str(path)
+                    updated = True
+                    logger.info(f"Updated {key} = {path}")
+
+        if updated:
+            with open(config_path, 'w') as f:
+                config.write(f)
+            print(f"Updated {config_path}")
+
+        return updated

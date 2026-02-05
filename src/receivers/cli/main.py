@@ -2570,6 +2570,123 @@ def cmd_rinex(args) -> int:
     return 0 if total_failed == 0 else 1
 
 
+def cmd_tools(args) -> int:
+    """Tools management command - install and configure RINEX conversion tools."""
+    from ..tools import ToolManager
+
+    manager = ToolManager()
+
+    if not hasattr(args, 'tools_command') or args.tools_command is None:
+        # No subcommand - show help
+        print("Usage: receivers tools <command>")
+        print("\nCommands:")
+        print("  list         List all tools and their installation status")
+        print("  install      Install a specific tool")
+        print("  install-all  Install all auto-installable tools")
+        print("  check        Check tool availability")
+        print("  configure    Update receivers.cfg with tool paths")
+        print("\nRun 'receivers tools <command> --help' for more info")
+        return 0
+
+    if args.tools_command == "list":
+        tools = manager.list_tools()
+        print("\nRINEX Conversion Tools")
+        print("=" * 70)
+
+        for name, info in tools.items():
+            status_icon = "✅" if info["status"] == "installed" else "❌"
+            if info["status"] == "manual_required":
+                status_icon = "📋"
+
+            auto = " (auto)" if info["auto_install"] else " (manual)"
+
+            print(f"\n{status_icon} {name}{auto}")
+            print(f"   {info['description']}")
+            if info["installed_path"]:
+                print(f"   Path: {info['installed_path']}")
+            if info["version"]:
+                print(f"   Version: {info['version']}")
+            print(f"   Required for: {', '.join(info['required_for'])}")
+
+        print("\n" + "=" * 70)
+        print("Run 'receivers tools install <name>' to install a tool")
+        print("Run 'receivers tools install-all' to install all auto-installable tools")
+        return 0
+
+    elif args.tools_command == "install":
+        tool_name = args.tool_name
+        force = getattr(args, 'force', False)
+
+        print(f"\nInstalling {tool_name}...")
+        result = manager.install(tool_name, force=force)
+
+        if result.success:
+            print(f"\n✅ {result.message}")
+            if result.path:
+                print(f"   Path: {result.path}")
+            return 0
+        else:
+            print(f"\n❌ {result.message}")
+            return 1
+
+    elif args.tools_command == "install-all":
+        force = getattr(args, 'force', False)
+
+        print("\nInstalling all auto-installable tools...")
+        results = manager.install_all(force=force)
+
+        success_count = sum(1 for r in results if r.success)
+        fail_count = len(results) - success_count
+
+        print(f"\nSummary: ✅ {success_count} installed, ❌ {fail_count} failed")
+
+        for r in results:
+            if not r.success and "Manual installation required" not in r.message:
+                print(f"  ❌ {r.tool_name}: {r.message}")
+
+        return 0 if fail_count == 0 else 1
+
+    elif args.tools_command == "check":
+        receiver_type = getattr(args, 'receiver_type', None)
+
+        tools = manager.check_tools(receiver_type=receiver_type)
+
+        if receiver_type:
+            print(f"\nTools for {receiver_type}:")
+        else:
+            print("\nTool availability:")
+
+        for name, available in tools.items():
+            icon = "✅" if available else "❌"
+            print(f"  {icon} {name}")
+
+        all_available = all(tools.values())
+        if all_available:
+            print("\n✅ All required tools are available")
+            return 0
+        else:
+            print("\n⚠️  Some tools are missing. Run 'receivers tools install-all'")
+            return 1
+
+    elif args.tools_command == "configure":
+        from pathlib import Path
+
+        config_path = None
+        if hasattr(args, 'config') and args.config:
+            config_path = Path(args.config)
+
+        updated = manager.configure_receivers_cfg(config_path)
+
+        if updated:
+            print("✅ Updated receivers.cfg with tool paths")
+            return 0
+        else:
+            print("ℹ️  No changes needed (tools already configured)")
+            return 0
+
+    return 0
+
+
 def create_parser() -> argparse.ArgumentParser:
     """Create argument parser using standardized arguments module."""
     from .arguments import create_argument_parser
@@ -2593,6 +2710,8 @@ def create_parser() -> argparse.ArgumentParser:
                 subparsers_map["rec-config"].set_defaults(func=cmd_rec_config)
             if "rinex" in subparsers_map:
                 subparsers_map["rinex"].set_defaults(func=cmd_rinex)
+            if "tools" in subparsers_map:
+                subparsers_map["tools"].set_defaults(func=cmd_tools)
             break
 
     return parser
