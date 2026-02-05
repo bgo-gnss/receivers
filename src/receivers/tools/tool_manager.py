@@ -123,8 +123,8 @@ class ToolManager:
                 required_for=["all"],
                 auto_install=False,  # Now requires registration
                 download_url=gfzrnx_url,
-                version_cmd=["gfzrnx", "-h"],
-                version_pattern=r"gfzrnx\s+version\s+([\d.]+)",
+                version_cmd=["gfzrnx", "-help"],  # Version shown at end of help
+                version_pattern=r"VERSION:\s*gfzrnx-([\d.]+-\d+)",
                 manual_instructions=(
                     "gfzrnx now requires registration (free for non-commercial use).\n"
                     "1. Visit https://gnss.gfz-potsdam.de/services/gfzrnx\n"
@@ -189,7 +189,8 @@ class ToolManager:
                 required_for=["PolaRX5", "PolaRx5", "Septentrio"],
                 auto_install=False,
                 download_url=None,
-                version_cmd=["sbf2rin", "-h"],
+                version_cmd=["sbf2rin", "-V"],  # Outputs version string
+                version_pattern=r"sbf2rin-([\d.]+)",
                 manual_instructions=(
                     "Part of Septentrio RxTools package.\n"
                     "1. Download RxTools from https://www.septentrio.com/\n"
