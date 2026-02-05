@@ -806,11 +806,11 @@
           "mode": "details"
         },
         "view": {
-          "allLayers": true,
           "id": "coords",
           "lat": 64.9,
           "lon": -18.5,
-          "zoom": 6
+          "zoom": 6,
+          "allLayers": true
         }
       },
       "pluginVersion": "10.0.0",
