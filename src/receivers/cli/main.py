@@ -64,9 +64,18 @@ def parse_datetime(date_str: str) -> datetime:
 
 
 def _validate_station_for_download(
-    station_id: str, logger: logging.Logger
+    station_id: str, logger: logging.Logger, session: str = None
 ) -> Optional[Any]:
-    """Validate station config and return (receiver, station_config) or None on failure."""
+    """Validate station config and return (receiver, station_config) or None on failure.
+
+    Args:
+        station_id: Station identifier
+        logger: Logger instance
+        session: Session type to validate (e.g., '15s_24hr', 'status_1hr')
+
+    Returns:
+        Receiver instance if valid, None if station should be skipped
+    """
     station_config = get_station_config(station_id)
     if station_config is None:
         logger.warning(
@@ -91,6 +100,19 @@ def _validate_station_for_download(
             f"⚠️  Station {station_id} configuration missing required key {e} - SKIPPING"
         )
         return None
+
+    # Check if session is supported by this receiver type
+    if session:
+        from ..config.receivers_config import get_receivers_config
+        receivers_config = get_receivers_config()
+        receiver_type = station_config.get("receiver_type", "").lower()
+        if not receivers_config.is_session_supported_by_receiver(receiver_type, session):
+            supported = receivers_config.get_supported_sessions(receiver_type)
+            logger.info(
+                f"⏭️  Skipping {station_id}: {session} not supported for {receiver_type} "
+                f"(supported: {', '.join(supported) or 'none'})"
+            )
+            return None
 
     receiver = create_receiver(station_id, station_config)
     return receiver
@@ -272,7 +294,7 @@ def cmd_download(args) -> int:
         receivers_map: Dict[str, Any] = {}
         for sid in args.stations:
             sid = sid.upper()
-            receiver = _validate_station_for_download(sid, logger)
+            receiver = _validate_station_for_download(sid, logger, session=args.session)
             if receiver is None:
                 total_errors += 1
                 continue
@@ -307,7 +329,7 @@ def cmd_download(args) -> int:
             station_id = station_id.upper()
             logger.info(f"Processing station: {station_id}")
 
-            receiver = _validate_station_for_download(station_id, logger)
+            receiver = _validate_station_for_download(station_id, logger, session=args.session)
             if receiver is None:
                 total_errors += 1
                 continue

@@ -722,7 +722,7 @@
           },
           "decimals": 2,
           "mappings": [],
-          "max": 18,
+          "max": 25,
           "min": 8,
           "thresholds": {
             "mode": "absolute",
@@ -741,11 +741,11 @@
               },
               {
                 "color": "yellow",
-                "value": 15
+                "value": 21
               },
               {
                 "color": "red",
-                "value": 16
+                "value": 23
               }
             ]
           },
@@ -782,90 +782,11 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT p.voltage as \"Voltage\"\nFROM block_power_status p\nJOIN stations s ON s.sid = p.sid\nWHERE p.sid = '$station'\n  AND COALESCE(s.power_type, 'battery') != 'mains'\n  AND $__timeFilter(p.ts)\nORDER BY p.ts DESC\nLIMIT 1",
+          "rawSql": "SELECT p.voltage as \"Voltage\"\nFROM block_power_status p\nWHERE p.sid = '$station'\n  AND $__timeFilter(p.ts)\nORDER BY p.ts DESC\nLIMIT 1",
           "refId": "A"
         }
       ],
       "title": "Current Voltage - $station",
-      "type": "gauge"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "gps_health"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 2,
-          "mappings": [],
-          "max": 30,
-          "min": 12,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 15
-              },
-              {
-                "color": "green",
-                "value": 18
-              },
-              {
-                "color": "yellow",
-                "value": 28
-              },
-              {
-                "color": "red",
-                "value": 30
-              }
-            ]
-          },
-          "unit": "volt"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 6,
-        "x": 0,
-        "y": 24
-      },
-      "id": 30,
-      "options": {
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showThresholdLabels": true,
-        "showThresholdMarkers": true
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "gps_health"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT p.voltage as \"Voltage\"\nFROM block_power_status p\nJOIN stations s ON s.sid = p.sid\nWHERE p.sid = '$station'\n  AND s.power_type = 'mains'\n  AND $__timeFilter(p.ts)\nORDER BY p.ts DESC\nLIMIT 1",
-          "refId": "A"
-        }
-      ],
-      "title": "Current Voltage (Mains) - $station",
       "type": "gauge"
     },
     {
