@@ -561,13 +561,14 @@ def setup_rinex_parser(subparsers) -> argparse.ArgumentParser:
         help='Convert raw GPS data to RINEX format',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description='''
-Convert raw GPS receiver data (SBF, T02, T00) to RINEX format with proper
+Convert raw GPS receiver data (SBF, T02, T00, m00) to RINEX format with proper
 header metadata from TOS database.
 
 Supported formats:
   - Septentrio SBF (.sbf, .sbf.gz) - using sbf2rin
   - Trimble T02 (.T02) - using runpkr00 + GFZRNX
   - Trimble T00 (.T00) - using runpkr00 + GFZRNX
+  - Leica m00 (.m00, .m00.gz) - using teqc + GFZRNX
 
 Examples:
   # Convert last 7 days of daily data
