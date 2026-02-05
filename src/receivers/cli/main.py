@@ -2338,9 +2338,11 @@ def _rinex_convert_station_period(
                 raw_files.extend(matches)
 
         if not raw_files:
+            print(f"  No raw files found for {station_id}")
             logger.warning(f"No raw files found for {station_id} in date range")
             return 0, 0, 1
 
+        print(f"  Found {len(raw_files)} raw file(s) to convert")
         logger.info(f"Found {len(raw_files)} raw files to convert")
 
         if getattr(args, "dry_run", False):
@@ -2367,6 +2369,7 @@ def _rinex_convert_station_period(
             )
 
             if result.success:
+                print(f"  ✅ {raw_file.name} -> {result.rinex_file.name}")
                 logger.info(f"✅ {raw_file.name} -> {result.rinex_file.name}")
                 if result.header_corrections_applied > 0:
                     logger.debug(
@@ -2374,6 +2377,7 @@ def _rinex_convert_station_period(
                     )
                 converted += 1
             else:
+                print(f"  ❌ {raw_file.name}: {result.message}")
                 logger.error(f"❌ {raw_file.name}: {result.message}")
                 failed += 1
 
@@ -2479,6 +2483,10 @@ def cmd_rinex(args) -> int:
         logger.error("No date range specified. Use -s/--start, -e/--end, or -d/--days")
         return 1
 
+    # Print progress info (always visible, not dependent on log level)
+    print(f"RINEX conversion for {len(stations)} station(s)")
+    print(f"Date range: {start_time.strftime('%Y-%m-%d')} to {end_time.strftime('%Y-%m-%d')}")
+    print(f"RINEX version: {rinex_version.value}, Naming: {naming_str}")
     logger.info(f"RINEX conversion for {len(stations)} stations")
     logger.info(f"Date range: {start_time} to {end_time}")
     logger.info(f"RINEX version: {rinex_version.value}, Naming: {naming_str}")
@@ -2529,6 +2537,7 @@ def cmd_rinex(args) -> int:
     else:
         # Station-first: current behavior
         for station_id in stations:
+            print(f"\nProcessing: {station_id}")
             logger.info(f"\n{'='*60}")
             logger.info(f"Processing station: {station_id}")
             logger.info(f"{'='*60}")
@@ -2550,6 +2559,7 @@ def cmd_rinex(args) -> int:
             total_skipped += s
 
     # Summary
+    print(f"\nSummary: ✅ {total_converted} converted, ❌ {total_failed} failed, ⏭️  {total_skipped} skipped")
     logger.info(f"\n{'='*60}")
     logger.info(f"RINEX Conversion Summary:")
     logger.info(f"  ✅ Converted: {total_converted}")
