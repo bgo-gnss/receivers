@@ -2598,6 +2598,17 @@ def main() -> int:
             )
             return 1
 
+    # Handle TOS subcommands
+    if args.command == "tos":
+        try:
+            from .tos import handle_tos_command
+
+            return handle_tos_command(args)
+        except ImportError as e:
+            print(f"❌ TOS command requires tostools. Install with: pip install tostools")
+            print(f"   Error: {e}")
+            return 1
+
     try:
         return args.func(args)
     except KeyboardInterrupt:
