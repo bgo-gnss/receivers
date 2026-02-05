@@ -722,7 +722,7 @@
           },
           "decimals": 2,
           "mappings": [],
-          "max": 25,
+          "max": 18,
           "min": 8,
           "thresholds": {
             "mode": "absolute",
@@ -741,17 +741,62 @@
               },
               {
                 "color": "yellow",
-                "value": 21
+                "value": 15
               },
               {
                 "color": "red",
-                "value": 23
+                "value": 16
               }
             ]
           },
           "unit": "volt"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Mains"
+            },
+            "properties": [
+              {
+                "id": "max",
+                "value": 25
+              },
+              {
+                "id": "min",
+                "value": 12
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 15
+                    },
+                    {
+                      "color": "green",
+                      "value": 18
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 22
+                    },
+                    {
+                      "color": "red",
+                      "value": 24
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
@@ -782,8 +827,19 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT p.voltage as \"Voltage\"\nFROM block_power_status p\nWHERE p.sid = '$station'\n  AND $__timeFilter(p.ts)\nORDER BY p.ts DESC\nLIMIT 1",
+          "rawSql": "SELECT p.voltage as \"Battery\"\nFROM block_power_status p\nWHERE p.sid = '$station'\n  AND '$power_type' = 'battery'\n  AND $__timeFilter(p.ts)\nORDER BY p.ts DESC\nLIMIT 1",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT p.voltage as \"Mains\"\nFROM block_power_status p\nWHERE p.sid = '$station'\n  AND '$power_type' = 'mains'\n  AND $__timeFilter(p.ts)\nORDER BY p.ts DESC\nLIMIT 1",
+          "refId": "B"
         }
       ],
       "title": "Current Voltage - $station",
@@ -2006,7 +2062,42 @@
           },
           "unit": "volt"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Mains"
+            },
+            "properties": [
+              {
+                "id": "custom.axisSoftMin",
+                "value": 14
+              },
+              {
+                "id": "custom.axisSoftMax",
+                "value": 24
+              },
+              {
+                "id": "custom.thresholdsStyle",
+                "value": {
+                  "mode": "off"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
@@ -2042,8 +2133,19 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  ts AS time,\n  voltage AS \"Voltage\"\nFROM block_power_status\nWHERE sid = '$station'\n  AND $__timeFilter(ts)\nORDER BY ts",
+          "rawSql": "SELECT\n  ts AS time,\n  voltage AS \"Battery\"\nFROM block_power_status\nWHERE sid = '$station'\n  AND '$power_type' = 'battery'\n  AND $__timeFilter(ts)\nORDER BY ts",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  ts AS time,\n  voltage AS \"Mains\"\nFROM block_power_status\nWHERE sid = '$station'\n  AND '$power_type' = 'mains'\n  AND $__timeFilter(ts)\nORDER BY ts",
+          "refId": "B"
         }
       ],
       "title": "Voltage History - $station",
@@ -2203,6 +2305,26 @@
         "regex": "",
         "skipUrlSync": false,
         "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {},
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "gps_health"
+        },
+        "definition": "SELECT COALESCE(power_type, 'battery') FROM stations WHERE sid = '$station'",
+        "hide": 2,
+        "includeAll": false,
+        "label": "Power Type",
+        "multi": false,
+        "name": "power_type",
+        "options": [],
+        "query": "SELECT COALESCE(power_type, 'battery') FROM stations WHERE sid = '$station'",
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
         "type": "query"
       }
     ]
