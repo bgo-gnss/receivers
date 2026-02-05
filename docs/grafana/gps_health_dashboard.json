@@ -731,7 +731,7 @@
           "links": [
             {
               "title": "View ${__data.fields.sid} details",
-              "url": "/d/gps-health-voltage?var-station=${__data.fields.sid}"
+              "url": "/d/gps-health-voltage?var-station=${__data.fields.sid}&var-area=$area"
             }
           ]
         },
