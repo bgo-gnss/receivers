@@ -2,23 +2,26 @@
 Trimble T02/T00 to RINEX converter.
 
 This module implements RINEX conversion for Trimble raw files (.T02, .T00)
-using runpkr00 for extraction and GFZRNX for format conversion.
+using runpkr00 for extraction, teqc for RINEX 2 conversion, and GFZRNX for
+RINEX 3 format conversion.
 
 Trimble formats:
 - T02: NetR9 raw format (newer)
 - T00: NetRS raw format (older)
 
 Workflow:
-    1. runpkr00 extracts T02/T00 -> TGD (RINEX-like intermediate)
-    2. GFZRNX converts TGD -> RINEX 3 (if needed)
-    3. MetadataProvider supplies TOS equipment metadata
-    4. Header corrections applied using tostools
-    5. File renamed to short/long naming convention
+    1. runpkr00 extracts T02/T00 -> .dat (binary intermediate)
+    2. teqc converts .dat -> RINEX 2 (text format)
+    3. GFZRNX converts RINEX 2 -> RINEX 3 (if needed)
+    4. MetadataProvider supplies TOS equipment metadata
+    5. Header corrections applied using tostools
+    6. File renamed to short/long naming convention
 
-Note: Since teqc is deprecated and cannot produce RINEX 3, we use GFZRNX
-from GFZ Potsdam as a replacement for format conversion.
+Note: runpkr00 produces binary .dat files that need teqc for RINEX conversion.
+Since teqc cannot produce RINEX 3, we use GFZRNX for the final format upgrade.
 """
 
+import gzip
 import logging
 import shutil
 import tempfile
@@ -88,7 +91,7 @@ class TrimbleConverter(RawToRinexConverter):
     @property
     def supported_extensions(self) -> List[str]:
         """Return supported file extensions."""
-        return [".t02", ".T02", ".t00", ".T00"]
+        return [".t02", ".T02", ".t00", ".T00", ".t02.gz", ".T02.gz", ".t00.gz", ".T00.gz"]
 
     @property
     def converter_name(self) -> str:
@@ -97,10 +100,37 @@ class TrimbleConverter(RawToRinexConverter):
 
     def _get_required_tools(self) -> List[str]:
         """Return list of required external tools."""
-        tools = ["runpkr00"]
+        # runpkr00 extracts binary, teqc converts to RINEX 2
+        tools = ["runpkr00", "teqc"]
         if self.rinex_version.value >= 3:
             tools.append("gfzrnx")
         return tools
+
+    def _decompress_if_needed(self, raw_file: Path) -> Path:
+        """Decompress .gz file if needed.
+
+        Args:
+            raw_file: Input file (possibly compressed)
+
+        Returns:
+            Path to uncompressed file
+        """
+        if raw_file.suffix.lower() == '.gz':
+            # Create temp file for decompressed data
+            temp_dir = Path(tempfile.mkdtemp(prefix="trimble_"))
+            decompressed = temp_dir / raw_file.stem
+
+            self.logger.debug(f"Decompressing {raw_file} to {decompressed}")
+
+            with gzip.open(raw_file, 'rb') as f_in:
+                with open(decompressed, 'wb') as f_out:
+                    shutil.copyfileobj(f_in, f_out)
+
+            self._temp_files.append(decompressed)
+            self._temp_files.append(temp_dir)
+            return decompressed
+
+        return raw_file
 
     def _run_conversion(
         self,
@@ -111,8 +141,10 @@ class TrimbleConverter(RawToRinexConverter):
         """Run T02/T00 to RINEX conversion.
 
         Workflow:
-        1. runpkr00 extracts T02/T00 -> .tgd (RINEX 2-like)
-        2. If RINEX 3 requested, GFZRNX converts tgd -> .rnx
+        1. Decompress if .gz file
+        2. runpkr00 extracts T02/T00 -> .dat (binary)
+        3. teqc converts .dat -> RINEX 2 (text)
+        4. If RINEX 3 requested, GFZRNX converts RINEX 2 -> RINEX 3
 
         Args:
             raw_file: Path to T02/T00 file
@@ -126,16 +158,22 @@ class TrimbleConverter(RawToRinexConverter):
             ConversionError: If conversion fails
         """
         try:
-            # Step 1: Extract with runpkr00
-            tgd_file = self._run_runpkr00(raw_file, output_dir)
+            # Step 0: Decompress if needed
+            working_file = self._decompress_if_needed(raw_file)
 
-            # Step 2: Convert to final RINEX version
+            # Step 1: Extract with runpkr00 (produces binary .dat)
+            dat_file = self._run_runpkr00(working_file, output_dir)
+
+            # Step 2: Convert binary .dat to RINEX 2 with teqc
+            rinex2_file = self._run_teqc(dat_file, output_dir, observation_date)
+
+            # Step 3: Convert to final RINEX version
             if self.rinex_version.value >= 3:
                 # Use GFZRNX for RINEX 3 conversion
-                rinex_file = self._run_gfzrnx(tgd_file, output_dir, observation_date)
+                rinex_file = self._run_gfzrnx(rinex2_file, output_dir, observation_date)
             else:
-                # RINEX 2: rename tgd to proper extension
-                rinex_file = self._rename_tgd_to_rinex2(tgd_file, observation_date)
+                # RINEX 2: already have the file
+                rinex_file = rinex2_file
 
             # Clean up intermediate files
             if not self.keep_intermediate:
@@ -186,16 +224,26 @@ class TrimbleConverter(RawToRinexConverter):
         self._run_subprocess(cmd, timeout=300, cwd=output_dir)
 
         # Find output file (runpkr00 naming can vary)
+        # runpkr00 produces:
+        # - .tgd for RT27 format (with -g flag)
+        # - .dat for older formats
         if tgd_file.exists():
             self._temp_files.append(tgd_file)
             return tgd_file
 
-        # Try to find any .tgd file
-        tgd_files = list(output_dir.glob("*.tgd"))
-        if tgd_files:
-            tgd_file = tgd_files[0]
-            self._temp_files.append(tgd_file)
-            return tgd_file
+        # Check for .dat file (common for T00 files)
+        dat_file = output_dir / (raw_file.stem + ".dat")
+        if dat_file.exists():
+            self._temp_files.append(dat_file)
+            return dat_file
+
+        # Try to find any .tgd or .dat file
+        for pattern in ["*.tgd", "*.dat"]:
+            matches = list(output_dir.glob(pattern))
+            if matches:
+                out_file = matches[0]
+                self._temp_files.append(out_file)
+                return out_file
 
         # Also check for .obs files (alternative output)
         obs_files = list(output_dir.glob(f"{raw_file.stem}*.obs"))
@@ -203,8 +251,71 @@ class TrimbleConverter(RawToRinexConverter):
             return obs_files[0]
 
         raise ConversionError(
-            "runpkr00 did not produce expected .tgd output",
+            "runpkr00 did not produce expected output (.tgd or .dat)",
             raw_file,
+        )
+
+    def _run_teqc(
+        self,
+        dat_file: Path,
+        output_dir: Path,
+        observation_date: datetime,
+    ) -> Path:
+        """Run teqc to convert binary .dat to RINEX 2 format.
+
+        Args:
+            dat_file: Input .dat file from runpkr00
+            output_dir: Output directory
+            observation_date: Date of observation
+
+        Returns:
+            Path to RINEX 2 observation file
+
+        Raises:
+            ConversionError: If conversion fails
+        """
+        teqc = self.get_tool_path("teqc")
+
+        # Build output filename (RINEX 2 naming: SSSS0DDF.YYo)
+        day_of_year = observation_date.timetuple().tm_yday
+        year_2digit = observation_date.year % 100
+
+        rinex_name = f"{self.station_id}{day_of_year:03d}0.{year_2digit:02d}o"
+        rinex_file = output_dir / rinex_name
+
+        # Build command
+        # teqc +obs <output> <input>
+        # teqc reads the .dat file and produces RINEX observation file
+        cmd = [
+            str(teqc),
+            "+obs", str(rinex_file),
+            str(dat_file),
+        ]
+
+        self.logger.info(f"Running teqc to convert {dat_file.name} to RINEX 2")
+        self._run_subprocess(cmd, timeout=300, cwd=output_dir)
+
+        if rinex_file.exists():
+            self._temp_files.append(rinex_file)
+            return rinex_file
+
+        # Check for alternative output (teqc may use different naming)
+        patterns = [
+            f"{self.station_id}*.{year_2digit:02d}o",
+            f"{self.station_id.lower()}*.{year_2digit:02d}o",
+            f"*.{year_2digit:02d}o",
+        ]
+
+        for pattern in patterns:
+            matches = list(output_dir.glob(pattern))
+            if matches:
+                out_file = max(matches, key=lambda p: p.stat().st_mtime)
+                self._temp_files.append(out_file)
+                return out_file
+
+        raise ConversionError(
+            "teqc did not produce expected RINEX 2 output",
+            dat_file,
         )
 
     def _run_gfzrnx(
@@ -237,13 +348,12 @@ class TrimbleConverter(RawToRinexConverter):
         rinex_file = output_dir / output_name
 
         # Build command
-        # gfzrnx -finp <input> -fout <output> [-kv] [-vo 3]
+        # gfzrnx -finp <input> -fout <output> -vo 3
         cmd = [
             str(gfzrnx),
             "-finp", str(tgd_file),
             "-fout", str(rinex_file),
             "-vo", "3",        # Output RINEX version 3
-            "-kv",             # Keep version/format info
         ]
 
         self.logger.info(f"Running GFZRNX for RINEX 3 conversion")
@@ -296,14 +406,18 @@ class TrimbleConverter(RawToRinexConverter):
         return rinex_file
 
     def _cleanup_temp_files(self) -> None:
-        """Clean up intermediate files."""
-        for temp_file in self._temp_files:
+        """Clean up intermediate files and directories."""
+        for temp_path in self._temp_files:
             try:
-                if temp_file.exists():
-                    temp_file.unlink()
-                    self.logger.debug(f"Cleaned up {temp_file.name}")
+                if temp_path.exists():
+                    if temp_path.is_dir():
+                        shutil.rmtree(temp_path)
+                        self.logger.debug(f"Cleaned up directory {temp_path}")
+                    else:
+                        temp_path.unlink()
+                        self.logger.debug(f"Cleaned up {temp_path.name}")
             except Exception as e:
-                self.logger.warning(f"Could not clean up {temp_file}: {e}")
+                self.logger.warning(f"Could not clean up {temp_path}: {e}")
 
         self._temp_files.clear()
 
@@ -317,7 +431,7 @@ class NetR9Converter(TrimbleConverter):
     @property
     def supported_extensions(self) -> List[str]:
         """Return supported file extensions for NetR9."""
-        return [".t02", ".T02"]
+        return [".t02", ".T02", ".t02.gz", ".T02.gz"]
 
 
 class NetRSConverter(TrimbleConverter):
@@ -329,4 +443,4 @@ class NetRSConverter(TrimbleConverter):
     @property
     def supported_extensions(self) -> List[str]:
         """Return supported file extensions for NetRS."""
-        return [".t00", ".T00"]
+        return [".t00", ".T00", ".t00.gz", ".T00.gz"]
