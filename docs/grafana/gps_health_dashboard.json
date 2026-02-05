@@ -575,19 +575,6 @@
       "type": "table"
     },
     {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 37
-      },
-      "id": 6,
-      "panels": [],
-      "title": "Voltage Trends - All Stations",
-      "type": "row"
-    },
-    {
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "gps_health"
@@ -665,7 +652,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 38
+        "y": 60
       },
       "id": 7,
       "options": {
@@ -703,11 +690,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 48
+        "y": 29
       },
       "id": 30,
       "panels": [],
-      "title": "Station Map",
+      "title": "Area View: $area",
       "type": "row"
     },
     {
@@ -751,10 +738,10 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 15,
+        "h": 30,
         "w": 24,
         "x": 0,
-        "y": 49
+        "y": 30
       },
       "id": 31,
       "options": {
@@ -2384,7 +2371,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 29
+        "y": 70
       },
       "id": 11,
       "options": {
