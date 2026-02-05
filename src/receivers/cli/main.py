@@ -2226,7 +2226,7 @@ def _create_rinex_converter(
     Returns:
         Tuple of (converter, raw_extension) or (None, None) on failure.
     """
-    from ..rinex import SBFConverter, TrimbleConverter
+    from ..rinex import SBFConverter, TrimbleConverter, LeicaConverter
 
     station_config = get_station_config(station_id)
     if station_config is None:
@@ -2268,6 +2268,17 @@ def _create_rinex_converter(
             loglevel=args.loglevel,
         )
         raw_extension = ".T00"
+    elif "g10" in receiver_type or "leica" in receiver_type:
+        converter = LeicaConverter(
+            station_id=station_id,
+            rinex_version=rinex_version,
+            output_format=output_format,
+            naming_convention=naming_convention,
+            apply_header_corrections=not getattr(args, "no_header_correction", False),
+            keep_intermediate=getattr(args, "keep_intermediate", False),
+            loglevel=args.loglevel,
+        )
+        raw_extension = ".m00.gz"
     else:
         logger.warning(
             f"Unsupported receiver type '{receiver_type}' for {station_id} - SKIPPING"

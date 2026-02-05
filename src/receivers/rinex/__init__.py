@@ -1,13 +1,14 @@
 """
 RINEX conversion module for GPS receiver data.
 
-This module provides converters for converting raw GPS receiver data (SBF, T02, T00)
+This module provides converters for converting raw GPS receiver data (SBF, T02, T00, m00)
 to RINEX format with proper header metadata from TOS database.
 
 Main Components:
     - RawToRinexConverter: Abstract base class for all converters
     - SBFConverter: Septentrio SBF -> RINEX (using sbf2rin)
     - TrimbleConverter: Trimble T02/T00 -> RINEX (using runpkr00 + GFZRNX)
+    - LeicaConverter: Leica m00 -> RINEX (using teqc + GFZRNX)
     - MetadataProvider: Historical metadata lookup from TOS database
     - RinexNamer: Short/long RINEX filename conventions
 """
@@ -28,6 +29,7 @@ from .metadata_provider import (
     format_rinex_field,
 )
 from .rinex_namer import NamingConvention, RinexNamer
+from .leica_converter import G10Converter, LeicaConverter
 from .sbf_converter import SBFConverter
 from .trimble_converter import NetR9Converter, NetRSConverter, TrimbleConverter
 
@@ -54,4 +56,6 @@ __all__ = [
     "TrimbleConverter",
     "NetR9Converter",
     "NetRSConverter",
+    "LeicaConverter",
+    "G10Converter",
 ]
