@@ -2256,7 +2256,7 @@ def _create_rinex_converter(
             keep_intermediate=getattr(args, "keep_intermediate", False),
             loglevel=args.loglevel,
         )
-        raw_extension = ".T02"
+        raw_extension = ".T02*"  # Match .T02 and .T02.gz
     elif "netrs" in receiver_type:
         converter = TrimbleConverter(
             station_id=station_id,
@@ -2267,7 +2267,7 @@ def _create_rinex_converter(
             keep_intermediate=getattr(args, "keep_intermediate", False),
             loglevel=args.loglevel,
         )
-        raw_extension = ".T00"
+        raw_extension = ".T00*"  # Match .T00 and .T00.gz
     elif "g10" in receiver_type or "leica" in receiver_type:
         converter = LeicaConverter(
             station_id=station_id,
