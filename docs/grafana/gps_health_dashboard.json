@@ -711,7 +711,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "dark-red",
+                "color": "text",
                 "value": null
               },
               {
