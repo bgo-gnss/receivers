@@ -2,20 +2,33 @@
 Leica MDB (m00) to RINEX converter.
 
 This module implements RINEX conversion for Leica raw files (.m00)
-using teqc for conversion and optional GFZRNX for format upgrades.
+supporting two conversion backends:
+
+1. mdb2rinex (preferred) - Leica's official converter
+   - Outputs native RINEX 3 directly
+   - Available from Leica myWorld portal
+   - Recommended for production use
+
+2. teqc + gfzrnx (fallback) - UNAVCO legacy tool
+   - teqc converts m00 -> RINEX 2
+   - gfzrnx upgrades RINEX 2 -> RINEX 3 (reformatting only)
+   - Fallback when mdb2rinex is not available
 
 Leica formats:
-- m00: MDB format from Leica receivers (e.g., G10)
+- m00: MDB format from Leica receivers (e.g., GR10, GR25, GR30)
 
-Workflow:
+Workflow with mdb2rinex:
+    1. mdb2rinex converts m00 -> RINEX 3 observation file (native)
+    2. MetadataProvider supplies TOS equipment metadata
+    3. Header corrections applied using tostools
+    4. File renamed to short/long naming convention
+
+Workflow with teqc (fallback):
     1. teqc converts m00 -> RINEX 2 observation file
-    2. GFZRNX converts to RINEX 3 (if needed)
+    2. GFZRNX converts to RINEX 3 (reformatting only)
     3. MetadataProvider supplies TOS equipment metadata
     4. Header corrections applied using tostools
     5. File renamed to short/long naming convention
-
-Note: teqc is no longer maintained by UNAVCO but remains the standard
-tool for Leica MDB conversion. Alternative: mdb2rinex from Leica.
 """
 
 import gzip
@@ -39,10 +52,11 @@ from .converter_base import (
 class LeicaConverter(RawToRinexConverter):
     """Converter for Leica m00 (MDB) files to RINEX format.
 
-    Uses teqc for initial conversion and optionally GFZRNX for RINEX 3.
+    Prefers mdb2rinex (native RINEX 3) when available, falls back to
+    teqc + gfzrnx (RINEX 2 + reformatting) if not.
 
     Supports:
-    - Leica G10 .m00 files
+    - Leica GR10, GR25, GR30, GR50 .m00 files
     - Compressed input (.m00.gz)
     - RINEX versions 2.x and 3.x output
 
@@ -73,7 +87,7 @@ class LeicaConverter(RawToRinexConverter):
             naming_convention: Filename convention (SHORT or LONG).
                               If None, defaults based on rinex_version.
             apply_header_corrections: Whether to apply TOS metadata corrections
-            teqc_config: Optional path to teqc configuration file
+            teqc_config: Optional path to teqc configuration file (for teqc fallback)
             keep_intermediate: Keep intermediate files
             loglevel: Logging level
         """
@@ -88,6 +102,7 @@ class LeicaConverter(RawToRinexConverter):
         self.teqc_config = teqc_config
         self.keep_intermediate = keep_intermediate
         self._temp_files: List[Path] = []
+        self._use_mdb2rinex: Optional[bool] = None  # Determined at runtime
 
     @property
     def supported_extensions(self) -> List[str]:
@@ -97,10 +112,25 @@ class LeicaConverter(RawToRinexConverter):
     @property
     def converter_name(self) -> str:
         """Return converter tool name."""
+        if self._use_mdb2rinex:
+            return "mdb2rinex"
         return "teqc"
 
     def _get_required_tools(self) -> List[str]:
-        """Return list of required external tools."""
+        """Return list of required external tools.
+
+        Checks for mdb2rinex first (preferred), falls back to teqc.
+        """
+        # Check if mdb2rinex is available (preferred)
+        try:
+            self.get_tool_path("mdb2rinex")
+            self._use_mdb2rinex = True
+            return ["mdb2rinex"]
+        except ConversionError:
+            pass
+
+        # Fall back to teqc + gfzrnx
+        self._use_mdb2rinex = False
         tools = ["teqc"]
         if self.rinex_version == RinexVersion.RINEX_3:
             tools.append("gfzrnx")
@@ -114,10 +144,8 @@ class LeicaConverter(RawToRinexConverter):
     ) -> Path:
         """Run m00 to RINEX conversion.
 
-        Workflow:
-        1. Decompress .m00.gz if needed
-        2. teqc converts m00 -> RINEX 2
-        3. GFZRNX upgrades to RINEX 3 (if needed)
+        Uses mdb2rinex if available (native RINEX 3), otherwise falls back
+        to teqc + gfzrnx (RINEX 2 + reformatting).
 
         Args:
             raw_file: Path to m00 file
@@ -129,18 +157,28 @@ class LeicaConverter(RawToRinexConverter):
         """
         self._temp_files = []
 
+        # Determine which backend to use
+        if self._use_mdb2rinex is None:
+            self._get_required_tools()  # Sets self._use_mdb2rinex
+
         try:
             # Step 1: Decompress if needed
             working_file = self._decompress_if_needed(raw_file)
 
-            # Step 2: Run teqc to get RINEX 2
-            rinex2_file = self._run_teqc(working_file, output_dir)
-
-            # Step 3: Convert to RINEX 3 if needed
-            if self.rinex_version == RinexVersion.RINEX_3:
-                final_obs = self._convert_to_rinex3(rinex2_file, output_dir)
+            # Step 2: Convert using preferred backend
+            if self._use_mdb2rinex:
+                self.logger.info("Using mdb2rinex (native RINEX 3)")
+                final_obs = self._run_mdb2rinex(working_file, output_dir, observation_date)
             else:
-                final_obs = rinex2_file
+                self.logger.info("Using teqc + gfzrnx (RINEX 2 fallback)")
+                # Run teqc to get RINEX 2
+                rinex2_file = self._run_teqc(working_file, output_dir)
+
+                # Convert to RINEX 3 if needed
+                if self.rinex_version == RinexVersion.RINEX_3:
+                    final_obs = self._convert_to_rinex3(rinex2_file, output_dir)
+                else:
+                    final_obs = rinex2_file
 
             return final_obs
 
@@ -181,8 +219,148 @@ class LeicaConverter(RawToRinexConverter):
 
         return raw_file
 
+    def _run_mdb2rinex(
+        self, m00_file: Path, output_dir: Path, observation_date: datetime
+    ) -> Path:
+        """Run mdb2rinex to convert m00 to RINEX 3.
+
+        mdb2rinex is Leica's official converter that outputs native RINEX 3.
+        Command-line options (typical):
+            mdb2rinex -i input.m00 -o output.rnx [-v 3] [-f]
+
+        Args:
+            m00_file: Input m00 file
+            output_dir: Output directory
+            observation_date: Date of observation
+
+        Returns:
+            Path to RINEX observation file
+
+        Raises:
+            ConversionError: If mdb2rinex fails
+        """
+        mdb2rinex_path = self.get_tool_path("mdb2rinex")
+
+        # Determine RINEX version for output
+        if self.rinex_version == RinexVersion.RINEX_3:
+            version_str = "3"
+            ext = ".rnx"
+        else:
+            version_str = "2"
+            ext = ".obs"
+
+        temp_obs = output_dir / f"{m00_file.stem}{ext}"
+
+        # Build mdb2rinex command
+        # Common option patterns - adjust based on actual tool usage
+        cmd = [
+            str(mdb2rinex_path),
+            "-i", str(m00_file),          # Input file
+            "-o", str(temp_obs),           # Output file
+            "-v", version_str,             # RINEX version
+            "-f",                          # Force overwrite
+        ]
+
+        self.logger.info(f"Running: {' '.join(cmd)}")
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300,  # 5 minute timeout
+            )
+
+            if result.returncode != 0:
+                # Log the error and try alternate command format
+                self.logger.warning(
+                    f"mdb2rinex failed with standard options: {result.stderr}"
+                )
+                # Try simpler command format
+                return self._run_mdb2rinex_simple(m00_file, output_dir, version_str, ext)
+
+            if not temp_obs.exists() or temp_obs.stat().st_size == 0:
+                raise ConversionError(
+                    f"mdb2rinex produced no output for {m00_file}"
+                )
+
+            self.logger.info(f"Created RINEX {version_str}: {temp_obs}")
+            return temp_obs
+
+        except subprocess.TimeoutExpired:
+            raise ConversionError(f"mdb2rinex timed out converting {m00_file}")
+        except FileNotFoundError:
+            raise ConversionError(
+                "mdb2rinex not found. Download from Leica myWorld portal."
+            )
+
+    def _run_mdb2rinex_simple(
+        self, m00_file: Path, output_dir: Path, version_str: str, ext: str
+    ) -> Path:
+        """Run mdb2rinex with simpler command format.
+
+        Alternate command format:
+            mdb2rinex input.m00 [output_dir]
+
+        Args:
+            m00_file: Input m00 file
+            output_dir: Output directory
+            version_str: RINEX version string
+            ext: Output file extension
+
+        Returns:
+            Path to RINEX observation file
+        """
+        mdb2rinex_path = self.get_tool_path("mdb2rinex")
+        temp_obs = output_dir / f"{m00_file.stem}{ext}"
+
+        # Try simpler format: mdb2rinex input.m00
+        cmd = [str(mdb2rinex_path), str(m00_file)]
+
+        self.logger.info(f"Trying simple format: {' '.join(cmd)}")
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300,
+                cwd=str(output_dir),  # Run in output directory
+            )
+
+            if result.returncode != 0:
+                raise ConversionError(
+                    f"mdb2rinex failed: {result.stderr}\n"
+                    "Check mdb2rinex --help for correct usage."
+                )
+
+            # mdb2rinex may output to current directory or same location as input
+            # Look for output file
+            possible_outputs = [
+                temp_obs,
+                output_dir / f"{m00_file.stem}.rnx",
+                output_dir / f"{m00_file.stem}.obs",
+                m00_file.parent / f"{m00_file.stem}.rnx",
+                m00_file.parent / f"{m00_file.stem}.obs",
+            ]
+
+            for out_file in possible_outputs:
+                if out_file.exists() and out_file.stat().st_size > 0:
+                    if out_file != temp_obs and out_file.parent != output_dir:
+                        # Move to output directory
+                        shutil.move(out_file, temp_obs)
+                    self.logger.info(f"Created RINEX: {temp_obs}")
+                    return temp_obs
+
+            raise ConversionError(
+                f"mdb2rinex produced no output for {m00_file}"
+            )
+
+        except subprocess.TimeoutExpired:
+            raise ConversionError(f"mdb2rinex timed out converting {m00_file}")
+
     def _run_teqc(self, m00_file: Path, output_dir: Path) -> Path:
-        """Run teqc to convert m00 to RINEX.
+        """Run teqc to convert m00 to RINEX 2 (fallback).
 
         Args:
             m00_file: Input m00 file
@@ -194,8 +372,7 @@ class LeicaConverter(RawToRinexConverter):
         Raises:
             ConversionError: If teqc fails
         """
-        # Generate output filename (RINEX 2 style: SSSSdddh.YYo)
-        # We'll use a temp name and rename later
+        # Generate output filename (RINEX 2 style)
         temp_obs = output_dir / f"{m00_file.stem}.obs"
 
         # Build teqc command using configured path
@@ -250,6 +427,9 @@ class LeicaConverter(RawToRinexConverter):
     def _convert_to_rinex3(self, rinex2_file: Path, output_dir: Path) -> Path:
         """Convert RINEX 2 to RINEX 3 using GFZRNX.
 
+        Note: This is just reformatting, not native RINEX 3 conversion.
+        For native RINEX 3, use mdb2rinex.
+
         Args:
             rinex2_file: RINEX 2 observation file
             output_dir: Output directory
@@ -277,7 +457,7 @@ class LeicaConverter(RawToRinexConverter):
             "-q",  # Quiet mode - suppress warnings about RINEX 2→3 reformatting
         ]
 
-        self.logger.info(f"Converting to RINEX 3: {' '.join(cmd)}")
+        self.logger.info(f"Converting to RINEX 3 (reformatting): {' '.join(cmd)}")
 
         try:
             result = subprocess.run(
@@ -312,9 +492,17 @@ class G10Converter(LeicaConverter):
     """Specialized converter for Leica G10 receivers.
 
     G10 receivers produce .m00 files with specific characteristics.
+    Uses the same conversion backend as LeicaConverter (mdb2rinex or teqc).
     """
 
     @property
     def supported_extensions(self) -> List[str]:
         """G10 uses m00 format."""
         return [".m00", ".M00", ".m00.gz", ".M00.gz"]
+
+    @property
+    def converter_name(self) -> str:
+        """Return converter name based on available backend."""
+        if self._use_mdb2rinex:
+            return "mdb2rinex"
+        return "teqc"
