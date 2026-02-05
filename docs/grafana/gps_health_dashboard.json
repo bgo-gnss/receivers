@@ -690,7 +690,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  p.ts AS time,\n  p.sid AS metric,\n  p.voltage AS value\nFROM block_power_status p\nJOIN station_area_members sam ON sam.sid = p.sid\nJOIN stations s ON s.sid = p.sid\nWHERE $__timeFilter(p.ts)\n  AND sam.area_id = '$area'\n  AND COALESCE(s.power_type, 'battery') != 'mains'\nORDER BY p.ts",
+          "rawSql": "SELECT\n  p.ts AS time,\n  p.sid AS metric,\n  p.voltage AS value\nFROM block_power_status p\nJOIN stations s ON s.sid = p.sid\nLEFT JOIN station_area_members sam ON sam.sid = p.sid\nWHERE $__timeFilter(p.ts)\n  AND ('$area' = 'all' OR sam.area_id = '$area')\n  AND COALESCE(s.power_type, 'battery') != 'mains'\nORDER BY p.ts",
           "refId": "A"
         }
       ],
@@ -704,6 +704,158 @@
         "w": 24,
         "x": 0,
         "y": 23
+      },
+      "id": 30,
+      "panels": [],
+      "title": "Station Map",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 11
+              },
+              {
+                "color": "green",
+                "value": 11.8
+              },
+              {
+                "color": "yellow",
+                "value": 15
+              },
+              {
+                "color": "red",
+                "value": 16
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 15,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "id": 31,
+      "options": {
+        "basemap": {
+          "config": {},
+          "name": "Layer 0",
+          "type": "osm-standard"
+        },
+        "controls": {
+          "mouseWheelZoom": true,
+          "showAttribution": true,
+          "showDebug": false,
+          "showMeasure": false,
+          "showScale": false,
+          "showZoom": true
+        },
+        "layers": [
+          {
+            "config": {
+              "showLegend": true,
+              "style": {
+                "color": {
+                  "field": "voltage",
+                  "fixed": "dark-green"
+                },
+                "opacity": 0.8,
+                "rotation": {
+                  "fixed": 0,
+                  "max": 360,
+                  "min": -360,
+                  "mode": "mod"
+                },
+                "size": {
+                  "fixed": 8,
+                  "max": 15,
+                  "min": 5
+                },
+                "symbol": {
+                  "fixed": "img/icons/marker/circle.svg",
+                  "mode": "fixed"
+                },
+                "textConfig": {
+                  "fontSize": 12,
+                  "offsetX": 0,
+                  "offsetY": 0,
+                  "textAlign": "center",
+                  "textBaseline": "middle"
+                }
+              }
+            },
+            "location": {
+              "latitude": "latitude",
+              "longitude": "longitude",
+              "mode": "coords"
+            },
+            "name": "Stations",
+            "tooltip": true,
+            "type": "markers"
+          }
+        ],
+        "tooltip": {
+          "mode": "details"
+        },
+        "view": {
+          "allLayers": true,
+          "id": "coords",
+          "lat": 64.9,
+          "lon": -18.5,
+          "zoom": 6
+        }
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT DISTINCT ON (s.sid)\n  s.sid,\n  s.latitude,\n  s.longitude,\n  p.voltage,\n  p.ts\nFROM stations s\nLEFT JOIN block_power_status p ON p.sid = s.sid\nLEFT JOIN station_area_members sam ON sam.sid = s.sid\nWHERE s.latitude IS NOT NULL\n  AND s.longitude IS NOT NULL\n  AND ('$area' = 'all' OR sam.area_id = '$area')\nORDER BY s.sid, p.ts DESC",
+          "refId": "A"
+        }
+      ],
+      "title": "Station Locations - $area",
+      "type": "geomap"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 39
       },
       "id": 8,
       "panels": [],
@@ -2293,14 +2445,14 @@
           "type": "grafana-postgresql-datasource",
           "uid": "gps_health"
         },
-        "definition": "SELECT area_id AS __value, area_name || ' (' || area_type || ')' AS __text FROM station_areas ORDER BY area_type, area_name",
+        "definition": "SELECT 'all' AS __value, 'All Stations' AS __text UNION ALL SELECT area_id AS __value, area_name || ' (' || area_type || ')' AS __text FROM station_areas ORDER BY __text",
         "hide": 0,
         "includeAll": false,
         "label": "Area",
         "multi": false,
         "name": "area",
         "options": [],
-        "query": "SELECT area_id AS __value, area_name || ' (' || area_type || ')' AS __text FROM station_areas ORDER BY area_type, area_name",
+        "query": "SELECT 'all' AS __value, 'All Stations' AS __text UNION ALL SELECT area_id AS __value, area_name || ' (' || area_type || ')' AS __text FROM station_areas ORDER BY __text",
         "refresh": 1,
         "regex": "",
         "skipUrlSync": false,
