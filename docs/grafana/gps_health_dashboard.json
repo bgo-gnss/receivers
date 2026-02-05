@@ -652,7 +652,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 60
+        "y": 62
       },
       "id": 7,
       "options": {
@@ -741,7 +741,7 @@
         "h": 30,
         "w": 24,
         "x": 0,
-        "y": 30
+        "y": 32
       },
       "id": 31,
       "options": {
@@ -2371,7 +2371,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 70
+        "y": 72
       },
       "id": 11,
       "options": {
@@ -2408,6 +2408,68 @@
       ],
       "title": "Recent Data - $station",
       "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 30
+      },
+      "id": 32,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "name"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT area_name || ' (' || area_type || ')' AS \"Selected Area: $area\" FROM station_areas WHERE area_id = '$area' UNION ALL SELECT 'All Stations' WHERE '$area' = 'all'",
+          "refId": "A"
+        }
+      ],
+      "title": "",
+      "type": "stat",
+      "transparent": true
     }
   ],
   "refresh": "5m",
