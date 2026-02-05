@@ -95,9 +95,8 @@ volcanic_areas:
     name: "Bárðarbunga"
     description: "Bárðarbunga volcanic system (Holuhraun)"
     stations:
-      - DYNA   # Dyngja
-      - DYNC   # Dyngjuháls
       - DYNG   # Dyngja
+      - DYNC   # Dyngjuháls
       - DYNY   # Dyngjufjöll ytri
       - KISA   # Kista í Bárðarbungu
       - VONC   # Vonarskard
@@ -239,7 +238,7 @@ regional_areas:
       - ALHV   # Álftavatnsheidi
       - VONC   # Vonarskard
       - JOKU   # Jökulheimar
-      - DYNA   # Dyngja
+      - DYNG   # Dyngja
       - DYNC   # Dyngjuháls
       - EYVI   # Eyvindstungur
 
@@ -250,9 +249,8 @@ regional_areas:
       - GFUM   # Grímsfjall
       - GRFS   # Grænufjöll
       - HAFS   # Hamarinn
-      - DYNA   # Dyngja
-      - DYNC   # Dyngjuháls
       - DYNG   # Dyngja
+      - DYNC   # Dyngjuháls
       - DYNY   # Dyngjufjöll ytri
       - KISA   # Kista
       - VONC   # Vonarskard
