@@ -41,7 +41,12 @@ def get_stations_from_config() -> List[str]:
 
     try:
         config = gps_parser.ConfigParser()
-        return config.getStationList()
+        # Filter: only uppercase 4-letter station IDs, excluding config sections
+        excluded_sections = {'DEFAULT', 'DEFAULTS', 'Configs', 'PATHS', 'FILES'}
+        return [
+            s for s in config.config.sections()
+            if s not in excluded_sections and s.isupper() and len(s) == 4
+        ]
     except Exception as e:
         logging.warning(f"Could not get station list from config: {e}")
         return []
