@@ -690,11 +690,11 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  p.ts AS time,\n  p.sid AS metric,\n  p.voltage AS value\nFROM block_power_status p\nJOIN stations s ON s.sid = p.sid\nWHERE $__timeFilter(p.ts)\n  AND COALESCE(s.power_type, 'battery') != 'mains'\nORDER BY p.ts",
+          "rawSql": "SELECT\n  p.ts AS time,\n  p.sid AS metric,\n  p.voltage AS value\nFROM block_power_status p\nJOIN station_area_members sam ON sam.sid = p.sid\nJOIN stations s ON s.sid = p.sid\nWHERE $__timeFilter(p.ts)\n  AND sam.area_id = '$area'\n  AND COALESCE(s.power_type, 'battery') != 'mains'\nORDER BY p.ts",
           "refId": "A"
         }
       ],
-      "title": "Voltage Over Time - All Stations",
+      "title": "Voltage Over Time - $area",
       "type": "timeseries"
     },
     {
@@ -2287,6 +2287,26 @@
   ],
   "templating": {
     "list": [
+      {
+        "current": {},
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "gps_health"
+        },
+        "definition": "SELECT area_id AS __value, area_name || ' (' || area_type || ')' AS __text FROM station_areas ORDER BY area_type, area_name",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Area",
+        "multi": false,
+        "name": "area",
+        "options": [],
+        "query": "SELECT area_id AS __value, area_name || ' (' || area_type || ')' AS __text FROM station_areas ORDER BY area_type, area_name",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      },
       {
         "current": {},
         "datasource": {
