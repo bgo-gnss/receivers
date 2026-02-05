@@ -701,6 +701,97 @@ Examples:
     return parser
 
 
+def setup_tools_parser(subparsers) -> argparse.ArgumentParser:
+    """Set up argument parser for tools management subcommand."""
+    parser = subparsers.add_parser(
+        'tools',
+        help='Manage RINEX conversion tools',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description='''
+Manage external tools required for RINEX conversion.
+
+Tools are installed to ~/.local/share/gps-rinex-tools/bin/ by default.
+
+Supported tools:
+  teqc      - Leica MDB/m00 to RINEX 2 (UNAVCO, auto-install)
+  gfzrnx    - RINEX format conversion and QC (GFZ, auto-install)
+  rnx2crx   - Hatanaka compression (GSI, auto-install)
+  mdb2rinex - Leica MDB to RINEX 3 (Leica myWorld, manual)
+  runpkr00  - Trimble T00/T02 extraction (Trimble, manual)
+  sbf2rin   - Septentrio SBF to RINEX (Septentrio, manual)
+
+Examples:
+  receivers tools list              # Show all tools and status
+  receivers tools install teqc      # Install specific tool
+  receivers tools install-all       # Install all auto-installable tools
+  receivers tools check             # Verify tools are working
+  receivers tools configure         # Update receivers.cfg with tool paths
+        '''
+    )
+
+    # Subcommands for tools
+    tools_subparsers = parser.add_subparsers(
+        dest='tools_command',
+        title='tools commands',
+    )
+
+    # list
+    list_parser = tools_subparsers.add_parser(
+        'list',
+        help='List all tools and their installation status'
+    )
+
+    # install
+    install_parser = tools_subparsers.add_parser(
+        'install',
+        help='Install a specific tool'
+    )
+    install_parser.add_argument(
+        'tool_name',
+        help='Name of tool to install (teqc, gfzrnx, rnx2crx, etc.)'
+    )
+    install_parser.add_argument(
+        '-f', '--force',
+        action='store_true',
+        help='Force reinstall even if already installed'
+    )
+
+    # install-all
+    install_all_parser = tools_subparsers.add_parser(
+        'install-all',
+        help='Install all auto-installable tools'
+    )
+    install_all_parser.add_argument(
+        '-f', '--force',
+        action='store_true',
+        help='Force reinstall even if already installed'
+    )
+
+    # check
+    check_parser = tools_subparsers.add_parser(
+        'check',
+        help='Check tool availability for a receiver type'
+    )
+    check_parser.add_argument(
+        '--receiver-type',
+        help='Check tools needed for specific receiver type (e.g., G10, PolaRX5)'
+    )
+
+    # configure
+    configure_parser = tools_subparsers.add_parser(
+        'configure',
+        help='Update receivers.cfg with installed tool paths'
+    )
+    configure_parser.add_argument(
+        '--config',
+        help='Path to receivers.cfg (default: ~/.config/gpsconfig/receivers.cfg)'
+    )
+
+    add_verbose_flag(parser)
+
+    return parser
+
+
 def create_argument_parser() -> argparse.ArgumentParser:
     """Create the main argument parser with all subcommands."""
     parser = argparse.ArgumentParser(
@@ -736,6 +827,7 @@ For subcommand help: receivers <command> --help
     setup_validate_parser(subparsers)
     setup_rec_config_parser(subparsers)
     setup_rinex_parser(subparsers)
+    setup_tools_parser(subparsers)
 
     # Scheduler (optional - requires APScheduler)
     try:
