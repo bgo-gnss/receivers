@@ -161,3 +161,6 @@ docs/diagrams/*_combined.pdf
 measasc.dat
 docs/legacy_scripts/config-*
 uv.lock
+
+# External tools (proprietary, not shipped)
+external-tools/

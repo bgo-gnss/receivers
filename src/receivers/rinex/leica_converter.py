@@ -222,19 +222,20 @@ class LeicaConverter(RawToRinexConverter):
     def _run_mdb2rinex(
         self, m00_file: Path, output_dir: Path, observation_date: datetime
     ) -> Path:
-        """Run mdb2rinex to convert m00 to RINEX 3.
+        """Run mdb2rinex to convert m00 to RINEX 3/4.
 
-        mdb2rinex is Leica's official converter that outputs native RINEX 3.
-        Command-line options (typical):
-            mdb2rinex -i input.m00 -o output.rnx [-v 3] [-f]
+        mdb2rinex is Leica's official converter that outputs native RINEX 3/4.
+
+        Command-line usage (from Mdb2Rinex_ReadMe.txt):
+            mdb2rinex -f input.m00 -o output_dir [-r rinex3.04|rinex4.00]
 
         Args:
             m00_file: Input m00 file
             output_dir: Output directory
-            observation_date: Date of observation
+            observation_date: Date of observation (unused, mdb2rinex names files automatically)
 
         Returns:
-            Path to RINEX observation file
+            Path to converted RINEX observation file
 
         Raises:
             ConversionError: If mdb2rinex fails
@@ -242,23 +243,25 @@ class LeicaConverter(RawToRinexConverter):
         mdb2rinex_path = self.get_tool_path("mdb2rinex")
 
         # Determine RINEX version for output
+        # mdb2rinex supports rinex3.04 (default) and rinex4.00
         if self.rinex_version == RinexVersion.RINEX_3:
-            version_str = "3"
-            ext = ".rnx"
+            version_arg = "rinex3.04"
+        elif self.rinex_version == RinexVersion.RINEX_4:
+            version_arg = "rinex4.00"
         else:
-            version_str = "2"
-            ext = ".obs"
-
-        temp_obs = output_dir / f"{m00_file.stem}{ext}"
+            # RINEX 2 not supported by mdb2rinex, use default (3.04)
+            version_arg = "rinex3.04"
+            self.logger.warning(
+                "mdb2rinex doesn't support RINEX 2, using RINEX 3.04"
+            )
 
         # Build mdb2rinex command
-        # Common option patterns - adjust based on actual tool usage
+        # Usage: mdb2rinex -f filename -o output_directory [-r rinex_version]
         cmd = [
             str(mdb2rinex_path),
-            "-i", str(m00_file),          # Input file
-            "-o", str(temp_obs),           # Output file
-            "-v", version_str,             # RINEX version
-            "-f",                          # Force overwrite
+            "-f", str(m00_file),       # Input file
+            "-o", str(output_dir),      # Output directory
+            "-r", version_arg,          # RINEX version
         ]
 
         self.logger.info(f"Running: {' '.join(cmd)}")
@@ -272,20 +275,21 @@ class LeicaConverter(RawToRinexConverter):
             )
 
             if result.returncode != 0:
-                # Log the error and try alternate command format
-                self.logger.warning(
-                    f"mdb2rinex failed with standard options: {result.stderr}"
-                )
-                # Try simpler command format
-                return self._run_mdb2rinex_simple(m00_file, output_dir, version_str, ext)
-
-            if not temp_obs.exists() or temp_obs.stat().st_size == 0:
                 raise ConversionError(
-                    f"mdb2rinex produced no output for {m00_file}"
+                    f"mdb2rinex failed with code {result.returncode}: {result.stderr}"
                 )
 
-            self.logger.info(f"Created RINEX {version_str}: {temp_obs}")
-            return temp_obs
+            # mdb2rinex creates output files with automatic naming based on content
+            # Look for the observation file (.xxo or .rnx)
+            obs_file = self._find_mdb2rinex_output(output_dir, m00_file)
+
+            if obs_file:
+                self.logger.info(f"Created RINEX: {obs_file}")
+                return obs_file
+            else:
+                raise ConversionError(
+                    f"mdb2rinex produced no observation file for {m00_file}"
+                )
 
         except subprocess.TimeoutExpired:
             raise ConversionError(f"mdb2rinex timed out converting {m00_file}")
@@ -294,70 +298,41 @@ class LeicaConverter(RawToRinexConverter):
                 "mdb2rinex not found. Download from Leica myWorld portal."
             )
 
-    def _run_mdb2rinex_simple(
-        self, m00_file: Path, output_dir: Path, version_str: str, ext: str
-    ) -> Path:
-        """Run mdb2rinex with simpler command format.
+    def _find_mdb2rinex_output(self, output_dir: Path, m00_file: Path) -> Optional[Path]:
+        """Find the observation file created by mdb2rinex.
 
-        Alternate command format:
-            mdb2rinex input.m00 [output_dir]
+        mdb2rinex creates files with naming based on station ID and time from
+        the MDB file content, not the input filename. The naming follows RINEX
+        conventions: ssssdddf.yyo or ssssdddf.yyt
 
         Args:
-            m00_file: Input m00 file
-            output_dir: Output directory
-            version_str: RINEX version string
-            ext: Output file extension
+            output_dir: Directory where mdb2rinex wrote output
+            m00_file: Original input file (for station ID extraction)
 
         Returns:
-            Path to RINEX observation file
+            Path to observation file if found, None otherwise
         """
-        mdb2rinex_path = self.get_tool_path("mdb2rinex")
-        temp_obs = output_dir / f"{m00_file.stem}{ext}"
+        # Extract station ID from input filename (first 4 chars)
+        station_id = m00_file.stem[:4].upper()
 
-        # Try simpler format: mdb2rinex input.m00
-        cmd = [str(mdb2rinex_path), str(m00_file)]
+        # Look for observation files (*.xxo patterns or *.rnx)
+        patterns = [
+            f"{station_id}*.??o",   # RINEX 2/3 obs files (e.g., SKFC0350.26o)
+            f"{station_id}*.??O",   # Uppercase
+            f"{station_id}*.rnx",   # RINEX 3 modern naming
+            f"{station_id}*.RNX",
+            "*.??o",                # Any obs file as fallback
+            "*.rnx",
+        ]
 
-        self.logger.info(f"Trying simple format: {' '.join(cmd)}")
+        for pattern in patterns:
+            matches = list(output_dir.glob(pattern))
+            if matches:
+                # Return the most recently modified file
+                matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                return matches[0]
 
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=300,
-                cwd=str(output_dir),  # Run in output directory
-            )
-
-            if result.returncode != 0:
-                raise ConversionError(
-                    f"mdb2rinex failed: {result.stderr}\n"
-                    "Check mdb2rinex --help for correct usage."
-                )
-
-            # mdb2rinex may output to current directory or same location as input
-            # Look for output file
-            possible_outputs = [
-                temp_obs,
-                output_dir / f"{m00_file.stem}.rnx",
-                output_dir / f"{m00_file.stem}.obs",
-                m00_file.parent / f"{m00_file.stem}.rnx",
-                m00_file.parent / f"{m00_file.stem}.obs",
-            ]
-
-            for out_file in possible_outputs:
-                if out_file.exists() and out_file.stat().st_size > 0:
-                    if out_file != temp_obs and out_file.parent != output_dir:
-                        # Move to output directory
-                        shutil.move(out_file, temp_obs)
-                    self.logger.info(f"Created RINEX: {temp_obs}")
-                    return temp_obs
-
-            raise ConversionError(
-                f"mdb2rinex produced no output for {m00_file}"
-            )
-
-        except subprocess.TimeoutExpired:
-            raise ConversionError(f"mdb2rinex timed out converting {m00_file}")
+        return None
 
     def _run_teqc(self, m00_file: Path, output_dir: Path) -> Path:
         """Run teqc to convert m00 to RINEX 2 (fallback).
