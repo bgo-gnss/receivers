@@ -292,6 +292,39 @@ class ReceiversConfig:
         session_types = self.get_session_types()
         return session in session_types
 
+    def is_session_supported_by_receiver(self, receiver_type: str, session: str) -> bool:
+        """Check if a session type is supported by a specific receiver type.
+
+        Args:
+            receiver_type: Receiver type (e.g., 'polarx5', 'netr9', 'netrs', 'g10')
+            session: Session type (e.g., '15s_24hr', '1Hz_1hr', 'status_1hr')
+
+        Returns:
+            True if the receiver type has a session_map entry for this session
+        """
+        receiver_config = self.get_receiver_config(receiver_type)
+        # Session maps are stored as session_map_{session} (case-insensitive)
+        session_key = f"session_map_{session.lower()}"
+        return session_key in receiver_config
+
+    def get_supported_sessions(self, receiver_type: str) -> list:
+        """Get list of sessions supported by a specific receiver type.
+
+        Args:
+            receiver_type: Receiver type (e.g., 'polarx5', 'netr9')
+
+        Returns:
+            List of supported session names
+        """
+        receiver_config = self.get_receiver_config(receiver_type)
+        sessions = []
+        for key in receiver_config:
+            if key.startswith("session_map_"):
+                # Extract session name from key (e.g., "session_map_15s_24hr" -> "15s_24hr")
+                session_name = key[len("session_map_"):]
+                sessions.append(session_name)
+        return sessions
+
     def get_session_frequency(self, session: str) -> str:
         """Get frequency for session type.
 
