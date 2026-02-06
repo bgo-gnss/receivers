@@ -380,12 +380,18 @@ class ReceiversConfig:
 
         try:
             for key, value in self.config.items("rinex"):
-                try:
-                    # Try to parse as Python literal (bool, int, etc.)
-                    rinex_config[key] = ast.literal_eval(value)
-                except (ValueError, SyntaxError):
-                    # Keep as string if not parseable
-                    rinex_config[key] = value
+                # Handle common boolean strings
+                if value.lower() in ("true", "yes", "on", "1"):
+                    rinex_config[key] = True
+                elif value.lower() in ("false", "no", "off", "0"):
+                    rinex_config[key] = False
+                else:
+                    try:
+                        # Try to parse as Python literal (int, etc.)
+                        rinex_config[key] = ast.literal_eval(value)
+                    except (ValueError, SyntaxError):
+                        # Keep as string if not parseable
+                        rinex_config[key] = value
         except configparser.NoSectionError:
             self.logger.debug("No [rinex] section found, using defaults")
 
