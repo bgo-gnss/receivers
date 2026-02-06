@@ -181,14 +181,25 @@ class TrimbleNativeConverter(RawToRinexConverter):
             rinex_ver = version_map.get(self.rinex_version, "3.04")
 
             # Build Docker command
-            # docker run --rm -v "temp_dir:/data" trm2rinex:cli-light \
-            #   data/file.T02 -p data/out -v 3.04 -d -co -s
+            # The trm2rinex image uses Wine to run convertToRinex.exe
+            # We need to:
+            # 1. Mount the temp directory to /data in the container
+            # 2. Run wine with the full Windows path to convertToRinex.exe
+            # 3. Use Z: drive mapping for Linux paths (Z:\data maps to /data)
+
+            # Path to convertToRinex inside the container
+            convert_exe = "C:\\Program Files\\Trimble\\convertToRINEX\\convertToRinex.exe"
+            wine_path = "/opt/wine/bin/wine"
+
             cmd = [
                 "docker", "run", "--rm",
                 "-v", f"{temp_dir}:/data",
+                "--entrypoint", "",
                 self.docker_image,
-                f"data/{working_file.name}",
-                "-p", "data/out",
+                wine_path,
+                convert_exe,
+                f"Z:\\data\\{working_file.name}",
+                "-p", "Z:\\data\\out",
                 "-v", rinex_ver,
                 "-d",   # Include Doppler
                 "-co",  # Include clock offsets

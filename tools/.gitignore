@@ -1,0 +1,7 @@
+# External tools (cloned separately)
+*
+!.gitignore
+
+# Include our setup scripts
+!trimble-native/
+!trimble-native/**
