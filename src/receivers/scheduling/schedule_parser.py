@@ -255,14 +255,29 @@ def apply_distribution_window(
 
     Returns:
         Tuple of (trigger_type, modified_kwargs)
-
-    Note:
-        For interval triggers, distribution window is not applied.
     """
-    if trigger.trigger_type != 'cron':
-        # Interval triggers don't support distribution
-        return trigger.trigger_type, trigger.trigger_kwargs.copy()
+    from datetime import datetime, timedelta, timezone
 
+    kwargs = trigger.trigger_kwargs.copy()
+
+    if trigger.trigger_type == 'interval':
+        # For interval triggers, stagger start times across the distribution window
+        # This ensures stations don't all run at the same instant
+        if total_stations <= 1 or window_minutes <= 0:
+            seconds_offset = 0
+        else:
+            # Spread stations evenly across distribution window
+            # Convert window to seconds for finer granularity
+            window_seconds = window_minutes * 60
+            seconds_offset = int((station_index / total_stations) * window_seconds)
+
+        # Set start_date to now + offset so first run is staggered
+        start_time = datetime.now(timezone.utc) + timedelta(seconds=seconds_offset)
+        kwargs['start_date'] = start_time
+
+        return trigger.trigger_type, kwargs
+
+    # For cron triggers, apply minute offset
     # Calculate minute offset for this station
     if total_stations <= 1 or window_minutes <= 0:
         # No distribution: single station or window_minutes=0 (run all at once)
@@ -272,7 +287,6 @@ def apply_distribution_window(
         minute_offset = int(station_index / stations_per_minute)
 
     # Apply offset to minute field
-    kwargs = trigger.trigger_kwargs.copy()
     base_minute = kwargs.get('minute', 0)
 
     # Handle different minute formats
