@@ -23,20 +23,27 @@ except ImportError:
 
 def cmd_scheduler_start(args) -> int:
     """Start the bulk download scheduler."""
-    
+
     if not HAS_APSCHEDULER:
         print("❌ APScheduler not available. Install with: pip install apscheduler")
         return 1
-        
+
+    # Parse --only flag
+    scheduler_types = None
+    if getattr(args, 'only', None):
+        scheduler_types = [s.strip() for s in args.only.split(',')]
+        print(f"📋 Running only: {', '.join(scheduler_types)}")
+
     try:
         # Create scheduler with filtering options
         scheduler = BulkDownloadScheduler(
             production_mode=not args.verbose,
             max_workers=args.max_workers,
             station_filter=getattr(args, 'stations', None),
-            max_stations_per_session=getattr(args, 'max_stations', None)
+            max_stations_per_session=getattr(args, 'max_stations', None),
+            scheduler_types=scheduler_types
         )
-        
+
         # Schedule all sessions
         scheduler.schedule_all_sessions()
 
@@ -187,6 +194,12 @@ def cmd_scheduler_test(args) -> int:
         print("❌ APScheduler not available. Install with: pip install apscheduler")
         return 1
 
+    # Parse --only flag
+    scheduler_types = None
+    if getattr(args, 'only', None):
+        scheduler_types = [s.strip() for s in args.only.split(',')]
+        print(f"📋 Testing only: {', '.join(scheduler_types)}")
+
     try:
         print("🧪 Testing scheduler setup...")
 
@@ -194,7 +207,8 @@ def cmd_scheduler_test(args) -> int:
         scheduler = BulkDownloadScheduler(
             production_mode=True,
             station_filter=getattr(args, 'stations', None),
-            max_stations_per_session=getattr(args, 'max_stations', None)
+            max_stations_per_session=getattr(args, 'max_stations', None),
+            scheduler_types=scheduler_types
         )
 
         # Load stations
@@ -401,6 +415,12 @@ def create_scheduler_parser(subparsers):
         type=int,
         help="Maximum number of stations per session (for testing)"
     )
+    start_parser.add_argument(
+        "--only",
+        type=str,
+        help="Only run specific scheduler types (comma-separated). "
+             "Options: health, 15s_24hr, 1Hz_1hr, status_1hr, downloads, all"
+    )
     start_parser.set_defaults(func=cmd_scheduler_start)
     
     # Status command
@@ -446,6 +466,12 @@ def create_scheduler_parser(subparsers):
         "--max-stations",
         type=int,
         help="Maximum number of stations per session (for testing)"
+    )
+    test_parser.add_argument(
+        "--only",
+        type=str,
+        help="Only test specific scheduler types (comma-separated). "
+             "Options: health, 15s_24hr, 1Hz_1hr, status_1hr, downloads, all"
     )
     test_parser.set_defaults(func=cmd_scheduler_test)
 
