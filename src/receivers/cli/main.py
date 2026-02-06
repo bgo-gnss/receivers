@@ -2465,13 +2465,32 @@ def cmd_rinex(args) -> int:
         logger.error(f"RINEX module not available: {e}")
         return 1
 
-    # Parse RINEX version
+    # Load RINEX defaults from config
+    from ..config.receivers_config import get_receivers_config
+    try:
+        rinex_config = get_receivers_config().get_rinex_config()
+    except FileNotFoundError:
+        rinex_config = {
+            "default_version": 3,
+            "default_naming": "short",
+            "default_hatanaka": True,
+            "default_compression": "gz",
+            "apply_header_corrections": True,
+        }
+
+    # Parse RINEX version (CLI overrides config)
     version_map = {
         2: RinexVersion.RINEX_2,
         3: RinexVersion.RINEX_3,
         4: RinexVersion.RINEX_4,
     }
-    rinex_version = version_map.get(args.rinex_version, RinexVersion.RINEX_3)
+    # Use CLI arg if explicitly set, otherwise use config default
+    cli_version = getattr(args, 'rinex_version', None)
+    if cli_version is not None:
+        rinex_version = version_map.get(cli_version, RinexVersion.RINEX_3)
+    else:
+        config_version = rinex_config.get("default_version", 3)
+        rinex_version = version_map.get(config_version, RinexVersion.RINEX_3)
 
     # Parse output format (None means use config defaults)
     if args.output_format == "legacy":
@@ -2481,16 +2500,11 @@ def cmd_rinex(args) -> int:
     else:
         output_format = None  # Let converter use config defaults
 
-    # Parse naming convention (from args or config)
+    # Parse naming convention (CLI overrides config)
     if args.naming is not None:
         naming_str = args.naming
     else:
-        # Get default from receivers.cfg
-        from ..config.receivers_config import get_receivers_config
-        try:
-            naming_str = get_receivers_config().get_rinex_default_naming()
-        except FileNotFoundError:
-            naming_str = "short"  # Fallback if no config
+        naming_str = rinex_config.get("default_naming", "short")
     naming_convention = (
         NamingConvention.SHORT
         if naming_str == "short"

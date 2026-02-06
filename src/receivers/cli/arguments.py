@@ -616,10 +616,10 @@ Examples:
     format_group.add_argument(
         '--version', '-V',
         type=int,
-        default=3,
+        default=None,
         choices=[2, 3, 4],
         dest='rinex_version',
-        help='RINEX version: 2, 3, or 4 (default: 3)'
+        help='RINEX version: 2, 3, or 4 (default: from receivers.cfg)'
     )
 
     format_group.add_argument(
