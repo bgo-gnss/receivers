@@ -15,7 +15,8 @@ from datetime import datetime
 from pathlib import Path
 
 try:
-    from ..scheduling.bulk_scheduler import BulkDownloadScheduler, create_scheduler_config, HAS_APSCHEDULER
+    from ..scheduling.bulk_scheduler import BulkDownloadScheduler, HAS_APSCHEDULER
+    from ..scheduling.config_loader import create_default_config_file, load_scheduler_config
 except ImportError:
     HAS_APSCHEDULER = False
 
@@ -141,29 +142,41 @@ def cmd_scheduler_status(args) -> int:
 
 def cmd_scheduler_config(args) -> int:
     """Manage scheduler configuration."""
-    
+    import os
+
+    # Determine config path (respects GPS_CONFIG_PATH env var)
+    gps_config_dir = os.getenv('GPS_CONFIG_PATH')
+    if gps_config_dir:
+        config_file = Path(gps_config_dir) / 'scheduler.yaml'
+    else:
+        config_file = Path.home() / '.config' / 'gpsconfig' / 'scheduler.yaml'
+
     if args.create:
         try:
-            config_file = create_scheduler_config()
-            print(f"✅ Created scheduler configuration: {config_file}")
+            created_file = create_default_config_file()
+            print(f"✅ Created scheduler configuration: {created_file}")
             print("   Edit this file to customize scheduling behavior")
             return 0
         except Exception as e:
             print(f"❌ Failed to create configuration: {e}")
             return 1
-            
+
     if args.show:
-        config_file = Path.home() / '.config' / 'gps_receivers' / 'scheduler.json'
         if config_file.exists():
-            with open(config_file) as f:
-                config = json.load(f)
-            print("📋 Current scheduler configuration:")
-            print(json.dumps(config, indent=2))
+            # Load and display as YAML (or raw content)
+            try:
+                config = load_scheduler_config(config_file)
+                print(f"📋 Current scheduler configuration ({config_file}):")
+                print(json.dumps(config, indent=2))
+            except Exception as e:
+                # Fall back to showing raw file
+                print(f"📋 Current scheduler configuration ({config_file}):")
+                print(config_file.read_text())
         else:
             print(f"❌ No configuration file found at {config_file}")
             print("   Create one with: receivers scheduler config --create")
             return 1
-            
+
     return 0
 
 
