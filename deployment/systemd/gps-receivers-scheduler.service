@@ -1,8 +1,9 @@
 [Unit]
-Description=GPS Receivers Scheduler - Automated GNSS Data Download
+Description=GPS Receivers Pipeline Scheduler - Automated GNSS Data Processing
 Documentation=https://github.com/bennigo/receivers
-After=network-online.target
+After=network-online.target postgresql.service
 Wants=network-online.target
+# Optional: Requires=postgresql.service  # Uncomment if DB is required
 
 [Service]
 Type=simple
@@ -13,22 +14,30 @@ WorkingDirectory=/opt/receivers
 # Environment setup
 Environment="GPS_CONFIG_PATH=/etc/gpsconfig"
 Environment="GPS_CACHE_DIR=/var/cache/gps_receivers"
+Environment="PYTHONPATH=/opt/receivers/lib/gtimes/src:/opt/receivers/lib/gps_parser/src:/opt/receivers/src"
 
-# Command to run
+# Command to run - Pipeline scheduler schedules ALL stations from stations.cfg
+# Use --stations flag only for testing subsets
 ExecStart=/opt/receivers/venv/bin/receivers scheduler start \
-    --max-workers 100 \
-    --config /etc/gpsconfig/scheduler.yaml
+    --max-workers 5
+
+# Graceful shutdown - allow active pipelines to complete
+ExecStop=/opt/receivers/venv/bin/receivers scheduler stop
+TimeoutStopSec=120
 
 # Restart policy
 Restart=always
-RestartSec=10s
-StartLimitInterval=5min
-StartLimitBurst=3
+RestartSec=30s
+StartLimitInterval=10min
+StartLimitBurst=5
 
 # Resource limits
+# Network pool: 10 workers (I/O-bound, concurrent OK)
+# CPU pool: 4 workers (memory-limited for RINEX conversion)
 LimitNOFILE=65536
-MemoryMax=2G
-CPUQuota=200%
+MemoryMax=4G
+MemoryHigh=3G
+CPUQuota=400%
 
 # Logging
 StandardOutput=journal
@@ -40,10 +49,11 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/cache/gps_receivers /mnt/gpsdata
+ReadWritePaths=/var/cache/gps_receivers /mnt/gpsdata /tmp
 
 # Watchdog (restart if no keep-alive for 5 minutes)
 WatchdogSec=300s
+NotifyAccess=main
 
 [Install]
 WantedBy=multi-user.target
