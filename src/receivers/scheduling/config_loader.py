@@ -128,7 +128,67 @@ def get_default_config() -> Dict[str, Any]:
             'auto_recovery_enabled': False,
             'max_recovery_days': 30,
             'backfill_enabled': False
-        }
+        },
+        # Pipeline and resource pool configuration (new in scheduler enhancement)
+        'resource_pools': {
+            'network_workers': 10,    # I/O-bound: many concurrent OK
+            'cpu_workers': 4,         # CPU-bound: limit for memory
+        },
+        'pipelines': {
+            '15s_24hr': {
+                'stages': ['download', 'rinex', 'sync'],
+                'priority': 'standard',
+                'rinex_timing': 'immediate',
+                'sync_types': ['raw', 'rinex'],
+            },
+            '1Hz_1hr': {
+                'stages': ['download', 'sync'],
+                'priority': 'realtime',
+                'sync_types': ['raw'],
+            },
+            'status_1hr': {
+                'stages': ['download', 'health'],
+                'priority': 'standard',
+                'health_targets': ['database'],
+                'health_priority': 'backfill',
+            },
+        },
+        'status_monitoring': {
+            'enabled': True,
+            'schedule': '5m',  # Every 5 minutes
+            'distribution_window': 3,  # Spread across 3 minutes
+            'priority': 'realtime',
+            'targets': ['database', 'icinga'],
+        },
+        'priorities': {
+            'realtime': {
+                'level': 1,
+                'sessions': ['1Hz_1hr'],
+            },
+            'standard': {
+                'level': 5,
+                'sessions': ['15s_24hr', 'status_1hr'],
+            },
+            'backfill': {
+                'level': 8,
+                'max_concurrent': 2,
+            },
+        },
+        'sync': {
+            'remote_host': 'gpsops@rawdata.vedur.is',
+            'remote_path': '/data/gps/archive',
+            'raw_options': '--ignore-existing',
+            'rinex_options': '--update',
+            'retry_count': 3,
+        },
+        'monitoring': {
+            'database': {
+                'enabled': True,
+            },
+            'icinga': {
+                'enabled': True,
+            },
+        },
     }
 
 
@@ -170,6 +230,17 @@ def merge_with_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
     # Ensure recovery section exists
     if 'recovery' not in config:
         config['recovery'] = defaults['recovery']
+
+    # Ensure new pipeline sections exist
+    for section in ['resource_pools', 'pipelines', 'status_monitoring',
+                    'priorities', 'sync', 'monitoring']:
+        if section not in config:
+            config[section] = defaults.get(section, {})
+        else:
+            # Merge with defaults
+            for key, value in defaults.get(section, {}).items():
+                if key not in config[section]:
+                    config[section][key] = value
 
     return config
 

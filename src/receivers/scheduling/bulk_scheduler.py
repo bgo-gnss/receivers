@@ -178,6 +178,83 @@ except ImportError as e:
     _import_error = str(e)
 
 
+# Module-level status check function for APScheduler serialization
+def _status_check_job(station_id: str, send_to_db: bool = True, send_to_icinga: bool = True):
+    """Run health status check for a station (standalone job function for APScheduler).
+
+    This is the equivalent of: receivers health STATION --icinga --save-db
+
+    Args:
+        station_id: Station identifier
+        send_to_db: Write health data to PostgreSQL
+        send_to_icinga: Send passive checks to Icinga
+    """
+    logger = logging.getLogger(f'gps_scheduler.health.{station_id}')
+
+    try:
+        logger.info(f"Starting health check: {station_id}")
+        start_time = time.time()
+
+        # Import here to avoid circular imports
+        from ..cli.main import get_station_config, create_receiver
+
+        # Get station configuration
+        station_config = get_station_config(station_id)
+        if not station_config:
+            logger.error(f"❌ Health check failed: No config for {station_id}")
+            return
+
+        # Create receiver
+        receiver = create_receiver(station_id, station_config)
+
+        # Get health status from receiver
+        try:
+            health_data = receiver.get_health_status()
+        except Exception as e:
+            logger.warning(f"Could not get live health from {station_id}: {e}")
+            health_data = {'station_id': station_id, 'error': str(e)}
+
+        # Write to PostgreSQL
+        db_success = False
+        if send_to_db and health_data:
+            try:
+                from ..health.db_writer import HealthDatabaseWriter
+                writer = HealthDatabaseWriter()
+                db_success = writer.write_health_data(health_data)
+                if db_success:
+                    logger.debug(f"Health data written to database for {station_id}")
+            except ImportError:
+                logger.debug("PostgreSQL writer not available")
+            except Exception as e:
+                logger.warning(f"Database write failed for {station_id}: {e}")
+
+        # Send to Icinga
+        icinga_sent = 0
+        if send_to_icinga and health_data:
+            try:
+                from ..monitoring.icinga_client import IcingaClient
+                client = IcingaClient()
+                results = client.send_health_from_json(health_data)
+                icinga_sent = sum(1 for r in results.values() if r.get('success', False))
+            except ImportError:
+                logger.debug("Icinga client not available")
+            except Exception as e:
+                logger.warning(f"Icinga send failed for {station_id}: {e}")
+
+        duration = time.time() - start_time
+        status_parts = []
+        if db_success:
+            status_parts.append("DB")
+        if icinga_sent > 0:
+            status_parts.append(f"Icinga({icinga_sent})")
+
+        status_str = ", ".join(status_parts) if status_parts else "no targets"
+        logger.info(f"✅ Health check complete: {station_id} - {status_str} ({duration:.1f}s)")
+
+    except Exception as e:
+        logger.error(f"❌ Health check failed: {station_id} - {type(e).__name__}: {e}")
+
+
 @dataclass
 class ScheduleConfig:
     """Configuration for scheduled downloads.
@@ -539,6 +616,9 @@ class BulkDownloadScheduler:
             )
 
         self.logger.info(f"Total: {total_jobs} jobs scheduled with interleaved ordering for stress testing")
+
+        # Schedule health monitoring if enabled
+        self._schedule_health_monitoring()
         
     def _get_stations_for_session(self, session_type: str) -> List[str]:
         """Get list of stations that support a specific session type."""
@@ -608,6 +688,73 @@ class BulkDownloadScheduler:
             f"({base_trigger.description})"
         )
         
+    def _schedule_health_monitoring(self):
+        """Schedule health monitoring jobs (send to Icinga + PostgreSQL).
+
+        Health checks run every 5 minutes for all stations that support live health.
+        Equivalent to: receivers health STATION --icinga --save-db
+        """
+        # Check if health monitoring is enabled in config
+        status_monitoring = self.yaml_config.get('status_monitoring', {})
+        if not status_monitoring.get('enabled', True):
+            self.logger.info("Health monitoring disabled in config")
+            return
+
+        # Get schedule (default: every 5 minutes)
+        schedule = status_monitoring.get('schedule', '5m')
+
+        # Get stations that support health checks (polarx5 only for now)
+        health_stations = []
+        for station_id, config in self.stations.items():
+            if not config.get('enabled', True):
+                continue
+
+            # Apply station filter if specified
+            if self.station_filter and station_id not in self.station_filter:
+                continue
+
+            # Only polarx5 receivers support live health checks
+            receiver_type = config.get('receiver_type', '').lower()
+            if receiver_type != 'polarx5':
+                continue
+
+            health_stations.append(station_id)
+
+        if not health_stations:
+            self.logger.info("No stations support health monitoring")
+            return
+
+        # Apply max stations limit
+        if self.max_stations_per_session and len(health_stations) > self.max_stations_per_session:
+            health_stations = health_stations[:self.max_stations_per_session]
+
+        # Parse schedule
+        base_trigger = parse_schedule(schedule)
+
+        # Distribution window for health checks (default 3 minutes)
+        distribution_window = status_monitoring.get('distribution_window', 3)
+
+        # Schedule health check jobs
+        for i, station_id in enumerate(sorted(health_stations)):
+            trigger_type, trigger_kwargs = apply_distribution_window(
+                base_trigger, i, len(health_stations), distribution_window
+            )
+
+            job_id = f"health_{station_id}"
+            self.scheduler.add_job(
+                func=_status_check_job,
+                trigger=trigger_type,
+                args=[station_id, True, True],  # send_to_db=True, send_to_icinga=True
+                id=job_id,
+                replace_existing=True,
+                **trigger_kwargs
+            )
+
+        self.logger.info(
+            f"Scheduled {len(health_stations)} stations for health monitoring "
+            f"({base_trigger.description})"
+        )
+
     def _download_station_data(self, station_id: str, session_type: str):
         """Download data for a single station (wrapper for backward compatibility).
 

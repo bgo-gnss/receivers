@@ -12,7 +12,7 @@ a consistent interface and behavior.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, Any, Optional, Tuple
 from enum import Enum
 import logging
@@ -24,6 +24,26 @@ class TaskType(Enum):
     STATUS = "status"
     HEALTH = "health"
     VALIDATE = "validate"
+    RINEX = "rinex"
+    SYNC = "sync"
+
+
+class TaskPriority(Enum):
+    """Task priority levels for scheduling.
+
+    Lower values = higher priority. Used for ordering tasks in the scheduler
+    when resources are constrained.
+
+    Priority levels:
+    - REALTIME (1): Live hourly data (1Hz_1hr), immediate processing
+    - STANDARD (5): Daily scheduled operations (15s_24hr)
+    - BACKFILL (8): Recovery and historical processing
+    - MAINTENANCE (10): Low priority background tasks
+    """
+    REALTIME = 1      # Live hourly data, status monitoring
+    STANDARD = 5      # Daily scheduled operations
+    BACKFILL = 8      # Recovery operations
+    MAINTENANCE = 10  # Low priority tasks
 
 
 class TaskFrequency(Enum):
@@ -48,7 +68,9 @@ class TaskConfig:
         max_concurrent: Maximum concurrent instances
         timeout_minutes: Timeout for task execution
         retry_count: Number of retries on failure
-        priority: Task priority (higher = more important)
+        priority: Task priority (REALTIME=1, STANDARD=5, BACKFILL=8)
+        lookback_periods: Number of periods to check (for download tasks)
+        resource_pool: Which resource pool to use ('network' or 'cpu')
     """
     task_type: TaskType
     session_type: str
@@ -59,7 +81,9 @@ class TaskConfig:
     max_concurrent: int = 3
     timeout_minutes: int = 30
     retry_count: int = 0
-    priority: int = 5
+    priority: TaskPriority = TaskPriority.STANDARD
+    lookback_periods: int = 1
+    resource_pool: str = "network"  # "network" for I/O-bound, "cpu" for CPU-bound
 
 
 @dataclass
@@ -74,6 +98,8 @@ class TaskResult:
         data: Task-specific result data (files downloaded, status info, etc.)
         error: Error information if task failed
         metrics: Performance/monitoring metrics
+        pipeline_job_id: Optional pipeline job ID for tracking multi-stage pipelines
+        output_files: List of output files produced (for pipeline chaining)
     """
     success: bool
     status: str
@@ -82,6 +108,8 @@ class TaskResult:
     data: Dict[str, Any]
     error: Optional[str] = None
     metrics: Optional[Dict[str, Any]] = None
+    pipeline_job_id: Optional[str] = None
+    output_files: Optional[list] = None
 
 
 class ScheduledTask(ABC):
@@ -276,3 +304,30 @@ class TaskFactory:
             List of TaskType enums
         """
         return list(cls._task_classes.keys())
+
+    @classmethod
+    def register_builtin_tasks(cls) -> None:
+        """Register all built-in task types.
+
+        Called automatically when module is imported.
+        """
+        from .tasks import DownloadTask, HealthTask, RINEXTask, StatusTask, SyncTask
+
+        cls.register(TaskType.DOWNLOAD, DownloadTask)
+        cls.register(TaskType.STATUS, StatusTask)
+        cls.register(TaskType.HEALTH, HealthTask)
+        cls.register(TaskType.RINEX, RINEXTask)
+        cls.register(TaskType.SYNC, SyncTask)
+
+
+def _init_task_factory():
+    """Initialize task factory with built-in tasks."""
+    try:
+        TaskFactory.register_builtin_tasks()
+    except ImportError:
+        # Tasks module may not be fully loaded yet during import
+        pass
+
+
+# Deferred initialization to avoid circular imports
+# Registration happens when tasks module is fully loaded
