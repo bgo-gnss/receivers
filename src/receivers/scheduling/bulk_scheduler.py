@@ -312,7 +312,8 @@ class BulkDownloadScheduler:
                  max_workers: int = None,
                  station_filter: List[str] = None,
                  max_stations_per_session: int = None,
-                 config_path: Path = None):
+                 config_path: Path = None,
+                 scheduler_types: List[str] = None):
 
         if not HAS_APSCHEDULER:
             raise ImportError("APScheduler not available. Install with: pip install apscheduler")
@@ -339,6 +340,10 @@ class BulkDownloadScheduler:
         self.max_workers = max_workers if max_workers is not None else scheduler_cfg.get('max_workers', 5)
         self.station_filter = [s.upper() for s in station_filter] if station_filter else None
         self.max_stations_per_session = max_stations_per_session
+
+        # Parse scheduler_types filter
+        # Valid types: health, 15s_24hr, 1Hz_1hr, status_1hr, downloads (all download sessions), all
+        self.scheduler_types = self._parse_scheduler_types(scheduler_types)
 
         # Set up logging
         self._setup_logging()
@@ -398,7 +403,49 @@ class BulkDownloadScheduler:
 
         # Track running jobs
         self.running_jobs = {}
-        
+
+    def _parse_scheduler_types(self, scheduler_types: List[str] = None) -> dict:
+        """Parse scheduler types filter into a structured dict.
+
+        Args:
+            scheduler_types: List of types like ['health', '15s_24hr'] or ['downloads', 'health']
+
+        Returns:
+            Dict with keys: health, 15s_24hr, 1Hz_1hr, status_1hr (all True/False)
+        """
+        # Default: all enabled
+        result = {
+            'health': True,
+            '15s_24hr': True,
+            '1Hz_1hr': True,
+            'status_1hr': True,
+        }
+
+        if scheduler_types is None or 'all' in scheduler_types:
+            return result
+
+        # Start with all disabled
+        result = {k: False for k in result}
+
+        for stype in scheduler_types:
+            stype = stype.lower().strip()
+
+            if stype == 'health':
+                result['health'] = True
+            elif stype == 'downloads':
+                # Enable all download sessions
+                result['15s_24hr'] = True
+                result['1Hz_1hr'] = True
+                result['status_1hr'] = True
+            elif stype in ['15s_24hr', '15s', 'daily']:
+                result['15s_24hr'] = True
+            elif stype in ['1hz_1hr', '1hz', 'hourly']:
+                result['1Hz_1hr'] = True
+            elif stype in ['status_1hr', 'status']:
+                result['status_1hr'] = True
+
+        return result
+
     def _setup_logging(self):
         """Set up scheduler logging."""
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -560,6 +607,11 @@ class BulkDownloadScheduler:
         # Build station lists for each session type
         session_stations = {}
         for session_type, config in self.schedule_configs.items():
+            # Check scheduler_types filter
+            if not self.scheduler_types.get(session_type, True):
+                self.logger.info(f"Skipping session (--only filter): {session_type}")
+                continue
+
             if not config.enabled:
                 self.logger.info(f"Skipping disabled session: {session_type}")
                 continue
@@ -694,6 +746,11 @@ class BulkDownloadScheduler:
         Health checks run every 5 minutes for all stations that support live health.
         Equivalent to: receivers health STATION --icinga --save-db
         """
+        # Check scheduler_types filter
+        if not self.scheduler_types.get('health', True):
+            self.logger.info("Health monitoring skipped (--only filter)")
+            return
+
         # Check if health monitoring is enabled in config
         status_monitoring = self.yaml_config.get('status_monitoring', {})
         if not status_monitoring.get('enabled', True):
