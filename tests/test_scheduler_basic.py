@@ -314,8 +314,8 @@ class TestSchedulerJobScheduling:
         # Should have jobs scheduled
         jobs = scheduler.get_scheduled_jobs()
 
-        # 2 stations × 3 session types = 6 jobs
-        assert len(jobs) == 6
+        # 2 stations × 3 session types = 6 download jobs + 2 health jobs = 8 total
+        assert len(jobs) == 8
 
         # Check job IDs follow pattern: session_station
         job_ids = [job['id'] for job in jobs]
@@ -325,6 +325,9 @@ class TestSchedulerJobScheduling:
         assert '1Hz_1hr_TEST2' in job_ids
         assert 'status_1hr_TEST1' in job_ids
         assert 'status_1hr_TEST2' in job_ids
+        # Health monitoring jobs are also scheduled
+        assert 'health_TEST1' in job_ids
+        assert 'health_TEST2' in job_ids
 
     @patch('receivers.cli.main.get_all_station_configs')
     def test_get_job_status(self, mock_get_stations):
@@ -342,7 +345,8 @@ class TestSchedulerJobScheduling:
         assert 'total_jobs' in status
         assert 'running_jobs' in status
         assert 'current_jobs' in status
-        assert status['total_jobs'] == 3  # 1 station × 3 sessions
+        # 1 station × 3 sessions + 1 health monitoring job = 4 total
+        assert status['total_jobs'] == 4
 
 
 @pytest.mark.unit
