@@ -7,8 +7,9 @@ to RINEX format with proper header metadata from TOS database.
 Main Components:
     - RawToRinexConverter: Abstract base class for all converters
     - SBFConverter: Septentrio SBF -> RINEX (using sbf2rin)
-    - TrimbleConverter: Trimble T02/T00 -> RINEX (using runpkr00 + GFZRNX)
-    - LeicaConverter: Leica m00 -> RINEX (using teqc + GFZRNX)
+    - TrimbleConverter: Trimble T02/T00 -> RINEX (using runpkr00 + teqc + gfzrnx)
+    - TrimbleNativeConverter: Trimble T02/T00 -> native RINEX 3 (using Docker)
+    - LeicaConverter: Leica m00 -> RINEX (using mdb2rinex or teqc + gfzrnx)
     - MetadataProvider: Historical metadata lookup from TOS database
     - RinexNamer: Short/long RINEX filename conventions
 """
@@ -32,6 +33,7 @@ from .rinex_namer import NamingConvention, RinexNamer
 from .leica_converter import G10Converter, LeicaConverter
 from .sbf_converter import SBFConverter
 from .trimble_converter import NetR9Converter, NetRSConverter, TrimbleConverter
+from .trimble_native_converter import TrimbleNativeConverter
 
 __all__ = [
     # Base classes
@@ -54,6 +56,7 @@ __all__ = [
     # Converters
     "SBFConverter",
     "TrimbleConverter",
+    "TrimbleNativeConverter",
     "NetR9Converter",
     "NetRSConverter",
     "LeicaConverter",

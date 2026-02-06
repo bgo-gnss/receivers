@@ -637,6 +637,12 @@ Examples:
         help='Observation types to include (comma-separated, e.g., C1C,L1C,S1C)'
     )
 
+    format_group.add_argument(
+        '--native-trimble',
+        action='store_true',
+        help='Use native Trimble converter via Docker (requires trm2rinex image)'
+    )
+
     # Metadata options
     meta_group = parser.add_argument_group('metadata options')
     meta_group.add_argument(
