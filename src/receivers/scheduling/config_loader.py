@@ -7,12 +7,12 @@ Provides defaults if config file doesn't exist.
 import logging
 from pathlib import Path
 from typing import Dict, Any, Optional
-from dataclasses import asdict
 
 try:
     import yaml
     HAS_YAML = True
 except ImportError:
+    yaml = None  # type: ignore[assignment]
     HAS_YAML = False
 
 from .bulk_scheduler import ScheduleConfig
@@ -51,6 +51,7 @@ def load_scheduler_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
 
     # Load YAML configuration
     try:
+        assert yaml is not None  # Guaranteed by HAS_YAML check above
         with open(config_path) as f:
             config = yaml.safe_load(f)
 
@@ -218,22 +219,101 @@ def create_default_config_file(output_path: Optional[Path] = None) -> Path:
     Returns:
         Path to created config file
     """
+    if not HAS_YAML:
+        raise ImportError("PyYAML required to create config file. Install with: pip install pyyaml")
+
     if output_path is None:
-        output_path = Path.home() / '.config' / 'gpsconfig' / 'scheduler.yaml'
+        # Check for GPS_CONFIG_PATH environment variable first
+        import os
+        gps_config_dir = os.getenv('GPS_CONFIG_PATH')
+        if gps_config_dir:
+            output_path = Path(gps_config_dir) / 'scheduler.yaml'
+        else:
+            output_path = Path.home() / '.config' / 'gpsconfig' / 'scheduler.yaml'
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Read the template we already created
-    # (In production, this would use a template string)
     if output_path.exists():
         logger.warning(f"Configuration file already exists: {output_path}")
         backup_path = output_path.with_suffix('.yaml.backup')
         output_path.rename(backup_path)
         logger.info(f"Backed up existing config to {backup_path}")
 
-    # The file was already created by Write tool above
-    # This function validates it can be loaded
-    config = load_scheduler_config(output_path)
+    # Write YAML configuration with comments
+    yaml_content = '''# GPS Receiver Scheduler Configuration
+# Location: ~/.config/gpsconfig/scheduler.yaml
+#
+# SCHEDULE SYNTAX:
+# ----------------
+# schedule_minute + frequency (legacy):
+#   schedule_minute: 10
+#   frequency: daily  # or 'hourly'
+#
+# Flexible format (new):
+#   schedule: "00:10"       # Daily at 00:10
+#   schedule: ":15"         # Hourly at :15
+#   schedule: "6h"          # Every 6 hours
+#   schedule: "45m"         # Every 45 minutes
+#   schedule: ["00:10", "12:10"]  # Multiple times
+
+scheduler:
+  max_workers: 5
+  log_level: INFO
+  job_defaults:
+    coalesce: false
+    max_instances: 1
+    misfire_grace_time: 300
+
+sessions:
+  15s_24hr:
+    enabled: true
+    schedule_minute: 10
+    frequency: daily
+    distribution_window: 10
+    lookback_periods: 1
+    max_concurrent: 3
+    timeout_minutes: 45
+    retry_on_failure: true
+    retry_delay_minutes: 30
+    max_retries: 3
+    clean_tmp: false
+
+  1Hz_1hr:
+    enabled: true
+    schedule_minute: 15
+    frequency: hourly
+    distribution_window: 10
+    lookback_periods: 1
+    max_concurrent: 4
+    timeout_minutes: 30
+    retry_on_failure: true
+    retry_delay_minutes: 15
+    max_retries: 3
+    clean_tmp: false
+
+  status_1hr:
+    enabled: true
+    schedule_minute: 25
+    frequency: hourly
+    distribution_window: 5
+    lookback_periods: 1
+    max_concurrent: 5
+    timeout_minutes: 15
+    retry_on_failure: true
+    retry_delay_minutes: 10
+    max_retries: 2
+    clean_tmp: false
+
+stations: {}
+
+recovery:
+  auto_recovery_enabled: false
+  max_recovery_days: 30
+  backfill_enabled: false
+'''
+
+    with open(output_path, 'w') as f:
+        f.write(yaml_content)
 
     logger.info(f"Created scheduler configuration: {output_path}")
     return output_path

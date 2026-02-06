@@ -14,13 +14,28 @@ try:
     from receivers.scheduling.bulk_scheduler import (
         BulkDownloadScheduler,
         ScheduleConfig,
-        create_scheduler_config,
         HAS_APSCHEDULER
+    )
+    from receivers.scheduling.config_loader import (
+        create_default_config_file,
+        get_default_config,
     )
     SCHEDULER_AVAILABLE = True
 except ImportError:
     SCHEDULER_AVAILABLE = False
     pytestmark = pytest.mark.skip(reason="APScheduler not installed")
+
+
+@pytest.fixture(autouse=True)
+def mock_scheduler_config():
+    """Mock load_scheduler_config to return defaults for all tests.
+
+    This prevents tests from loading the user's actual scheduler.yaml file,
+    which may have different settings (like 'schedule: 5m' for testing).
+    """
+    with patch('receivers.scheduling.config_loader.load_scheduler_config') as mock:
+        mock.return_value = get_default_config()
+        yield mock
 
 
 @pytest.mark.unit
@@ -333,30 +348,30 @@ class TestSchedulerJobScheduling:
 @pytest.mark.unit
 @pytest.mark.scheduler
 def test_create_scheduler_config(tmp_path):
-    """Test creating scheduler configuration file."""
-    with patch('pathlib.Path.home', return_value=tmp_path):
-        config_file = create_scheduler_config()
+    """Test creating scheduler configuration file (YAML format)."""
+    import yaml
 
-        assert config_file.exists()
-        assert config_file.name == 'scheduler.json'
+    config_file = tmp_path / 'scheduler.yaml'
+    created_file = create_default_config_file(config_file)
 
-        # Read and verify config
-        import json
-        with open(config_file) as f:
-            config = json.load(f)
+    assert created_file.exists()
+    assert created_file.name == 'scheduler.yaml'
 
-        assert 'database_url' in config
-        assert 'production_mode' in config
-        assert 'max_workers' in config
-        assert 'sessions' in config
+    # Read and verify YAML config
+    with open(config_file) as f:
+        config = yaml.safe_load(f)
 
-        # Check session configs
-        assert '15s_24hr' in config['sessions']
-        assert '1Hz_1hr' in config['sessions']
-        assert 'status_1hr' in config['sessions']
+    assert 'scheduler' in config
+    assert 'sessions' in config
+    assert config['scheduler']['max_workers'] == 5
 
-        # Verify session structure
-        daily_session = config['sessions']['15s_24hr']
-        assert daily_session['enabled'] is True
-        assert daily_session['frequency'] == 'daily'
-        assert daily_session['schedule_minute'] == 10
+    # Check session configs
+    assert '15s_24hr' in config['sessions']
+    assert '1Hz_1hr' in config['sessions']
+    assert 'status_1hr' in config['sessions']
+
+    # Verify session structure (uses legacy format in default template)
+    daily_session = config['sessions']['15s_24hr']
+    assert daily_session['enabled'] is True
+    assert daily_session['frequency'] == 'daily'
+    assert daily_session['schedule_minute'] == 10

@@ -681,50 +681,20 @@ class BulkDownloadScheduler:
 
 
 def create_scheduler_config() -> Path:
-    """Create default scheduler configuration file."""
-    
-    config_dir = Path.home() / '.config' / 'gps_receivers'
-    config_dir.mkdir(parents=True, exist_ok=True)
-    
-    config_file = config_dir / 'scheduler.json'
-    
-    default_config = {
-        "database_url": "sqlite:///~/.cache/gps_receivers/scheduler.db",
-        "log_dir": "~/.cache/gps_receivers/logs",
-        "production_mode": True,
-        "max_workers": 5,
-        "sessions": {
-            "15s_24hr": {
-                "enabled": True,
-                "schedule_minute": 10,
-                "distribution_window": 10,
-                "frequency": "daily",
-                "max_concurrent": 3,
-                "timeout_minutes": 45
-            },
-            "1Hz_1hr": {
-                "enabled": True,
-                "schedule_minute": 15,
-                "distribution_window": 10, 
-                "frequency": "hourly",
-                "max_concurrent": 4,
-                "timeout_minutes": 30
-            },
-            "status_1hr": {
-                "enabled": True,
-                "schedule_minute": 25,
-                "distribution_window": 5,
-                "frequency": "hourly", 
-                "max_concurrent": 5,
-                "timeout_minutes": 15
-            }
-        }
-    }
-    
-    with open(config_file, 'w') as f:
-        json.dump(default_config, f, indent=2)
-        
-    return config_file
+    """DEPRECATED: Use config_loader.create_default_config_file() instead.
+
+    This function created JSON config at ~/.config/gps_receivers/scheduler.json.
+    The new function creates YAML config at ~/.config/gpsconfig/scheduler.yaml.
+    """
+    import warnings
+    warnings.warn(
+        "create_scheduler_config() is deprecated. "
+        "Use receivers.scheduling.config_loader.create_default_config_file() instead.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    from .config_loader import create_default_config_file
+    return create_default_config_file()
 
 
 # Example usage and testing
