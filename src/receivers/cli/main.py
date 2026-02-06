@@ -2250,8 +2250,20 @@ def _create_rinex_converter(
     elif "netr9" in receiver_type:
         if use_native_trimble:
             if not TrimbleNativeConverter.is_available():
-                logger.error("Native Trimble converter not available (Docker image not found)")
-                logger.error("Build image with: cd tools/trm2rinex-docker && docker build -t trm2rinex:cli-light .")
+                logger.error("Native Trimble converter not available")
+                print("\n" + "=" * 60)
+                print("NATIVE TRIMBLE CONVERTER - Setup Required")
+                print("=" * 60)
+                print("\nThe --native-trimble option requires Docker with the")
+                print("trm2rinex image installed.")
+                print("\nQuick setup:")
+                print("  cd tools/trimble-native && ./setup.sh")
+                print("\nManual setup:")
+                print("  docker pull geodesyewsp/trm2rinex:cli-light")
+                print("  docker tag geodesyewsp/trm2rinex:cli-light trm2rinex:cli-light")
+                print("\nAlternative: Use standard conversion (without --native-trimble)")
+                print("  receivers rinex STATION -d 1")
+                print("=" * 60 + "\n")
                 return None, None, None
             converter = TrimbleNativeConverter(
                 station_id=station_id,
@@ -2275,8 +2287,20 @@ def _create_rinex_converter(
     elif "netrs" in receiver_type:
         if use_native_trimble:
             if not TrimbleNativeConverter.is_available():
-                logger.error("Native Trimble converter not available (Docker image not found)")
-                logger.error("Build image with: cd tools/trm2rinex-docker && docker build -t trm2rinex:cli-light .")
+                logger.error("Native Trimble converter not available")
+                print("\n" + "=" * 60)
+                print("NATIVE TRIMBLE CONVERTER - Setup Required")
+                print("=" * 60)
+                print("\nThe --native-trimble option requires Docker with the")
+                print("trm2rinex image installed.")
+                print("\nQuick setup:")
+                print("  cd tools/trimble-native && ./setup.sh")
+                print("\nManual setup:")
+                print("  docker pull geodesyewsp/trm2rinex:cli-light")
+                print("  docker tag geodesyewsp/trm2rinex:cli-light trm2rinex:cli-light")
+                print("\nAlternative: Use standard conversion (without --native-trimble)")
+                print("  receivers rinex STATION -d 1")
+                print("=" * 60 + "\n")
                 return None, None, None
             converter = TrimbleNativeConverter(
                 station_id=station_id,
@@ -2319,8 +2343,11 @@ def _create_rinex_converter(
         tools = converter.validate_tools()
         missing = [t for t, avail in tools.items() if not avail]
         if missing:
-            logger.error(f"Missing required tools: {', '.join(missing)}")
-            logger.error("Install tools or configure paths in receivers.cfg [rinex_tools]")
+            from ..tools import ToolManager
+            manager = ToolManager()
+            logger.error(f"Missing required tools for {station_id}: {', '.join(missing)}")
+            # Print detailed installation guide
+            print(manager.get_installation_guide(missing))
             return None, None, None
 
     return converter, raw_extension, station_config
