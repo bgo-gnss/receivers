@@ -538,14 +538,18 @@ class ToolManager:
             Dictionary of tool name -> available status
         """
         result = {}
-        for name, info in self.TOOLS.items():
-            if receiver_type:
-                # Check if tool is needed for this receiver type
-                if receiver_type not in info.required_for and "all" not in info.required_for:
-                    continue
 
-            path = self._find_tool(name)
-            result[name] = path is not None
+        if receiver_type:
+            # Use the accurate mapping of receiver type to tools
+            tools_to_check = self.get_tools_for_receiver(receiver_type)
+            for name in tools_to_check:
+                path = self._find_tool(name)
+                result[name] = path is not None
+        else:
+            # Check all tools
+            for name in self.TOOLS:
+                path = self._find_tool(name)
+                result[name] = path is not None
 
         return result
 
@@ -600,3 +604,105 @@ class ToolManager:
             print(f"Updated {config_path}")
 
         return updated
+
+    def get_installation_guide(self, tool_names: List[str]) -> str:
+        """Get detailed installation instructions for missing tools.
+
+        Args:
+            tool_names: List of tool names that need to be installed
+
+        Returns:
+            Formatted string with installation instructions
+        """
+        lines = []
+        lines.append("\n" + "=" * 60)
+        lines.append("MISSING TOOLS - Installation Guide")
+        lines.append("=" * 60)
+
+        for name in tool_names:
+            info = self.TOOLS.get(name)
+            if not info:
+                lines.append(f"\n{name}: Unknown tool")
+                continue
+
+            lines.append(f"\n{name}")
+            lines.append("-" * len(name))
+            lines.append(f"  {info.description}")
+
+            if info.auto_install:
+                lines.append(f"\n  Quick install:")
+                lines.append(f"    receivers tools install {name}")
+            elif info.manual_instructions:
+                lines.append(f"\n  Manual installation required:")
+                for line in info.manual_instructions.split('\n'):
+                    lines.append(f"    {line}")
+
+            lines.append(f"\n  Or configure custom path in receivers.cfg:")
+            lines.append(f"    [rinex_tools]")
+            lines.append(f"    {name}_path = /path/to/{name}")
+
+        lines.append("\n" + "=" * 60)
+        lines.append("Quick commands:")
+        lines.append("  receivers tools list        # Show all tools")
+        lines.append("  receivers tools install-all # Install auto-installable tools")
+        lines.append("  receivers tools check       # Verify installation")
+        lines.append("=" * 60 + "\n")
+
+        return '\n'.join(lines)
+
+    def get_tools_for_receiver(self, receiver_type: str) -> List[str]:
+        """Get list of tools required for a specific receiver type.
+
+        Args:
+            receiver_type: Receiver type (e.g., 'netr9', 'polarx5', 'g10')
+
+        Returns:
+            List of required tool names
+        """
+        receiver_lower = receiver_type.lower()
+        required = []
+
+        # Map receiver types to tool requirements
+        if 'polarx' in receiver_lower or 'septentrio' in receiver_lower:
+            required = ['sbf2rin', 'gfzrnx']
+        elif 'netr9' in receiver_lower or 'netrs' in receiver_lower or 'trimble' in receiver_lower:
+            required = ['runpkr00', 'teqc', 'gfzrnx']
+        elif 'g10' in receiver_lower or 'leica' in receiver_lower or 'gr' in receiver_lower:
+            required = ['mdb2rinex', 'gfzrnx']  # mdb2rinex preferred, teqc fallback
+
+        # Always need rnx2crx for Hatanaka compression
+        if 'rnx2crx' not in required:
+            required.append('rnx2crx')
+
+        return required
+
+    def check_tools_with_details(
+        self, receiver_type: Optional[str] = None
+    ) -> Dict[str, Dict]:
+        """Check tool availability with detailed status.
+
+        Args:
+            receiver_type: If specified, only check tools for this receiver
+
+        Returns:
+            Dictionary with tool status and installation info
+        """
+        result = {}
+
+        if receiver_type:
+            tools_to_check = self.get_tools_for_receiver(receiver_type)
+        else:
+            tools_to_check = list(self.TOOLS.keys())
+
+        for name in tools_to_check:
+            info = self.TOOLS.get(name)
+            path = self._find_tool(name)
+
+            result[name] = {
+                "available": path is not None,
+                "path": str(path) if path else None,
+                "auto_install": info.auto_install if info else False,
+                "manual_instructions": info.manual_instructions if info else None,
+            }
+
+        return result
