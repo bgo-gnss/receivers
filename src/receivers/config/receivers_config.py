@@ -376,6 +376,7 @@ class ReceiversConfig:
             "default_compression": "gz",
             "apply_header_corrections": True,
             "use_tos_for_historical": True,
+            "use_native_trimble": False,  # Requires Docker setup
         }
 
         try:

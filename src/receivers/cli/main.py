@@ -2219,7 +2219,7 @@ def apply_receiver_type_corrections(
 
 def _create_rinex_converter(
     station_id: str, args, rinex_version, output_format, naming_convention,
-    observation_types, logger: logging.Logger,
+    observation_types, logger: logging.Logger, rinex_config: dict = None,
 ):
     """Create appropriate RINEX converter for a station.
 
@@ -2234,7 +2234,15 @@ def _create_rinex_converter(
         return None, None, None
 
     receiver_type = station_config.get("receiver", {}).get("type", "").lower()
-    use_native_trimble = getattr(args, "native_trimble", False)
+
+    # Determine if native Trimble converter should be used
+    # CLI --native-trimble overrides config, config overrides default (False)
+    if getattr(args, "native_trimble", False):
+        use_native_trimble = True
+    elif rinex_config:
+        use_native_trimble = rinex_config.get("use_native_trimble", False)
+    else:
+        use_native_trimble = False
 
     if "polarx" in receiver_type or "septentrio" in receiver_type:
         converter = SBFConverter(
@@ -2575,7 +2583,7 @@ def cmd_rinex(args) -> int:
         for station_id in stations:
             conv, ext, _ = _create_rinex_converter(
                 station_id, args, rinex_version, output_format,
-                naming_convention, observation_types, logger,
+                naming_convention, observation_types, logger, rinex_config,
             )
             if conv is not None:
                 converters[station_id] = (conv, ext)
@@ -2614,7 +2622,7 @@ def cmd_rinex(args) -> int:
 
             conv, ext, _ = _create_rinex_converter(
                 station_id, args, rinex_version, output_format,
-                naming_convention, observation_types, logger,
+                naming_convention, observation_types, logger, rinex_config,
             )
             if conv is None:
                 total_skipped += 1
