@@ -2226,7 +2226,7 @@ def _create_rinex_converter(
     Returns:
         Tuple of (converter, raw_extension) or (None, None) on failure.
     """
-    from ..rinex import SBFConverter, TrimbleConverter, LeicaConverter
+    from ..rinex import SBFConverter, TrimbleConverter, LeicaConverter, TrimbleNativeConverter
 
     station_config = get_station_config(station_id)
     if station_config is None:
@@ -2234,6 +2234,7 @@ def _create_rinex_converter(
         return None, None, None
 
     receiver_type = station_config.get("receiver", {}).get("type", "").lower()
+    use_native_trimble = getattr(args, "native_trimble", False)
 
     if "polarx" in receiver_type or "septentrio" in receiver_type:
         converter = SBFConverter(
@@ -2247,26 +2248,54 @@ def _create_rinex_converter(
         )
         raw_extension = ".sbf.gz"
     elif "netr9" in receiver_type:
-        converter = TrimbleConverter(
-            station_id=station_id,
-            rinex_version=rinex_version,
-            output_format=output_format,
-            naming_convention=naming_convention,
-            apply_header_corrections=not getattr(args, "no_header_correction", False),
-            keep_intermediate=getattr(args, "keep_intermediate", False),
-            loglevel=args.loglevel,
-        )
+        if use_native_trimble:
+            if not TrimbleNativeConverter.is_available():
+                logger.error("Native Trimble converter not available (Docker image not found)")
+                logger.error("Build image with: cd tools/trm2rinex-docker && docker build -t trm2rinex:cli-light .")
+                return None, None, None
+            converter = TrimbleNativeConverter(
+                station_id=station_id,
+                rinex_version=rinex_version,
+                output_format=output_format,
+                naming_convention=naming_convention,
+                apply_header_corrections=not getattr(args, "no_header_correction", False),
+                loglevel=args.loglevel,
+            )
+        else:
+            converter = TrimbleConverter(
+                station_id=station_id,
+                rinex_version=rinex_version,
+                output_format=output_format,
+                naming_convention=naming_convention,
+                apply_header_corrections=not getattr(args, "no_header_correction", False),
+                keep_intermediate=getattr(args, "keep_intermediate", False),
+                loglevel=args.loglevel,
+            )
         raw_extension = ".T02*"  # Match .T02 and .T02.gz
     elif "netrs" in receiver_type:
-        converter = TrimbleConverter(
-            station_id=station_id,
-            rinex_version=rinex_version,
-            output_format=output_format,
-            naming_convention=naming_convention,
-            apply_header_corrections=not getattr(args, "no_header_correction", False),
-            keep_intermediate=getattr(args, "keep_intermediate", False),
-            loglevel=args.loglevel,
-        )
+        if use_native_trimble:
+            if not TrimbleNativeConverter.is_available():
+                logger.error("Native Trimble converter not available (Docker image not found)")
+                logger.error("Build image with: cd tools/trm2rinex-docker && docker build -t trm2rinex:cli-light .")
+                return None, None, None
+            converter = TrimbleNativeConverter(
+                station_id=station_id,
+                rinex_version=rinex_version,
+                output_format=output_format,
+                naming_convention=naming_convention,
+                apply_header_corrections=not getattr(args, "no_header_correction", False),
+                loglevel=args.loglevel,
+            )
+        else:
+            converter = TrimbleConverter(
+                station_id=station_id,
+                rinex_version=rinex_version,
+                output_format=output_format,
+                naming_convention=naming_convention,
+                apply_header_corrections=not getattr(args, "no_header_correction", False),
+                keep_intermediate=getattr(args, "keep_intermediate", False),
+                loglevel=args.loglevel,
+            )
         raw_extension = ".T00*"  # Match .T00 and .T00.gz
     elif "g10" in receiver_type or "leica" in receiver_type:
         converter = LeicaConverter(
