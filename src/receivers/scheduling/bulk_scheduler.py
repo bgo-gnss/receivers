@@ -825,7 +825,9 @@ class BulkDownloadScheduler:
         # Get schedule (default: every 5 minutes)
         schedule = status_monitoring.get('schedule', '5m')
 
-        # Get stations that support health checks (polarx5 only for now)
+        # Get stations that support health checks (all receiver types with get_health_status)
+        # Supported: PolaRX5, NetR9, NetRS, NetR5, G10
+        supported_health_types = {'polarx5', 'netr9', 'netrs', 'netr5', 'g10'}
         health_stations = []
         for station_id, config in self.stations.items():
             if not config.get('enabled', True):
@@ -835,9 +837,9 @@ class BulkDownloadScheduler:
             if self.station_filter and station_id not in self.station_filter:
                 continue
 
-            # Only polarx5 receivers support live health checks
+            # Check if receiver type supports health checks
             receiver_type = config.get('receiver_type', '').lower()
-            if receiver_type != 'polarx5':
+            if receiver_type not in supported_health_types:
                 continue
 
             health_stations.append(station_id)
