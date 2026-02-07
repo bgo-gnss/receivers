@@ -245,6 +245,8 @@ class StatusTask(ScheduledTask):
             # Try router_ping first (from ConnectionChecker.check_all_levels)
             connection = health_data.get('connection', {})
             router_ping = connection.get('router_ping', {})
+            metrics = health_data.get('metrics', {})
+            ports = metrics.get('ports', {})
 
             # Determine if online based on ping result
             is_online = router_ping.get('accessible', False)
@@ -261,6 +263,16 @@ class StatusTask(ScheduledTask):
                 response_time_ms = connection.get('tcp', {}).get('response_time_ms')
                 error_message = connection.get('error') if not is_online else None
                 packet_loss = None
+
+            # Check if all service ports are closed - station is offline even if host pings
+            if ports:
+                ftp_open = ports.get('ftp', {}).get('open', False)
+                http_open = ports.get('http', {}).get('open', False)
+                control_open = ports.get('control', {}).get('open', False)
+
+                if not ftp_open and not http_open and not control_open:
+                    is_online = False
+                    error_message = "all ports closed"
 
             db_host = os.getenv("POSTGRES_HOST", "localhost")
             db_port = os.getenv("POSTGRES_PORT", "5432")

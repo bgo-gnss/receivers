@@ -569,8 +569,11 @@ class PolaRX5TCPExtractor:
         """Check status of configured ports (FTP, HTTP, control).
 
         Returns:
-            Dictionary with port status for each configured port
+            Dictionary with port status for each configured port.
+            Status values: 'open', 'timeout', 'refused', 'error'
         """
+        import errno
+
         port_status = {}
         all_ok = True
 
@@ -582,13 +585,36 @@ class PolaRX5TCPExtractor:
                 sock.close()
 
                 is_open = result == 0
+                if is_open:
+                    status = "open"
+                elif result == errno.ECONNREFUSED:
+                    status = "refused"
+                elif result == errno.ETIMEDOUT or result == errno.EHOSTUNREACH:
+                    status = "timeout"
+                else:
+                    status = "timeout"  # Default closed ports to timeout
+
                 port_status[name] = {
                     "port": port_num,
                     "open": is_open,
-                    "status": "ok" if is_open else "error"
+                    "status": status
                 }
                 if not is_open:
                     all_ok = False
+            except socket.timeout:
+                port_status[name] = {
+                    "port": port_num,
+                    "open": False,
+                    "status": "timeout"
+                }
+                all_ok = False
+            except ConnectionRefusedError:
+                port_status[name] = {
+                    "port": port_num,
+                    "open": False,
+                    "status": "refused"
+                }
+                all_ok = False
             except Exception as e:
                 port_status[name] = {
                     "port": port_num,

@@ -918,20 +918,11 @@ def _write_connectivity_status(station_id: str, health_data: Dict[str, Any], log
         metrics = health_data.get('metrics', {})
         ports = metrics.get('ports', {})
 
-        # Determine online status from connection or overall status
-        tcp_status = connection.get('tcp', {}).get('status', 'unknown')
-        overall_status = health_data.get('overall_status', 'unknown')
-        is_online = tcp_status == 'ok' or overall_status in ('healthy', 'ok', 'warning')
-
-        # Try to get ping info from router_ping (ConnectionChecker) or infer from tcp
-        router_ping = connection.get('router_ping', {})
-        ping_response_ms = router_ping.get('response_time_ms')
-        ping_error = router_ping.get('error_message') if not is_online else None
-
         # Extract port status from metrics.ports
         # Septentrio uses FTP for download, Trimble uses HTTP
         ftp_port = ports.get('ftp', {})
         http_port = ports.get('http', {})
+        control_port = ports.get('control', {})
 
         # Determine download protocol from connection.protocol.type
         protocol_info = connection.get('protocol', {})
@@ -946,7 +937,8 @@ def _write_connectivity_status(station_id: str, health_data: Dict[str, Any], log
         if download_port_info:
             download_port = download_port_info.get('port')
             download_open = download_port_info.get('open', False)
-            download_status = 'open' if download_open else download_port_info.get('error_type', 'error')
+            # Use 'status' field which contains 'open', 'timeout', 'refused', or 'error'
+            download_status = download_port_info.get('status', 'unknown')
         else:
             download_port = None
             download_status = 'unknown'
@@ -956,11 +948,36 @@ def _write_connectivity_status(station_id: str, health_data: Dict[str, Any], log
         if http_port:
             health_port = http_port.get('port')
             health_open = http_port.get('open', False)
-            health_status = 'open' if health_open else http_port.get('error_type', 'error')
+            health_status = http_port.get('status', 'unknown')
         else:
             health_port = None
             health_status = 'unknown'
         health_response_ms = None  # Not tracked in current format
+
+        # Determine online status:
+        # - If all ports are closed (timeout/refused/error), station is offline
+        # - TCP connection alone doesn't mean online if services aren't accessible
+        tcp_status = connection.get('tcp', {}).get('status', 'unknown')
+        all_ports_closed = (
+            not download_port_info.get('open', False) if download_port_info else True
+        ) and (
+            not http_port.get('open', False) if http_port else True
+        ) and (
+            not control_port.get('open', False) if control_port else True
+        )
+
+        # Station is online only if TCP works AND at least one service port is accessible
+        is_online = tcp_status == 'ok' and not all_ports_closed
+
+        # Try to get ping info from router_ping (ConnectionChecker) or infer from tcp
+        router_ping = connection.get('router_ping', {})
+        ping_response_ms = router_ping.get('response_time_ms')
+        ping_error = None
+        if not is_online:
+            if all_ports_closed:
+                ping_error = "all ports closed"
+            elif tcp_status != 'ok':
+                ping_error = router_ping.get('error_message', 'connection failed')
 
         try:
             with conn.cursor() as cur:
