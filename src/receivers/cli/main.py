@@ -954,10 +954,13 @@ def _write_connectivity_status(station_id: str, health_data: Dict[str, Any], log
             health_status = 'unknown'
         health_response_ms = None  # Not tracked in current format
 
-        # Determine online status:
-        # - If all ports are closed (timeout/refused/error), station is offline
-        # - TCP connection alone doesn't mean online if services aren't accessible
-        tcp_status = connection.get('tcp', {}).get('status', 'unknown')
+        # Extract router ping status (ICMP reachability)
+        router_ping = connection.get('router_ping', {})
+        ping_accessible = router_ping.get('accessible', False)
+        ping_response_ms = router_ping.get('response_time_ms')
+        ping_packet_loss = router_ping.get('packet_loss')
+
+        # Check if all service ports are closed
         all_ports_closed = (
             not download_port_info.get('open', False) if download_port_info else True
         ) and (
@@ -966,18 +969,24 @@ def _write_connectivity_status(station_id: str, health_data: Dict[str, Any], log
             not control_port.get('open', False) if control_port else True
         )
 
-        # Station is online only if TCP works AND at least one service port is accessible
-        is_online = tcp_status == 'ok' and not all_ports_closed
+        # Determine online status:
+        # 1. Router must respond to ICMP ping
+        # 2. At least one service port must be accessible
+        # This distinguishes between:
+        # - Router offline: ping fails
+        # - Router online but services blocked: ping works but all ports closed
+        if ping_accessible:
+            is_online = not all_ports_closed
+        else:
+            is_online = False
 
-        # Try to get ping info from router_ping (ConnectionChecker) or infer from tcp
-        router_ping = connection.get('router_ping', {})
-        ping_response_ms = router_ping.get('response_time_ms')
+        # Determine error message
         ping_error = None
         if not is_online:
-            if all_ports_closed:
-                ping_error = "all ports closed"
-            elif tcp_status != 'ok':
-                ping_error = router_ping.get('error_message', 'connection failed')
+            if not ping_accessible:
+                ping_error = router_ping.get('error', 'ping failed - host unreachable')
+            elif all_ports_closed:
+                ping_error = "all ports closed - port forwarding missing"
 
         try:
             with conn.cursor() as cur:
@@ -989,8 +998,9 @@ def _write_connectivity_status(station_id: str, health_data: Dict[str, Any], log
                     ON CONFLICT (sid, ts) DO UPDATE SET
                         is_online = EXCLUDED.is_online,
                         response_time_ms = EXCLUDED.response_time_ms,
+                        packet_loss = EXCLUDED.packet_loss,
                         error_message = EXCLUDED.error_message
-                """, (station_id, is_online, ping_response_ms, None, ping_error))
+                """, (station_id, is_online, ping_response_ms, ping_packet_loss, ping_error))
 
                 # Write port status
                 cur.execute("""

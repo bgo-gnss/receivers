@@ -1804,6 +1804,7 @@ class PolaRX5(BaseReceiver):
             Dictionary with health status information following health-data-spec.md
         """
         from ..health.polarx5_tcp_extractor import PolaRX5TCPExtractor
+        from ..health.connection_checker import ConnectionChecker
 
         # Step 1: Try live health extraction via TCP
         metrics = None
@@ -1812,6 +1813,7 @@ class PolaRX5(BaseReceiver):
         extraction_source = None
         port_status = None  # Track port status separately to ensure it's always captured
         extractor = None
+        ping_result = None  # Track ICMP ping result separately
 
         host = self.ip_number
         if host:
@@ -1824,7 +1826,37 @@ class PolaRX5(BaseReceiver):
             }
             control_port = port_config["control"]
 
-            # Step 1a: Always check port status first (even if later extraction fails)
+            # Step 1a: Check ICMP ping first (router/network reachability)
+            try:
+                checker = ConnectionChecker(host, self.station_id)
+                ping_result = checker.check_ping(count=1, timeout=2)
+                if ping_result.accessible:
+                    connection_data["router_ping"] = {
+                        "status": "ok",
+                        "host": host,
+                        "accessible": True,
+                        "response_time_ms": ping_result.response_time_ms,
+                        "packet_loss": ping_result.details.get("packet_loss", 0) if ping_result.details else 0,
+                    }
+                    self.logger.debug(f"Router ping successful: {host} ({ping_result.response_time_ms:.1f}ms)")
+                else:
+                    connection_data["router_ping"] = {
+                        "status": "failed",
+                        "host": host,
+                        "accessible": False,
+                        "error": ping_result.error_message or "ping failed",
+                    }
+                    self.logger.debug(f"Router ping failed: {host} - {ping_result.error_message}")
+            except Exception as e:
+                self.logger.debug(f"Ping check failed: {e}")
+                connection_data["router_ping"] = {
+                    "status": "error",
+                    "host": host,
+                    "accessible": False,
+                    "error": str(e),
+                }
+
+            # Step 1b: Check port status (service availability)
             try:
                 extractor = PolaRX5TCPExtractor(
                     host, self.station_id,
@@ -1839,14 +1871,14 @@ class PolaRX5(BaseReceiver):
                 control_open = port_status.get("control", {}).get("open", False)
 
                 if ftp_open or http_open or control_open:
-                    connection_data = {"tcp": {"status": "ok", "host": host}}
+                    connection_data["tcp"] = {"status": "ok", "host": host}
                 else:
-                    connection_data = {"tcp": {"status": "failed", "host": host, "error": "all ports unreachable"}}
+                    connection_data["tcp"] = {"status": "failed", "host": host, "error": "all ports unreachable"}
             except Exception as e:
                 self.logger.debug(f"Port check failed: {e}")
-                connection_data = {"tcp": {"status": "failed", "host": host, "error": str(e)}}
+                connection_data["tcp"] = {"status": "failed", "host": host, "error": str(e)}
 
-            # Step 1b: Try full data extraction if control port is open
+            # Step 1c: Try full data extraction if control port is open
             if port_status and extractor:
                 control_ok = port_status.get("control", {}).get("open", False)
                 if control_ok:
