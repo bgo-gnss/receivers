@@ -935,28 +935,7 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [
-            {
-              "options": {
-                "0": {
-                  "color": "red",
-                  "index": 0,
-                  "text": "OFFLINE"
-                },
-                "1": {
-                  "color": "yellow",
-                  "index": 1,
-                  "text": "OFFLINE"
-                },
-                "2": {
-                  "color": "green",
-                  "index": 2,
-                  "text": "ONLINE"
-                }
-              },
-              "type": "value"
-            }
-          ],
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -975,7 +954,53 @@
             ]
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "status"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "0": {
+                        "color": "red",
+                        "index": 0,
+                        "text": "offline"
+                      },
+                      "1": {
+                        "color": "yellow",
+                        "index": 1,
+                        "text": "offline"
+                      },
+                      "2": {
+                        "color": "green",
+                        "index": 2,
+                        "text": "online"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "duration"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 4,
@@ -988,13 +1013,13 @@
         "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "auto",
-        "orientation": "auto",
+        "orientation": "vertical",
         "reduceOptions": {
           "calcs": [],
           "fields": "",
           "values": true
         },
-        "textMode": "auto"
+        "textMode": "value"
       },
       "pluginVersion": "10.0.0",
       "targets": [
@@ -1006,7 +1031,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT CASE\n  WHEN sc.is_online THEN 2\n  WHEN sc.is_online = false THEN CASE WHEN sc.state_duration < interval '1 day' THEN 1 ELSE 0 END\n  ELSE NULL\nEND AS status_val\nFROM station_connectivity sc\nWHERE sc.sid = '$station'",
+          "rawSql": "SELECT\n  CASE\n    WHEN sc.is_online THEN 2\n    WHEN sc.is_online = false THEN CASE WHEN sc.state_duration < interval '1 day' THEN 1 ELSE 0 END\n    ELSE NULL\n  END AS status,\n  extract(epoch from sc.state_duration)::integer AS duration\nFROM station_connectivity sc\nWHERE sc.sid = '$station'",
           "refId": "A"
         }
       ],
