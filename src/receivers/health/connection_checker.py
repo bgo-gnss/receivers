@@ -68,6 +68,7 @@ class ConnectionChecker:
         http_port: int = 80,
         protocol_type: str = "ftp",
         protocol_port: Optional[int] = None,
+        fail_fast: bool = True,
     ) -> Dict[str, ConnectionStatus]:
         """Check all connection levels.
 
@@ -75,14 +76,36 @@ class ConnectionChecker:
             http_port: HTTP port to test (default: 80)
             protocol_type: Protocol type (ftp, http, tcp)
             protocol_port: Protocol-specific port (if different from http_port)
+            fail_fast: If True, skip remaining checks when ping fails (saves time
+                      on offline stations). Default True.
 
         Returns:
             Dictionary with connection status for each level
         """
         results = {}
 
-        # Level 1: Router/Network ping
-        results["router_ping"] = self.check_ping()
+        # Level 1: Router/Network ping (fast check first)
+        results["router_ping"] = self.check_ping(count=1, timeout=2)
+
+        # If ping failed and fail_fast enabled, skip remaining slow checks
+        if fail_fast and not results["router_ping"].accessible:
+            self.logger.debug(
+                f"Ping failed for {self.station_id}, skipping port checks (fail_fast)"
+            )
+            # Mark other levels as unreachable without attempting
+            results["http_port"] = ConnectionStatus(
+                status=HealthStatus.CRITICAL,
+                accessible=False,
+                error_message="Skipped: host unreachable (ping failed)",
+                details={"port": http_port, "skipped": True},
+            )
+            results["protocol"] = ConnectionStatus(
+                status=HealthStatus.CRITICAL,
+                accessible=False,
+                error_message="Skipped: host unreachable (ping failed)",
+                details={"type": protocol_type, "skipped": True},
+            )
+            return results
 
         # Level 2: HTTP port test
         results["http_port"] = self.check_http_port(http_port)
@@ -234,14 +257,22 @@ class ConnectionChecker:
                 status=HealthStatus.CRITICAL,
                 accessible=False,
                 error_message=f"HTTP port {port} timeout after {timeout}s",
-                details={"port": port},
+                details={"port": port, "error_type": "timeout"},
             )
         except requests.ConnectionError as e:
+            # Check if it's a refused connection (instant) vs timeout
+            error_str = str(e).lower()
+            if "refused" in error_str or "connection refused" in error_str:
+                error_type = "refused"
+            elif "unreachable" in error_str:
+                error_type = "unreachable"
+            else:
+                error_type = "connection_error"
             return ConnectionStatus(
                 status=HealthStatus.CRITICAL,
                 accessible=False,
                 error_message=f"Cannot connect to HTTP port {port}: {str(e)}",
-                details={"port": port},
+                details={"port": port, "error_type": error_type},
             )
         except Exception as e:
             self.logger.error(f"HTTP port test error: {e}")
@@ -249,7 +280,7 @@ class ConnectionChecker:
                 status=HealthStatus.ERROR,
                 accessible=False,
                 error_message=f"HTTP port test error: {str(e)}",
-                details={"port": port},
+                details={"port": port, "error_type": "error"},
             )
 
     def check_ftp(self, port: int = 21, timeout: int = 10) -> ConnectionStatus:
@@ -300,14 +331,32 @@ class ConnectionChecker:
                 status=HealthStatus.CRITICAL,
                 accessible=False,
                 error_message=f"FTP connection timeout after {timeout}s",
-                details={"type": "ftp", "port": port},
+                details={"type": "ftp", "port": port, "error_type": "timeout"},
             )
         except ConnectionRefusedError:
+            # Port refused = host is up but service not running (instant response)
             return ConnectionStatus(
                 status=HealthStatus.CRITICAL,
                 accessible=False,
                 error_message=f"FTP connection refused on port {port}",
-                details={"type": "ftp", "port": port},
+                details={"type": "ftp", "port": port, "error_type": "refused"},
+            )
+        except OSError as e:
+            import errno
+            if e.errno == errno.EHOSTUNREACH:
+                error_type = "unreachable"
+                msg = f"Host unreachable"
+            elif e.errno == errno.ENETUNREACH:
+                error_type = "unreachable"
+                msg = f"Network unreachable"
+            else:
+                error_type = "error"
+                msg = str(e)
+            return ConnectionStatus(
+                status=HealthStatus.CRITICAL,
+                accessible=False,
+                error_message=f"FTP connection error: {msg}",
+                details={"type": "ftp", "port": port, "error_type": error_type},
             )
         except Exception as e:
             self.logger.error(f"FTP connection error: {e}")
@@ -315,7 +364,7 @@ class ConnectionChecker:
                 status=HealthStatus.ERROR,
                 accessible=False,
                 error_message=f"FTP connection error: {str(e)}",
-                details={"type": "ftp", "port": port},
+                details={"type": "ftp", "port": port, "error_type": "error"},
             )
 
     def check_http(self, port: int = 8060, timeout: int = 5) -> ConnectionStatus:

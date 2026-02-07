@@ -884,6 +884,119 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
             print(f"  Processing: {emoji} {short_msg}")
 
 
+def _write_connectivity_status(station_id: str, health_data: Dict[str, Any], logger: logging.Logger) -> None:
+    """Write ping and port status to database for Grafana dashboard.
+
+    Extracts connection info from health_data and writes to:
+    - block_ping_status: Online/offline status with duration tracking
+    - block_port_status: Download and health port status
+
+    Args:
+        station_id: Station identifier
+        health_data: Health data dictionary with connection info
+        logger: Logger instance
+    """
+    try:
+        import os
+        import psycopg2
+
+        db_host = os.getenv("POSTGRES_HOST", "localhost")
+        db_port = os.getenv("POSTGRES_PORT", "5432")
+        db_name = os.getenv("POSTGRES_DB", "gps_health")
+        db_user = os.getenv("POSTGRES_USER", os.getenv("USER", "bgo"))
+        db_pass = os.getenv("POSTGRES_PASSWORD", "")
+
+        conn = psycopg2.connect(
+            host=db_host,
+            port=db_port,
+            database=db_name,
+            user=db_user,
+            password=db_pass,
+        )
+
+        connection = health_data.get('connection', {})
+        metrics = health_data.get('metrics', {})
+        ports = metrics.get('ports', {})
+
+        # Determine online status from connection or overall status
+        tcp_status = connection.get('tcp', {}).get('status', 'unknown')
+        overall_status = health_data.get('overall_status', 'unknown')
+        is_online = tcp_status == 'ok' or overall_status in ('healthy', 'ok', 'warning')
+
+        # Try to get ping info from router_ping (ConnectionChecker) or infer from tcp
+        router_ping = connection.get('router_ping', {})
+        ping_response_ms = router_ping.get('response_time_ms')
+        ping_error = router_ping.get('error_message') if not is_online else None
+
+        # Extract port status from metrics.ports (PolaRX5 format)
+        # FTP is download port for Septentrio, HTTP for Trimble
+        ftp_port = ports.get('ftp', {})
+        http_port = ports.get('http', {})
+
+        # Determine download port (FTP for Septentrio, HTTP for Trimble)
+        if ftp_port:
+            download_port = ftp_port.get('port')
+            download_open = ftp_port.get('open', False)
+            download_status = 'open' if download_open else ftp_port.get('error_type', 'error')
+        else:
+            download_port = None
+            download_status = 'unknown'
+        download_response_ms = None  # Not tracked in current format
+
+        # Health port is HTTP (web interface)
+        if http_port:
+            health_port = http_port.get('port')
+            health_open = http_port.get('open', False)
+            health_status = 'open' if health_open else http_port.get('error_type', 'error')
+        else:
+            health_port = None
+            health_status = 'unknown'
+        health_response_ms = None  # Not tracked in current format
+
+        try:
+            with conn.cursor() as cur:
+                # Write ping status
+                cur.execute("""
+                    INSERT INTO block_ping_status (
+                        sid, ts, is_online, response_time_ms, packet_loss, error_message
+                    ) VALUES (%s, NOW(), %s, %s, %s, %s)
+                    ON CONFLICT (sid, ts) DO UPDATE SET
+                        is_online = EXCLUDED.is_online,
+                        response_time_ms = EXCLUDED.response_time_ms,
+                        error_message = EXCLUDED.error_message
+                """, (station_id, is_online, ping_response_ms, None, ping_error))
+
+                # Write port status
+                cur.execute("""
+                    INSERT INTO block_port_status (
+                        sid, ts, download_port, download_status, download_response_ms,
+                        health_port, health_status, health_response_ms
+                    ) VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (sid, ts) DO UPDATE SET
+                        download_port = EXCLUDED.download_port,
+                        download_status = EXCLUDED.download_status,
+                        download_response_ms = EXCLUDED.download_response_ms,
+                        health_port = EXCLUDED.health_port,
+                        health_status = EXCLUDED.health_status,
+                        health_response_ms = EXCLUDED.health_response_ms
+                """, (
+                    station_id,
+                    download_port, download_status, download_response_ms,
+                    health_port, health_status, health_response_ms
+                ))
+
+            conn.commit()
+            logger.debug(f"Wrote connectivity status for {station_id}")
+
+        finally:
+            conn.close()
+
+    except ImportError:
+        logger.debug("psycopg2 not available for connectivity status")
+    except Exception as e:
+        logger.debug(f"Failed to write connectivity status: {e}")
+
+
 def cmd_health_timeseries_extract(
     args, station_id: str, station_config: Dict[str, Any], logger: logging.Logger
 ) -> int:
@@ -1424,6 +1537,8 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
             success = receiver.save_health_to_database(health)
             if success:
                 logger.info("Saved health data to database")
+                # Also write ping and port status for Grafana dashboard
+                _write_connectivity_status(station_id, health, logger)
             else:
                 logger.warning("Failed to save health data to database")
 

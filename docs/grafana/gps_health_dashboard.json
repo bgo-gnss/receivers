@@ -85,7 +85,7 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 5,
+        "w": 4,
         "x": 0,
         "y": 1
       },
@@ -114,11 +114,80 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(*) as \"Stations\" FROM (SELECT DISTINCT ON (sid) sid FROM block_power_status WHERE $__timeFilter(ts) ORDER BY sid, ts DESC) latest",
+          "rawSql": "SELECT COUNT(*) as \"Online\" FROM station_connectivity WHERE is_online = true",
           "refId": "A"
         }
       ],
-      "title": "Active Stations",
+      "title": "Online",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 1
+      },
+      "id": 14,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) as \"Offline\" FROM station_connectivity WHERE is_online = false",
+          "refId": "A"
+        }
+      ],
+      "title": "Offline",
       "type": "stat"
     },
     {
@@ -154,8 +223,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 5,
-        "x": 5,
+        "w": 4,
+        "x": 8,
         "y": 1
       },
       "id": 3,
@@ -219,8 +288,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 5,
-        "x": 10,
+        "w": 3,
+        "x": 12,
         "y": 1
       },
       "id": 4,
@@ -431,6 +500,174 @@
                     "title": "View station detail",
                     "url": "/d/gps-station-detail/gps-station-detail?var-station=${__data.fields.Station}&${__url_time_range}",
                     "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Conn"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "pattern": "^online.*",
+                      "result": {
+                        "color": "green",
+                        "index": 0
+                      }
+                    },
+                    "type": "regex"
+                  },
+                  {
+                    "options": {
+                      "pattern": "^offline \\d+[mh]$",
+                      "result": {
+                        "color": "yellow",
+                        "index": 1
+                      }
+                    },
+                    "type": "regex"
+                  },
+                  {
+                    "options": {
+                      "pattern": "^offline.*",
+                      "result": {
+                        "color": "red",
+                        "index": 2
+                      }
+                    },
+                    "type": "regex"
+                  },
+                  {
+                    "options": {
+                      "match": "null",
+                      "result": {
+                        "color": "text",
+                        "index": 3,
+                        "text": "-"
+                      }
+                    },
+                    "type": "special"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Port"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "active": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "active"
+                      }
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "options": {
+                      "pattern": "^dl:refused$",
+                      "result": {
+                        "color": "red",
+                        "index": 1,
+                        "text": "refused"
+                      }
+                    },
+                    "type": "regex"
+                  },
+                  {
+                    "options": {
+                      "pattern": "^dl:timeout$",
+                      "result": {
+                        "color": "red",
+                        "index": 2,
+                        "text": "timeout"
+                      }
+                    },
+                    "type": "regex"
+                  },
+                  {
+                    "options": {
+                      "pattern": "^dl:.*",
+                      "result": {
+                        "color": "red",
+                        "index": 3,
+                        "text": "dl error"
+                      }
+                    },
+                    "type": "regex"
+                  },
+                  {
+                    "options": {
+                      "pattern": "^hc:refused$",
+                      "result": {
+                        "color": "yellow",
+                        "index": 4,
+                        "text": "hc:refused"
+                      }
+                    },
+                    "type": "regex"
+                  },
+                  {
+                    "options": {
+                      "pattern": "^hc:timeout$",
+                      "result": {
+                        "color": "yellow",
+                        "index": 5,
+                        "text": "hc:timeout"
+                      }
+                    },
+                    "type": "regex"
+                  },
+                  {
+                    "options": {
+                      "pattern": "^hc:.*",
+                      "result": {
+                        "color": "yellow",
+                        "index": 6,
+                        "text": "hc error"
+                      }
+                    },
+                    "type": "regex"
+                  },
+                  {
+                    "options": {
+                      "match": "null",
+                      "result": {
+                        "color": "text",
+                        "index": 7,
+                        "text": "-"
+                      }
+                    },
+                    "type": "special"
                   }
                 ]
               }
@@ -688,7 +925,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT DISTINCT ON (p.sid)\n  p.sid as \"Station\",\n  p.voltage as \"Voltage\",\n  sat.total as \"Sats\",\n  COALESCE(nc.status, ns.status) as \"NTRIP\",\n  r.uptime_seconds as \"Uptime\",\n  hs.overall_status as \"Status\",\n  p.ts as \"Last Update\"\nFROM block_power_status p\nLEFT JOIN block_health_summary hs ON p.sid = hs.sid AND p.ts = hs.ts\nLEFT JOIN block_satellite_tracking sat ON p.sid = sat.sid AND p.ts = sat.ts\nLEFT JOIN block_ntrip_client nc ON p.sid = nc.sid AND p.ts = nc.ts\nLEFT JOIN block_ntrip_server ns ON p.sid = ns.sid AND p.ts = ns.ts\nLEFT JOIN block_receiver_status r ON p.sid = r.sid AND p.ts = r.ts\nLEFT JOIN station_area_members sam ON sam.sid = p.sid\nWHERE $__timeFilter(p.ts)\n  AND ('$area' = 'all' OR sam.area_id = '$area')\nORDER BY p.sid, p.ts DESC",
+          "rawSql": "SELECT DISTINCT ON (p.sid)\n  p.sid as \"Station\",\n  CASE\n    WHEN sc.is_online IS NULL THEN NULL\n    WHEN sc.is_online THEN 'online ' || format_duration(sc.state_duration)\n    ELSE 'offline ' || format_duration(sc.state_duration)\n  END as \"Conn\",\n  CASE\n    WHEN ps.download_status IS NULL THEN NULL\n    WHEN ps.download_status = 'open' AND (ps.health_status = 'open' OR ps.health_status IS NULL) THEN 'active'\n    WHEN ps.download_status IN ('refused', 'timeout', 'error') THEN 'dl:' || ps.download_status\n    WHEN ps.health_status IN ('refused', 'timeout', 'error') THEN 'hc:' || ps.health_status\n    ELSE 'unknown'\n  END as \"Port\",\n  p.voltage as \"Voltage\",\n  sat.total as \"Sats\",\n  COALESCE(nc.status, ns.status) as \"NTRIP\",\n  r.uptime_seconds as \"Uptime\",\n  hs.overall_status as \"Status\",\n  p.ts as \"Last Update\"\nFROM block_power_status p\nLEFT JOIN block_health_summary hs ON p.sid = hs.sid AND p.ts = hs.ts\nLEFT JOIN block_satellite_tracking sat ON p.sid = sat.sid AND p.ts = sat.ts\nLEFT JOIN block_ntrip_client nc ON p.sid = nc.sid AND p.ts = nc.ts\nLEFT JOIN block_ntrip_server ns ON p.sid = ns.sid AND p.ts = ns.ts\nLEFT JOIN block_receiver_status r ON p.sid = r.sid AND p.ts = r.ts\nLEFT JOIN station_connectivity sc ON p.sid = sc.sid\nLEFT JOIN station_port_status ps ON p.sid = ps.sid\nLEFT JOIN station_area_members sam ON sam.sid = p.sid\nWHERE $__timeFilter(p.ts)\n  AND ('$area' = 'all' OR sam.area_id = '$area')\nORDER BY p.sid, p.ts DESC",
           "refId": "A"
         }
       ],

@@ -24,6 +24,71 @@ from dataclasses import dataclass
 from .schedule_parser import parse_schedule, apply_distribution_window
 
 
+def _write_connectivity_status(station_id: str, health_data: Dict[str, Any], logger: logging.Logger) -> None:
+    """Write ping and port status to database for Grafana dashboard.
+
+    Args:
+        station_id: Station identifier
+        health_data: Health data dictionary with connection info
+        logger: Logger instance
+    """
+    try:
+        import psycopg2
+
+        db_host = os.getenv("POSTGRES_HOST", "localhost")
+        db_port = os.getenv("POSTGRES_PORT", "5432")
+        db_name = os.getenv("POSTGRES_DB", "gps_health")
+        db_user = os.getenv("POSTGRES_USER", os.getenv("USER", "bgo"))
+        db_pass = os.getenv("POSTGRES_PASSWORD", "")
+
+        conn = psycopg2.connect(
+            host=db_host, port=db_port, database=db_name, user=db_user, password=db_pass
+        )
+
+        connection = health_data.get('connection', {})
+        metrics = health_data.get('metrics', {})
+        ports = metrics.get('ports', {})
+
+        # Determine online status
+        tcp_status = connection.get('tcp', {}).get('status', 'unknown')
+        overall_status = health_data.get('overall_status', 'unknown')
+        is_online = tcp_status == 'ok' or overall_status in ('healthy', 'ok', 'warning')
+
+        # Extract port status from metrics.ports
+        ftp_port = ports.get('ftp', {})
+        http_port = ports.get('http', {})
+
+        download_port = ftp_port.get('port') if ftp_port else None
+        download_status = 'open' if ftp_port.get('open') else ftp_port.get('error_type', 'unknown') if ftp_port else 'unknown'
+
+        health_port = http_port.get('port') if http_port else None
+        health_status = 'open' if http_port.get('open') else http_port.get('error_type', 'unknown') if http_port else 'unknown'
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO block_ping_status (sid, ts, is_online, response_time_ms, packet_loss, error_message)
+                    VALUES (%s, NOW(), %s, %s, %s, %s)
+                    ON CONFLICT (sid, ts) DO UPDATE SET is_online = EXCLUDED.is_online
+                """, (station_id, is_online, None, None, None))
+
+                cur.execute("""
+                    INSERT INTO block_port_status (sid, ts, download_port, download_status, download_response_ms, health_port, health_status, health_response_ms)
+                    VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (sid, ts) DO UPDATE SET
+                        download_status = EXCLUDED.download_status,
+                        health_status = EXCLUDED.health_status
+                """, (station_id, download_port, download_status, None, health_port, health_status, None))
+
+            conn.commit()
+            logger.debug(f"Wrote connectivity status for {station_id}")
+        finally:
+            conn.close()
+
+    except Exception as e:
+        logger.debug(f"Failed to write connectivity status: {e}")
+
+
 # Module-level download function for APScheduler serialization
 def _download_station_data_job(station_id: str, session_type: str, production_mode: bool = False, lookback_periods: int = 1, timeout_minutes: int = 30, run_rinex: bool = False):
     """Download data for a single station (standalone job function for APScheduler).
@@ -286,6 +351,8 @@ def _status_check_job(station_id: str, send_to_db: bool = True, send_to_icinga: 
                 db_success = writer.write_health_data(health_data)
                 if db_success:
                     logger.debug(f"Health data written to database for {station_id}")
+                    # Also write ping and port status for Grafana dashboard
+                    _write_connectivity_status(station_id, health_data, logger)
             except ImportError:
                 logger.debug("PostgreSQL writer not available")
             except Exception as e:
