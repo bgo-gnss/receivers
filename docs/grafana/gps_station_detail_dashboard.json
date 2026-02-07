@@ -935,6 +935,14 @@
           "color": {
             "mode": "thresholds"
           },
+          "custom": {
+            "align": "center",
+            "cellOptions": {
+              "mode": "gradient",
+              "type": "color-background"
+            },
+            "inspect": false
+          },
           "mappings": [
             {
               "options": {
@@ -987,16 +995,14 @@
       },
       "id": 50,
       "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [],
+        "cellHeight": "lg",
+        "footer": {
+          "countRows": false,
           "fields": "",
-          "values": true
+          "reducer": ["sum"],
+          "show": false
         },
-        "textMode": "value"
+        "showHeader": false
       },
       "pluginVersion": "10.0.0",
       "targets": [
@@ -1008,12 +1014,12 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT CASE\n  WHEN sc.is_online IS NULL THEN NULL\n  WHEN sc.is_online THEN 'online ' || format_duration(sc.state_duration)\n  ELSE 'offline ' || format_duration(sc.state_duration)\nEND AS \"conn_status\"\nFROM station_connectivity sc\nWHERE sc.sid = '$station'",
+          "rawSql": "SELECT CASE\n  WHEN sc.is_online IS NULL THEN '-'\n  WHEN sc.is_online THEN 'online ' || format_duration(sc.state_duration)\n  ELSE 'offline ' || format_duration(sc.state_duration)\nEND AS \"Status\"\nFROM station_connectivity sc\nWHERE sc.sid = '$station'",
           "refId": "A"
         }
       ],
       "title": "Online",
-      "type": "stat"
+      "type": "table"
     },
     {
       "datasource": {
