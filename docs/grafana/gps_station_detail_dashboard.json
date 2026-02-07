@@ -992,9 +992,11 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": [],
+          "calcs": [
+            "last"
+          ],
           "fields": "",
-          "values": true
+          "values": false
         },
         "textMode": "value"
       },
