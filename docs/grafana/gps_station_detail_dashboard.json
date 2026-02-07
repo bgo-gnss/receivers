@@ -10,14 +10,14 @@
     {
       "asDropdown": false,
       "icon": "external link",
-      "includeVars": true,
+      "includeVars": false,
       "keepTime": true,
       "tags": [],
       "targetBlank": false,
       "title": "\u2190 Back to Overview",
       "tooltip": "Return to main dashboard with map",
       "type": "link",
-      "url": "/d/gps-health-voltage/gps-receiver-health-voltage"
+      "url": "/d/gps-health-voltage/gps-receiver-health-voltage?var-area=${area}&var-station=all&var-receiver=${receiver}&var-antenna=${antenna}"
     }
   ],
   "liveNow": false,
@@ -646,13 +646,11 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "/Status/",
-          "values": false
+          "calcs": [],
+          "fields": "/^status$/",
+          "values": true
         },
-        "textMode": "auto"
+        "textMode": "value_and_name"
       },
       "pluginVersion": "10.0.0",
       "targets": [
@@ -664,8 +662,22 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT CASE overall_status\n  WHEN 'healthy' THEN 0\n  WHEN 'warning' THEN 1\n  WHEN 'critical' THEN 2\n  ELSE 3\nEND AS \"Status\",\nCASE WHEN status_details IS NOT NULL\n  THEN status_details\n  ELSE ''\nEND AS \"Details\"\nFROM block_health_summary\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
+          "rawSql": "SELECT\n  CASE overall_status\n    WHEN 'healthy' THEN 0\n    WHEN 'warning' THEN 1\n    WHEN 'critical' THEN 2\n    ELSE 3\n  END AS status,\n  CASE\n    WHEN overall_status = 'healthy' THEN 'All systems OK'\n    WHEN COALESCE(status_details, '') = '' THEN 'Check file/port status'\n    ELSE status_details\n  END AS details\nFROM block_health_summary\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
           "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "configFromData",
+          "options": {
+            "configRefId": "A",
+            "mappings": [
+              {
+                "fieldName": "details",
+                "handlerKey": "displayName"
+              }
+            ]
+          }
         }
       ],
       "title": "Overall Status",
@@ -918,11 +930,11 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT extract(epoch from now() - max(latest_ts))::integer AS \"Age\"\nFROM (\n  SELECT max(ts) AS latest_ts FROM block_health_summary WHERE sid = '$station'\n  UNION ALL\n  SELECT max(ts) FROM block_power_status WHERE sid = '$station'\n  UNION ALL\n  SELECT max(ts) FROM block_receiver_status WHERE sid = '$station'\n  UNION ALL\n  SELECT max(ts) FROM block_pvt_geodetic WHERE sid = '$station'\n) t",
+          "rawSql": "SELECT EXTRACT(EPOCH FROM (NOW() - max(ts)))::int AS \"Checked\" FROM block_power_status WHERE sid = '$station'",
           "refId": "A"
         }
       ],
-      "title": "Last Observation",
+      "title": "Last Checked",
       "type": "stat"
     },
     {
@@ -1009,17 +1021,85 @@
         "y": 1
       },
       "id": 50,
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "green",
+                "value": 2
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "online"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "offline"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "yellow",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 86400
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
       "options": {
         "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "auto",
-        "orientation": "vertical",
+        "orientation": "auto",
         "reduceOptions": {
           "calcs": [],
           "fields": "",
           "values": true
         },
-        "textMode": "value"
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
       },
       "pluginVersion": "10.0.0",
       "targets": [
@@ -1031,8 +1111,19 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  CASE\n    WHEN sc.is_online THEN 2\n    WHEN sc.is_online = false THEN CASE WHEN sc.state_duration < interval '1 day' THEN 1 ELSE 0 END\n    ELSE NULL\n  END AS status,\n  extract(epoch from sc.state_duration)::integer AS duration\nFROM station_connectivity sc\nWHERE sc.sid = '$station'",
+          "rawSql": "SELECT COALESCE(extract(epoch from sc.state_duration)::integer, 0) AS \"online\"\nFROM station_connectivity sc\nWHERE sc.sid = '$station' AND sc.is_online = true",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(extract(epoch from sc.state_duration)::integer, 0) AS \"offline\"\nFROM station_connectivity sc\nWHERE sc.sid = '$station' AND sc.is_online = false",
+          "refId": "B"
         }
       ],
       "title": "Online",
@@ -1765,6 +1856,46 @@
         "skipUrlSync": false,
         "sort": 0,
         "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "all",
+          "value": "all"
+        },
+        "hide": 2,
+        "label": "Receiver",
+        "name": "receiver",
+        "options": [
+          {
+            "selected": true,
+            "text": "all",
+            "value": "all"
+          }
+        ],
+        "query": "all",
+        "skipUrlSync": false,
+        "type": "textbox"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "all",
+          "value": "all"
+        },
+        "hide": 2,
+        "label": "Antenna",
+        "name": "antenna",
+        "options": [
+          {
+            "selected": true,
+            "text": "all",
+            "value": "all"
+          }
+        ],
+        "query": "all",
+        "skipUrlSync": false,
+        "type": "textbox"
       }
     ]
   },

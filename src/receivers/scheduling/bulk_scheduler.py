@@ -150,17 +150,13 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
         receiver = create_receiver(station_id, station_config)
 
         # Determine time range based on session type and lookback_periods
+        # Use time_utils for consistent time calculation between CLI and scheduler
+        from ..utils.time_utils import calculate_download_time_range
+        start_time, end_time = calculate_download_time_range(session_type, lookback_periods)
+
         if session_type == '15s_24hr':
-            # Daily data - get yesterday's data (or multiple days with lookback)
-            end_time = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
-            start_time = end_time - timedelta(days=lookback_periods - 1)
             frequency = '1D'
         else:
-            # Hourly data - get previous complete hour's data (or multiple hours with lookback)
-            # At 00:15, we want 23:00 (end) and 22:00 (start) with lookback_periods=2
-            now = datetime.now(timezone.utc)
-            end_time = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
-            start_time = end_time - timedelta(hours=lookback_periods - 1)
             frequency = '1H'
 
         # Download data with all our enhanced features

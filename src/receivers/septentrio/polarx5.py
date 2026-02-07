@@ -1810,57 +1810,69 @@ class PolaRX5(BaseReceiver):
         data_quality = None
         connection_data = {}
         extraction_source = None
+        port_status = None  # Track port status separately to ensure it's always captured
+        extractor = None
 
-        try:
-            host = self.ip_number
-            if host:
-                # Build port configuration from station config
-                receiver_config = self.station_info.get("receiver", {})
-                port_config = {
-                    "ftp": int(receiver_config.get("ftpport", 2160)),
-                    "http": int(receiver_config.get("httpport", 8060)),
-                    "control": int(receiver_config.get("controlport", 28784)),
-                }
-                control_port = port_config["control"]
+        host = self.ip_number
+        if host:
+            # Build port configuration from station config
+            receiver_config = self.station_info.get("receiver", {})
+            port_config = {
+                "ftp": int(receiver_config.get("ftpport", 2160)),
+                "http": int(receiver_config.get("httpport", 8060)),
+                "control": int(receiver_config.get("controlport", 28784)),
+            }
+            control_port = port_config["control"]
 
+            # Step 1a: Always check port status first (even if later extraction fails)
+            try:
                 extractor = PolaRX5TCPExtractor(
                     host, self.station_id,
                     port=control_port,
                     port_config=port_config
                 )
-
-                # Always check port status first (ftp, http, control independently)
                 port_status = extractor._check_port_status()
-                connection_data = {
-                    "tcp": {"status": "ok", "host": host},
-                }
-                # Add individual port status to metrics (will be included later)
-                port_metrics = port_status
 
-                # Only try full data extraction if control port is open
+                # Determine TCP status based on whether any port is reachable
+                ftp_open = port_status.get("ftp", {}).get("open", False)
+                http_open = port_status.get("http", {}).get("open", False)
+                control_open = port_status.get("control", {}).get("open", False)
+
+                if ftp_open or http_open or control_open:
+                    connection_data = {"tcp": {"status": "ok", "host": host}}
+                else:
+                    connection_data = {"tcp": {"status": "failed", "host": host, "error": "all ports unreachable"}}
+            except Exception as e:
+                self.logger.debug(f"Port check failed: {e}")
+                connection_data = {"tcp": {"status": "failed", "host": host, "error": str(e)}}
+
+            # Step 1b: Try full data extraction if control port is open
+            if port_status and extractor:
                 control_ok = port_status.get("control", {}).get("open", False)
                 if control_ok:
-                    live_data = extractor.extract_health_data()
+                    try:
+                        live_data = extractor.extract_health_data()
 
-                    if live_data.get("metrics"):
-                        metrics = live_data["metrics"]
-                        # Merge port status into metrics
-                        if "ports" not in metrics:
-                            metrics["ports"] = port_status
-                        data_quality = live_data.get("data_quality")
-                        extraction_source = "tcp_live"
-                        self.logger.info(f"Extracted live health data via TCP from {host}")
-                else:
-                    # Control port down - report port status but no live data
+                        if live_data.get("metrics"):
+                            metrics = live_data["metrics"]
+                            # Merge port status into metrics
+                            if "ports" not in metrics:
+                                metrics["ports"] = port_status
+                            data_quality = live_data.get("data_quality")
+                            extraction_source = "tcp_live"
+                            self.logger.info(f"Extracted live health data via TCP from {host}")
+                    except Exception as e:
+                        self.logger.debug(f"TCP data extraction failed: {e}")
+
+                # If no metrics yet but we have port status, use that
+                if not metrics and port_status:
                     metrics = {"ports": port_status}
                     extraction_source = "port_check_only"
-                    self.logger.warning(
-                        f"Control port {control_port} not responding on {host} - "
-                        f"cannot extract live data"
-                    )
-
-        except Exception as e:
-            self.logger.debug(f"TCP health extraction failed: {e}")
+                    if not control_ok:
+                        self.logger.warning(
+                            f"Control port {control_port} not responding on {host} - "
+                            f"cannot extract live data"
+                        )
 
         # Step 2: Fall back to SBF file extraction if TCP failed
         if not metrics:
@@ -1870,6 +1882,14 @@ class PolaRX5(BaseReceiver):
                 metrics = sbf_result.get("metrics")
                 data_quality = sbf_result.get("data_quality")
                 extraction_source = "sbf_file"
+                # Merge port_status if we have it from earlier check
+                if port_status and metrics and "ports" not in metrics:
+                    metrics["ports"] = port_status
+
+        # If we still have no metrics but have port_status, create minimal metrics
+        if not metrics and port_status:
+            metrics = {"ports": port_status}
+            extraction_source = "port_check_only"
 
         # Step 3: Build standardized health status structure
         health_status = self.build_health_status(
@@ -1885,6 +1905,21 @@ class PolaRX5(BaseReceiver):
                 "data_source": extraction_source,
                 "tool_version": "0.2.0",
             }
+
+        # Step 4: Override overall status if all service ports are closed
+        # This indicates the receiver is offline/unreachable even if host pings
+        if port_status:
+            ftp_open = port_status.get("ftp", {}).get("open", False)
+            http_open = port_status.get("http", {}).get("open", False)
+            control_open = port_status.get("control", {}).get("open", False)
+
+            if not ftp_open and not http_open and not control_open:
+                # All service ports closed - station is effectively offline
+                health_status["overall_status"] = "critical"
+                health_status["status_details"] = "all ports closed - receiver unreachable"
+                # Update status summary
+                if "status_summary" in health_status:
+                    health_status["status_summary"]["critical"] = health_status["status_summary"].get("critical", 0) + 1
 
         return health_status
 

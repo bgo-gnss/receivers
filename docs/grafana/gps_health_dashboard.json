@@ -359,7 +359,7 @@
           "links": [
             {
               "title": "View ${__data.fields.sid} details",
-              "url": "/d/gps-station-detail/gps-station-detail?var-station=${__data.fields.sid}&var-area=$area&${__url_time_range}"
+              "url": "/d/gps-station-detail/gps-station-detail?var-station=${__data.fields.sid}&var-area=$area&var-receiver=$receiver&var-antenna=$antenna&${__url_time_range}"
             }
           ]
         },
@@ -451,7 +451,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT DISTINCT ON (s.sid)\n  s.sid,\n  s.latitude,\n  s.longitude,\n  h.overall_status,\n  CASE \n    WHEN h.overall_status = 'healthy' THEN 3\n    WHEN h.overall_status = 'warning' THEN 2\n    WHEN h.overall_status = 'critical' THEN 1\n    ELSE 0\n  END as status_code,\n  p.voltage,\n  h.ts\nFROM stations s\nLEFT JOIN block_health_summary h ON h.sid = s.sid\nLEFT JOIN block_power_status p ON p.sid = s.sid AND p.ts = h.ts\nLEFT JOIN station_area_members sam ON sam.sid = s.sid\nWHERE s.latitude IS NOT NULL\n  AND s.longitude IS NOT NULL\n  AND ('$area' = 'all' OR sam.area_id = '$area')\nORDER BY s.sid, h.ts DESC",
+          "rawSql": "SELECT DISTINCT ON (s.sid)\n  s.sid,\n  s.latitude,\n  s.longitude,\n  h.overall_status,\n  CASE \n    WHEN h.overall_status = 'healthy' THEN 3\n    WHEN h.overall_status = 'warning' THEN 2\n    WHEN h.overall_status = 'critical' THEN 1\n    ELSE 0\n  END as status_code,\n  p.voltage,\n  h.ts\nFROM stations s\nLEFT JOIN block_health_summary h ON h.sid = s.sid\nLEFT JOIN block_power_status p ON p.sid = s.sid AND p.ts = h.ts\nLEFT JOIN station_area_members sam ON sam.sid = s.sid\nWHERE s.latitude IS NOT NULL\n  AND s.longitude IS NOT NULL\n  AND ('$area' = 'all' OR sam.area_id = '$area')\n  AND (${station:singlequote} = 'all' OR s.sid = ${station:singlequote})\n  AND (${receiver:singlequote} = 'all' OR s.receiver_type = ${receiver:singlequote})\n  AND (${antenna:singlequote} = 'all' OR s.antenna_type = ${antenna:singlequote})\nORDER BY s.sid, h.ts DESC",
           "refId": "A"
         }
       ],
@@ -494,11 +494,15 @@
             },
             "properties": [
               {
+                "id": "custom.width",
+                "value": 70
+              },
+              {
                 "id": "links",
                 "value": [
                   {
                     "title": "View station detail",
-                    "url": "/d/gps-station-detail/gps-station-detail?var-station=${__data.fields.Station}&${__url_time_range}",
+                    "url": "/d/gps-station-detail/gps-station-detail?var-station=${__data.fields.Station}&var-area=$area&var-receiver=$receiver&var-antenna=$antenna&${__url_time_range}",
                     "targetBlank": false
                   }
                 ]
@@ -508,9 +512,37 @@
           {
             "matcher": {
               "id": "byName",
+              "options": "Receiver"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 85
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Antenna"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 145
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
               "options": "Conn"
             },
             "properties": [
+              {
+                "id": "custom.width",
+                "value": 90
+              },
               {
                 "id": "custom.cellOptions",
                 "value": {
@@ -572,6 +604,10 @@
               "options": "Port"
             },
             "properties": [
+              {
+                "id": "custom.width",
+                "value": 70
+              },
               {
                 "id": "custom.cellOptions",
                 "value": {
@@ -690,6 +726,10 @@
             },
             "properties": [
               {
+                "id": "custom.width",
+                "value": 80
+              },
+              {
                 "id": "custom.cellOptions",
                 "value": {
                   "mode": "gradient",
@@ -741,6 +781,10 @@
             },
             "properties": [
               {
+                "id": "custom.width",
+                "value": 55
+              },
+              {
                 "id": "custom.cellOptions",
                 "value": {
                   "mode": "gradient",
@@ -775,6 +819,10 @@
               "options": "NTRIP"
             },
             "properties": [
+              {
+                "id": "custom.width",
+                "value": 60
+              },
               {
                 "id": "custom.cellOptions",
                 "value": {
@@ -869,23 +917,44 @@
                 "value": [
                   {
                     "options": {
-                      "critical": {
-                        "color": "red",
-                        "index": 2,
-                        "text": "CRITICAL"
-                      },
-                      "healthy": {
+                      "OK": {
                         "color": "green",
-                        "index": 0,
-                        "text": "OK"
+                        "index": 0
                       },
-                      "warning": {
-                        "color": "yellow",
-                        "index": 1,
-                        "text": "WARNING"
+                      "offline": {
+                        "color": "red",
+                        "index": 1
+                      },
+                      "port forward missing": {
+                        "color": "red",
+                        "index": 2
+                      },
+                      "unknown": {
+                        "color": "orange",
+                        "index": 3
                       }
                     },
                     "type": "value"
+                  },
+                  {
+                    "options": {
+                      "pattern": "^CRITICAL:.*",
+                      "result": {
+                        "color": "red",
+                        "index": 4
+                      }
+                    },
+                    "type": "regex"
+                  },
+                  {
+                    "options": {
+                      "pattern": "^WARNING:.*",
+                      "result": {
+                        "color": "yellow",
+                        "index": 5
+                      }
+                    },
+                    "type": "regex"
                   }
                 ]
               },
@@ -894,6 +963,53 @@
                 "value": {
                   "mode": "gradient",
                   "type": "color-background"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 180
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Checked"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 90
+              },
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "gradient",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 7200
+                    },
+                    {
+                      "color": "red",
+                      "value": 86400
+                    }
+                  ]
                 }
               }
             ]
@@ -935,7 +1051,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT DISTINCT ON (p.sid)\n  p.sid as \"Station\",\n  CASE\n    WHEN sc.is_online IS NULL THEN NULL\n    WHEN sc.is_online THEN 'online ' || format_duration(sc.state_duration)\n    ELSE 'offline ' || format_duration(sc.state_duration)\n  END as \"Conn\",\n  CASE\n    WHEN ps.download_status IS NULL THEN NULL\n    WHEN ps.download_status = 'open' AND (ps.health_status = 'open' OR ps.health_status IS NULL) THEN 'active'\n    WHEN ps.download_status IN ('refused', 'timeout', 'error') THEN 'dl:' || ps.download_status\n    WHEN ps.health_status IN ('refused', 'timeout', 'error') THEN 'hc:' || ps.health_status\n    ELSE 'unknown'\n  END as \"Port\",\n  p.voltage as \"Voltage\",\n  sat.total as \"Sats\",\n  COALESCE(nc.status, ns.status) as \"NTRIP\",\n  r.uptime_seconds as \"Uptime\",\n  hs.overall_status as \"Status\",\n  p.ts as \"Last Update\"\nFROM block_power_status p\nLEFT JOIN block_health_summary hs ON p.sid = hs.sid AND p.ts = hs.ts\nLEFT JOIN block_satellite_tracking sat ON p.sid = sat.sid AND p.ts = sat.ts\nLEFT JOIN block_ntrip_client nc ON p.sid = nc.sid AND p.ts = nc.ts\nLEFT JOIN block_ntrip_server ns ON p.sid = ns.sid AND p.ts = ns.ts\nLEFT JOIN block_receiver_status r ON p.sid = r.sid AND p.ts = r.ts\nLEFT JOIN station_connectivity sc ON p.sid = sc.sid\nLEFT JOIN station_port_status ps ON p.sid = ps.sid\nLEFT JOIN station_area_members sam ON sam.sid = p.sid\nWHERE $__timeFilter(p.ts)\n  AND ('$area' = 'all' OR sam.area_id = '$area')\nORDER BY p.sid, p.ts DESC",
+          "rawSql": "SELECT DISTINCT ON (p.sid)\n  p.sid as \"Station\",\n  s.receiver_type as \"Receiver\",\n  s.antenna_type as \"Antenna\",\n  EXTRACT(EPOCH FROM (NOW() - GREATEST(p.ts, COALESCE(sc.last_check, p.ts))))::int as \"Checked\",\n  CASE\n    WHEN sc.is_online IS NULL THEN NULL\n    WHEN sc.is_online THEN 'online ' || format_duration(sc.state_duration)\n    ELSE 'offline ' || format_duration(sc.state_duration)\n  END as \"Conn\",\n  CASE\n    WHEN ps.download_status IS NULL THEN NULL\n    WHEN ps.download_status = 'open' AND (ps.health_status = 'open' OR ps.health_status IS NULL) THEN 'active'\n    WHEN ps.download_status IN ('refused', 'timeout', 'error') THEN 'dl:' || ps.download_status\n    WHEN ps.health_status IN ('refused', 'timeout', 'error') THEN 'hc:' || ps.health_status\n    ELSE 'unknown'\n  END as \"Port\",\n  CASE WHEN sc.is_online = false THEN 'offline' WHEN ps.download_status = 'refused' OR ps.health_status = 'refused' THEN 'port forward missing' WHEN ps.download_status = 'timeout' AND (ps.health_status = 'timeout' OR ps.health_status IS NULL) THEN 'offline' WHEN hs.overall_status = 'critical' THEN 'CRITICAL: ' || COALESCE(hs.status_details, '') WHEN hs.overall_status = 'warning' THEN 'WARNING: ' || COALESCE(hs.status_details, '') WHEN hs.overall_status = 'healthy' THEN 'OK' ELSE COALESCE(hs.overall_status, 'unknown') END as \"Status\",\n  p.voltage as \"Voltage\",\n  sat.total as \"Sats\",\n  COALESCE(nc.status, ns.status) as \"NTRIP\",\n  r.uptime_seconds as \"Uptime\"\nFROM block_power_status p\nJOIN stations s ON p.sid = s.sid\nLEFT JOIN block_health_summary hs ON p.sid = hs.sid AND p.ts = hs.ts\nLEFT JOIN block_satellite_tracking sat ON p.sid = sat.sid AND p.ts = sat.ts\nLEFT JOIN block_ntrip_client nc ON p.sid = nc.sid AND p.ts = nc.ts\nLEFT JOIN block_ntrip_server ns ON p.sid = ns.sid AND p.ts = ns.ts\nLEFT JOIN block_receiver_status r ON p.sid = r.sid AND p.ts = r.ts\nLEFT JOIN station_connectivity sc ON p.sid = sc.sid\nLEFT JOIN station_port_status ps ON p.sid = ps.sid\nLEFT JOIN station_area_members sam ON sam.sid = p.sid\nWHERE $__timeFilter(p.ts)\n  AND ('$area' = 'all' OR sam.area_id = '$area')\n  AND (${station:singlequote} = 'all' OR p.sid = ${station:singlequote})\n  AND (${receiver:singlequote} = 'all' OR s.receiver_type = ${receiver:singlequote})\n  AND (${antenna:singlequote} = 'all' OR s.antenna_type = ${antenna:singlequote})\nORDER BY p.sid, p.ts DESC",
           "refId": "A"
         }
       ],
@@ -982,7 +1098,7 @@
                 "value": [
                   {
                     "title": "View station detail",
-                    "url": "/d/gps-station-detail/gps-station-detail?var-station=${__data.fields.Station}&${__url_time_range}",
+                    "url": "/d/gps-station-detail/gps-station-detail?var-station=${__data.fields.Station}&var-area=$area&var-receiver=$receiver&var-antenna=$antenna&${__url_time_range}",
                     "targetBlank": false
                   }
                 ]
@@ -1111,7 +1227,7 @@
                 "value": [
                   {
                     "title": "View station detail",
-                    "url": "/d/gps-station-detail/gps-station-detail?var-station=${__data.fields.Station}&${__url_time_range}",
+                    "url": "/d/gps-station-detail/gps-station-detail?var-station=${__data.fields.Station}&var-area=$area&var-receiver=$receiver&var-antenna=$antenna&${__url_time_range}",
                     "targetBlank": false
                   }
                 ]
@@ -1335,6 +1451,66 @@
         "name": "area",
         "options": [],
         "query": "SELECT 'all' AS __value, 'All Stations' AS __text UNION ALL SELECT area_id AS __value, area_name || ' (' || area_type || ')' AS __text FROM station_areas ORDER BY __text",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {},
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "gps_health"
+        },
+        "definition": "SELECT 'all' AS sid UNION ALL SELECT sid FROM stations ORDER BY sid",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Station",
+        "multi": false,
+        "name": "station",
+        "options": [],
+        "query": "SELECT 'all' AS sid UNION ALL SELECT sid FROM stations ORDER BY sid",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {},
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "gps_health"
+        },
+        "definition": "SELECT 'all' AS receiver_type UNION ALL SELECT DISTINCT receiver_type FROM stations WHERE receiver_type IS NOT NULL ORDER BY receiver_type",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Receiver",
+        "multi": false,
+        "name": "receiver",
+        "options": [],
+        "query": "SELECT 'all' AS receiver_type UNION ALL SELECT DISTINCT receiver_type FROM stations WHERE receiver_type IS NOT NULL ORDER BY receiver_type",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {},
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "gps_health"
+        },
+        "definition": "SELECT 'all' AS antenna_type UNION ALL SELECT DISTINCT antenna_type FROM stations WHERE antenna_type IS NOT NULL ORDER BY antenna_type",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Antenna",
+        "multi": false,
+        "name": "antenna",
+        "options": [],
+        "query": "SELECT 'all' AS antenna_type UNION ALL SELECT DISTINCT antenna_type FROM stations WHERE antenna_type IS NOT NULL ORDER BY antenna_type",
         "refresh": 1,
         "regex": "",
         "skipUrlSync": false,
