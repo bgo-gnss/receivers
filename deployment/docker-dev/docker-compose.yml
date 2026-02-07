@@ -79,6 +79,7 @@ services:
       - ../../docs/grafana/provisioning/dashboards/dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml:ro
       - ../../docs/grafana/gps_health_dashboard.json:/etc/grafana/provisioning/dashboards/json/gps_health_dashboard.json:ro
       - ../../docs/grafana/gps_station_detail_dashboard.json:/etc/grafana/provisioning/dashboards/json/gps_station_detail_dashboard.json:ro
+      - ../../docs/grafana/gps_map_dashboard.json:/etc/grafana/provisioning/dashboards/json/gps_map_dashboard.json:ro
       - ../../docs/grafana/provisioning/datasources/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
       - grafana-data:/var/lib/grafana
 

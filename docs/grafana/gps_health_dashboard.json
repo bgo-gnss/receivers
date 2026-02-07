@@ -22,12 +22,24 @@
   "links": [
     {
       "asDropdown": false,
-      "icon": "dashboard",
+      "icon": "external-link",
       "includeVars": true,
       "keepTime": true,
       "tags": [],
       "targetBlank": false,
-      "title": "Station Detail \u2192",
+      "title": "Full Map",
+      "tooltip": "View full-screen station map",
+      "type": "link",
+      "url": "/d/gps-map/gps-station-map"
+    },
+    {
+      "asDropdown": false,
+      "icon": "info-circle",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Station Detail",
       "tooltip": "View detailed station information",
       "type": "link",
       "url": "/d/gps-station-detail/gps-station-detail"
@@ -45,7 +57,7 @@
       },
       "id": 1,
       "panels": [],
-      "title": "Overview",
+      "title": "Network Overview",
       "type": "row"
     },
     {
@@ -72,8 +84,8 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 5,
-        "w": 4,
+        "h": 4,
+        "w": 5,
         "x": 0,
         "y": 1
       },
@@ -102,7 +114,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(DISTINCT sid) as \"Stations\" FROM block_power_status WHERE $__timeFilter(ts)",
+          "rawSql": "SELECT COUNT(*) as \"Stations\" FROM (SELECT DISTINCT ON (sid) sid FROM block_power_status WHERE $__timeFilter(ts) ORDER BY sid, ts DESC) latest",
           "refId": "A"
         }
       ],
@@ -141,9 +153,9 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 5,
-        "w": 4,
-        "x": 4,
+        "h": 4,
+        "w": 5,
+        "x": 5,
         "y": 1
       },
       "id": 3,
@@ -171,7 +183,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(DISTINCT sid) as \"Critical\" FROM block_health_summary WHERE overall_status = 'critical' AND $__timeFilter(ts)",
+          "rawSql": "SELECT COUNT(*) as \"Critical\" FROM (SELECT DISTINCT ON (sid) sid, overall_status FROM block_health_summary WHERE $__timeFilter(ts) ORDER BY sid, ts DESC) latest WHERE overall_status = 'critical'",
           "refId": "A"
         }
       ],
@@ -206,9 +218,9 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 5,
-        "w": 4,
-        "x": 8,
+        "h": 4,
+        "w": 5,
+        "x": 10,
         "y": 1
       },
       "id": 4,
@@ -236,7 +248,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(DISTINCT sid) as \"Warnings\" FROM block_health_summary WHERE overall_status = 'warning' AND $__timeFilter(ts)",
+          "rawSql": "SELECT COUNT(*) as \"Warnings\" FROM (SELECT DISTINCT ON (sid) sid, overall_status FROM block_health_summary WHERE $__timeFilter(ts) ORDER BY sid, ts DESC) latest WHERE overall_status = 'warning'",
           "refId": "A"
         }
       ],
@@ -248,137 +260,117 @@
         "type": "grafana-postgresql-datasource",
         "uid": "gps_health"
       },
+      "description": "Click station to view details. Click \"Full Map\" link above for larger view.",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "thresholds"
           },
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "auto"
-            },
-            "inspect": false
-          },
-          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "text",
                 "value": null
-              }
-            ]
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Station"
-            },
-            "properties": [
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "View station detail",
-                    "url": "/d/gps-health-voltage/gps-receiver-health-voltage?var-station=${__data.fields.Station}&${__url_time_range}",
-                    "targetBlank": false
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Status"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "options": {
-                      "critical": {
-                        "color": "red",
-                        "index": 1,
-                        "text": "CRITICAL"
-                      },
-                      "warning": {
-                        "color": "yellow",
-                        "index": 0,
-                        "text": "WARNING"
-                      }
-                    },
-                    "type": "value"
-                  }
-                ]
               },
               {
-                "id": "custom.cellOptions",
-                "value": {
-                  "mode": "gradient",
-                  "type": "color-background"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Voltage"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "volt"
+                "color": "red",
+                "value": 1
               },
               {
-                "id": "decimals",
+                "color": "yellow",
                 "value": 2
+              },
+              {
+                "color": "green",
+                "value": 3
               }
             ]
           },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Cause"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 200
-              }
-            ]
-          }
-        ]
+          "links": [
+            {
+              "title": "View ${__data.fields.sid} details",
+              "url": "/d/gps-station-detail/gps-station-detail?var-station=${__data.fields.sid}&var-area=$area&${__url_time_range}"
+            }
+          ]
+        },
+        "overrides": []
       },
       "gridPos": {
-        "h": 11,
-        "w": 12,
-        "x": 12,
+        "h": 16,
+        "w": 9,
+        "x": 15,
         "y": 1
       },
-      "id": 12,
+      "id": 31,
       "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
+        "basemap": {
+          "config": {},
+          "name": "Layer 0",
+          "type": "osm-standard"
         },
-        "showHeader": true,
-        "sortBy": [
+        "controls": {
+          "mouseWheelZoom": true,
+          "showAttribution": false,
+          "showDebug": false,
+          "showMeasure": false,
+          "showScale": false,
+          "showZoom": true
+        },
+        "layers": [
           {
-            "desc": false,
-            "displayName": "Status"
+            "config": {
+              "showLegend": false,
+              "style": {
+                "color": {
+                  "field": "status_code",
+                  "fixed": "dark-green"
+                },
+                "opacity": 0.9,
+                "rotation": {
+                  "fixed": 0,
+                  "max": 360,
+                  "min": -360,
+                  "mode": "mod"
+                },
+                "size": {
+                  "fixed": 8,
+                  "max": 12,
+                  "min": 4
+                },
+                "symbol": {
+                  "fixed": "img/icons/marker/circle.svg",
+                  "mode": "fixed"
+                },
+                "textConfig": {
+                  "fontSize": 10,
+                  "offsetX": 0,
+                  "offsetY": 0,
+                  "textAlign": "center",
+                  "textBaseline": "middle"
+                }
+              }
+            },
+            "location": {
+              "latitude": "latitude",
+              "longitude": "longitude",
+              "mode": "coords"
+            },
+            "name": "Stations",
+            "tooltip": true,
+            "type": "markers"
           }
-        ]
+        ],
+        "tooltip": {
+          "mode": "details"
+        },
+        "view": {
+          "id": "coords",
+          "lat": 65.1,
+          "lon": -18.8,
+          "zoom": 6.5,
+          "allLayers": true
+        }
       },
       "pluginVersion": "10.0.0",
       "targets": [
@@ -390,12 +382,12 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT DISTINCT ON (p.sid)\n  p.sid as \"Station\",\n  hs.overall_status as \"Status\",\n  hs.status_details as \"Cause\",\n  p.voltage as \"Voltage\",\n  p.ts as \"Last Update\"\nFROM block_power_status p\nLEFT JOIN block_health_summary hs ON p.sid = hs.sid AND p.ts = hs.ts\nWHERE $__timeFilter(p.ts)\n  AND hs.overall_status IN ('critical', 'warning')\nORDER BY p.sid, p.ts DESC",
+          "rawSql": "SELECT DISTINCT ON (s.sid)\n  s.sid,\n  s.latitude,\n  s.longitude,\n  h.overall_status,\n  CASE \n    WHEN h.overall_status = 'healthy' THEN 3\n    WHEN h.overall_status = 'warning' THEN 2\n    WHEN h.overall_status = 'critical' THEN 1\n    ELSE 0\n  END as status_code,\n  p.voltage,\n  h.ts\nFROM stations s\nLEFT JOIN block_health_summary h ON h.sid = s.sid\nLEFT JOIN block_power_status p ON p.sid = s.sid AND p.ts = h.ts\nLEFT JOIN station_area_members sam ON sam.sid = s.sid\nWHERE s.latitude IS NOT NULL\n  AND s.longitude IS NOT NULL\n  AND ('$area' = 'all' OR sam.area_id = '$area')\nORDER BY s.sid, h.ts DESC",
           "refId": "A"
         }
       ],
-      "title": "Stations with Issues",
-      "type": "table"
+      "title": "Station Map - $area",
+      "type": "geomap"
     },
     {
       "datasource": {
@@ -419,24 +411,8 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 11
-              },
-              {
                 "color": "green",
-                "value": 11.8
-              },
-              {
-                "color": "yellow",
-                "value": 28
-              },
-              {
-                "color": "red",
-                "value": 30
+                "value": null
               }
             ]
           }
@@ -453,7 +429,7 @@
                 "value": [
                   {
                     "title": "View station detail",
-                    "url": "/d/gps-health-voltage/gps-receiver-health-voltage?var-station=${__data.fields.Station}&${__url_time_range}",
+                    "url": "/d/gps-station-detail/gps-station-detail?var-station=${__data.fields.Station}&${__url_time_range}",
                     "targetBlank": false
                   }
                 ]
@@ -480,6 +456,158 @@
               {
                 "id": "decimals",
                 "value": 2
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 11
+                    },
+                    {
+                      "color": "green",
+                      "value": 11.8
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 28
+                    },
+                    {
+                      "color": "red",
+                      "value": 30
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Sats"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "gradient",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 10
+                    },
+                    {
+                      "color": "green",
+                      "value": 20
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "NTRIP"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "connected": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "OK"
+                      },
+                      "connecting": {
+                        "color": "yellow",
+                        "index": 1,
+                        "text": "..."
+                      },
+                      "idle": {
+                        "color": "blue",
+                        "index": 2,
+                        "text": "IDLE"
+                      },
+                      "error": {
+                        "color": "red",
+                        "index": 3,
+                        "text": "ERR"
+                      },
+                      "inactive": {
+                        "color": "text",
+                        "index": 4,
+                        "text": "-"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Uptime"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dtdurations"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "gradient",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 3600
+                    },
+                    {
+                      "color": "green",
+                      "value": 86400
+                    }
+                  ]
+                }
               }
             ]
           },
@@ -526,10 +654,10 @@
         ]
       },
       "gridPos": {
-        "h": 6,
-        "w": 12,
+        "h": 12,
+        "w": 15,
         "x": 0,
-        "y": 6
+        "y": 5
       },
       "id": 5,
       "options": {
@@ -560,11 +688,269 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT DISTINCT ON (p.sid)\n  p.sid as \"Station\",\n  p.voltage as \"Voltage\",\n  hs.overall_status as \"Status\",\n  p.ts as \"Last Update\"\nFROM block_power_status p\nLEFT JOIN block_health_summary hs ON p.sid = hs.sid AND p.ts = hs.ts\nWHERE $__timeFilter(p.ts)\nORDER BY p.sid, p.ts DESC",
+          "rawSql": "SELECT DISTINCT ON (p.sid)\n  p.sid as \"Station\",\n  p.voltage as \"Voltage\",\n  sat.total as \"Sats\",\n  COALESCE(nc.status, ns.status) as \"NTRIP\",\n  r.uptime_seconds as \"Uptime\",\n  hs.overall_status as \"Status\",\n  p.ts as \"Last Update\"\nFROM block_power_status p\nLEFT JOIN block_health_summary hs ON p.sid = hs.sid AND p.ts = hs.ts\nLEFT JOIN block_satellite_tracking sat ON p.sid = sat.sid AND p.ts = sat.ts\nLEFT JOIN block_ntrip_client nc ON p.sid = nc.sid AND p.ts = nc.ts\nLEFT JOIN block_ntrip_server ns ON p.sid = ns.sid AND p.ts = ns.ts\nLEFT JOIN block_receiver_status r ON p.sid = r.sid AND p.ts = r.ts\nLEFT JOIN station_area_members sam ON sam.sid = p.sid\nWHERE $__timeFilter(p.ts)\n  AND ('$area' = 'all' OR sam.area_id = '$area')\nORDER BY p.sid, p.ts DESC",
           "refId": "A"
         }
       ],
-      "title": "Latest Voltage - All Stations",
+      "title": "All Stations - $area",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Station"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View station detail",
+                    "url": "/d/gps-station-detail/gps-station-detail?var-station=${__data.fields.Station}&${__url_time_range}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Voltage"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "volt"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Cause"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 17
+      },
+      "id": 12,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Last Update"
+          }
+        ]
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT DISTINCT ON (p.sid)\n  p.sid as \"Station\",\n  hs.status_details as \"Cause\",\n  p.voltage as \"Voltage\",\n  p.ts as \"Last Update\"\nFROM block_power_status p\nLEFT JOIN block_health_summary hs ON p.sid = hs.sid AND p.ts = hs.ts\nWHERE $__timeFilter(p.ts)\n  AND hs.overall_status = 'critical'\nORDER BY p.sid, p.ts DESC",
+          "refId": "A"
+        }
+      ],
+      "title": "Critical Issues",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "yellow",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Station"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View station detail",
+                    "url": "/d/gps-station-detail/gps-station-detail?var-station=${__data.fields.Station}&${__url_time_range}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Voltage"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "volt"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Cause"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "yellow",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 17
+      },
+      "id": 13,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Last Update"
+          }
+        ]
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT DISTINCT ON (p.sid)\n  p.sid as \"Station\",\n  hs.status_details as \"Cause\",\n  p.voltage as \"Voltage\",\n  p.ts as \"Last Update\"\nFROM block_power_status p\nLEFT JOIN block_health_summary hs ON p.sid = hs.sid AND p.ts = hs.ts\nWHERE $__timeFilter(p.ts)\n  AND hs.overall_status = 'warning'\nORDER BY p.sid, p.ts DESC",
+          "refId": "A"
+        }
+      ],
+      "title": "Warnings",
       "type": "table"
     },
     {
@@ -645,7 +1031,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 30
+        "y": 25
       },
       "id": 7,
       "options": {
@@ -676,1712 +1062,6 @@
       ],
       "title": "Voltage Over Time - $area",
       "type": "timeseries"
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 29
-      },
-      "id": 30,
-      "panels": [],
-      "title": "Area View: $area",
-      "type": "row"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "gps_health"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 1
-              },
-              {
-                "color": "yellow",
-                "value": 2
-              },
-              {
-                "color": "green",
-                "value": 3
-              }
-            ]
-          },
-          "links": [
-            {
-              "title": "View ${__data.fields.sid} details",
-              "url": "/d/gps-station-detail/gps-station-detail?var-station=${__data.fields.sid}&var-area=$area&${__url_time_range}"
-            }
-          ]
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 40,
-        "w": 24,
-        "x": 0,
-        "y": 40
-      },
-      "id": 31,
-      "options": {
-        "basemap": {
-          "config": {},
-          "name": "Layer 0",
-          "type": "osm-standard"
-        },
-        "controls": {
-          "mouseWheelZoom": true,
-          "showAttribution": true,
-          "showDebug": false,
-          "showMeasure": false,
-          "showScale": false,
-          "showZoom": true
-        },
-        "layers": [
-          {
-            "config": {
-              "showLegend": true,
-              "style": {
-                "color": {
-                  "field": "status_code",
-                  "fixed": "dark-green"
-                },
-                "opacity": 0.9,
-                "rotation": {
-                  "fixed": 0,
-                  "max": 360,
-                  "min": -360,
-                  "mode": "mod"
-                },
-                "size": {
-                  "fixed": 10,
-                  "max": 15,
-                  "min": 5
-                },
-                "symbol": {
-                  "fixed": "img/icons/marker/circle.svg",
-                  "mode": "fixed"
-                },
-                "textConfig": {
-                  "fontSize": 12,
-                  "offsetX": 0,
-                  "offsetY": 0,
-                  "textAlign": "center",
-                  "textBaseline": "middle"
-                }
-              }
-            },
-            "location": {
-              "latitude": "latitude",
-              "longitude": "longitude",
-              "mode": "coords"
-            },
-            "name": "Stations",
-            "tooltip": true,
-            "type": "markers"
-          }
-        ],
-        "tooltip": {
-          "mode": "details"
-        },
-        "view": {
-          "id": "coords",
-          "lat": 64.9,
-          "lon": -18.5,
-          "zoom": 6,
-          "allLayers": true
-        }
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "gps_health"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT DISTINCT ON (s.sid)\n  s.sid,\n  s.latitude,\n  s.longitude,\n  h.overall_status,\n  CASE \n    WHEN h.overall_status = 'healthy' THEN 3\n    WHEN h.overall_status = 'warning' THEN 2\n    WHEN h.overall_status = 'critical' THEN 1\n    ELSE 0\n  END as status_code,\n  p.voltage,\n  h.ts\nFROM stations s\nLEFT JOIN block_health_summary h ON h.sid = s.sid\nLEFT JOIN block_power_status p ON p.sid = s.sid AND p.ts = h.ts\nLEFT JOIN station_area_members sam ON sam.sid = s.sid\nWHERE s.latitude IS NOT NULL\n  AND s.longitude IS NOT NULL\n  AND ('$area' = 'all' OR sam.area_id = '$area')\nORDER BY s.sid, h.ts DESC",
-          "refId": "A"
-        }
-      ],
-      "title": "Station Locations - $area",
-      "type": "geomap"
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 12
-      },
-      "id": 8,
-      "panels": [],
-      "title": "Station Detail: $station",
-      "type": "row"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "gps_health"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 2,
-          "mappings": [],
-          "max": 18,
-          "min": 8,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 11
-              },
-              {
-                "color": "green",
-                "value": 11.8
-              },
-              {
-                "color": "yellow",
-                "value": 15
-              },
-              {
-                "color": "red",
-                "value": 16
-              }
-            ]
-          },
-          "unit": "volt"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Mains"
-            },
-            "properties": [
-              {
-                "id": "max",
-                "value": 25
-              },
-              {
-                "id": "min",
-                "value": 12
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "red",
-                      "value": null
-                    },
-                    {
-                      "color": "yellow",
-                      "value": 15
-                    },
-                    {
-                      "color": "green",
-                      "value": 18
-                    },
-                    {
-                      "color": "yellow",
-                      "value": 22
-                    },
-                    {
-                      "color": "red",
-                      "value": 24
-                    }
-                  ]
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 6,
-        "x": 0,
-        "y": 13
-      },
-      "id": 9,
-      "options": {
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showThresholdLabels": true,
-        "showThresholdMarkers": true
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "gps_health"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT p.voltage as \"Battery\"\nFROM block_power_status p\nWHERE p.sid = '$station'\n  AND '$power_type' = 'battery'\n  AND $__timeFilter(p.ts)\nORDER BY p.ts DESC\nLIMIT 1",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "gps_health"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT p.voltage as \"Mains\"\nFROM block_power_status p\nWHERE p.sid = '$station'\n  AND '$power_type' = 'mains'\n  AND $__timeFilter(p.ts)\nORDER BY p.ts DESC\nLIMIT 1",
-          "refId": "B"
-        }
-      ],
-      "title": "Current Voltage - $station",
-      "type": "gauge"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "gps_health"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "-1": {
-                  "color": "text",
-                  "index": 0,
-                  "text": "N/A"
-                }
-              },
-              "type": "value"
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "yellow",
-                "value": 60
-              },
-              {
-                "color": "red",
-                "value": 70
-              }
-            ]
-          },
-          "unit": "celsius",
-          "noValue": "N/A"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 2,
-        "x": 18,
-        "y": 13
-      },
-      "id": 13,
-      "options": {
-        "colorMode": "background_solid",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "gps_health"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT COALESCE((SELECT temperature FROM block_receiver_status WHERE sid = '$station' AND temperature IS NOT NULL ORDER BY ts DESC LIMIT 1), -1) AS \"Temperature\"",
-          "refId": "A"
-        }
-      ],
-      "title": "Temperature",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "gps_health"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "-1": {
-                  "color": "text",
-                  "index": 0,
-                  "text": "N/A"
-                }
-              },
-              "type": "value"
-            }
-          ],
-          "noValue": "N/A",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "yellow",
-                "value": 80
-              },
-              {
-                "color": "red",
-                "value": 95
-              }
-            ]
-          },
-          "unit": "percent"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 2,
-        "x": 20,
-        "y": 13
-      },
-      "id": 14,
-      "options": {
-        "colorMode": "background_solid",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "gps_health"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT COALESCE((SELECT cpu_load FROM block_receiver_status WHERE sid = '$station' AND cpu_load IS NOT NULL ORDER BY ts DESC LIMIT 1), -1) AS \"CPU\"",
-          "refId": "A"
-        }
-      ],
-      "title": "CPU Load",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "gps_health"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "-1": {
-                  "color": "text",
-                  "index": 0,
-                  "text": "N/A"
-                }
-              },
-              "type": "value"
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "yellow",
-                "value": 80
-              },
-              {
-                "color": "red",
-                "value": 90
-              }
-            ]
-          },
-          "unit": "percent",
-          "noValue": "N/A"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 2,
-        "x": 22,
-        "y": 13
-      },
-      "id": 15,
-      "options": {
-        "colorMode": "background_solid",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "gps_health"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT COALESCE((SELECT usage_percent FROM block_disk_status WHERE sid = '$station' ORDER BY ts DESC LIMIT 1), -1) AS \"Disk\"",
-          "refId": "A"
-        }
-      ],
-      "title": "Disk Usage",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "gps_health"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "-1": {
-                  "color": "text",
-                  "index": 0,
-                  "text": "N/A"
-                }
-              },
-              "type": "value"
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "#E0B400",
-                "value": 8
-              },
-              {
-                "color": "green",
-                "value": 16
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 1,
-        "x": 12,
-        "y": 13
-      },
-      "id": 16,
-      "options": {
-        "colorMode": "background_solid",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value"
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "gps_health"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT COALESCE((SELECT total FROM block_satellite_tracking WHERE sid = '$station' ORDER BY ts DESC LIMIT 1), -1) AS \"Satellites\"",
-          "refId": "A"
-        }
-      ],
-      "title": "Sat",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "gps_health"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "max": 16,
-          "min": 0,
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "#E0B400",
-                "value": 4
-              },
-              {
-                "color": "green",
-                "value": 8
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 2,
-        "x": 13,
-        "y": 13
-      },
-      "id": 29,
-      "options": {
-        "displayMode": "basic",
-        "minVizHeight": 10,
-        "minVizWidth": 0,
-        "namePlacement": "left",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [],
-          "fields": "",
-          "values": true
-        },
-        "showUnfilled": true,
-        "sizing": "auto",
-        "text": {
-          "titleSize": 12,
-          "valueSize": 12
-        },
-        "valueMode": "text"
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "gps_health"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT gps AS \"GPS\", glonass AS \"GLO\", galileo AS \"GAL\", beidou AS \"BDS\"\nFROM block_satellite_tracking\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
-          "refId": "A"
-        }
-      ],
-      "title": "",
-      "type": "bargauge"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "gps_health"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "0": {
-                  "color": "green",
-                  "index": 0,
-                  "text": "HEALTHY"
-                },
-                "1": {
-                  "color": "yellow",
-                  "index": 1,
-                  "text": "WARNING"
-                },
-                "2": {
-                  "color": "red",
-                  "index": 2,
-                  "text": "CRITICAL"
-                },
-                "3": {
-                  "color": "blue",
-                  "index": 3,
-                  "text": "UNKNOWN"
-                }
-              },
-              "type": "value"
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 3,
-        "x": 9,
-        "y": 13
-      },
-      "id": 17,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "/Status/",
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "gps_health"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT CASE overall_status\n  WHEN 'healthy' THEN 0\n  WHEN 'warning' THEN 1\n  WHEN 'critical' THEN 2\n  ELSE 3\nEND AS \"Status\",\nCASE WHEN status_details IS NOT NULL\n  THEN status_details\n  ELSE ''\nEND AS \"Details\"\nFROM block_health_summary\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
-          "refId": "A"
-        }
-      ],
-      "title": "Overall Status",
-      "description": "Details field shows what is causing non-healthy status (e.g. 'Voltage, FTP down')",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "gps_health"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 86400
-              },
-              {
-                "color": "green",
-                "value": 86400
-              }
-            ]
-          },
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 3,
-        "x": 15,
-        "y": 13
-      },
-      "id": 23,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "gps_health"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT uptime_seconds AS \"Uptime\"\nFROM block_receiver_status\nWHERE sid = '$station' AND uptime_seconds IS NOT NULL\nORDER BY ts DESC LIMIT 1",
-          "refId": "A"
-        }
-      ],
-      "title": "Uptime",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "gps_health"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "align": "left",
-            "cellOptions": {
-              "type": "auto"
-            },
-            "inspect": false
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "blue",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Receiver"
-            },
-            "properties": [
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "Open receiver web interface",
-                    "url": "http://${__data.fields.url}",
-                    "targetBlank": true
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Location"
-            },
-            "properties": [
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "Open in Google Maps",
-                    "url": "https://www.google.com/maps/search/?api=1&query=${__data.fields.Location}",
-                    "targetBlank": true
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "url"
-            },
-            "properties": [
-              {
-                "id": "custom.hidden",
-                "value": true
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 5,
-        "x": 6,
-        "y": 17
-      },
-      "id": 22,
-      "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
-        "showHeader": true
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "gps_health"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT \n  CASE \n    WHEN s.ip_address IS NOT NULL THEN host(s.ip_address) || ':' || COALESCE(s.http_port, 80)::text\n    ELSE ''\n  END AS url,\n  CASE \n    WHEN s.ip_address IS NOT NULL THEN host(s.ip_address) || ':' || COALESCE(s.http_port, 80)::text || ' (' || COALESCE(s.receiver_type, '?') || ')'\n    ELSE COALESCE(s.receiver_type, 'Unknown')\n  END AS \"Receiver\",\n  CASE \n    WHEN s.latitude IS NOT NULL THEN \n      ROUND(s.latitude::numeric, 4)::text || ', ' || ROUND(s.longitude::numeric, 4)::text\n    ELSE 'No coordinates'\n  END AS \"Location\"\nFROM stations s\nWHERE s.sid = '$station'",
-          "refId": "A"
-        }
-      ],
-      "title": "Station Information",
-      "type": "table"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "gps_health"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "#E0B400",
-                "value": 7200
-              },
-              {
-                "color": "red",
-                "value": 86400
-              }
-            ]
-          },
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 3,
-        "x": 6,
-        "y": 13
-      },
-      "id": 28,
-      "options": {
-        "colorMode": "background_solid",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [],
-          "fields": "",
-          "values": true
-        },
-        "textMode": "value"
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "gps_health"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT extract(epoch from now() - max(latest_ts))::integer AS \"Age\"\nFROM (\n  SELECT max(ts) AS latest_ts FROM block_health_summary WHERE sid = '$station'\n  UNION ALL\n  SELECT max(ts) FROM block_power_status WHERE sid = '$station'\n  UNION ALL\n  SELECT max(ts) FROM block_receiver_status WHERE sid = '$station'\n  UNION ALL\n  SELECT max(ts) FROM block_pvt_geodetic WHERE sid = '$station'\n) t",
-          "refId": "A"
-        }
-      ],
-      "title": "Last Observation",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "gps_health"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "-1": {
-                  "color": "text",
-                  "index": 0,
-                  "text": "N/A"
-                },
-                "0": {
-                  "color": "red",
-                  "index": 1,
-                  "text": "closed"
-                }
-              },
-              "type": "value"
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 1
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 3,
-        "x": 11,
-        "y": 17
-      },
-      "id": 27,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "vertical",
-        "reduceOptions": {
-          "calcs": [],
-          "fields": "",
-          "values": true
-        },
-        "textMode": "value_and_name"
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "gps_health"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT\n  CASE WHEN ftp_port IS NULL THEN -1 WHEN ftp_open THEN ftp_port ELSE 0 END AS \"FTP\",\n  CASE WHEN http_port IS NULL THEN -1 WHEN http_open THEN http_port ELSE 0 END AS \"HTTP\",\n  CASE WHEN control_port IS NULL THEN -1 WHEN control_open THEN control_port ELSE 0 END AS \"Ctrl\"\nFROM block_health_summary\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
-          "refId": "A"
-        }
-      ],
-      "title": "Ports",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "gps_health"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "-1": {
-                  "color": "text",
-                  "index": 0,
-                  "text": "N/A"
-                }
-              },
-              "type": "value"
-            }
-          ],
-          "noValue": "N/A",
-          "unit": "s",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              },
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "yellow",
-                "value": 7200
-              },
-              {
-                "color": "red",
-                "value": 14400
-              }
-            ]
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "24h"
-            },
-            "properties": [
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "text",
-                      "value": null
-                    },
-                    {
-                      "color": "green",
-                      "value": 0
-                    },
-                    {
-                      "color": "yellow",
-                      "value": 129600
-                    },
-                    {
-                      "color": "red",
-                      "value": 216000
-                    }
-                  ]
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 3,
-        "x": 14,
-        "y": 17
-      },
-      "id": 24,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "vertical",
-        "text": {
-          "titleSize": 10,
-          "valueSize": 28
-        },
-        "reduceOptions": {
-          "calcs": [],
-          "fields": "",
-          "values": true
-        },
-        "textMode": "value_and_name"
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "gps_health"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT\n  (SELECT CASE\n    WHEN NOT EXISTS (SELECT 1 FROM file_tracking WHERE sid='$station' AND session_type='15s_24hr' AND status='downloaded') THEN -1\n    ELSE (SELECT ROUND(EXTRACT(EPOCH FROM NOW() - (file_date + INTERVAL '1 day')))\n          FROM file_tracking WHERE sid='$station' AND session_type='15s_24hr'\n          AND status='downloaded' ORDER BY file_date DESC LIMIT 1)\n  END) AS \"24h\",\n  (SELECT CASE\n    WHEN NOT EXISTS (SELECT 1 FROM file_tracking WHERE sid='$station' AND session_type='1Hz_1hr' AND status='downloaded') THEN -1\n    ELSE (SELECT ROUND(EXTRACT(EPOCH FROM NOW() - (file_date + file_hour * INTERVAL '1 hour')))\n          FROM file_tracking WHERE sid='$station' AND session_type='1Hz_1hr'\n          AND status='downloaded' ORDER BY file_date DESC, file_hour DESC NULLS LAST LIMIT 1)\n  END) AS \"1Hz\",\n  (SELECT CASE\n    WHEN NOT EXISTS (SELECT 1 FROM file_tracking WHERE sid='$station' AND session_type='status_1hr' AND status='downloaded') THEN -1\n    ELSE (SELECT ROUND(EXTRACT(EPOCH FROM NOW() - (file_date + file_hour * INTERVAL '1 hour')))\n          FROM file_tracking WHERE sid='$station' AND session_type='status_1hr'\n          AND status='downloaded' ORDER BY file_date DESC, file_hour DESC NULLS LAST LIMIT 1)\n  END) AS \"Status\"",
-          "refId": "A"
-        }
-      ],
-      "title": "File Status",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "gps_health"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "1": {
-                  "color": "green",
-                  "index": 0,
-                  "text": "Active"
-                },
-                "-1": {
-                  "color": "text",
-                  "index": 1,
-                  "text": "N/A"
-                }
-              },
-              "type": "value"
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 3,
-        "x": 17,
-        "y": 17
-      },
-      "id": 25,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "vertical",
-        "text": {
-          "titleSize": 10,
-          "valueSize": 18
-        },
-        "reduceOptions": {
-          "calcs": [],
-          "fields": "",
-          "values": true
-        },
-        "textMode": "value_and_name"
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "gps_health"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT\n  (SELECT CASE WHEN EXISTS (SELECT 1 FROM file_tracking WHERE sid='$station' AND session_type='15s_24hr' AND status='downloaded') THEN 1 ELSE -1 END) AS \"15s\",\n  (SELECT CASE WHEN EXISTS (SELECT 1 FROM file_tracking WHERE sid='$station' AND session_type='1Hz_1hr' AND status='downloaded') THEN 1 ELSE -1 END) AS \"1Hz\",\n  (SELECT CASE WHEN EXISTS (SELECT 1 FROM file_tracking WHERE sid='$station' AND session_type='status_1hr' AND status='downloaded') THEN 1 ELSE -1 END) AS \"Status\"",
-          "refId": "A"
-        }
-      ],
-      "title": "Logging",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "gps_health"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "0": {
-                  "color": "green",
-                  "index": 0,
-                  "text": "Connected"
-                },
-                "1": {
-                  "color": "yellow",
-                  "index": 1,
-                  "text": "Connecting"
-                },
-                "2": {
-                  "color": "orange",
-                  "index": 2,
-                  "text": "Idle"
-                },
-                "3": {
-                  "color": "red",
-                  "index": 3,
-                  "text": "Error"
-                },
-                "4": {
-                  "color": "transparent",
-                  "index": 4,
-                  "text": "N/A"
-                }
-              },
-              "type": "value"
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "blue",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 20,
-        "y": 17
-      },
-      "id": 26,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "gps_health"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT CASE status\n  WHEN 'connected' THEN 0\n  WHEN 'connecting' THEN 1\n  WHEN 'idle' THEN 2\n  WHEN 'inactive' THEN 4\n  WHEN 'error' THEN 3\n  ELSE 2\nEND AS \"RTK\"\nFROM (\n  SELECT status, ts FROM block_ntrip_client WHERE sid = '$station'\n  UNION ALL\n  SELECT status, ts FROM block_ntrip_server WHERE sid = '$station'\n) ntrip\nORDER BY ts DESC LIMIT 1",
-          "refId": "A"
-        }
-      ],
-      "title": "NTRIP Status",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "gps_health"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "Voltage (V)",
-            "axisPlacement": "auto",
-            "axisSoftMin": 11,
-            "axisSoftMax": 14,
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 20,
-            "gradientMode": "opacity",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": 3600000,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "line+area"
-            }
-          },
-          "decimals": 2,
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 11
-              },
-              {
-                "color": "transparent",
-                "value": 11.8
-              },
-              {
-                "color": "yellow",
-                "value": 15
-              },
-              {
-                "color": "red",
-                "value": 16
-              }
-            ]
-          },
-          "unit": "volt"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Mains"
-            },
-            "properties": [
-              {
-                "id": "custom.axisSoftMin",
-                "value": 14
-              },
-              {
-                "id": "custom.axisSoftMax",
-                "value": 24
-              },
-              {
-                "id": "custom.thresholdsStyle",
-                "value": {
-                  "mode": "off"
-                }
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "green",
-                      "value": null
-                    }
-                  ]
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 21
-      },
-      "id": 10,
-      "options": {
-        "legend": {
-          "calcs": [
-            "mean",
-            "min",
-            "max",
-            "lastNotNull"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "gps_health"
-          },
-          "editorMode": "code",
-          "format": "time_series",
-          "rawQuery": true,
-          "rawSql": "SELECT\n  ts AS time,\n  voltage AS \"Battery\"\nFROM block_power_status\nWHERE sid = '$station'\n  AND '$power_type' = 'battery'\n  AND $__timeFilter(ts)\nORDER BY ts",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "gps_health"
-          },
-          "editorMode": "code",
-          "format": "time_series",
-          "rawQuery": true,
-          "rawSql": "SELECT\n  ts AS time,\n  voltage AS \"Mains\"\nFROM block_power_status\nWHERE sid = '$station'\n  AND '$power_type' = 'mains'\n  AND $__timeFilter(ts)\nORDER BY ts",
-          "refId": "B"
-        }
-      ],
-      "title": "Voltage History - $station",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "gps_health"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "auto"
-            },
-            "inspect": false
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Voltage"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "volt"
-              },
-              {
-                "id": "decimals",
-                "value": 2
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Temperature"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "celsius"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "CPU"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "percent"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Disk"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "percent"
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 70
-      },
-      "id": 11,
-      "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
-        "showHeader": true,
-        "sortBy": [
-          {
-            "desc": true,
-            "displayName": "Time"
-          }
-        ]
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "gps_health"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT\n  p.ts AS \"Time\",\n  p.voltage AS \"Voltage\",\n  r.temperature AS \"Temperature\",\n  r.cpu_load AS \"CPU\",\n  d.usage_percent AS \"Disk\",\n  sat.total AS \"Satellites\",\n  hs.overall_status AS \"Status\"\nFROM block_power_status p\nLEFT JOIN block_receiver_status r ON p.sid = r.sid AND p.ts = r.ts\nLEFT JOIN block_disk_status d ON p.sid = d.sid AND p.ts = d.ts\nLEFT JOIN block_satellite_tracking sat ON p.sid = sat.sid AND p.ts = sat.ts\nLEFT JOIN block_health_summary hs ON p.sid = hs.sid AND p.ts = hs.ts\nWHERE p.sid = '$station'\n  AND $__timeFilter(p.ts)\nORDER BY p.ts DESC\nLIMIT 100",
-          "refId": "A"
-        }
-      ],
-      "title": "Recent Data - $station",
-      "type": "table"
     }
   ],
   "refresh": "5m",
@@ -2413,46 +1093,6 @@
         "skipUrlSync": false,
         "sort": 0,
         "type": "query"
-      },
-      {
-        "current": {},
-        "datasource": {
-          "type": "grafana-postgresql-datasource",
-          "uid": "gps_health"
-        },
-        "definition": "SELECT sid FROM stations ORDER BY sid",
-        "hide": 0,
-        "includeAll": false,
-        "label": "Station",
-        "multi": false,
-        "name": "station",
-        "options": [],
-        "query": "SELECT sid FROM stations ORDER BY sid",
-        "refresh": 1,
-        "regex": "",
-        "skipUrlSync": false,
-        "sort": 1,
-        "type": "query"
-      },
-      {
-        "current": {},
-        "datasource": {
-          "type": "grafana-postgresql-datasource",
-          "uid": "gps_health"
-        },
-        "definition": "SELECT COALESCE(power_type, 'battery') FROM stations WHERE sid = '$station'",
-        "hide": 2,
-        "includeAll": false,
-        "label": "Power Type",
-        "multi": false,
-        "name": "power_type",
-        "options": [],
-        "query": "SELECT COALESCE(power_type, 'battery') FROM stations WHERE sid = '$station'",
-        "refresh": 2,
-        "regex": "",
-        "skipUrlSync": false,
-        "sort": 0,
-        "type": "query"
       }
     ]
   },
@@ -2462,7 +1102,7 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "GPS Receiver Health - Voltage",
+  "title": "GPS Receiver Health - Overview",
   "uid": "gps-health-voltage",
   "version": 1,
   "weekStart": ""
