@@ -928,22 +928,31 @@ def _write_connectivity_status(station_id: str, health_data: Dict[str, Any], log
         ping_response_ms = router_ping.get('response_time_ms')
         ping_error = router_ping.get('error_message') if not is_online else None
 
-        # Extract port status from metrics.ports (PolaRX5 format)
-        # FTP is download port for Septentrio, HTTP for Trimble
+        # Extract port status from metrics.ports
+        # Septentrio uses FTP for download, Trimble uses HTTP
         ftp_port = ports.get('ftp', {})
         http_port = ports.get('http', {})
 
-        # Determine download port (FTP for Septentrio, HTTP for Trimble)
-        if ftp_port:
-            download_port = ftp_port.get('port')
-            download_open = ftp_port.get('open', False)
-            download_status = 'open' if download_open else ftp_port.get('error_type', 'error')
+        # Determine download protocol from connection.protocol.type
+        protocol_info = connection.get('protocol', {})
+        protocol_type = protocol_info.get('type', 'ftp')  # default to ftp for backwards compat
+
+        # Download port depends on receiver type (ftp for Septentrio, http for Trimble)
+        if protocol_type == 'http':
+            download_port_info = http_port
+        else:
+            download_port_info = ftp_port
+
+        if download_port_info:
+            download_port = download_port_info.get('port')
+            download_open = download_port_info.get('open', False)
+            download_status = 'open' if download_open else download_port_info.get('error_type', 'error')
         else:
             download_port = None
             download_status = 'unknown'
         download_response_ms = None  # Not tracked in current format
 
-        # Health port is HTTP (web interface)
+        # Health port is always HTTP (web interface)
         if http_port:
             health_port = http_port.get('port')
             health_open = http_port.get('open', False)

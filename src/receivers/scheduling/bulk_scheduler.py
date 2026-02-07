@@ -54,13 +54,24 @@ def _write_connectivity_status(station_id: str, health_data: Dict[str, Any], log
         overall_status = health_data.get('overall_status', 'unknown')
         is_online = tcp_status == 'ok' or overall_status in ('healthy', 'ok', 'warning')
 
-        # Extract port status from metrics.ports
+        # Determine download protocol from connection.protocol.type
+        # Septentrio uses FTP, Trimble uses HTTP for downloads
+        protocol_info = connection.get('protocol', {})
+        protocol_type = protocol_info.get('type', 'ftp')  # default to ftp for backwards compat
+
         ftp_port = ports.get('ftp', {})
         http_port = ports.get('http', {})
 
-        download_port = ftp_port.get('port') if ftp_port else None
-        download_status = 'open' if ftp_port.get('open') else ftp_port.get('error_type', 'unknown') if ftp_port else 'unknown'
+        # Download port depends on receiver type (ftp for Septentrio, http for Trimble)
+        if protocol_type == 'http':
+            download_port_info = http_port
+        else:
+            download_port_info = ftp_port
 
+        download_port = download_port_info.get('port') if download_port_info else None
+        download_status = 'open' if download_port_info.get('open') else download_port_info.get('error_type', 'unknown') if download_port_info else 'unknown'
+
+        # Health port is always HTTP
         health_port = http_port.get('port') if http_port else None
         health_status = 'open' if http_port.get('open') else http_port.get('error_type', 'unknown') if http_port else 'unknown'
 
