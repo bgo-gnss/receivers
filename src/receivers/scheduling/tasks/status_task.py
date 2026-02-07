@@ -242,37 +242,40 @@ class StatusTask(ScheduledTask):
             import psycopg2
 
             # Extract connection status from health data
-            # Try router_ping first (from ConnectionChecker.check_all_levels)
+            # router_ping contains ICMP ping result from ConnectionChecker
             connection = health_data.get('connection', {})
             router_ping = connection.get('router_ping', {})
             metrics = health_data.get('metrics', {})
             ports = metrics.get('ports', {})
 
-            # Determine if online based on ping result
-            is_online = router_ping.get('accessible', False)
-
-            # Get response time from ping if available
+            # Get ping result (ICMP reachability)
+            ping_accessible = router_ping.get('accessible', False)
             response_time_ms = router_ping.get('response_time_ms')
             packet_loss = router_ping.get('packet_loss')
-            error_message = router_ping.get('error') if not is_online else None
 
-            # Fallback to tcp status if no router_ping data
-            if not router_ping:
-                tcp_status = connection.get('tcp', {}).get('status', 'unknown')
-                is_online = tcp_status in ('ok', 'connected', 'success')
-                response_time_ms = connection.get('tcp', {}).get('response_time_ms')
-                error_message = connection.get('error') if not is_online else None
-                packet_loss = None
-
-            # Check if all service ports are closed - station is offline even if host pings
+            # Check if all service ports are closed
+            all_ports_closed = True
             if ports:
                 ftp_open = ports.get('ftp', {}).get('open', False)
                 http_open = ports.get('http', {}).get('open', False)
                 control_open = ports.get('control', {}).get('open', False)
+                all_ports_closed = not ftp_open and not http_open and not control_open
 
-                if not ftp_open and not http_open and not control_open:
-                    is_online = False
-                    error_message = "all ports closed"
+            # Determine online status:
+            # 1. Router must respond to ICMP ping
+            # 2. At least one service port must be accessible
+            if ping_accessible:
+                is_online = not all_ports_closed
+            else:
+                is_online = False
+
+            # Determine error message
+            error_message = None
+            if not is_online:
+                if not ping_accessible:
+                    error_message = router_ping.get('error', 'ping failed - host unreachable')
+                elif all_ports_closed:
+                    error_message = "all ports closed - port forwarding missing"
 
             db_host = os.getenv("POSTGRES_HOST", "localhost")
             db_port = os.getenv("POSTGRES_PORT", "5432")
