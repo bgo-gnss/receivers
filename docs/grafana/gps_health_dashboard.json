@@ -331,32 +331,12 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Min Voltage"
+              "options": "Cause"
             },
             "properties": [
               {
-                "id": "unit",
-                "value": "volt"
-              },
-              {
-                "id": "decimals",
-                "value": 2
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Max Voltage"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "volt"
-              },
-              {
-                "id": "decimals",
-                "value": 2
+                "id": "custom.width",
+                "value": 200
               }
             ]
           }
@@ -397,7 +377,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT DISTINCT ON (p.sid)\n  p.sid as \"Station\",\n  p.voltage as \"Voltage\",\n  hs.overall_status as \"Status\",\n  p.ts as \"Last Update\",\n  (SELECT MIN(p2.voltage) FROM block_power_status p2 WHERE p2.sid = p.sid AND $__timeFilter(p2.ts)) as \"Min Voltage\",\n  (SELECT MAX(p2.voltage) FROM block_power_status p2 WHERE p2.sid = p.sid AND $__timeFilter(p2.ts)) as \"Max Voltage\"\nFROM block_power_status p\nLEFT JOIN block_health_summary hs ON p.sid = hs.sid AND p.ts = hs.ts\nWHERE $__timeFilter(p.ts)\n  AND hs.overall_status IN ('critical', 'warning')\nORDER BY p.sid, p.ts DESC",
+          "rawSql": "SELECT DISTINCT ON (p.sid)\n  p.sid as \"Station\",\n  hs.overall_status as \"Status\",\n  hs.status_details as \"Cause\",\n  p.voltage as \"Voltage\",\n  p.ts as \"Last Update\"\nFROM block_power_status p\nLEFT JOIN block_health_summary hs ON p.sid = hs.sid AND p.ts = hs.ts\nWHERE $__timeFilter(p.ts)\n  AND hs.overall_status IN ('critical', 'warning')\nORDER BY p.sid, p.ts DESC",
           "refId": "A"
         }
       ],
@@ -731,7 +711,7 @@
           "links": [
             {
               "title": "View ${__data.fields.sid} details",
-              "url": "/d/gps-health-voltage?var-station=${__data.fields.sid}&var-area=$area"
+              "url": "/d/gps-health-voltage/gps-receiver-health-voltage?var-station=${__data.fields.sid}&var-area=$area&${__url_time_range}&viewPanel=8"
             }
           ]
         },
@@ -1561,7 +1541,7 @@
             "mode": "thresholds"
           },
           "custom": {
-            "align": "auto",
+            "align": "left",
             "cellOptions": {
               "type": "auto"
             },
@@ -1582,32 +1562,60 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Lat"
+              "options": "Receiver"
             },
             "properties": [
               {
-                "id": "decimals",
-                "value": 6
-              },
-              {
-                "id": "unit",
-                "value": "degree"
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open receiver web interface",
+                    "url": "http://${__data.fields.ip}",
+                    "targetBlank": true
+                  }
+                ]
               }
             ]
           },
           {
             "matcher": {
               "id": "byName",
-              "options": "Lon"
+              "options": "Location"
             },
             "properties": [
               {
-                "id": "decimals",
-                "value": 6
-              },
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open in Google Maps",
+                    "url": "https://www.google.com/maps/place/${__data.fields.coords_dms}",
+                    "targetBlank": true
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ip"
+            },
+            "properties": [
               {
-                "id": "unit",
-                "value": "degree"
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "coords_dms"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
               }
             ]
           },
@@ -1677,11 +1685,11 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT round(latitude::numeric, 4) AS \"Lat\", round(longitude::numeric, 4) AS \"Lon\", fix_type AS \"Fix\"\nFROM block_pvt_geodetic\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
+          "rawSql": "SELECT \n  s.ip_address as ip,\n  COALESCE(s.ip_address, 'N/A') || ' (' || COALESCE(s.receiver_type, '?') || ')' AS \"Receiver\",\n  ROUND(p.latitude::numeric, 4) || '°, ' || ROUND(p.longitude::numeric, 4) || '°' AS \"Location\",\n  p.fix_type AS \"Fix\",\n  -- DMS format for Google Maps URL (e.g. \"65°42'18.7\"N+21°40'29.1\"W\")\n  CASE WHEN p.latitude >= 0 THEN\n    FLOOR(ABS(p.latitude))::text || '°' || FLOOR((ABS(p.latitude) - FLOOR(ABS(p.latitude))) * 60)::text || '''' || ROUND(((ABS(p.latitude) - FLOOR(ABS(p.latitude))) * 60 - FLOOR((ABS(p.latitude) - FLOOR(ABS(p.latitude))) * 60)) * 60, 1)::text || '\"N'\n  ELSE\n    FLOOR(ABS(p.latitude))::text || '°' || FLOOR((ABS(p.latitude) - FLOOR(ABS(p.latitude))) * 60)::text || '''' || ROUND(((ABS(p.latitude) - FLOOR(ABS(p.latitude))) * 60 - FLOOR((ABS(p.latitude) - FLOOR(ABS(p.latitude))) * 60)) * 60, 1)::text || '\"S'\n  END || '+' ||\n  CASE WHEN p.longitude >= 0 THEN\n    FLOOR(ABS(p.longitude))::text || '°' || FLOOR((ABS(p.longitude) - FLOOR(ABS(p.longitude))) * 60)::text || '''' || ROUND(((ABS(p.longitude) - FLOOR(ABS(p.longitude))) * 60 - FLOOR((ABS(p.longitude) - FLOOR(ABS(p.longitude))) * 60)) * 60, 1)::text || '\"E'\n  ELSE\n    FLOOR(ABS(p.longitude))::text || '°' || FLOOR((ABS(p.longitude) - FLOOR(ABS(p.longitude))) * 60)::text || '''' || ROUND(((ABS(p.longitude) - FLOOR(ABS(p.longitude))) * 60 - FLOOR((ABS(p.longitude) - FLOOR(ABS(p.longitude))) * 60)) * 60, 1)::text || '\"W'\n  END AS coords_dms\nFROM stations s\nLEFT JOIN block_pvt_geodetic p ON p.sid = s.sid\nWHERE s.sid = '$station'\nORDER BY p.ts DESC NULLS LAST LIMIT 1",
           "refId": "A"
         }
       ],
-      "title": "Station Location",
+      "title": "Station Information",
       "type": "table"
     },
     {
