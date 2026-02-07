@@ -938,57 +938,48 @@
           "mappings": [
             {
               "options": {
-                "pattern": "^online.*",
-                "result": {
-                  "color": "green",
-                  "index": 0
-                }
-              },
-              "type": "regex"
-            },
-            {
-              "options": {
-                "pattern": "^offline [0-9]+[smh]$",
-                "result": {
-                  "color": "yellow",
-                  "index": 1
-                }
-              },
-              "type": "regex"
-            },
-            {
-              "options": {
-                "pattern": "^offline.*",
-                "result": {
+                "0": {
                   "color": "red",
-                  "index": 2
+                  "index": 0,
+                  "text": "offline"
+                },
+                "1": {
+                  "color": "green",
+                  "index": 1,
+                  "text": "online"
                 }
               },
-              "type": "regex"
-            },
-            {
-              "options": {
-                "match": "null",
-                "result": {
-                  "color": "text",
-                  "index": 3,
-                  "text": "-"
-                }
-              },
-              "type": "special"
+              "type": "value"
             }
           ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "text",
+                "color": "red",
                 "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
               }
             ]
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "duration"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 4,
@@ -1006,10 +997,10 @@
           "calcs": [
             "lastNotNull"
           ],
-          "fields": "",
+          "fields": "/online/",
           "values": false
         },
-        "textMode": "auto"
+        "textMode": "value_and_name"
       },
       "pluginVersion": "10.0.0",
       "targets": [
@@ -1021,7 +1012,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT CASE\n  WHEN sc.is_online IS NULL THEN NULL\n  WHEN sc.is_online THEN 'online ' || format_duration(sc.state_duration)\n  ELSE 'offline ' || format_duration(sc.state_duration)\nEND AS \"Status\"\nFROM station_connectivity sc\nWHERE sc.sid = '$station'",
+          "rawSql": "SELECT\n  CASE WHEN sc.is_online THEN 1 ELSE 0 END AS \"online\",\n  extract(epoch from sc.state_duration)::integer AS \"duration\"\nFROM station_connectivity sc\nWHERE sc.sid = '$station'",
           "refId": "A"
         }
       ],
