@@ -9,6 +9,7 @@ Tracks file availability and import status to:
 import hashlib
 import logging
 import os
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
@@ -245,6 +246,47 @@ class FileTracker:
             return True
         except Exception as e:
             logger.debug(f"Error marking file as downloaded: {e}")
+            if self._conn:
+                self._conn.rollback()
+            return False
+
+    def mark_file_archived(
+        self,
+        station_id: str,
+        session_type: str,
+        file_date: date,
+        file_hour: Optional[int] = None,
+        filename: Optional[str] = None,
+        file_size: Optional[int] = None,
+    ) -> bool:
+        """Mark a file as successfully archived.
+
+        Args:
+            station_id: Station identifier
+            session_type: Session type
+            file_date: Date of the file
+            file_hour: Hour for hourly files
+            filename: Filename
+            file_size: File size in bytes
+
+        Returns:
+            True if successfully recorded
+        """
+        if not self._conn:
+            if not self.connect():
+                return False
+
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    """SELECT upsert_file_tracking(%s, %s, %s, %s::smallint, %s, 'archived', %s)""",
+                    (station_id, session_type, file_date, file_hour, filename, file_size),
+                )
+            self._conn.commit()
+            logger.debug(f"Marked file as archived: {station_id}/{session_type}/{file_date}")
+            return True
+        except Exception as e:
+            logger.debug(f"Error marking file as archived: {e}")
             if self._conn:
                 self._conn.rollback()
             return False
@@ -992,3 +1034,448 @@ def compute_checksum(data: Dict[str, Any]) -> str:
     # Create stable JSON string (sorted keys)
     json_str = json.dumps(data, sort_keys=True, default=str)
     return hashlib.sha256(json_str.encode()).hexdigest()[:16]
+
+
+@dataclass
+class GapInfo:
+    """Information about a detected gap (missing file)."""
+
+    station_id: str
+    session_type: str
+    file_date: date
+    file_hour: Optional[int]
+    reason: str  # 'not_in_archive', 'not_in_db', 'removed_from_archive'
+    expected_path: Optional[str] = None
+
+
+@dataclass
+class SyncResult:
+    """Result of archive-to-database sync operation."""
+
+    files_found: int
+    files_added: int
+    files_updated: int
+    files_removed: int  # Detected as removed from archive
+    errors: int
+
+
+class GapDetector:
+    """Detect gaps in downloaded files by comparing archive, database, and expected files.
+
+    Combines ArchiveFileChecker and FileTracker to:
+    1. Generate expected files for a date range
+    2. Check archive for existing files
+    3. Check DB for files marked as 'missing' or 'downloaded'
+    4. Return files that need downloading (expected - archived - known_missing)
+    5. Sync archive state to database
+    6. Detect files that disappeared from archive
+    """
+
+    def __init__(
+        self,
+        data_prepath: Optional[str] = None,
+        connection_string: Optional[str] = None,
+    ):
+        """Initialize gap detector.
+
+        Args:
+            data_prepath: Base archive path. If None, loads from config.
+            connection_string: PostgreSQL connection string. If None, uses env vars.
+        """
+        self.archive_checker = ArchiveFileChecker(data_prepath)
+        self.file_tracker = FileTracker(connection_string)
+        self._config = None
+
+    def _load_config(self):
+        """Load receivers configuration."""
+        if self._config is not None:
+            return
+
+        try:
+            from ..config.receivers_config import ReceiversConfig
+
+            self._config = ReceiversConfig()
+        except Exception as e:
+            logger.debug(f"Could not load receivers config: {e}")
+
+    def _generate_expected_files(
+        self,
+        station_id: str,
+        session_type: str,
+        start_date: date,
+        end_date: date,
+    ) -> list[tuple[date, Optional[int]]]:
+        """Generate list of expected files for a date range.
+
+        Args:
+            station_id: Station identifier
+            session_type: Session type ('15s_24hr', '1Hz_1hr', 'status_1hr')
+            start_date: Start date (inclusive)
+            end_date: End date (inclusive)
+
+        Returns:
+            List of (file_date, file_hour) tuples.
+            file_hour is None for daily files, 0-23 for hourly files.
+        """
+        expected = []
+        current = start_date
+
+        while current <= end_date:
+            if session_type == "15s_24hr":
+                # Daily file
+                expected.append((current, None))
+            else:
+                # Hourly file
+                for hour in range(24):
+                    expected.append((current, hour))
+            current += timedelta(days=1)
+
+        return expected
+
+    def _check_archive_for_file(
+        self,
+        station_id: str,
+        session_type: str,
+        file_date: date,
+        file_hour: Optional[int] = None,
+        receiver_type: Optional[str] = None,
+    ) -> tuple[bool, Optional[str], Optional[int]]:
+        """Check if a file exists in the archive.
+
+        Args:
+            station_id: Station identifier
+            session_type: Session type
+            file_date: Date of file
+            file_hour: Hour for hourly files
+            receiver_type: Optional receiver type for extension detection
+
+        Returns:
+            Tuple of (exists, filepath, file_size)
+        """
+        # Build the datetime for the file
+        if file_hour is not None:
+            dt = datetime.combine(file_date, datetime.min.time()).replace(hour=file_hour)
+        else:
+            dt = datetime.combine(file_date, datetime.min.time())
+
+        # Build expected path
+        expected_path = self.archive_checker.build_archive_path(
+            station_id, session_type, dt, receiver_type
+        )
+
+        # Check if file exists
+        if os.path.isfile(expected_path):
+            file_size = os.path.getsize(expected_path)
+            return True, expected_path, file_size
+
+        # Also check for compressed version
+        if not expected_path.endswith(".gz"):
+            gz_path = expected_path + ".gz"
+            if os.path.isfile(gz_path):
+                file_size = os.path.getsize(gz_path)
+                return True, gz_path, file_size
+
+        return False, expected_path, None
+
+    def sync_archive_to_db(
+        self,
+        station_id: str,
+        session_type: str,
+        start_date: date,
+        end_date: date,
+        receiver_type: Optional[str] = None,
+    ) -> SyncResult:
+        """Sync archive state to database.
+
+        Scans archive for files and updates database:
+        - Files found in archive: mark as 'archived'
+        - Files in DB as 'downloaded' but not in archive: mark as 'removed'
+
+        Args:
+            station_id: Station identifier
+            session_type: Session type
+            start_date: Start date
+            end_date: End date
+            receiver_type: Optional receiver type
+
+        Returns:
+            SyncResult with counts of changes made
+        """
+        if not self.file_tracker.connect():
+            logger.warning("Cannot connect to database for sync")
+            return SyncResult(0, 0, 0, 0, 1)
+
+        files_found = 0
+        files_added = 0
+        files_updated = 0
+        files_removed = 0
+        errors = 0
+
+        # Get expected files for date range
+        expected_files = self._generate_expected_files(
+            station_id, session_type, start_date, end_date
+        )
+
+        try:
+            conn = self.file_tracker._conn
+            with conn.cursor() as cur:
+                for file_date, file_hour in expected_files:
+                    try:
+                        # Check archive
+                        exists, filepath, file_size = self._check_archive_for_file(
+                            station_id, session_type, file_date, file_hour, receiver_type
+                        )
+
+                        if exists:
+                            files_found += 1
+                            filename = os.path.basename(filepath) if filepath else None
+
+                            # Check current DB status
+                            if file_hour is None:
+                                cur.execute(
+                                    """SELECT id, status FROM file_tracking
+                                    WHERE sid = %s AND session_type = %s
+                                    AND file_date = %s AND file_hour IS NULL""",
+                                    (station_id, session_type, file_date),
+                                )
+                            else:
+                                cur.execute(
+                                    """SELECT id, status FROM file_tracking
+                                    WHERE sid = %s AND session_type = %s
+                                    AND file_date = %s AND file_hour = %s""",
+                                    (station_id, session_type, file_date, file_hour),
+                                )
+
+                            row = cur.fetchone()
+
+                            if row is None:
+                                # New file - add to DB as archived
+                                cur.execute(
+                                    """SELECT upsert_file_tracking(%s, %s, %s, %s::smallint, %s, 'archived', %s)""",
+                                    (station_id, session_type, file_date, file_hour, filename, file_size),
+                                )
+                                files_added += 1
+                            elif row[1] != "archived":
+                                # Existing file - update to archived
+                                cur.execute(
+                                    """SELECT upsert_file_tracking(%s, %s, %s, %s::smallint, %s, 'archived', %s)""",
+                                    (station_id, session_type, file_date, file_hour, filename, file_size),
+                                )
+                                files_updated += 1
+                        else:
+                            # File not in archive - check if it was previously marked as archived/downloaded
+                            if file_hour is None:
+                                cur.execute(
+                                    """SELECT id, status FROM file_tracking
+                                    WHERE sid = %s AND session_type = %s
+                                    AND file_date = %s AND file_hour IS NULL
+                                    AND status IN ('archived', 'downloaded')""",
+                                    (station_id, session_type, file_date),
+                                )
+                            else:
+                                cur.execute(
+                                    """SELECT id, status FROM file_tracking
+                                    WHERE sid = %s AND session_type = %s
+                                    AND file_date = %s AND file_hour = %s
+                                    AND status IN ('archived', 'downloaded')""",
+                                    (station_id, session_type, file_date, file_hour),
+                                )
+
+                            row = cur.fetchone()
+                            if row is not None:
+                                # File was marked as archived/downloaded but is now missing
+                                cur.execute(
+                                    """UPDATE file_tracking SET
+                                        status = 'removed',
+                                        last_error = 'File removed from archive',
+                                        updated_at = NOW()
+                                    WHERE id = %s""",
+                                    (row[0],),
+                                )
+                                files_removed += 1
+                                logger.warning(
+                                    f"File removed from archive: {station_id}/{session_type}/"
+                                    f"{file_date}" + (f"/{file_hour:02d}" if file_hour is not None else "")
+                                )
+
+                    except Exception as e:
+                        logger.debug(f"Error syncing file: {e}")
+                        errors += 1
+
+                conn.commit()
+
+        except Exception as e:
+            logger.error(f"Error during archive sync: {e}")
+            if self.file_tracker._conn:
+                self.file_tracker._conn.rollback()
+            errors += 1
+
+        return SyncResult(files_found, files_added, files_updated, files_removed, errors)
+
+    def find_gaps(
+        self,
+        station_id: str,
+        session_type: str,
+        start_date: date,
+        end_date: date,
+        receiver_type: Optional[str] = None,
+        sync_first: bool = True,
+        skip_missing_on_receiver: bool = True,
+    ) -> list[GapInfo]:
+        """Find gaps in downloaded files.
+
+        Identifies files that:
+        1. Are expected based on date range
+        2. Are NOT in the archive
+        3. Are NOT marked as 'missing' on the receiver (unless skip_missing_on_receiver=False)
+
+        Args:
+            station_id: Station identifier
+            session_type: Session type ('15s_24hr', '1Hz_1hr', 'status_1hr')
+            start_date: Start date (inclusive)
+            end_date: End date (inclusive)
+            receiver_type: Optional receiver type for archive path detection
+            sync_first: Whether to sync archive to DB first (recommended)
+            skip_missing_on_receiver: Skip files known to be missing on receiver
+
+        Returns:
+            List of GapInfo objects representing files that need downloading
+        """
+        gaps = []
+
+        # Optionally sync archive state to DB first
+        if sync_first:
+            sync_result = self.sync_archive_to_db(
+                station_id, session_type, start_date, end_date, receiver_type
+            )
+            logger.debug(
+                f"Archive sync: found={sync_result.files_found}, "
+                f"added={sync_result.files_added}, updated={sync_result.files_updated}, "
+                f"removed={sync_result.files_removed}"
+            )
+
+        # Connect to database
+        db_connected = self.file_tracker.connect()
+
+        # Generate expected files
+        expected_files = self._generate_expected_files(
+            station_id, session_type, start_date, end_date
+        )
+
+        for file_date, file_hour in expected_files:
+            # Check archive
+            exists, expected_path, _ = self._check_archive_for_file(
+                station_id, session_type, file_date, file_hour, receiver_type
+            )
+
+            if exists:
+                # File exists in archive - no gap
+                continue
+
+            # File not in archive - check if we should skip it
+            if db_connected and skip_missing_on_receiver:
+                # Check if file is known to be missing on receiver
+                if self.file_tracker.is_file_missing(
+                    station_id, session_type, file_date, file_hour
+                ):
+                    # Skip - file confirmed missing on receiver
+                    logger.debug(
+                        f"Skipping {station_id}/{session_type}/{file_date}"
+                        + (f"/{file_hour:02d}" if file_hour is not None else "")
+                        + " - known missing on receiver"
+                    )
+                    continue
+
+            # This is a gap - file should be downloaded
+            gap = GapInfo(
+                station_id=station_id,
+                session_type=session_type,
+                file_date=file_date,
+                file_hour=file_hour,
+                reason="not_in_archive",
+                expected_path=expected_path,
+            )
+            gaps.append(gap)
+
+        return gaps
+
+    def get_gap_summary(
+        self,
+        station_ids: list[str],
+        session_type: str,
+        days_back: int = 7,
+        receiver_types: Optional[dict[str, str]] = None,
+    ) -> dict[str, Any]:
+        """Get summary of gaps across multiple stations.
+
+        Args:
+            station_ids: List of station IDs
+            session_type: Session type
+            days_back: Number of days to check
+            receiver_types: Optional dict of station_id -> receiver_type
+
+        Returns:
+            Dictionary with gap summary:
+            - total_expected: Total expected files
+            - total_archived: Total archived files
+            - total_gaps: Total gaps (need download)
+            - total_missing_on_receiver: Total confirmed missing on receiver
+            - stations: Dict of station_id -> gap count
+        """
+        end_date = date.today() - timedelta(days=1)  # Yesterday
+        start_date = end_date - timedelta(days=days_back - 1)
+
+        summary = {
+            "total_expected": 0,
+            "total_archived": 0,
+            "total_gaps": 0,
+            "total_missing_on_receiver": 0,
+            "stations": {},
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+        }
+
+        for station_id in station_ids:
+            receiver_type = None
+            if receiver_types:
+                receiver_type = receiver_types.get(station_id)
+
+            # Generate expected files
+            expected = self._generate_expected_files(
+                station_id, session_type, start_date, end_date
+            )
+            summary["total_expected"] += len(expected)
+
+            # Find gaps
+            gaps = self.find_gaps(
+                station_id,
+                session_type,
+                start_date,
+                end_date,
+                receiver_type=receiver_type,
+                sync_first=True,
+                skip_missing_on_receiver=True,
+            )
+
+            archived = len(expected) - len(gaps)
+            summary["total_archived"] += archived
+            summary["total_gaps"] += len(gaps)
+            summary["stations"][station_id] = {
+                "expected": len(expected),
+                "archived": archived,
+                "gaps": len(gaps),
+            }
+
+        return summary
+
+    def close(self):
+        """Close database connection."""
+        self.file_tracker.close()
+
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit."""
+        self.close()
