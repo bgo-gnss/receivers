@@ -668,6 +668,16 @@
                       }
                     },
                     "type": "special"
+                  },
+                  {
+                    "options": {
+                      "unknown": {
+                        "color": "text",
+                        "index": 8,
+                        "text": "unknown"
+                      }
+                    },
+                    "type": "value"
                   }
                 ]
               }
