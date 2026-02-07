@@ -335,6 +335,98 @@ def cmd_scheduler_stop(args) -> int:
         return 1
 
 
+def cmd_scheduler_gaps(args) -> int:
+    """Find gaps in downloaded files."""
+    from datetime import date, timedelta
+
+    try:
+        from ..health.file_tracker import GapDetector
+        from ..cli.main import get_all_station_configs
+    except ImportError as e:
+        print(f"❌ Required modules not available: {e}")
+        return 1
+
+    # Get stations
+    station_filter = getattr(args, 'stations', None)
+    if station_filter:
+        station_ids = [s.upper() for s in station_filter]
+    else:
+        # Get all enabled stations
+        all_stations = get_all_station_configs()
+        station_ids = [
+            sid for sid, cfg in all_stations.items()
+            if cfg.get('enabled', True)
+        ]
+
+    # Limit stations for testing
+    max_stations = getattr(args, 'max_stations', None)
+    if max_stations:
+        station_ids = station_ids[:max_stations]
+
+    session_type = getattr(args, 'session', '15s_24hr')
+    days_back = getattr(args, 'days', 7)
+
+    print(f"🔍 Finding gaps in {session_type} data for {len(station_ids)} stations")
+    print(f"   Checking last {days_back} days\n")
+
+    # Calculate date range
+    end_date = date.today() - timedelta(days=1)  # Yesterday
+    start_date = end_date - timedelta(days=days_back - 1)
+
+    with GapDetector() as detector:
+        if getattr(args, 'summary', False):
+            # Get summary for all stations
+            summary = detector.get_gap_summary(
+                station_ids,
+                session_type,
+                days_back=days_back,
+            )
+
+            print(f"📊 Gap Summary ({summary['start_date']} to {summary['end_date']})")
+            print(f"   Total expected files: {summary['total_expected']}")
+            print(f"   Total archived files: {summary['total_archived']}")
+            print(f"   Total gaps (need download): {summary['total_gaps']}")
+
+            if summary['total_gaps'] > 0:
+                print("\n   Stations with gaps:")
+                stations_with_gaps = [
+                    (sid, info) for sid, info in summary['stations'].items()
+                    if info['gaps'] > 0
+                ]
+                for sid, info in sorted(stations_with_gaps, key=lambda x: -x[1]['gaps'])[:20]:
+                    pct = 100 * info['archived'] / info['expected'] if info['expected'] else 0
+                    print(f"     {sid}: {info['gaps']} gaps ({pct:.0f}% complete)")
+
+                if len(stations_with_gaps) > 20:
+                    print(f"     ... and {len(stations_with_gaps) - 20} more stations")
+        else:
+            # Show detailed gaps per station
+            total_gaps = 0
+            for station_id in sorted(station_ids):
+                gaps = detector.find_gaps(
+                    station_id,
+                    session_type,
+                    start_date,
+                    end_date,
+                    sync_first=True,
+                    skip_missing_on_receiver=not getattr(args, 'include_missing', False),
+                )
+
+                if gaps:
+                    total_gaps += len(gaps)
+                    print(f"📁 {station_id}: {len(gaps)} gaps")
+                    if getattr(args, 'verbose', False):
+                        for gap in gaps[:10]:
+                            hour_str = f" hour {gap.file_hour:02d}" if gap.file_hour is not None else ""
+                            print(f"     {gap.file_date}{hour_str}")
+                        if len(gaps) > 10:
+                            print(f"     ... and {len(gaps) - 10} more")
+
+            print(f"\n✅ Total gaps found: {total_gaps}")
+
+    return 0
+
+
 def cmd_scheduler_restart(args) -> int:
     """Restart the scheduler (stop and start)."""
 
@@ -520,6 +612,51 @@ def create_scheduler_parser(subparsers):
     )
     restart_parser.set_defaults(func=cmd_scheduler_restart)
 
+    # Gaps command
+    gaps_parser = scheduler_subparsers.add_parser(
+        "gaps",
+        help="Find gaps in downloaded files"
+    )
+    gaps_parser.add_argument(
+        "--stations",
+        nargs="+",
+        help="Only check these specific stations (e.g., OLKE ELDC THOB)"
+    )
+    gaps_parser.add_argument(
+        "--max-stations",
+        type=int,
+        help="Maximum number of stations to check"
+    )
+    gaps_parser.add_argument(
+        "--session",
+        type=str,
+        default="15s_24hr",
+        choices=["15s_24hr", "1Hz_1hr", "status_1hr"],
+        help="Session type to check (default: 15s_24hr)"
+    )
+    gaps_parser.add_argument(
+        "--days",
+        type=int,
+        default=7,
+        help="Number of days to check (default: 7)"
+    )
+    gaps_parser.add_argument(
+        "--summary",
+        action="store_true",
+        help="Show summary across all stations instead of per-station details"
+    )
+    gaps_parser.add_argument(
+        "--include-missing",
+        action="store_true",
+        help="Include files known to be missing on receiver"
+    )
+    gaps_parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Show detailed gap information"
+    )
+    gaps_parser.set_defaults(func=cmd_scheduler_gaps)
+
     return scheduler_parser
 
 
@@ -529,7 +666,7 @@ def handle_scheduler_command(args) -> int:
 
     if not hasattr(args, 'scheduler_command') or not args.scheduler_command:
         print("❌ No scheduler command specified")
-        print("Available commands: start, stop, restart, status, config, test")
+        print("Available commands: start, stop, restart, status, config, test, gaps")
         return 1
 
     return args.func(args)

@@ -16,7 +16,14 @@ from .g10_ftp_inferrer import G10FTPHealthInferrer
 from .g10_http_extractor import G10HTTPExtractor
 from .json_writer import HealthJSONWriter
 from .db_writer import HealthDatabaseWriter
-from .file_tracker import FileTracker, compute_checksum
+from .file_tracker import (
+    FileTracker,
+    ArchiveFileChecker,
+    GapDetector,
+    GapInfo,
+    SyncResult,
+    compute_checksum,
+)
 from .metrics import (
     HealthStatus,
     ThresholdConfig,
@@ -38,6 +45,10 @@ __all__ = [
     "HealthJSONWriter",
     "HealthDatabaseWriter",
     "FileTracker",
+    "ArchiveFileChecker",
+    "GapDetector",
+    "GapInfo",
+    "SyncResult",
     "compute_checksum",
     "HealthStatus",
     "ThresholdConfig",
