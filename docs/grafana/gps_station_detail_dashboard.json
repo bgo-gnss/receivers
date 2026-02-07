@@ -1003,11 +1003,13 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": [],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
-          "values": true
+          "values": false
         },
-        "textMode": "value"
+        "textMode": "auto"
       },
       "pluginVersion": "10.0.0",
       "targets": [
