@@ -935,52 +935,42 @@
           "color": {
             "mode": "thresholds"
           },
-          "custom": {
-            "align": "center",
-            "cellOptions": {
-              "mode": "gradient",
-              "type": "color-background"
-            },
-            "inspect": false
-          },
           "mappings": [
             {
               "options": {
-                "pattern": "^online.*",
-                "result": {
-                  "color": "green",
-                  "index": 0
-                }
-              },
-              "type": "regex"
-            },
-            {
-              "options": {
-                "pattern": "^offline [0-9]+[smh]$",
-                "result": {
-                  "color": "yellow",
-                  "index": 1
-                }
-              },
-              "type": "regex"
-            },
-            {
-              "options": {
-                "pattern": "^offline.*",
-                "result": {
+                "0": {
                   "color": "red",
-                  "index": 2
+                  "index": 0,
+                  "text": "OFFLINE"
+                },
+                "1": {
+                  "color": "yellow",
+                  "index": 1,
+                  "text": "OFFLINE"
+                },
+                "2": {
+                  "color": "green",
+                  "index": 2,
+                  "text": "ONLINE"
                 }
               },
-              "type": "regex"
+              "type": "value"
             }
           ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "text",
+                "color": "red",
                 "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "green",
+                "value": 2
               }
             ]
           }
@@ -995,14 +985,16 @@
       },
       "id": 50,
       "options": {
-        "cellHeight": "lg",
-        "footer": {
-          "countRows": false,
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [],
           "fields": "",
-          "reducer": ["sum"],
-          "show": false
+          "values": true
         },
-        "showHeader": false
+        "textMode": "auto"
       },
       "pluginVersion": "10.0.0",
       "targets": [
@@ -1014,12 +1006,12 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT CASE\n  WHEN sc.is_online IS NULL THEN '-'\n  WHEN sc.is_online THEN 'online ' || format_duration(sc.state_duration)\n  ELSE 'offline ' || format_duration(sc.state_duration)\nEND AS \"Status\"\nFROM station_connectivity sc\nWHERE sc.sid = '$station'",
+          "rawSql": "SELECT CASE\n  WHEN sc.is_online THEN 2\n  WHEN sc.is_online = false THEN CASE WHEN sc.state_duration < interval '1 day' THEN 1 ELSE 0 END\n  ELSE NULL\nEND AS status_val\nFROM station_connectivity sc\nWHERE sc.sid = '$station'",
           "refId": "A"
         }
       ],
       "title": "Online",
-      "type": "table"
+      "type": "stat"
     },
     {
       "datasource": {
