@@ -25,7 +25,7 @@ from .schedule_parser import parse_schedule, apply_distribution_window
 
 
 # Module-level download function for APScheduler serialization
-def _download_station_data_job(station_id: str, session_type: str, production_mode: bool = False, lookback_periods: int = 1, timeout_minutes: int = 30):
+def _download_station_data_job(station_id: str, session_type: str, production_mode: bool = False, lookback_periods: int = 1, timeout_minutes: int = 30, run_rinex: bool = False):
     """Download data for a single station (standalone job function for APScheduler).
 
     This is a module-level function to allow APScheduler to serialize it to the database.
@@ -38,6 +38,7 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
         production_mode: Whether to use production logging
         lookback_periods: Number of periods to check (1=last period only, 2=last 2 periods, etc.)
         timeout_minutes: Maximum job duration in minutes (for monitoring and eventual enforcement)
+        run_rinex: Whether to run RINEX conversion after download
     """
     job_id = f"{session_type}_{station_id}"
     exec_start_time = datetime.now(timezone.utc)
@@ -151,6 +152,12 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
             else:
                 logger.info(f"✅ Completed: {station_id} ({session_type}) - 0 files (already synced) in {duration:.1f}s")
 
+        # Run RINEX conversion if enabled and download was successful
+        if run_rinex and status != 'failed':
+            archived_files = result.get('archived_files', [])
+            if archived_files:
+                _run_rinex_conversion(station_id, session_type, archived_files, station_config, logger)
+
     except Exception as e:
         # Unexpected exception during download
         error_type = type(e).__name__
@@ -164,6 +171,62 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
                 'error_message': str(e),
                 'scheduled': True
             })
+
+
+def _run_rinex_conversion(station_id: str, session_type: str, raw_files: List[str], station_config: Dict[str, Any], logger: logging.Logger):
+    """Run RINEX conversion on downloaded files.
+
+    Args:
+        station_id: Station identifier
+        session_type: Session type (15s_24hr, 1Hz_1hr)
+        raw_files: List of paths to raw files to convert
+        station_config: Station configuration dictionary
+        logger: Logger instance
+    """
+    try:
+        from .tasks.rinex_task import RINEXTask
+        from .task_interface import TaskConfig, TaskType, TaskFrequency
+
+        logger.info(f"🔄 Starting RINEX conversion: {station_id} ({len(raw_files)} files)")
+        start_time = time.time()
+
+        # Create task config
+        config = TaskConfig(
+            task_type=TaskType.RINEX,
+            session_type=session_type,
+            schedule_minute=0,
+            distribution_window=10,
+            frequency=TaskFrequency.HOURLY if session_type == '1Hz_1hr' else TaskFrequency.DAILY,
+            lookback_periods=1,
+            max_concurrent=1,
+            timeout_minutes=30,
+        )
+
+        # Create and execute RINEX task
+        task = RINEXTask(
+            station_id=station_id,
+            config=config,
+            logger=logger,
+            input_files=raw_files,
+            rinex_version=3,
+            apply_hatanaka=True,
+            apply_header_corrections=True,
+        )
+
+        result = task.execute()
+        duration = time.time() - start_time
+
+        if result.success:
+            files_converted = result.data.get('files_converted', 0)
+            logger.info(f"✅ RINEX complete: {station_id} - {files_converted} files in {duration:.1f}s")
+        else:
+            logger.warning(f"⚠️  RINEX partial/failed: {station_id} - {result.message}")
+
+    except ImportError as e:
+        logger.warning(f"⚠️  RINEX not available: {e}")
+    except Exception as e:
+        logger.error(f"❌ RINEX failed: {station_id} - {type(e).__name__}: {e}")
+
 
 try:
     from apscheduler.schedulers.blocking import BlockingScheduler
@@ -277,6 +340,7 @@ class ScheduleConfig:
     max_concurrent: int = 3
     timeout_minutes: int = 30
     lookback_periods: int = 1  # Number of periods to check (1=last period only, 2=last 2 periods, etc.)
+    rinex: bool = False  # Whether to run RINEX conversion after download
 
     # New flexible schedule format (preferred)
     schedule: Optional[Union[str, List[str], Dict[str, Any]]] = None
@@ -377,7 +441,8 @@ class BulkDownloadScheduler:
                         3 if session_type == '15s_24hr' else 4 if session_type == '1Hz_1hr' else 5),
                     timeout_minutes=session_cfg.get('timeout_minutes',
                         45 if session_type == '15s_24hr' else 30 if session_type == '1Hz_1hr' else 15),
-                    lookback_periods=session_cfg.get('lookback_periods', 1)
+                    lookback_periods=session_cfg.get('lookback_periods', 1),
+                    rinex=session_cfg.get('rinex', False)
                 )
             else:
                 # New flexible schedule format
@@ -391,9 +456,9 @@ class BulkDownloadScheduler:
                         3 if session_type == '15s_24hr' else 4 if session_type == '1Hz_1hr' else 5),
                     timeout_minutes=session_cfg.get('timeout_minutes',
                         45 if session_type == '15s_24hr' else 30 if session_type == '1Hz_1hr' else 15),
-                    lookback_periods=session_cfg.get('lookback_periods', 1)
+                    lookback_periods=session_cfg.get('lookback_periods', 1),
+                    rinex=session_cfg.get('rinex', False)
                 )
-                print(f"  -> Created, schedule field = {repr(self.schedule_configs[session_type].schedule)}")
 
         # Load station configurations
         self.stations = self._load_station_configs()
@@ -652,7 +717,7 @@ class BulkDownloadScheduler:
                 self.scheduler.add_job(
                     func=_download_station_data_job,
                     trigger=trigger_type,
-                    args=[station_id, session_type, self.production_mode, config.lookback_periods, config.timeout_minutes],
+                    args=[station_id, session_type, self.production_mode, config.lookback_periods, config.timeout_minutes, config.rinex],
                     id=job_id,
                     replace_existing=True,
                     **trigger_kwargs
@@ -729,7 +794,7 @@ class BulkDownloadScheduler:
             self.scheduler.add_job(
                 func=_download_station_data_job,
                 trigger=trigger_type,
-                args=[station_id, session_type, self.production_mode, config.lookback_periods, config.timeout_minutes],
+                args=[station_id, session_type, self.production_mode, config.lookback_periods, config.timeout_minutes, config.rinex],
                 id=job_id,
                 replace_existing=True,
                 **trigger_kwargs
