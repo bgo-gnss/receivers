@@ -935,23 +935,7 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [
-            {
-              "options": {
-                "0": {
-                  "color": "red",
-                  "index": 0,
-                  "text": "offline"
-                },
-                "1": {
-                  "color": "green",
-                  "index": 1,
-                  "text": "online"
-                }
-              },
-              "type": "value"
-            }
-          ],
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -960,8 +944,12 @@
                 "value": null
               },
               {
-                "color": "green",
+                "color": "yellow",
                 "value": 1
+              },
+              {
+                "color": "green",
+                "value": 2
               }
             ]
           }
@@ -978,6 +966,34 @@
                 "value": "s"
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "status_code"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "0": {
+                        "color": "red",
+                        "index": 0,
+                        "text": "offline"
+                      },
+                      "2": {
+                        "color": "green",
+                        "index": 1,
+                        "text": "online"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            ]
           }
         ]
       },
@@ -992,13 +1008,11 @@
         "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "auto",
-        "orientation": "auto",
+        "orientation": "vertical",
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "/online/",
-          "values": false
+          "calcs": [],
+          "fields": "",
+          "values": true
         },
         "textMode": "value_and_name"
       },
@@ -1012,7 +1026,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  CASE WHEN sc.is_online THEN 1 ELSE 0 END AS \"online\",\n  extract(epoch from sc.state_duration)::integer AS \"duration\"\nFROM station_connectivity sc\nWHERE sc.sid = '$station'",
+          "rawSql": "SELECT\n  extract(epoch from sc.state_duration)::integer AS duration,\n  CASE WHEN sc.is_online THEN 2 ELSE 0 END AS status_code\nFROM station_connectivity sc\nWHERE sc.sid = '$station'",
           "refId": "A"
         }
       ],
