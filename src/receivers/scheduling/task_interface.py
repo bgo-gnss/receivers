@@ -26,6 +26,7 @@ class TaskType(Enum):
     VALIDATE = "validate"
     RINEX = "rinex"
     SYNC = "sync"
+    PING = "ping"
 
 
 class TaskPriority(Enum):
@@ -310,6 +311,9 @@ class TaskFactory:
         """Register all built-in task types.
 
         Called automatically when module is imported.
+
+        Note: PING is not registered as a separate task - ping checks are
+        integrated into StatusTask and ConnectionChecker.check_all_levels().
         """
         from .tasks import DownloadTask, HealthTask, RINEXTask, StatusTask, SyncTask
 

@@ -60,7 +60,7 @@ class BaseReceiver(ABC):
         except (subprocess.TimeoutExpired, Exception):
             return False
 
-    def _quick_tcp_check(self, port: int) -> bool:
+    def _quick_tcp_check(self, port: int, return_details: bool = False):
         """Quick TCP connect check to verify service port is responding.
 
         Catches the case where a host responds to ICMP ping but the actual
@@ -68,21 +68,73 @@ class BaseReceiver(ABC):
 
         Args:
             port: TCP port number to check
+            return_details: If True, return dict with status details instead of bool
 
         Returns:
-            True if TCP connection succeeded, False otherwise
+            If return_details=False: True if TCP connection succeeded, False otherwise
+            If return_details=True: Dict with 'success', 'error_type', 'message'
+                error_type can be: 'refused' (port closed, instant), 'timeout' (no response),
+                'unreachable' (host down), 'error' (other)
         """
         host = self.station_info.get("router", {}).get("ip")
         if not host or not port:
-            return True
+            return True if not return_details else {'success': True}
+
+        import errno
+
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(3)
             sock.connect((host, port))
             sock.close()
-            return True
-        except (socket.timeout, socket.error, OSError):
-            return False
+            return True if not return_details else {'success': True}
+
+        except socket.timeout:
+            # No response - host may be down or port filtered
+            result = {
+                'success': False,
+                'error_type': 'timeout',
+                'message': f'Port {port} timeout (no response in 3s)'
+            }
+            return False if not return_details else result
+
+        except ConnectionRefusedError:
+            # Port closed but host is up - instant response
+            result = {
+                'success': False,
+                'error_type': 'refused',
+                'message': f'Port {port} refused (service not running)'
+            }
+            return False if not return_details else result
+
+        except OSError as e:
+            if e.errno == errno.EHOSTUNREACH:
+                result = {
+                    'success': False,
+                    'error_type': 'unreachable',
+                    'message': f'Host unreachable'
+                }
+            elif e.errno == errno.ENETUNREACH:
+                result = {
+                    'success': False,
+                    'error_type': 'unreachable',
+                    'message': f'Network unreachable'
+                }
+            else:
+                result = {
+                    'success': False,
+                    'error_type': 'error',
+                    'message': f'Connection error: {e}'
+                }
+            return False if not return_details else result
+
+        except Exception as e:
+            result = {
+                'success': False,
+                'error_type': 'error',
+                'message': f'Unexpected error: {e}'
+            }
+            return False if not return_details else result
 
     @abstractmethod
     def get_connection_status(self) -> Dict[str, Any]:
