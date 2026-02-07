@@ -326,18 +326,17 @@ class StatusTask(ScheduledTask):
             # Extract connection status from health data
             connection = health_data.get('connection', {})
 
-            # Get protocol port status (FTP or HTTP depending on receiver)
+            # Get protocol port status (FTP for Septentrio, HTTP for Trimble)
+            # The protocol field contains the download protocol info
             protocol = connection.get('protocol', {})
-            protocol_details = protocol.get('details', {})
-            download_port = protocol_details.get('port')
-            download_status = 'open' if protocol.get('accessible') else protocol_details.get('error_type', 'error')
+            download_port = protocol.get('port')
+            download_status = 'open' if protocol.get('accessible') else protocol.get('error_type', 'error')
             download_response_ms = protocol.get('response_time_ms')
 
             # Get HTTP port status (health/web interface)
             http_port_data = connection.get('http_port', {})
-            http_details = http_port_data.get('details', {})
-            health_port = http_details.get('port')
-            health_status = 'open' if http_port_data.get('accessible') else http_details.get('error_type', 'error')
+            health_port = http_port_data.get('port')
+            health_status = 'open' if http_port_data.get('accessible') else http_port_data.get('error_type', 'error')
             health_response_ms = http_port_data.get('response_time_ms')
 
             db_host = os.getenv("POSTGRES_HOST", "localhost")
