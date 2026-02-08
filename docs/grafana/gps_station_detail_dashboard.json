@@ -184,9 +184,9 @@
             {
               "options": {
                 "-1": {
-                  "color": "text",
+                  "color": "#464646",
                   "index": 0,
-                  "text": "N/A"
+                  "text": "?"
                 }
               },
               "type": "value"
@@ -214,7 +214,7 @@
             ]
           },
           "unit": "celsius",
-          "noValue": "N/A"
+          "noValue": "?"
         },
         "overrides": []
       },
@@ -249,7 +249,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COALESCE(temperature, -1) AS \"Temperature\" FROM station_dashboard_data WHERE station_id = '$station'",
+          "rawSql": "SELECT CASE WHEN NOT COALESCE(is_online, false) THEN -1 ELSE COALESCE(temperature, -1) END AS \"Temperature\" FROM station_dashboard_data WHERE station_id = '$station'",
           "refId": "A"
         }
       ],
@@ -270,15 +270,20 @@
             {
               "options": {
                 "-1": {
-                  "color": "text",
+                  "color": "#464646",
                   "index": 0,
+                  "text": "?"
+                },
+                "-2": {
+                  "color": "text",
+                  "index": 1,
                   "text": "N/A"
                 }
               },
               "type": "value"
             }
           ],
-          "noValue": "N/A",
+          "noValue": "?",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -335,7 +340,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COALESCE(cpu_load, -1) AS \"CPU\" FROM station_dashboard_data WHERE station_id = '$station'",
+          "rawSql": "SELECT CASE WHEN receiver_type NOT IN ('PolaRX5') THEN -2 WHEN NOT COALESCE(is_online, false) THEN -1 ELSE COALESCE(cpu_load, -1) END AS \"CPU\" FROM station_dashboard_data WHERE station_id = '$station'",
           "refId": "A"
         }
       ],
@@ -356,9 +361,9 @@
             {
               "options": {
                 "-1": {
-                  "color": "text",
+                  "color": "#464646",
                   "index": 0,
-                  "text": "N/A"
+                  "text": "?"
                 }
               },
               "type": "value"
@@ -386,7 +391,7 @@
             ]
           },
           "unit": "percent",
-          "noValue": "N/A"
+          "noValue": "?"
         },
         "overrides": []
       },
@@ -421,7 +426,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COALESCE(disk_usage_pct, -1) AS \"Disk\" FROM station_dashboard_data WHERE station_id = '$station'",
+          "rawSql": "SELECT CASE WHEN NOT COALESCE(is_online, false) THEN -1 ELSE COALESCE(disk_usage_pct, -1) END AS \"Disk\" FROM station_dashboard_data WHERE station_id = '$station'",
           "refId": "A"
         }
       ],
@@ -442,8 +447,13 @@
             {
               "options": {
                 "-1": {
-                  "color": "text",
+                  "color": "#464646",
                   "index": 0,
+                  "text": "?"
+                },
+                "-2": {
+                  "color": "text",
+                  "index": 1,
                   "text": "N/A"
                 }
               },
@@ -501,7 +511,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COALESCE(satellites_tracked, -1) AS \"Satellites\" FROM station_dashboard_data WHERE station_id = '$station'",
+          "rawSql": "SELECT CASE WHEN receiver_type = 'NetR5' THEN -2 WHEN NOT COALESCE(is_online, false) THEN -1 ELSE COALESCE(satellites_tracked, -1) END AS \"Satellites\" FROM station_dashboard_data WHERE station_id = '$station'",
           "refId": "A"
         }
       ],
@@ -692,9 +702,9 @@
               "options": {
                 "match": "null",
                 "result": {
-                  "color": "text",
+                  "color": "#464646",
                   "index": 0,
-                  "text": "N/A"
+                  "text": "?"
                 }
               },
               "type": "special"
@@ -704,7 +714,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "text",
+                "color": "#464646",
                 "value": null
               },
               {
@@ -1357,8 +1367,13 @@
                   "text": "Active"
                 },
                 "-1": {
-                  "color": "text",
+                  "color": "#464646",
                   "index": 1,
+                  "text": "?"
+                },
+                "-2": {
+                  "color": "text",
+                  "index": 2,
                   "text": "N/A"
                 }
               },
@@ -1451,7 +1466,7 @@
                   "text": "Error"
                 },
                 "4": {
-                  "color": "transparent",
+                  "color": "text",
                   "index": 4,
                   "text": "N/A"
                 }
@@ -1463,7 +1478,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "blue",
+                "color": "text",
                 "value": null
               }
             ]
@@ -1502,7 +1517,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT CASE ntrip_status\n  WHEN 'connected' THEN 0\n  WHEN 'connecting' THEN 1\n  WHEN 'idle' THEN 2\n  WHEN 'inactive' THEN 4\n  WHEN 'error' THEN 3\n  ELSE 2\nEND AS \"RTK\"\nFROM station_dashboard_data\nWHERE station_id = '$station'",
+          "rawSql": "SELECT CASE\n  WHEN receiver_type NOT IN ('PolaRX5') THEN 4\n  WHEN ntrip_status = 'connected' THEN 0\n  WHEN ntrip_status = 'connecting' THEN 1\n  WHEN ntrip_status = 'idle' THEN 2\n  WHEN ntrip_status = 'inactive' THEN 4\n  WHEN ntrip_status = 'error' THEN 3\n  ELSE 3\nEND AS \"RTK\"\nFROM station_dashboard_data\nWHERE station_id = '$station'",
           "refId": "A"
         }
       ],
