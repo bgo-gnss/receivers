@@ -45,11 +45,11 @@ class TestGetConnectionParams:
         params = DatabaseConnectionFactory.get_connection_params(database="other_db")
         assert params["database"] == "other_db"
 
-    def test_user_fallback_to_bgo(self):
+    def test_user_fallback_to_postgres(self):
         """Test USER fallback when no env vars set."""
         with patch.dict(os.environ, {}, clear=True):
             params = DatabaseConnectionFactory.get_connection_params()
-            assert params["user"] == "bgo"
+            assert params["user"] == "postgres"
 
 
 class TestGetConnection:

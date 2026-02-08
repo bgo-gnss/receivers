@@ -27,14 +27,17 @@ API Documentation:
 
 import json
 import logging
+import os
 import requests
 from typing import Optional, Dict, Any
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import quote
 
 from ..health.metrics import MetricChecker, MetricResult, HealthStatus, ThresholdConfig
 from ..config.icinga_config import get_icinga_config, IcingaThresholds
 
+# Icinga service domain (configurable via env var)
+ICINGA_SERVICE_DOMAIN = os.getenv("ICINGA_SERVICE_DOMAIN", "gps.vedur.is")
 
 # Nagios/Icinga exit codes (kept for backward compatibility)
 EXIT_OK = 0
@@ -62,16 +65,16 @@ class CheckResult:
     exit_status: int
     plugin_output: str
     performance_data: str = ""
-    check_source: str = "eldey"
+    check_source: str = field(default_factory=lambda: os.getenv("ICINGA_CHECK_SOURCE", "eldey"))
     ttl: Optional[int] = None
 
     def to_service_name(self) -> str:
         """Convert to Icinga service name format.
 
         Returns:
-            Service name in format: {station}.gps.vedur.is!{check_name}
+            Service name in format: {station}.{domain}!{check_name}
         """
-        return f"{self.station.lower()}.gps.vedur.is!{self.check_name}"
+        return f"{self.station.lower()}.{ICINGA_SERVICE_DOMAIN}!{self.check_name}"
 
     def to_api_payload(self) -> Dict[str, Any]:
         """Convert to Icinga API payload format.

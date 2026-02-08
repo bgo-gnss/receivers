@@ -62,7 +62,7 @@ class DatabaseConnectionFactory:
             "host": os.getenv("POSTGRES_HOST", "localhost"),
             "port": os.getenv("POSTGRES_PORT", "5432"),
             "database": database or os.getenv("POSTGRES_DB", "gps_health"),
-            "user": os.getenv("POSTGRES_USER", os.getenv("USER", "bgo")),
+            "user": os.getenv("POSTGRES_USER", os.getenv("USER", "postgres")),
             "password": os.getenv("POSTGRES_PASSWORD", ""),
         }
 

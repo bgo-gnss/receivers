@@ -5,6 +5,7 @@ Provides defaults if config file doesn't exist.
 """
 
 import logging
+import os
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -175,8 +176,8 @@ def get_default_config() -> Dict[str, Any]:
             },
         },
         'sync': {
-            'remote_host': 'gpsops@rawdata.vedur.is',
-            'remote_path': '/data/gps/archive',
+            'remote_host': os.getenv('SYNC_REMOTE_HOST', 'gpsops@rawdata.vedur.is'),
+            'remote_path': os.getenv('SYNC_REMOTE_PATH', '/data/gps/archive'),
             'raw_options': '--ignore-existing',
             'rinex_options': '--update',
             'retry_count': 3,

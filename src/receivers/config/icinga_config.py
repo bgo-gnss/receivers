@@ -2,12 +2,17 @@
 
 This module handles loading configuration for Icinga monitoring integration,
 including connection settings and threshold values.
+
+Connection settings resolution order:
+1. icinga.cfg [connection] section (highest priority)
+2. Environment variables (ICINGA_HOST, ICINGA_USERNAME, ICINGA_PASSWORD, etc.)
+3. Hardcoded defaults (lowest priority)
 """
 
 import configparser
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -91,15 +96,19 @@ class IcingaThresholds:
 
 @dataclass
 class IcingaConnection:
-    """Icinga API connection settings."""
+    """Icinga API connection settings.
 
-    host: str = "ut-icinga-m-vip.vedur.is"
-    port: int = 5665
-    username: str = "passive"
-    password: str = "passive"
+    Values are resolved from environment variables with fallback defaults.
+    Config file values (icinga.cfg) take priority when loaded via IcingaConfig.
+    """
+
+    host: str = field(default_factory=lambda: os.getenv("ICINGA_HOST", "ut-icinga-m-vip.vedur.is"))
+    port: int = field(default_factory=lambda: int(os.getenv("ICINGA_PORT", "5665")))
+    username: str = field(default_factory=lambda: os.getenv("ICINGA_USERNAME", ""))
+    password: str = field(default_factory=lambda: os.getenv("ICINGA_PASSWORD", ""))
     verify_ssl: bool = False
     timeout: int = 30
-    check_source: str = "eldey"
+    check_source: str = field(default_factory=lambda: os.getenv("ICINGA_CHECK_SOURCE", "eldey"))
 
 
 class IcingaConfig:
