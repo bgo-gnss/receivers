@@ -80,12 +80,14 @@ class NTRIPConfig:
                 ),
             }
         except Exception as e:
+            import os
+
             logger.debug(f"Could not load ntrip_defaults: {e}")
             defaults = {
-                "host": "ntrcaster.vedur.is",
-                "port": 2101,
-                "username": "gpsops",
-                "password": "<your_password>",
+                "host": os.getenv("NTRIP_HOST", "ntrcaster.vedur.is"),
+                "port": int(os.getenv("NTRIP_PORT", "2101")),
+                "username": os.getenv("NTRIP_USERNAME", ""),
+                "password": os.getenv("NTRIP_PASSWORD", ""),
                 "mountpoint_suffix": "0",
                 "connect_timeout": 10.0,
                 "data_timeout": 5.0,

@@ -162,5 +162,8 @@ measasc.dat
 docs/legacy_scripts/config-*
 uv.lock
 
+# Claude Code MCP config (local connection strings)
+.mcp.json
+
 # External tools (proprietary, not shipped)
 external-tools/
