@@ -650,7 +650,7 @@
           "fields": "/^status$/",
           "values": true
         },
-        "textMode": "value_and_name"
+        "textMode": "name"
       },
       "pluginVersion": "10.0.0",
       "targets": [
@@ -662,7 +662,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  CASE overall_status\n    WHEN 'healthy' THEN 0\n    WHEN 'warning' THEN 1\n    WHEN 'critical' THEN 2\n    ELSE 3\n  END AS status,\n  CASE\n    WHEN overall_status = 'healthy' THEN 'All systems OK'\n    WHEN COALESCE(status_details, '') = '' THEN 'Check file/port status'\n    ELSE status_details\n  END AS details\nFROM station_dashboard_data\nWHERE station_id = '$station'",
+          "rawSql": "SELECT\n  CASE overall_status\n    WHEN 'healthy' THEN 0\n    WHEN 'warning' THEN 1\n    WHEN 'critical' THEN 2\n    ELSE 3\n  END AS status,\n  CASE overall_status\n    WHEN 'healthy' THEN 'HEALTHY' || chr(10) || 'All systems OK'\n    ELSE\n      CASE overall_status\n        WHEN 'warning' THEN 'WARNING'\n        WHEN 'critical' THEN 'CRITICAL'\n        ELSE 'UNKNOWN'\n      END || chr(10) ||\n      COALESCE(NULLIF(status_details, ''), 'Check status')\n  END AS combined\nFROM station_dashboard_data\nWHERE station_id = '$station'",
           "refId": "A"
         }
       ],
@@ -673,7 +673,7 @@
             "configRefId": "A",
             "mappings": [
               {
-                "fieldName": "details",
+                "fieldName": "combined",
                 "handlerKey": "displayName"
               }
             ]
@@ -681,7 +681,6 @@
         }
       ],
       "title": "Overall Status",
-      "description": "Details field shows what is causing non-healthy status (e.g. 'Voltage, FTP down')",
       "type": "stat"
     },
     {
