@@ -549,7 +549,7 @@ class HealthDatabaseWriter:
                     else:
                         problems.append(f"{name.upper()} down")
 
-        return ", ".join(problems) if problems else None
+        return "\n".join(problems) if problems else None
 
     def write_timeseries_sample(
         self,
