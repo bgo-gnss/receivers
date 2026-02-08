@@ -12,6 +12,7 @@ Key characteristics:
 """
 
 import logging
+import os
 import subprocess
 import time
 from datetime import datetime
@@ -37,9 +38,9 @@ class SyncTask(ScheduledTask):
     Typically runs at STANDARD priority after download/RINEX conversion.
     """
 
-    # Default remote configuration
-    DEFAULT_HOST = "gpsops@rawdata.vedur.is"
-    DEFAULT_PATH = "/data/gps/archive"
+    # Default remote configuration (overridable via env vars)
+    DEFAULT_HOST = os.getenv("SYNC_REMOTE_HOST", "gpsops@rawdata.vedur.is")
+    DEFAULT_PATH = os.getenv("SYNC_REMOTE_PATH", "/data/gps/archive")
 
     # Default to STANDARD priority
     default_priority = TaskPriority.STANDARD
