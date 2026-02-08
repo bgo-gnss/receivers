@@ -101,7 +101,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(DISTINCT sid) as \"Stations\" FROM block_power_status WHERE $__timeFilter(ts)",
+          "rawSql": "SELECT COUNT(*) AS \"Stations\" FROM station_dashboard_data WHERE last_update IS NOT NULL",
           "refId": "A"
         }
       ],
@@ -170,7 +170,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(DISTINCT sid) as \"Critical\" FROM block_health_summary WHERE overall_status = 'critical' AND $__timeFilter(ts)",
+          "rawSql": "SELECT COUNT(*) AS \"Critical\" FROM station_dashboard_data WHERE overall_status = 'critical'",
           "refId": "A"
         }
       ],
@@ -235,7 +235,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(DISTINCT sid) as \"Warnings\" FROM block_health_summary WHERE overall_status = 'warning' AND $__timeFilter(ts)",
+          "rawSql": "SELECT COUNT(*) AS \"Warnings\" FROM station_dashboard_data WHERE overall_status = 'warning'",
           "refId": "A"
         }
       ],
@@ -296,7 +296,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(DISTINCT s.sid) as \"Healthy\" FROM stations s JOIN block_health_summary h ON h.sid = s.sid WHERE h.overall_status = 'healthy' AND $__timeFilter(h.ts)",
+          "rawSql": "SELECT COUNT(*) AS \"Healthy\" FROM station_dashboard_data WHERE overall_status = 'healthy'",
           "refId": "A"
         }
       ],
@@ -429,7 +429,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT DISTINCT ON (s.sid)\n  s.sid,\n  s.latitude,\n  s.longitude,\n  h.overall_status,\n  CASE \n    WHEN h.overall_status = 'healthy' THEN 3\n    WHEN h.overall_status = 'warning' THEN 2\n    WHEN h.overall_status = 'critical' THEN 1\n    ELSE 0\n  END as status_code,\n  p.voltage,\n  h.ts\nFROM stations s\nLEFT JOIN block_health_summary h ON h.sid = s.sid\nLEFT JOIN block_power_status p ON p.sid = s.sid AND p.ts = h.ts\nLEFT JOIN station_area_members sam ON sam.sid = s.sid\nWHERE s.latitude IS NOT NULL\n  AND s.longitude IS NOT NULL\n  AND ('$area' = 'all' OR sam.area_id = '$area')\nORDER BY s.sid, h.ts DESC",
+          "rawSql": "SELECT\n  d.station_id AS sid,\n  d.latitude,\n  d.longitude,\n  CASE\n    WHEN d.overall_status = 'healthy' THEN 3\n    WHEN d.overall_status = 'warning' THEN 2\n    WHEN d.overall_status = 'critical' THEN 1\n    ELSE 0\n  END AS status_code,\n  d.receiver_type AS \"Receiver\",\n  COALESCE(d.overall_status, 'unknown') AS \"Health\",\n  CASE\n    WHEN d.is_online IS NULL THEN 'unknown'\n    WHEN d.is_online THEN 'online ' || format_duration(d.state_duration)\n    ELSE 'offline ' || format_duration(d.state_duration)\n  END AS \"Connection\",\n  CASE WHEN d.voltage IS NOT NULL THEN ROUND(d.voltage::numeric, 1) || ' V' ELSE '-' END AS \"Voltage\",\n  CASE WHEN d.temperature IS NOT NULL THEN d.temperature || ' C' ELSE '-' END AS \"Temp\",\n  COALESCE(d.satellites_tracked::text, '-') AS \"Sats\",\n  CASE WHEN d.disk_usage_pct IS NOT NULL THEN ROUND(d.disk_usage_pct::numeric, 0) || '%' ELSE '-' END AS \"Disk\",\n  COALESCE(d.ntrip_status, '-') AS \"NTRIP\",\n  COALESCE(d.status_details, '') AS \"Details\"\nFROM station_dashboard_data d\nLEFT JOIN station_area_members sam ON sam.sid = d.station_id\nWHERE d.latitude IS NOT NULL\n  AND d.longitude IS NOT NULL\n  AND ('$area' = 'all' OR sam.area_id = '$area')\nORDER BY d.station_id",
           "refId": "A"
         }
       ],
