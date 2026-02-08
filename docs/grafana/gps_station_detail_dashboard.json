@@ -592,46 +592,36 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "0": {
-                  "color": "green",
-                  "index": 0,
-                  "text": "HEALTHY"
-                },
-                "1": {
-                  "color": "yellow",
-                  "index": 1,
-                  "text": "WARNING"
-                },
-                "2": {
-                  "color": "red",
-                  "index": 2,
-                  "text": "CRITICAL"
-                },
-                "3": {
-                  "color": "blue",
-                  "index": 3,
-                  "text": "UNKNOWN"
-                }
-              },
-              "type": "value"
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
+            "mode": "fixed",
+            "fixedColor": "text"
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "CRITICAL" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "WARNING" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "yellow" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "HEALTHY" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "UNKNOWN" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 4,
@@ -647,10 +637,14 @@
         "orientation": "auto",
         "reduceOptions": {
           "calcs": [],
-          "fields": "/^status$/",
+          "fields": "/^details$/",
           "values": true
         },
-        "textMode": "name"
+        "text": {
+          "titleSize": 24,
+          "valueSize": 14
+        },
+        "textMode": "value_and_name"
       },
       "pluginVersion": "10.0.0",
       "targets": [
@@ -662,7 +656,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  CASE overall_status\n    WHEN 'healthy' THEN 0\n    WHEN 'warning' THEN 1\n    WHEN 'critical' THEN 2\n    ELSE 3\n  END AS status,\n  CASE overall_status\n    WHEN 'healthy' THEN 'HEALTHY' || chr(10) || 'All systems OK'\n    ELSE\n      CASE overall_status\n        WHEN 'warning' THEN 'WARNING'\n        WHEN 'critical' THEN 'CRITICAL'\n        ELSE 'UNKNOWN'\n      END || chr(10) ||\n      COALESCE(NULLIF(status_details, ''), 'Check status')\n  END AS combined\nFROM station_dashboard_data\nWHERE station_id = '$station'",
+          "rawSql": "SELECT\n  CASE\n    WHEN overall_status = 'healthy' THEN 'All systems OK'\n    WHEN COALESCE(status_details, '') = '' THEN 'Check file/port status'\n    ELSE status_details\n  END AS details,\n  CASE overall_status\n    WHEN 'healthy' THEN 'HEALTHY'\n    WHEN 'warning' THEN 'WARNING'\n    WHEN 'critical' THEN 'CRITICAL'\n    ELSE 'UNKNOWN'\n  END AS label\nFROM station_dashboard_data\nWHERE station_id = '$station'",
           "refId": "A"
         }
       ],
@@ -673,7 +667,7 @@
             "configRefId": "A",
             "mappings": [
               {
-                "fieldName": "combined",
+                "fieldName": "label",
                 "handlerKey": "displayName"
               }
             ]
