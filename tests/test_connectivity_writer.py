@@ -160,8 +160,12 @@ class TestWritePingStatus:
         assert params[2] is False  # is_online
         assert "ping failed" in params[5]  # error message
 
-    def test_offline_when_all_ports_closed(self):
-        """Test station offline when ping works but all ports closed."""
+    def test_online_when_ping_works_but_ports_closed(self):
+        """Test station is online when ping works even if all ports closed.
+
+        is_online reflects network reachability (ping), not service availability.
+        Port status is tracked separately in block_port_status.
+        """
         writer = ConnectivityWriter()
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
@@ -179,8 +183,8 @@ class TestWritePingStatus:
         writer._write_ping_status(mock_conn, "ELDC", health_data, ts)
 
         sql, params = mock_cursor.execute.call_args[0]
-        assert params[2] is False  # is_online
-        assert "port forwarding" in params[5]  # error message
+        assert params[2] is True  # is_online (ping works)
+        assert params[5] is None  # no error message
 
     def test_uses_explicit_timestamp_not_now(self):
         """Test that explicit timestamp is used instead of NOW().

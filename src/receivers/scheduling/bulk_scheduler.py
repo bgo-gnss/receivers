@@ -258,7 +258,10 @@ except ImportError as e:
 def _status_check_job(station_id: str, send_to_db: bool = True, send_to_icinga: bool = True):
     """Run health status check for a station (standalone job function for APScheduler).
 
-    This is the equivalent of: receivers health STATION --icinga --save-db
+    Uses the same code path as: receivers health STATION --save-db --icinga
+    by calling gather_comprehensive_health() rather than receiver.get_health_status()
+    directly. This ensures NTRIP checks, file status, and power_type handling
+    are included.
 
     Args:
         station_id: Station identifier
@@ -273,6 +276,7 @@ def _status_check_job(station_id: str, send_to_db: bool = True, send_to_icinga: 
 
         # Import here to avoid circular imports
         from ..cli.main import get_station_config, create_receiver
+        from ..health.live_health import gather_comprehensive_health
 
         # Get station configuration
         station_config = get_station_config(station_id)
@@ -283,9 +287,13 @@ def _status_check_job(station_id: str, send_to_db: bool = True, send_to_icinga: 
         # Create receiver
         receiver = create_receiver(station_id, station_config)
 
-        # Get health status from receiver
+        # Get comprehensive health — same as CLI 'receivers health' command
         try:
-            health_data = receiver.get_health_status()
+            health_data = gather_comprehensive_health(
+                station_id, station_config, receiver,
+                include_files=False,
+                include_ntrip=True,
+            )
         except Exception as e:
             logger.warning(f"Could not get live health from {station_id}: {e}")
             health_data = {'station_id': station_id, 'error': str(e)}
@@ -416,7 +424,7 @@ class BulkDownloadScheduler:
             log_path = Path(log_path).expanduser()
         self.log_dir = log_dir or log_path
         self.production_mode = production_mode
-        self.max_workers = max_workers if max_workers is not None else scheduler_cfg.get('max_workers', 5)
+        self.max_workers = max_workers if max_workers is not None else scheduler_cfg.get('max_workers', 15)
         self.station_filter = [s.upper() for s in station_filter] if station_filter else None
         self.max_stations_per_session = max_stations_per_session
 

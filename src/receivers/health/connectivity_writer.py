@@ -163,8 +163,6 @@ class ConnectivityWriter:
             ts: Timestamp to use for the record
         """
         connection = health_data.get("connection", {})
-        metrics = health_data.get("metrics", {})
-        ports = metrics.get("ports", {})
 
         # ICMP ping result
         router_ping = connection.get("router_ping", {})
@@ -172,28 +170,14 @@ class ConnectivityWriter:
         response_time_ms = router_ping.get("response_time_ms")
         packet_loss = router_ping.get("packet_loss")
 
-        # Check if any service port is open
-        all_ports_closed = True
-        if ports:
-            for port_name in ("ftp", "http", "control"):
-                port_info = ports.get(port_name, {})
-                if isinstance(port_info, dict) and port_info.get("open", False):
-                    all_ports_closed = False
-                    break
-
-        # Online = ping works AND at least one port open
-        if ping_accessible:
-            is_online = not all_ports_closed
-        else:
-            is_online = False
+        # Online = ping works (network reachable)
+        # Port status is tracked separately in block_port_status
+        is_online = ping_accessible
 
         # Determine error message
         error_message = None
-        if not is_online:
-            if not ping_accessible:
-                error_message = router_ping.get("error", "ping failed - host unreachable")
-            elif all_ports_closed:
-                error_message = "all ports closed - port forwarding missing"
+        if not ping_accessible:
+            error_message = router_ping.get("error", "ping failed - host unreachable")
 
         with conn.cursor() as cur:
             cur.execute(

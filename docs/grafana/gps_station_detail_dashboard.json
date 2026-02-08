@@ -694,13 +694,29 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [],
+          "mappings": [
+            {
+              "options": {
+                "match": "null",
+                "result": {
+                  "color": "text",
+                  "index": 0,
+                  "text": "N/A"
+                }
+              },
+              "type": "special"
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
+                "color": "text",
                 "value": null
+              },
+              {
+                "color": "red",
+                "value": 0
               },
               {
                 "color": "yellow",
@@ -747,7 +763,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COALESCE(uptime_seconds, 0) AS \"Uptime\" FROM station_dashboard_data WHERE station_id = '$station'",
+          "rawSql": "SELECT uptime_seconds AS \"Uptime\" FROM station_dashboard_data WHERE station_id = '$station'",
           "refId": "A"
         }
       ],
@@ -1401,7 +1417,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  (SELECT CASE WHEN EXISTS (SELECT 1 FROM file_tracking WHERE sid='$station' AND session_type='15s_24hr' AND status='downloaded') THEN 1 ELSE -1 END) AS \"15s\",\n  (SELECT CASE WHEN EXISTS (SELECT 1 FROM file_tracking WHERE sid='$station' AND session_type='1Hz_1hr' AND status='downloaded') THEN 1 ELSE -1 END) AS \"1Hz\",\n  (SELECT CASE WHEN EXISTS (SELECT 1 FROM file_tracking WHERE sid='$station' AND session_type='status_1hr' AND status='downloaded') THEN 1 ELSE -1 END) AS \"Status\"",
+          "rawSql": "SELECT\n  (SELECT CASE WHEN EXISTS (SELECT 1 FROM file_tracking WHERE sid='$station' AND session_type='15s_24hr' AND status='downloaded' AND file_date >= CURRENT_DATE - INTERVAL '2 days') THEN 1 ELSE -1 END) AS \"15s\",\n  (SELECT CASE WHEN EXISTS (SELECT 1 FROM file_tracking WHERE sid='$station' AND session_type='1Hz_1hr' AND status='downloaded' AND file_date >= CURRENT_DATE - INTERVAL '1 day') THEN 1 ELSE -1 END) AS \"1Hz\",\n  (SELECT CASE WHEN EXISTS (SELECT 1 FROM file_tracking WHERE sid='$station' AND session_type='status_1hr' AND status='downloaded' AND file_date >= CURRENT_DATE - INTERVAL '1 day') THEN 1 ELSE -1 END) AS \"Status\"",
           "refId": "A"
         }
       ],
