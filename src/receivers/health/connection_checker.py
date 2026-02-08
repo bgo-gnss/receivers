@@ -304,10 +304,14 @@ class ConnectionChecker:
             sock.connect((self.host, port))
 
             # Read FTP welcome banner
+            banner_text = None
+            has_banner = False
             try:
-                banner = sock.recv(1024).decode("utf-8", errors="ignore")
-                has_banner = len(banner) > 0 and "220" in banner
-            except:
+                raw_banner = sock.recv(1024).decode("utf-8", errors="ignore")
+                has_banner = len(raw_banner) > 0 and "220" in raw_banner
+                if has_banner:
+                    banner_text = raw_banner.strip()
+            except Exception:
                 has_banner = False
 
             sock.close()
@@ -323,6 +327,7 @@ class ConnectionChecker:
                     "port": port,
                     "connected": True,
                     "ftp_banner": has_banner,
+                    "banner_text": banner_text,
                 },
             )
 

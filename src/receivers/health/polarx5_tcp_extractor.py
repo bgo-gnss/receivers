@@ -46,6 +46,7 @@ class PolaRX5TCPExtractor:
     BLOCK_QUALITY_IND = 4082
     BLOCK_NTRIP_SERVER_STATUS = 4122  # NTRIP server connections
     BLOCK_NTRIP_CLIENT_STATUS = 4053  # NTRIP client connection
+    BLOCK_RECEIVER_SETUP = 4027  # ReceiverSetup - model, firmware, serial
 
     def __init__(
         self,
@@ -144,6 +145,11 @@ class PolaRX5TCPExtractor:
             ntrip_server = self._query_ntrip_server_status()
             if ntrip_server:
                 health_data["metrics"]["ntrip_server"] = ntrip_server
+
+            # Query ReceiverSetup for identity (model, firmware, serial)
+            setup_data = self._query_receiver_setup()
+            if setup_data:
+                health_data["receiver_identity"] = setup_data
 
         except Exception as e:
             self.logger.error(f"Error extracting health data: {e}")
@@ -345,6 +351,72 @@ class PolaRX5TCPExtractor:
 
         except Exception as e:
             self.logger.error(f"Error parsing NTRIPServerStatus: {e}")
+
+        return None
+
+    def _query_receiver_setup(self) -> Optional[Dict[str, Any]]:
+        """Query ReceiverSetup SBF block (4027) for receiver identity.
+
+        Extracts model name, firmware version, and serial number from the
+        ReceiverSetup block. This identifies the actual hardware connected,
+        enabling mismatch detection against configured receiver type.
+
+        ReceiverSetup structure (after 14-byte standard SBF header+TOW+WNc):
+        - Bytes 14-73:   MarkerName (60 chars, null-padded)
+        - Bytes 74-93:   MarkerNumber (20 chars)
+        - Bytes 94-113:  Observer (20 chars)
+        - Bytes 114-153: Agency (40 chars)
+        - Bytes 154-173: RxSerialNumber (20 chars)
+        - Bytes 174-193: RxName (20 chars) — receiver model
+        - Bytes 194-213: RxVersion (20 chars) — firmware version
+
+        Returns:
+            Dictionary with receiver identity or None on failure
+        """
+        sbf_data = self._send_sbf_request(
+            "ReceiverSetup", self.BLOCK_RECEIVER_SETUP
+        )
+        if not sbf_data:
+            return None
+
+        try:
+            _, length = self._parse_sbf_header(sbf_data)
+
+            # Need at least 214 bytes to extract through RxVersion
+            if length < 214 or len(sbf_data) < 214:
+                self.logger.debug(
+                    f"ReceiverSetup response too short: {length} bytes"
+                )
+                return None
+
+            def _extract_string(data: bytes, start: int, size: int) -> str:
+                """Extract null-terminated string from fixed-size field."""
+                raw = data[start:start + size]
+                return raw.split(b"\x00", 1)[0].decode("ascii", errors="ignore").strip()
+
+            serial_number = _extract_string(sbf_data, 154, 20)
+            receiver_model = _extract_string(sbf_data, 174, 20)
+            firmware_version = _extract_string(sbf_data, 194, 20)
+
+            if not any([serial_number, receiver_model, firmware_version]):
+                return None
+
+            identity = {}
+            if receiver_model:
+                identity["receiver_model"] = receiver_model
+            if firmware_version:
+                identity["firmware_version"] = firmware_version
+            if serial_number:
+                identity["serial_number"] = serial_number
+
+            self.logger.info(
+                f"Receiver identity: model={receiver_model}, "
+                f"firmware={firmware_version}, serial={serial_number}"
+            )
+            return identity
+
+        except Exception as e:
+            self.logger.error(f"Error parsing ReceiverSetup: {e}")
 
         return None
 
@@ -586,18 +658,23 @@ class PolaRX5TCPExtractor:
 
                 is_open = result == 0
                 if is_open:
-                    status = "open"
+                    status = "ok"
+                    detail = "open"
                 elif result == errno.ECONNREFUSED:
-                    status = "refused"
+                    status = "warning"
+                    detail = "refused"
                 elif result == errno.ETIMEDOUT or result == errno.EHOSTUNREACH:
-                    status = "timeout"
+                    status = "critical"
+                    detail = "timeout"
                 else:
-                    status = "timeout"  # Default closed ports to timeout
+                    status = "critical"
+                    detail = "timeout"
 
                 port_status[name] = {
                     "port": port_num,
                     "open": is_open,
-                    "status": status
+                    "status": status,
+                    "detail": detail,
                 }
                 if not is_open:
                     all_ok = False
@@ -605,14 +682,16 @@ class PolaRX5TCPExtractor:
                 port_status[name] = {
                     "port": port_num,
                     "open": False,
-                    "status": "timeout"
+                    "status": "critical",
+                    "detail": "timeout",
                 }
                 all_ok = False
             except ConnectionRefusedError:
                 port_status[name] = {
                     "port": port_num,
                     "open": False,
-                    "status": "refused"
+                    "status": "warning",
+                    "detail": "refused",
                 }
                 all_ok = False
             except Exception as e:
@@ -620,7 +699,7 @@ class PolaRX5TCPExtractor:
                     "port": port_num,
                     "open": False,
                     "status": "error",
-                    "error": str(e)
+                    "detail": str(e),
                 }
                 all_ok = False
 

@@ -44,6 +44,7 @@ class TrimbleHTTPExtractor:
         "tracking": "/prog/show?TrackingStatus",
         "position": "/prog/show?Position",
         "serial": "/prog/show?SerialNumber",
+        "firmware": "/prog/show?FirmwareVersion",
         "gpstime": "/prog/show?GpsTime",
         "refstation": "/prog/show?RefStation",
         "antenna": "/prog/show?Antenna",
@@ -190,6 +191,16 @@ class TrimbleHTTPExtractor:
         system_data = self._fetch_system_info()
         if system_data:
             health_data["metrics"]["system"] = system_data
+
+            # Build receiver identity from system info
+            identity = {}
+            if system_data.get("serial_number"):
+                identity["serial_number"] = system_data["serial_number"]
+            if system_data.get("firmware_version"):
+                identity["firmware_version"] = system_data["firmware_version"]
+            if identity:
+                identity["receiver_model"] = self.receiver_type
+                health_data["receiver_identity"] = identity
 
         # Trimble doesn't provide these metrics - mark as unavailable
         health_data["metrics"]["cpu_load"] = {"available": False}
@@ -1000,7 +1011,7 @@ class TrimbleHTTPExtractor:
             return None
 
     def _fetch_system_info(self) -> Optional[Dict[str, Any]]:
-        """Fetch system information (serial number, antenna, etc).
+        """Fetch system information (serial number, firmware, antenna, etc).
 
         Returns:
             System info dictionary or None
@@ -1013,6 +1024,18 @@ class TrimbleHTTPExtractor:
             match = re.search(r"sn=(\S+)", serial_response)
             if match:
                 system_info["serial_number"] = match.group(1)
+
+        # Get firmware version
+        firmware_response = self._fetch_endpoint("firmware")
+        if firmware_response:
+            match = re.search(r"version=(\S+)", firmware_response)
+            if not match:
+                # Try bare value (some receivers return just the version string)
+                stripped = firmware_response.strip()
+                if stripped and len(stripped) < 60:
+                    system_info["firmware_version"] = stripped
+            else:
+                system_info["firmware_version"] = match.group(1)
 
         # Get antenna info
         antenna_response = self._fetch_endpoint("antenna")
