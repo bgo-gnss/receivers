@@ -15,6 +15,8 @@ from .trimble_http_extractor import TrimbleHTTPExtractor
 from .g10_ftp_inferrer import G10FTPHealthInferrer
 from .g10_http_extractor import G10HTTPExtractor
 from .json_writer import HealthJSONWriter
+from .database_factory import DatabaseConnectionFactory
+from .connectivity_writer import ConnectivityWriter
 from .db_writer import HealthDatabaseWriter
 from .file_tracker import (
     FileTracker,
@@ -43,6 +45,8 @@ __all__ = [
     "G10FTPHealthInferrer",
     "G10HTTPExtractor",
     "HealthJSONWriter",
+    "DatabaseConnectionFactory",
+    "ConnectivityWriter",
     "HealthDatabaseWriter",
     "FileTracker",
     "ArchiveFileChecker",

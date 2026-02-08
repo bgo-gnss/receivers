@@ -37,27 +37,13 @@ class HealthJsonImporter:
             True if connection successful
         """
         try:
-            import psycopg2
+            from .database_factory import DatabaseConnectionFactory
 
-            if self.connection_string:
-                self._conn = psycopg2.connect(self.connection_string)
-            else:
-                import os
-                db_host = os.getenv("POSTGRES_HOST", "localhost")
-                db_port = os.getenv("POSTGRES_PORT", "5432")
-                db_name = os.getenv("POSTGRES_DB", database)
-                db_user = os.getenv("POSTGRES_USER", os.getenv("USER", "postgres"))
-                db_pass = os.getenv("POSTGRES_PASSWORD", "")
-
-                self._conn = psycopg2.connect(
-                    host=db_host,
-                    port=db_port,
-                    database=db_name,
-                    user=db_user,
-                    password=db_pass,
-                )
-
-            logger.info(f"Connected to PostgreSQL database")
+            self._conn = DatabaseConnectionFactory.get_connection(
+                database=database,
+                connection_string=self.connection_string,
+            )
+            logger.info("Connected to PostgreSQL database")
             return True
 
         except ImportError:
@@ -82,20 +68,13 @@ class HealthJsonImporter:
     def _determine_status(self, voltage: Optional[float]) -> str:
         """Determine overall status based on voltage.
 
-        Thresholds:
-        - OK: 11.8V - 15.0V
-        - Warning: < 11.8V or > 15.0V
-        - Critical: < 11.0V or > 16.0V
+        Uses centralized MetricChecker thresholds from metrics.py.
         """
-        if voltage is None:
-            return "unknown"
+        from .metrics import MetricChecker
 
-        if voltage < 11.0 or voltage > 16.0:
-            return "critical"
-        elif voltage < 11.8 or voltage > 15.0:
-            return "warning"
-        else:
-            return "healthy"
+        checker = MetricChecker()
+        result = checker.check_voltage(voltage)
+        return result.status.value
 
     def import_json_file(
         self,

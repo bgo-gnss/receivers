@@ -27,77 +27,18 @@ from .schedule_parser import parse_schedule, apply_distribution_window
 def _write_connectivity_status(station_id: str, health_data: Dict[str, Any], logger: logging.Logger) -> None:
     """Write ping and port status to database for Grafana dashboard.
 
+    Delegates to shared ConnectivityWriter module. Uses health data timestamp
+    instead of NOW() for consistent time alignment across block tables.
+
     Args:
         station_id: Station identifier
         health_data: Health data dictionary with connection info
         logger: Logger instance
     """
-    try:
-        import psycopg2
+    from ..health.connectivity_writer import ConnectivityWriter
 
-        db_host = os.getenv("POSTGRES_HOST", "localhost")
-        db_port = os.getenv("POSTGRES_PORT", "5432")
-        db_name = os.getenv("POSTGRES_DB", "gps_health")
-        db_user = os.getenv("POSTGRES_USER", os.getenv("USER", "bgo"))
-        db_pass = os.getenv("POSTGRES_PASSWORD", "")
-
-        conn = psycopg2.connect(
-            host=db_host, port=db_port, database=db_name, user=db_user, password=db_pass
-        )
-
-        connection = health_data.get('connection', {})
-        metrics = health_data.get('metrics', {})
-        ports = metrics.get('ports', {})
-
-        # Determine online status
-        tcp_status = connection.get('tcp', {}).get('status', 'unknown')
-        overall_status = health_data.get('overall_status', 'unknown')
-        is_online = tcp_status == 'ok' or overall_status in ('healthy', 'ok', 'warning')
-
-        # Determine download protocol from connection.protocol.type
-        # Septentrio uses FTP, Trimble uses HTTP for downloads
-        protocol_info = connection.get('protocol', {})
-        protocol_type = protocol_info.get('type', 'ftp')  # default to ftp for backwards compat
-
-        ftp_port = ports.get('ftp', {})
-        http_port = ports.get('http', {})
-
-        # Download port depends on receiver type (ftp for Septentrio, http for Trimble)
-        if protocol_type == 'http':
-            download_port_info = http_port
-        else:
-            download_port_info = ftp_port
-
-        download_port = download_port_info.get('port') if download_port_info else None
-        download_status = 'open' if download_port_info.get('open') else download_port_info.get('error_type', 'unknown') if download_port_info else 'unknown'
-
-        # Health port is always HTTP
-        health_port = http_port.get('port') if http_port else None
-        health_status = 'open' if http_port.get('open') else http_port.get('error_type', 'unknown') if http_port else 'unknown'
-
-        try:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO block_ping_status (sid, ts, is_online, response_time_ms, packet_loss, error_message)
-                    VALUES (%s, NOW(), %s, %s, %s, %s)
-                    ON CONFLICT (sid, ts) DO UPDATE SET is_online = EXCLUDED.is_online
-                """, (station_id, is_online, None, None, None))
-
-                cur.execute("""
-                    INSERT INTO block_port_status (sid, ts, download_port, download_status, download_response_ms, health_port, health_status, health_response_ms)
-                    VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (sid, ts) DO UPDATE SET
-                        download_status = EXCLUDED.download_status,
-                        health_status = EXCLUDED.health_status
-                """, (station_id, download_port, download_status, None, health_port, health_status, None))
-
-            conn.commit()
-            logger.debug(f"Wrote connectivity status for {station_id}")
-        finally:
-            conn.close()
-
-    except Exception as e:
-        logger.debug(f"Failed to write connectivity status: {e}")
+    writer = ConnectivityWriter(logger)
+    writer.write_connectivity_status(station_id, health_data)
 
 
 # Module-level download function for APScheduler serialization

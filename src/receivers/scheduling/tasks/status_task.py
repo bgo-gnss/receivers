@@ -159,8 +159,7 @@ class StatusTask(ScheduledTask):
             if self.send_to_database:
                 db_success = self._write_to_database(health_data)
                 # Also write connectivity and port status
-                self._write_ping_status(health_data)
-                self._write_port_status(health_data)
+                self._write_connectivity_status(health_data)
 
             # Send to Icinga
             icinga_results = {}
@@ -225,108 +224,28 @@ class StatusTask(ScheduledTask):
                 error_msg
             )
 
+    def _write_connectivity_status(self, health_data: Dict[str, Any]) -> bool:
+        """Write ping and port connectivity status to database.
+
+        Delegates to shared ConnectivityWriter which writes both
+        block_ping_status and block_port_status in a single transaction.
+
+        Args:
+            health_data: Health data dictionary with connection info
+
+        Returns:
+            True if write successful
+        """
+        from ...health.connectivity_writer import ConnectivityWriter
+
+        writer = ConnectivityWriter(self.logger)
+        return writer.write_connectivity_status(self.station_id, health_data)
+
     def _write_ping_status(self, health_data: Dict[str, Any]) -> bool:
-        """Write connectivity status to block_ping_status table.
+        """Write only ping status (for error/offline recording).
 
-        Extracts connection info from health_data and stores it for
-        online/offline tracking in Grafana dashboards.
-
-        Args:
-            health_data: Health data dictionary with connection info
-
-        Returns:
-            True if write successful
-        """
-        try:
-            import os
-            import psycopg2
-
-            # Extract connection status from health data
-            # router_ping contains ICMP ping result from ConnectionChecker
-            connection = health_data.get('connection', {})
-            router_ping = connection.get('router_ping', {})
-            metrics = health_data.get('metrics', {})
-            ports = metrics.get('ports', {})
-
-            # Get ping result (ICMP reachability)
-            ping_accessible = router_ping.get('accessible', False)
-            response_time_ms = router_ping.get('response_time_ms')
-            packet_loss = router_ping.get('packet_loss')
-
-            # Check if all service ports are closed
-            all_ports_closed = True
-            if ports:
-                ftp_open = ports.get('ftp', {}).get('open', False)
-                http_open = ports.get('http', {}).get('open', False)
-                control_open = ports.get('control', {}).get('open', False)
-                all_ports_closed = not ftp_open and not http_open and not control_open
-
-            # Determine online status:
-            # 1. Router must respond to ICMP ping
-            # 2. At least one service port must be accessible
-            if ping_accessible:
-                is_online = not all_ports_closed
-            else:
-                is_online = False
-
-            # Determine error message
-            error_message = None
-            if not is_online:
-                if not ping_accessible:
-                    error_message = router_ping.get('error', 'ping failed - host unreachable')
-                elif all_ports_closed:
-                    error_message = "all ports closed - port forwarding missing"
-
-            db_host = os.getenv("POSTGRES_HOST", "localhost")
-            db_port = os.getenv("POSTGRES_PORT", "5432")
-            db_name = os.getenv("POSTGRES_DB", "gps_health")
-            db_user = os.getenv("POSTGRES_USER", os.getenv("USER", "bgo"))
-            db_pass = os.getenv("POSTGRES_PASSWORD", "")
-
-            conn = psycopg2.connect(
-                host=db_host,
-                port=db_port,
-                database=db_name,
-                user=db_user,
-                password=db_pass,
-            )
-
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        INSERT INTO block_ping_status (
-                            sid, ts, is_online, response_time_ms, packet_loss, error_message
-                        ) VALUES (%s, NOW(), %s, %s, %s, %s)
-                        ON CONFLICT (sid, ts) DO UPDATE SET
-                            is_online = EXCLUDED.is_online,
-                            response_time_ms = EXCLUDED.response_time_ms,
-                            packet_loss = EXCLUDED.packet_loss,
-                            error_message = EXCLUDED.error_message
-                    """, (
-                        self.station_id,
-                        is_online,
-                        response_time_ms,
-                        packet_loss,
-                        error_message
-                    ))
-                conn.commit()
-                return True
-
-            finally:
-                conn.close()
-
-        except ImportError:
-            self.logger.debug("psycopg2 not available for ping status")
-            return False
-        except Exception as e:
-            self.logger.debug(f"Ping status write failed: {e}")
-            return False
-
-    def _write_port_status(self, health_data: Dict[str, Any]) -> bool:
-        """Write port status to block_port_status table.
-
-        Extracts port check results from health_data and stores them for
-        dashboard visualization.
+        Used when a health check fails and we only want to record
+        the station as offline without port data.
 
         Args:
             health_data: Health data dictionary with connection info
@@ -334,75 +253,10 @@ class StatusTask(ScheduledTask):
         Returns:
             True if write successful
         """
-        try:
-            import os
-            import psycopg2
+        from ...health.connectivity_writer import ConnectivityWriter
 
-            # Extract connection status from health data
-            connection = health_data.get('connection', {})
-
-            # Get protocol port status (FTP for Septentrio, HTTP for Trimble)
-            # The protocol field contains the download protocol info
-            protocol = connection.get('protocol', {})
-            download_port = protocol.get('port')
-            download_status = 'open' if protocol.get('accessible') else protocol.get('error_type', 'error')
-            download_response_ms = protocol.get('response_time_ms')
-
-            # Get HTTP port status (health/web interface)
-            http_port_data = connection.get('http_port', {})
-            health_port = http_port_data.get('port')
-            health_status = 'open' if http_port_data.get('accessible') else http_port_data.get('error_type', 'error')
-            health_response_ms = http_port_data.get('response_time_ms')
-
-            db_host = os.getenv("POSTGRES_HOST", "localhost")
-            db_port = os.getenv("POSTGRES_PORT", "5432")
-            db_name = os.getenv("POSTGRES_DB", "gps_health")
-            db_user = os.getenv("POSTGRES_USER", os.getenv("USER", "bgo"))
-            db_pass = os.getenv("POSTGRES_PASSWORD", "")
-
-            conn = psycopg2.connect(
-                host=db_host,
-                port=db_port,
-                database=db_name,
-                user=db_user,
-                password=db_pass,
-            )
-
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        INSERT INTO block_port_status (
-                            sid, ts, download_port, download_status, download_response_ms,
-                            health_port, health_status, health_response_ms
-                        ) VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (sid, ts) DO UPDATE SET
-                            download_port = EXCLUDED.download_port,
-                            download_status = EXCLUDED.download_status,
-                            download_response_ms = EXCLUDED.download_response_ms,
-                            health_port = EXCLUDED.health_port,
-                            health_status = EXCLUDED.health_status,
-                            health_response_ms = EXCLUDED.health_response_ms
-                    """, (
-                        self.station_id,
-                        download_port,
-                        download_status,
-                        download_response_ms,
-                        health_port,
-                        health_status,
-                        health_response_ms
-                    ))
-                conn.commit()
-                return True
-
-            finally:
-                conn.close()
-
-        except ImportError:
-            self.logger.debug("psycopg2 not available for port status")
-            return False
-        except Exception as e:
-            self.logger.debug(f"Port status write failed: {e}")
-            return False
+        writer = ConnectivityWriter(self.logger)
+        return writer.write_ping_only(self.station_id, health_data)
 
     def _write_to_database(self, health_data: Dict[str, Any]) -> bool:
         """Write health data to PostgreSQL.
