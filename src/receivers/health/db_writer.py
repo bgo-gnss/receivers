@@ -56,26 +56,13 @@ class HealthDatabaseWriter:
             True if connection successful, False otherwise
         """
         try:
-            import psycopg2
+            from .database_factory import DatabaseConnectionFactory
 
-            if self.connection_string:
-                self._conn = psycopg2.connect(self.connection_string)
-            else:
-                db_host = os.getenv("POSTGRES_HOST", "localhost")
-                db_port = os.getenv("POSTGRES_PORT", "5432")
-                db_name = os.getenv("POSTGRES_DB", database)
-                db_user = os.getenv("POSTGRES_USER", os.getenv("USER", "bgo"))
-                db_pass = os.getenv("POSTGRES_PASSWORD", "")
-
-                self._conn = psycopg2.connect(
-                    host=db_host,
-                    port=db_port,
-                    database=db_name,
-                    user=db_user,
-                    password=db_pass,
-                )
-
-            self.logger.info(f"Connected to PostgreSQL database: {db_name}")
+            self._conn = DatabaseConnectionFactory.get_connection(
+                database=database,
+                connection_string=self.connection_string,
+            )
+            self.logger.info("Connected to PostgreSQL database")
             return True
 
         except ImportError:

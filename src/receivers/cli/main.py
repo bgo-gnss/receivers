@@ -887,150 +887,18 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
 def _write_connectivity_status(station_id: str, health_data: Dict[str, Any], logger: logging.Logger) -> None:
     """Write ping and port status to database for Grafana dashboard.
 
-    Extracts connection info from health_data and writes to:
-    - block_ping_status: Online/offline status with duration tracking
-    - block_port_status: Download and health port status
+    Delegates to shared ConnectivityWriter module. Uses health data timestamp
+    instead of NOW() for consistent time alignment across block tables.
 
     Args:
         station_id: Station identifier
         health_data: Health data dictionary with connection info
         logger: Logger instance
     """
-    try:
-        import os
-        import psycopg2
+    from ..health.connectivity_writer import ConnectivityWriter
 
-        db_host = os.getenv("POSTGRES_HOST", "localhost")
-        db_port = os.getenv("POSTGRES_PORT", "5432")
-        db_name = os.getenv("POSTGRES_DB", "gps_health")
-        db_user = os.getenv("POSTGRES_USER", os.getenv("USER", "bgo"))
-        db_pass = os.getenv("POSTGRES_PASSWORD", "")
-
-        conn = psycopg2.connect(
-            host=db_host,
-            port=db_port,
-            database=db_name,
-            user=db_user,
-            password=db_pass,
-        )
-
-        connection = health_data.get('connection', {})
-        metrics = health_data.get('metrics', {})
-        ports = metrics.get('ports', {})
-
-        # Extract port status from metrics.ports
-        # Septentrio uses FTP for download, Trimble uses HTTP
-        ftp_port = ports.get('ftp', {})
-        http_port = ports.get('http', {})
-        control_port = ports.get('control', {})
-
-        # Determine download protocol from connection.protocol.type
-        protocol_info = connection.get('protocol', {})
-        protocol_type = protocol_info.get('type', 'ftp')  # default to ftp for backwards compat
-
-        # Download port depends on receiver type (ftp for Septentrio, http for Trimble)
-        if protocol_type == 'http':
-            download_port_info = http_port
-        else:
-            download_port_info = ftp_port
-
-        if download_port_info:
-            download_port = download_port_info.get('port')
-            download_open = download_port_info.get('open', False)
-            # Use 'status' field which contains 'open', 'timeout', 'refused', or 'error'
-            download_status = download_port_info.get('status', 'unknown')
-        else:
-            download_port = None
-            download_status = 'unknown'
-        download_response_ms = None  # Not tracked in current format
-
-        # Health port is always HTTP (web interface)
-        if http_port:
-            health_port = http_port.get('port')
-            health_open = http_port.get('open', False)
-            health_status = http_port.get('status', 'unknown')
-        else:
-            health_port = None
-            health_status = 'unknown'
-        health_response_ms = None  # Not tracked in current format
-
-        # Extract router ping status (ICMP reachability)
-        router_ping = connection.get('router_ping', {})
-        ping_accessible = router_ping.get('accessible', False)
-        ping_response_ms = router_ping.get('response_time_ms')
-        ping_packet_loss = router_ping.get('packet_loss')
-
-        # Check if all service ports are closed
-        all_ports_closed = (
-            not download_port_info.get('open', False) if download_port_info else True
-        ) and (
-            not http_port.get('open', False) if http_port else True
-        ) and (
-            not control_port.get('open', False) if control_port else True
-        )
-
-        # Determine online status:
-        # 1. Router must respond to ICMP ping
-        # 2. At least one service port must be accessible
-        # This distinguishes between:
-        # - Router offline: ping fails
-        # - Router online but services blocked: ping works but all ports closed
-        if ping_accessible:
-            is_online = not all_ports_closed
-        else:
-            is_online = False
-
-        # Determine error message
-        ping_error = None
-        if not is_online:
-            if not ping_accessible:
-                ping_error = router_ping.get('error', 'ping failed - host unreachable')
-            elif all_ports_closed:
-                ping_error = "all ports closed - port forwarding missing"
-
-        try:
-            with conn.cursor() as cur:
-                # Write ping status
-                cur.execute("""
-                    INSERT INTO block_ping_status (
-                        sid, ts, is_online, response_time_ms, packet_loss, error_message
-                    ) VALUES (%s, NOW(), %s, %s, %s, %s)
-                    ON CONFLICT (sid, ts) DO UPDATE SET
-                        is_online = EXCLUDED.is_online,
-                        response_time_ms = EXCLUDED.response_time_ms,
-                        packet_loss = EXCLUDED.packet_loss,
-                        error_message = EXCLUDED.error_message
-                """, (station_id, is_online, ping_response_ms, ping_packet_loss, ping_error))
-
-                # Write port status
-                cur.execute("""
-                    INSERT INTO block_port_status (
-                        sid, ts, download_port, download_status, download_response_ms,
-                        health_port, health_status, health_response_ms
-                    ) VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (sid, ts) DO UPDATE SET
-                        download_port = EXCLUDED.download_port,
-                        download_status = EXCLUDED.download_status,
-                        download_response_ms = EXCLUDED.download_response_ms,
-                        health_port = EXCLUDED.health_port,
-                        health_status = EXCLUDED.health_status,
-                        health_response_ms = EXCLUDED.health_response_ms
-                """, (
-                    station_id,
-                    download_port, download_status, download_response_ms,
-                    health_port, health_status, health_response_ms
-                ))
-
-            conn.commit()
-            logger.debug(f"Wrote connectivity status for {station_id}")
-
-        finally:
-            conn.close()
-
-    except ImportError:
-        logger.debug("psycopg2 not available for connectivity status")
-    except Exception as e:
-        logger.debug(f"Failed to write connectivity status: {e}")
+    writer = ConnectivityWriter(logger)
+    writer.write_connectivity_status(station_id, health_data)
 
 
 def cmd_health_timeseries_extract(
