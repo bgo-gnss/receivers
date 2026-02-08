@@ -9,12 +9,7 @@ for consistent threshold evaluation across all health monitoring components.
 Usage:
     from receivers.monitoring.icinga_client import IcingaClient, CheckResult
 
-    client = IcingaClient(
-        host="ut-icinga-m-vip.vedur.is",
-        port=5665,
-        username="icingaweb",
-        password="ji5Aeb8oopieGoh"
-    )
+    client = IcingaClient()  # Loads from icinga.cfg
 
     result = CheckResult(
         station="ORFC",
