@@ -225,22 +225,30 @@ class NetR9(BaseReceiver):
                 self.logger.info(
                     f"Extracted health data from {host}:{http_port} via HTTP API"
                 )
+
+                # Capture receiver identity if available
+                receiver_identity = health_data.get("receiver_identity")
             else:
                 self.logger.warning(
                     f"No router IP configured for {self.station_id} - "
                     "connection health only"
                 )
+                receiver_identity = None
 
         except Exception as e:
             self.logger.error(f"Error extracting health data via HTTP: {e}")
+            receiver_identity = None
 
         # Step 3: Build standardized health status structure
-        return self.build_health_status(
+        result = self.build_health_status(
             connection_data=connection_data,
             metrics=metrics,
             data_quality=data_quality,
             network=network,
         )
+        if receiver_identity:
+            result["receiver_identity"] = receiver_identity
+        return result
 
     def download_data(
         self,

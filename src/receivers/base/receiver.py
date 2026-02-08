@@ -310,15 +310,18 @@ class BaseReceiver(ABC):
                     elif "status" in metric_data:
                         statuses.append(_safe_health_status(metric_data["status"]))
 
-        # Determine overall status (worst status wins)
+        # Determine overall status (worst status wins, ignore unknowns if we have real data)
+        known_statuses = [s for s in statuses if s != HealthStatus.UNKNOWN]
         if HealthStatus.CRITICAL in statuses:
             overall_status = "critical"
         elif HealthStatus.ERROR in statuses:
             overall_status = "critical"  # Treat errors as critical
         elif HealthStatus.WARNING in statuses:
             overall_status = "warning"
-        elif all(s == HealthStatus.OK for s in statuses):
+        elif known_statuses and all(s == HealthStatus.OK for s in known_statuses):
             overall_status = "healthy"
+        elif not known_statuses:
+            overall_status = "unknown"
         else:
             overall_status = "unknown"
 

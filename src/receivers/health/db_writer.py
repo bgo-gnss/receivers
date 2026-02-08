@@ -113,6 +113,71 @@ class HealthDatabaseWriter:
             self._conn.rollback()
             return False
 
+    def _update_station_identity(
+        self, station_id: str, timestamp: Any, identity: Dict[str, Any]
+    ) -> None:
+        """Update station identity columns and write to block_receiver_setup.
+
+        Updates the stations table with the latest identity data and writes
+        a timestamped record to block_receiver_setup for historical tracking.
+
+        Args:
+            station_id: Station identifier
+            timestamp: Check timestamp
+            identity: Identity dict with receiver_model, firmware_version, serial_number
+        """
+        firmware = identity.get("firmware_version")
+        model = identity.get("receiver_model")
+        serial = identity.get("serial_number")
+
+        if not any([firmware, model, serial]):
+            return
+
+        ts = self._parse_timestamp(timestamp)
+
+        try:
+            with self._conn.cursor() as cur:
+                # Update stations table with latest identity
+                cur.execute("""
+                    UPDATE stations SET
+                        firmware_version = COALESCE(%s, firmware_version),
+                        detected_model = COALESCE(%s, detected_model),
+                        serial_number = COALESCE(%s, serial_number),
+                        identity_last_checked = NOW()
+                    WHERE sid = %s
+                """, (firmware, model, serial, station_id))
+
+                # Write historical record to block_receiver_setup
+                cur.execute("""
+                    INSERT INTO block_receiver_setup (sid, ts, rx_name, rx_version, rx_serial_number)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (sid, ts) DO UPDATE SET
+                        rx_name = COALESCE(EXCLUDED.rx_name, block_receiver_setup.rx_name),
+                        rx_version = COALESCE(EXCLUDED.rx_version, block_receiver_setup.rx_version),
+                        rx_serial_number = COALESCE(EXCLUDED.rx_serial_number, block_receiver_setup.rx_serial_number)
+                """, (station_id, ts, model, firmware, serial))
+
+            # Check for mismatch
+            from .receiver_fingerprint import check_identity_mismatch
+            configured_type = None
+            # Look up configured type from cache or query
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    "SELECT receiver_type FROM stations WHERE sid = %s",
+                    (station_id,),
+                )
+                row = cur.fetchone()
+                if row:
+                    configured_type = row[0]
+
+            if configured_type:
+                mismatch = check_identity_mismatch(configured_type, identity)
+                if mismatch:
+                    self.logger.warning(f"[{station_id}] {mismatch}")
+
+        except Exception as e:
+            self.logger.debug(f"Station identity update failed for {station_id}: {e}")
+
     def _parse_timestamp(self, timestamp: Any) -> datetime:
         """Parse timestamp from various formats to datetime.
 
@@ -161,6 +226,17 @@ class HealthDatabaseWriter:
             # Ensure station exists
             if not self._ensure_station(station_id, receiver_type, power_type):
                 return False
+
+            # Persist receiver identity if available
+            identity = health_data.get("receiver_identity")
+            if not identity:
+                # build_health_status puts it under the receiver type key
+                receiver_key = receiver_type.lower()
+                rx_specific = health_data.get(receiver_key, {})
+                if isinstance(rx_specific, dict) and rx_specific.get("receiver_model"):
+                    identity = rx_specific
+            if identity:
+                self._update_station_identity(station_id, timestamp, identity)
 
             metrics = health_data.get("metrics", {})
 
@@ -467,7 +543,11 @@ class HealthDatabaseWriter:
             for name in ("ftp", "http", "control"):
                 port_info = ports.get(name, {})
                 if isinstance(port_info, dict) and not port_info.get("open", True):
-                    problems.append(f"{name.upper()} down")
+                    detail = port_info.get("detail", "")
+                    if detail == "refused":
+                        problems.append(f"{name.upper()} refused (port forward missing?)")
+                    else:
+                        problems.append(f"{name.upper()} down")
 
         return ", ".join(problems) if problems else None
 

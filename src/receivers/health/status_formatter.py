@@ -226,7 +226,8 @@ class StatusFormatter:
                     if is_open:
                         port_parts.append(f"{port_name}:{port_num} OK")
                     else:
-                        port_parts.append(f"{port_name}:{port_num} closed")
+                        detail = port_data.get("detail", "closed")
+                        port_parts.append(f"{port_name}:{port_num} {detail}")
                 else:
                     port_parts.append(f"{port_name}: N/A")
             return "Ports: " + " | ".join(port_parts)
@@ -308,6 +309,17 @@ class StatusFormatter:
 
         # Header line
         lines.append(f"{station_id} ({receiver_type}) @ {ip}  [{overall_icon}] {overall.upper()}")
+
+        # Receiver identity (firmware, serial) if available
+        identity = health_data.get("receiver_identity", {})
+        if identity:
+            id_parts = []
+            if identity.get("firmware_version"):
+                id_parts.append(f"FW: {identity['firmware_version']}")
+            if identity.get("serial_number"):
+                id_parts.append(f"S/N: {identity['serial_number']}")
+            if id_parts:
+                lines.append(f"  Identity: {' | '.join(id_parts)}")
 
         # Metrics
         metrics = health_data.get("metrics", {})

@@ -1814,6 +1814,7 @@ class PolaRX5(BaseReceiver):
         port_status = None  # Track port status separately to ensure it's always captured
         extractor = None
         ping_result = None  # Track ICMP ping result separately
+        receiver_identity = None  # Receiver model/firmware/serial from SBF
 
         host = self.ip_number
         if host:
@@ -1893,6 +1894,10 @@ class PolaRX5(BaseReceiver):
                             data_quality = live_data.get("data_quality")
                             extraction_source = "tcp_live"
                             self.logger.info(f"Extracted live health data via TCP from {host}")
+
+                        # Capture receiver identity if available
+                        if live_data.get("receiver_identity"):
+                            receiver_identity = live_data["receiver_identity"]
                     except Exception as e:
                         self.logger.debug(f"TCP data extraction failed: {e}")
 
@@ -1928,7 +1933,12 @@ class PolaRX5(BaseReceiver):
             connection_data=connection_data,
             metrics=metrics,
             data_quality=data_quality,
+            receiver_specific=receiver_identity,
         )
+
+        # Also store identity at top level for DB writer
+        if receiver_identity:
+            health_status["receiver_identity"] = receiver_identity
 
         # Add extraction source info
         if extraction_source:
