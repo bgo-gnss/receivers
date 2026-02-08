@@ -103,12 +103,13 @@ SELECT
     m.free_space_mb,
     m.disk_ts,
 
-    -- Staleness
-    m.seconds_since_update,
-    m.last_update,
+    -- Staleness (fall back to ping check time for offline stations with no metrics)
+    COALESCE(m.seconds_since_update, EXTRACT(EPOCH FROM (NOW() - sc.last_check))::integer) AS seconds_since_update,
+    COALESCE(m.last_update, sc.last_check) AS last_update,
 
     -- Connectivity (from ping checks)
     sc.is_online,
+    sc.last_check,
     sc.state_since,
     sc.state_duration,
     sc.response_time_ms AS ping_response_ms,

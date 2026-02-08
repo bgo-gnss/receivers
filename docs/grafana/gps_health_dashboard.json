@@ -451,7 +451,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  d.station_id AS sid,\n  d.latitude,\n  d.longitude,\n  d.overall_status,\n  CASE\n    WHEN d.overall_status = 'healthy' THEN 3\n    WHEN d.overall_status = 'warning' THEN 2\n    WHEN d.overall_status = 'critical' THEN 1\n    ELSE 0\n  END AS status_code,\n  d.receiver_type,\n  d.connection_status,\n  CASE\n    WHEN d.is_online IS NULL THEN NULL\n    WHEN d.is_online THEN 'online ' || format_duration(d.state_duration)\n    ELSE 'offline ' || format_duration(d.state_duration)\n  END AS conn,\n  d.voltage,\n  d.temperature,\n  d.satellites_tracked,\n  d.disk_usage_pct,\n  d.ntrip_status,\n  d.seconds_since_update,\n  d.status_details\nFROM station_dashboard_data d\nLEFT JOIN station_area_members sam ON sam.sid = d.station_id\nWHERE d.latitude IS NOT NULL\n  AND d.longitude IS NOT NULL\n  AND ('$area' = 'all' OR sam.area_id = '$area')\n  AND (${station:singlequote} = 'all' OR d.station_id = ${station:singlequote})\n  AND (${receiver:singlequote} = 'all' OR d.receiver_type = ${receiver:singlequote})\n  AND (${antenna:singlequote} = 'all' OR d.antenna_type = ${antenna:singlequote})\nORDER BY d.station_id",
+          "rawSql": "SELECT\n  d.station_id AS sid,\n  d.latitude,\n  d.longitude,\n  d.overall_status,\n  CASE\n    WHEN d.overall_status = 'healthy' THEN 3\n    WHEN d.overall_status = 'warning' THEN 2\n    WHEN d.overall_status = 'critical' THEN 1\n    ELSE 0\n  END AS status_code,\n  d.receiver_type,\n  d.connection_status,\n  CASE\n    WHEN d.is_online IS NULL THEN NULL\n    WHEN d.is_online THEN 'online ' || format_duration(d.state_duration)\n    ELSE 'offline ' || format_duration(d.state_duration)\n  END AS conn,\n  d.voltage,\n  d.temperature,\n  d.satellites_tracked,\n  d.disk_usage_pct,\n  d.ntrip_status,\n  d.seconds_since_update,\n  d.status_details\nFROM station_dashboard_data d\nWHERE d.latitude IS NOT NULL\n  AND d.longitude IS NOT NULL\n  AND ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = d.station_id AND sam.area_id = '$area'))\n  AND (${station:singlequote} = 'all' OR d.station_id = ${station:singlequote})\n  AND (${receiver:singlequote} = 'all' OR d.receiver_type = ${receiver:singlequote})\n  AND (${antenna:singlequote} = 'all' OR d.antenna_type = ${antenna:singlequote})\nORDER BY d.station_id",
           "refId": "A"
         }
       ],
@@ -750,8 +750,12 @@
                   "mode": "absolute",
                   "steps": [
                     {
-                      "color": "red",
+                      "color": "text",
                       "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 0.1
                     },
                     {
                       "color": "yellow",
@@ -766,11 +770,31 @@
                       "value": 15
                     },
                     {
+                      "color": "green",
+                      "value": 18
+                    },
+                    {
                       "color": "red",
-                      "value": 16
+                      "value": 25
                     }
                   ]
                 }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "match": "null",
+                      "result": {
+                        "color": "text",
+                        "index": 0,
+                        "text": "-"
+                      }
+                    },
+                    "type": "special"
+                  }
+                ]
               }
             ]
           },
@@ -797,8 +821,12 @@
                   "mode": "absolute",
                   "steps": [
                     {
-                      "color": "red",
+                      "color": "text",
                       "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 0
                     },
                     {
                       "color": "yellow",
@@ -810,6 +838,22 @@
                     }
                   ]
                 }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "match": "null",
+                      "result": {
+                        "color": "text",
+                        "index": 0,
+                        "text": "-"
+                      }
+                    },
+                    "type": "special"
+                  }
+                ]
               }
             ]
           },
@@ -862,6 +906,17 @@
                       }
                     },
                     "type": "value"
+                  },
+                  {
+                    "options": {
+                      "match": "null",
+                      "result": {
+                        "color": "text",
+                        "index": 5,
+                        "text": "-"
+                      }
+                    },
+                    "type": "special"
                   }
                 ]
               }
@@ -890,8 +945,12 @@
                   "mode": "absolute",
                   "steps": [
                     {
-                      "color": "red",
+                      "color": "text",
                       "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 0
                     },
                     {
                       "color": "yellow",
@@ -903,6 +962,22 @@
                     }
                   ]
                 }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "match": "null",
+                      "result": {
+                        "color": "text",
+                        "index": 0,
+                        "text": "-"
+                      }
+                    },
+                    "type": "special"
+                  }
+                ]
               }
             ]
           },
@@ -930,7 +1005,7 @@
                         "index": 2
                       },
                       "unknown": {
-                        "color": "orange",
+                        "color": "text",
                         "index": 3
                       }
                     },
@@ -998,8 +1073,12 @@
                   "mode": "absolute",
                   "steps": [
                     {
-                      "color": "green",
+                      "color": "text",
                       "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 0
                     },
                     {
                       "color": "yellow",
@@ -1011,6 +1090,22 @@
                     }
                   ]
                 }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "match": "null",
+                      "result": {
+                        "color": "text",
+                        "index": 0,
+                        "text": "-"
+                      }
+                    },
+                    "type": "special"
+                  }
+                ]
               }
             ]
           }
@@ -1051,7 +1146,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  d.station_id AS \"Station\",\n  d.receiver_type AS \"Receiver\",\n  d.antenna_type AS \"Antenna\",\n  d.seconds_since_update AS \"Checked\",\n  CASE\n    WHEN d.is_online IS NULL THEN NULL\n    WHEN d.is_online THEN 'online ' || format_duration(d.state_duration)\n    ELSE 'offline ' || format_duration(d.state_duration)\n  END AS \"Conn\",\n  CASE\n    WHEN d.download_status IS NULL THEN NULL\n    WHEN d.download_status = 'open' AND (d.port_health_status = 'open' OR d.port_health_status IS NULL) THEN 'active'\n    WHEN d.download_status IN ('refused', 'timeout', 'error') THEN 'dl:' || d.download_status\n    WHEN d.port_health_status IN ('refused', 'timeout', 'error') THEN 'hc:' || d.port_health_status\n    ELSE 'unknown'\n  END AS \"Port\",\n  CASE\n    WHEN d.is_online = false THEN 'offline'\n    WHEN d.download_status = 'refused' OR d.port_health_status = 'refused' THEN 'port forward missing'\n    WHEN d.download_status = 'timeout' AND (d.port_health_status = 'timeout' OR d.port_health_status IS NULL) THEN 'offline'\n    WHEN d.overall_status = 'critical' THEN 'CRITICAL: ' || COALESCE(d.status_details, '')\n    WHEN d.overall_status = 'warning' THEN 'WARNING: ' || COALESCE(d.status_details, '')\n    WHEN d.overall_status = 'healthy' THEN 'OK'\n    ELSE COALESCE(d.overall_status, 'unknown')\n  END AS \"Status\",\n  d.voltage AS \"Voltage\",\n  d.satellites_tracked AS \"Sats\",\n  d.ntrip_status AS \"NTRIP\",\n  d.uptime_seconds AS \"Uptime\"\nFROM station_dashboard_data d\nLEFT JOIN station_area_members sam ON sam.sid = d.station_id\nWHERE ('$area' = 'all' OR sam.area_id = '$area')\n  AND (${station:singlequote} = 'all' OR d.station_id = ${station:singlequote})\n  AND (${receiver:singlequote} = 'all' OR d.receiver_type = ${receiver:singlequote})\n  AND (${antenna:singlequote} = 'all' OR d.antenna_type = ${antenna:singlequote})\nORDER BY d.station_id",
+          "rawSql": "SELECT\n  d.station_id AS \"Station\",\n  d.receiver_type AS \"Receiver\",\n  d.antenna_type AS \"Antenna\",\n  d.seconds_since_update AS \"Checked\",\n  CASE\n    WHEN d.is_online IS NULL THEN NULL\n    WHEN d.is_online THEN 'online ' || format_duration(d.state_duration)\n    ELSE 'offline ' || format_duration(d.state_duration)\n  END AS \"Conn\",\n  CASE\n    WHEN d.download_status IS NULL THEN NULL\n    WHEN d.download_status = 'open' AND (d.port_health_status = 'open' OR d.port_health_status IS NULL) THEN 'active'\n    WHEN d.download_status IN ('refused', 'timeout', 'error') THEN 'dl:' || d.download_status\n    WHEN d.port_health_status IN ('refused', 'timeout', 'error') THEN 'hc:' || d.port_health_status\n    ELSE 'unknown'\n  END AS \"Port\",\n  CASE\n    WHEN d.is_online = false THEN 'offline'\n    WHEN d.download_status = 'refused' OR d.port_health_status = 'refused' THEN 'port forward missing'\n    WHEN d.download_status = 'timeout' AND (d.port_health_status = 'timeout' OR d.port_health_status IS NULL) THEN 'offline'\n    WHEN d.overall_status = 'critical' THEN 'CRITICAL: ' || COALESCE(d.status_details, '')\n    WHEN d.overall_status = 'warning' THEN 'WARNING: ' || COALESCE(d.status_details, '')\n    WHEN d.overall_status = 'healthy' THEN 'OK'\n    ELSE COALESCE(d.overall_status, 'unknown')\n  END AS \"Status\",\n  d.voltage AS \"Voltage\",\n  d.satellites_tracked AS \"Sats\",\n  d.ntrip_status AS \"NTRIP\",\n  d.uptime_seconds AS \"Uptime\"\nFROM station_dashboard_data d\nWHERE ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = d.station_id AND sam.area_id = '$area'))\n  AND (${station:singlequote} = 'all' OR d.station_id = ${station:singlequote})\n  AND (${receiver:singlequote} = 'all' OR d.receiver_type = ${receiver:singlequote})\n  AND (${antenna:singlequote} = 'all' OR d.antenna_type = ${antenna:singlequote})\nORDER BY d.station_id",
           "refId": "A"
         }
       ],
@@ -1419,7 +1514,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  p.ts AS time,\n  p.sid AS metric,\n  p.voltage AS value\nFROM block_power_status p\nJOIN stations s ON s.sid = p.sid\nLEFT JOIN station_area_members sam ON sam.sid = p.sid\nWHERE $__timeFilter(p.ts)\n  AND ('$area' = 'all' OR sam.area_id = '$area')\n  AND COALESCE(s.power_type, 'battery') != 'mains'\nORDER BY p.ts",
+          "rawSql": "SELECT\n  p.ts AS time,\n  p.sid AS metric,\n  p.voltage AS value\nFROM block_power_status p\nJOIN stations s ON s.sid = p.sid\nWHERE $__timeFilter(p.ts)\n  AND ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = p.sid AND sam.area_id = '$area'))\n  AND COALESCE(s.power_type, 'battery') != 'mains'\nORDER BY p.ts",
           "refId": "A"
         }
       ],
