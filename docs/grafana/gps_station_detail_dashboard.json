@@ -249,7 +249,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COALESCE((SELECT temperature FROM block_receiver_status WHERE sid = '$station' AND temperature IS NOT NULL ORDER BY ts DESC LIMIT 1), -1) AS \"Temperature\"",
+          "rawSql": "SELECT COALESCE(temperature, -1) AS \"Temperature\" FROM station_dashboard_data WHERE station_id = '$station'",
           "refId": "A"
         }
       ],
@@ -335,7 +335,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COALESCE((SELECT cpu_load FROM block_receiver_status WHERE sid = '$station' AND cpu_load IS NOT NULL ORDER BY ts DESC LIMIT 1), -1) AS \"CPU\"",
+          "rawSql": "SELECT COALESCE(cpu_load, -1) AS \"CPU\" FROM station_dashboard_data WHERE station_id = '$station'",
           "refId": "A"
         }
       ],
@@ -421,7 +421,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COALESCE((SELECT usage_percent FROM block_disk_status WHERE sid = '$station' ORDER BY ts DESC LIMIT 1), -1) AS \"Disk\"",
+          "rawSql": "SELECT COALESCE(disk_usage_pct, -1) AS \"Disk\" FROM station_dashboard_data WHERE station_id = '$station'",
           "refId": "A"
         }
       ],
@@ -501,7 +501,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COALESCE((SELECT total FROM block_satellite_tracking WHERE sid = '$station' ORDER BY ts DESC LIMIT 1), -1) AS \"Satellites\"",
+          "rawSql": "SELECT COALESCE(satellites_tracked, -1) AS \"Satellites\" FROM station_dashboard_data WHERE station_id = '$station'",
           "refId": "A"
         }
       ],
@@ -577,7 +577,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT gps AS \"GPS\", glonass AS \"GLO\", galileo AS \"GAL\", beidou AS \"BDS\"\nFROM block_satellite_tracking\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
+          "rawSql": "SELECT gps_sats AS \"GPS\", glonass_sats AS \"GLO\", galileo_sats AS \"GAL\", beidou_sats AS \"BDS\"\nFROM station_dashboard_data\nWHERE station_id = '$station'",
           "refId": "A"
         }
       ],
@@ -662,7 +662,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  CASE overall_status\n    WHEN 'healthy' THEN 0\n    WHEN 'warning' THEN 1\n    WHEN 'critical' THEN 2\n    ELSE 3\n  END AS status,\n  CASE\n    WHEN overall_status = 'healthy' THEN 'All systems OK'\n    WHEN COALESCE(status_details, '') = '' THEN 'Check file/port status'\n    ELSE status_details\n  END AS details\nFROM block_health_summary\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
+          "rawSql": "SELECT\n  CASE overall_status\n    WHEN 'healthy' THEN 0\n    WHEN 'warning' THEN 1\n    WHEN 'critical' THEN 2\n    ELSE 3\n  END AS status,\n  CASE\n    WHEN overall_status = 'healthy' THEN 'All systems OK'\n    WHEN COALESCE(status_details, '') = '' THEN 'Check file/port status'\n    ELSE status_details\n  END AS details\nFROM station_dashboard_data\nWHERE station_id = '$station'",
           "refId": "A"
         }
       ],
@@ -747,7 +747,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT uptime_seconds AS \"Uptime\"\nFROM block_receiver_status\nWHERE sid = '$station' AND uptime_seconds IS NOT NULL\nORDER BY ts DESC LIMIT 1",
+          "rawSql": "SELECT COALESCE(uptime_seconds, 0) AS \"Uptime\" FROM station_dashboard_data WHERE station_id = '$station'",
           "refId": "A"
         }
       ],
@@ -862,7 +862,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT \n  CASE \n    WHEN s.ip_address IS NOT NULL THEN host(s.ip_address) || ':' || COALESCE(s.http_port, 80)::text\n    ELSE ''\n  END AS url,\n  CASE \n    WHEN s.ip_address IS NOT NULL THEN host(s.ip_address) || ':' || COALESCE(s.http_port, 80)::text || ' (' || COALESCE(s.receiver_type, '?') || ')'\n    ELSE COALESCE(s.receiver_type, 'Unknown')\n  END AS \"Receiver\",\n  CASE \n    WHEN s.latitude IS NOT NULL THEN \n      ROUND(s.latitude::numeric, 4)::text || ', ' || ROUND(s.longitude::numeric, 4)::text\n    ELSE 'No coordinates'\n  END AS \"Location\"\nFROM stations s\nWHERE s.sid = '$station'",
+          "rawSql": "SELECT\n  CASE\n    WHEN d.ip_address IS NOT NULL THEN host(d.ip_address) || ':' || COALESCE(d.station_http_port, 80)::text\n    ELSE ''\n  END AS url,\n  CASE\n    WHEN d.ip_address IS NOT NULL THEN host(d.ip_address) || ':' || COALESCE(d.station_http_port, 80)::text || ' (' || COALESCE(d.receiver_type, '?') || ')'\n    ELSE COALESCE(d.receiver_type, 'Unknown')\n  END AS \"Receiver\",\n  CASE\n    WHEN d.latitude IS NOT NULL THEN\n      ROUND(d.latitude::numeric, 4)::text || ', ' || ROUND(d.longitude::numeric, 4)::text\n    ELSE 'No coordinates'\n  END AS \"Location\"\nFROM station_dashboard_data d\nWHERE d.station_id = '$station'",
           "refId": "A"
         }
       ],
@@ -930,7 +930,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT EXTRACT(EPOCH FROM (NOW() - max(ts)))::int AS \"Checked\" FROM block_power_status WHERE sid = '$station'",
+          "rawSql": "SELECT COALESCE(seconds_since_update, 0) AS \"Checked\" FROM station_dashboard_data WHERE station_id = '$station'",
           "refId": "A"
         }
       ],
@@ -1111,7 +1111,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COALESCE(extract(epoch from sc.state_duration)::integer, 0) AS \"online\"\nFROM station_connectivity sc\nWHERE sc.sid = '$station' AND sc.is_online = true",
+          "rawSql": "SELECT COALESCE(EXTRACT(EPOCH FROM d.state_duration)::integer, 0) AS \"online\"\nFROM station_dashboard_data d\nWHERE d.station_id = '$station' AND d.is_online = true",
           "refId": "A"
         },
         {
@@ -1122,7 +1122,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COALESCE(extract(epoch from sc.state_duration)::integer, 0) AS \"offline\"\nFROM station_connectivity sc\nWHERE sc.sid = '$station' AND sc.is_online = false",
+          "rawSql": "SELECT COALESCE(EXTRACT(EPOCH FROM d.state_duration)::integer, 0) AS \"offline\"\nFROM station_dashboard_data d\nWHERE d.station_id = '$station' AND d.is_online = false",
           "refId": "B"
         }
       ],
@@ -1201,7 +1201,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  CASE WHEN ftp_port IS NULL THEN -1 WHEN ftp_open THEN ftp_port ELSE 0 END AS \"FTP\",\n  CASE WHEN http_port IS NULL THEN -1 WHEN http_open THEN http_port ELSE 0 END AS \"HTTP\",\n  CASE WHEN control_port IS NULL THEN -1 WHEN control_open THEN control_port ELSE 0 END AS \"Ctrl\"\nFROM block_health_summary\nWHERE sid = '$station'\nORDER BY ts DESC LIMIT 1",
+          "rawSql": "SELECT\n  CASE WHEN ftp_port IS NULL THEN -1 WHEN ftp_open THEN ftp_port ELSE 0 END AS \"FTP\",\n  CASE WHEN health_http_port IS NULL THEN -1 WHEN http_open THEN health_http_port ELSE 0 END AS \"HTTP\",\n  CASE WHEN control_port IS NULL THEN -1 WHEN control_open THEN control_port ELSE 0 END AS \"Ctrl\"\nFROM station_dashboard_data\nWHERE station_id = '$station'",
           "refId": "A"
         }
       ],
@@ -1493,7 +1493,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT CASE status\n  WHEN 'connected' THEN 0\n  WHEN 'connecting' THEN 1\n  WHEN 'idle' THEN 2\n  WHEN 'inactive' THEN 4\n  WHEN 'error' THEN 3\n  ELSE 2\nEND AS \"RTK\"\nFROM (\n  SELECT status, ts FROM block_ntrip_client WHERE sid = '$station'\n  UNION ALL\n  SELECT status, ts FROM block_ntrip_server WHERE sid = '$station'\n) ntrip\nORDER BY ts DESC LIMIT 1",
+          "rawSql": "SELECT CASE ntrip_status\n  WHEN 'connected' THEN 0\n  WHEN 'connecting' THEN 1\n  WHEN 'idle' THEN 2\n  WHEN 'inactive' THEN 4\n  WHEN 'error' THEN 3\n  ELSE 2\nEND AS \"RTK\"\nFROM station_dashboard_data\nWHERE station_id = '$station'",
           "refId": "A"
         }
       ],
