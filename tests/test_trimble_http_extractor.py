@@ -641,39 +641,60 @@ def netr5_extractor():
 
 
 class TestNetR5Extraction:
-    """Test NetR5 uses standard Trimble HTTP API (same as NetR9)."""
+    """Test NetR5 skips unsupported /prog/show? endpoints and uses merge.xml."""
 
     def test_netr5_full_extraction(self, netr5_extractor):
-        """Confirm NetR5 uses standard /prog/show?Voltages format."""
+        """NetR5 only fetches serial via /prog/show?; voltage/temp come from merge.xml."""
+        # merge.xml provides voltage, temperature, uptime, disk for NetR5
+        merge_xml = """<?xml version="1.0"?>
+        <merge>
+          <power>
+            <P1><voltage>19.35</voltage><capacity>100</capacity><active>TRUE</active></P1>
+            <P2><voltage>0.60</voltage><capacity>0</capacity></P2>
+            <B1><voltage>8.37</voltage><capacity>100</capacity></B1>
+            <T1><celsius>48.91</celsius></T1>
+          </power>
+          <uptime><day>5</day><hour>3</hour><min>12</min><sec>45</sec></uptime>
+        </merge>"""
+
         def mock_fetch(endpoint):
-            responses = {
-                "voltages": SAMPLE_VOLTAGES,
-                "temperature": SAMPLE_TEMPERATURE,
-                "tracking": SAMPLE_TRACKING,
-                "position": SAMPLE_POSITION,
-                "serial": SAMPLE_SERIAL,
-                "antenna": SAMPLE_ANTENNA,
-                "refstation": SAMPLE_REFSTATION,
-            }
-            return responses.get(endpoint)
+            # NetR5 only supports serial; code should only call this for serial
+            if endpoint == "serial":
+                return SAMPLE_SERIAL
+            return None
 
         def mock_connection():
             return {"status": "ok", "port": 8060, "accessible": True}
 
-        with patch.object(netr5_extractor, "_fetch_endpoint", side_effect=mock_fetch):
+        with patch.object(netr5_extractor, "_fetch_endpoint", side_effect=mock_fetch) as mock_ep:
             with patch.object(netr5_extractor, "_test_connection", return_value=mock_connection()):
-                with patch.object(netr5_extractor, "_fetch_merge_xml", return_value=None):
+                with patch.object(netr5_extractor, "_fetch_merge_xml", return_value=merge_xml):
                     result = netr5_extractor.extract_health_data()
 
         assert result["station_id"] == "TEST"
         assert result["receiver_type"] == "NetR5"
-        # Overall status depends on thresholds; 15.06V exceeds voltage_warning_high=15.0
-        assert result["overall_status"] in ("healthy", "warning")
 
-        # Uses standard voltage format (same as NetR9)
+        # Voltage from merge.xml (P1)
         assert "power" in result["metrics"]
-        assert result["metrics"]["power"]["voltage"] == 15.06
-        assert len(result["metrics"]["power"]["ports"]) == 3
+        assert result["metrics"]["power"]["voltage"] == 19.35
+        assert result["metrics"]["power"]["source"] == "merge_xml"
+
+        # Temperature from merge.xml
+        assert "temperature" in result["metrics"]
+        assert result["metrics"]["temperature"]["value"] == 48.91
+
+        # No satellites or position (not available on NetR5)
+        assert "satellites" not in result["metrics"]
+        assert "position" not in result["metrics"]
+
+        # Serial number still fetched via /prog/show?
+        assert result["metrics"]["system"]["serial_number"] == "5039K70766"
+
+        # Should NOT have called voltages, temperature, tracking, position,
+        # firmware, antenna, or refstation endpoints
+        called_endpoints = [call.args[0] for call in mock_ep.call_args_list]
+        for ep in ["voltages", "temperature", "tracking", "position", "firmware", "antenna", "refstation"]:
+            assert ep not in called_endpoints, f"NetR5 should not call {ep}"
 
     def test_netr5_receiver_type_in_output(self, netr5_extractor):
         """Verify receiver_type field says NetR5 in output."""

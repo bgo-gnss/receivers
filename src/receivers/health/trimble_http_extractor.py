@@ -155,8 +155,12 @@ class TrimbleHTTPExtractor:
         # primary source for uptime + disk on all Trimble receivers.
         merge_xml = self._fetch_merge_xml()
 
+        # NetR5 has very limited /prog/show? support (only SerialNumber works).
+        # Skip unsupported endpoints to avoid wasting time on ERROR responses.
+        has_prog_show = self.receiver_type != "NetR5"
+
         # Fetch and parse voltages (/prog/show? first, merge.xml fallback)
-        voltage_data = self._fetch_and_parse_voltages()
+        voltage_data = self._fetch_and_parse_voltages() if has_prog_show else None
         if not voltage_data and merge_xml:
             voltage_data = self._parse_voltage_from_merge_xml(merge_xml)
         if voltage_data:
@@ -164,28 +168,32 @@ class TrimbleHTTPExtractor:
             statuses.append(voltage_data.get("status", "unknown"))
 
         # Fetch and parse temperature (/prog/show? first, merge.xml fallback)
-        temp_data = self._fetch_and_parse_temperature()
+        temp_data = self._fetch_and_parse_temperature() if has_prog_show else None
         if not temp_data and merge_xml:
             temp_data = self._parse_temperature_from_merge_xml(merge_xml)
         if temp_data:
             health_data["metrics"]["temperature"] = temp_data
             statuses.append(temp_data.get("status", "unknown"))
 
-        # Fetch and parse tracking status
-        tracking_data = self._fetch_and_parse_tracking()
-        if tracking_data:
-            health_data["metrics"]["satellites"] = tracking_data
-            statuses.append(tracking_data.get("status", "unknown"))
+        # Fetch and parse tracking status (not available on NetR5)
+        tracking_data = None
+        if has_prog_show:
+            tracking_data = self._fetch_and_parse_tracking()
+            if tracking_data:
+                health_data["metrics"]["satellites"] = tracking_data
+                statuses.append(tracking_data.get("status", "unknown"))
 
-        # Fetch and parse position
-        position_data = self._fetch_and_parse_position()
-        if position_data:
-            health_data["metrics"]["position"] = position_data
-            # Position quality affects status
-            if position_data.get("fix_type") and "3D" not in position_data.get(
-                "fix_type", ""
-            ):
-                statuses.append("warning")
+        # Fetch and parse position (not available on NetR5)
+        position_data = None
+        if has_prog_show:
+            position_data = self._fetch_and_parse_position()
+            if position_data:
+                health_data["metrics"]["position"] = position_data
+                # Position quality affects status
+                if position_data.get("fix_type") and "3D" not in position_data.get(
+                    "fix_type", ""
+                ):
+                    statuses.append("warning")
 
         # Fetch system info (serial, firmware)
         system_data = self._fetch_system_info()
@@ -1013,47 +1021,53 @@ class TrimbleHTTPExtractor:
     def _fetch_system_info(self) -> Optional[Dict[str, Any]]:
         """Fetch system information (serial number, firmware, antenna, etc).
 
+        NetR5 only supports /prog/show?SerialNumber; firmware, antenna, and
+        refstation endpoints all return "ERROR: Unknown Command".
+
         Returns:
             System info dictionary or None
         """
         system_info = {}
+        has_prog_show = self.receiver_type != "NetR5"
 
-        # Get serial number
+        # Get serial number (works on all Trimble models including NetR5)
         serial_response = self._fetch_endpoint("serial")
         if serial_response:
             match = re.search(r"sn=(\S+)", serial_response)
             if match:
                 system_info["serial_number"] = match.group(1)
 
-        # Get firmware version
-        firmware_response = self._fetch_endpoint("firmware")
-        if firmware_response:
-            match = re.search(r"version=(\S+)", firmware_response)
-            if not match:
-                # Try bare value (some receivers return just the version string)
-                stripped = firmware_response.strip()
-                if stripped and len(stripped) < 60:
-                    system_info["firmware_version"] = stripped
-            else:
-                system_info["firmware_version"] = match.group(1)
+        # Remaining /prog/show? endpoints only work on NetR9/NetRS
+        if has_prog_show:
+            # Get firmware version
+            firmware_response = self._fetch_endpoint("firmware")
+            if firmware_response:
+                match = re.search(r"version=(\S+)", firmware_response)
+                if not match:
+                    # Try bare value (some receivers return just the version string)
+                    stripped = firmware_response.strip()
+                    if stripped and len(stripped) < 60:
+                        system_info["firmware_version"] = stripped
+                else:
+                    system_info["firmware_version"] = match.group(1)
 
-        # Get antenna info
-        antenna_response = self._fetch_endpoint("antenna")
-        if antenna_response:
-            name_match = re.search(r'name="([^"]+)"', antenna_response)
-            if name_match:
-                system_info["antenna_type"] = name_match.group(1)
+            # Get antenna info
+            antenna_response = self._fetch_endpoint("antenna")
+            if antenna_response:
+                name_match = re.search(r'name="([^"]+)"', antenna_response)
+                if name_match:
+                    system_info["antenna_type"] = name_match.group(1)
 
-            height_match = re.search(r"height=([\d.]+)", antenna_response)
-            if height_match:
-                system_info["antenna_height"] = float(height_match.group(1))
+                height_match = re.search(r"height=([\d.]+)", antenna_response)
+                if height_match:
+                    system_info["antenna_height"] = float(height_match.group(1))
 
-        # Get reference station info
-        refstation_response = self._fetch_endpoint("refstation")
-        if refstation_response:
-            name_match = re.search(r"Name='([^']+)'", refstation_response)
-            if name_match:
-                system_info["station_name"] = name_match.group(1)
+            # Get reference station info
+            refstation_response = self._fetch_endpoint("refstation")
+            if refstation_response:
+                name_match = re.search(r"Name='([^']+)'", refstation_response)
+                if name_match:
+                    system_info["station_name"] = name_match.group(1)
 
         return system_info if system_info else None
 
