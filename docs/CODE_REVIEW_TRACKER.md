@@ -262,14 +262,27 @@ Tracking document for code weaknesses, recurring issues, and optimization opport
 - **Fix**: Increased to `count=5` with automatic retry on failure. First try sends 5 ICMP packets; if all fail, retries with 5 more. False-offline rate dropped from 33% (count=1) to ~0.002% (count=5 + retry). Cost for truly offline stations: ~12s (vs ~2s before), but still saves 20s+ by skipping futile extraction.
 - **Files**: `health/connection_checker.py`
 
-### CONFIG-013: Station lifecycle status (station_status) and filtering
+### CONFIG-013: Station lifecycle status (station_status + health_check) and filtering
 - **Category**: CONFIG / SCHEDULER / DASHBOARD
 - **Severity**: Medium
 - **Status**: Resolved
 - **Resolution date**: 2026-02-09
-- **Description**: Stations without receivers, decommissioned stations, and passive stations needed a unified lifecycle field. Previously used `health_check` in stations.cfg; renamed to `station_status` as the single source of truth for station lifecycle state.
-- **Fix**: `station_status` field in stations.cfg (values: discontinued, passive, inactive). Auto-detect `inactive` from missing receiver_type in `_load_station_configs()`. DB column renamed from `health_check` to `station_status`. Config file watcher (5-min mtime check) syncs changes. Dashboard shows clickable "Inactive" count box with dark-gray styling and filter option. Both overview and map dashboards updated.
+- **Description**: Stations without receivers, decommissioned stations, and passive stations needed lifecycle and monitoring mode fields. Initially conflated into a single field; separated into two orthogonal fields:
+  - `station_status`: lifecycle state (discontinued, inactive, or NULL=active)
+  - `health_check`: monitoring mode (passive, or NULL=active)
+- **Fix**: Two fields in stations.cfg and DB. Auto-detect `inactive` from missing receiver_type. Scheduler filters on both (`station_status` in discontinued/inactive → skip entirely; `health_check` = passive → skip health monitoring). Config file watcher (5-min mtime check) syncs both fields. Dashboard shows clickable count boxes (Inactive, Discontinued, Passive) with dark-gray "N/A" styling for non-applicable columns.
 - **Files**: `config_utils.py`, `scheduling/bulk_scheduler.py`, `migrations/015_health_check_status.sql`, `gps_health_dashboard.json`, `gps_map_dashboard.json`, `stations.cfg`
+
+### DB-013: Ping packet loss severity threshold too aggressive
+- **Category**: DB-WRITER
+- **Severity**: Medium
+- **Status**: Open
+- **Description**: Ping packet loss of 20% currently triggers CRITICAL overall_status. On 3G/4G links, 20% packet loss is normal and should be WARNING at most. The status_details string shows "CRITICAL: Ping packet loss (20%) Disk" which misrepresents the station's actual health.
+- **Proposal**: Adjust thresholds:
+  - 0-10%: OK (normal for radio links)
+  - 10-60%: WARNING
+  - \>60%: CRITICAL
+- **Files**: `health/db_writer.py` (`_build_status_details()` and/or `_calculate_overall_status()`), possibly `health/connection_checker.py` if thresholds are defined there
 
 ---
 
@@ -303,5 +316,5 @@ When reviewing a file, check for these patterns:
 ---
 
 **Created**: 2026-02-09
-**Last updated**: 2026-02-09 (evening session)
+**Last updated**: 2026-02-09
 **Purpose**: Track code quality issues for systematic review and optimization
