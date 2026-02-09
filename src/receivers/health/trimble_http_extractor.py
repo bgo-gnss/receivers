@@ -238,10 +238,11 @@ class TrimbleHTTPExtractor:
         logging_data = None
         if activity_html:
             logging_data = self._parse_logging_from_activity_html(activity_html)
-        elif self.receiver_type != "NetR5":
-            # Fetch activity page for non-NetRS Trimble receivers too
-            if not activity_html:
-                activity_html = self._fetch_activity_page()
+        if not logging_data and merge_xml:
+            logging_data = self._parse_logging_from_merge_xml(merge_xml)
+        if not logging_data and self.receiver_type != "NetR5" and not activity_html:
+            # Last resort: try activity page for non-NetRS Trimble receivers
+            activity_html = self._fetch_activity_page()
             if activity_html:
                 logging_data = self._parse_logging_from_activity_html(activity_html)
         if logging_data:
@@ -741,6 +742,62 @@ class TrimbleHTTPExtractor:
             "value": temperature,
             "status": status,
             "source": "merge_xml",
+        }
+
+    def _parse_logging_from_merge_xml(
+        self, xml_text: Optional[str]
+    ) -> Optional[Dict[str, Any]]:
+        """Parse logging sessions from merge.xml dataLogger block.
+
+        Each <session> has <name>, <enabled>, <status>, and <filePath>.
+        Status values: 0=idle, 2=logging.
+
+        Returns:
+            Logging sessions dict with session names and count, or None
+        """
+        if not xml_text:
+            return None
+
+        sessions = re.findall(r"<session>(.*?)</session>", xml_text, re.DOTALL)
+        if not sessions:
+            return None
+
+        # Map Trimble session names to our canonical names
+        session_map = {
+            "24hr_15s": "15s_24hr",
+            "15s_24hr": "15s_24hr",
+            "1hr_1s": "1Hz_1hr",
+            "1Hz_1hr": "1Hz_1hr",
+            "1hr_15s": "15s_1hr",
+            "status_1hr": "status_1hr",
+        }
+
+        active = []
+        for session_xml in sessions:
+            name_m = re.search(r"<name>(.*?)</name>", session_xml)
+            enabled_m = re.search(r"<enabled>(\d)</enabled>", session_xml)
+            status_m = re.search(r"<status>(\d+)</status>", session_xml)
+            path_m = re.search(r"<filePath>(.*?)</filePath>", session_xml)
+
+            if not name_m or not enabled_m:
+                continue
+
+            name = name_m.group(1)
+            enabled = enabled_m.group(1) == "1"
+            is_logging = status_m and status_m.group(1) == "2"
+            file_path = path_m.group(1) if path_m else ""
+
+            if enabled and is_logging and file_path:
+                canonical = session_map.get(name, name)
+                active.append({"session": canonical, "file": file_path})
+
+        if not active:
+            return None
+
+        return {
+            "active_sessions": len(active),
+            "sessions": active,
+            "status": "ok",
         }
 
     def _fetch_activity_page(self) -> Optional[str]:
