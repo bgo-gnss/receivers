@@ -900,7 +900,22 @@ class LeicaG10(BaseReceiver):
         http_port = int(self.station_info.get("receiver", {}).get("httpport", 8060))
         ftp_port = int(self.station_info.get("receiver", {}).get("ftpport", 2160))
 
-        # Try HTTP extraction first (rich data from web interface)
+        # Step 1: Check connection health (ping + port checks with fail_fast)
+        connection_data = self.check_connection_health(
+            http_port=http_port,
+            protocol_type="ftp",
+            protocol_port=ftp_port,
+        )
+
+        ping_ok = connection_data.get("router_ping", {}).get("accessible", False)
+
+        if not ping_ok:
+            self.logger.debug(
+                f"Ping failed for {host} — skipping HTTP/FTP extraction"
+            )
+            return self.build_health_status(connection_data=connection_data)
+
+        # Step 2: Try HTTP extraction first (rich data from web interface)
         if host:
             try:
                 from ..health import G10HTTPExtractor
@@ -923,14 +938,8 @@ class LeicaG10(BaseReceiver):
                     f"HTTP extraction failed, falling back to FTP: {e}"
                 )
 
-        # Fall back to FTP-based health inference
+        # Step 3: Fall back to FTP-based health inference
         from ..health import G10FTPHealthInferrer
-
-        connection_data = self.check_connection_health(
-            http_port=http_port,
-            protocol_type="ftp",
-            protocol_port=ftp_port,
-        )
 
         data_quality = None
         receiver_specific = None
