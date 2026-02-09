@@ -22,6 +22,18 @@
   "links": [
     {
       "asDropdown": false,
+      "icon": "bolt",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Reset Filters",
+      "tooltip": "Reset all filters to defaults",
+      "type": "link",
+      "url": "/d/gps-map/gps-station-map"
+    },
+    {
+      "asDropdown": false,
       "icon": "dashboard",
       "includeVars": true,
       "keepTime": true,
@@ -613,7 +625,7 @@
       "type": "geomap"
     }
   ],
-  "refresh": "5m",
+  "refresh": "10s",
   "schemaVersion": 38,
   "style": "dark",
   "tags": [
@@ -624,7 +636,11 @@
   "templating": {
     "list": [
       {
-        "current": {},
+        "current": {
+          "selected": true,
+          "text": "All Stations",
+          "value": "all"
+        },
         "datasource": {
           "type": "grafana-postgresql-datasource",
           "uid": "gps_health"
