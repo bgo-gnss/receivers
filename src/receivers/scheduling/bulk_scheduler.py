@@ -617,7 +617,8 @@ class BulkDownloadScheduler:
                     'ip_number': config.get('ip_number', ''),
                     'ip_port': config.get('ip_port', 21),
                     'enabled': config.get('enabled', True),
-                    'timeout_category': config.get('timeout_category', 'default')
+                    'timeout_category': config.get('timeout_category', 'default'),
+                    'health_check': config.get('health_check'),
                 }
                 
         except Exception as e:
@@ -777,6 +778,10 @@ class BulkDownloadScheduler:
             if not config.get('enabled', True):
                 continue
 
+            # Skip discontinued/passive stations
+            if config.get('health_check') in ('discontinued', 'passive'):
+                continue
+
             # Apply station filter if specified
             if self.station_filter and station_id not in self.station_filter:
                 continue
@@ -859,8 +864,15 @@ class BulkDownloadScheduler:
         # Supported: PolaRX5, NetR9, NetRS, NetR5, G10
         supported_health_types = {'polarx5', 'netr9', 'netrs', 'netr5', 'g10'}
         health_stations = []
+        skipped_stations = []
         for station_id, config in self.stations.items():
             if not config.get('enabled', True):
+                continue
+
+            # Skip discontinued/passive stations
+            health_check = config.get('health_check')
+            if health_check in ('discontinued', 'passive'):
+                skipped_stations.append(station_id)
                 continue
 
             # Apply station filter if specified
@@ -873,6 +885,12 @@ class BulkDownloadScheduler:
                 continue
 
             health_stations.append(station_id)
+
+        if skipped_stations:
+            self.logger.info(
+                f"Skipping {len(skipped_stations)} discontinued/passive stations: "
+                f"{', '.join(sorted(skipped_stations))}"
+            )
 
         if not health_stations:
             self.logger.info("No stations support health monitoring")
