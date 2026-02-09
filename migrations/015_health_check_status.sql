@@ -66,6 +66,7 @@ COMMENT ON COLUMN stations.health_check IS 'Monitoring mode: NULL=active, passiv
 
 -- Set known values from stations.cfg
 UPDATE stations SET station_status = 'discontinued' WHERE sid IN ('ASVE', 'BLAL', 'ICEB', 'ICEC');
+UPDATE stations SET station_status = 'inactive' WHERE sid IN ('GRVM', 'GRVV', 'INGC');
 UPDATE stations SET health_check = 'passive' WHERE sid IN ('GRVM', 'GRVV', 'KRAC', 'MYVA', 'RVIT', 'SYRF', 'THRC', 'TORK');
 
 -- Recreate the dashboard view with both columns
