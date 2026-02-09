@@ -262,14 +262,14 @@ Tracking document for code weaknesses, recurring issues, and optimization opport
 - **Fix**: Increased to `count=5` with automatic retry on failure. First try sends 5 ICMP packets; if all fail, retries with 5 more. False-offline rate dropped from 33% (count=1) to ~0.002% (count=5 + retry). Cost for truly offline stations: ~12s (vs ~2s before), but still saves 20s+ by skipping futile extraction.
 - **Files**: `health/connection_checker.py`
 
-### CONFIG-013: No-instrument station auto-detection and filtering
+### CONFIG-013: Station lifecycle status (station_status) and filtering
 - **Category**: CONFIG / SCHEDULER / DASHBOARD
 - **Severity**: Medium
 - **Status**: Resolved
 - **Resolution date**: 2026-02-09
-- **Description**: Stations without receiver or antenna (receiver_type missing/None, antenna_type missing) were still health-checked and shown in dashboards, wasting scheduler threads and cluttering the overview.
-- **Fix**: Auto-detect `no_instrument` status from config in `_load_station_configs()` (receiver_type None/empty/unknown or antenna missing). DB sync at startup writes health_check to stations table. Config file watcher (5-min mtime check) picks up changes when instruments are added back. Dashboard shows clickable "No Instrument" count box, dark-gray styling, and filter option. Map dashboard also updated with matching filter support.
-- **Files**: `scheduling/bulk_scheduler.py`, `migrations/015_health_check_status.sql`, `gps_health_dashboard.json`, `gps_map_dashboard.json`
+- **Description**: Stations without receivers, decommissioned stations, and passive stations needed a unified lifecycle field. Previously used `health_check` in stations.cfg; renamed to `station_status` as the single source of truth for station lifecycle state.
+- **Fix**: `station_status` field in stations.cfg (values: discontinued, passive, inactive). Auto-detect `inactive` from missing receiver_type in `_load_station_configs()`. DB column renamed from `health_check` to `station_status`. Config file watcher (5-min mtime check) syncs changes. Dashboard shows clickable "Inactive" count box with dark-gray styling and filter option. Both overview and map dashboards updated.
+- **Files**: `config_utils.py`, `scheduling/bulk_scheduler.py`, `migrations/015_health_check_status.sql`, `gps_health_dashboard.json`, `gps_map_dashboard.json`, `stations.cfg`
 
 ---
 
