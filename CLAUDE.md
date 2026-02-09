@@ -169,6 +169,31 @@ See `docs/scheduler/scheduler-guide.md` for complete details.
 # Environment: GPS_CONFIG_PATH or default paths
 ```
 
+#### Station Lifecycle Fields
+
+Two separate fields in `stations.cfg` control station visibility:
+
+| Field | Purpose | Values | Default (NULL) |
+|-------|---------|--------|----------------|
+| `station_status` | Station lifecycle | `inactive`, `discontinued` | active |
+| `health_check` | Monitoring mode | `passive` | active (directly checked) |
+
+- **`station_status`**: Controls whether the station is operational
+  - `inactive` — no receiver installed or temporarily out of service
+  - `discontinued` — station decommissioned, no longer operational
+  - Not set (NULL) — active, fully operational
+- **`health_check`**: Controls how the station is monitored
+  - `passive` — data arrives externally, not directly health-checked
+  - Not set (NULL) — active, scheduler runs health checks
+
+A station can have both fields set (e.g., GRVM: `station_status = inactive` + `health_check = passive`).
+
+**Config change detection**: The scheduler watches `stations.cfg` for changes (mtime-based, every 5 minutes) and automatically syncs `station_status` and `health_check` to the PostgreSQL database. No scheduler restart needed for config changes.
+
+**Auto-detection**: Stations with `receiver_type` set to None/empty/unknown are automatically flagged as `station_status = inactive` by the scheduler.
+
+See `stations.cfg` header comments for the complete field reference.
+
 ### Scheduler Configuration
 ```bash
 # Create default configuration
@@ -273,12 +298,17 @@ mkdir -p ~/.config/gpsconfig
 - **SQLAlchemy**: Database backend for job storage
 
 ### Monitoring Integration
-- **Grafana Dashboard**: GPS Receiver Health dashboard (`docs/grafana/`), see `docs/grafana/README.md`
+- **Grafana Dashboards** (`docs/grafana/`), see `docs/grafana/README.md`
   - Runs via Docker Compose (`deployment/docker-dev/docker-compose.yml`) on port 3001
-  - Dashboard JSON: `docs/grafana/gps_health_dashboard.json`
+  - **Overview**: `gps_health_dashboard.json` — count boxes, station table, map panel
+  - **Map**: `gps_map_dashboard.json` — full-screen geomap with count boxes
+  - **Station Detail**: `gps_station_detail_dashboard.json` — per-station deep dive
   - Datasource: PostgreSQL `gps_health` database
   - Auto-provisioned dashboards and datasources via YAML configs
-  - To update: edit the JSON file and restart the Grafana container
+  - To update: edit the JSON file and `docker restart gps-grafana-dev`
+  - Default refresh: 10s, filters: Area, Station, Receiver (NONE=missing), Antenna (NONE=missing), Status Filter
+  - "Reset Filters" button in nav bar resets all filters to defaults
+  - **Ping tolerance**: `station_connectivity` view requires 2 consecutive failed pings before reporting offline (prevents false-offline on lossy 3G/4G links)
 - **Icinga 2**: Health data can be sent to monitoring endpoints
 - **JSON logging**: Structured output for log aggregation systems
 - **Email alerts**: Integration with gps-validation@vedur.is
@@ -364,9 +394,10 @@ All receivers use Phase 1 utilities by default:
 
 ---
 
-**Last updated**: 2025-10-01
+**Last updated**: 2026-02-09
 **Package version**: Development (gpslibrary_new)
 **Phase Status**: Phase 3C Partial Complete - Flexible scheduling implemented, extensible architecture ready
+
 ## TODO / Known Issues
 
 A systematic review is needed to address recurring patterns of issues found during dashboard and health monitoring development. See **`docs/CODE_REVIEW_TRACKER.md`** for the full tracking document with details, priorities, and status.
