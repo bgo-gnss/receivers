@@ -34,19 +34,42 @@ CREATE INDEX IF NOT EXISTS idx_ping_status_ts ON block_ping_status(ts DESC);
 -- STATE TRANSITION TRACKING VIEW
 -- ============================================================================
 
--- View to get current state and duration for each station
+-- View to get current state and duration for each station.
+-- Requires 2 consecutive failed pings before reporting offline.
+-- A single failed ping after a success is still shown as online to
+-- avoid false-offline reports on lossy 3G/4G links.
 CREATE OR REPLACE VIEW station_connectivity AS
-WITH latest_ping AS (
-    -- Get the most recent ping for each station
-    SELECT DISTINCT ON (sid)
-        sid,
-        ts,
-        is_online,
-        response_time_ms,
-        packet_loss,
-        error_message
+WITH latest_two AS (
+    -- Get the two most recent pings for each station
+    SELECT sid, ts, is_online, response_time_ms, packet_loss, error_message,
+        ROW_NUMBER() OVER (PARTITION BY sid ORDER BY ts DESC) AS rn
     FROM block_ping_status
-    ORDER BY sid, ts DESC
+),
+latest_ping AS (
+    SELECT sid, ts, is_online, response_time_ms, packet_loss, error_message
+    FROM latest_two WHERE rn = 1
+),
+prev_ping AS (
+    SELECT sid, is_online AS prev_online
+    FROM latest_two WHERE rn = 2
+),
+effective_state AS (
+    -- Only report offline if BOTH latest pings failed.
+    -- Single failure after success stays online (lossy link tolerance).
+    SELECT
+        lp.sid,
+        lp.ts,
+        CASE
+            WHEN lp.is_online THEN true
+            WHEN pp.prev_online IS NULL THEN lp.is_online  -- only 1 ping exists
+            WHEN pp.prev_online = false THEN false          -- 2 consecutive failures
+            ELSE true                                        -- single failure, prev was ok
+        END AS is_online,
+        lp.response_time_ms,
+        lp.packet_loss,
+        lp.error_message
+    FROM latest_ping lp
+    LEFT JOIN prev_ping pp ON lp.sid = pp.sid
 ),
 state_changes AS (
     -- Find when the current state started by looking at state transitions
@@ -67,18 +90,18 @@ state_start AS (
     ORDER BY sid, ts DESC
 )
 SELECT
-    lp.sid,
-    lp.ts as last_check,
-    lp.is_online,
-    lp.response_time_ms,
-    lp.packet_loss,
-    lp.error_message,
-    COALESCE(ss.state_since, lp.ts) as state_since,
-    NOW() - COALESCE(ss.state_since, lp.ts) as state_duration
-FROM latest_ping lp
-LEFT JOIN state_start ss ON lp.sid = ss.sid;
+    es.sid,
+    es.ts as last_check,
+    es.is_online,
+    es.response_time_ms,
+    es.packet_loss,
+    es.error_message,
+    COALESCE(ss.state_since, es.ts) as state_since,
+    NOW() - COALESCE(ss.state_since, es.ts) as state_duration
+FROM effective_state es
+LEFT JOIN state_start ss ON es.sid = ss.sid;
 
-COMMENT ON VIEW station_connectivity IS 'Current connectivity state and duration for each station';
+COMMENT ON VIEW station_connectivity IS 'Current connectivity state per station (requires 2 consecutive failed pings for offline)';
 
 -- ============================================================================
 -- HELPER FUNCTION - Format duration for display
