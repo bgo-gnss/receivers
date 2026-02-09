@@ -224,12 +224,28 @@ class TrimbleHTTPExtractor:
 
         # Uptime from merge.xml, fall back to activity CGI (NetRS)
         uptime_data = self._parse_uptime_from_merge_xml(merge_xml)
+        activity_html = None
         if not uptime_data and self.receiver_type == "NetRS":
-            uptime_data = self._fetch_uptime_from_activity_page()
+            activity_html = self._fetch_activity_page()
+            if activity_html:
+                uptime_data = self._parse_uptime_from_activity_html(activity_html)
         if uptime_data:
             health_data["metrics"]["uptime"] = uptime_data
         else:
             health_data["metrics"]["uptime"] = {"available": False}
+
+        # Logging sessions from activity page (NetRS) or merge.xml (NetR9)
+        logging_data = None
+        if activity_html:
+            logging_data = self._parse_logging_from_activity_html(activity_html)
+        elif self.receiver_type != "NetR5":
+            # Fetch activity page for non-NetRS Trimble receivers too
+            if not activity_html:
+                activity_html = self._fetch_activity_page()
+            if activity_html:
+                logging_data = self._parse_logging_from_activity_html(activity_html)
+        if logging_data:
+            health_data["metrics"]["logging_sessions"] = logging_data
 
         # Correct port status if any HTTP endpoint succeeded after initial test
         # (receiver may be slow to respond initially but data extraction works)
@@ -727,50 +743,83 @@ class TrimbleHTTPExtractor:
             "source": "merge_xml",
         }
 
-    def _fetch_uptime_from_activity_page(self) -> Optional[Dict[str, Any]]:
-        """Fetch uptime data from NetRS Activity CGI page.
+    def _fetch_activity_page(self) -> Optional[str]:
+        """Fetch the Activity CGI page HTML from Trimble receiver.
 
-        Response format (HTML):
-            <b>Run Time:</b><br />System has been running for 159 days 1 hour 31 minutes
+        Returns:
+            HTML string or None
+        """
+        url = f"{self.base_url}{self.NETRS_ENDPOINTS['activity']}"
+        try:
+            response = requests.get(url, auth=self.auth, timeout=self.timeout)
+            if response.status_code == 200:
+                return response.text
+        except Exception:
+            pass
+        return None
+
+    def _parse_uptime_from_activity_html(self, html: str) -> Optional[Dict[str, Any]]:
+        """Parse uptime from Activity CGI HTML.
+
+        Expected format:
+            System has been running for 159 days 1 hour 31 minutes
 
         Returns:
             Parsed uptime data or None
         """
-        url = f"{self.base_url}{self.NETRS_ENDPOINTS['activity']}"
-
-        try:
-            response = requests.get(url, auth=self.auth, timeout=self.timeout)
-
-            if response.status_code != 200:
-                return None
-
-            html = response.text
-
-            # Parse uptime: "running for X days Y hour Z minutes"
-            uptime_match = re.search(
-                r"running for (\d+) days? (\d+) hours? (\d+) minutes?", html
-            )
-
-            if not uptime_match:
-                return None
-
-            days = int(uptime_match.group(1))
-            hours = int(uptime_match.group(2))
-            minutes = int(uptime_match.group(3))
-
-            total_seconds = (days * 86400) + (hours * 3600) + (minutes * 60)
-
-            return {
-                "seconds": total_seconds,
-                "days": days,
-                "hours": hours,
-                "minutes": minutes,
-                "formatted": f"{days}d {hours}h {minutes}m",
-                "source": "activity_page",
-            }
-
-        except Exception:
+        uptime_match = re.search(
+            r"running for (\d+) days? (\d+) hours? (\d+) minutes?", html
+        )
+        if not uptime_match:
             return None
+
+        days = int(uptime_match.group(1))
+        hours = int(uptime_match.group(2))
+        minutes = int(uptime_match.group(3))
+        total_seconds = (days * 86400) + (hours * 3600) + (minutes * 60)
+
+        return {
+            "seconds": total_seconds,
+            "days": days,
+            "hours": hours,
+            "minutes": minutes,
+            "formatted": f"{days}d {hours}h {minutes}m",
+            "source": "activity_page",
+        }
+
+    def _parse_logging_from_activity_html(self, html: str) -> Optional[Dict[str, Any]]:
+        """Parse logging session info from Activity CGI HTML.
+
+        Expected format:
+            <td>Session</td><td>24hr_15s</td><td>logging to /202602/a/INSK...T00</td>
+            <td>Session</td><td>1hr_1s</td><td>logging to /202602/b/INSK...T00</td>
+
+        Returns:
+            Logging sessions dict with session names and count, or None
+        """
+        sessions = re.findall(
+            r"<td>Session</td>\s*<td>([^<]+)</td>\s*<td>logging to ([^<]+)</td>", html
+        )
+        if not sessions:
+            return None
+
+        # Map receiver session names to our canonical names
+        session_map = {
+            "24hr_15s": "15s_24hr",
+            "1hr_1s": "1Hz_1hr",
+            "1hr_15s": "15s_1hr",
+        }
+
+        active = []
+        for name, path in sessions:
+            canonical = session_map.get(name, name)
+            active.append({"session": canonical, "file": path})
+
+        return {
+            "active_sessions": len(active),
+            "sessions": active,
+            "status": "ok",
+        }
 
     def _fetch_and_parse_temperature(self) -> Optional[Dict[str, Any]]:
         """Fetch and parse temperature data.
@@ -1046,7 +1095,7 @@ class TrimbleHTTPExtractor:
                 if not match:
                     # Try bare value (some receivers return just the version string)
                     stripped = firmware_response.strip()
-                    if stripped and len(stripped) < 60:
+                    if stripped and len(stripped) < 60 and not stripped.startswith("ERROR:"):
                         system_info["firmware_version"] = stripped
                 else:
                     system_info["firmware_version"] = match.group(1)

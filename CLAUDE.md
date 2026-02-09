@@ -367,4 +367,22 @@ All receivers use Phase 1 utilities by default:
 **Last updated**: 2025-10-01
 **Package version**: Development (gpslibrary_new)
 **Phase Status**: Phase 3C Partial Complete - Flexible scheduling implemented, extensible architecture ready
+## TODO / Known Issues
+
+A systematic review is needed to address recurring patterns of issues found during dashboard and health monitoring development. See **`docs/CODE_REVIEW_TRACKER.md`** for the full tracking document with details, priorities, and status.
+
+### High Priority
+- **Protocol-agnostic data model**: Views and SQL assume PolaRX5 (FTP+HTTP+Control); Trimble HTTP-only receivers produce NULL/unknown in dashboards
+- **Status value vocabulary**: Inconsistent use of `'open'`/`'ok'`/`'active'` across `block_port_status`, `station_port_status`, and health summary
+- **Receiver capability awareness**: Dashboard should know what each receiver type supports (status session, control port, NTRIP) instead of per-field NULL checks
+
+### Medium Priority
+- **Codebase review**: Full audit of db_writer.py, connectivity_writer.py, and all extractors for protocol assumptions
+- **Test coverage**: Integration tests for Trimble health flow end-to-end (extractor → db_writer → dashboard views)
+- **Error handling patterns**: Standardize SAVEPOINT usage, transaction management, and value truncation across all DB writers
+
+### Tracking
+- Full issue tracker: `docs/CODE_REVIEW_TRACKER.md`
+- Updated: 2026-02-09
+
 **Maintainer**: Veðurstofa Íslands GPS Team
