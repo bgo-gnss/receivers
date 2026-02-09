@@ -187,8 +187,35 @@ Tracking document for code weaknesses, recurring issues, and optimization opport
 - **Category**: SCHEDULER
 - **Severity**: High
 - **Status**: Resolved
+- **Resolution date**: 2026-02-09
 - **Description**: Two scheduler processes ran simultaneously, causing duplicate health checks and corrupted SBF data (bogus 1.12V readings). Fixed with `fcntl.flock()` exclusive lock in `start()` — second instance fails immediately with PID of running instance.
 - **Files**: `scheduling/bulk_scheduler.py`
+
+### SCHEDULER-011: Thread pool starvation from offline stations
+- **Category**: SCHEDULER / EXTRACTOR
+- **Severity**: High
+- **Status**: Resolved
+- **Resolution date**: 2026-02-09
+- **Description**: 15 APScheduler workers blocked by slow offline station health checks (30-133s per station). Root cause: ping failure did not gate port checks or data extraction. Offline stations consumed threads doing futile port probes (3×2s timeout each), HTTP extraction (10s timeout), and NTRIP checks.
+- **Fix**: Added ping gate to all 4 receiver types — skip port checks and extraction when ping fails. `check_connection_health()` already had `fail_fast=True` for port checks; now extraction is also gated.
+- **Files**: `septentrio/polarx5.py`, `trimble/netr9.py`, `trimble/netrs.py`, `leica/g10.py`
+
+### EXTRACTOR-012: NetR9 logging sessions not extracted (merge.xml)
+- **Category**: EXTRACTOR
+- **Severity**: Medium
+- **Status**: Resolved
+- **Resolution date**: 2026-02-09
+- **Description**: NetR9 receivers showed "Logging: Unknown" because the activity CGI (`/perl-scripts/rstatusActivity.cgi`) is NetRS-only (returns 404 on NetR9). Logging session data was available in merge.xml `dataLogger` block but not parsed.
+- **Fix**: Added `_parse_logging_from_merge_xml()` to parse `<session>` elements (enabled=1, status=2 = actively logging). Now falls back: activity CGI → merge.xml → skip.
+- **Files**: `health/trimble_http_extractor.py`
+
+### CONFIG-011: Passive stations lack health_check marker
+- **Category**: CONFIG
+- **Severity**: Low
+- **Status**: Resolved
+- **Resolution date**: 2026-02-09
+- **Description**: 8 stations (GRVM, GRVV, KRAC, MYVA, RVIT, SYRF, THRC, TORK) have no `receiver_type` or `router_ip` — they are either inactive or externally managed. They appear in the dashboard as "unknown" with no health data. Added `health_check = passive` marker to `stations.cfg` for future filtering.
+- **Files**: `gps-config-data/stations.cfg`
 
 ### EXTRACTOR-011: G10 logging session data not written to DB
 - **Category**: EXTRACTOR / DB-WRITER
@@ -196,6 +223,22 @@ Tracking document for code weaknesses, recurring issues, and optimization opport
 - **Status**: Open
 - **Description**: G10 extractor already parses logging sessions (`_parse_logging_sessions()`) and puts them in `metrics["logging_sessions"]`. The db_writer now has `_write_logging_status()` but the G10 format uses `active_sessions` count without individual session booleans. Need to map G10 session names to canonical names.
 - **Files**: `health/g10_http_extractor.py`, `health/db_writer.py`
+
+### DASHBOARD-011: "Checked" column shows data age, not last check time
+- **Category**: DASHBOARD
+- **Severity**: Medium
+- **Status**: Resolved
+- **Resolution date**: 2026-02-09
+- **Description**: The overview table "Checked" column used `seconds_since_update` (time since last successful data extraction) not `last_check` (time since last health check attempt). For offline stations with all ports down, this showed hours/days even though health checks ran every 5 minutes.
+- **Fix**: Changed to `EXTRACT(epoch FROM now() - d.last_check)::integer`. Kept existing thresholds (green <2h, yellow 2-24h, red >24h) for flexibility if check frequency is reduced later. Data staleness is already shown by the Conn column ("offline 1d").
+- **Files**: `gps_health_dashboard.json` (table SQL + column overrides)
+
+### CONFIG-012: Passive stations not filtered from scheduler/dashboard
+- **Category**: CONFIG / SCHEDULER / DASHBOARD
+- **Severity**: Low
+- **Status**: Open
+- **Description**: Stations marked `health_check = passive` still appear in dashboard as "unknown" and trigger scheduler config errors. Should be filtered out of health monitoring or shown with "Passive" status. The `health_check` field was added 2026-02-09 but not yet consumed by any code.
+- **Files**: `gps-config-data/stations.cfg`, `scheduling/bulk_scheduler.py`, `gps_health_dashboard.json`
 
 ---
 
