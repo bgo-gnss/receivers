@@ -624,16 +624,15 @@ class BulkDownloadScheduler:
 
             for station_id, config in all_stations.items():
                 # Extract relevant configuration
+                station_status = config.get('station_status')
                 health_check = config.get('health_check')
                 receiver_type = config.get('receiver_type', 'unknown')
 
-                # Auto-detect no-instrument stations
-                # Only flag if receiver_type is genuinely absent — empty antenna_type
-                # is common metadata gap and doesn't mean no physical antenna
-                if not health_check:
+                # Auto-detect inactive stations: flag if receiver_type is genuinely absent
+                if not station_status:
                     rx_missing = receiver_type.lower() in ('none', '', 'unknown')
                     if rx_missing:
-                        health_check = 'no_instrument'
+                        station_status = 'inactive'
 
                 stations[station_id] = {
                     'station_id': station_id,
@@ -642,6 +641,7 @@ class BulkDownloadScheduler:
                     'ip_port': config.get('ip_port', 21),
                     'enabled': config.get('enabled', True),
                     'timeout_category': config.get('timeout_category', 'default'),
+                    'station_status': station_status,
                     'health_check': health_check,
                 }
 
@@ -653,12 +653,12 @@ class BulkDownloadScheduler:
         self.logger.info(f"Loaded {len(stations)} station configurations")
         return stations
 
-    def _sync_health_check_to_db(self) -> None:
-        """Sync health_check values from stations config to the database.
+    def _sync_station_status_to_db(self) -> None:
+        """Sync station_status and health_check values from config to the database.
 
-        Updates the stations.health_check column for all loaded stations,
-        setting it to the value from config (discontinued, passive, no_instrument)
-        or clearing it to NULL if the station is now active again.
+        Two separate fields:
+        - station_status: lifecycle (NULL=active, discontinued, inactive)
+        - health_check: monitoring mode (NULL=active, passive)
 
         This runs at startup and when config file changes are detected.
         """
@@ -667,32 +667,36 @@ class BulkDownloadScheduler:
 
             with DatabaseConnectionFactory.connection() as conn:
                 with conn.cursor() as cur:
-                    synced = 0
-                    cleared = 0
+                    status_synced = 0
+                    hc_synced = 0
                     for station_id, config in self.stations.items():
+                        station_status = config.get('station_status')
                         health_check = config.get('health_check')
                         cur.execute("""
                             UPDATE stations
-                            SET health_check = %s
-                            WHERE sid = %s AND (health_check IS DISTINCT FROM %s)
-                        """, (health_check, station_id, health_check))
+                            SET station_status = %s, health_check = %s
+                            WHERE sid = %s
+                              AND (station_status IS DISTINCT FROM %s
+                                OR health_check IS DISTINCT FROM %s)
+                        """, (station_status, health_check, station_id,
+                              station_status, health_check))
                         if cur.rowcount > 0:
+                            if station_status:
+                                status_synced += 1
                             if health_check:
-                                synced += 1
-                            else:
-                                cleared += 1
+                                hc_synced += 1
 
-                    if synced or cleared:
+                    if status_synced or hc_synced:
                         self.logger.info(
-                            f"Synced health_check to DB: {synced} set, {cleared} cleared"
+                            f"Synced to DB: {status_synced} station_status, {hc_synced} health_check"
                         )
                     else:
-                        self.logger.debug("health_check values already in sync with DB")
+                        self.logger.debug("station_status/health_check already in sync with DB")
 
         except ImportError:
-            self.logger.debug("psycopg2 not available — skipping health_check sync")
+            self.logger.debug("psycopg2 not available — skipping status sync")
         except Exception as e:
-            self.logger.warning(f"Failed to sync health_check to DB: {e}")
+            self.logger.warning(f"Failed to sync station status to DB: {e}")
 
     def _get_stations_cfg_path(self) -> Optional[Path]:
         """Get the path to stations.cfg using gps_parser."""
@@ -733,24 +737,28 @@ class BulkDownloadScheduler:
 
         old_stations = self.stations
         self.stations = self._load_station_configs()
-        self._sync_health_check_to_db()
+        self._sync_station_status_to_db()
 
         # Log meaningful changes
         new_ids = set(self.stations) - set(old_stations)
         removed_ids = set(old_stations) - set(self.stations)
         changed = []
         for sid in set(self.stations) & set(old_stations):
+            old_ss = old_stations[sid].get('station_status')
+            new_ss = self.stations[sid].get('station_status')
             old_hc = old_stations[sid].get('health_check')
             new_hc = self.stations[sid].get('health_check')
+            if old_ss != new_ss:
+                changed.append(f"{sid}: status {old_ss or 'active'} → {new_ss or 'active'}")
             if old_hc != new_hc:
-                changed.append(f"{sid}: {old_hc or 'active'} → {new_hc or 'active'}")
+                changed.append(f"{sid}: health_check {old_hc or 'active'} → {new_hc or 'active'}")
 
         if new_ids:
             self.logger.info(f"New stations: {', '.join(sorted(new_ids))}")
         if removed_ids:
             self.logger.info(f"Removed stations: {', '.join(sorted(removed_ids))}")
         if changed:
-            self.logger.info(f"Health check changes: {'; '.join(changed)}")
+            self.logger.info(f"Config changes: {'; '.join(changed)}")
 
     def _load_receiver_session_capabilities(self) -> Dict[str, List[str]]:
         """Load session capabilities for each receiver type from receivers.cfg.
@@ -891,8 +899,8 @@ class BulkDownloadScheduler:
         # Schedule health monitoring if enabled
         self._schedule_health_monitoring()
 
-        # Sync health_check values to DB at startup
-        self._sync_health_check_to_db()
+        # Sync station_status values to DB at startup
+        self._sync_station_status_to_db()
 
         # Schedule config file watcher (every 5 minutes)
         self._schedule_config_watcher()
@@ -927,8 +935,10 @@ class BulkDownloadScheduler:
             if not config.get('enabled', True):
                 continue
 
-            # Skip discontinued/passive/no-instrument stations
-            if config.get('health_check') in ('discontinued', 'passive', 'no_instrument'):
+            # Skip non-active stations (lifecycle or monitoring mode)
+            if config.get('station_status') in ('discontinued', 'inactive'):
+                continue
+            if config.get('health_check') == 'passive':
                 continue
 
             # Apply station filter if specified
@@ -1018,9 +1028,13 @@ class BulkDownloadScheduler:
             if not config.get('enabled', True):
                 continue
 
-            # Skip discontinued/passive/no-instrument stations
+            # Skip non-active stations (lifecycle or monitoring mode)
+            station_status = config.get('station_status')
             health_check = config.get('health_check')
-            if health_check in ('discontinued', 'passive', 'no_instrument'):
+            if station_status in ('discontinued', 'inactive'):
+                skipped_stations.append(station_id)
+                continue
+            if health_check == 'passive':
                 skipped_stations.append(station_id)
                 continue
 

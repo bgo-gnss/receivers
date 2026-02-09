@@ -1,29 +1,76 @@
--- Migration: 015_health_check_status.sql
--- Description: Add health_check column to control station monitoring status
+-- Migration: 015_station_status.sql
+-- Description: Add station_status column for lifecycle, keep health_check for monitoring mode
 -- Date: 2026-02-09
 --
--- Values:
---   NULL (default) = active, normal health checking
---   'passive'      = not directly checked (external data delivery, inactive infrastructure)
+-- Two separate concepts:
+--
+-- station_status (lifecycle):
+--   NULL (default) = active station
+--   'inactive'     = no receiver installed or temporarily out of service
 --   'discontinued' = station decommissioned, no longer operational
---   'no_instrument' = station has no receiver or antenna installed (auto-detected from config)
+--
+-- health_check (monitoring mode):
+--   NULL (default) = active, normal health checking
+--   'passive'      = not directly checked (external data delivery)
 --
 -- Usage:
 --   psql -h localhost -U bgo -d gps_health -f migrations/015_health_check_status.sql
 
 BEGIN;
 
--- Add health_check column
-ALTER TABLE stations ADD COLUMN IF NOT EXISTS health_check VARCHAR(20);
+-- If health_check was previously renamed to station_status, rename it back
+-- and add station_status as a new column
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'stations' AND column_name = 'station_status'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'stations' AND column_name = 'health_check'
+    ) THEN
+        -- Previous migration renamed health_check → station_status
+        -- Add health_check back as separate column
+        ALTER TABLE stations ADD COLUMN health_check VARCHAR(20);
+        -- Move passive values from station_status to health_check
+        UPDATE stations SET health_check = 'passive', station_status = NULL
+            WHERE station_status = 'passive';
+    ELSIF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'stations' AND column_name = 'station_status'
+    ) AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'stations' AND column_name = 'health_check'
+    ) THEN
+        -- Original state: only health_check exists
+        ALTER TABLE stations ADD COLUMN station_status VARCHAR(20);
+        -- Move discontinued/inactive to station_status, keep passive on health_check
+        UPDATE stations SET station_status = health_check, health_check = NULL
+            WHERE health_check IN ('discontinued', 'inactive');
+    ELSIF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'stations' AND column_name = 'station_status'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'stations' AND column_name = 'health_check'
+    ) THEN
+        -- Fresh install: add both columns
+        ALTER TABLE stations ADD COLUMN station_status VARCHAR(20);
+        ALTER TABLE stations ADD COLUMN health_check VARCHAR(20);
+    END IF;
+    -- Else: both columns already exist, no schema changes needed
+END $$;
 
-COMMENT ON COLUMN stations.health_check IS 'Health check mode: NULL=active, passive=external, discontinued=decommissioned, no_instrument=missing receiver/antenna';
+COMMENT ON COLUMN stations.station_status IS 'Station lifecycle: NULL=active, inactive=no instrument, discontinued=decommissioned';
+COMMENT ON COLUMN stations.health_check IS 'Monitoring mode: NULL=active, passive=external data delivery';
 
--- Set known discontinued/passive stations from stations.cfg
-UPDATE stations SET health_check = 'discontinued' WHERE sid = 'ASVE';
+-- Set known values from stations.cfg
+UPDATE stations SET station_status = 'discontinued' WHERE sid IN ('ASVE', 'BLAL', 'ICEB', 'ICEC');
 UPDATE stations SET health_check = 'passive' WHERE sid IN ('GRVM', 'GRVV', 'KRAC', 'MYVA', 'RVIT', 'SYRF', 'THRC', 'TORK');
 
--- Update the dashboard view to include health_check
-CREATE OR REPLACE VIEW station_dashboard_data AS
+-- Recreate the dashboard view with both columns
+DROP VIEW IF EXISTS station_dashboard_data;
+CREATE VIEW station_dashboard_data AS
 WITH latest_health AS (
     SELECT DISTINCT ON (sid) sid,
         ts AS health_ts,
@@ -173,7 +220,9 @@ SELECT
         ELSE 'ok'
     END AS satellite_status,
 
-    -- Health check mode (NULL=active, 'passive', 'discontinued')
+    -- Station lifecycle (NULL=active, 'discontinued', 'inactive')
+    s.station_status,
+    -- Monitoring mode (NULL=active, 'passive')
     s.health_check
 
 FROM station_latest_metrics m

@@ -166,6 +166,7 @@ def get_station_config(station_id: str) -> Optional[Dict[str, Any]]:
             # Station-level properties (unprefixed fields from stations.cfg)
             'power_type': raw_config.get('power_type', 'battery'),
             'ntrip_importance': raw_config.get('ntrip_importance'),
+            'station_status': raw_config.get('station_status'),
             'health_check': raw_config.get('health_check'),
         }
 
