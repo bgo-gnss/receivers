@@ -22,6 +22,18 @@
   "links": [
     {
       "asDropdown": false,
+      "icon": "bolt",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Reset Filters",
+      "tooltip": "Reset all filters to defaults",
+      "type": "link",
+      "url": "/d/gps-health-voltage/gps-receiver-health-overview"
+    },
+    {
+      "asDropdown": false,
       "icon": "external-link",
       "includeVars": true,
       "keepTime": true,
@@ -1720,7 +1732,7 @@
       "type": "timeseries"
     }
   ],
-  "refresh": "5m",
+  "refresh": "10s",
   "schemaVersion": 38,
   "style": "dark",
   "tags": [
@@ -1731,7 +1743,11 @@
   "templating": {
     "list": [
       {
-        "current": {},
+        "current": {
+          "selected": true,
+          "text": "All Stations",
+          "value": "all"
+        },
         "datasource": {
           "type": "grafana-postgresql-datasource",
           "uid": "gps_health"
