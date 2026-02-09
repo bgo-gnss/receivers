@@ -1857,59 +1857,69 @@ class PolaRX5(BaseReceiver):
                     "error": str(e),
                 }
 
-            # Step 1b: Check port status (service availability)
-            try:
-                extractor = PolaRX5TCPExtractor(
-                    host, self.station_id,
-                    port=control_port,
-                    port_config=port_config
-                )
-                port_status = extractor._check_port_status()
+            # Step 1b: Check port status (only if ping succeeded — no point
+            # probing ports on an unreachable host, and the timeouts are expensive)
+            ping_ok = connection_data.get("router_ping", {}).get("accessible", False)
+            if not ping_ok:
+                self.logger.debug(f"Ping failed for {host} — skipping port checks")
+                connection_data["tcp"] = {
+                    "status": "failed", "host": host,
+                    "error": "ping failed - host unreachable",
+                }
 
-                # Determine TCP status based on whether any port is reachable
-                ftp_open = port_status.get("ftp", {}).get("open", False)
-                http_open = port_status.get("http", {}).get("open", False)
-                control_open = port_status.get("control", {}).get("open", False)
+            if ping_ok:
+                try:
+                    extractor = PolaRX5TCPExtractor(
+                        host, self.station_id,
+                        port=control_port,
+                        port_config=port_config
+                    )
+                    port_status = extractor._check_port_status()
 
-                if ftp_open or http_open or control_open:
-                    connection_data["tcp"] = {"status": "ok", "host": host}
-                else:
-                    connection_data["tcp"] = {"status": "failed", "host": host, "error": "all ports unreachable"}
-            except Exception as e:
-                self.logger.debug(f"Port check failed: {e}")
-                connection_data["tcp"] = {"status": "failed", "host": host, "error": str(e)}
+                    # Determine TCP status based on whether any port is reachable
+                    ftp_open = port_status.get("ftp", {}).get("open", False)
+                    http_open = port_status.get("http", {}).get("open", False)
+                    control_open = port_status.get("control", {}).get("open", False)
 
-            # Step 1c: Try full data extraction if control port is open
-            if port_status and extractor:
-                control_ok = port_status.get("control", {}).get("open", False)
-                if control_ok:
-                    try:
-                        live_data = extractor.extract_health_data()
+                    if ftp_open or http_open or control_open:
+                        connection_data["tcp"] = {"status": "ok", "host": host}
+                    else:
+                        connection_data["tcp"] = {"status": "failed", "host": host, "error": "all ports unreachable"}
+                except Exception as e:
+                    self.logger.debug(f"Port check failed: {e}")
+                    connection_data["tcp"] = {"status": "failed", "host": host, "error": str(e)}
 
-                        if live_data.get("metrics"):
-                            metrics = live_data["metrics"]
-                            # Merge port status into metrics
-                            if "ports" not in metrics:
-                                metrics["ports"] = port_status
-                            data_quality = live_data.get("data_quality")
-                            extraction_source = "tcp_live"
-                            self.logger.info(f"Extracted live health data via TCP from {host}")
+                # Step 1c: Try full data extraction if control port is open
+                if port_status and extractor:
+                    control_ok = port_status.get("control", {}).get("open", False)
+                    if control_ok:
+                        try:
+                            live_data = extractor.extract_health_data()
 
-                        # Capture receiver identity if available
-                        if live_data.get("receiver_identity"):
-                            receiver_identity = live_data["receiver_identity"]
-                    except Exception as e:
-                        self.logger.debug(f"TCP data extraction failed: {e}")
+                            if live_data.get("metrics"):
+                                metrics = live_data["metrics"]
+                                # Merge port status into metrics
+                                if "ports" not in metrics:
+                                    metrics["ports"] = port_status
+                                data_quality = live_data.get("data_quality")
+                                extraction_source = "tcp_live"
+                                self.logger.info(f"Extracted live health data via TCP from {host}")
 
-                # If no metrics yet but we have port status, use that
-                if not metrics and port_status:
-                    metrics = {"ports": port_status}
-                    extraction_source = "port_check_only"
-                    if not control_ok:
-                        self.logger.warning(
-                            f"Control port {control_port} not responding on {host} - "
-                            f"cannot extract live data"
-                        )
+                            # Capture receiver identity if available
+                            if live_data.get("receiver_identity"):
+                                receiver_identity = live_data["receiver_identity"]
+                        except Exception as e:
+                            self.logger.debug(f"TCP data extraction failed: {e}")
+
+                    # If no metrics yet but we have port status, use that
+                    if not metrics and port_status:
+                        metrics = {"ports": port_status}
+                        extraction_source = "port_check_only"
+                        if not control_ok:
+                            self.logger.warning(
+                                f"Control port {control_port} not responding on {host} - "
+                                f"cannot extract live data"
+                            )
 
         # Step 2: Fall back to SBF file extraction if TCP failed
         if not metrics:

@@ -202,9 +202,22 @@ class NetR9(BaseReceiver):
         metrics = None
         data_quality = None
         network = None
+        receiver_identity = None
 
-        try:
-            if host:
+        # Check if ping succeeded before attempting HTTP extraction
+        ping_ok = connection_data.get("router_ping", {}).get("accessible", False)
+
+        if not ping_ok:
+            self.logger.debug(
+                f"Ping failed for {host} — skipping HTTP extraction"
+            )
+        elif not host:
+            self.logger.warning(
+                f"No router IP configured for {self.station_id} - "
+                "connection health only"
+            )
+        else:
+            try:
                 # Extract health data using TrimbleHTTPExtractor
                 extractor = TrimbleHTTPExtractor(
                     host=host,
@@ -228,16 +241,9 @@ class NetR9(BaseReceiver):
 
                 # Capture receiver identity if available
                 receiver_identity = health_data.get("receiver_identity")
-            else:
-                self.logger.warning(
-                    f"No router IP configured for {self.station_id} - "
-                    "connection health only"
-                )
-                receiver_identity = None
 
-        except Exception as e:
-            self.logger.error(f"Error extracting health data via HTTP: {e}")
-            receiver_identity = None
+            except Exception as e:
+                self.logger.error(f"Error extracting health data via HTTP: {e}")
 
         # Step 3: Build standardized health status structure
         result = self.build_health_status(
