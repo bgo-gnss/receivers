@@ -11,6 +11,7 @@ Features:
 - Fault tolerance and recovery
 """
 
+import fcntl
 import logging
 import json
 import os
@@ -431,6 +432,12 @@ class BulkDownloadScheduler:
         # Parse scheduler_types filter
         # Valid types: health, 15s_24hr, 1Hz_1hr, status_1hr, downloads (all download sessions), all
         self.scheduler_types = self._parse_scheduler_types(scheduler_types)
+
+        # PID lock file to prevent duplicate instances
+        lock_dir = Path(db_path).parent
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        self._lock_path = lock_dir / "scheduler.lock"
+        self._lock_fd = None
 
         # Set up logging
         self._setup_logging()
@@ -927,22 +934,70 @@ class BulkDownloadScheduler:
         """Handle job execution errors.""" 
         self.logger.error(f"Job error: {event.job_id} - {event.exception}")
         
+    def _acquire_lock(self) -> None:
+        """Acquire an exclusive file lock to prevent duplicate scheduler instances.
+
+        Raises:
+            RuntimeError: If another scheduler instance is already running.
+        """
+        existing_pid = ""
+        try:
+            # Open for reading+writing so we can read existing PID before overwriting
+            self._lock_fd = open(self._lock_path, "a+")
+            self._lock_fd.seek(0)
+            existing_pid = self._lock_fd.read().strip()
+            fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            if self._lock_fd:
+                self._lock_fd.close()
+            self._lock_fd = None
+            raise RuntimeError(
+                f"Another scheduler instance is already running (PID {existing_pid}). "
+                f"Lock file: {self._lock_path}"
+            )
+        # Write our PID for diagnostics
+        self._lock_fd.seek(0)
+        self._lock_fd.truncate()
+        self._lock_fd.write(str(os.getpid()))
+        self._lock_fd.flush()
+
+    def _release_lock(self) -> None:
+        """Release the file lock and clean up."""
+        if self._lock_fd:
+            try:
+                fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
+                self._lock_fd.close()
+            except OSError:
+                pass
+            self._lock_fd = None
+            try:
+                self._lock_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
     def start(self):
-        """Start the scheduler."""
+        """Start the scheduler.
+
+        Acquires an exclusive lock to prevent duplicate instances.
+        """
+        self._acquire_lock()
         try:
             self.scheduler.start()
-            self.logger.info("Scheduler started successfully")
+            self.logger.info(f"Scheduler started successfully (PID {os.getpid()})")
         except Exception as e:
+            self._release_lock()
             self.logger.error(f"Failed to start scheduler: {e}")
             raise
-            
+
     def stop(self):
-        """Stop the scheduler."""
+        """Stop the scheduler and release the lock."""
         try:
             self.scheduler.shutdown(wait=True)
             self.logger.info("Scheduler stopped")
         except Exception as e:
             self.logger.error(f"Error stopping scheduler: {e}")
+        finally:
+            self._release_lock()
             
     def get_scheduled_jobs(self) -> List[Dict[str, Any]]:
         """Get list of all scheduled jobs."""

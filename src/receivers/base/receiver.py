@@ -301,12 +301,13 @@ class BaseReceiver(ABC):
                     if metric_name == "ports":
                         for port_name, port_data in metric_data.items():
                             if isinstance(port_data, dict) and "status" in port_data:
-                                port_status = port_data["status"]
-                                # Downgrade error to warning for non-critical ports
-                                if port_status == "error" and port_name not in critical_ports:
-                                    statuses.append(HealthStatus.WARNING)
-                                else:
-                                    statuses.append(_safe_health_status(port_status))
+                                port_status = _safe_health_status(port_data["status"])
+                                # Cap non-critical ports at WARNING
+                                if port_name not in critical_ports and port_status in (
+                                    HealthStatus.CRITICAL, HealthStatus.ERROR
+                                ):
+                                    port_status = HealthStatus.WARNING
+                                statuses.append(port_status)
                     elif "status" in metric_data:
                         statuses.append(_safe_health_status(metric_data["status"]))
 

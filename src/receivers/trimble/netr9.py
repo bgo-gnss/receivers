@@ -210,7 +210,7 @@ class NetR9(BaseReceiver):
                     host=host,
                     station_id=self.station_id,
                     port=http_port,
-                    receiver_type="NetR9",
+                    receiver_type=self.get_receiver_type(),
                     username=http_user,
                     password=http_pass,
                     ftp_port=ftp_port,

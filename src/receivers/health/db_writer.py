@@ -78,7 +78,12 @@ class HealthDatabaseWriter:
         receiver_type: str = "PolaRX5",
         power_type: Optional[str] = None,
     ) -> bool:
-        """Ensure station exists in stations table.
+        """Ensure station exists in stations table and sync config metadata.
+
+        Reads station configuration from stations.cfg and syncs metadata
+        (antenna, coordinates, RINEX header fields) to the database.
+        This means changes to stations.cfg are picked up on the next
+        health check cycle (~5 minutes).
 
         Args:
             station_id: Station identifier (e.g., 'ISFS')
@@ -94,17 +99,65 @@ class HealthDatabaseWriter:
         if not self._conn:
             return False
 
+        # Load config metadata from stations.cfg
+        antenna_type = None
+        marker_name = None
+        marker_number = None
+        observer = None
+        agency = None
+        ip_address = None
+        http_port = None
+        try:
+            from ..config_utils import get_station_config
+            cfg = get_station_config(station_id)
+            if cfg:
+                antenna = cfg.get("antenna", {})
+                antenna_type = antenna.get("type") or None
+                rinex = cfg.get("rinex", {})
+                marker_name = rinex.get("marker_name") or None
+                marker_number = rinex.get("marker_number") or None
+                observer = rinex.get("observer") or None
+                agency = rinex.get("agency") or None
+                router = cfg.get("router", {})
+                ip_raw = router.get("ip") or None
+                if ip_raw:
+                    # Resolve hostname to IP if needed (inet type requires IP)
+                    import socket
+                    try:
+                        ip_address = socket.gethostbyname(ip_raw)
+                    except socket.gaierror:
+                        ip_address = None
+                receiver_cfg = cfg.get("receiver", {})
+                http_port_raw = receiver_cfg.get("httpport")
+                if http_port_raw is not None:
+                    http_port = int(http_port_raw)
+                if not power_type:
+                    power_type = cfg.get("power_type") or None
+        except Exception as e:
+            self.logger.debug(f"Could not load config for {station_id}: {e}")
+
         try:
             with self._conn.cursor() as cur:
                 cur.execute("""
-                    INSERT INTO stations (sid, receiver_type, power_type)
-                    VALUES (%s, %s, %s)
+                    INSERT INTO stations (sid, receiver_type, power_type,
+                        antenna_type, marker_name, marker_number,
+                        observer, agency, ip_address, http_port)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::inet, %s)
                     ON CONFLICT (sid) DO UPDATE SET
                         receiver_type = EXCLUDED.receiver_type,
                         power_type = COALESCE(EXCLUDED.power_type, stations.power_type),
+                        antenna_type = EXCLUDED.antenna_type,
+                        marker_name = EXCLUDED.marker_name,
+                        marker_number = EXCLUDED.marker_number,
+                        observer = EXCLUDED.observer,
+                        agency = EXCLUDED.agency,
+                        ip_address = COALESCE(EXCLUDED.ip_address, stations.ip_address),
+                        http_port = COALESCE(EXCLUDED.http_port, stations.http_port),
                         updated_at = NOW()
                     RETURNING sid
-                """, (station_id, receiver_type, power_type))
+                """, (station_id, receiver_type, power_type,
+                      antenna_type, marker_name, marker_number,
+                      observer, agency, ip_address, http_port))
                 self._conn.commit()
                 self._station_cache.add(station_id)
                 return True
@@ -133,29 +186,45 @@ class HealthDatabaseWriter:
         if not any([firmware, model, serial]):
             return
 
+        # Truncate to column limits to prevent VARCHAR overflow
+        if firmware:
+            firmware = firmware[:30]
+        if model:
+            model = model[:60]
+        if serial:
+            serial = serial[:30]
+
         ts = self._parse_timestamp(timestamp)
 
         try:
             with self._conn.cursor() as cur:
-                # Update stations table with latest identity
-                cur.execute("""
-                    UPDATE stations SET
-                        firmware_version = COALESCE(%s, firmware_version),
-                        detected_model = COALESCE(%s, detected_model),
-                        serial_number = COALESCE(%s, serial_number),
-                        identity_last_checked = NOW()
-                    WHERE sid = %s
-                """, (firmware, model, serial, station_id))
+                # Use savepoint so failure doesn't poison the outer transaction
+                cur.execute("SAVEPOINT identity_update")
+                try:
+                    # Update stations table with latest identity
+                    cur.execute("""
+                        UPDATE stations SET
+                            firmware_version = COALESCE(%s, firmware_version),
+                            detected_model = COALESCE(%s, detected_model),
+                            serial_number = COALESCE(%s, serial_number),
+                            identity_last_checked = NOW()
+                        WHERE sid = %s
+                    """, (firmware, model, serial, station_id))
 
-                # Write historical record to block_receiver_setup
-                cur.execute("""
-                    INSERT INTO block_receiver_setup (sid, ts, rx_name, rx_version, rx_serial_number)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (sid, ts) DO UPDATE SET
-                        rx_name = COALESCE(EXCLUDED.rx_name, block_receiver_setup.rx_name),
-                        rx_version = COALESCE(EXCLUDED.rx_version, block_receiver_setup.rx_version),
-                        rx_serial_number = COALESCE(EXCLUDED.rx_serial_number, block_receiver_setup.rx_serial_number)
-                """, (station_id, ts, model, firmware, serial))
+                    # Write historical record to block_receiver_setup
+                    cur.execute("""
+                        INSERT INTO block_receiver_setup (sid, ts, rx_name, rx_version, rx_serial_number)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (sid, ts) DO UPDATE SET
+                            rx_name = COALESCE(EXCLUDED.rx_name, block_receiver_setup.rx_name),
+                            rx_version = COALESCE(EXCLUDED.rx_version, block_receiver_setup.rx_version),
+                            rx_serial_number = COALESCE(EXCLUDED.rx_serial_number, block_receiver_setup.rx_serial_number)
+                    """, (station_id, ts, model, firmware, serial))
+
+                    cur.execute("RELEASE SAVEPOINT identity_update")
+                except Exception:
+                    cur.execute("ROLLBACK TO SAVEPOINT identity_update")
+                    raise
 
             # Check for mismatch
             from .receiver_fingerprint import check_identity_mismatch
@@ -271,11 +340,18 @@ class HealthDatabaseWriter:
             if "satellites" in metrics:
                 self._write_satellite_tracking(station_id, timestamp, metrics["satellites"])
 
+            # Write to block_logging_status
+            if "logging_sessions" in metrics:
+                self._write_logging_status(station_id, timestamp, metrics["logging_sessions"])
+
             # Write to block_health_summary (composite status + port checks)
             overall_status = health_data.get("overall_status")
+            connection = health_data.get("connection", {})
             ports = metrics.get("ports")
             if overall_status or ports:
-                status_details = self._build_status_details(metrics, overall_status)
+                status_details = self._build_status_details(
+                    metrics, overall_status, connection
+                )
                 self._write_health_summary(
                     station_id, timestamp, overall_status, ports, status_details
                 )
@@ -456,6 +532,39 @@ class HealthDatabaseWriter:
         except Exception as e:
             self.logger.warning(f"block_satellite_tracking write failed: {e}")
 
+    def _write_logging_status(
+        self, sid: str, ts: datetime, logging_data: Dict[str, Any]
+    ) -> None:
+        """Write to block_logging_status table."""
+        active_sessions = logging_data.get("active_sessions", 0)
+        status = logging_data.get("status", "unknown")
+
+        # Determine which sessions are active
+        sessions = logging_data.get("sessions", [])
+        session_names = {s.get("session") for s in sessions if isinstance(s, dict)}
+
+        session_15s = "15s_24hr" in session_names
+        session_1hz = "1Hz_1hr" in session_names
+        session_status = "status_1hr" in session_names
+
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO block_logging_status
+                        (sid, ts, active_sessions, session_15s_24hr,
+                         session_1hz_1hr, session_status_1hr, status)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (sid, ts) DO UPDATE SET
+                        active_sessions = EXCLUDED.active_sessions,
+                        session_15s_24hr = EXCLUDED.session_15s_24hr,
+                        session_1hz_1hr = EXCLUDED.session_1hz_1hr,
+                        session_status_1hr = EXCLUDED.session_status_1hr,
+                        status = EXCLUDED.status
+                """, (sid, ts, active_sessions,
+                      session_15s, session_1hz, session_status, status))
+        except Exception as e:
+            self.logger.warning(f"block_logging_status write failed: {e}")
+
     def _write_health_summary(
         self,
         sid: str,
@@ -502,11 +611,12 @@ class HealthDatabaseWriter:
         self,
         metrics: Dict[str, Any],
         overall_status: Optional[str],
+        connection: Optional[Dict[str, Any]] = None,
     ) -> Optional[str]:
         """Build a short description of what is causing non-healthy status.
 
-        Scans individual metric statuses and port states to produce a
-        comma-separated list like ``"FTP down, NTRIP error"``.
+        Scans connection, metric statuses and port states to produce a
+        newline-separated list like ``"FTP down\\nNTRIP error"``.
 
         Returns:
             Detail string, or None when status is healthy/unknown.
@@ -515,6 +625,23 @@ class HealthDatabaseWriter:
             return None
 
         problems: List[str] = []
+
+        # Connection-level issues (ping, port accessibility)
+        if connection:
+            ping = connection.get("router_ping", {})
+            if isinstance(ping, dict):
+                ping_status = ping.get("status", "").lower()
+                if ping_status == "critical":
+                    problems.append("Ping failed")
+                elif ping_status == "warning":
+                    latency = ping.get("latency_ms") or ping.get("response_time_ms")
+                    loss = ping.get("details", {}).get("packet_loss", 0) if isinstance(ping.get("details"), dict) else ping.get("packet_loss", 0)
+                    if loss and loss > 0:
+                        problems.append(f"Ping packet loss ({loss:.0f}%)")
+                    elif latency:
+                        problems.append(f"Ping high latency ({latency:.0f}ms)")
+                    else:
+                        problems.append("Ping warning")
 
         # Friendly labels for metric keys
         labels = {

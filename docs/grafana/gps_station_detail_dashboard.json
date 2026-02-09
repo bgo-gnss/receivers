@@ -186,7 +186,7 @@
                 "-1": {
                   "color": "#464646",
                   "index": 0,
-                  "text": "?"
+                  "text": "Unknown"
                 }
               },
               "type": "value"
@@ -214,7 +214,7 @@
             ]
           },
           "unit": "celsius",
-          "noValue": "?"
+          "noValue": "Unknown"
         },
         "overrides": []
       },
@@ -272,7 +272,7 @@
                 "-1": {
                   "color": "#464646",
                   "index": 0,
-                  "text": "?"
+                  "text": "Unknown"
                 },
                 "-2": {
                   "color": "text",
@@ -283,7 +283,7 @@
               "type": "value"
             }
           ],
-          "noValue": "?",
+          "noValue": "Unknown",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -363,7 +363,7 @@
                 "-1": {
                   "color": "#464646",
                   "index": 0,
-                  "text": "?"
+                  "text": "Unknown"
                 }
               },
               "type": "value"
@@ -391,7 +391,7 @@
             ]
           },
           "unit": "percent",
-          "noValue": "?"
+          "noValue": "Unknown"
         },
         "overrides": []
       },
@@ -449,7 +449,7 @@
                 "-1": {
                   "color": "#464646",
                   "index": 0,
-                  "text": "?"
+                  "text": "Unknown"
                 },
                 "-2": {
                   "color": "text",
@@ -704,7 +704,7 @@
                 "result": {
                   "color": "#464646",
                   "index": 0,
-                  "text": "?"
+                  "text": "Unknown"
                 }
               },
               "type": "special"
@@ -743,7 +743,7 @@
       },
       "id": 23,
       "options": {
-        "colorMode": "value",
+        "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
@@ -1166,10 +1166,25 @@
                   "index": 0,
                   "text": "N/A"
                 },
-                "0": {
+                "-2": {
                   "color": "red",
                   "index": 1,
-                  "text": "closed"
+                  "text": "refused"
+                },
+                "-3": {
+                  "color": "orange",
+                  "index": 2,
+                  "text": "timeout"
+                },
+                "-4": {
+                  "color": "red",
+                  "index": 3,
+                  "text": "down"
+                },
+                "1": {
+                  "color": "green",
+                  "index": 4,
+                  "text": "open"
                 }
               },
               "type": "value"
@@ -1189,7 +1204,26 @@
             ]
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "FTP" },
+            "properties": [
+              { "id": "displayName", "value": "FTP\n$ftp_port" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "HTTP" },
+            "properties": [
+              { "id": "displayName", "value": "HTTP\n$http_port" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Ctrl" },
+            "properties": [
+              { "id": "displayName", "value": "Ctrl\n$ctrl_port" }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 4,
@@ -1203,6 +1237,10 @@
         "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "vertical",
+        "text": {
+          "titleSize": 18,
+          "valueSize": 20
+        },
         "reduceOptions": {
           "calcs": [],
           "fields": "",
@@ -1220,7 +1258,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  CASE WHEN ftp_port IS NULL THEN -1 WHEN ftp_open THEN ftp_port ELSE 0 END AS \"FTP\",\n  CASE WHEN health_http_port IS NULL THEN -1 WHEN http_open THEN health_http_port ELSE 0 END AS \"HTTP\",\n  CASE WHEN control_port IS NULL THEN -1 WHEN control_open THEN control_port ELSE 0 END AS \"Ctrl\"\nFROM station_dashboard_data\nWHERE station_id = '$station'",
+          "rawSql": "SELECT\n  CASE WHEN ftp_port IS NULL THEN -1 WHEN ftp_open THEN 1\n    WHEN status_details LIKE '%FTP refused%' THEN -2\n    WHEN status_details LIKE '%FTP timeout%' THEN -3\n    ELSE -4 END AS \"FTP\",\n  CASE WHEN health_http_port IS NULL THEN -1 WHEN http_open THEN 1\n    WHEN status_details LIKE '%HTTP refused%' THEN -2\n    WHEN status_details LIKE '%HTTP timeout%' THEN -3\n    ELSE -4 END AS \"HTTP\",\n  CASE WHEN control_port IS NULL THEN -1 WHEN control_open THEN 1\n    WHEN status_details LIKE '%CONTROL refused%' THEN -2\n    WHEN status_details LIKE '%CONTROL timeout%' THEN -3\n    ELSE -4 END AS \"Ctrl\"\nFROM station_dashboard_data\nWHERE station_id = '$station'",
           "refId": "A"
         }
       ],
@@ -1369,7 +1407,7 @@
                 "-1": {
                   "color": "#464646",
                   "index": 1,
-                  "text": "?"
+                  "text": "Unknown"
                 },
                 "-2": {
                   "color": "text",
@@ -1425,7 +1463,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  CASE WHEN NOT COALESCE((SELECT is_online FROM station_dashboard_data WHERE station_id='$station'), false) THEN -1\n    ELSE (SELECT CASE WHEN EXISTS (SELECT 1 FROM file_tracking WHERE sid='$station' AND session_type='15s_24hr' AND status='downloaded' AND file_date >= CURRENT_DATE - INTERVAL '2 days') THEN 1 ELSE -1 END)\n  END AS \"15s\",\n  CASE WHEN NOT COALESCE((SELECT is_online FROM station_dashboard_data WHERE station_id='$station'), false) THEN -1\n    ELSE (SELECT CASE WHEN EXISTS (SELECT 1 FROM file_tracking WHERE sid='$station' AND session_type='1Hz_1hr' AND status='downloaded' AND file_date >= CURRENT_DATE - INTERVAL '1 day') THEN 1 ELSE -1 END)\n  END AS \"1Hz\",\n  CASE WHEN NOT COALESCE((SELECT is_online FROM station_dashboard_data WHERE station_id='$station'), false) THEN -1\n    ELSE (SELECT CASE WHEN EXISTS (SELECT 1 FROM file_tracking WHERE sid='$station' AND session_type='status_1hr' AND status='downloaded' AND file_date >= CURRENT_DATE - INTERVAL '1 day') THEN 1 ELSE -1 END)\n  END AS \"Status\"",
+          "rawSql": "SELECT\n  CASE WHEN NOT COALESCE(d.is_online, false) THEN -1\n    WHEN l.session_15s_24hr IS NULL THEN -1\n    WHEN l.session_15s_24hr THEN 1\n    ELSE -1\n  END AS \"15s\",\n  CASE WHEN NOT COALESCE(d.is_online, false) THEN -1\n    WHEN l.session_1hz_1hr IS NULL THEN -1\n    WHEN l.session_1hz_1hr THEN 1\n    ELSE -1\n  END AS \"1Hz\",\n  CASE WHEN d.receiver_type != 'PolaRX5' THEN -2\n    WHEN NOT COALESCE(d.is_online, false) THEN -1\n    WHEN l.session_status_1hr IS NULL THEN -1\n    WHEN l.session_status_1hr THEN 1\n    ELSE -1\n  END AS \"Status\"\nFROM station_dashboard_data d\nLEFT JOIN station_logging_status l ON l.sid = d.station_id\nWHERE d.station_id = '$station'",
           "refId": "A"
         }
       ],
@@ -1445,40 +1483,31 @@
           "mappings": [
             {
               "options": {
-                "0": {
+                "1": {
                   "color": "green",
                   "index": 0,
-                  "text": "Connected"
+                  "text": "Active"
                 },
-                "1": {
-                  "color": "yellow",
-                  "index": 1,
-                  "text": "Connecting"
-                },
-                "2": {
-                  "color": "orange",
-                  "index": 2,
-                  "text": "Idle"
-                },
-                "3": {
+                "0": {
                   "color": "red",
-                  "index": 3,
-                  "text": "Error"
+                  "index": 1,
+                  "text": "Inactive"
                 },
-                "4": {
-                  "color": "text",
-                  "index": 4,
-                  "text": "N/A"
+                "-1": {
+                  "color": "#464646",
+                  "index": 2,
+                  "text": "Unknown"
                 }
               },
               "type": "value"
             }
           ],
+          "noValue": "Unknown",
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "text",
+                "color": "#464646",
                 "value": null
               }
             ]
@@ -1517,7 +1546,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT CASE\n  WHEN receiver_type NOT IN ('PolaRX5') THEN 4\n  WHEN ntrip_status = 'connected' THEN 0\n  WHEN ntrip_status = 'connecting' THEN 1\n  WHEN ntrip_status = 'idle' THEN 2\n  WHEN ntrip_status = 'inactive' THEN 4\n  WHEN ntrip_status = 'error' THEN 3\n  ELSE 3\nEND AS \"RTK\"\nFROM station_dashboard_data\nWHERE station_id = '$station'",
+          "rawSql": "SELECT CASE\n  WHEN ntrip_status = 'connected' THEN 1\n  WHEN ntrip_status IS NOT NULL THEN 0\n  ELSE -1\nEND AS \"RTK\"\nFROM station_dashboard_data\nWHERE station_id = '$station'",
           "refId": "A"
         }
       ],
@@ -1878,6 +1907,66 @@
         "refresh": 2,
         "regex": "",
         "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {},
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "gps_health"
+        },
+        "definition": "SELECT COALESCE(ftp_port::text, '') FROM station_dashboard_data WHERE station_id = '$station'",
+        "hide": 2,
+        "includeAll": false,
+        "label": "FTP Port",
+        "multi": false,
+        "name": "ftp_port",
+        "options": [],
+        "query": "SELECT COALESCE(ftp_port::text, '') FROM station_dashboard_data WHERE station_id = '$station'",
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {},
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "gps_health"
+        },
+        "definition": "SELECT COALESCE(health_http_port::text, '') FROM station_dashboard_data WHERE station_id = '$station'",
+        "hide": 2,
+        "includeAll": false,
+        "label": "HTTP Port",
+        "multi": false,
+        "name": "http_port",
+        "options": [],
+        "query": "SELECT COALESCE(health_http_port::text, '') FROM station_dashboard_data WHERE station_id = '$station'",
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {},
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "gps_health"
+        },
+        "definition": "SELECT COALESCE(control_port::text, '') FROM station_dashboard_data WHERE station_id = '$station'",
+        "hide": 2,
+        "includeAll": false,
+        "label": "Ctrl Port",
+        "multi": false,
+        "name": "ctrl_port",
+        "options": [],
+        "query": "SELECT COALESCE(control_port::text, '') FROM station_dashboard_data WHERE station_id = '$station'",
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": true,
         "sort": 0,
         "type": "query"
       },

@@ -47,10 +47,13 @@ SELECT DISTINCT ON (sid)
     health_status,
     health_response_ms,
     -- Overall status for dashboard coloring
+    -- Note: download_status/health_status can be 'open'/'ok' (good),
+    --       'refused'/'timeout'/'error'/'critical'/'warning' (bad)
     CASE
-        WHEN download_status = 'open' AND (health_status = 'open' OR health_status IS NULL) THEN 'active'
-        WHEN download_status IN ('refused', 'timeout', 'error') THEN download_status
-        WHEN health_status IN ('refused', 'timeout', 'error') THEN health_status
+        WHEN download_status IN ('open', 'ok') AND (health_status IN ('open', 'ok') OR health_status IS NULL) THEN 'active'
+        WHEN download_status IN ('refused', 'timeout', 'error', 'critical') THEN download_status
+        WHEN health_status IN ('refused', 'timeout', 'error', 'critical') THEN health_status
+        WHEN download_status = 'warning' OR health_status = 'warning' THEN 'warning'
         ELSE 'unknown'
     END as overall_port_status
 FROM block_port_status
