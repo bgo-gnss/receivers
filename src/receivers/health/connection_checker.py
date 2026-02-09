@@ -13,7 +13,6 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, Any, Optional, Tuple
-import requests
 
 
 class HealthStatus(Enum):
@@ -85,7 +84,10 @@ class ConnectionChecker:
         results = {}
 
         # Level 1: Router/Network ping (fast check first)
-        results["router_ping"] = self.check_ping(count=1, timeout=2)
+        # Use count=3 to avoid false negatives on high-latency/lossy links
+        # (e.g. GFUM 33% loss, FTEY 900ms latency). With count=1, a single
+        # dropped packet triggers the ping gate and skips all extraction.
+        results["router_ping"] = self.check_ping(count=3, timeout=2)
 
         # If ping failed and fail_fast enabled, skip remaining slow checks
         if fail_fast and not results["router_ping"].accessible:
@@ -219,7 +221,11 @@ class ConnectionChecker:
             )
 
     def check_http_port(self, port: int = 80, timeout: int = 5) -> ConnectionStatus:
-        """Check if HTTP port responds.
+        """Check if HTTP port is open via TCP socket connect.
+
+        Uses a raw socket connect instead of a full HTTP GET request.
+        Embedded receiver web servers (PolaRX5, Trimble) can occasionally
+        be slow to serve HTTP responses even though the port is open.
 
         Args:
             port: HTTP port number
@@ -233,45 +239,49 @@ class ConnectionChecker:
         try:
             start_time = time.time()
 
-            # Try HTTP GET request with short timeout
-            url = f"http://{self.host}:{port}/"
-            response = requests.get(
-                url, timeout=timeout, allow_redirects=False, verify=False
-            )
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            sock.connect((self.host, port))
+            sock.close()
 
             elapsed_ms = (time.time() - start_time) * 1000
 
-            # Any response (even error codes) means port is accessible
             return ConnectionStatus(
                 status=HealthStatus.OK,
                 response_time_ms=elapsed_ms,
                 accessible=True,
-                details={
-                    "port": port,
-                    "status_code": response.status_code,
-                },
+                details={"port": port},
             )
 
-        except requests.Timeout:
+        except socket.timeout:
             return ConnectionStatus(
                 status=HealthStatus.CRITICAL,
                 accessible=False,
                 error_message=f"HTTP port {port} timeout after {timeout}s",
                 details={"port": port, "error_type": "timeout"},
             )
-        except requests.ConnectionError as e:
-            # Check if it's a refused connection (instant) vs timeout
-            error_str = str(e).lower()
-            if "refused" in error_str or "connection refused" in error_str:
-                error_type = "refused"
-            elif "unreachable" in error_str:
-                error_type = "unreachable"
-            else:
-                error_type = "connection_error"
+        except ConnectionRefusedError:
             return ConnectionStatus(
                 status=HealthStatus.CRITICAL,
                 accessible=False,
-                error_message=f"Cannot connect to HTTP port {port}: {str(e)}",
+                error_message=f"HTTP port {port} connection refused",
+                details={"port": port, "error_type": "refused"},
+            )
+        except OSError as e:
+            import errno
+            if e.errno == errno.EHOSTUNREACH:
+                error_type = "unreachable"
+                msg = "Host unreachable"
+            elif e.errno == errno.ENETUNREACH:
+                error_type = "unreachable"
+                msg = "Network unreachable"
+            else:
+                error_type = "error"
+                msg = str(e)
+            return ConnectionStatus(
+                status=HealthStatus.CRITICAL,
+                accessible=False,
+                error_message=f"HTTP port {port}: {msg}",
                 details={"port": port, "error_type": error_type},
             )
         except Exception as e:
@@ -373,7 +383,12 @@ class ConnectionChecker:
             )
 
     def check_http(self, port: int = 8060, timeout: int = 5) -> ConnectionStatus:
-        """Check HTTP protocol connection (more thorough than port test).
+        """Check HTTP protocol connectivity via TCP socket connect.
+
+        Uses a raw socket connect like check_http_port() and check_ftp().
+        Embedded receiver web servers can be slow to serve full HTTP responses
+        even when the port is open. Actual HTTP protocol validation happens
+        during data extraction, not here.
 
         Args:
             port: HTTP port number
@@ -387,41 +402,50 @@ class ConnectionChecker:
         try:
             start_time = time.time()
 
-            url = f"http://{self.host}:{port}/"
-            response = requests.get(url, timeout=timeout, allow_redirects=True)
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            sock.connect((self.host, port))
+            sock.close()
 
             elapsed_ms = (time.time() - start_time) * 1000
 
-            # Check if we got a reasonable response
-            success = response.status_code < 500
-
-            status = HealthStatus.OK if success else HealthStatus.WARNING
-
             return ConnectionStatus(
-                status=status,
+                status=HealthStatus.OK,
                 response_time_ms=elapsed_ms,
                 accessible=True,
                 details={
                     "type": "http",
                     "port": port,
                     "connected": True,
-                    "status_code": response.status_code,
-                    "content_length": len(response.content),
                 },
             )
 
-        except requests.Timeout:
+        except socket.timeout:
             return ConnectionStatus(
                 status=HealthStatus.CRITICAL,
                 accessible=False,
                 error_message=f"HTTP connection timeout after {timeout}s",
                 details={"type": "http", "port": port},
             )
-        except requests.ConnectionError as e:
+        except ConnectionRefusedError:
             return ConnectionStatus(
                 status=HealthStatus.CRITICAL,
                 accessible=False,
-                error_message=f"HTTP connection failed: {str(e)}",
+                error_message=f"HTTP connection refused on port {port}",
+                details={"type": "http", "port": port, "error_type": "refused"},
+            )
+        except OSError as e:
+            import errno
+            if e.errno == errno.EHOSTUNREACH:
+                msg = "Host unreachable"
+            elif e.errno == errno.ENETUNREACH:
+                msg = "Network unreachable"
+            else:
+                msg = str(e)
+            return ConnectionStatus(
+                status=HealthStatus.CRITICAL,
+                accessible=False,
+                error_message=f"HTTP connection failed: {msg}",
                 details={"type": "http", "port": port},
             )
         except Exception as e:
