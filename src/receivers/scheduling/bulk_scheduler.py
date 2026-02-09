@@ -24,6 +24,15 @@ from dataclasses import dataclass
 
 from .schedule_parser import parse_schedule, apply_distribution_window
 
+# Module-level reference for config watcher job (APScheduler needs module-level functions)
+_scheduler_instance: Optional["BulkDownloadScheduler"] = None
+
+
+def _check_config_changes_job() -> None:
+    """Check for stations.cfg changes (standalone job function for APScheduler)."""
+    if _scheduler_instance is not None:
+        _scheduler_instance._check_config_changes()
+
 
 def _write_connectivity_status(station_id: str, health_data: Dict[str, Any], logger: logging.Logger) -> None:
     """Write ping and port status to database for Grafana dashboard.
@@ -499,6 +508,10 @@ class BulkDownloadScheduler:
         # Track running jobs
         self.running_jobs = {}
 
+        # Set module-level reference for config watcher job
+        global _scheduler_instance
+        _scheduler_instance = self
+
     def _parse_scheduler_types(self, scheduler_types: List[str] = None) -> dict:
         """Parse scheduler types filter into a structured dict.
 
@@ -603,31 +616,141 @@ class BulkDownloadScheduler:
     def _load_station_configs(self) -> Dict[str, Dict[str, Any]]:
         """Load station configurations from gps_parser."""
         stations = {}
-        
+
         try:
-            # Use the existing station loading from CLI  
+            # Use the existing station loading from CLI
             from ..cli.main import get_all_station_configs
             all_stations = get_all_station_configs()
-            
+
             for station_id, config in all_stations.items():
                 # Extract relevant configuration
+                health_check = config.get('health_check')
+                receiver_type = config.get('receiver_type', 'unknown')
+
+                # Auto-detect no-instrument stations
+                # Only flag if receiver_type is genuinely absent — empty antenna_type
+                # is common metadata gap and doesn't mean no physical antenna
+                if not health_check:
+                    rx_missing = receiver_type.lower() in ('none', '', 'unknown')
+                    if rx_missing:
+                        health_check = 'no_instrument'
+
                 stations[station_id] = {
                     'station_id': station_id,
-                    'receiver_type': config.get('receiver_type', 'unknown'),
+                    'receiver_type': receiver_type,
                     'ip_number': config.get('ip_number', ''),
                     'ip_port': config.get('ip_port', 21),
                     'enabled': config.get('enabled', True),
                     'timeout_category': config.get('timeout_category', 'default'),
-                    'health_check': config.get('health_check'),
+                    'health_check': health_check,
                 }
-                
+
         except Exception as e:
             self.logger.error(f"Failed to load station configurations: {e}")
             # Fallback: empty station list
             stations = {}
-            
+
         self.logger.info(f"Loaded {len(stations)} station configurations")
         return stations
+
+    def _sync_health_check_to_db(self) -> None:
+        """Sync health_check values from stations config to the database.
+
+        Updates the stations.health_check column for all loaded stations,
+        setting it to the value from config (discontinued, passive, no_instrument)
+        or clearing it to NULL if the station is now active again.
+
+        This runs at startup and when config file changes are detected.
+        """
+        try:
+            from ..health.database_factory import DatabaseConnectionFactory
+
+            with DatabaseConnectionFactory.connection() as conn:
+                with conn.cursor() as cur:
+                    synced = 0
+                    cleared = 0
+                    for station_id, config in self.stations.items():
+                        health_check = config.get('health_check')
+                        cur.execute("""
+                            UPDATE stations
+                            SET health_check = %s
+                            WHERE sid = %s AND (health_check IS DISTINCT FROM %s)
+                        """, (health_check, station_id, health_check))
+                        if cur.rowcount > 0:
+                            if health_check:
+                                synced += 1
+                            else:
+                                cleared += 1
+
+                    if synced or cleared:
+                        self.logger.info(
+                            f"Synced health_check to DB: {synced} set, {cleared} cleared"
+                        )
+                    else:
+                        self.logger.debug("health_check values already in sync with DB")
+
+        except ImportError:
+            self.logger.debug("psycopg2 not available — skipping health_check sync")
+        except Exception as e:
+            self.logger.warning(f"Failed to sync health_check to DB: {e}")
+
+    def _get_stations_cfg_path(self) -> Optional[Path]:
+        """Get the path to stations.cfg using gps_parser."""
+        try:
+            import gps_parser
+            parser = gps_parser.ConfigParser()
+            return Path(parser.get_stations_config_path())
+        except Exception:
+            return None
+
+    def _check_config_changes(self) -> None:
+        """Check if stations.cfg has been modified and reload if so.
+
+        Scheduled as a periodic job. Compares file mtime to detect changes.
+        When a change is found, reloads station configs and syncs to DB.
+        """
+        cfg_path = self._get_stations_cfg_path()
+        if not cfg_path or not cfg_path.exists():
+            return
+
+        try:
+            current_mtime = cfg_path.stat().st_mtime
+        except OSError:
+            return
+
+        if not hasattr(self, '_config_mtime'):
+            self._config_mtime = current_mtime
+            return
+
+        if current_mtime == self._config_mtime:
+            return
+
+        self.logger.info(
+            f"stations.cfg changed (mtime {self._config_mtime:.0f} → {current_mtime:.0f}), "
+            f"reloading station configs"
+        )
+        self._config_mtime = current_mtime
+
+        old_stations = self.stations
+        self.stations = self._load_station_configs()
+        self._sync_health_check_to_db()
+
+        # Log meaningful changes
+        new_ids = set(self.stations) - set(old_stations)
+        removed_ids = set(old_stations) - set(self.stations)
+        changed = []
+        for sid in set(self.stations) & set(old_stations):
+            old_hc = old_stations[sid].get('health_check')
+            new_hc = self.stations[sid].get('health_check')
+            if old_hc != new_hc:
+                changed.append(f"{sid}: {old_hc or 'active'} → {new_hc or 'active'}")
+
+        if new_ids:
+            self.logger.info(f"New stations: {', '.join(sorted(new_ids))}")
+        if removed_ids:
+            self.logger.info(f"Removed stations: {', '.join(sorted(removed_ids))}")
+        if changed:
+            self.logger.info(f"Health check changes: {'; '.join(changed)}")
 
     def _load_receiver_session_capabilities(self) -> Dict[str, List[str]]:
         """Load session capabilities for each receiver type from receivers.cfg.
@@ -767,7 +890,33 @@ class BulkDownloadScheduler:
 
         # Schedule health monitoring if enabled
         self._schedule_health_monitoring()
-        
+
+        # Sync health_check values to DB at startup
+        self._sync_health_check_to_db()
+
+        # Schedule config file watcher (every 5 minutes)
+        self._schedule_config_watcher()
+
+    def _schedule_config_watcher(self) -> None:
+        """Schedule periodic config file change detection."""
+        # Initialize mtime tracking
+        cfg_path = self._get_stations_cfg_path()
+        if cfg_path and cfg_path.exists():
+            try:
+                self._config_mtime = cfg_path.stat().st_mtime
+                self.logger.debug(f"Tracking config changes: {cfg_path}")
+            except OSError:
+                pass
+
+        self.scheduler.add_job(
+            func=_check_config_changes_job,
+            trigger='interval',
+            minutes=5,
+            id='config_watcher',
+            replace_existing=True,
+        )
+        self.logger.info("Scheduled config watcher (every 5 min)")
+
     def _get_stations_for_session(self, session_type: str) -> List[str]:
         """Get list of stations that support a specific session type."""
 
@@ -778,8 +927,8 @@ class BulkDownloadScheduler:
             if not config.get('enabled', True):
                 continue
 
-            # Skip discontinued/passive stations
-            if config.get('health_check') in ('discontinued', 'passive'):
+            # Skip discontinued/passive/no-instrument stations
+            if config.get('health_check') in ('discontinued', 'passive', 'no_instrument'):
                 continue
 
             # Apply station filter if specified
@@ -869,9 +1018,9 @@ class BulkDownloadScheduler:
             if not config.get('enabled', True):
                 continue
 
-            # Skip discontinued/passive stations
+            # Skip discontinued/passive/no-instrument stations
             health_check = config.get('health_check')
-            if health_check in ('discontinued', 'passive'):
+            if health_check in ('discontinued', 'passive', 'no_instrument'):
                 skipped_stations.append(station_id)
                 continue
 

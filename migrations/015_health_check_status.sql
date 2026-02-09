@@ -6,6 +6,7 @@
 --   NULL (default) = active, normal health checking
 --   'passive'      = not directly checked (external data delivery, inactive infrastructure)
 --   'discontinued' = station decommissioned, no longer operational
+--   'no_instrument' = station has no receiver or antenna installed (auto-detected from config)
 --
 -- Usage:
 --   psql -h localhost -U bgo -d gps_health -f migrations/015_health_check_status.sql
@@ -15,7 +16,7 @@ BEGIN;
 -- Add health_check column
 ALTER TABLE stations ADD COLUMN IF NOT EXISTS health_check VARCHAR(20);
 
-COMMENT ON COLUMN stations.health_check IS 'Health check mode: NULL=active, passive=external, discontinued=decommissioned';
+COMMENT ON COLUMN stations.health_check IS 'Health check mode: NULL=active, passive=external, discontinued=decommissioned, no_instrument=missing receiver/antenna';
 
 -- Set known discontinued/passive stations from stations.cfg
 UPDATE stations SET health_check = 'discontinued' WHERE sid = 'ASVE';
