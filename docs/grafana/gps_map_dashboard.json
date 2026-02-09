@@ -404,7 +404,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(*) as \"Ctrl Refused\" FROM station_dashboard_data WHERE control_open = false AND is_online = true AND station_status IS NULL AND d.health_check IS NULL",
+          "rawSql": "SELECT COUNT(*) as \"Ctrl Refused\" FROM station_dashboard_data WHERE control_open = false AND is_online = true AND station_status IS NULL AND health_check IS NULL",
           "refId": "A"
         }
       ],
