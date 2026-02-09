@@ -233,12 +233,32 @@ Tracking document for code weaknesses, recurring issues, and optimization opport
 - **Fix**: Changed to `EXTRACT(epoch FROM now() - d.last_check)::integer`. Kept existing thresholds (green <2h, yellow 2-24h, red >24h) for flexibility if check frequency is reduced later. Data staleness is already shown by the Conn column ("offline 1d").
 - **Files**: `gps_health_dashboard.json` (table SQL + column overrides)
 
-### CONFIG-012: Passive stations not filtered from scheduler/dashboard
+### CONFIG-012: Passive/discontinued stations not filtered from scheduler/dashboard
 - **Category**: CONFIG / SCHEDULER / DASHBOARD
 - **Severity**: Low
-- **Status**: Open
-- **Description**: Stations marked `health_check = passive` still appear in dashboard as "unknown" and trigger scheduler config errors. Should be filtered out of health monitoring or shown with "Passive" status. The `health_check` field was added 2026-02-09 but not yet consumed by any code.
-- **Files**: `gps-config-data/stations.cfg`, `scheduling/bulk_scheduler.py`, `gps_health_dashboard.json`
+- **Status**: Resolved
+- **Resolution date**: 2026-02-09
+- **Description**: Stations marked `health_check = passive` or `health_check = discontinued` appeared in dashboard as "unknown" and triggered scheduler config errors. Passive stations lacked required fields; discontinued stations (e.g., ASVE) had full config but should not be checked.
+- **Fix**: Added `health_check` column to stations table (migration 015). Scheduler skips these stations from health monitoring and downloads. Dashboard hides them by default; new "Discontinued"/"Passive" filter options show them with dark-gray styling. Summary count panels also exclude them.
+- **Files**: `migrations/015_health_check_status.sql`, `scheduling/bulk_scheduler.py`, `config_utils.py`, `gps_health_dashboard.json`
+
+### PROTOCOL-012: HTTP port checks use full GET request causing false CRITICAL
+- **Category**: PROTOCOL / EXTRACTOR
+- **Severity**: High
+- **Status**: Resolved
+- **Resolution date**: 2026-02-09
+- **Description**: `check_http_port()` and `check_http()` in connection_checker.py used `requests.get()` for port checks. Embedded receiver web servers (PolaRX5, Trimble) occasionally took >5s to serve HTTP responses even though the TCP port was open. This caused false CRITICAL status (e.g., SEY6 HTTP "down", ALFD "CRITICAL: HTTP down") even when all metrics were normal.
+- **Fix**: Both methods now use raw TCP socket connect (like `check_ftp()` already did). Socket connect proves port is open in ~70ms. Actual HTTP protocol validation happens during data extraction in the extractors.
+- **Files**: `health/connection_checker.py`
+
+### SCHEDULER-012: Single-packet ping causes false offline on lossy links
+- **Category**: SCHEDULER / PROTOCOL
+- **Severity**: High
+- **Status**: Resolved
+- **Resolution date**: 2026-02-09
+- **Description**: `check_all_levels()` called `check_ping(count=1, timeout=2)`. Stations with intermittent packet loss (GFUM 33%, FTEY 900ms latency, DYNC 33%, ELDC, HAHV) had high false-offline rate. Combined with the ping gate (SCHEDULER-011), one dropped packet skipped ALL extraction.
+- **Fix**: Increased to `count=5` with automatic retry on failure. First try sends 5 ICMP packets; if all fail, retries with 5 more. False-offline rate dropped from 33% (count=1) to ~0.002% (count=5 + retry). Cost for truly offline stations: ~12s (vs ~2s before), but still saves 20s+ by skipping futile extraction.
+- **Files**: `health/connection_checker.py`
 
 ---
 
@@ -272,5 +292,5 @@ When reviewing a file, check for these patterns:
 ---
 
 **Created**: 2026-02-09
-**Last updated**: 2026-02-09
+**Last updated**: 2026-02-09 (evening session)
 **Purpose**: Track code quality issues for systematic review and optimization

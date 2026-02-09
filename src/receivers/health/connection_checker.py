@@ -84,15 +84,23 @@ class ConnectionChecker:
         results = {}
 
         # Level 1: Router/Network ping (fast check first)
-        # Use count=3 to avoid false negatives on high-latency/lossy links
-        # (e.g. GFUM 33% loss, FTEY 900ms latency). With count=1, a single
-        # dropped packet triggers the ping gate and skips all extraction.
-        results["router_ping"] = self.check_ping(count=3, timeout=2)
+        # Use count=5 to handle lossy links (DYNC/GFUM/ELDC have ~33% loss).
+        # Retry once on failure to catch bursty packet loss automatically.
+        # False-offline rate: single try 0.4%, with retry ~0.002%.
+        # Cost for truly offline: ~12s (two tries) — still saves 20s+ vs
+        # futile port checks and extraction attempts.
+        results["router_ping"] = self.check_ping(count=5, timeout=2)
+
+        if not results["router_ping"].accessible:
+            self.logger.debug(
+                f"Ping failed for {self.station_id}, retrying once..."
+            )
+            results["router_ping"] = self.check_ping(count=5, timeout=2)
 
         # If ping failed and fail_fast enabled, skip remaining slow checks
         if fail_fast and not results["router_ping"].accessible:
             self.logger.debug(
-                f"Ping failed for {self.station_id}, skipping port checks (fail_fast)"
+                f"Ping retry failed for {self.station_id}, skipping port checks (fail_fast)"
             )
             # Mark other levels as unreachable without attempting
             results["http_port"] = ConnectionStatus(
@@ -150,7 +158,7 @@ class ConnectionChecker:
                 ["ping", "-c", str(count), "-W", str(timeout), self.host],
                 capture_output=True,
                 text=True,
-                timeout=timeout + 5,
+                timeout=count + timeout + 2,
             )
 
             elapsed_ms = (time.time() - start_time) * 1000
