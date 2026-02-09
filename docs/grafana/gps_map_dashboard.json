@@ -91,6 +91,13 @@
         },
         "textMode": "auto"
       },
+      "links": [
+        {
+          "title": "Filter: Online",
+          "url": "/d/gps-map?var-status_filter=online&${area:queryparam}",
+          "targetBlank": false
+        }
+      ],
       "pluginVersion": "10.0.0",
       "targets": [
         {
@@ -101,11 +108,87 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(*) AS \"Stations\" FROM station_dashboard_data WHERE last_update IS NOT NULL",
+          "rawSql": "SELECT COUNT(*) as \"Online\" FROM station_connectivity sc WHERE sc.is_online = true AND sc.sid NOT IN (SELECT sid FROM stations WHERE health_check IS NOT NULL)",
           "refId": "A"
         }
       ],
-      "title": "Active Stations",
+      "title": "Online",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 4,
+        "x": 4,
+        "y": 0
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "links": [
+        {
+          "title": "Filter: Offline",
+          "url": "/d/gps-map?var-status_filter=offline&${area:queryparam}",
+          "targetBlank": false
+        }
+      ],
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) as \"Offline\" FROM station_connectivity sc WHERE sc.is_online = false AND sc.sid NOT IN (SELECT sid FROM stations WHERE health_check IS NOT NULL)",
+          "refId": "A"
+        }
+      ],
+      "title": "Offline",
       "type": "stat"
     },
     {
@@ -142,10 +225,10 @@
       "gridPos": {
         "h": 2,
         "w": 4,
-        "x": 4,
+        "x": 8,
         "y": 0
       },
-      "id": 3,
+      "id": 4,
       "options": {
         "colorMode": "value",
         "graphMode": "none",
@@ -160,6 +243,13 @@
         },
         "textMode": "auto"
       },
+      "links": [
+        {
+          "title": "Filter: Critical",
+          "url": "/d/gps-map?var-status_filter=critical&${area:queryparam}",
+          "targetBlank": false
+        }
+      ],
       "pluginVersion": "10.0.0",
       "targets": [
         {
@@ -170,7 +260,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(*) AS \"Critical\" FROM station_dashboard_data WHERE overall_status = 'critical'",
+          "rawSql": "SELECT COUNT(*) AS \"Critical\" FROM (SELECT DISTINCT ON (sid) sid, overall_status FROM block_health_summary WHERE $__timeFilter(ts) ORDER BY sid, ts DESC) latest WHERE overall_status = 'critical' AND sid NOT IN (SELECT sid FROM stations WHERE health_check IS NOT NULL)",
           "refId": "A"
         }
       ],
@@ -207,10 +297,10 @@
       "gridPos": {
         "h": 2,
         "w": 4,
-        "x": 8,
+        "x": 12,
         "y": 0
       },
-      "id": 4,
+      "id": 5,
       "options": {
         "colorMode": "value",
         "graphMode": "none",
@@ -225,6 +315,13 @@
         },
         "textMode": "auto"
       },
+      "links": [
+        {
+          "title": "Filter: Warning",
+          "url": "/d/gps-map?var-status_filter=warning&${area:queryparam}",
+          "targetBlank": false
+        }
+      ],
       "pluginVersion": "10.0.0",
       "targets": [
         {
@@ -235,7 +332,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(*) AS \"Warnings\" FROM station_dashboard_data WHERE overall_status = 'warning'",
+          "rawSql": "SELECT COUNT(*) AS \"Warnings\" FROM (SELECT DISTINCT ON (sid) sid, overall_status FROM block_health_summary WHERE $__timeFilter(ts) ORDER BY sid, ts DESC) latest WHERE overall_status = 'warning' AND sid NOT IN (SELECT sid FROM stations WHERE health_check IS NOT NULL)",
           "refId": "A"
         }
       ],
@@ -259,6 +356,10 @@
               {
                 "color": "green",
                 "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
               }
             ]
           }
@@ -268,10 +369,10 @@
       "gridPos": {
         "h": 2,
         "w": 4,
-        "x": 12,
+        "x": 16,
         "y": 0
       },
-      "id": 5,
+      "id": 6,
       "options": {
         "colorMode": "value",
         "graphMode": "none",
@@ -286,6 +387,13 @@
         },
         "textMode": "auto"
       },
+      "links": [
+        {
+          "title": "Filter: Ctrl Refused",
+          "url": "/d/gps-map?var-status_filter=ctrl_refused&${area:queryparam}",
+          "targetBlank": false
+        }
+      ],
       "pluginVersion": "10.0.0",
       "targets": [
         {
@@ -296,11 +404,79 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(*) AS \"Healthy\" FROM station_dashboard_data WHERE overall_status = 'healthy'",
+          "rawSql": "SELECT COUNT(*) as \"Ctrl Refused\" FROM station_dashboard_data WHERE control_open = false AND is_online = true AND health_check IS NULL",
           "refId": "A"
         }
       ],
-      "title": "Healthy",
+      "title": "Ctrl Refused",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "dark-gray",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 4,
+        "x": 20,
+        "y": 0
+      },
+      "id": 7,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "links": [
+        {
+          "title": "Filter: No Instrument",
+          "url": "/d/gps-map?var-status_filter=no_instrument&${area:queryparam}",
+          "targetBlank": false
+        }
+      ],
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) as \"No Instrument\" FROM stations WHERE health_check = 'no_instrument'",
+          "refId": "A"
+        }
+      ],
+      "title": "No Instrument",
       "type": "stat"
     },
     {
@@ -429,7 +605,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  d.station_id AS sid,\n  d.latitude,\n  d.longitude,\n  CASE\n    WHEN d.overall_status = 'healthy' THEN 3\n    WHEN d.overall_status = 'warning' THEN 2\n    WHEN d.overall_status = 'critical' THEN 1\n    ELSE 0\n  END AS status_code,\n  d.receiver_type AS \"Receiver\",\n  COALESCE(d.overall_status, 'unknown') AS \"Health\",\n  CASE\n    WHEN d.is_online IS NULL THEN 'unknown'\n    WHEN d.is_online THEN 'online ' || format_duration(d.state_duration)\n    ELSE 'offline ' || format_duration(d.state_duration)\n  END AS \"Connection\",\n  CASE WHEN d.voltage IS NOT NULL THEN ROUND(d.voltage::numeric, 1) || ' V' ELSE '-' END AS \"Voltage\",\n  CASE WHEN d.temperature IS NOT NULL THEN d.temperature || ' C' ELSE '-' END AS \"Temp\",\n  COALESCE(d.satellites_tracked::text, '-') AS \"Sats\",\n  CASE WHEN d.disk_usage_pct IS NOT NULL THEN ROUND(d.disk_usage_pct::numeric, 0) || '%' ELSE '-' END AS \"Disk\",\n  COALESCE(d.ntrip_status, '-') AS \"NTRIP\",\n  COALESCE(d.status_details, '') AS \"Details\"\nFROM station_dashboard_data d\nWHERE d.latitude IS NOT NULL\n  AND d.longitude IS NOT NULL\n  AND ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = d.station_id AND sam.area_id = '$area'))\nORDER BY d.station_id",
+          "rawSql": "SELECT\n  d.station_id AS sid,\n  d.latitude,\n  d.longitude,\n  CASE\n    WHEN d.health_check IS NOT NULL THEN 0\n    WHEN d.overall_status = 'healthy' THEN 3\n    WHEN d.overall_status = 'warning' THEN 2\n    WHEN d.overall_status = 'critical' THEN 1\n    ELSE 0\n  END AS status_code,\n  d.receiver_type AS \"Receiver\",\n  COALESCE(d.overall_status, 'unknown') AS \"Health\",\n  CASE\n    WHEN d.health_check IS NOT NULL THEN d.health_check\n    WHEN d.is_online IS NULL THEN 'unknown'\n    WHEN d.is_online THEN 'online ' || format_duration(d.state_duration)\n    ELSE 'offline ' || format_duration(d.state_duration)\n  END AS \"Connection\",\n  CASE WHEN d.health_check IS NOT NULL THEN '-' WHEN d.voltage IS NOT NULL THEN ROUND(d.voltage::numeric, 1) || ' V' ELSE '-' END AS \"Voltage\",\n  CASE WHEN d.health_check IS NOT NULL THEN '-' WHEN d.temperature IS NOT NULL THEN d.temperature || ' C' ELSE '-' END AS \"Temp\",\n  CASE WHEN d.health_check IS NOT NULL THEN '-' ELSE COALESCE(d.satellites_tracked::text, '-') END AS \"Sats\",\n  CASE WHEN d.health_check IS NOT NULL THEN '-' WHEN d.disk_usage_pct IS NOT NULL THEN ROUND(d.disk_usage_pct::numeric, 0) || '%' ELSE '-' END AS \"Disk\",\n  CASE WHEN d.health_check IS NOT NULL THEN d.health_check ELSE COALESCE(d.ntrip_status, '-') END AS \"NTRIP\",\n  COALESCE(d.status_details, '') AS \"Details\"\nFROM station_dashboard_data d\nWHERE d.latitude IS NOT NULL\n  AND d.longitude IS NOT NULL\n  AND ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = d.station_id AND sam.area_id = '$area'))\n  AND (${station:singlequote} = 'all' OR d.station_id = ${station:singlequote})\n  AND (${receiver:singlequote} = 'all' OR d.receiver_type = ${receiver:singlequote})\n  AND (${antenna:singlequote} = 'all' OR d.antenna_type = ${antenna:singlequote})\n  AND ('$status_filter' = 'all'\n    OR ('$status_filter' = 'online' AND d.is_online = true AND d.health_check IS NULL)\n    OR ('$status_filter' = 'offline' AND d.is_online = false AND d.health_check IS NULL)\n    OR ('$status_filter' = 'critical' AND d.overall_status = 'critical' AND d.health_check IS NULL)\n    OR ('$status_filter' = 'warning' AND d.overall_status = 'warning' AND d.health_check IS NULL)\n    OR ('$status_filter' = 'ctrl_refused' AND d.control_open = false AND d.is_online = true AND d.health_check IS NULL)\n    OR ('$status_filter' = 'discontinued' AND d.health_check = 'discontinued')\n    OR ('$status_filter' = 'passive' AND d.health_check = 'passive')\n    OR ('$status_filter' = 'no_instrument' AND d.health_check = 'no_instrument')\n  )\n  AND ('$status_filter' IN ('discontinued', 'passive', 'no_instrument') OR d.health_check IS NULL)\nORDER BY d.station_id",
           "refId": "A"
         }
       ],
@@ -466,6 +642,90 @@
         "skipUrlSync": false,
         "sort": 0,
         "type": "query"
+      },
+      {
+        "current": {},
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "gps_health"
+        },
+        "definition": "SELECT 'all' AS sid UNION ALL SELECT sid FROM stations ORDER BY sid",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Station",
+        "multi": false,
+        "name": "station",
+        "options": [],
+        "query": "SELECT 'all' AS sid UNION ALL SELECT sid FROM stations ORDER BY sid",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {},
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "gps_health"
+        },
+        "definition": "SELECT 'all' AS receiver_type UNION ALL SELECT DISTINCT receiver_type FROM stations WHERE receiver_type IS NOT NULL ORDER BY receiver_type",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Receiver",
+        "multi": false,
+        "name": "receiver",
+        "options": [],
+        "query": "SELECT 'all' AS receiver_type UNION ALL SELECT DISTINCT receiver_type FROM stations WHERE receiver_type IS NOT NULL ORDER BY receiver_type",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {},
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "gps_health"
+        },
+        "definition": "SELECT 'all' AS antenna_type UNION ALL SELECT DISTINCT antenna_type FROM stations WHERE antenna_type IS NOT NULL ORDER BY antenna_type",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Antenna",
+        "multi": false,
+        "name": "antenna",
+        "options": [],
+        "query": "SELECT 'all' AS antenna_type UNION ALL SELECT DISTINCT antenna_type FROM stations WHERE antenna_type IS NOT NULL ORDER BY antenna_type",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "all"
+        },
+        "hide": 0,
+        "label": "Status Filter",
+        "name": "status_filter",
+        "options": [
+          { "selected": true, "text": "All", "value": "all" },
+          { "selected": false, "text": "Online", "value": "online" },
+          { "selected": false, "text": "Offline", "value": "offline" },
+          { "selected": false, "text": "Critical", "value": "critical" },
+          { "selected": false, "text": "Warning", "value": "warning" },
+          { "selected": false, "text": "Ctrl Refused", "value": "ctrl_refused" },
+          { "selected": false, "text": "Discontinued", "value": "discontinued" },
+          { "selected": false, "text": "Passive", "value": "passive" },
+          { "selected": false, "text": "No Instrument", "value": "no_instrument" }
+        ],
+        "query": "all,online,offline,critical,warning,ctrl_refused,discontinued,passive,no_instrument",
+        "skipUrlSync": false,
+        "type": "custom"
       }
     ]
   },

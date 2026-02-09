@@ -314,8 +314,8 @@ class TestSchedulerJobScheduling:
         # Should have jobs scheduled
         jobs = scheduler.get_scheduled_jobs()
 
-        # 2 stations × 3 session types = 6 download jobs + 2 health jobs = 8 total
-        assert len(jobs) == 8
+        # 2 stations × 3 session types = 6 download jobs + 2 health jobs + 1 config watcher = 9 total
+        assert len(jobs) == 9
 
         # Check job IDs follow pattern: session_station
         job_ids = [job['id'] for job in jobs]
@@ -345,8 +345,8 @@ class TestSchedulerJobScheduling:
         assert 'total_jobs' in status
         assert 'running_jobs' in status
         assert 'current_jobs' in status
-        # 1 station × 3 sessions + 1 health monitoring job = 4 total
-        assert status['total_jobs'] == 4
+        # 1 station × 3 sessions + 1 health monitoring job + 1 config watcher = 5 total
+        assert status['total_jobs'] == 5
 
 
 @pytest.mark.unit

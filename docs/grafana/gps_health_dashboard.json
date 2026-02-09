@@ -237,7 +237,7 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 3,
+        "w": 2,
         "x": 6,
         "y": 1
       },
@@ -309,8 +309,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 3,
-        "x": 9,
+        "w": 2,
+        "x": 8,
         "y": 1
       },
       "id": 4,
@@ -381,8 +381,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 3,
-        "x": 12,
+        "w": 2,
+        "x": 10,
         "y": 1
       },
       "id": 32,
@@ -422,6 +422,74 @@
         }
       ],
       "title": "Ctrl Refused",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "dark-gray",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 12,
+        "y": 1
+      },
+      "id": 33,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "links": [
+        {
+          "title": "Filter: No Instrument",
+          "url": "/d/gps-health-voltage?var-status_filter=no_instrument&${area:queryparam}&${station:queryparam}&${receiver:queryparam}&${antenna:queryparam}",
+          "targetBlank": false
+        }
+      ],
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) as \"No Instrument\" FROM stations WHERE health_check = 'no_instrument'",
+          "refId": "A"
+        }
+      ],
+      "title": "No Instrument",
       "type": "stat"
     },
     {
@@ -551,7 +619,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  d.station_id AS sid,\n  d.latitude,\n  d.longitude,\n  d.overall_status,\n  CASE\n    WHEN d.overall_status = 'healthy' THEN 3\n    WHEN d.overall_status = 'warning' THEN 2\n    WHEN d.overall_status = 'critical' THEN 1\n    ELSE 0\n  END AS status_code,\n  d.receiver_type,\n  d.connection_status,\n  CASE\n    WHEN d.is_online IS NULL THEN NULL\n    WHEN d.is_online THEN 'online ' || format_duration(d.state_duration)\n    ELSE 'offline ' || format_duration(d.state_duration)\n  END AS conn,\n  d.voltage,\n  d.temperature,\n  d.satellites_tracked,\n  d.disk_usage_pct,\n  d.ntrip_status,\n  d.seconds_since_update,\n  d.status_details\nFROM station_dashboard_data d\nWHERE d.latitude IS NOT NULL\n  AND d.longitude IS NOT NULL\n  AND ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = d.station_id AND sam.area_id = '$area'))\n  AND (${station:singlequote} = 'all' OR d.station_id = ${station:singlequote})\n  AND (${receiver:singlequote} = 'all' OR d.receiver_type = ${receiver:singlequote})\n  AND (${antenna:singlequote} = 'all' OR d.antenna_type = ${antenna:singlequote})\n  AND ('$status_filter' = 'all'\n    OR ('$status_filter' = 'online' AND d.is_online = true)\n    OR ('$status_filter' = 'offline' AND d.is_online = false)\n    OR ('$status_filter' = 'critical' AND d.overall_status = 'critical')\n    OR ('$status_filter' = 'warning' AND d.overall_status = 'warning')\n    OR ('$status_filter' = 'ctrl_refused' AND d.control_open = false AND d.is_online = true)\n  )\nORDER BY d.station_id",
+          "rawSql": "SELECT\n  d.station_id AS sid,\n  d.latitude,\n  d.longitude,\n  d.overall_status,\n  CASE\n    WHEN d.overall_status = 'healthy' THEN 3\n    WHEN d.overall_status = 'warning' THEN 2\n    WHEN d.overall_status = 'critical' THEN 1\n    ELSE 0\n  END AS status_code,\n  d.receiver_type,\n  d.connection_status,\n  CASE\n    WHEN d.is_online IS NULL THEN NULL\n    WHEN d.is_online THEN 'online ' || format_duration(d.state_duration)\n    ELSE 'offline ' || format_duration(d.state_duration)\n  END AS conn,\n  d.voltage,\n  d.temperature,\n  d.satellites_tracked,\n  d.disk_usage_pct,\n  d.ntrip_status,\n  d.seconds_since_update,\n  d.status_details\nFROM station_dashboard_data d\nWHERE d.latitude IS NOT NULL\n  AND d.longitude IS NOT NULL\n  AND ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = d.station_id AND sam.area_id = '$area'))\n  AND (${station:singlequote} = 'all' OR d.station_id = ${station:singlequote})\n  AND (${receiver:singlequote} = 'all' OR d.receiver_type = ${receiver:singlequote})\n  AND (${antenna:singlequote} = 'all' OR d.antenna_type = ${antenna:singlequote})\n  AND ('$status_filter' = 'all'\n    OR ('$status_filter' = 'online' AND d.is_online = true)\n    OR ('$status_filter' = 'offline' AND d.is_online = false)\n    OR ('$status_filter' = 'critical' AND d.overall_status = 'critical')\n    OR ('$status_filter' = 'warning' AND d.overall_status = 'warning')\n    OR ('$status_filter' = 'ctrl_refused' AND d.control_open = false AND d.is_online = true)\n    OR ('$status_filter' = 'discontinued' AND d.health_check = 'discontinued')\n    OR ('$status_filter' = 'passive' AND d.health_check = 'passive')\n    OR ('$status_filter' = 'no_instrument' AND d.health_check = 'no_instrument')\n  )\n  AND ('$status_filter' IN ('discontinued', 'passive', 'no_instrument') OR d.health_check IS NULL)\nORDER BY d.station_id",
           "refId": "A"
         }
       ],
@@ -703,6 +771,10 @@
                       "passive": {
                         "color": "dark-gray",
                         "index": 5
+                      },
+                      "no_instrument": {
+                        "color": "dark-gray",
+                        "index": 6
                       }
                     },
                     "type": "value"
@@ -832,6 +904,10 @@
                       "passive": {
                         "color": "dark-gray",
                         "index": 10
+                      },
+                      "no_instrument": {
+                        "color": "dark-gray",
+                        "index": 11
                       }
                     },
                     "type": "value"
@@ -1022,6 +1098,10 @@
                       "passive": {
                         "color": "dark-gray",
                         "index": 4
+                      },
+                      "no_instrument": {
+                        "color": "dark-gray",
+                        "index": 5
                       }
                     },
                     "type": "value"
@@ -1145,6 +1225,10 @@
                       "Passive": {
                         "color": "dark-gray",
                         "index": 7
+                      },
+                      "No Instrument": {
+                        "color": "dark-gray",
+                        "index": 8
                       }
                     },
                     "type": "value"
@@ -1284,7 +1368,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  d.station_id AS \"Station\",\n  d.receiver_type AS \"Receiver\",\n  d.antenna_type AS \"Antenna\",\n  EXTRACT(epoch FROM now() - d.last_check)::integer AS \"Checked\",\n  CASE\n    WHEN d.health_check IS NOT NULL THEN d.health_check\n    WHEN d.is_online IS NULL THEN NULL\n    WHEN d.is_online THEN 'online ' || format_duration(d.state_duration)\n    ELSE 'offline ' || format_duration(d.state_duration)\n  END AS \"Conn\",\n  CASE\n    WHEN d.health_check IS NOT NULL THEN d.health_check\n    WHEN d.ftp_open IS NULL AND d.http_open IS NULL THEN NULL\n    WHEN COALESCE(d.ftp_open, true) AND COALESCE(d.http_open, true) THEN 'active'\n    WHEN d.ftp_open = false THEN\n      CASE WHEN d.status_details LIKE '%FTP refused%' THEN 'dl:refused'\n           WHEN d.status_details LIKE '%FTP timeout%' THEN 'dl:timeout'\n           ELSE 'dl:down' END\n    WHEN d.http_open = false THEN\n      CASE WHEN d.status_details LIKE '%HTTP refused%' THEN 'hc:refused'\n           WHEN d.status_details LIKE '%HTTP timeout%' THEN 'hc:timeout'\n           ELSE 'hc:down' END\n    ELSE 'unknown'\n  END AS \"Port\",\n  CASE\n    WHEN d.health_check = 'discontinued' THEN 'Discontinued'\n    WHEN d.health_check = 'passive' THEN 'Passive'\n    WHEN d.is_online = false THEN 'offline'\n    WHEN d.overall_status = 'critical' THEN 'CRITICAL: ' || COALESCE(d.status_details, '')\n    WHEN d.overall_status = 'warning' THEN 'WARNING: ' || COALESCE(d.status_details, '')\n    WHEN d.overall_status = 'healthy' THEN 'OK'\n    ELSE COALESCE(d.overall_status, 'unknown')\n  END AS \"Status\",\n  CASE WHEN d.health_check IS NOT NULL THEN NULL ELSE d.voltage END AS \"Voltage\",\n  CASE WHEN d.health_check IS NOT NULL THEN NULL WHEN d.receiver_type = 'NetR5' THEN -1 ELSE d.satellites_tracked END AS \"Sats\",\n  CASE WHEN d.health_check IS NOT NULL THEN d.health_check ELSE d.ntrip_status END AS \"NTRIP\",\n  CASE WHEN d.health_check IS NOT NULL THEN NULL ELSE d.uptime_seconds END AS \"Uptime\"\nFROM station_dashboard_data d\nWHERE ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = d.station_id AND sam.area_id = '$area'))\n  AND (${station:singlequote} = 'all' OR d.station_id = ${station:singlequote})\n  AND (${receiver:singlequote} = 'all' OR d.receiver_type = ${receiver:singlequote})\n  AND (${antenna:singlequote} = 'all' OR d.antenna_type = ${antenna:singlequote})\n  AND ('$status_filter' = 'all'\n    OR ('$status_filter' = 'online' AND d.is_online = true AND d.health_check IS NULL)\n    OR ('$status_filter' = 'offline' AND d.is_online = false AND d.health_check IS NULL)\n    OR ('$status_filter' = 'critical' AND d.overall_status = 'critical' AND d.health_check IS NULL)\n    OR ('$status_filter' = 'warning' AND d.overall_status = 'warning' AND d.health_check IS NULL)\n    OR ('$status_filter' = 'ctrl_refused' AND d.control_open = false AND d.is_online = true AND d.health_check IS NULL)\n    OR ('$status_filter' = 'discontinued' AND d.health_check = 'discontinued')\n    OR ('$status_filter' = 'passive' AND d.health_check = 'passive')\n  )\n  AND ('$status_filter' IN ('discontinued', 'passive') OR d.health_check IS NULL)\nORDER BY d.station_id",
+          "rawSql": "SELECT\n  d.station_id AS \"Station\",\n  d.receiver_type AS \"Receiver\",\n  d.antenna_type AS \"Antenna\",\n  EXTRACT(epoch FROM now() - d.last_check)::integer AS \"Checked\",\n  CASE\n    WHEN d.health_check IS NOT NULL THEN d.health_check\n    WHEN d.is_online IS NULL THEN NULL\n    WHEN d.is_online THEN 'online ' || format_duration(d.state_duration)\n    ELSE 'offline ' || format_duration(d.state_duration)\n  END AS \"Conn\",\n  CASE\n    WHEN d.health_check IS NOT NULL THEN d.health_check\n    WHEN d.ftp_open IS NULL AND d.http_open IS NULL THEN NULL\n    WHEN COALESCE(d.ftp_open, true) AND COALESCE(d.http_open, true) THEN 'active'\n    WHEN d.ftp_open = false THEN\n      CASE WHEN d.status_details LIKE '%FTP refused%' THEN 'dl:refused'\n           WHEN d.status_details LIKE '%FTP timeout%' THEN 'dl:timeout'\n           ELSE 'dl:down' END\n    WHEN d.http_open = false THEN\n      CASE WHEN d.status_details LIKE '%HTTP refused%' THEN 'hc:refused'\n           WHEN d.status_details LIKE '%HTTP timeout%' THEN 'hc:timeout'\n           ELSE 'hc:down' END\n    ELSE 'unknown'\n  END AS \"Port\",\n  CASE\n    WHEN d.health_check = 'discontinued' THEN 'Discontinued'\n    WHEN d.health_check = 'passive' THEN 'Passive'\n    WHEN d.health_check = 'no_instrument' THEN 'No Instrument'\n    WHEN d.is_online = false THEN 'offline'\n    WHEN d.overall_status = 'critical' THEN 'CRITICAL: ' || COALESCE(d.status_details, '')\n    WHEN d.overall_status = 'warning' THEN 'WARNING: ' || COALESCE(d.status_details, '')\n    WHEN d.overall_status = 'healthy' THEN 'OK'\n    ELSE COALESCE(d.overall_status, 'unknown')\n  END AS \"Status\",\n  CASE WHEN d.health_check IS NOT NULL THEN NULL ELSE d.voltage END AS \"Voltage\",\n  CASE WHEN d.health_check IS NOT NULL THEN NULL WHEN d.receiver_type = 'NetR5' THEN -1 ELSE d.satellites_tracked END AS \"Sats\",\n  CASE WHEN d.health_check IS NOT NULL THEN d.health_check ELSE d.ntrip_status END AS \"NTRIP\",\n  CASE WHEN d.health_check IS NOT NULL THEN NULL ELSE d.uptime_seconds END AS \"Uptime\"\nFROM station_dashboard_data d\nWHERE ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = d.station_id AND sam.area_id = '$area'))\n  AND (${station:singlequote} = 'all' OR d.station_id = ${station:singlequote})\n  AND (${receiver:singlequote} = 'all' OR d.receiver_type = ${receiver:singlequote})\n  AND (${antenna:singlequote} = 'all' OR d.antenna_type = ${antenna:singlequote})\n  AND ('$status_filter' = 'all'\n    OR ('$status_filter' = 'online' AND d.is_online = true AND d.health_check IS NULL)\n    OR ('$status_filter' = 'offline' AND d.is_online = false AND d.health_check IS NULL)\n    OR ('$status_filter' = 'critical' AND d.overall_status = 'critical' AND d.health_check IS NULL)\n    OR ('$status_filter' = 'warning' AND d.overall_status = 'warning' AND d.health_check IS NULL)\n    OR ('$status_filter' = 'ctrl_refused' AND d.control_open = false AND d.is_online = true AND d.health_check IS NULL)\n    OR ('$status_filter' = 'discontinued' AND d.health_check = 'discontinued')\n    OR ('$status_filter' = 'passive' AND d.health_check = 'passive')\n    OR ('$status_filter' = 'no_instrument' AND d.health_check = 'no_instrument')\n  )\n  AND ('$status_filter' IN ('discontinued', 'passive', 'no_instrument') OR d.health_check IS NULL)\nORDER BY d.station_id",
           "refId": "A"
         }
       ],
@@ -1767,9 +1851,10 @@
           { "selected": false, "text": "Warning", "value": "warning" },
           { "selected": false, "text": "Ctrl Refused", "value": "ctrl_refused" },
           { "selected": false, "text": "Discontinued", "value": "discontinued" },
-          { "selected": false, "text": "Passive", "value": "passive" }
+          { "selected": false, "text": "Passive", "value": "passive" },
+          { "selected": false, "text": "No Instrument", "value": "no_instrument" }
         ],
-        "query": "all,online,offline,critical,warning,ctrl_refused,discontinued,passive",
+        "query": "all,online,offline,critical,warning,ctrl_refused,discontinued,passive,no_instrument",
         "skipUrlSync": false,
         "type": "custom"
       }

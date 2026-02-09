@@ -172,8 +172,10 @@ Tracking document for code weaknesses, recurring issues, and optimization opport
 ### CONFIG-010: Config change detection / live reload
 - **Category**: CONFIG / SCHEDULER
 - **Severity**: Low
-- **Status**: Open
+- **Status**: Resolved
+- **Resolution date**: 2026-02-09
 - **Description**: Currently config is loaded fresh each health check (via `_ensure_station()`), which picks up `stations.cfg` changes within ~5 minutes. However, adding/removing stations requires scheduler restart. Consider file watching or periodic config diff.
+- **Fix**: Added mtime-based config watcher (`_check_config_changes()`) as a 5-minute periodic scheduler job. Detects stations.cfg changes, reloads configs, syncs health_check values to DB, and logs meaningful changes (new/removed stations, health_check transitions).
 - **Files**: `scheduling/bulk_scheduler.py`, `config_utils.py`
 
 ### EXTRACTOR-010: NetR5 endpoint support matrix
@@ -259,6 +261,15 @@ Tracking document for code weaknesses, recurring issues, and optimization opport
 - **Description**: `check_all_levels()` called `check_ping(count=1, timeout=2)`. Stations with intermittent packet loss (GFUM 33%, FTEY 900ms latency, DYNC 33%, ELDC, HAHV) had high false-offline rate. Combined with the ping gate (SCHEDULER-011), one dropped packet skipped ALL extraction.
 - **Fix**: Increased to `count=5` with automatic retry on failure. First try sends 5 ICMP packets; if all fail, retries with 5 more. False-offline rate dropped from 33% (count=1) to ~0.002% (count=5 + retry). Cost for truly offline stations: ~12s (vs ~2s before), but still saves 20s+ by skipping futile extraction.
 - **Files**: `health/connection_checker.py`
+
+### CONFIG-013: No-instrument station auto-detection and filtering
+- **Category**: CONFIG / SCHEDULER / DASHBOARD
+- **Severity**: Medium
+- **Status**: Resolved
+- **Resolution date**: 2026-02-09
+- **Description**: Stations without receiver or antenna (receiver_type missing/None, antenna_type missing) were still health-checked and shown in dashboards, wasting scheduler threads and cluttering the overview.
+- **Fix**: Auto-detect `no_instrument` status from config in `_load_station_configs()` (receiver_type None/empty/unknown or antenna missing). DB sync at startup writes health_check to stations table. Config file watcher (5-min mtime check) picks up changes when instruments are added back. Dashboard shows clickable "No Instrument" count box, dark-gray styling, and filter option. Map dashboard also updated with matching filter support.
+- **Files**: `scheduling/bulk_scheduler.py`, `migrations/015_health_check_status.sql`, `gps_health_dashboard.json`, `gps_map_dashboard.json`
 
 ---
 
