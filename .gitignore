@@ -170,3 +170,7 @@ external-tools/
 
 # Database dumps (large, contain data)
 dumps/*.sql
+
+# Grafana auth tokens (if accidentally placed in project)
+grafana_tokens.yaml
+**/grafana_tokens.yaml

@@ -1,0 +1,45 @@
+# Grafana deployment targets — UID mappings for dashboard sync
+#
+# Each target defines:
+#   - url: Grafana instance URL
+#   - auth_type: "basic" (user:pass) or "token" (env var)
+#   - datasource_uid: PostgreSQL datasource UID on that instance
+#   - folder_uid: Target folder (null = General)
+#   - dashboards: mapping of source filename (without .json) → target dashboard UID
+#
+# The sync script reads local dashboards from docs/grafana/*.json (source of truth)
+# and remaps UIDs before pushing to the target.
+
+targets:
+  local:
+    url: "http://localhost:3001"
+    auth_type: basic
+    username: admin
+    password: admin
+    datasource_uid: "gps_health"
+    folder_uid: null
+    dashboards:
+      gps_health_dashboard: "gps-health-voltage"
+      gps_map_dashboard: "gps-map"
+      gps_station_detail_dashboard: "gps-station-detail"
+
+  vedur:
+    url: "https://grafana.vedur.is"
+    auth_type: token  # reads GRAFANA_VEDUR_TOKEN env var
+    datasource_uid: "cfcq67myv2by8e"
+    folder_uid: "ffctg7iot7tvkb"
+    dashboards:
+      gps_health_dashboard: "bgp9jh6"
+      gps_map_dashboard: "45d42ce0-48b5-4ff6-a58c-a36d3ced2e69"
+      gps_station_detail_dashboard: "bgqb686"
+
+# UID mapping for inter-dashboard links
+# Used to rewrite /d/<uid>/... URLs in dashboard JSON
+# Key = local (source) UID, value = target UID per environment
+link_mappings:
+  "gps-health-voltage":
+    vedur: "bgp9jh6"
+  "gps-map":
+    vedur: "45d42ce0-48b5-4ff6-a58c-a36d3ced2e69"
+  "gps-station-detail":
+    vedur: "bgqb686"
