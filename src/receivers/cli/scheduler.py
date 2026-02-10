@@ -60,7 +60,7 @@ def cmd_scheduler_start(args) -> int:
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
 
-        print(f"🚀 Starting scheduler with {args.max_workers} workers...")
+        print(f"🚀 Starting scheduler with {scheduler.max_workers} workers...")
         print("   Press Ctrl+C to stop")
 
         # Start scheduler (non-blocking for BackgroundScheduler)
@@ -484,8 +484,8 @@ def create_scheduler_parser(subparsers):
     start_parser.add_argument(
         "--max-workers",
         type=int,
-        default=5,
-        help="Maximum number of concurrent downloads (default: 5)"
+        default=None,
+        help="Maximum concurrent downloads (default: from scheduler.yaml, or 15)"
     )
     start_parser.add_argument(
         "--show-jobs",
@@ -592,8 +592,8 @@ def create_scheduler_parser(subparsers):
     restart_parser.add_argument(
         "--max-workers",
         type=int,
-        default=5,
-        help="Maximum number of concurrent downloads after restart (default: 5)"
+        default=None,
+        help="Maximum concurrent downloads after restart (default: from scheduler.yaml, or 15)"
     )
     restart_parser.add_argument(
         "-v", "--verbose",

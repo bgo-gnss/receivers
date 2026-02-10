@@ -277,11 +277,9 @@ def _extract_and_store_health(
                 health_data = extractor.extract_health_from_sbf(file_path)
                 if not health_data or not health_data.get("metrics"):
                     log.debug(f"No health metrics in {file_path.name}")
-                    if file_date:
-                        tracker.mark_file_missing(
-                            station_id, "status_1hr", file_date, file_hour,
-                            file_path.name
-                        )
+                    # Don't mark as 'missing' — the file was downloaded successfully,
+                    # it just didn't contain extractable health metrics. Marking it
+                    # 'missing' would overwrite the 'downloaded' status in file_tracking.
                     continue
 
                 # Add station metadata for db_writer
