@@ -181,6 +181,12 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
             if archived_files:
                 _run_rinex_conversion(station_id, session_type, archived_files, station_config, logger)
 
+        # Extract health data from status_1hr SBF files and write to DB
+        if session_type == 'status_1hr' and status != 'failed':
+            downloaded_files = result.get('downloaded_files', [])
+            if downloaded_files:
+                _extract_and_store_health_data(station_id, downloaded_files, logger)
+
     except Exception as e:
         # Unexpected exception during download
         error_type = type(e).__name__
@@ -249,6 +255,35 @@ def _run_rinex_conversion(station_id: str, session_type: str, raw_files: List[st
         logger.warning(f"⚠️  RINEX not available: {e}")
     except Exception as e:
         logger.error(f"❌ RINEX failed: {station_id} - {type(e).__name__}: {e}")
+
+
+def _extract_and_store_health_data(station_id: str, file_paths: List[str], logger: logging.Logger) -> None:
+    """Extract health data from status_1hr SBF files and write to database.
+
+    Called after successful status_1hr downloads. Delegates to the shared
+    extraction function in backfill module.
+
+    Args:
+        station_id: Station identifier
+        file_paths: List of downloaded file paths
+        logger: Logger instance
+    """
+    try:
+        from .backfill import _extract_and_store_health
+
+        start_time = time.time()
+        imported = _extract_and_store_health(station_id, file_paths, logger)
+        duration = time.time() - start_time
+
+        if imported > 0:
+            logger.info(
+                f"Extracted health data: {station_id} - "
+                f"{imported}/{len(file_paths)} files in {duration:.1f}s"
+            )
+    except ImportError as e:
+        logger.debug(f"Health extraction not available: {e}")
+    except Exception as e:
+        logger.warning(f"Health extraction failed for {station_id}: {e}")
 
 
 try:
@@ -910,6 +945,10 @@ class BulkDownloadScheduler:
         # Schedule config file watcher (every 5 minutes)
         self._schedule_config_watcher()
 
+        # Schedule status_1hr backfill if status_1hr is enabled
+        if self.schedule_configs.get('status_1hr', None) and self.schedule_configs['status_1hr'].enabled:
+            self._schedule_backfill()
+
     def _schedule_config_watcher(self) -> None:
         """Schedule periodic config file change detection."""
         # Initialize mtime tracking
@@ -929,6 +968,27 @@ class BulkDownloadScheduler:
             replace_existing=True,
         )
         self.logger.info("Scheduled config watcher (every 5 min)")
+
+    def _schedule_backfill(self) -> None:
+        """Schedule status_1hr backfill for PolaRX5 stations.
+
+        Runs at :40 each hour with low concurrency to avoid competing with
+        live downloads (:01) and status downloads (:31). Processes one day
+        per station per run, round-robin through stations.
+
+        Progress is tracked in the backfill_progress table (migration 016).
+        """
+        from .backfill import _backfill_next_station
+
+        self.scheduler.add_job(
+            func=_backfill_next_station,
+            trigger='cron',
+            minute=40,
+            id='backfill_status_1hr',
+            replace_existing=True,
+            max_instances=2,  # Allow 2 concurrent backfill jobs
+        )
+        self.logger.info("Scheduled status_1hr backfill (hourly at :40)")
 
     def _get_stations_for_session(self, session_type: str) -> List[str]:
         """Get list of stations that support a specific session type."""
