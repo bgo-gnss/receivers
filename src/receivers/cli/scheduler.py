@@ -335,6 +335,165 @@ def cmd_scheduler_stop(args) -> int:
         return 1
 
 
+def cmd_scheduler_backfill(args) -> int:
+    """Manually trigger backfill for a specific session type."""
+    from datetime import date, timedelta
+
+    session_type = getattr(args, 'session', 'status_1hr')
+    days_back = getattr(args, 'days', 30)
+    stations = getattr(args, 'stations', None)
+
+    print(f"Starting manual backfill for {session_type} ({days_back} days back)")
+
+    try:
+        from ..health.database_factory import DatabaseConnectionFactory
+
+        # If specific stations requested, just process them
+        if stations:
+            station_ids = [s.upper() for s in stations]
+        else:
+            # Get stations from backfill_progress table
+            with DatabaseConnectionFactory.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT sid FROM backfill_progress
+                        WHERE session_type = %s
+                          AND status IN ('pending', 'in_progress')
+                        ORDER BY last_run ASC NULLS FIRST
+                    """, (session_type,))
+                    station_ids = [row[0] for row in cur.fetchall()]
+
+        if not station_ids:
+            print(f"No stations pending backfill for {session_type}")
+            return 0
+
+        max_stations = getattr(args, 'max_stations', None)
+        if max_stations:
+            station_ids = station_ids[:max_stations]
+
+        print(f"Processing {len(station_ids)} stations: {', '.join(station_ids[:10])}")
+        if len(station_ids) > 10:
+            print(f"  ... and {len(station_ids) - 10} more")
+
+        from ..scheduling.backfill import _backfill_station_day_generic
+
+        end_date = date.today() - timedelta(days=1)
+        start_date = end_date - timedelta(days=days_back - 1)
+        archiving_mode = getattr(args, 'archiving_mode', 'bulk')
+        immediate = archiving_mode != 'bulk'
+
+        total_processed = 0
+        for station_id in station_ids:
+            current = start_date
+            while current <= end_date:
+                has_more = _backfill_station_day_generic(
+                    station_id, current, end_date, session_type,
+                    immediate_archive=immediate,
+                )
+                total_processed += 1
+                if not has_more:
+                    break
+                current += timedelta(days=1)
+
+                # Show progress
+                if total_processed % 10 == 0:
+                    print(f"  Processed {total_processed} station-days...")
+
+        print(f"\nBackfill complete: {total_processed} station-days processed")
+        return 0
+
+    except ImportError as e:
+        print(f"Required modules not available: {e}")
+        return 1
+    except Exception as e:
+        print(f"Backfill failed: {e}")
+        return 1
+
+
+def cmd_scheduler_reconcile(args) -> int:
+    """Manually trigger SBF->RINEX archive reconciliation."""
+
+    days_back = getattr(args, 'days', 30)
+    dry_run = getattr(args, 'dry_run', False)
+    stations = getattr(args, 'stations', None)
+
+    print(f"Archive reconciler: scanning {days_back} days back")
+    if dry_run:
+        print("  DRY RUN: no conversions will be performed")
+
+    try:
+        from ..cli.main import get_all_station_configs
+        from ..health.file_tracker import ArchiveFileChecker
+        from ..scheduling.archive_reconciler import (
+            _find_sbf_file, _find_rinex_file, _convert_sbf_to_rinex,
+        )
+        from datetime import date, datetime, timedelta, timezone
+
+        all_stations = get_all_station_configs()
+
+        if stations:
+            polarx5_stations = [s.upper() for s in stations]
+        else:
+            polarx5_stations = [
+                sid for sid, cfg in all_stations.items()
+                if cfg.get('enabled', True)
+                and cfg.get('receiver_type', '').lower() == 'polarx5'
+                and cfg.get('station_status') not in ('discontinued', 'inactive')
+            ]
+
+        session_types = ['15s_24hr', '1Hz_1hr']
+        print(f"Scanning {len(polarx5_stations)} PolaRX5 stations, sessions: {session_types}")
+
+        checker = ArchiveFileChecker()
+        end_date = date.today() - timedelta(days=1)
+        start_date = end_date - timedelta(days=days_back - 1)
+
+        total_missing = 0
+        total_converted = 0
+
+        for station_id in sorted(polarx5_stations):
+            for session_type in session_types:
+                current = start_date
+                while current <= end_date:
+                    dt = datetime.combine(current, datetime.min.time()).replace(
+                        tzinfo=timezone.utc
+                    )
+
+                    hours = [0] if session_type == "15s_24hr" else list(range(24))
+                    for hour in hours:
+                        file_dt = dt.replace(hour=hour)
+                        sbf_path = _find_sbf_file(station_id, session_type, file_dt, checker)
+                        if sbf_path is None:
+                            continue
+                        rinex_path = _find_rinex_file(sbf_path)
+                        if rinex_path is not None:
+                            continue
+
+                        total_missing += 1
+                        if dry_run:
+                            print(f"  MISSING RINEX: {sbf_path}")
+                        else:
+                            success = _convert_sbf_to_rinex(station_id, sbf_path)
+                            if success:
+                                total_converted += 1
+
+                    current += timedelta(days=1)
+
+        if dry_run:
+            print(f"\nDry run complete: {total_missing} SBF files missing RINEX")
+        else:
+            print(f"\nReconciliation complete: {total_missing} missing, {total_converted} converted")
+
+        return 0
+
+    except ImportError as e:
+        print(f"Required modules not available: {e}")
+        return 1
+    except Exception as e:
+        print(f"Reconciliation failed: {e}")
+        return 1
+
+
 def cmd_scheduler_gaps(args) -> int:
     """Find gaps in downloaded files."""
     from datetime import date, timedelta
@@ -657,6 +816,66 @@ def create_scheduler_parser(subparsers):
     )
     gaps_parser.set_defaults(func=cmd_scheduler_gaps)
 
+    # Backfill command
+    backfill_parser = scheduler_subparsers.add_parser(
+        "backfill",
+        help="Manually trigger backfill for a session type"
+    )
+    backfill_parser.add_argument(
+        "--session",
+        type=str,
+        default="status_1hr",
+        choices=["15s_24hr", "1Hz_1hr", "status_1hr"],
+        help="Session type to backfill (default: status_1hr)"
+    )
+    backfill_parser.add_argument(
+        "--days",
+        type=int,
+        default=30,
+        help="Number of days to backfill (default: 30)"
+    )
+    backfill_parser.add_argument(
+        "--stations",
+        nargs="+",
+        help="Only backfill these specific stations"
+    )
+    backfill_parser.add_argument(
+        "--max-stations",
+        type=int,
+        help="Maximum number of stations to process"
+    )
+    backfill_parser.add_argument(
+        "--archiving-mode",
+        type=str,
+        default="bulk",
+        choices=["bulk", "immediate"],
+        help="Archiving mode: bulk (download all then archive) or immediate (default: bulk)"
+    )
+    backfill_parser.set_defaults(func=cmd_scheduler_backfill)
+
+    # Reconcile command
+    reconcile_parser = scheduler_subparsers.add_parser(
+        "reconcile",
+        help="Reconcile SBF archives with RINEX output"
+    )
+    reconcile_parser.add_argument(
+        "--days",
+        type=int,
+        default=30,
+        help="Number of days to scan (default: 30)"
+    )
+    reconcile_parser.add_argument(
+        "--stations",
+        nargs="+",
+        help="Only check these specific stations"
+    )
+    reconcile_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be converted without actually converting"
+    )
+    reconcile_parser.set_defaults(func=cmd_scheduler_reconcile)
+
     return scheduler_parser
 
 
@@ -666,7 +885,7 @@ def handle_scheduler_command(args) -> int:
 
     if not hasattr(args, 'scheduler_command') or not args.scheduler_command:
         print("❌ No scheduler command specified")
-        print("Available commands: start, stop, restart, status, config, test, gaps")
+        print("Available commands: start, stop, restart, status, config, test, gaps, backfill, reconcile")
         return 1
 
     return args.func(args)
