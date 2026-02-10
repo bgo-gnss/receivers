@@ -267,6 +267,15 @@ class ConnectivityWriter:
                 health_status = http_port_data["error_type"]
             health_response_ms = http_port_data.get("response_time_ms")
 
+        # Skip writing when no actual port data was collected (e.g., SBF fallback
+        # where ping failed and port checks were skipped). Writing NULL/unknown
+        # rows would overwrite the last known-good port status in the view.
+        if download_port is None and health_port is None:
+            self.logger.debug(
+                f"Skipping port status write for {station_id}: no port data collected"
+            )
+            return
+
         with conn.cursor() as cur:
             cur.execute(
                 """

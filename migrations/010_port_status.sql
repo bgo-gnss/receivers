@@ -36,9 +36,10 @@ CREATE INDEX IF NOT EXISTS idx_port_status_sid_ts ON block_port_status(sid, ts D
 -- VIEW FOR DASHBOARD
 -- ============================================================================
 
--- Requires 2 consecutive timeout/error results before reporting port down.
--- A single timeout after open/ok stays reported as open (lossy link tolerance).
+-- Requires 2 consecutive failures before reporting port down.
+-- 'unknown' = SBF fallback with no port data (treat like timeout).
 -- 'refused' is a definitive answer and reported immediately.
+-- When latest row has NULL ports (SBF fallback), carry forward previous port numbers.
 CREATE OR REPLACE VIEW station_port_status AS
 WITH latest_two AS (
     SELECT sid, ts, download_port, download_status, download_response_ms,
@@ -50,35 +51,40 @@ latest AS (
     SELECT * FROM latest_two WHERE rn = 1
 ),
 prev AS (
-    SELECT sid, download_status AS prev_download, health_status AS prev_health
+    SELECT sid,
+           download_port AS prev_download_port,
+           download_status AS prev_download,
+           health_port AS prev_health_port,
+           health_status AS prev_health
     FROM latest_two WHERE rn = 2
 ),
 effective AS (
     SELECT
         l.sid,
         l.ts AS last_check,
-        l.download_port,
-        -- Effective download status: timeout/error needs 2 consecutive failures
+        -- Carry forward port numbers when latest has NULL (SBF fallback)
+        COALESCE(l.download_port, p.prev_download_port) AS download_port,
+        -- Effective download status: timeout/error/unknown needs 2 consecutive failures
         CASE
             WHEN l.download_status IN ('open', 'ok') THEN l.download_status
             WHEN l.download_status = 'refused' THEN 'refused'
-            WHEN l.download_status IN ('timeout', 'error') AND
-                 COALESCE(p.prev_download, 'open') IN ('timeout', 'error', 'refused')
+            WHEN l.download_status IN ('timeout', 'error', 'unknown') AND
+                 COALESCE(p.prev_download, 'open') IN ('timeout', 'error', 'unknown', 'refused')
                 THEN l.download_status                            -- 2 consecutive failures
-            WHEN l.download_status IN ('timeout', 'error')
+            WHEN l.download_status IN ('timeout', 'error', 'unknown')
                 THEN COALESCE(p.prev_download, l.download_status) -- single failure, use prev
             ELSE l.download_status
         END AS download_status,
         l.download_response_ms,
-        l.health_port,
+        COALESCE(l.health_port, p.prev_health_port) AS health_port,
         -- Effective health status: same logic
         CASE
             WHEN l.health_status IN ('open', 'ok') THEN l.health_status
             WHEN l.health_status = 'refused' THEN 'refused'
-            WHEN l.health_status IN ('timeout', 'error') AND
-                 COALESCE(p.prev_health, 'open') IN ('timeout', 'error', 'refused')
+            WHEN l.health_status IN ('timeout', 'error', 'unknown') AND
+                 COALESCE(p.prev_health, 'open') IN ('timeout', 'error', 'unknown', 'refused')
                 THEN l.health_status                              -- 2 consecutive failures
-            WHEN l.health_status IN ('timeout', 'error')
+            WHEN l.health_status IN ('timeout', 'error', 'unknown')
                 THEN COALESCE(p.prev_health, l.health_status)     -- single failure, use prev
             ELSE l.health_status
         END AS health_status,
@@ -105,6 +111,6 @@ SELECT
     END AS overall_port_status
 FROM effective;
 
-COMMENT ON VIEW station_port_status IS 'Latest port status per station (requires 2 consecutive timeout/error for down; refused is immediate)';
+COMMENT ON VIEW station_port_status IS 'Latest port status per station (requires 2 consecutive failures for down; unknown/SBF-fallback carries forward previous status)';
 
 COMMIT;
