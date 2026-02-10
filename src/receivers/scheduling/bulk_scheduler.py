@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple, Union
 from dataclasses import dataclass
 
-from .schedule_parser import parse_schedule, apply_distribution_window
+from .schedule_parser import ScheduleTrigger, parse_schedule, apply_distribution_window
 
 # Module-level reference for config watcher job (APScheduler needs module-level functions)
 _scheduler_instance: Optional["BulkDownloadScheduler"] = None
@@ -413,6 +413,10 @@ class ScheduleConfig:
     # New flexible schedule format (preferred)
     schedule: Optional[Union[str, List[str], Dict[str, Any]]] = None
 
+    # Midnight offset: extra minutes added at hour 0 to avoid clashing with
+    # daily sessions (e.g., 15s_24hr).  Only meaningful for hourly sessions.
+    midnight_offset: int = 0
+
     # Legacy format fields (for backward compatibility)
     schedule_minute: Optional[int] = None
     frequency: Optional[str] = None
@@ -498,6 +502,8 @@ class BulkDownloadScheduler:
             schedule = session_cfg.get('schedule')
 
             # If no new schedule field, use legacy format (schedule_minute + frequency)
+            midnight_offset = session_cfg.get('midnight_offset', 0)
+
             if schedule is None:
                 schedule_minute = session_cfg.get('schedule_minute',
                     10 if session_type == '15s_24hr' else 15 if session_type == '1Hz_1hr' else 25)
@@ -516,7 +522,8 @@ class BulkDownloadScheduler:
                     timeout_minutes=session_cfg.get('timeout_minutes',
                         45 if session_type == '15s_24hr' else 30 if session_type == '1Hz_1hr' else 15),
                     lookback_periods=session_cfg.get('lookback_periods', 1),
-                    rinex=session_cfg.get('rinex', False)
+                    rinex=session_cfg.get('rinex', False),
+                    midnight_offset=midnight_offset,
                 )
             else:
                 # New flexible schedule format
@@ -531,7 +538,8 @@ class BulkDownloadScheduler:
                     timeout_minutes=session_cfg.get('timeout_minutes',
                         45 if session_type == '15s_24hr' else 30 if session_type == '1Hz_1hr' else 15),
                     lookback_periods=session_cfg.get('lookback_periods', 1),
-                    rinex=session_cfg.get('rinex', False)
+                    rinex=session_cfg.get('rinex', False),
+                    midnight_offset=midnight_offset,
                 )
 
         # Load station configurations
@@ -626,19 +634,24 @@ class BulkDownloadScheduler:
         }
         
         # Executor configuration
-        # Separate executor for health checks prevents health monitoring
-        # from starving download workers when distribution_window=0
+        # Separate executors prevent different workloads from starving each other:
+        #   default  — live downloads
+        #   health   — real-time health monitoring
+        #   backfill — backfill, gap detection, archive reconciler
         health_workers = min(self.max_workers // 3, 30)
+        backfill_workers = max(self.max_workers // 5, 5)
         executors = {
             'default': ThreadPoolExecutor(self.max_workers),
             'health': ThreadPoolExecutor(health_workers),
+            'backfill': ThreadPoolExecutor(backfill_workers),
         }
-        
-        # Job defaults
+
+        # Job defaults — read from YAML config if available
+        yaml_job_defaults = self.yaml_config.get('scheduler', {}).get('job_defaults', {})
         job_defaults = {
-            'coalesce': False,  # Don't combine missed jobs
-            'max_instances': 70,  # Allow 70 concurrent instances per job for stress testing
-            'misfire_grace_time': 300  # 5 minute grace period
+            'coalesce': yaml_job_defaults.get('coalesce', True),
+            'max_instances': yaml_job_defaults.get('max_instances', 3),
+            'misfire_grace_time': yaml_job_defaults.get('misfire_grace_time', 300),
         }
         
         # Initialize scheduler
@@ -903,6 +916,7 @@ class BulkDownloadScheduler:
         all_stations = sorted(all_stations)  # Consistent ordering
 
         total_jobs = 0
+        midnight_jobs = 0
         for station_id in all_stations:
             # Schedule all session types for this station
             for session_type, stations in session_stations.items():
@@ -914,31 +928,87 @@ class BulkDownloadScheduler:
 
                 # Parse schedule and apply distribution window
                 base_trigger = parse_schedule(config.schedule)
-                trigger_type, trigger_kwargs = apply_distribution_window(
-                    base_trigger, station_index, len(stations), config.distribution_window
-                )
 
-                # Create job
-                job_id = f"{session_type}_{station_id}"
-                self.scheduler.add_job(
-                    func=_download_station_data_job,
-                    trigger=trigger_type,
-                    args=[station_id, session_type, self.production_mode, config.lookback_periods, config.timeout_minutes, config.rinex],
-                    id=job_id,
-                    replace_existing=True,
-                    **trigger_kwargs
-                )
-                total_jobs += 1
+                # Midnight offset handling: for hourly sessions with midnight_offset,
+                # create two job sets — one for hours 1-23 (normal) and one for
+                # hour 0 (offset).  Pure cron-based, no runtime coordination.
+                if config.midnight_offset > 0 and base_trigger.trigger_type == 'cron' and 'hour' not in base_trigger.trigger_kwargs:
+                    # Hours 1-23: normal schedule
+                    normal_trigger = ScheduleTrigger(
+                        trigger_type='cron',
+                        trigger_kwargs={**base_trigger.trigger_kwargs, 'hour': '1-23'},
+                        description=f"{base_trigger.description} (hours 1-23)",
+                    )
+                    trigger_type, trigger_kwargs = apply_distribution_window(
+                        normal_trigger, station_index, len(stations), config.distribution_window
+                    )
+                    job_id = f"{session_type}_{station_id}"
+                    self.scheduler.add_job(
+                        func=_download_station_data_job,
+                        trigger=trigger_type,
+                        args=[station_id, session_type, self.production_mode, config.lookback_periods, config.timeout_minutes, config.rinex],
+                        id=job_id,
+                        replace_existing=True,
+                        **trigger_kwargs
+                    )
+                    total_jobs += 1
+
+                    # Hour 0: offset schedule
+                    base_minute = base_trigger.trigger_kwargs.get('minute', 0)
+                    if isinstance(base_minute, int):
+                        midnight_minute = base_minute + config.midnight_offset
+                    else:
+                        midnight_minute = config.midnight_offset
+                    midnight_trigger = ScheduleTrigger(
+                        trigger_type='cron',
+                        trigger_kwargs={'hour': 0, 'minute': midnight_minute},
+                        description=f"{base_trigger.description} (hour 0, offset +{config.midnight_offset}m)",
+                    )
+                    trigger_type, trigger_kwargs = apply_distribution_window(
+                        midnight_trigger, station_index, len(stations), config.distribution_window
+                    )
+                    midnight_job_id = f"{session_type}_midnight_{station_id}"
+                    self.scheduler.add_job(
+                        func=_download_station_data_job,
+                        trigger=trigger_type,
+                        args=[station_id, session_type, self.production_mode, config.lookback_periods, config.timeout_minutes, config.rinex],
+                        id=midnight_job_id,
+                        replace_existing=True,
+                        **trigger_kwargs
+                    )
+                    midnight_jobs += 1
+                    total_jobs += 1
+                else:
+                    # Standard scheduling (no midnight split)
+                    trigger_type, trigger_kwargs = apply_distribution_window(
+                        base_trigger, station_index, len(stations), config.distribution_window
+                    )
+                    job_id = f"{session_type}_{station_id}"
+                    self.scheduler.add_job(
+                        func=_download_station_data_job,
+                        trigger=trigger_type,
+                        args=[station_id, session_type, self.production_mode, config.lookback_periods, config.timeout_minutes, config.rinex],
+                        id=job_id,
+                        replace_existing=True,
+                        **trigger_kwargs
+                    )
+                    total_jobs += 1
 
         # Log summary
         for session_type, stations in session_stations.items():
-            base_trigger = parse_schedule(self.schedule_configs[session_type].schedule)
+            config = self.schedule_configs[session_type]
+            base_trigger = parse_schedule(config.schedule)
+            extra = ""
+            if config.midnight_offset > 0:
+                extra = f", midnight_offset={config.midnight_offset}m"
             self.logger.info(
                 f"Scheduled {len(stations)} stations for {session_type} "
-                f"({base_trigger.description})"
+                f"(window={config.distribution_window}m, {base_trigger.description}{extra})"
             )
 
-        self.logger.info(f"Total: {total_jobs} jobs scheduled with interleaved ordering for stress testing")
+        if midnight_jobs:
+            self.logger.info(f"Created {midnight_jobs} midnight-offset jobs")
+        self.logger.info(f"Total: {total_jobs} download jobs scheduled")
 
         # Schedule health monitoring if enabled
         self._schedule_health_monitoring()
@@ -949,9 +1019,10 @@ class BulkDownloadScheduler:
         # Schedule config file watcher (every 5 minutes)
         self._schedule_config_watcher()
 
-        # Schedule status_1hr backfill if status_1hr is enabled
-        if self.schedule_configs.get('status_1hr', None) and self.schedule_configs['status_1hr'].enabled:
-            self._schedule_backfill()
+        # Schedule backfill, gap detection, and archive reconciler
+        self._schedule_multi_session_backfill()
+        self._schedule_gap_detection()
+        self._schedule_archive_reconciler()
 
     def _schedule_config_watcher(self) -> None:
         """Schedule periodic config file change detection."""
@@ -974,25 +1045,113 @@ class BulkDownloadScheduler:
         self.logger.info("Scheduled config watcher (every 5 min)")
 
     def _schedule_backfill(self) -> None:
-        """Schedule status_1hr backfill for PolaRX5 stations.
+        """DEPRECATED: Use _schedule_multi_session_backfill() instead."""
+        self._schedule_multi_session_backfill()
 
-        Runs at :40 each hour with low concurrency to avoid competing with
-        live downloads (:01) and status downloads (:31). Processes one day
-        per station per run, round-robin through stations.
+    def _schedule_multi_session_backfill(self) -> None:
+        """Schedule multi-session backfill inside the :25-:55 window.
 
-        Progress is tracked in the backfill_progress table (migration 016).
+        Creates one interval job per session type on the 'backfill' executor.
+        Each job is self-gating: it checks the clock on entry and returns
+        immediately if outside the configured window.
+
+        Progress is tracked in the backfill_progress table (migrations 016, 017).
         """
-        from .backfill import _backfill_next_station
+        backfill_cfg = self.yaml_config.get('backfill', {})
+        if not backfill_cfg.get('enabled', True):
+            self.logger.info("Backfill disabled in config")
+            return
+
+        from .backfill import _backfill_next_station_for_session
+
+        window_start = backfill_cfg.get('window_start', 25)
+        window_end = backfill_cfg.get('window_end', 55)
+        archiving_mode = backfill_cfg.get('archiving_mode', 'bulk')
+        schedule = backfill_cfg.get('schedule', '5m')
+        sessions = backfill_cfg.get('sessions', ['status_1hr'])
+
+        base_trigger = parse_schedule(schedule)
+
+        for session_type in sessions:
+            job_id = f"backfill_{session_type}"
+            trigger_type, trigger_kwargs = base_trigger.trigger_type, base_trigger.trigger_kwargs.copy()
+
+            self.scheduler.add_job(
+                func=_backfill_next_station_for_session,
+                trigger=trigger_type,
+                args=[session_type, window_start, window_end, archiving_mode],
+                id=job_id,
+                replace_existing=True,
+                max_instances=1,
+                executor='backfill',
+                **trigger_kwargs
+            )
+
+        self.logger.info(
+            f"Scheduled backfill for {len(sessions)} session types "
+            f"(window :{window_start:02d}-:{window_end:02d}, {base_trigger.description})"
+        )
+
+    def _schedule_gap_detection(self) -> None:
+        """Schedule periodic gap detection on the backfill executor.
+
+        Scans archive directories for missing files and logs gap counts.
+        """
+        gap_cfg = self.yaml_config.get('gap_detection', {})
+        if not gap_cfg.get('enabled', True):
+            self.logger.info("Gap detection disabled in config")
+            return
+
+        from .gap_scheduler import _run_gap_detection_job
+
+        schedule = gap_cfg.get('schedule', '2h')
+        days_back = gap_cfg.get('days_back', 7)
+        sessions = gap_cfg.get('sessions', ['15s_24hr', '1Hz_1hr', 'status_1hr'])
+
+        base_trigger = parse_schedule(schedule)
 
         self.scheduler.add_job(
-            func=_backfill_next_station,
-            trigger='cron',
-            minute=40,
-            id='backfill_status_1hr',
+            func=_run_gap_detection_job,
+            trigger=base_trigger.trigger_type,
+            args=[sessions, days_back],
+            id='gap_detection',
             replace_existing=True,
-            max_instances=2,  # Allow 2 concurrent backfill jobs
+            max_instances=1,
+            executor='backfill',
+            **base_trigger.trigger_kwargs
         )
-        self.logger.info("Scheduled status_1hr backfill (hourly at :40)")
+        self.logger.info(f"Scheduled gap detection ({base_trigger.description}, {days_back} days back)")
+
+    def _schedule_archive_reconciler(self) -> None:
+        """Schedule periodic SBF->RINEX archive reconciliation.
+
+        Scans archive for SBF files missing their RINEX counterpart and
+        triggers conversion.  PolaRX5 stations only.
+        """
+        reconciler_cfg = self.yaml_config.get('archive_reconciler', {})
+        if not reconciler_cfg.get('enabled', True):
+            self.logger.info("Archive reconciler disabled in config")
+            return
+
+        from .archive_reconciler import _run_archive_reconciler_job
+
+        schedule = reconciler_cfg.get('schedule', '6h')
+        days_back = reconciler_cfg.get('days_back', 30)
+        sessions = reconciler_cfg.get('sessions', ['15s_24hr', '1Hz_1hr'])
+
+        base_trigger = parse_schedule(schedule)
+
+        self.scheduler.add_job(
+            func=_run_archive_reconciler_job,
+            trigger=base_trigger.trigger_type,
+            args=[sessions, days_back],
+            id='archive_reconciler',
+            replace_existing=True,
+            max_instances=1,
+            executor='backfill',
+            **base_trigger.trigger_kwargs
+        )
+        self.logger.info(f"Scheduled archive reconciler ({base_trigger.description}, {days_back} days back)")
 
     def _get_stations_for_session(self, session_type: str) -> List[str]:
         """Get list of stations that support a specific session type."""

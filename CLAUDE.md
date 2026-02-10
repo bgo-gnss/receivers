@@ -72,6 +72,14 @@ receivers scheduler status --show-jobs
 # Create/manage configuration
 receivers scheduler config --create
 receivers scheduler config --show
+
+# Manual backfill
+receivers scheduler backfill --session 15s_24hr --days 30
+receivers scheduler backfill --session status_1hr --stations ELDC THOB
+
+# SBF→RINEX reconciliation
+receivers scheduler reconcile --days 30 --dry-run
+receivers scheduler reconcile --stations ELDC THOB
 ```
 
 ## Architecture
@@ -108,11 +116,20 @@ receivers download STATION --sync --archive  # Phase 1 is always active
 - **Better monitoring**: Clear file-by-file progress tracking
 
 ### Scheduling System
-- **Time distribution**: Downloads spread across 10-minute windows to avoid network congestion
-- **Session types**:
-  - `15s_24hr`: Daily downloads at 00:10-00:19
-  - `1Hz_1hr`: Hourly downloads at XX:15-XX:24
-  - `status_1hr`: Hourly status at XX:25-XX:29
+- **Hourly timeline** (optimized distribution):
+  - `:01-:11` — `1Hz_1hr` live downloads (hours 1-23)
+  - `:01-:16` — `15s_24hr` live downloads (midnight only)
+  - `:15-:25` — `status_1hr` live downloads
+  - `:16-:26` — `1Hz_1hr` midnight downloads (hour 0, offset avoids 15s clash)
+  - `:25-:55` — BACKFILL WINDOW (self-gating, gap detection, SBF→RINEX reconciler)
+  - `:55-:00` — cooldown
+  - Health monitoring: every 5m on separate executor (always)
+- **Three executors**: `default` (live downloads), `health` (monitoring), `backfill` (gap fill + reconciler)
+- **Distribution windows**: Stations spread evenly across time to prevent burst load
+- **Midnight offset**: 1Hz_1hr uses `midnight_offset: 15` to avoid clashing with 15s_24hr at hour 0
+- **Multi-session backfill**: All three sessions backfilled via self-gating interval jobs
+- **Gap detection**: Periodic scan for missing files (every 2h, configurable)
+- **Archive reconciler**: SBF→RINEX conversion for orphaned raw files (every 6h)
 - **Persistence**: SQLite job store survives restarts
 - **Manual compatibility**: All manual operations remain fully functional
 - **Extensibility**: Task interface allows scheduling any operation type (status, health, validation)
@@ -204,6 +221,14 @@ receivers scheduler config --create
 # - Otherwise: ~/.config/gpsconfig/scheduler.yaml
 # Database: ~/.cache/gps_receivers/scheduler.db
 # Logs: ~/.cache/gps_receivers/logs/
+
+# Key config sections:
+# - scheduler: max_workers, job_defaults (coalesce, max_instances)
+# - sessions: 15s_24hr, 1Hz_1hr, status_1hr (schedule, distribution_window, midnight_offset)
+# - backfill: window_start/end, schedule, archiving_mode, sessions
+# - gap_detection: schedule, days_back, sessions
+# - archive_reconciler: schedule, days_back, sessions
+# - status_monitoring: schedule, distribution_window, targets
 ```
 
 #### Flexible Schedule Syntax
@@ -394,9 +419,9 @@ All receivers use Phase 1 utilities by default:
 
 ---
 
-**Last updated**: 2026-02-09
+**Last updated**: 2026-02-10
 **Package version**: Development (gpslibrary_new)
-**Phase Status**: Phase 3C Partial Complete - Flexible scheduling implemented, extensible architecture ready
+**Phase Status**: Phase 3C Complete - Distribution window optimization, midnight offset, multi-session backfill, gap detection, archive reconciler
 
 ## TODO / Known Issues
 

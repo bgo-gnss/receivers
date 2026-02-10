@@ -161,6 +161,26 @@ def get_default_config() -> Dict[str, Any]:
             'priority': 'realtime',
             'targets': ['database', 'icinga'],
         },
+        'backfill': {
+            'enabled': True,
+            'window_start': 25,
+            'window_end': 55,
+            'schedule': '5m',
+            'archiving_mode': 'bulk',
+            'sessions': ['status_1hr', '1Hz_1hr', '15s_24hr'],
+        },
+        'gap_detection': {
+            'enabled': True,
+            'schedule': '2h',
+            'days_back': 7,
+            'sessions': ['15s_24hr', '1Hz_1hr', 'status_1hr'],
+        },
+        'archive_reconciler': {
+            'enabled': True,
+            'schedule': '6h',
+            'days_back': 30,
+            'sessions': ['15s_24hr', '1Hz_1hr'],
+        },
         'priorities': {
             'realtime': {
                 'level': 1,
@@ -234,7 +254,8 @@ def merge_with_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
 
     # Ensure new pipeline sections exist
     for section in ['resource_pools', 'pipelines', 'status_monitoring',
-                    'priorities', 'sync', 'monitoring']:
+                    'priorities', 'sync', 'monitoring',
+                    'backfill', 'gap_detection', 'archive_reconciler']:
         if section not in config:
             config[section] = defaults.get(section, {})
         else:
@@ -278,7 +299,8 @@ def get_session_config(config: Dict[str, Any],
         frequency=session_cfg['frequency'],
         enabled=session_cfg.get('enabled', True),
         max_concurrent=session_cfg.get('max_concurrent', 3),
-        timeout_minutes=session_cfg.get('timeout_minutes', 30)
+        timeout_minutes=session_cfg.get('timeout_minutes', 30),
+        midnight_offset=session_cfg.get('midnight_offset', 0),
     )
 
 
@@ -315,66 +337,83 @@ def create_default_config_file(output_path: Optional[Path] = None) -> Path:
     yaml_content = '''# GPS Receiver Scheduler Configuration
 # Location: ~/.config/gpsconfig/scheduler.yaml
 #
-# SCHEDULE SYNTAX:
-# ----------------
-# schedule_minute + frequency (legacy):
-#   schedule_minute: 10
-#   frequency: daily  # or 'hourly'
+# Hourly Timeline:
+#   :00      cooldown ends
+#   :01-:11  1Hz_1hr live downloads (hours 1-23)
+#   :01-:16  15s_24hr live downloads (midnight only)
+#   :15-:25  status_1hr live downloads
+#   :16-:26  1Hz_1hr midnight downloads (hour 0 only)
+#   :25-:55  BACKFILL: gap filling, RINEX reconciliation
+#   :55-:00  cooldown
+#   Health monitoring: every 5m on separate executor (always)
 #
-# Flexible format (new):
-#   schedule: "00:10"       # Daily at 00:10
-#   schedule: ":15"         # Hourly at :15
-#   schedule: "6h"          # Every 6 hours
-#   schedule: "45m"         # Every 45 minutes
-#   schedule: ["00:10", "12:10"]  # Multiple times
+# Schedule syntax:
+#   "00:01"  daily | ":01"  hourly | "6h"  interval | "cron: ..."  raw cron
 
 scheduler:
-  max_workers: 5
+  max_workers: 100
   log_level: INFO
   job_defaults:
-    coalesce: false
-    max_instances: 1
+    coalesce: true
+    max_instances: 3
     misfire_grace_time: 300
 
 sessions:
   15s_24hr:
     enabled: true
-    schedule_minute: 10
-    frequency: daily
-    distribution_window: 10
+    schedule: "00:01"
+    distribution_window: 15
     lookback_periods: 1
     max_concurrent: 3
     timeout_minutes: 45
-    retry_on_failure: true
-    retry_delay_minutes: 30
-    max_retries: 3
+    rinex: true
     clean_tmp: false
 
   1Hz_1hr:
     enabled: true
-    schedule_minute: 15
-    frequency: hourly
+    schedule: ":01"
     distribution_window: 10
+    midnight_offset: 15
     lookback_periods: 1
     max_concurrent: 4
     timeout_minutes: 30
-    retry_on_failure: true
-    retry_delay_minutes: 15
-    max_retries: 3
+    rinex: true
     clean_tmp: false
 
   status_1hr:
     enabled: true
-    schedule_minute: 25
-    frequency: hourly
-    distribution_window: 5
+    schedule: ":15"
+    distribution_window: 10
     lookback_periods: 1
     max_concurrent: 5
     timeout_minutes: 15
-    retry_on_failure: true
-    retry_delay_minutes: 10
-    max_retries: 2
     clean_tmp: false
+
+status_monitoring:
+  enabled: true
+  schedule: "5m"
+  distribution_window: 3
+  targets: [database, icinga]
+
+backfill:
+  enabled: true
+  window_start: 25
+  window_end: 55
+  schedule: "5m"
+  archiving_mode: bulk
+  sessions: [status_1hr, 1Hz_1hr, 15s_24hr]
+
+gap_detection:
+  enabled: true
+  schedule: "2h"
+  days_back: 7
+  sessions: [15s_24hr, 1Hz_1hr, status_1hr]
+
+archive_reconciler:
+  enabled: true
+  schedule: "6h"
+  days_back: 30
+  sessions: [15s_24hr, 1Hz_1hr]
 
 stations: {}
 

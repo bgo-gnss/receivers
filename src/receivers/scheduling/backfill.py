@@ -17,50 +17,82 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger("gps_scheduler.backfill")
 
 
-def _backfill_next_station() -> None:
-    """Pick the next station needing backfill and process one day.
+def _backfill_next_station_for_session(
+    session_type: str,
+    window_start: int = 25,
+    window_end: int = 55,
+    archiving_mode: str = "bulk",
+) -> None:
+    """Pick the next station needing backfill for a given session type.
 
-    This is the APScheduler job entry point. It:
-    1. Queries backfill_progress for the least-recently-processed station
-    2. Calls _backfill_station_day() to process one day
-    3. Updates progress in the database
+    Self-gating: checks datetime.now().minute and returns immediately if
+    outside the configured backfill window.
 
-    Module-level function for APScheduler serialization.
+    Args:
+        session_type: Session to backfill ('status_1hr', '1Hz_1hr', '15s_24hr')
+        window_start: Minute of hour when backfill window opens (default 25)
+        window_end: Minute of hour when backfill window closes (default 55)
+        archiving_mode: 'bulk' (download all then archive) or 'immediate'
     """
+    # Self-gating: return immediately if outside backfill window
+    now_minute = datetime.now().minute
+    if not (window_start <= now_minute < window_end):
+        logger.debug(
+            f"Backfill {session_type}: outside window "
+            f"(:{now_minute:02d} not in :{window_start:02d}-:{window_end:02d})"
+        )
+        return
+
     try:
         from ..health.database_factory import DatabaseConnectionFactory
 
         with DatabaseConnectionFactory.connection() as conn:
             with conn.cursor() as cur:
-                # Pick station processed least recently (fair round-robin)
+                # Pick station processed least recently for this session type
                 cur.execute("""
                     SELECT sid, next_date, backfill_start, backfill_end
                     FROM backfill_progress
-                    WHERE status IN ('pending', 'in_progress')
+                    WHERE session_type = %s
+                      AND status IN ('pending', 'in_progress')
                     ORDER BY last_run ASC NULLS FIRST, sid
                     LIMIT 1
-                """)
+                """, (session_type,))
                 row = cur.fetchone()
 
             if not row:
-                logger.debug("No stations pending backfill")
+                logger.debug(f"No stations pending backfill for {session_type}")
                 return
 
             station_id = row[0]
             current_dt = row[1]
-            # row[2] is backfill_start (not needed here)
             backfill_end = row[3]
 
-        logger.info(f"Backfill: {station_id} processing {current_dt}")
-        has_more = _backfill_station_day(station_id, current_dt, backfill_end)
+        logger.info(f"Backfill {session_type}: {station_id} processing {current_dt}")
+        use_immediate = archiving_mode != "bulk"
+        has_more = _backfill_station_day_generic(
+            station_id, current_dt, backfill_end, session_type,
+            immediate_archive=use_immediate,
+        )
 
         if not has_more:
-            logger.info(f"Backfill complete for {station_id}")
+            logger.info(f"Backfill {session_type} complete for {station_id}")
 
     except ImportError:
         logger.debug("psycopg2 not available - backfill disabled")
     except Exception as e:
-        logger.error(f"Backfill job error: {type(e).__name__}: {e}")
+        logger.error(f"Backfill {session_type} job error: {type(e).__name__}: {e}")
+
+
+def _backfill_next_station() -> None:
+    """Pick the next station needing backfill and process one day.
+
+    This is the legacy APScheduler job entry point (status_1hr only).
+    Kept for backward compatibility.  New code should use
+    _backfill_next_station_for_session().
+
+    Module-level function for APScheduler serialization.
+    """
+    _backfill_next_station_for_session("status_1hr")
 
 
 def _backfill_station_day(
@@ -176,6 +208,187 @@ def _backfill_station_day(
         except Exception:
             pass
         return True  # More work to do (retry this date)
+
+
+def _backfill_station_day_generic(
+    station_id: str,
+    process_date: date,
+    backfill_end: date,
+    session_type: str,
+    immediate_archive: bool = False,
+) -> bool:
+    """Process one day of backfill for any session type.
+
+    Downloads that day's files, optionally extracts health data (status_1hr only),
+    writes to DB, and advances the backfill_progress cursor.
+
+    Args:
+        station_id: Station identifier (e.g., 'ELDC')
+        process_date: The date to process
+        backfill_end: End date of backfill range
+        session_type: Session type ('status_1hr', '1Hz_1hr', '15s_24hr')
+        immediate_archive: If True, archive each file immediately.
+                          If False (bulk), download all then archive.
+
+    Returns:
+        True if there's more work to do, False if backfill is complete
+    """
+    from ..health.database_factory import DatabaseConnectionFactory
+
+    start_time = time.time()
+    files_found = 0
+    files_imported = 0
+    files_missing = 0
+    files_error = 0
+
+    try:
+        # Mark as in_progress
+        with DatabaseConnectionFactory.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE backfill_progress
+                    SET status = 'in_progress', updated_at = NOW()
+                    WHERE sid = %s AND session_type = %s
+                """, (station_id, session_type))
+
+        # Download files for this single day
+        result = _download_day_generic(
+            station_id, process_date, session_type,
+            immediate_archive=immediate_archive,
+        )
+
+        if result is None:
+            files_error = 1
+        else:
+            status = result.get("status", "failed")
+            downloaded_files = result.get("downloaded_files", [])
+            files_downloaded = result.get("files_downloaded", 0)
+
+            if status in ("failed", "unreachable"):
+                files_error = 1
+            elif files_downloaded == 0 and status in ("up_to_date", "completed"):
+                files_missing = 1
+            else:
+                files_found = files_downloaded
+
+                # Extract health data only for status_1hr
+                if session_type == "status_1hr" and downloaded_files:
+                    imported = _extract_and_store_health(
+                        station_id, downloaded_files, logger
+                    )
+                    files_imported = imported
+
+        # Advance cursor
+        next_date = process_date + timedelta(days=1)
+        is_complete = next_date > backfill_end
+        new_status = "completed" if is_complete else "in_progress"
+        duration = time.time() - start_time
+
+        with DatabaseConnectionFactory.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE backfill_progress
+                    SET next_date = %s,
+                        status = %s,
+                        files_found = files_found + %s,
+                        files_imported = files_imported + %s,
+                        files_missing = files_missing + %s,
+                        files_error = files_error + %s,
+                        last_run = NOW(),
+                        last_duration_seconds = %s,
+                        updated_at = NOW()
+                    WHERE sid = %s AND session_type = %s
+                """, (
+                    next_date, new_status,
+                    files_found, files_imported, files_missing, files_error,
+                    duration,
+                    station_id, session_type,
+                ))
+
+        logger.info(
+            f"Backfill {session_type} {station_id}/{process_date}: "
+            f"found={files_found} imported={files_imported} "
+            f"missing={files_missing} errors={files_error} "
+            f"({duration:.1f}s)"
+        )
+
+        return not is_complete
+
+    except Exception as e:
+        logger.error(f"Backfill error {session_type} {station_id}/{process_date}: {e}")
+        try:
+            with DatabaseConnectionFactory.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        UPDATE backfill_progress
+                        SET files_error = files_error + 1,
+                            last_run = NOW(),
+                            last_duration_seconds = %s,
+                            updated_at = NOW()
+                        WHERE sid = %s AND session_type = %s
+                    """, (time.time() - start_time, station_id, session_type))
+        except Exception:
+            pass
+        return True
+
+
+def _download_day_generic(
+    station_id: str,
+    process_date: date,
+    session_type: str,
+    immediate_archive: bool = True,
+) -> Optional[Dict[str, Any]]:
+    """Download files for a single day and session type.
+
+    Args:
+        station_id: Station identifier
+        process_date: Date to download
+        session_type: Session type ('status_1hr', '1Hz_1hr', '15s_24hr')
+        immediate_archive: Whether to archive immediately after each file
+
+    Returns:
+        Download result dictionary, or None on setup error
+    """
+    try:
+        from ..cli.main import get_station_config, create_receiver
+
+        station_config = get_station_config(station_id)
+        if not station_config:
+            logger.warning(f"No config for {station_id}")
+            return None
+
+        receiver = create_receiver(station_id, station_config)
+
+        start_time = datetime.combine(process_date, datetime.min.time()).replace(
+            tzinfo=timezone.utc
+        )
+
+        if session_type == "15s_24hr":
+            frequency = "1D"
+            end_time = start_time + timedelta(days=1)
+        else:
+            frequency = "1H"
+            end_time = start_time + timedelta(days=1)
+
+        result = receiver.download_data(
+            start=start_time,
+            end=end_time,
+            session=session_type,
+            ffrequency=frequency,
+            sync=True,
+            archive=True,
+            immediate_archive=immediate_archive,
+            clean_tmp=True,
+            compression=".gz",
+            reverse_chronological=False,
+            loglevel=logging.INFO,
+        )
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Download error {session_type} {station_id}/{process_date}: {e}")
+        return None
 
 
 def _download_day(
