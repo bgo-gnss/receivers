@@ -929,6 +929,12 @@ class LeicaG10(BaseReceiver):
                 )
                 health_data = extractor.extract_health_data()
                 if health_data and health_data.get("metrics"):
+                    # Merge router_ping from our ICMP check into the
+                    # extractor's connection data so connectivity_writer
+                    # can determine online status correctly.
+                    health_data.setdefault("connection", {})["router_ping"] = (
+                        connection_data.get("router_ping", {})
+                    )
                     self.logger.info(
                         f"Extracted health via HTTP from {host}:{http_port}"
                     )
