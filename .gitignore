@@ -167,3 +167,6 @@ uv.lock
 
 # External tools (proprietary, not shipped)
 external-tools/
+
+# Database dumps (large, contain data)
+dumps/*.sql
