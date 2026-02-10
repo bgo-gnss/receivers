@@ -624,8 +624,13 @@ class BulkDownloadScheduler:
 
             for station_id, config in all_stations.items():
                 # Extract relevant configuration
+                # 'active' is the default — normalize to None (NULL in DB)
                 station_status = config.get('station_status')
+                if station_status and station_status.lower() == 'active':
+                    station_status = None
                 health_check = config.get('health_check')
+                if health_check and health_check.lower() == 'active':
+                    health_check = None
                 receiver_type = config.get('receiver_type', 'unknown')
 
                 # Auto-detect inactive stations: flag if receiver_type is genuinely absent

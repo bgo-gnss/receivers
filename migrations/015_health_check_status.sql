@@ -65,9 +65,10 @@ COMMENT ON COLUMN stations.station_status IS 'Station lifecycle: NULL=active, in
 COMMENT ON COLUMN stations.health_check IS 'Monitoring mode: NULL=active, passive=external data delivery';
 
 -- Set known values from stations.cfg
+-- Note: station_status/health_check = 'active' in config means NULL in DB (active is default)
 UPDATE stations SET station_status = 'discontinued' WHERE sid IN ('ASVE', 'BLAL', 'ICEB', 'ICEC');
-UPDATE stations SET station_status = 'inactive' WHERE sid IN ('GRVM', 'GRVV', 'INGC');
-UPDATE stations SET health_check = 'passive' WHERE sid IN ('GRVM', 'GRVV', 'KRAC', 'MYVA', 'RVIT', 'SYRF', 'THRC', 'TORK');
+UPDATE stations SET station_status = 'inactive' WHERE sid IN ('INGC');
+UPDATE stations SET health_check = 'passive' WHERE sid IN ('KRAC', 'MYVA', 'RVIT', 'SYRF', 'THRC', 'TORK');
 
 -- Recreate the dashboard view with both columns
 DROP VIEW IF EXISTS station_dashboard_data;

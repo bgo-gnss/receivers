@@ -36,10 +36,59 @@ CREATE INDEX IF NOT EXISTS idx_port_status_sid_ts ON block_port_status(sid, ts D
 -- VIEW FOR DASHBOARD
 -- ============================================================================
 
+-- Requires 2 consecutive timeout/error results before reporting port down.
+-- A single timeout after open/ok stays reported as open (lossy link tolerance).
+-- 'refused' is a definitive answer and reported immediately.
 CREATE OR REPLACE VIEW station_port_status AS
-SELECT DISTINCT ON (sid)
+WITH latest_two AS (
+    SELECT sid, ts, download_port, download_status, download_response_ms,
+           health_port, health_status, health_response_ms,
+           ROW_NUMBER() OVER (PARTITION BY sid ORDER BY ts DESC) AS rn
+    FROM block_port_status
+),
+latest AS (
+    SELECT * FROM latest_two WHERE rn = 1
+),
+prev AS (
+    SELECT sid, download_status AS prev_download, health_status AS prev_health
+    FROM latest_two WHERE rn = 2
+),
+effective AS (
+    SELECT
+        l.sid,
+        l.ts AS last_check,
+        l.download_port,
+        -- Effective download status: timeout/error needs 2 consecutive failures
+        CASE
+            WHEN l.download_status IN ('open', 'ok') THEN l.download_status
+            WHEN l.download_status = 'refused' THEN 'refused'
+            WHEN l.download_status IN ('timeout', 'error') AND
+                 COALESCE(p.prev_download, 'open') IN ('timeout', 'error', 'refused')
+                THEN l.download_status                            -- 2 consecutive failures
+            WHEN l.download_status IN ('timeout', 'error')
+                THEN COALESCE(p.prev_download, l.download_status) -- single failure, use prev
+            ELSE l.download_status
+        END AS download_status,
+        l.download_response_ms,
+        l.health_port,
+        -- Effective health status: same logic
+        CASE
+            WHEN l.health_status IN ('open', 'ok') THEN l.health_status
+            WHEN l.health_status = 'refused' THEN 'refused'
+            WHEN l.health_status IN ('timeout', 'error') AND
+                 COALESCE(p.prev_health, 'open') IN ('timeout', 'error', 'refused')
+                THEN l.health_status                              -- 2 consecutive failures
+            WHEN l.health_status IN ('timeout', 'error')
+                THEN COALESCE(p.prev_health, l.health_status)     -- single failure, use prev
+            ELSE l.health_status
+        END AS health_status,
+        l.health_response_ms
+    FROM latest l
+    LEFT JOIN prev p ON l.sid = p.sid
+)
+SELECT
     sid,
-    ts as last_check,
+    last_check,
     download_port,
     download_status,
     download_response_ms,
@@ -47,18 +96,15 @@ SELECT DISTINCT ON (sid)
     health_status,
     health_response_ms,
     -- Overall status for dashboard coloring
-    -- Note: download_status/health_status can be 'open'/'ok' (good),
-    --       'refused'/'timeout'/'error'/'critical'/'warning' (bad)
     CASE
         WHEN download_status IN ('open', 'ok') AND (health_status IN ('open', 'ok') OR health_status IS NULL) THEN 'active'
         WHEN download_status IN ('refused', 'timeout', 'error', 'critical') THEN download_status
         WHEN health_status IN ('refused', 'timeout', 'error', 'critical') THEN health_status
         WHEN download_status = 'warning' OR health_status = 'warning' THEN 'warning'
         ELSE 'unknown'
-    END as overall_port_status
-FROM block_port_status
-ORDER BY sid, ts DESC;
+    END AS overall_port_status
+FROM effective;
 
-COMMENT ON VIEW station_port_status IS 'Latest port status for each station';
+COMMENT ON VIEW station_port_status IS 'Latest port status per station (requires 2 consecutive timeout/error for down; refused is immediate)';
 
 COMMIT;
