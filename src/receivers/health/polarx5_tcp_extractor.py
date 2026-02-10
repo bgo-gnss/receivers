@@ -21,11 +21,12 @@ Usage:
 """
 
 import logging
+import re
 import socket
 import struct
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .metrics import MetricChecker, load_thresholds
 
@@ -150,6 +151,11 @@ class PolaRX5TCPExtractor:
             setup_data = self._query_receiver_setup()
             if setup_data:
                 health_data["receiver_identity"] = setup_data
+
+            # Query logging sessions via ASCII command (lst, LogSession)
+            logging_data = self._query_logging_sessions()
+            if logging_data:
+                health_data["metrics"]["logging_sessions"] = logging_data
 
         except Exception as e:
             self.logger.error(f"Error extracting health data: {e}")
@@ -419,6 +425,169 @@ class PolaRX5TCPExtractor:
             self.logger.error(f"Error parsing ReceiverSetup: {e}")
 
         return None
+
+    def _query_logging_sessions(self) -> Optional[Dict[str, Any]]:
+        """Query active logging sessions via ASCII command interface.
+
+        Sends 'getLogSession' to list configured sessions and their state.
+        Parses the response to identify which sessions are actively logging.
+
+        The response format contains lines like:
+            LogSession, LOG1, Enabled, DSK1, "15s_24hr", After1Year, High, Continuous
+            LogSession, LOG4, Disabled, DSK1, "geod_15m", After1Year, Medium, Continuous
+            LogSession, LOG6, Unused, DSK1, "", Never, Medium, Continuous
+
+        Returns:
+            Logging sessions dict compatible with db_writer._write_logging_status(),
+            or None if query fails or no sessions found.
+        """
+        response = self._send_ascii_command("getLogSession")
+        if not response:
+            return None
+
+        return self._parse_log_session_response(response)
+
+    def _parse_log_session_response(
+        self, response: str
+    ) -> Optional[Dict[str, Any]]:
+        """Parse getLogSession response to extract active sessions.
+
+        Response format (one line per LOG slot):
+            LogSession, LOG1, Enabled, DSK1, "15s_24hr", After1Year, High, Continuous
+            LogSession, LOG2, Enabled, DSK1, "1Hz_1hr", After30Days, High, Continuous
+            LogSession, LOG5, Enabled, DSK1, "status_1hr", After1Year, High, Continuous
+            LogSession, LOG4, Disabled, DSK1, "geod_15m", ...
+            LogSession, LOG6, Unused, DSK1, "", Never, ...
+
+        State field: Enabled/Disabled/Unused
+
+        Known session names are mapped to canonical names used by the
+        dashboard (15s_24hr, 1Hz_1hr, status_1hr).
+
+        Args:
+            response: Raw text response from receiver
+
+        Returns:
+            Logging sessions dict or None
+        """
+        # Map receiver session names to our canonical names
+        session_map = {
+            "15s_24hr": "15s_24hr",
+            "1hz_1hr": "1Hz_1hr",
+            "1Hz_1hr": "1Hz_1hr",
+            "status_1hr": "status_1hr",
+        }
+
+        active_sessions: List[Dict[str, str]] = []
+
+        for line in response.split("\n"):
+            line = line.strip()
+
+            # Look for LogSession lines
+            if "LogSession" not in line:
+                continue
+
+            # Skip lines that are just the command echo
+            if line.startswith("$R: getLogSession"):
+                continue
+
+            # Check if session is Enabled (vs Disabled/Unused)
+            if "Enabled" not in line:
+                continue
+
+            # Extract session name from quoted string
+            name_match = re.search(r'"([^"]+)"', line)
+            if not name_match:
+                continue
+
+            session_name = name_match.group(1)
+            if not session_name:
+                continue
+
+            # Map to canonical name
+            canonical = session_map.get(session_name)
+            if not canonical:
+                canonical = session_map.get(session_name.lower())
+            if not canonical:
+                continue
+
+            # Avoid duplicates
+            if not any(s["session"] == canonical for s in active_sessions):
+                active_sessions.append({"session": canonical})
+
+        if not active_sessions:
+            return None
+
+        return {
+            "active_sessions": len(active_sessions),
+            "sessions": active_sessions,
+            "status": "ok",
+        }
+
+    def _send_ascii_command(self, command: str) -> Optional[str]:
+        """Send an ASCII command to the receiver and return text response.
+
+        Opens a new TCP connection, sends the command, collects the text
+        response until the prompt reappears or timeout, then closes.
+
+        Args:
+            command: ASCII command string (e.g., 'lst, LogSession')
+
+        Returns:
+            Response text or None on failure
+        """
+        sock = None
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(self.timeout)
+            sock.connect((self.host, self.port))
+
+            # Read initial prompt (e.g., "IP11>")
+            prompt = sock.recv(1024)
+            conn_id = self._parse_connection_id(prompt)
+            self.logger.debug(f"ASCII command connection as {conn_id}")
+
+            # Send command
+            sock.send((command + "\n").encode("utf-8"))
+
+            # Collect text response until prompt reappears or timeout
+            response = b""
+            end_time = time.time() + 3.0
+
+            while time.time() < end_time:
+                try:
+                    sock.settimeout(1.0)
+                    chunk = sock.recv(8192)
+                    if chunk:
+                        response += chunk
+
+                        # Check if response ends with prompt (IPxx>)
+                        decoded = response.decode("utf-8", errors="ignore")
+                        if (
+                            decoded.rstrip().endswith(">")
+                            and "IP" in decoded[-20:]
+                        ):
+                            break
+                except socket.timeout:
+                    if response:
+                        break
+
+            return response.decode("utf-8", errors="ignore")
+
+        except socket.timeout:
+            self.logger.debug(f"Timeout sending ASCII command: {command}")
+            return None
+        except ConnectionRefusedError:
+            self.logger.debug(
+                f"Connection refused for ASCII command to {self.host}:{self.port}"
+            )
+            return None
+        except Exception as e:
+            self.logger.debug(f"ASCII command '{command}' failed: {e}")
+            return None
+        finally:
+            if sock:
+                sock.close()
 
     def _query_disk_status(self) -> Optional[Dict[str, Any]]:
         """Query DiskStatus SBF block for disk usage.
