@@ -625,9 +625,13 @@ class BulkDownloadScheduler:
             'default': SQLAlchemyJobStore(url=self.database_url)
         }
         
-        # Executor configuration  
+        # Executor configuration
+        # Separate executor for health checks prevents health monitoring
+        # from starving download workers when distribution_window=0
+        health_workers = min(self.max_workers // 3, 30)
         executors = {
             'default': ThreadPoolExecutor(self.max_workers),
+            'health': ThreadPoolExecutor(health_workers),
         }
         
         # Job defaults
@@ -1147,6 +1151,7 @@ class BulkDownloadScheduler:
                 args=[station_id, True, True],  # send_to_db=True, send_to_icinga=True
                 id=job_id,
                 replace_existing=True,
+                executor='health',
                 **trigger_kwargs
             )
 
