@@ -398,6 +398,150 @@ class ReceiversConfig:
 
         return rinex_config
 
+    def get_storage_locations(self) -> list[Dict[str, Any]]:
+        """Get storage location definitions from config.
+
+        Reads [storage_locations] section from receivers.cfg. Each key is a
+        location_id and the value is a comma-separated string:
+            location_id = base_path, location_type, name [, is_primary]
+
+        Example receivers.cfg:
+            [storage_locations]
+            local_archive = /home/bgo/tmp/gpsdata, local, Local development archive, true
+            production_nfs = /mnt_data/gpsdata, nfs, Production NFS mount
+
+        Returns:
+            List of dicts with keys: location_id, base_path, location_type,
+            name, is_primary, enabled
+        """
+        locations = []
+
+        try:
+            for location_id, value in self.config.items("storage_locations"):
+                try:
+                    parts = [p.strip() for p in value.split(",")]
+                    if len(parts) < 3:
+                        self.logger.warning(
+                            f"Invalid storage_location format for {location_id}: "
+                            f"expected 'base_path, type, name [, is_primary]'"
+                        )
+                        continue
+
+                    base_path = os.path.expanduser(parts[0])
+                    location_type = parts[1]
+                    name = parts[2]
+                    is_primary = (
+                        parts[3].lower() in ("true", "yes", "1")
+                        if len(parts) > 3
+                        else False
+                    )
+
+                    if location_type not in ("local", "nfs", "server"):
+                        self.logger.warning(
+                            f"Invalid location_type '{location_type}' for {location_id}, "
+                            f"must be local/nfs/server"
+                        )
+                        continue
+
+                    locations.append({
+                        "location_id": location_id,
+                        "base_path": base_path,
+                        "location_type": location_type,
+                        "name": name,
+                        "is_primary": is_primary,
+                        "enabled": True,
+                    })
+
+                except Exception as e:
+                    self.logger.warning(
+                        f"Could not parse storage_location {location_id}: {e}"
+                    )
+
+        except configparser.NoSectionError:
+            # No [storage_locations] section — provide a sensible default
+            # based on data_prepath
+            data_prepath = self.get_data_prepath()
+            locations.append({
+                "location_id": "local_archive",
+                "base_path": data_prepath,
+                "location_type": "local",
+                "name": "Local archive",
+                "is_primary": True,
+                "enabled": True,
+            })
+
+        return locations
+
+
+def seed_storage_locations(connection_string: Optional[str] = None) -> int:
+    """Seed storage_location table from receivers.cfg on first run.
+
+    Reads storage locations from ReceiversConfig and inserts any missing
+    entries into the storage_location table. Existing entries are not
+    modified (base_path may differ between environments).
+
+    Args:
+        connection_string: PostgreSQL connection string. If None, uses env vars.
+
+    Returns:
+        Number of locations inserted (0 if all already exist)
+    """
+    config_logger = logging.getLogger(__name__)
+
+    try:
+        config = ReceiversConfig()
+        locations = config.get_storage_locations()
+    except Exception as e:
+        config_logger.warning(f"Cannot load storage locations from config: {e}")
+        return 0
+
+    if not locations:
+        return 0
+
+    try:
+        from ..health.database_factory import DatabaseConnectionFactory
+
+        conn = DatabaseConnectionFactory.get_connection(
+            database="gps_health",
+            connection_string=connection_string,
+        )
+    except Exception as e:
+        config_logger.debug(f"Cannot connect to database for storage location seeding: {e}")
+        return 0
+
+    inserted = 0
+    try:
+        with conn.cursor() as cur:
+            for loc in locations:
+                cur.execute(
+                    """INSERT INTO storage_location
+                        (location_id, name, base_path, location_type, is_primary, enabled)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (location_id) DO NOTHING""",
+                    (
+                        loc["location_id"],
+                        loc["name"],
+                        loc["base_path"],
+                        loc["location_type"],
+                        loc["is_primary"],
+                        loc["enabled"],
+                    ),
+                )
+                if cur.rowcount > 0:
+                    inserted += 1
+
+        conn.commit()
+        if inserted:
+            config_logger.info(f"Seeded {inserted} storage locations to database")
+
+    except Exception as e:
+        config_logger.warning(f"Error seeding storage locations: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
+
+    return inserted
+
 
 # Global configuration instance
 _global_config: Optional[ReceiversConfig] = None
