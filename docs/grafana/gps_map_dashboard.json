@@ -560,11 +560,11 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(*) AS \"Missing 24h RNX\" FROM station_data_flow_status f JOIN station_dashboard_data d ON d.station_id = f.sid WHERE f.status_24h = 2 AND d.station_status IS NULL AND d.health_check IS NULL",
+          "rawSql": "SELECT COUNT(*) AS \"Missing 24h\" FROM station_data_flow_status f JOIN station_dashboard_data d ON d.station_id = f.sid WHERE f.status_24h = 2 AND d.station_status IS NULL AND d.health_check IS NULL",
           "refId": "A"
         }
       ],
-      "title": "Missing 24h RNX",
+      "title": "Missing 24h",
       "type": "stat"
     },
     {
