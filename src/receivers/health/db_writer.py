@@ -652,6 +652,24 @@ class HealthDatabaseWriter:
                     else:
                         problems.append("Ping warning")
 
+            # HTTP port and protocol connection issues
+            for conn_key, conn_label in (
+                ("http_port", "HTTP port"),
+                ("protocol", "Protocol"),
+            ):
+                conn_level = connection.get(conn_key, {})
+                if isinstance(conn_level, dict):
+                    conn_status = conn_level.get("status", "").lower()
+                    if conn_status == "critical" and not conn_level.get("accessible", True):
+                        err = conn_level.get("error_message", "")
+                        if "timeout" in err.lower():
+                            problems.append(f"{conn_label} timeout")
+                        elif "refused" in err.lower():
+                            problems.append(f"{conn_label} refused")
+                        elif "skipped" not in err.lower():
+                            # Skip "host unreachable" duplicates (already covered by ping)
+                            problems.append(f"{conn_label} down")
+
         # Friendly labels for metric keys
         labels = {
             "power": "Voltage",

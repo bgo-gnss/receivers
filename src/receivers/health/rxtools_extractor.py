@@ -878,9 +878,9 @@ class RxToolsExtractor:
     @staticmethod
     def _check_disk_status(usage_pct: float) -> str:
         """Check disk usage status."""
-        if usage_pct > 90:
+        if usage_pct > 97:
             return "critical"
-        elif usage_pct > 80:
+        elif usage_pct > 90:
             return "warning"
         return "ok"
 

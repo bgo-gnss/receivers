@@ -163,8 +163,8 @@ class ThresholdConfig:
     sat_max: int = 40
 
     # Disk usage (%)
-    disk_warning: float = 80.0
-    disk_critical: float = 90.0
+    disk_warning: float = 90.0
+    disk_critical: float = 97.0
     disk_min: float = 0.0
     disk_max: float = 100.0
 
