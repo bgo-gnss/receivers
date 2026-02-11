@@ -165,6 +165,88 @@ See `docs/scheduler/scheduler-guide.md` for complete details.
 - **Multiple input types**: Supports single datetime, datetime lists, or start/end time ranges
 - **IGS filename accuracy**: Uses gtimes `#Rin2` format for correct hour-to-letter mapping
 
+### Archive Format & Multi-Location System
+**Status**: ✅ Implemented — migration `021_archive_format.sql`
+
+Table-driven system for RINEX metadata, path templates, and multi-location file tracking. New file formats can be added without code changes.
+
+#### Database Tables
+
+| Table | Purpose |
+|-------|---------|
+| `archive_format` | Format definitions: session type, RINEX metadata, path/filename templates |
+| `storage_location` | Storage locations with environment-specific base paths |
+| `file_locations` | Many-to-many: which files exist at which locations |
+| `file_tracking.format_id` | Nullable FK linking tracked files to their format (backward compatible) |
+
+#### archive_format Seed Data (PolaRX5)
+
+| format_id | category | frequency | RINEX | naming | Hatanaka | ext |
+|-----------|----------|-----------|-------|--------|----------|-----|
+| `polarx5_15s_24hr_raw` | raw | 1D | — | — | — | `.sbf.gz` |
+| `polarx5_15s_24hr_rinex` | rinex | 1D | 3.04 | short | yes | `.d.Z` |
+| `polarx5_1hz_1hr_raw` | raw | 1H | — | — | — | `.sbf.gz` |
+| `polarx5_1hz_1hr_rinex` | rinex | 1H | 3.04 | short | yes | `.d.Z` |
+| `polarx5_status_1hr_raw` | raw | 1H | — | — | — | `.sbf.gz` |
+
+#### Path Templates
+
+Format definitions store separate `dir_template` and `filename_template` with placeholders:
+- `{station}`, `{session_letter}` — substituted before gtimes
+- `%Y`, `%m`, `%d`, `%H`, `#b`, `#Rin2`, `#hourl` — handled by `gtimes.datepathlist()`
+
+Example templates and resolved paths:
+```
+dir_template:      %Y/#b/{station}/15s_24hr/rinex/
+filename_template: {station}#Rin2d.Z
+→ /data/2026/feb/ELDC/15s_24hr/rinex/ELDC0410.26d.Z
+
+dir_template:      %Y/#b/{station}/1Hz_1hr/raw/
+filename_template: {station}%Y%m%d%H00{session_letter}.sbf.gz
+→ /data/2026/feb/THOB/1Hz_1hr/raw/THOB202602101400b.sbf.gz
+```
+
+#### FormatResolver Class (`file_tracker.py`)
+
+```python
+from receivers.health.file_tracker import FormatResolver
+
+with FormatResolver() as resolver:
+    # Build full path from format + station + datetime
+    path = resolver.build_path('polarx5_15s_24hr_rinex', 'ELDC', dt,
+                               base_path='/data')
+
+    # Find format by criteria (receiver-specific first, then universal)
+    fmt = resolver.find_format('15s_24hr', 'rinex', receiver_type='polarx5')
+
+    # List all RINEX formats
+    rinex_formats = resolver.list_formats(file_category='rinex')
+
+    # Record file at a storage location
+    resolver.record_file_location(tracking_id, 'local_archive',
+                                  file_path='/data/...', file_size=12345)
+```
+
+- Loads `archive_format` and `storage_location` from PostgreSQL into memory (cached)
+- `build_path()` / `build_directory()` — construct paths via gtimes
+- `find_format()` — lookup by session_type + file_category + receiver_type
+- `record_file_location()` — upsert to `file_locations` join table
+- Archive reconciler uses FormatResolver when available, falls back to glob
+
+#### Storage Locations
+
+Base paths are environment-specific — defined in `receivers.cfg` and seeded to DB:
+
+```ini
+[storage_locations]
+local_archive = /home/bgo/tmp/gpsdata, local, Local development archive, true
+production_nfs = /mnt_data/gpsdata, nfs, Production NFS mount
+```
+
+Falls back to `[archive_paths] data_prepath` when no `[storage_locations]` section exists.
+
+Seed to database: `seed_storage_locations()` from `receivers.config.receivers_config`.
+
 ### Production Logging
 - **Concise output**: Timestamp, level icon, station, message format
 - **JSON mode**: Structured logs for monitoring system integration
@@ -419,9 +501,9 @@ All receivers use Phase 1 utilities by default:
 
 ---
 
-**Last updated**: 2026-02-10
+**Last updated**: 2026-02-11
 **Package version**: Development (gpslibrary_new)
-**Phase Status**: Phase 3C Complete - Distribution window optimization, midnight offset, multi-session backfill, gap detection, archive reconciler
+**Phase Status**: Phase 3C Complete - Distribution window optimization, midnight offset, multi-session backfill, gap detection, archive reconciler, archive format system
 
 ## TODO / Known Issues
 
@@ -437,8 +519,15 @@ A systematic review is needed to address recurring patterns of issues found duri
 - **Test coverage**: Integration tests for Trimble health flow end-to-end (extractor → db_writer → dashboard views)
 - **Error handling patterns**: Standardize SAVEPOINT usage, transaction management, and value truncation across all DB writers
 
+### Archive Format System — Future Work
+- **RINEX format converter tool**: Read any stored RINEX → output in any desired format (R2/R3/R4, short/long naming, .YYd/.YYo, .Z/.gz/none). R2→R3 is lossy, all other conversions feasible. The `archive_format` table provides the metadata needed to drive this.
+- **Cold storage archival**: rsync to production server. `storage_location` with `location_type='server'` + rsync integration. Track what's been synced via `file_locations`.
+- **Trimble/Leica format definitions**: Add `netr9_15s_24hr_raw` (.T02), `netrs_15s_24hr_raw` (.T00), `g10_15s_24hr_raw` (.m00) when those receivers get RINEX conversion support.
+- **Navigation RINEX**: Add format definitions for nav files when needed.
+- **Apply migration to production**: Run `021_archive_format.sql` on the production database (10.170.110.80) when ready.
+
 ### Tracking
 - Full issue tracker: `docs/CODE_REVIEW_TRACKER.md`
-- Updated: 2026-02-09
+- Updated: 2026-02-11
 
 **Maintainer**: Veðurstofa Íslands GPS Team
