@@ -14,10 +14,12 @@ Health Messages Extracted (SBF blocks):
 - 4027 ReceiverSetup: Receiver configuration and firmware version
 """
 
+import gzip
 import logging
 import re
 import shutil
 import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -113,7 +115,7 @@ class RxToolsExtractor:
         """Convert SBF file to ASCII format using bin2asc.
 
         Args:
-            sbf_file: Path to SBF file
+            sbf_file: Path to SBF file (can be .sbf or .sbf.gz)
             output_dir: Directory for ASCII output files
 
         Returns:
@@ -127,6 +129,47 @@ class RxToolsExtractor:
         if self._bin2asc_path is None:
             self.logger.error("bin2asc not found in PATH")
             return ascii_files
+
+        # bin2asc cannot read gzip files — decompress to temp file if needed
+        temp_sbf = None
+        actual_sbf = sbf_file
+        if sbf_file.name.endswith('.sbf.gz'):
+            try:
+                temp_sbf = tempfile.NamedTemporaryFile(
+                    suffix='.sbf', dir=str(output_dir), delete=False
+                )
+                with gzip.open(sbf_file, 'rb') as gz_in:
+                    shutil.copyfileobj(gz_in, temp_sbf)
+                temp_sbf.close()
+                actual_sbf = Path(temp_sbf.name)
+            except Exception as e:
+                self.logger.warning(f"Failed to decompress {sbf_file.name}: {e}")
+                if temp_sbf is not None:
+                    Path(temp_sbf.name).unlink(missing_ok=True)
+                return ascii_files
+
+        try:
+            ascii_files = self._run_bin2asc(actual_sbf, output_dir)
+        finally:
+            # Clean up temp decompressed file
+            if temp_sbf is not None:
+                Path(temp_sbf.name).unlink(missing_ok=True)
+
+        return ascii_files
+
+    def _run_bin2asc(
+        self, sbf_file: Path, output_dir: Path
+    ) -> Dict[str, Path]:
+        """Run bin2asc on an uncompressed SBF file.
+
+        Args:
+            sbf_file: Path to uncompressed .sbf file
+            output_dir: Directory for ASCII output files
+
+        Returns:
+            Dictionary mapping block names to ASCII file paths
+        """
+        ascii_files = {}
 
         # Convert each health block type separately for easier parsing
         for block_name, friendly_name in self.HEALTH_BLOCKS.items():

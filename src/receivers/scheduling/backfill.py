@@ -445,10 +445,10 @@ def _extract_and_store_health(
     file_paths: List[str],
     log: logging.Logger,
 ) -> int:
-    """Extract health data from SBF files and write to database.
+    """Extract time-series health data from SBF files and write to database.
 
-    Processes each file through RxToolsExtractor, writes metrics to block tables
-    via HealthDatabaseWriter, and updates file_tracking.
+    Uses TimeSeriesHealthExtractor to get full timeseries with proper GPS
+    timestamps, then HealthJsonImporter to write to block_* tables.
 
     Args:
         station_id: Station identifier
@@ -461,68 +461,43 @@ def _extract_and_store_health(
     imported_count = 0
 
     try:
-        from ..health.rxtools_extractor import RxToolsExtractor
-        from ..health.db_writer import HealthDatabaseWriter
-        from ..health.file_tracker import FileTracker
-
-        extractor = RxToolsExtractor(station_id)
-        if not extractor.check_rxtools_available():
-            log.warning(f"RxTools not available - cannot extract health from SBF files")
-            return 0
-
-        writer = HealthDatabaseWriter()
-        tracker = FileTracker()
-
-        for file_path_str in file_paths:
-            file_path = Path(file_path_str)
-
-            try:
-                # Check if already imported
-                file_date = _extract_date_from_path(file_path)
-                file_hour = _extract_hour_from_path(file_path)
-
-                if file_date and tracker.is_file_missing(
-                    station_id, "status_1hr", file_date, file_hour
-                ):
-                    continue
-
-                # Extract health data from SBF
-                health_data = extractor.extract_health_from_sbf(file_path)
-                if not health_data or not health_data.get("metrics"):
-                    log.debug(f"No health metrics in {file_path.name}")
-                    # Don't mark as 'missing' — the file was downloaded successfully,
-                    # it just didn't contain extractable health metrics. Marking it
-                    # 'missing' would overwrite the 'downloaded' status in file_tracking.
-                    continue
-
-                # Add station metadata for db_writer
-                health_data["station_id"] = station_id
-                health_data["receiver_type"] = "PolaRX5"
-
-                # Use file timestamp if no timestamp in data
-                if "timestamp" not in health_data:
-                    health_data["timestamp"] = datetime.now(timezone.utc).isoformat()
-
-                # Write to database
-                success = writer.write_health_data(health_data)
-
-                if success:
-                    imported_count += 1
-                    # Update file_tracking
-                    if file_date:
-                        samples = _count_samples(health_data)
-                        tracker.mark_health_imported(
-                            station_id, file_date, samples
-                        )
-                    log.debug(f"Imported health data from {file_path.name}")
-                else:
-                    log.warning(f"Failed to write health data from {file_path.name}")
-
-            except Exception as e:
-                log.warning(f"Error processing {file_path.name}: {e}")
-
+        from ..health.timeseries_extractor import TimeSeriesHealthExtractor
+        from ..health.json_importer import HealthJsonImporter
     except ImportError as e:
         log.warning(f"Health extraction dependencies not available: {e}")
+        return 0
+
+    try:
+        extractor = TimeSeriesHealthExtractor(
+            station_id=station_id,
+            receiver_type="PolaRX5",
+        )
+
+        sbf_files = [Path(p) for p in file_paths if Path(p).exists()]
+        if not sbf_files:
+            return 0
+
+        # Extract timeseries from all files at once (groups by day internally)
+        file_date = _extract_date_from_path(sbf_files[0])
+        extract_date = datetime.combine(file_date, datetime.min.time()) if file_date else datetime.now(timezone.utc)
+
+        health_data = extractor.extract_daily_health(sbf_files, extract_date)
+        sample_count = health_data.get("sample_count", 0)
+
+        if sample_count == 0:
+            log.debug(f"No health samples in {len(sbf_files)} files for {station_id}")
+            return 0
+
+        # Write to database using the JSON importer (handles proper timestamps)
+        with HealthJsonImporter() as importer:
+            if importer.connect(database="gps_health"):
+                rows = importer.import_health_data(health_data, station_id, "PolaRX5")
+                if rows > 0:
+                    imported_count = len(sbf_files)
+                    log.debug(f"Imported {rows} rows from {len(sbf_files)} files for {station_id}")
+            else:
+                log.warning(f"Failed to connect to database for health import")
+
     except Exception as e:
         log.error(f"Health extraction error for {station_id}: {e}")
 
@@ -566,64 +541,3 @@ def _extract_date_from_path(file_path: Path) -> Optional[date]:
     return None
 
 
-def _extract_hour_from_path(file_path: Path) -> Optional[int]:
-    """Extract hour from archive file path.
-
-    For hourly files, the hour may be encoded as a letter (a=0, b=1, ..., x=23)
-    or as HH in the filename.
-
-    Args:
-        file_path: Path to archived file
-
-    Returns:
-        Hour (0-23) or None
-    """
-    import re
-
-    name = file_path.name
-
-    # Try HH pattern after date digits (e.g., ELDC2026011512)
-    match = re.search(r"\d{8}(\d{2})", name)
-    if match:
-        hour = int(match.group(1))
-        if 0 <= hour <= 23:
-            return hour
-
-    # Try IGS letter convention (a=0, b=1, ..., x=23)
-    # Pattern: 4-char station + DOY + letter
-    match = re.search(r"[A-Z]{4}\d{3,}([a-x])", name, re.IGNORECASE)
-    if match:
-        letter = match.group(1).lower()
-        return ord(letter) - ord("a")
-
-    return None
-
-
-def _count_samples(health_data: Dict[str, Any]) -> int:
-    """Count number of data samples in health data.
-
-    Args:
-        health_data: Extracted health data dictionary
-
-    Returns:
-        Approximate sample count
-    """
-    count = 0
-    metrics = health_data.get("metrics", {})
-    if "power" in metrics:
-        count += 1
-    if "cpu_load" in metrics:
-        count += 1
-    if "temperature" in metrics:
-        count += 1
-    if "position" in metrics:
-        count += 1
-    if "satellites" in metrics:
-        count += 1
-    data_quality = health_data.get("data_quality", {})
-    if data_quality:
-        count += 1
-    network = health_data.get("network", {})
-    if network:
-        count += 1
-    return max(count, 1)  # At least 1 if we got any data
