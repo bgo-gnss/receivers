@@ -120,6 +120,65 @@ Tracking document for code weaknesses, recurring issues, and optimization opport
 - **Root cause**: `_build_status_details()` only checked metric statuses and port states, not connection-level data. When ping latency caused warning/critical, `status_details` was NULL, showing generic "Check file/port status".
 - **Fix**: Added connection data inspection — now reports "Ping high latency (520ms)" or "Ping packet loss (50%)".
 
+### EXTRACTOR-013: PolaRX5 port check timeout too short for 3G/4G
+- **Category**: EXTRACTOR / PROTOCOL
+- **Severity**: High
+- **Found**: 2026-02-10
+- **Resolved**: 2026-02-10
+- **Files**: `health/polarx5_tcp_extractor.py`
+- **Root cause**: TCP port check used 2s timeout. On 3G/4G links, TCP handshake can take 3-5s. Single attempt meant ~30% false-negative rate on slow links.
+- **Fix**: Increased timeout to 5s. Added retry-on-timeout via `_check_single_port()` helper. `refused` is definitive (never retried). Reduces false negatives from ~30% to ~2% on slow links.
+
+### EXTRACTOR-014: PolaRX5 single-packet ping unreliable
+- **Category**: EXTRACTOR / PROTOCOL
+- **Severity**: Medium
+- **Found**: 2026-02-10
+- **Resolved**: 2026-02-10
+- **Files**: `septentrio/polarx5.py`
+- **Root cause**: PolaRX5 health check used `count=1` for ping (separate from connection_checker's `count=5`). One dropped ICMP packet = station marked offline + extraction skipped.
+- **Fix**: Changed to `count=3`. Also added self-correction: when TCP data extraction succeeds, control port status is corrected from timeout→open (proves the port works even if the TCP check was slow).
+
+### DATA-FLOW-001: No RINEX file tracking in file_tracking table
+- **Category**: DATA-MODEL / SCHEDULER
+- **Severity**: High
+- **Found**: 2026-02-10
+- **Resolved**: 2026-02-10
+- **Files**: `health/file_tracker.py`, `scheduling/gap_scheduler.py`, `migrations/018_data_flow_status.sql`
+- **Root cause**: `file_tracking` table only tracked raw SBF files (`15s_24hr`, `1Hz_1hr`, `status_1hr`). RINEX conversion output was invisible to the monitoring system. Operators had no visibility into RINEX freshness.
+- **Fix**: Multi-part fix:
+  1. `get_archive_directory()`: Support `_rinex` suffix session types → `rinex/` subdir
+  2. `_generate_expected_files()`: Treat `15s_24hr_rinex` as daily
+  3. `scan_rinex_files()`: New method on GapDetector, parses RINEX 2 short names, upserts to file_tracking with file_size
+  4. `_run_gap_detection_job()`: Calls RINEX scanner for PolaRX5 stations
+  5. `station_data_flow_status` view: Computes combined raw+RINEX+logging status codes per station
+
+### DATA-FLOW-002: Archive scanner counts zero-byte files as present
+- **Category**: DATA-MODEL
+- **Severity**: Medium
+- **Found**: 2026-02-10
+- **Resolved**: 2026-02-10
+- **Files**: `health/file_tracker.py`
+- **Root cause**: `check_file_status()` glob loop counted any file matching the pattern as "found", including 0-byte corrupt files. A truncated RINEX conversion would show as "green" in the dashboard.
+- **Fix**: Added `MIN_ARCHIVE_FILE_SIZE = 50` bytes threshold. Files below this size are skipped in the glob loop. Protects both raw SBF and RINEX file counting.
+
+### DASHBOARD-012: No data flow columns in overview table
+- **Category**: DASHBOARD
+- **Severity**: Medium
+- **Found**: 2026-02-10
+- **Resolved**: 2026-02-10
+- **Files**: `gps_health_dashboard.json`, `gps_map_dashboard.json`
+- **Root cause**: Overview table had no visibility into file freshness or RINEX conversion status. Operators couldn't see which stations were missing downloads or conversions.
+- **Fix**: Added "24h" and "1Hz Data" columns to overview table with color-coded status (green/yellow/red/grey). Added "Missing 24h RNX" count box to both health and map dashboards. Added `24hr_rinex_missing` and `1hr_rinex_missing` filter options.
+
+### DASHBOARD-013: Station detail dashboard missing RINEX panel
+- **Category**: DASHBOARD
+- **Severity**: Medium
+- **Found**: 2026-02-10
+- **Resolved**: 2026-02-10
+- **Files**: `gps_station_detail_dashboard.json`
+- **Root cause**: Station detail showed File Status (raw file age) and Logging (active sessions) but no RINEX conversion status.
+- **Fix**: Added "RINEX Status" panel (id:51) between File Status and Logging panels with 15s/1Hz columns and color-coded value mappings.
+
 ---
 
 ## Open Issues / Future Work
@@ -137,9 +196,11 @@ Tracking document for code weaknesses, recurring issues, and optimization opport
 ### PROTOCOL-011: PolaRX5 logging session extraction
 - **Category**: EXTRACTOR
 - **Severity**: Medium
-- **Status**: Open
-- **Description**: PolaRX5 extractor doesn't report logging session status to `block_logging_status`. Currently only Trimble (via activity CGI) and G10 (via XML) report this. PolaRX5 should extract from SBF ExeScript or status_1hr data.
-- **Files**: `septentrio/polarx5.py`, `health/sbf_extractor.py`
+- **Status**: Resolved
+- **Resolution date**: 2026-02-10
+- **Description**: PolaRX5 extractor didn't report logging session status to `block_logging_status`. Only Trimble (via activity CGI) and G10 (via XML) reported this.
+- **Fix**: Added `getLogSession` TCP command to PolaRX5 TCP extractor. Parses response to detect active logging sessions (15s_24hr, 1Hz_1hr, status_1hr). Data written to `block_logging_status` via db_writer.
+- **Files**: `health/polarx5_tcp_extractor.py`, `septentrio/polarx5.py`
 
 ### DB-010: Audit all DB writers for VARCHAR overflow
 - **Category**: DB-WRITER
@@ -316,5 +377,5 @@ When reviewing a file, check for these patterns:
 ---
 
 **Created**: 2026-02-09
-**Last updated**: 2026-02-09
+**Last updated**: 2026-02-10
 **Purpose**: Track code quality issues for systematic review and optimization

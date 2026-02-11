@@ -192,6 +192,7 @@ def get_thresholds_config_path() -> Path:
 def load_thresholds(
     receiver_type: Optional[str] = None,
     config_path: Optional[Path] = None,
+    power_type: Optional[str] = None,
 ) -> ThresholdConfig:
     """Load threshold configuration from YAML file with defaults fallback.
 
@@ -237,9 +238,21 @@ def load_thresholds(
     if config_path is None:
         config_path = get_thresholds_config_path()
 
+    # Built-in DC/DC voltage thresholds (13.5-16.5V normal range)
+    _dcdc_voltage_overrides = {
+        "voltage": {
+            "warning_low": 12.0,
+            "critical_low": 11.0,
+            "warning_high": 16.5,
+            "critical_high": 18.0,
+        }
+    }
+
     # Try to load from file
     if not config_path.exists():
         logger.debug(f"No thresholds config file at {config_path}, using defaults")
+        if power_type == "dcdc":
+            config = _apply_config_section(config, _dcdc_voltage_overrides)
         return config
 
     try:
@@ -270,6 +283,17 @@ def load_thresholds(
             if type_config:
                 config = _apply_config_section(config, type_config)
                 logger.debug(f"Applied receiver-type overrides for {receiver_type}")
+
+        # Apply power-type-specific overrides
+        if power_type:
+            power_types = yaml_config.get("power_types", {})
+            pt_config = power_types.get(power_type)
+            if pt_config:
+                config = _apply_config_section(config, pt_config)
+                logger.debug(f"Applied power-type overrides for {power_type}")
+            elif power_type == "dcdc":
+                config = _apply_config_section(config, _dcdc_voltage_overrides)
+                logger.debug("Applied built-in DC/DC voltage thresholds")
 
         logger.debug(f"Loaded thresholds from {config_path}")
         return config

@@ -70,7 +70,15 @@ class G10HTTPExtractor:
 
         # Initialize centralized metric checker
         from .metrics import load_thresholds
-        config = load_thresholds(receiver_type="G10")
+        power_type = None
+        try:
+            from ..config_utils import get_station_config
+            cfg = get_station_config(station_id)
+            if cfg:
+                power_type = cfg.get("power_type") or None
+        except Exception:
+            pass
+        config = load_thresholds(receiver_type="G10", power_type=power_type)
         self.metric_checker = MetricChecker(config)
 
     def extract_health_data(self) -> Dict[str, Any]:

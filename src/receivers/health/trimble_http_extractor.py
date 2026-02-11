@@ -94,9 +94,16 @@ class TrimbleHTTPExtractor:
         self.logger = logging.getLogger(f"receivers.health.trimble.{station_id}")
 
         # Initialize centralized metric checker for consistent threshold evaluation
-        # Load thresholds with receiver-type-specific overrides if configured
         from .metrics import load_thresholds
-        config = load_thresholds(receiver_type=receiver_type)
+        power_type = None
+        try:
+            from ..config_utils import get_station_config
+            cfg = get_station_config(station_id)
+            if cfg:
+                power_type = cfg.get("power_type") or None
+        except Exception:
+            pass
+        config = load_thresholds(receiver_type=receiver_type, power_type=power_type)
         self.metric_checker = MetricChecker(config)
 
         # HTTP Basic Auth if credentials provided

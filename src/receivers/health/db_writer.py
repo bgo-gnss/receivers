@@ -107,10 +107,15 @@ class HealthDatabaseWriter:
         agency = None
         ip_address = None
         http_port = None
+        station_name = None
         try:
             from ..config_utils import get_station_config
             cfg = get_station_config(station_id)
             if cfg:
+                station_name = cfg.get("station_name") or None
+                # Don't store SID as station_name (config fallback)
+                if station_name == station_id:
+                    station_name = None
                 antenna = cfg.get("antenna", {})
                 antenna_type = antenna.get("type") or None
                 rinex = cfg.get("rinex", {})
@@ -141,8 +146,10 @@ class HealthDatabaseWriter:
                 cur.execute("""
                     INSERT INTO stations (sid, receiver_type, power_type,
                         antenna_type, marker_name, marker_number,
-                        observer, agency, ip_address, http_port)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::inet, %s)
+                        observer, agency, ip_address, http_port,
+                        station_name)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::inet, %s,
+                        %s)
                     ON CONFLICT (sid) DO UPDATE SET
                         receiver_type = EXCLUDED.receiver_type,
                         power_type = COALESCE(EXCLUDED.power_type, stations.power_type),
@@ -153,11 +160,13 @@ class HealthDatabaseWriter:
                         agency = EXCLUDED.agency,
                         ip_address = COALESCE(EXCLUDED.ip_address, stations.ip_address),
                         http_port = COALESCE(EXCLUDED.http_port, stations.http_port),
+                        station_name = COALESCE(EXCLUDED.station_name, stations.station_name),
                         updated_at = NOW()
                     RETURNING sid
                 """, (station_id, receiver_type, power_type,
                       antenna_type, marker_name, marker_number,
-                      observer, agency, ip_address, http_port))
+                      observer, agency, ip_address, http_port,
+                      station_name))
                 self._conn.commit()
                 self._station_cache.add(station_id)
                 return True
