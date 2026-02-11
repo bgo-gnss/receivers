@@ -121,6 +121,19 @@ def get_auth_headers(target: dict[str, Any], target_name: str) -> dict[str, str]
             if token:
                 return {"Authorization": f"Bearer {token}"}
 
+        # Fallback: check cookie file
+        config_dir = Path(
+            os.environ.get("GPS_CONFIG_PATH", "~/.config/gpsconfig")
+        ).expanduser()
+        cookie_file = config_dir / "grafana_cookies.yaml"
+        if cookie_file.exists():
+            with open(cookie_file) as f:
+                cookies = yaml.safe_load(f) or {}
+            cookie = cookies.get(target_name, "")
+            if cookie:
+                info(f"Using session cookie from {cookie_file}")
+                return {"Cookie": cookie}
+
         # Fallback: prompt for session cookie
         warn(f"No token found in ${env_var} or {token_file}")
         cookie = input("  Enter Grafana session cookie (grafana_session=...): ").strip()

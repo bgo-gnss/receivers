@@ -75,8 +75,16 @@ class PolaRX5TCPExtractor:
         self._connection_id = None  # Will be detected from prompt (e.g., "IP11")
 
         # Initialize centralized metric checker for consistent threshold evaluation
-        # Load thresholds with receiver-type-specific overrides if configured
-        config = load_thresholds(receiver_type="PolaRX5")
+        # Load thresholds with receiver-type and power-type overrides
+        power_type = None
+        try:
+            from ..config_utils import get_station_config
+            cfg = get_station_config(station_id)
+            if cfg:
+                power_type = cfg.get("power_type") or None
+        except Exception:
+            pass
+        config = load_thresholds(receiver_type="PolaRX5", power_type=power_type)
         self.metric_checker = MetricChecker(config)
 
         # Port configuration for status checks
@@ -809,71 +817,60 @@ class PolaRX5TCPExtractor:
     def _check_port_status(self) -> Dict[str, Any]:
         """Check status of configured ports (FTP, HTTP, control).
 
+        Uses 5s timeout and retries once on timeout to reduce false negatives
+        on slow 3G/4G links.  'refused' is definitive and never retried.
+
         Returns:
             Dictionary with port status for each configured port.
             Status values: 'open', 'timeout', 'refused', 'error'
         """
-        import errno
-
         port_status = {}
         all_ok = True
 
         for name, port_num in self.port_config.items():
-            try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(2.0)  # Quick timeout for port checks
-                result = sock.connect_ex((self.host, port_num))
-                sock.close()
-
-                is_open = result == 0
-                if is_open:
-                    status = "ok"
-                    detail = "open"
-                elif result == errno.ECONNREFUSED:
-                    status = "warning"
-                    detail = "refused"
-                elif result == errno.ETIMEDOUT or result == errno.EHOSTUNREACH:
-                    status = "critical"
-                    detail = "timeout"
-                else:
-                    status = "critical"
-                    detail = "timeout"
-
-                port_status[name] = {
-                    "port": port_num,
-                    "open": is_open,
-                    "status": status,
-                    "detail": detail,
-                }
-                if not is_open:
-                    all_ok = False
-            except socket.timeout:
-                port_status[name] = {
-                    "port": port_num,
-                    "open": False,
-                    "status": "critical",
-                    "detail": "timeout",
-                }
-                all_ok = False
-            except ConnectionRefusedError:
-                port_status[name] = {
-                    "port": port_num,
-                    "open": False,
-                    "status": "warning",
-                    "detail": "refused",
-                }
-                all_ok = False
-            except Exception as e:
-                port_status[name] = {
-                    "port": port_num,
-                    "open": False,
-                    "status": "error",
-                    "detail": str(e),
-                }
+            result_entry = self._check_single_port(name, port_num)
+            # Retry once on timeout (not refused — that's definitive)
+            if result_entry["detail"] == "timeout":
+                self.logger.debug(
+                    f"Port {name}:{port_num} timed out, retrying once..."
+                )
+                result_entry = self._check_single_port(name, port_num)
+            port_status[name] = result_entry
+            if not result_entry["open"]:
                 all_ok = False
 
         port_status["overall_status"] = "ok" if all_ok else "warning"
         return port_status
+
+    def _check_single_port(
+        self, _name: str, port_num: int
+    ) -> Dict[str, Any]:
+        """Check a single TCP port with 5s timeout.
+
+        Returns:
+            Dictionary with port, open, status, detail keys.
+        """
+        import errno
+
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5.0)  # 5s for slow 3G/4G links
+            result = sock.connect_ex((self.host, port_num))
+            sock.close()
+
+            is_open = result == 0
+            if is_open:
+                return {"port": port_num, "open": True, "status": "ok", "detail": "open"}
+            elif result == errno.ECONNREFUSED:
+                return {"port": port_num, "open": False, "status": "warning", "detail": "refused"}
+            else:
+                return {"port": port_num, "open": False, "status": "critical", "detail": "timeout"}
+        except socket.timeout:
+            return {"port": port_num, "open": False, "status": "critical", "detail": "timeout"}
+        except ConnectionRefusedError:
+            return {"port": port_num, "open": False, "status": "warning", "detail": "refused"}
+        except Exception as e:
+            return {"port": port_num, "open": False, "status": "error", "detail": str(e)}
 
     def _query_pvt_geodetic(self) -> Optional[Dict[str, Any]]:
         """Query PVTGeodetic2 SBF block for position and accuracy.

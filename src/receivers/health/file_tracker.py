@@ -501,6 +501,10 @@ class FileTracker:
         self.close()
 
 
+# Minimum file size (bytes) for archive scanning — skip empty/corrupt files
+MIN_ARCHIVE_FILE_SIZE = 50
+
+
 class ArchiveFileChecker:
     """Check archive file system for expected files.
 
@@ -633,7 +637,7 @@ class ArchiveFileChecker:
 
         Args:
             station_id: Station ID (e.g., 'THOB')
-            session_type: Session type (e.g., '15s_24hr')
+            session_type: Session type (e.g., '15s_24hr', '15s_24hr_rinex')
             year: Optional year (default: current year)
             month: Optional month abbreviation (default: current month)
 
@@ -648,14 +652,22 @@ class ArchiveFileChecker:
         if month is None:
             month = now.strftime("%b").lower()  # Use lowercase month (jan, feb, etc.)
 
-        # Build directory path: {data_prepath}/{year}/{month}/{station}/{session}/raw/
+        # RINEX session types use rinex/ subdir instead of raw/
+        if session_type.endswith("_rinex"):
+            base_session = session_type[:-6]  # strip '_rinex'
+            subdir = "rinex"
+        else:
+            base_session = session_type
+            subdir = "raw"
+
+        # Build directory path: {data_prepath}/{year}/{month}/{station}/{session}/{subdir}/
         return os.path.join(
             self.data_prepath or "/mnt/gpsdata",
             str(year),
             month,
             station_id,
-            session_type,
-            "raw"
+            base_session,
+            subdir,
         )
 
     def check_file_status(
@@ -716,6 +728,9 @@ class ArchiveFileChecker:
                 pattern = os.path.join(archive_dir, f"{station_id}*")
                 for filepath in glob.glob(pattern):
                     if os.path.isfile(filepath):
+                        fsize = os.path.getsize(filepath)
+                        if fsize < MIN_ARCHIVE_FILE_SIZE:
+                            continue  # skip empty/corrupt files
                         mtime = datetime.fromtimestamp(os.path.getmtime(filepath))
                         # Only count files within the days_back period
                         if mtime >= cutoff_date:
@@ -1096,7 +1111,8 @@ class GapDetector:
 
         Args:
             station_id: Station identifier
-            session_type: Session type ('15s_24hr', '1Hz_1hr', 'status_1hr')
+            session_type: Session type ('15s_24hr', '1Hz_1hr', 'status_1hr',
+                         '15s_24hr_rinex', '1Hz_1hr_rinex')
             start_date: Start date (inclusive)
             end_date: End date (inclusive)
 
@@ -1108,7 +1124,7 @@ class GapDetector:
         current = start_date
 
         while current <= end_date:
-            if session_type == "15s_24hr":
+            if session_type in ("15s_24hr", "15s_24hr_rinex"):
                 # Daily file
                 expected.append((current, None))
             else:
@@ -1454,6 +1470,123 @@ class GapDetector:
             }
 
         return summary
+
+    def scan_rinex_files(
+        self,
+        station_id: str,
+        session_type: str,
+        start_date: date,
+        end_date: date,
+    ) -> tuple[int, int]:
+        """Glob RINEX directory, parse dates from RINEX 2 short names, upsert to file_tracking.
+
+        RINEX 2 short naming convention:
+          SSSSdddS.YYt.Z  where SSSS=station, ddd=DOY, S=session letter, YY=year, t=type
+          Session letter: '0' = daily, 'a'-'x' = hourly (a=00, b=01, ...)
+
+        Cannot reuse sync_archive_to_db() because build_archive_path() generates SBF
+        filenames, not RINEX names.
+
+        Args:
+            station_id: Station identifier
+            session_type: RINEX session type (e.g., '15s_24hr_rinex', '1Hz_1hr_rinex')
+            start_date: Start date (inclusive)
+            end_date: End date (inclusive)
+
+        Returns:
+            Tuple of (files_found, files_added) counts
+        """
+        import glob as glob_mod
+
+        if not self.file_tracker.connect():
+            logger.warning("Cannot connect to database for RINEX scan")
+            return 0, 0
+
+        files_found = 0
+        files_added = 0
+
+        # Collect unique year/month combinations in the date range
+        unique_months: set[tuple[int, str]] = set()
+        current = start_date
+        while current <= end_date:
+            unique_months.add((current.year, datetime.combine(current, datetime.min.time()).strftime("%b").lower()))
+            current += timedelta(days=1)
+
+        try:
+            conn = self.file_tracker._conn
+            with conn.cursor() as cur:
+                for year, month in unique_months:
+                    archive_dir = self.archive_checker.get_archive_directory(
+                        station_id, session_type, year=year, month=month,
+                    )
+
+                    if not os.path.isdir(archive_dir):
+                        continue
+
+                    # Glob for RINEX files: station*.??d.Z, station*.??o.Z, etc.
+                    pattern = os.path.join(archive_dir, f"{station_id}*")
+                    for filepath in glob_mod.glob(pattern):
+                        if not os.path.isfile(filepath):
+                            continue
+
+                        fsize = os.path.getsize(filepath)
+                        if fsize < MIN_ARCHIVE_FILE_SIZE:
+                            continue
+
+                        filename = os.path.basename(filepath)
+                        # Parse RINEX 2 short name: SSSSdddS.YYt.Z
+                        # Minimum: SSSS + ddd + session(1) + '.' + YY + type(1) = 12 chars
+                        if len(filename) < 12:
+                            continue
+
+                        try:
+                            doy_str = filename[4:7]
+                            session_char = filename[7]
+                            year_str = filename[9:11]
+
+                            doy = int(doy_str)
+                            file_year = int(year_str)
+                            # Two-digit year: 00-49 -> 2000-2049, 50-99 -> 1950-1999
+                            if file_year < 50:
+                                file_year += 2000
+                            else:
+                                file_year += 1900
+
+                            # Convert DOY to date
+                            file_date = date(file_year, 1, 1) + timedelta(days=doy - 1)
+
+                            # Check date is in range
+                            if file_date < start_date or file_date > end_date:
+                                continue
+
+                            # Parse hour from session character
+                            if session_char == '0':
+                                file_hour = None  # daily
+                            elif 'a' <= session_char <= 'x':
+                                file_hour = ord(session_char) - ord('a')  # a=0, b=1, ...
+                            else:
+                                continue  # unknown session char
+
+                            files_found += 1
+
+                            # Upsert to file_tracking
+                            cur.execute(
+                                """SELECT upsert_file_tracking(%s, %s, %s, %s::smallint, %s, 'archived', %s)""",
+                                (station_id, session_type, file_date, file_hour, filename, fsize),
+                            )
+                            files_added += 1
+
+                        except (ValueError, IndexError):
+                            continue  # skip unparseable filenames
+
+                conn.commit()
+
+        except Exception as e:
+            logger.error(f"Error scanning RINEX files for {station_id}/{session_type}: {e}")
+            if self.file_tracker._conn:
+                self.file_tracker._conn.rollback()
+
+        return files_found, files_added
 
     def close(self):
         """Close database connection."""

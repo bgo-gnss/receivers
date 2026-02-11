@@ -120,6 +120,50 @@
                 }
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "DC/DC"
+            },
+            "properties": [
+              {
+                "id": "max",
+                "value": 20
+              },
+              {
+                "id": "min",
+                "value": 10
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 12
+                    },
+                    {
+                      "color": "green",
+                      "value": 13.5
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 16.5
+                    },
+                    {
+                      "color": "red",
+                      "value": 18
+                    }
+                  ]
+                }
+              }
+            ]
           }
         ]
       },
@@ -165,6 +209,17 @@
           "rawQuery": true,
           "rawSql": "SELECT p.voltage as \"Mains\"\nFROM block_power_status p\nWHERE p.sid = '$station'\n  AND '$power_type' = 'mains'\n  AND $__timeFilter(p.ts)\nORDER BY p.ts DESC\nLIMIT 1",
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT p.voltage as \"DC/DC\"\nFROM block_power_status p\nWHERE p.sid = '$station'\n  AND '$power_type' = 'dcdc'\n  AND $__timeFilter(p.ts)\nORDER BY p.ts DESC\nLIMIT 1",
+          "refId": "C"
         }
       ],
       "title": "Current Voltage - $station",
@@ -885,7 +940,7 @@
           "refId": "A"
         }
       ],
-      "title": "Station Information",
+      "title": "$station — $station_name",
       "type": "table"
     },
     {
@@ -1399,6 +1454,100 @@
           "mappings": [
             {
               "options": {
+                "0": {
+                  "color": "green",
+                  "index": 0,
+                  "text": "OK"
+                },
+                "1": {
+                  "color": "yellow",
+                  "index": 1,
+                  "text": "Late"
+                },
+                "2": {
+                  "color": "red",
+                  "index": 2,
+                  "text": "Missing"
+                },
+                "-1": {
+                  "color": "#464646",
+                  "index": 3,
+                  "text": "Unknown"
+                },
+                "-2": {
+                  "color": "text",
+                  "index": 4,
+                  "text": "N/A"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 2,
+        "x": 17,
+        "y": 5
+      },
+      "id": 51,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "vertical",
+        "text": {
+          "titleSize": 10,
+          "valueSize": 18
+        },
+        "reduceOptions": {
+          "calcs": [],
+          "fields": "",
+          "values": true
+        },
+        "textMode": "value_and_name"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  f.rinex_24h_status AS \"15s\",\n  f.rinex_1hz_status AS \"1Hz\"\nFROM station_data_flow_status f\nWHERE f.sid = '$station'",
+          "refId": "A"
+        }
+      ],
+      "title": "RINEX Status",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "options": {
                 "1": {
                   "color": "green",
                   "index": 0,
@@ -1433,7 +1582,7 @@
       "gridPos": {
         "h": 4,
         "w": 3,
-        "x": 17,
+        "x": 19,
         "y": 5
       },
       "id": 25,
@@ -1517,8 +1666,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 20,
+        "w": 2,
+        "x": 22,
         "y": 5
       },
       "id": 26,
@@ -1709,6 +1858,17 @@
           "rawQuery": true,
           "rawSql": "SELECT\n  ts AS time,\n  voltage AS \"Mains\"\nFROM block_power_status\nWHERE sid = '$station'\n  AND '$power_type' = 'mains'\n  AND $__timeFilter(ts)\nORDER BY ts",
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  ts AS time,\n  voltage AS \"DC/DC\"\nFROM block_power_status\nWHERE sid = '$station'\n  AND '$power_type' = 'dcdc'\n  AND $__timeFilter(ts)\nORDER BY ts",
+          "refId": "C"
         }
       ],
       "title": "Voltage History - $station",
@@ -1888,6 +2048,26 @@
         "regex": "",
         "skipUrlSync": false,
         "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {},
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "gps_health"
+        },
+        "definition": "SELECT COALESCE(station_name, sid) FROM stations WHERE sid = '$station'",
+        "hide": 2,
+        "includeAll": false,
+        "label": "Station Name",
+        "multi": false,
+        "name": "station_name",
+        "options": [],
+        "query": "SELECT COALESCE(station_name, sid) FROM stations WHERE sid = '$station'",
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": true,
+        "sort": 0,
         "type": "query"
       },
       {

@@ -1830,7 +1830,7 @@ class PolaRX5(BaseReceiver):
             # Step 1a: Check ICMP ping first (router/network reachability)
             try:
                 checker = ConnectionChecker(host, self.station_id)
-                ping_result = checker.check_ping(count=1, timeout=2)
+                ping_result = checker.check_ping(count=3, timeout=2)
                 if ping_result.accessible:
                     connection_data["router_ping"] = {
                         "status": "ok",
@@ -1898,6 +1898,20 @@ class PolaRX5(BaseReceiver):
 
                             if live_data.get("metrics"):
                                 metrics = live_data["metrics"]
+                                # Self-correct: TCP extraction succeeded, so control port
+                                # is definitely open (fixes false timeout on slow links)
+                                ctrl_entry = port_status.get("control", {})
+                                if ctrl_entry and not ctrl_entry.get("open"):
+                                    self.logger.info(
+                                        f"Self-correcting control port status for {host}: "
+                                        f"{ctrl_entry.get('detail')} -> open (TCP extraction succeeded)"
+                                    )
+                                    port_status["control"] = {
+                                        "port": ctrl_entry.get("port", port_config.get("control")),
+                                        "open": True,
+                                        "status": "ok",
+                                        "detail": "open",
+                                    }
                                 # Merge port status into metrics
                                 if "ports" not in metrics:
                                     metrics["ports"] = port_status

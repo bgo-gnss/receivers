@@ -89,5 +89,32 @@ def _run_gap_detection_job(
                         f"no gaps ({total_archived}/{total_expected} archived)"
                     )
 
+            # RINEX freshness scan — PolaRX5 stations only
+            from datetime import date, timedelta
+            polarx5_ids = [
+                sid for sid, cfg in all_stations.items()
+                if sid in station_ids
+                and (cfg.get('receiver_type', '') or '').lower().startswith('polarx5')
+            ]
+
+            if polarx5_ids:
+                end_date = date.today() - timedelta(days=1)
+                start_date = end_date - timedelta(days=days_back)
+                total_found = 0
+                total_added = 0
+
+                for rinex_type in ("15s_24hr_rinex", "1Hz_1hr_rinex"):
+                    for sid in polarx5_ids:
+                        found, added = detector.scan_rinex_files(
+                            sid, rinex_type, start_date, end_date,
+                        )
+                        total_found += found
+                        total_added += added
+
+                logger.info(
+                    f"RINEX scan: {len(polarx5_ids)} PolaRX5 stations, "
+                    f"{total_found} files found, {total_added} upserted"
+                )
+
     except Exception as e:
         logger.error(f"Gap detection failed: {type(e).__name__}: {e}")
