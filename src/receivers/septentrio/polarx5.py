@@ -1889,41 +1889,43 @@ class PolaRX5(BaseReceiver):
                     self.logger.debug(f"Port check failed: {e}")
                     connection_data["tcp"] = {"status": "failed", "host": host, "error": str(e)}
 
-                # Step 1c: Try full data extraction if control port is open
+                # Step 1c: Try full data extraction via TCP control port.
+                # Always attempt extraction regardless of port check result —
+                # on lossy 3G/4G links the socket check can return "refused"
+                # or "timeout" spuriously while the actual TCP session works.
                 if port_status and extractor:
                     control_ok = port_status.get("control", {}).get("open", False)
-                    if control_ok:
-                        try:
-                            live_data = extractor.extract_health_data()
+                    try:
+                        live_data = extractor.extract_health_data()
 
-                            if live_data.get("metrics"):
-                                metrics = live_data["metrics"]
-                                # Self-correct: TCP extraction succeeded, so control port
-                                # is definitely open (fixes false timeout on slow links)
-                                ctrl_entry = port_status.get("control", {})
-                                if ctrl_entry and not ctrl_entry.get("open"):
-                                    self.logger.info(
-                                        f"Self-correcting control port status for {host}: "
-                                        f"{ctrl_entry.get('detail')} -> open (TCP extraction succeeded)"
-                                    )
-                                    port_status["control"] = {
-                                        "port": ctrl_entry.get("port", port_config.get("control")),
-                                        "open": True,
-                                        "status": "ok",
-                                        "detail": "open",
-                                    }
-                                # Merge port status into metrics
-                                if "ports" not in metrics:
-                                    metrics["ports"] = port_status
-                                data_quality = live_data.get("data_quality")
-                                extraction_source = "tcp_live"
-                                self.logger.info(f"Extracted live health data via TCP from {host}")
+                        if live_data.get("metrics"):
+                            metrics = live_data["metrics"]
+                            # Self-correct: TCP extraction succeeded, so control port
+                            # is definitely open (fixes false refused/timeout on lossy links)
+                            ctrl_entry = port_status.get("control", {})
+                            if ctrl_entry and not ctrl_entry.get("open"):
+                                self.logger.info(
+                                    f"Self-correcting control port status for {host}: "
+                                    f"{ctrl_entry.get('detail')} -> open (TCP extraction succeeded)"
+                                )
+                                port_status["control"] = {
+                                    "port": ctrl_entry.get("port", port_config.get("control")),
+                                    "open": True,
+                                    "status": "ok",
+                                    "detail": "open",
+                                }
+                            # Merge port status into metrics
+                            if "ports" not in metrics:
+                                metrics["ports"] = port_status
+                            data_quality = live_data.get("data_quality")
+                            extraction_source = "tcp_live"
+                            self.logger.info(f"Extracted live health data via TCP from {host}")
 
-                            # Capture receiver identity if available
-                            if live_data.get("receiver_identity"):
-                                receiver_identity = live_data["receiver_identity"]
-                        except Exception as e:
-                            self.logger.debug(f"TCP data extraction failed: {e}")
+                        # Capture receiver identity if available
+                        if live_data.get("receiver_identity"):
+                            receiver_identity = live_data["receiver_identity"]
+                    except Exception as e:
+                        self.logger.debug(f"TCP data extraction failed: {e}")
 
                     # If no metrics yet but we have port status, use that
                     if not metrics and port_status:

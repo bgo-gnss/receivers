@@ -829,10 +829,11 @@ class PolaRX5TCPExtractor:
 
         for name, port_num in self.port_config.items():
             result_entry = self._check_single_port(name, port_num)
-            # Retry once on timeout (not refused — that's definitive)
-            if result_entry["detail"] == "timeout":
+            # Retry once on timeout or refused — on lossy 3G/4G links,
+            # both can be spurious (NAT routers may RST during packet loss)
+            if result_entry["detail"] in ("timeout", "refused"):
                 self.logger.debug(
-                    f"Port {name}:{port_num} timed out, retrying once..."
+                    f"Port {name}:{port_num} {result_entry['detail']}, retrying once..."
                 )
                 result_entry = self._check_single_port(name, port_num)
             port_status[name] = result_entry
