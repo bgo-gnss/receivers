@@ -1108,19 +1108,26 @@ class BulkDownloadScheduler:
         days_back = gap_cfg.get('days_back', 7)
         sessions = gap_cfg.get('sessions', ['15s_24hr', '1Hz_1hr', 'status_1hr'])
 
+        # RINEX scan uses a longer window — defaults to archive_reconciler's days_back
+        reconciler_cfg = self.yaml_config.get('archive_reconciler', {})
+        rinex_days_back = gap_cfg.get('rinex_days_back', reconciler_cfg.get('days_back', 30))
+
         base_trigger = parse_schedule(schedule)
 
         self.scheduler.add_job(
             func=_run_gap_detection_job,
             trigger=base_trigger.trigger_type,
-            args=[sessions, days_back],
+            args=[sessions, days_back, rinex_days_back],
             id='gap_detection',
             replace_existing=True,
             max_instances=1,
             executor='backfill',
             **base_trigger.trigger_kwargs
         )
-        self.logger.info(f"Scheduled gap detection ({base_trigger.description}, {days_back} days back)")
+        self.logger.info(
+            f"Scheduled gap detection ({base_trigger.description}, "
+            f"{days_back} days back, RINEX {rinex_days_back} days)"
+        )
 
     def _schedule_archive_reconciler(self) -> None:
         """Schedule periodic SBF->RINEX archive reconciliation.

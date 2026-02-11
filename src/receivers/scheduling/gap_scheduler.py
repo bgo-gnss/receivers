@@ -17,6 +17,7 @@ logger = logging.getLogger("gps_scheduler.gap_detection")
 def _run_gap_detection_job(
     session_types: List[str],
     days_back: int = 7,
+    rinex_days_back: int = 30,
 ) -> None:
     """APScheduler job: scan for gaps in archived files.
 
@@ -26,6 +27,7 @@ def _run_gap_detection_job(
     Args:
         session_types: List of session types to scan (e.g., ['15s_24hr', '1Hz_1hr'])
         days_back: Number of days to look back from yesterday
+        rinex_days_back: Days to look back for RINEX scan (longer than gap detection)
     """
     try:
         from ..health.file_tracker import GapDetector
@@ -99,7 +101,7 @@ def _run_gap_detection_job(
 
             if polarx5_ids:
                 end_date = date.today() - timedelta(days=1)
-                start_date = end_date - timedelta(days=days_back)
+                start_date = end_date - timedelta(days=rinex_days_back)
                 total_found = 0
                 total_added = 0
 
@@ -112,7 +114,7 @@ def _run_gap_detection_job(
                         total_added += added
 
                 logger.info(
-                    f"RINEX scan: {len(polarx5_ids)} PolaRX5 stations, "
+                    f"RINEX scan ({rinex_days_back}d): {len(polarx5_ids)} PolaRX5 stations, "
                     f"{total_found} files found, {total_added} upserted"
                 )
 

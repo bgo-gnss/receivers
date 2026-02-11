@@ -124,10 +124,11 @@ Tracking document for code weaknesses, recurring issues, and optimization opport
 - **Category**: EXTRACTOR / PROTOCOL
 - **Severity**: High
 - **Found**: 2026-02-10
-- **Resolved**: 2026-02-10
+- **Resolved**: 2026-02-10 (updated 2026-02-11)
 - **Files**: `health/polarx5_tcp_extractor.py`
 - **Root cause**: TCP port check used 2s timeout. On 3G/4G links, TCP handshake can take 3-5s. Single attempt meant ~30% false-negative rate on slow links.
-- **Fix**: Increased timeout to 5s. Added retry-on-timeout via `_check_single_port()` helper. `refused` is definitive (never retried). Reduces false negatives from ~30% to ~2% on slow links.
+- **Fix**: Increased timeout to 5s. Added retry-on-timeout via `_check_single_port()` helper. Reduces false negatives from ~30% to ~2% on slow links.
+- **Update (2026-02-11)**: CONN-003 extended retry to also cover "refused" — NAT routers on lossy links can send spurious RST packets. `refused` is no longer treated as definitive.
 
 ### EXTRACTOR-014: PolaRX5 single-packet ping unreliable
 - **Category**: EXTRACTOR / PROTOCOL
@@ -323,6 +324,65 @@ Tracking document for code weaknesses, recurring issues, and optimization opport
 - **Fix**: Increased to `count=5` with automatic retry on failure. First try sends 5 ICMP packets; if all fail, retries with 5 more. False-offline rate dropped from 33% (count=1) to ~0.002% (count=5 + retry). Cost for truly offline stations: ~12s (vs ~2s before), but still saves 20s+ by skipping futile extraction.
 - **Files**: `health/connection_checker.py`
 
+### CONN-001: Redundant HTTP socket check causes false CRITICAL on lossy links
+- **Category**: PROTOCOL / EXTRACTOR
+- **Severity**: High
+- **Found**: 2026-02-11
+- **Resolved**: 2026-02-11
+- **Files**: `health/connection_checker.py`
+- **Root cause**: `check_all_levels()` performs 3 connection checks: `router_ping`, `http_port`, `protocol`. For HTTP-only receivers (NetR9, NetRS, G10), both `http_port` and `protocol` do identical TCP socket connects to the same port. On lossy 3G/4G links, the second connect can time out while the first succeeded — causing false CRITICAL (e.g., MOFC showing CRITICAL with 87% disk).
+- **Fix**: When `protocol_type == "http"` and `protocol_port == http_port`, reuse the `http_port` result for `protocol` instead of making a redundant socket connect.
+- **Deeper issue**: The 3-level model (ping/http/protocol) was designed for PolaRX5 which has distinct ports. For single-port receivers it creates unnecessary failure points.
+
+### CONN-002: Status details missing http_port/protocol failure info
+- **Category**: DB-WRITER
+- **Severity**: Medium
+- **Found**: 2026-02-11
+- **Resolved**: 2026-02-11
+- **Files**: `health/db_writer.py`
+- **Root cause**: `_build_status_details()` only inspected `router_ping` from connection data. When `http_port` or `protocol` timed out (causing CRITICAL overall), the status_details string didn't mention it — showing only "Disk" while the real cause was a connection timeout. Operators saw "CRITICAL: Disk" for what was actually a connection problem.
+- **Fix**: Added inspection of `http_port` and `protocol` connection levels. Now reports "HTTP port timeout", "Protocol refused", etc. alongside metric-based problems.
+
+### CONN-003: False control port "refused" on lossy links (no self-correction)
+- **Category**: EXTRACTOR / PROTOCOL
+- **Severity**: High
+- **Found**: 2026-02-11
+- **Resolved**: 2026-02-11
+- **Files**: `septentrio/polarx5.py`, `health/polarx5_tcp_extractor.py`
+- **Root cause**: Two compounding issues:
+  1. TCP extraction was gated behind `if control_ok:` — when the socket check returned "refused" (spurious RST from NAT on lossy link), extraction was skipped entirely and self-correction never fired.
+  2. Port check retry only retried on "timeout", not "refused". On lossy links, NAT routers can send RST packets during packet loss, producing spurious "refused" results.
+- **Fix**: (1) Always attempt TCP extraction regardless of port check result. Self-correction updates port status from refused/timeout → open when extraction succeeds. (2) Retry port check on "refused" too, not just timeout.
+- **User report**: GEVK (PolaRX5) showed control port 28784 "refused" when it was actually open and responding.
+
+### DISK-001: Inconsistent disk usage thresholds across extractors
+- **Category**: EXTRACTOR / CONFIG
+- **Severity**: Medium
+- **Found**: 2026-02-11
+- **Resolved**: 2026-02-11
+- **Files**: `health/metrics.py`, `health/trimble_http_extractor.py`, `health/g10_http_extractor.py`, `health/rxtools_extractor.py`, `config/icinga_config.py`, `monitoring/icinga_client.py`, `monitoring/check_gps_receiver.py`
+- **Root cause**: Four different disk threshold sets existed across 7 files:
+  - `metrics.py`: 80/90
+  - `trimble_http_extractor.py`: 85/95
+  - `g10_http_extractor.py`: 85/95
+  - `rxtools_extractor.py`: 80/90
+  - `icinga_config.py` / `icinga_client.py` / `check_gps_receiver.py`: 80/90
+- **Fix**: Unified all to `<90%` = green, `90-97%` = warning, `>97%` = critical. These thresholds are appropriate for GPS receivers where disk usage below 90% is normal, and critical alert is reserved for near-full disks.
+- **Deeper issue**: Thresholds are hardcoded in each file. Should be centralized in one config/constants location.
+
+### DASHBOARD-014: Added operational status filters (ping, ftp, disk, control)
+- **Category**: DASHBOARD
+- **Severity**: Medium
+- **Found**: 2026-02-11
+- **Resolved**: 2026-02-11
+- **Files**: `gps_health_dashboard.json`, `gps_map_dashboard.json`
+- **Description**: Added 3 new status filter options and renamed 1:
+  - **"Ping Failed"** (`ping_failed`): matches `status_details LIKE '%Ping%'`
+  - **"FTP Down"** (`ftp_down`): matches `ftp_open = false AND is_online = true`
+  - **"Disk"** (`disk_warning`): matches `status_details LIKE '%Disk%'`
+  - Renamed **"Ctrl Refused"** → **"Control Down"** (value unchanged: `ctrl_refused`)
+- Updated WHERE clauses in map panel, table panel, and count box queries in both dashboards.
+
 ### CONFIG-013: Station lifecycle status (station_status + health_check) and filtering
 - **Category**: CONFIG / SCHEDULER / DASHBOARD
 - **Severity**: Medium
@@ -333,6 +393,21 @@ Tracking document for code weaknesses, recurring issues, and optimization opport
   - `health_check`: monitoring mode (passive, or NULL=active)
 - **Fix**: Two fields in stations.cfg and DB. Auto-detect `inactive` from missing receiver_type. Scheduler filters on both (`station_status` in discontinued/inactive → skip entirely; `health_check` = passive → skip health monitoring). Config file watcher (5-min mtime check) syncs both fields. Dashboard shows clickable count boxes (Inactive, Discontinued, Passive) with dark-gray "N/A" styling for non-applicable columns.
 - **Files**: `config_utils.py`, `scheduling/bulk_scheduler.py`, `migrations/015_health_check_status.sql`, `gps_health_dashboard.json`, `gps_map_dashboard.json`, `stations.cfg`
+
+### CONFIG-014: Disk thresholds hardcoded in 7 files
+- **Category**: CONFIG
+- **Severity**: Low
+- **Status**: Open
+- **Description**: Even after unifying disk thresholds to 90/97 (DISK-001), the values are still hardcoded in 7 separate files. A single change requires editing `metrics.py`, 3 extractors, `icinga_config.py`, `icinga_client.py`, and `check_gps_receiver.py`.
+- **Proposal**: Define `DISK_WARNING_THRESHOLD` and `DISK_CRITICAL_THRESHOLD` in one central location (e.g., `health/metrics.py` or a shared constants module) and import from all other files.
+- **Files**: Same 7 files as DISK-001
+
+### CONN-004: 3-level connection model overhead for single-port receivers
+- **Category**: PROTOCOL
+- **Severity**: Low
+- **Status**: Open
+- **Description**: The connection checker runs 3 levels: `router_ping`, `http_port`, `protocol`. For HTTP-only receivers (NetR9, NetRS, G10), `http_port` and `protocol` are identical. CONN-001 fixed the false CRITICAL by reusing the result, but the model still conceptually has 3 levels. Consider simplifying to 2 levels (ping + primary port) for non-PolaRX5 receivers, or making the number of levels dynamic based on receiver capabilities.
+- **Files**: `health/connection_checker.py`
 
 ### DB-013: Ping packet loss severity threshold too aggressive
 - **Category**: DB-WRITER
@@ -377,5 +452,5 @@ When reviewing a file, check for these patterns:
 ---
 
 **Created**: 2026-02-09
-**Last updated**: 2026-02-10
+**Last updated**: 2026-02-11
 **Purpose**: Track code quality issues for systematic review and optimization
