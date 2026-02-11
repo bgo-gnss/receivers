@@ -1250,7 +1250,7 @@ class IcingaClient:
 
             if 'disk_usage' in metrics:
                 disk = metrics['disk_usage']
-                perf_data_parts.append(f"disk={disk}%;80;90")
+                perf_data_parts.append(f"disk={disk}%;90;97")
 
         performance_data = " ".join(perf_data_parts)
 

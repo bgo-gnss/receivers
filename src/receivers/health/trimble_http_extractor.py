@@ -672,9 +672,9 @@ class TrimbleHTTPExtractor:
 
         # Evaluate status using metric checker thresholds
         status = "ok"
-        if usage_percent > 95:
+        if usage_percent > 97:
             status = "critical"
-        elif usage_percent > 85:
+        elif usage_percent > 90:
             status = "warning"
 
         return {

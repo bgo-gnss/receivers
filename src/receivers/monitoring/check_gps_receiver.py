@@ -96,7 +96,7 @@ def format_performance_data(health: dict) -> str:
         disk_pct = data_quality["disk_usage"].get("usage_percent")
         if disk_pct is not None:
             # Format: disk_usage=44.6%;80;90;0;100
-            perf_data.append(f"disk_usage={disk_pct}%;80;90;0;100")
+            perf_data.append(f"disk_usage={disk_pct}%;90;97;0;100")
 
     # Response time from connection
     connection = health.get("connection", {})

@@ -76,8 +76,8 @@ class IcingaThresholds:
     satellites_critical: int = 4
 
     # Disk usage thresholds (percent)
-    disk_warning: float = 80.0
-    disk_critical: float = 90.0
+    disk_warning: float = 90.0
+    disk_critical: float = 97.0
 
     # File status thresholds (hours)
     file_daily_warning_hours: float = 26.0

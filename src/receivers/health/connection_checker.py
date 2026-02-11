@@ -124,7 +124,13 @@ class ConnectionChecker:
         if protocol_port is None:
             protocol_port = self._get_default_port(protocol_type)
 
-        if protocol_type == "ftp":
+        # For HTTP-only receivers (NetR9, NetRS, G10), the protocol check
+        # would be a redundant socket connect to the same port.  On lossy
+        # 3G/4G links this second connect can time out while the first
+        # succeeded, causing false CRITICAL.  Reuse the http_port result.
+        if protocol_type == "http" and protocol_port == http_port:
+            results["protocol"] = results["http_port"]
+        elif protocol_type == "ftp":
             results["protocol"] = self.check_ftp(protocol_port)
         elif protocol_type == "http":
             results["protocol"] = self.check_http(protocol_port)
