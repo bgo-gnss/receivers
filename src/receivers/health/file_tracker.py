@@ -11,7 +11,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -774,6 +774,504 @@ class ArchiveFileChecker:
         }
 
 
+@dataclass
+class ArchiveFormat:
+    """In-memory representation of an archive_format row."""
+
+    format_id: str
+    session_type: str
+    file_category: str  # 'raw', 'rinex', 'nav', 'timeseries'
+    receiver_type: Optional[str]
+    frequency: str  # '1D', '1H'
+    rinex_version: Optional[str]
+    naming_convention: Optional[str]  # 'short', 'long', None
+    hatanaka: Optional[bool]
+    compression: Optional[str]  # 'Z', 'gz', None
+    file_extension: str
+    dir_template: str
+    filename_template: str
+    description: Optional[str] = None
+
+
+@dataclass
+class StorageLocation:
+    """In-memory representation of a storage_location row."""
+
+    location_id: str
+    name: str
+    base_path: str
+    location_type: str  # 'local', 'nfs', 'server'
+    is_primary: bool = False
+    enabled: bool = True
+
+
+class FormatResolver:
+    """Resolve archive formats and build file paths from DB-driven templates.
+
+    Loads archive_format and storage_location definitions from PostgreSQL
+    and uses gtimes.datepathlist() to construct full paths.
+
+    Designed for use alongside ArchiveFileChecker — this class handles
+    format-aware path construction while ArchiveFileChecker handles
+    config-template-based paths for backward compatibility.
+    """
+
+    # Session letter mapping (same as ArchiveFileChecker._get_session_letter)
+    SESSION_LETTERS: Dict[str, str] = {
+        "15s_24hr": "a",
+        "1Hz_1hr": "b",
+        "status_1hr": "c",
+        "15s_24hr_rinex": "a",
+        "1Hz_1hr_rinex": "b",
+        "20Hz_1hr": "d",
+        "50Hz_1hr": "e",
+    }
+
+    def __init__(self, connection_string: Optional[str] = None):
+        """Initialize format resolver.
+
+        Args:
+            connection_string: PostgreSQL connection string.
+                             If None, uses environment variables.
+        """
+        self.connection_string = connection_string
+        self._conn = None
+        self._formats: Dict[str, ArchiveFormat] = {}
+        self._locations: Dict[str, StorageLocation] = {}
+        self._loaded = False
+
+    def connect(self, database: str = "gps_health") -> bool:
+        """Connect to PostgreSQL database.
+
+        Args:
+            database: Database name
+
+        Returns:
+            True if connection successful
+        """
+        try:
+            from .database_factory import DatabaseConnectionFactory
+
+            self._conn = DatabaseConnectionFactory.get_connection(
+                database=database,
+                connection_string=self.connection_string,
+            )
+            return True
+        except ImportError:
+            logger.warning("psycopg2 not installed - format resolver disabled")
+            return False
+        except Exception as e:
+            logger.warning(f"Database connection failed: {e} - format resolver disabled")
+            return False
+
+    def _ensure_loaded(self) -> bool:
+        """Ensure format and location data is loaded from DB.
+
+        Returns:
+            True if data is available
+        """
+        if self._loaded:
+            return bool(self._formats)
+
+        if not self._conn:
+            if not self.connect():
+                return False
+
+        try:
+            self._load_formats()
+            self._load_locations()
+            self._loaded = True
+            return bool(self._formats)
+        except Exception as e:
+            logger.warning(f"Failed to load format data: {e}")
+            return False
+
+    def _load_formats(self) -> None:
+        """Load all archive_format rows into memory."""
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """SELECT format_id, session_type, file_category, receiver_type,
+                          frequency, rinex_version, naming_convention, hatanaka,
+                          compression, file_extension, dir_template,
+                          filename_template, description
+                   FROM archive_format
+                   ORDER BY format_id"""
+            )
+            self._formats = {}
+            for row in cur.fetchall():
+                fmt = ArchiveFormat(
+                    format_id=row[0],
+                    session_type=row[1],
+                    file_category=row[2],
+                    receiver_type=row[3],
+                    frequency=row[4],
+                    rinex_version=row[5],
+                    naming_convention=row[6],
+                    hatanaka=row[7],
+                    compression=row[8],
+                    file_extension=row[9],
+                    dir_template=row[10],
+                    filename_template=row[11],
+                    description=row[12],
+                )
+                self._formats[fmt.format_id] = fmt
+
+        logger.debug(f"Loaded {len(self._formats)} archive formats")
+
+    def _load_locations(self) -> None:
+        """Load all storage_location rows into memory."""
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """SELECT location_id, name, base_path, location_type,
+                          is_primary, enabled
+                   FROM storage_location
+                   WHERE enabled = true
+                   ORDER BY location_id"""
+            )
+            self._locations = {}
+            for row in cur.fetchall():
+                loc = StorageLocation(
+                    location_id=row[0],
+                    name=row[1],
+                    base_path=row[2],
+                    location_type=row[3],
+                    is_primary=row[4],
+                    enabled=row[5],
+                )
+                self._locations[loc.location_id] = loc
+
+        logger.debug(f"Loaded {len(self._locations)} storage locations")
+
+    def get_format(self, format_id: str) -> Optional[ArchiveFormat]:
+        """Get a format definition by ID.
+
+        Args:
+            format_id: Format identifier (e.g., 'polarx5_15s_24hr_rinex')
+
+        Returns:
+            ArchiveFormat or None if not found
+        """
+        if not self._ensure_loaded():
+            return None
+        return self._formats.get(format_id)
+
+    def get_location(self, location_id: str) -> Optional[StorageLocation]:
+        """Get a storage location by ID.
+
+        Args:
+            location_id: Location identifier (e.g., 'local_archive')
+
+        Returns:
+            StorageLocation or None if not found
+        """
+        if not self._ensure_loaded():
+            return None
+        return self._locations.get(location_id)
+
+    def get_primary_location(self) -> Optional[StorageLocation]:
+        """Get the primary storage location.
+
+        Returns:
+            Primary StorageLocation or first enabled location, or None
+        """
+        if not self._ensure_loaded():
+            return None
+
+        for loc in self._locations.values():
+            if loc.is_primary:
+                return loc
+
+        # Fall back to first enabled location
+        if self._locations:
+            return next(iter(self._locations.values()))
+        return None
+
+    def list_formats(
+        self,
+        session_type: Optional[str] = None,
+        file_category: Optional[str] = None,
+        receiver_type: Optional[str] = None,
+    ) -> List[ArchiveFormat]:
+        """List formats matching optional filters.
+
+        Args:
+            session_type: Filter by session type (e.g., '15s_24hr')
+            file_category: Filter by category (e.g., 'rinex')
+            receiver_type: Filter by receiver type (e.g., 'polarx5')
+
+        Returns:
+            List of matching ArchiveFormat objects
+        """
+        if not self._ensure_loaded():
+            return []
+
+        result = list(self._formats.values())
+
+        if session_type is not None:
+            result = [f for f in result if f.session_type == session_type]
+        if file_category is not None:
+            result = [f for f in result if f.file_category == file_category]
+        if receiver_type is not None:
+            result = [f for f in result if f.receiver_type == receiver_type]
+
+        return result
+
+    def find_format(
+        self,
+        session_type: str,
+        file_category: str,
+        receiver_type: Optional[str] = None,
+    ) -> Optional[ArchiveFormat]:
+        """Find a single format matching the given criteria.
+
+        Tries receiver-specific format first, falls back to universal (NULL receiver_type).
+
+        Args:
+            session_type: Session type (e.g., '15s_24hr')
+            file_category: File category (e.g., 'raw', 'rinex')
+            receiver_type: Receiver type (e.g., 'polarx5')
+
+        Returns:
+            Best matching ArchiveFormat or None
+        """
+        if not self._ensure_loaded():
+            return None
+
+        # Try receiver-specific first
+        if receiver_type:
+            for fmt in self._formats.values():
+                if (
+                    fmt.session_type == session_type
+                    and fmt.file_category == file_category
+                    and fmt.receiver_type == receiver_type.lower()
+                ):
+                    return fmt
+
+        # Fall back to universal format (receiver_type IS NULL)
+        for fmt in self._formats.values():
+            if (
+                fmt.session_type == session_type
+                and fmt.file_category == file_category
+                and fmt.receiver_type is None
+            ):
+                return fmt
+
+        return None
+
+    def build_path(
+        self,
+        format_id: str,
+        station: str,
+        dt: datetime,
+        location_id: Optional[str] = None,
+        base_path: Optional[str] = None,
+    ) -> Optional[str]:
+        """Build a full file path from format template and datetime.
+
+        Uses gtimes.datepathlist() for date formatting. Either location_id
+        or base_path must be provided.
+
+        Args:
+            format_id: Format identifier (e.g., 'polarx5_15s_24hr_rinex')
+            station: Station ID (e.g., 'ELDC')
+            dt: Datetime for the file
+            location_id: Storage location ID (looks up base_path from DB)
+            base_path: Direct base path (overrides location_id)
+
+        Returns:
+            Full file path string, or None on error
+
+        Example:
+            >>> resolver.build_path('polarx5_15s_24hr_rinex', 'ELDC',
+            ...     datetime(2026, 2, 10), base_path='/home/bgo/tmp/gpsdata')
+            '/home/bgo/tmp/gpsdata/2026/feb/ELDC/15s_24hr/rinex/ELDC0410.26d.Z'
+        """
+        fmt = self.get_format(format_id)
+        if fmt is None:
+            logger.warning(f"Unknown format: {format_id}")
+            return None
+
+        # Resolve base path
+        if base_path is None:
+            if location_id:
+                loc = self.get_location(location_id)
+            else:
+                loc = self.get_primary_location()
+
+            if loc is None:
+                logger.warning(f"No storage location available for {format_id}")
+                return None
+            base_path = loc.base_path
+
+        return self._build_path_from_format(fmt, station, dt, base_path)
+
+    def _build_path_from_format(
+        self,
+        fmt: ArchiveFormat,
+        station: str,
+        dt: datetime,
+        base_path: str,
+    ) -> Optional[str]:
+        """Internal: build path from format object.
+
+        Args:
+            fmt: ArchiveFormat definition
+            station: Station ID
+            dt: Datetime for the file
+            base_path: Base directory path
+
+        Returns:
+            Full file path string, or None on error
+        """
+        session_letter = self.SESSION_LETTERS.get(fmt.session_type, "a")
+
+        # Combine: base_path / dir_template / filename_template
+        # Ensure no double slashes
+        base = base_path.rstrip("/")
+        dir_part = fmt.dir_template.strip("/")
+        filename_part = fmt.filename_template
+
+        template = f"{base}/{dir_part}/{filename_part}"
+
+        # Substitute our placeholders before passing to gtimes
+        template = template.replace("{station}", station)
+        template = template.replace("{session_letter}", session_letter)
+
+        # Use gtimes for date formatting
+        try:
+            import gtimes.timefunc as gt
+
+            paths = gt.datepathlist(template, fmt.frequency, datelist=[dt])
+            return paths[0] if paths else None
+        except ImportError:
+            logger.warning("gtimes not available — falling back to strftime")
+            # Minimal fallback for common codes
+            result = dt.strftime(template)
+            result = result.replace("#b", dt.strftime("%b").lower())
+            return result
+        except Exception as e:
+            logger.warning(f"Path construction failed for {fmt.format_id}: {e}")
+            return None
+
+    def build_directory(
+        self,
+        format_id: str,
+        station: str,
+        dt: datetime,
+        location_id: Optional[str] = None,
+        base_path: Optional[str] = None,
+    ) -> Optional[str]:
+        """Build only the directory path (without filename) from format template.
+
+        Args:
+            format_id: Format identifier
+            station: Station ID
+            dt: Datetime for the directory
+            location_id: Storage location ID
+            base_path: Direct base path (overrides location_id)
+
+        Returns:
+            Directory path string, or None on error
+        """
+        fmt = self.get_format(format_id)
+        if fmt is None:
+            return None
+
+        if base_path is None:
+            if location_id:
+                loc = self.get_location(location_id)
+            else:
+                loc = self.get_primary_location()
+            if loc is None:
+                return None
+            base_path = loc.base_path
+
+        session_letter = self.SESSION_LETTERS.get(fmt.session_type, "a")
+        base = base_path.rstrip("/")
+        dir_part = fmt.dir_template.strip("/")
+        template = f"{base}/{dir_part}"
+        template = template.replace("{station}", station)
+        template = template.replace("{session_letter}", session_letter)
+
+        try:
+            import gtimes.timefunc as gt
+
+            paths = gt.datepathlist(template, fmt.frequency, datelist=[dt])
+            return paths[0] if paths else None
+        except ImportError:
+            result = dt.strftime(template)
+            result = result.replace("#b", dt.strftime("%b").lower())
+            return result
+        except Exception as e:
+            logger.warning(f"Directory construction failed for {format_id}: {e}")
+            return None
+
+    def record_file_location(
+        self,
+        file_tracking_id: int,
+        location_id: str,
+        file_path: Optional[str] = None,
+        file_size: Optional[int] = None,
+    ) -> bool:
+        """Record that a file exists at a storage location.
+
+        Args:
+            file_tracking_id: file_tracking.id
+            location_id: storage_location.location_id
+            file_path: Full path at this location
+            file_size: File size in bytes
+
+        Returns:
+            True if recorded successfully
+        """
+        if not self._conn:
+            if not self.connect():
+                return False
+
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO file_locations
+                        (file_tracking_id, location_id, file_path, file_size, stored_at)
+                    VALUES (%s, %s, %s, %s, NOW())
+                    ON CONFLICT (file_tracking_id, location_id)
+                    DO UPDATE SET
+                        file_path = COALESCE(EXCLUDED.file_path, file_locations.file_path),
+                        file_size = COALESCE(EXCLUDED.file_size, file_locations.file_size),
+                        verified_at = NOW()
+                    """,
+                    (file_tracking_id, location_id, file_path, file_size),
+                )
+            self._conn.commit()
+            return True
+        except Exception as e:
+            logger.debug(f"Error recording file location: {e}")
+            if self._conn:
+                self._conn.rollback()
+            return False
+
+    def reload(self) -> None:
+        """Reload format and location data from database."""
+        self._loaded = False
+        self._formats.clear()
+        self._locations.clear()
+
+    def close(self) -> None:
+        """Close database connection."""
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+
+    def __enter__(self):
+        """Context manager entry."""
+        self.connect()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit."""
+        self.close()
+
+
 class ProcessingStatusChecker:
     """Check processing status from time series files.
 
@@ -1471,12 +1969,73 @@ class GapDetector:
 
         return summary
 
+    @staticmethod
+    def _parse_rinex_filename(
+        filename: str, station_id: str
+    ) -> tuple[Optional[date], Optional[int]]:
+        """Parse a RINEX filename (short or long naming) to extract date and hour.
+
+        Supports:
+        - RINEX 2 short: SSSSdddS.YYt.Z  (e.g., ELDC0340.26d.Z)
+        - RINEX 3 long: SSSS00CCC_R_YYYYDDDHHMM_PPP_FFF_TT.rnx.gz
+
+        Returns:
+            Tuple of (file_date, file_hour) or (None, None) if unparseable.
+            file_hour is None for daily files.
+        """
+        import re
+
+        # Try RINEX 3 long name first: SSSS00CCC_R_YYYYDDDHHMM_...
+        long_match = re.match(
+            rf'^{re.escape(station_id)}\d{{2}}\w{{3}}_R_(\d{{4}})(\d{{3}})(\d{{2}})(\d{{2}})_',
+            filename,
+        )
+        if long_match:
+            file_year = int(long_match.group(1))
+            doy = int(long_match.group(2))
+            hour = int(long_match.group(3))
+            file_date = date(file_year, 1, 1) + timedelta(days=doy - 1)
+            # Determine if daily (hour=0, minute=0, period=01D) or hourly
+            file_hour = None if '_01D_' in filename and hour == 0 else hour
+            return file_date, file_hour
+
+        # Try RINEX 2 short name: SSSSdddS.YYt.Z
+        if len(filename) < 12:
+            return None, None
+
+        try:
+            doy_str = filename[4:7]
+            session_char = filename[7]
+            year_str = filename[9:11]
+
+            doy = int(doy_str)
+            file_year = int(year_str)
+            if file_year < 50:
+                file_year += 2000
+            else:
+                file_year += 1900
+
+            file_date = date(file_year, 1, 1) + timedelta(days=doy - 1)
+
+            if session_char == '0':
+                file_hour = None
+            elif 'a' <= session_char <= 'x':
+                file_hour = ord(session_char) - ord('a')
+            else:
+                return None, None
+
+            return file_date, file_hour
+
+        except (ValueError, IndexError):
+            return None, None
+
     def scan_rinex_files(
         self,
         station_id: str,
         session_type: str,
         start_date: date,
         end_date: date,
+        format_id: Optional[str] = None,
     ) -> tuple[int, int]:
         """Glob RINEX directory, parse dates from RINEX 2 short names, upsert to file_tracking.
 
@@ -1492,6 +2051,7 @@ class GapDetector:
             session_type: RINEX session type (e.g., '15s_24hr_rinex', '1Hz_1hr_rinex')
             start_date: Start date (inclusive)
             end_date: End date (inclusive)
+            format_id: Optional archive_format.format_id to tag scanned files with
 
         Returns:
             Tuple of (files_found, files_added) counts
@@ -1534,47 +2094,36 @@ class GapDetector:
                             continue
 
                         filename = os.path.basename(filepath)
-                        # Parse RINEX 2 short name: SSSSdddS.YYt.Z
-                        # Minimum: SSSS + ddd + session(1) + '.' + YY + type(1) = 12 chars
-                        if len(filename) < 12:
-                            continue
 
                         try:
-                            doy_str = filename[4:7]
-                            session_char = filename[7]
-                            year_str = filename[9:11]
-
-                            doy = int(doy_str)
-                            file_year = int(year_str)
-                            # Two-digit year: 00-49 -> 2000-2049, 50-99 -> 1950-1999
-                            if file_year < 50:
-                                file_year += 2000
-                            else:
-                                file_year += 1900
-
-                            # Convert DOY to date
-                            file_date = date(file_year, 1, 1) + timedelta(days=doy - 1)
+                            file_date, file_hour = self._parse_rinex_filename(
+                                filename, station_id
+                            )
+                            if file_date is None:
+                                continue
 
                             # Check date is in range
                             if file_date < start_date or file_date > end_date:
                                 continue
 
-                            # Parse hour from session character
-                            if session_char == '0':
-                                file_hour = None  # daily
-                            elif 'a' <= session_char <= 'x':
-                                file_hour = ord(session_char) - ord('a')  # a=0, b=1, ...
-                            else:
-                                continue  # unknown session char
-
                             files_found += 1
 
                             # Upsert to file_tracking
-                            cur.execute(
+                            tracking_id = cur.execute(
                                 """SELECT upsert_file_tracking(%s, %s, %s, %s::smallint, %s, 'archived', %s)""",
                                 (station_id, session_type, file_date, file_hour, filename, fsize),
                             )
+                            result = cur.fetchone()
+                            tracking_id = result[0] if result else None
                             files_added += 1
+
+                            # Set format_id if provided
+                            if format_id and tracking_id:
+                                cur.execute(
+                                    """UPDATE file_tracking SET format_id = %s
+                                    WHERE id = %s AND format_id IS DISTINCT FROM %s""",
+                                    (format_id, tracking_id, format_id),
+                                )
 
                         except (ValueError, IndexError):
                             continue  # skip unparseable filenames

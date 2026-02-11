@@ -4,15 +4,36 @@ Scans archive directories for PolaRX5 stations and triggers SBF→RINEX
 conversion for any raw files that lack a corresponding RINEX file.
 
 Runs on the 'backfill' executor at a configurable interval (default every 6h).
+
+When FormatResolver is available (archive_format table populated), uses
+format templates for RINEX directory and file path construction. Falls back
+to ArchiveFileChecker + filesystem glob when format data is unavailable.
 """
 
 import logging
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 logger = logging.getLogger("gps_scheduler.archive_reconciler")
+
+
+def _get_format_resolver():
+    """Try to create a FormatResolver. Returns None if unavailable."""
+    try:
+        from ..health.file_tracker import FormatResolver
+
+        resolver = FormatResolver()
+        if resolver.connect():
+            # Check if format data is actually loaded
+            formats = resolver.list_formats(file_category="rinex")
+            if formats:
+                return resolver
+        resolver.close()
+    except Exception:
+        pass
+    return None
 
 
 def _run_archive_reconciler_job(
@@ -35,6 +56,7 @@ def _run_archive_reconciler_job(
         logger.debug(f"Archive reconciler dependencies not available: {e}")
         return
 
+    resolver = None
     try:
         start_time = time.time()
 
@@ -62,13 +84,18 @@ def _run_archive_reconciler_job(
         total_errors = 0
 
         checker = ArchiveFileChecker()
+        resolver = _get_format_resolver()
+        if resolver:
+            logger.debug("Using FormatResolver for RINEX path construction")
+
         end_date = date.today() - timedelta(days=1)
         start_date = end_date - timedelta(days=days_back - 1)
 
         for station_id in sorted(polarx5_stations):
             for session_type in session_types:
                 missing, converted, errors = _reconcile_station_session(
-                    station_id, session_type, start_date, end_date, checker
+                    station_id, session_type, start_date, end_date,
+                    checker, resolver,
                 )
                 total_missing += missing
                 total_converted += converted
@@ -83,6 +110,9 @@ def _run_archive_reconciler_job(
 
     except Exception as e:
         logger.error(f"Archive reconciler failed: {type(e).__name__}: {e}")
+    finally:
+        if resolver:
+            resolver.close()
 
 
 def _reconcile_station_session(
@@ -91,7 +121,8 @@ def _reconcile_station_session(
     start_date: date,
     end_date: date,
     checker: "ArchiveFileChecker",
-) -> tuple:
+    resolver: Optional["FormatResolver"] = None,
+) -> Tuple[int, int, int]:
     """Check one station/session for SBF files missing RINEX.
 
     Args:
@@ -100,6 +131,7 @@ def _reconcile_station_session(
         start_date: Start of date range
         end_date: End of date range
         checker: ArchiveFileChecker instance
+        resolver: Optional FormatResolver for format-aware path building
 
     Returns:
         Tuple of (missing_count, converted_count, error_count)
@@ -107,6 +139,15 @@ def _reconcile_station_session(
     missing = 0
     converted = 0
     errors = 0
+
+    # Resolve RINEX format for this session (if FormatResolver available)
+    rinex_format = None
+    if resolver:
+        rinex_format = resolver.find_format(
+            session_type=session_type,
+            file_category="rinex",
+            receiver_type="polarx5",
+        )
 
     try:
         current = start_date
@@ -130,7 +171,17 @@ def _reconcile_station_session(
                 if sbf_path is None:
                     continue
 
-                rinex_path = _find_rinex_file(sbf_path)
+                # Check for existing RINEX — try format-aware lookup first
+                rinex_path = None
+                if rinex_format and resolver:
+                    rinex_path = _find_rinex_file_by_format(
+                        station_id, file_dt, rinex_format, resolver, checker,
+                    )
+
+                # Fall back to filesystem glob
+                if rinex_path is None:
+                    rinex_path = _find_rinex_file(sbf_path)
+
                 if rinex_path is not None:
                     continue
 
@@ -157,6 +208,41 @@ def _reconcile_station_session(
     return missing, converted, errors
 
 
+def _find_rinex_file_by_format(
+    station_id: str,
+    dt: datetime,
+    rinex_format: "ArchiveFormat",
+    resolver: "FormatResolver",
+    checker: "ArchiveFileChecker",
+) -> Optional[Path]:
+    """Check if a RINEX file exists using format template path construction.
+
+    Uses FormatResolver to build the expected RINEX path from the archive_format
+    template, then checks if that file exists on disk.
+
+    Args:
+        station_id: Station identifier
+        dt: File datetime
+        rinex_format: ArchiveFormat for the RINEX output
+        resolver: FormatResolver instance
+        checker: ArchiveFileChecker for base path fallback
+
+    Returns:
+        Path to existing RINEX file, or None
+    """
+    try:
+        # Build expected RINEX path using format template
+        base_path = checker.data_prepath or "/mnt/gpsdata"
+        expected_path = resolver._build_path_from_format(
+            rinex_format, station_id, dt, base_path
+        )
+        if expected_path and Path(expected_path).exists():
+            return Path(expected_path)
+    except Exception:
+        pass
+    return None
+
+
 def _find_sbf_file(
     station_id: str,
     session_type: str,
@@ -173,7 +259,8 @@ def _find_sbf_file(
             year=dt.year,
             month=dt.strftime("%b").lower(),
         )
-        archive_path = Path(archive_dir) / "raw"
+        # get_archive_directory() already returns path ending in /raw
+        archive_path = Path(archive_dir)
 
         if not archive_path.exists():
             return None
@@ -230,6 +317,12 @@ def _find_rinex_file(sbf_path: Path) -> Optional[Path]:
             if candidates:
                 return candidates[0]
 
+        # Also check for Hatanaka compressed RINEX files (.d.Z, .d.gz, .YYd.Z)
+        hatanaka_candidates = list(search_dir.glob(f"{stem[:4]}*d.Z"))
+        hatanaka_candidates += list(search_dir.glob(f"{stem[:4]}*d.gz"))
+        if hatanaka_candidates:
+            return hatanaka_candidates[0]
+
     return None
 
 
@@ -246,8 +339,12 @@ def _convert_sbf_to_rinex(station_id: str, sbf_path: Path) -> bool:
     try:
         from ..rinex.sbf_converter import SBFConverter
 
+        # Output to rinex/ sibling directory instead of raw/
+        rinex_dir = sbf_path.parent.parent / "rinex"
+        rinex_dir.mkdir(parents=True, exist_ok=True)
+
         converter = SBFConverter(station_id=station_id)
-        result = converter.convert_file(sbf_path)
+        result = converter.convert_file(sbf_path, output_dir=rinex_dir)
 
         if result.success:
             logger.debug(f"Converted {sbf_path.name} to RINEX")
