@@ -89,13 +89,18 @@ class TestSchedulerDownloadExecution:
         assert call_kwargs['clean_tmp'] is True
 
         # Verify time parameters for hourly session
-        # Scheduler uses CLI -D 1 behavior: start and end are the same (last complete hour)
+        # With lookback_periods=1:
+        #   end_time = current hour start (exclusive)
+        #   start_time = end_time - 1 hour
+        # This gives us the previous complete hour's data
         start_time = call_kwargs['start']
         end_time = call_kwargs['end']
         assert isinstance(start_time, datetime)
         assert isinstance(end_time, datetime)
-        assert start_time == end_time  # Both point to last complete hour
+        assert start_time < end_time
+        assert (end_time - start_time).total_seconds() == 3600  # 1 hour range
         assert start_time.minute == 0  # Should be at hour boundary
+        assert end_time.minute == 0
 
     @patch('receivers.cli.main.get_all_station_configs')
     @patch('receivers.cli.main.get_station_config')
@@ -138,9 +143,13 @@ class TestSchedulerDownloadExecution:
         start_time = call_kwargs['start']
         end_time = call_kwargs['end']
 
-        # With lookback_periods=1 (default), start and end are the same day (yesterday)
-        # This is correct - gtimes will generate just that one date with frequency='1D'
-        assert start_time == end_time  # Both are yesterday midnight
+        # With lookback_periods=1 (default):
+        #   end_time = today 00:00:00 UTC (start of current day)
+        #   start_time = yesterday 00:00:00 UTC (1 day back)
+        # gtimes generates the single date (yesterday) within this range with frequency='1D'
+        assert start_time < end_time
+        assert (end_time - start_time).days == 1
+        assert start_time.hour == 0 and start_time.minute == 0  # Midnight
         assert end_time.hour == 0 and end_time.minute == 0  # Midnight
         # Frequency should be daily
         assert call_kwargs['ffrequency'] == '1D'
