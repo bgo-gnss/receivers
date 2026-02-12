@@ -180,6 +180,16 @@ Tracking document for code weaknesses, recurring issues, and optimization opport
 - **Root cause**: Station detail showed File Status (raw file age) and Logging (active sessions) but no RINEX conversion status.
 - **Fix**: Added "RINEX Status" panel (id:51) between File Status and Logging panels with 15s/1Hz columns and color-coded value mappings.
 
+### DASHBOARD-015: File Status panel shows N/A for archived files
+- **Category**: DASHBOARD
+- **Severity**: High
+- **Found**: 2026-02-12
+- **Resolved**: 2026-02-12
+- **Files**: `gps_station_detail_dashboard.json`
+- **Root cause**: File Status panel SQL filtered `status='downloaded'` only. Files transition `downloaded → archived` after archiving, so once archived they disappeared from the panel — showing N/A even though tracking data existed. Meanwhile RINEX Status (using `station_data_flow_status` view) correctly queried `status IN ('downloaded','archived')`, creating a contradictory display: File Status N/A but RINEX OK.
+- **Fix**: Changed File Status panel SQL to `status IN ('downloaded','archived')` for all three session types.
+- **User report**: AUST station showed File Status N/A for all sessions while RINEX 15s showed OK — logically impossible since RINEX is derived from raw files.
+
 ---
 
 ## Open Issues / Future Work
@@ -409,6 +419,26 @@ Tracking document for code weaknesses, recurring issues, and optimization opport
 - **Description**: The connection checker runs 3 levels: `router_ping`, `http_port`, `protocol`. For HTTP-only receivers (NetR9, NetRS, G10), `http_port` and `protocol` are identical. CONN-001 fixed the false CRITICAL by reusing the result, but the model still conceptually has 3 levels. Consider simplifying to 2 levels (ping + primary port) for non-PolaRX5 receivers, or making the number of levels dynamic based on receiver capabilities.
 - **Files**: `health/connection_checker.py`
 
+### SCHEDULER-013: Outage recovery should prioritize 24hr download + RINEX
+- **Category**: SCHEDULER
+- **Severity**: High
+- **Status**: Open
+- **Found**: 2026-02-12
+- **Description**: When the scheduler restarts after an outage (laptop powered off overnight, server reboot), 15s_24hr daily data should be prioritized over 1Hz_1hr and status_1hr. Currently `_schedule_daily_catchup()` schedules one-shot downloads with `lookback_periods=1` (yesterday only), but after a multi-day outage the gap is larger. The backfill system eventually catches up, but it processes stations alphabetically and interleaves with other work — taking many hours. Meanwhile, 130+ stations show "Missing" in the dashboard.
+- **Current behavior**:
+  1. Daily catch-up fires with `lookback_periods=1` — only catches yesterday
+  2. Gap detection runs at startup (60s delay) and identifies all missing files
+  3. Backfill processes stations alphabetically in the :25-:55 window — very slow for 130+ stations
+  4. 1Hz_1hr and status_1hr downloads compete for workers during catch-up
+- **Proposal**: Outage-aware recovery mode:
+  1. On startup, detect gap size (query `file_tracking` for latest date per session, compare to today)
+  2. If gap > 1 day for 15s_24hr: increase lookback_periods to cover the gap
+  3. Prioritize 15s_24hr catch-up over 1Hz_1hr/status_1hr (defer hourly sessions until daily is done)
+  4. Run RINEX conversion immediately after each 24hr download (not waiting for reconciler)
+  5. Consider dedicated "recovery executor" that doesn't compete with regular downloads
+- **Impact**: After overnight outage, 130+ stations showed "Missing 24h" for hours. Daily data is the highest-value product and most time-sensitive (receivers may overwrite old files).
+- **Files**: `scheduling/bulk_scheduler.py` (`_schedule_daily_catchup()`, `_schedule_gap_detection()`)
+
 ### DB-013: Ping packet loss severity threshold too aggressive
 - **Category**: DB-WRITER
 - **Severity**: Medium
@@ -452,5 +482,5 @@ When reviewing a file, check for these patterns:
 ---
 
 **Created**: 2026-02-09
-**Last updated**: 2026-02-11
+**Last updated**: 2026-02-12
 **Purpose**: Track code quality issues for systematic review and optimization
