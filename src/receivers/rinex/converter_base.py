@@ -202,14 +202,20 @@ class RawToRinexConverter(ABC):
         else:
             self.output_format = OutputFormat.MODERN
 
-        # Default naming convention based on RINEX version
-        if naming_convention is None:
-            if rinex_version == RinexVersion.RINEX_2:
+        # Naming convention: explicit > config > version-based default
+        if naming_convention is not None:
+            self.naming_convention = naming_convention
+        else:
+            rinex_cfg = self.config.get_rinex_config()
+            config_naming = str(rinex_cfg.get("default_naming", "")).lower()
+            if config_naming == "short":
+                self.naming_convention = NamingConvention.SHORT
+            elif config_naming == "long":
+                self.naming_convention = NamingConvention.LONG
+            elif rinex_version == RinexVersion.RINEX_2:
                 self.naming_convention = NamingConvention.SHORT
             else:
                 self.naming_convention = NamingConvention.LONG
-        else:
-            self.naming_convention = naming_convention
 
     @property
     @abstractmethod

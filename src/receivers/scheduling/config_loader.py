@@ -75,7 +75,7 @@ def get_default_config() -> Dict[str, Any]:
     """
     return {
         'scheduler': {
-            'max_workers': 5,
+            'max_workers': 100,
             'log_level': 'INFO',
             'job_defaults': {
                 'coalesce': False,

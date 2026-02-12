@@ -314,8 +314,11 @@ class TestSchedulerJobScheduling:
         # Should have jobs scheduled
         jobs = scheduler.get_scheduled_jobs()
 
-        # 2 stations × 3 session types = 6 download jobs + 2 health jobs + 1 config watcher = 9 total
-        assert len(jobs) == 9
+        # 2 stations × 3 sessions = 6 download + 2 health + 1 config_watcher
+        # + 3 backfill + 1 gap_detection + 1 gap_detection_startup
+        # + 1 archive_reconciler + 1 archive_reconciler_startup = 16 total
+        # (plus possible daily catch-up jobs depending on time of day)
+        assert len(jobs) >= 16
 
         # Check job IDs follow pattern: session_station
         job_ids = [job['id'] for job in jobs]
@@ -345,8 +348,11 @@ class TestSchedulerJobScheduling:
         assert 'total_jobs' in status
         assert 'running_jobs' in status
         assert 'current_jobs' in status
-        # 1 station × 3 sessions + 1 health monitoring job + 1 config watcher = 5 total
-        assert status['total_jobs'] == 5
+        # 1 station × 3 sessions + 1 health + 1 config_watcher
+        # + 3 backfill + 1 gap_detection + 1 gap_detection_startup
+        # + 1 archive_reconciler + 1 archive_reconciler_startup = 12 total
+        # (plus possible daily catch-up jobs depending on time of day)
+        assert status['total_jobs'] >= 12
 
 
 @pytest.mark.unit
@@ -367,15 +373,14 @@ def test_create_scheduler_config(tmp_path):
 
     assert 'scheduler' in config
     assert 'sessions' in config
-    assert config['scheduler']['max_workers'] == 5
+    assert config['scheduler']['max_workers'] == 100
 
     # Check session configs
     assert '15s_24hr' in config['sessions']
     assert '1Hz_1hr' in config['sessions']
     assert 'status_1hr' in config['sessions']
 
-    # Verify session structure (uses legacy format in default template)
+    # Verify session structure (uses flexible schedule format in default template)
     daily_session = config['sessions']['15s_24hr']
     assert daily_session['enabled'] is True
-    assert daily_session['frequency'] == 'daily'
-    assert daily_session['schedule_minute'] == 10
+    assert 'schedule' in daily_session  # New format uses 'schedule' field

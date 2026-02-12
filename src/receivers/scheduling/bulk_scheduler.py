@@ -638,7 +638,7 @@ class BulkDownloadScheduler:
         #   default  — live downloads
         #   health   — real-time health monitoring
         #   backfill — backfill, gap detection, archive reconciler
-        health_workers = min(self.max_workers // 3, 30)
+        health_workers = max(1, min(self.max_workers // 3, 30))
         backfill_workers = max(self.max_workers // 5, 5)
         executors = {
             'default': ThreadPoolExecutor(self.max_workers),
@@ -1024,6 +1024,9 @@ class BulkDownloadScheduler:
         self._schedule_gap_detection()
         self._schedule_archive_reconciler()
 
+        # Catch up any missed daily downloads (e.g., 15s_24hr if scheduler started after midnight)
+        self._schedule_daily_catchup(session_stations)
+
     def _schedule_config_watcher(self) -> None:
         """Schedule periodic config file change detection."""
         # Initialize mtime tracking
@@ -1124,9 +1127,22 @@ class BulkDownloadScheduler:
             executor='backfill',
             **base_trigger.trigger_kwargs
         )
+
+        # Schedule an immediate first run (interval triggers default to
+        # start_date=now+interval which delays first execution)
+        self.scheduler.add_job(
+            func=_run_gap_detection_job,
+            trigger='date',
+            run_date=datetime.now() + timedelta(seconds=60),
+            args=[sessions, days_back, rinex_days_back],
+            id='gap_detection_startup',
+            replace_existing=True,
+            executor='backfill',
+        )
+
         self.logger.info(
             f"Scheduled gap detection ({base_trigger.description}, "
-            f"{days_back} days back, RINEX {rinex_days_back} days)"
+            f"{days_back} days back, RINEX {rinex_days_back} days, immediate first run)"
         )
 
     def _schedule_archive_reconciler(self) -> None:
@@ -1158,7 +1174,88 @@ class BulkDownloadScheduler:
             executor='backfill',
             **base_trigger.trigger_kwargs
         )
-        self.logger.info(f"Scheduled archive reconciler ({base_trigger.description}, {days_back} days back)")
+
+        # Immediate first run
+        self.scheduler.add_job(
+            func=_run_archive_reconciler_job,
+            trigger='date',
+            run_date=datetime.now() + timedelta(seconds=120),
+            args=[sessions, days_back],
+            id='archive_reconciler_startup',
+            replace_existing=True,
+            executor='backfill',
+        )
+
+        self.logger.info(f"Scheduled archive reconciler ({base_trigger.description}, {days_back} days back, immediate first run)")
+
+    def _schedule_daily_catchup(self, session_stations: Dict[str, List[str]]) -> None:
+        """Schedule immediate catch-up downloads for daily sessions missed due to late start.
+
+        When the scheduler starts after a daily session's scheduled time (e.g., 15s_24hr
+        at 00:01 but scheduler started at 12:00), the cron trigger won't fire until
+        tomorrow. This method schedules one-shot downloads distributed across a window
+        so yesterday's data is fetched immediately.
+
+        Only applies to daily sessions (cron triggers with a specific hour).
+        Hourly sessions naturally catch up on their next hourly tick.
+        """
+        now = datetime.now(timezone.utc)
+        catchup_count = 0
+
+        for session_type, stations in session_stations.items():
+            config = self.schedule_configs[session_type]
+            if not config.enabled or not stations:
+                continue
+
+            base_trigger = parse_schedule(config.schedule)
+
+            # Only catch up daily sessions — those with a specific hour in the cron trigger
+            if base_trigger.trigger_type != 'cron':
+                continue
+            trigger_hour = base_trigger.trigger_kwargs.get('hour')
+            if trigger_hour is None:
+                continue  # Hourly session — no catch-up needed
+
+            scheduled_hour = int(trigger_hour)
+            scheduled_minute = int(base_trigger.trigger_kwargs.get('minute', 0))
+
+            # Check if the scheduled time already passed today
+            local_now = datetime.now()
+            today_target = local_now.replace(
+                hour=scheduled_hour, minute=scheduled_minute, second=0, microsecond=0
+            )
+            if local_now <= today_target:
+                continue  # Not missed — will fire at the scheduled time
+
+            # Daily session missed — schedule catch-up with distribution window
+            window = config.distribution_window
+            for i, station_id in enumerate(stations):
+                if len(stations) > 1 and window > 0:
+                    offset_seconds = int((i / len(stations)) * window * 60)
+                else:
+                    offset_seconds = 0
+
+                run_time = now + timedelta(seconds=30 + offset_seconds)
+                job_id = f"catchup_{session_type}_{station_id}"
+                self.scheduler.add_job(
+                    func=_download_station_data_job,
+                    trigger='date',
+                    run_date=run_time,
+                    args=[station_id, session_type, self.production_mode,
+                          config.lookback_periods, config.timeout_minutes, config.rinex],
+                    id=job_id,
+                    replace_existing=True,
+                )
+                catchup_count += 1
+
+            self.logger.info(
+                f"Catch-up: {len(stations)} {session_type} downloads "
+                f"(scheduled time {scheduled_hour:02d}:{scheduled_minute:02d} already passed, "
+                f"distributing over {window}min)"
+            )
+
+        if catchup_count:
+            self.logger.info(f"Total catch-up: {catchup_count} one-shot download jobs scheduled")
 
     def _get_stations_for_session(self, session_type: str) -> List[str]:
         """Get list of stations that support a specific session type."""

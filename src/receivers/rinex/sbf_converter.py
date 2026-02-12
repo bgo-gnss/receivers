@@ -55,7 +55,7 @@ class SBFConverter(RawToRinexConverter):
         self,
         station_id: str,
         rinex_version: RinexVersion = RinexVersion.RINEX_3,
-        output_format: OutputFormat = OutputFormat.MODERN,
+        output_format: Optional[OutputFormat] = None,
         naming_convention: Optional["NamingConvention"] = None,
         apply_header_corrections: bool = True,
         observation_types: Optional[List[str]] = None,
@@ -66,9 +66,11 @@ class SBFConverter(RawToRinexConverter):
         Args:
             station_id: Station identifier (e.g., 'ELDC')
             rinex_version: Target RINEX version (2, 3, or 4)
-            output_format: Output format (modern or legacy)
+            output_format: Output format (modern or legacy).
+                          If None, reads from config (default_hatanaka, default_compression).
             naming_convention: Filename convention (SHORT or LONG).
-                              If None, defaults based on rinex_version.
+                              If None, reads from config default_naming,
+                              then falls back based on rinex_version.
             apply_header_corrections: Whether to apply TOS metadata corrections
             observation_types: List of observation types to include (default: all)
             loglevel: Logging level
