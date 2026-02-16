@@ -43,11 +43,17 @@ from ..config_utils import get_station_config
 
 
 def setup_logging(level: int = logging.INFO) -> logging.Logger:
-    """Set up logging for CLI commands."""
+    """Set up logging for CLI commands.
+
+    Uses force=True because imports (gps_parser, gtimes) may have already
+    called basicConfig(), making a non-forced call a no-op that silently
+    swallows all output.
+    """
     logging.basicConfig(
         level=level,
         format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
+        force=True,
     )
     return logging.getLogger("receivers")
 
@@ -2459,6 +2465,14 @@ def _rinex_convert_station_period(
                         f"   Applied {result.header_corrections_applied} header corrections"
                     )
                 converted += 1
+
+                # Track RINEX output in file_tracking DB
+                try:
+                    from ..scheduling.bulk_scheduler import _track_rinex_output_files
+                    output_files = [str(result.rinex_file)]
+                    _track_rinex_output_files(station_id, args.session, output_files, logger)
+                except Exception as e:
+                    logger.debug(f"RINEX file tracking failed: {e}")
             else:
                 print(f"  ❌ {raw_file.name}: {result.message}")
                 logger.error(f"❌ {raw_file.name}: {result.message}")
