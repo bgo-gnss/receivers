@@ -105,8 +105,9 @@ class PolaRX5(BaseReceiver):
             self.progress_timeout = timeout_config["progress_timeout"]
             self.min_speed_threshold = timeout_config["min_speed_threshold"]
             # Data transfer timeout - how long to wait for initial data before failing
+            # 10s default handles FTP PASV setup under concurrent load
             # Can be per-station in future via gps_parser config
-            self.data_transfer_timeout = timeout_config.get("data_transfer_timeout", 2)
+            self.data_transfer_timeout = timeout_config.get("data_transfer_timeout", 10)
 
             self.logger.info(
                 f"Timeout config from gps_parser - Connection: {self.connection_timeout}s, "
@@ -124,7 +125,7 @@ class PolaRX5(BaseReceiver):
             self.inactivity_timeout = 60
             self.progress_timeout = 300
             self.min_speed_threshold = 2048
-            self.data_transfer_timeout = 2  # Fast-fail on data transfer stalls
+            self.data_transfer_timeout = 10  # Allow time for FTP PASV setup under load
 
             self.logger.info(
                 f"Fallback timeout config - Connection: {self.connection_timeout}s, "
@@ -278,6 +279,7 @@ class PolaRX5(BaseReceiver):
         # Immediate retry configuration (Level 1 retries)
         max_retries = kwargs.get("max_retries", 3)
         retry_initial_delay = kwargs.get("retry_initial_delay", 0.5)
+        retry_missing = kwargs.get("retry_missing", False)
 
         # Set logger level
         self.logger.setLevel(loglevel)
@@ -498,6 +500,7 @@ class PolaRX5(BaseReceiver):
                     max_retries,
                     retry_initial_delay,
                     reverse_chronological,
+                    retry_missing,
                 )
 
                 # Calculate total bytes downloaded
@@ -579,9 +582,9 @@ class PolaRX5(BaseReceiver):
         )
         self._record_performance_metrics(performance_metrics)
 
-        # Determine final status based on sync_success
+        # Determine final status based on sync_success and actual results
         if not sync_success:
-            # Sync failed - determine error category
+            # Sync raised an exception - determine error category
             error_msg = "Connection error"
             if performance_metrics.get("had_timeout"):
                 timeout_type = performance_metrics.get("timeout_type", "unknown")
@@ -599,6 +602,19 @@ class PolaRX5(BaseReceiver):
                 "duration": final_duration,
                 "had_timeout": performance_metrics.get("had_timeout", False),
                 "timeout_type": performance_metrics.get("timeout_type"),
+            }
+
+        # If sync was requested and there were missing files but none downloaded,
+        # all individual file downloads failed (e.g., watchdog timeouts)
+        if sync and all_missing_files and not downloaded_files_dict:
+            return {
+                "status": "failed",
+                "error_message": "All file downloads failed (0 of {} succeeded)".format(len(all_missing_files)),
+                "files_checked": len(file_date_dict),
+                "files_missing": len(all_missing_files),
+                "files_downloaded": 0,
+                "downloaded_files": [],
+                "duration": final_duration,
             }
 
         return {
@@ -735,6 +751,7 @@ class PolaRX5(BaseReceiver):
         max_retries=3,
         retry_initial_delay=0.5,
         reverse_chronological=True,
+        retry_missing=False,
     ):
         """Sync missing files from receiver to local archive with retry configuration.
 
@@ -780,6 +797,7 @@ class PolaRX5(BaseReceiver):
                 max_retries=max_retries,
                 retry_initial_delay=retry_initial_delay,
                 session=session,
+                retry_missing=retry_missing,
             )
 
             downloaded_files_dict = dict(
@@ -992,6 +1010,7 @@ class PolaRX5(BaseReceiver):
         max_retries=3,
         retry_initial_delay=0.5,
         session=None,
+        retry_missing=False,
     ):
         """Download files via FTP with progress tracking and immediate retries.
 
@@ -1045,7 +1064,8 @@ class PolaRX5(BaseReceiver):
         # DO NOT re-sort here - filename-based sorting breaks year boundary ordering
         for file_name, remote_dir in files_dict.items():
             # Check if file is known to be missing (skip download attempt)
-            if file_tracker and session:
+            # Skip this filter when retry_missing=True (scheduler always retries)
+            if file_tracker and session and not retry_missing:
                 file_dt = get_file_datetime(file_name)
                 if file_dt:
                     file_date = file_dt.date() if hasattr(file_dt, 'date') else file_dt
@@ -1689,6 +1709,9 @@ class PolaRX5(BaseReceiver):
                 "errno 111",
                 "data connection",
                 "port",
+                "won't open a connection",  # FTP passive mode NAT mismatch
+                "i won't open",             # Variation of NAT mismatch error
+                "500 i won't",              # FTP 500 error from passive mode
             ]
             if any(err in error_msg for err in connection_errors):
                 self.logger.warning(

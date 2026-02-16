@@ -30,7 +30,7 @@
       "title": "Reset Filters",
       "tooltip": "Reset all filters to defaults",
       "type": "link",
-      "url": "/d/gps-health-voltage/gps-receiver-health-overview?var-area=all&var-station=all&var-receiver=all&var-antenna=all&var-status_filter=all"
+      "url": "/d/gps-health-voltage/gps-receiver-health-overview?var-area=all&var-owner=all&var-station=all&var-receiver=all&var-antenna=all&var-status_filter=all"
     },
     {
       "asDropdown": false,
@@ -174,7 +174,7 @@
       "gridPos": {
         "h": 4,
         "w": 2,
-        "x": 2,
+        "x": 4,
         "y": 1
       },
       "id": 14,
@@ -250,7 +250,7 @@
       "gridPos": {
         "h": 4,
         "w": 2,
-        "x": 4,
+        "x": 10,
         "y": 1
       },
       "id": 3,
@@ -322,7 +322,7 @@
       "gridPos": {
         "h": 4,
         "w": 2,
-        "x": 6,
+        "x": 12,
         "y": 1
       },
       "id": 4,
@@ -394,7 +394,7 @@
       "gridPos": {
         "h": 4,
         "w": 2,
-        "x": 8,
+        "x": 14,
         "y": 1
       },
       "id": 32,
@@ -444,14 +444,15 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "mode": "fixed",
+            "fixedColor": "red"
           },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "dark-gray",
+                "color": "red",
                 "value": null
               }
             ]
@@ -462,7 +463,7 @@
       "gridPos": {
         "h": 4,
         "w": 2,
-        "x": 10,
+        "x": 6,
         "y": 1
       },
       "id": 33,
@@ -482,8 +483,8 @@
       },
       "links": [
         {
-          "title": "Filter: Inactive",
-          "url": "/d/gps-health-voltage?var-status_filter=inactive&${area:queryparam}&${station:queryparam}&${receiver:queryparam}&${antenna:queryparam}",
+          "title": "Filter: Missing Raw",
+          "url": "/d/gps-health-voltage?var-status_filter=24hr_raw_missing&${area:queryparam}&${station:queryparam}&${receiver:queryparam}&${antenna:queryparam}",
           "targetBlank": false
         }
       ],
@@ -497,11 +498,11 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(*) as \"Inactive\" FROM stations WHERE station_status = 'inactive'",
+          "rawSql": "SELECT COUNT(*) AS \"Missing Raw\"\nFROM station_dashboard_data d\nJOIN station_data_flow_status f ON f.sid = d.station_id\nWHERE d.is_online = true\n  AND d.station_status IS NULL\n  AND d.health_check IS NULL\n  AND f.status_24h = 2",
           "refId": "A"
         }
       ],
-      "title": "Inactive",
+      "title": "Missing Raw",
       "type": "stat"
     },
     {
@@ -538,7 +539,7 @@
       "gridPos": {
         "h": 4,
         "w": 2,
-        "x": 12,
+        "x": 8,
         "y": 1
       },
       "id": 34,
@@ -573,11 +574,11 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(*) AS \"Missing 24h\" FROM station_data_flow_status f JOIN station_dashboard_data d ON d.station_id = f.sid WHERE f.status_24h = 2 AND d.station_status IS NULL AND d.health_check IS NULL",
+          "rawSql": "SELECT COUNT(*) AS \"Missing RINEX\"\nFROM station_dashboard_data d\nJOIN station_data_flow_status f ON f.sid = d.station_id\nWHERE d.is_online = true\n  AND d.station_status IS NULL\n  AND d.health_check IS NULL\n  AND f.status_24h = 1",
           "refId": "A"
         }
       ],
-      "title": "Missing 24h",
+      "title": "Missing RINEX",
       "type": "stat"
     },
     {
@@ -610,7 +611,7 @@
       "gridPos": {
         "h": 4,
         "w": 2,
-        "x": 14,
+        "x": 2,
         "y": 1
       },
       "id": 35,
@@ -645,7 +646,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(*) AS \"Volt Warn\" FROM station_dashboard_data d JOIN stations s ON s.sid = d.station_id WHERE d.station_status IS NULL AND d.health_check IS NULL AND d.voltage IS NOT NULL AND (d.status_details LIKE '%Voltage%' OR (d.is_online = false AND ((COALESCE(s.power_type, 'battery') = 'battery' AND (d.voltage < 11.8 OR d.voltage > 15.0)) OR (s.power_type = 'dcdc' AND (d.voltage < 12.0 OR d.voltage > 16.5)) OR (s.power_type = 'mains' AND (d.voltage < 15.0 OR d.voltage > 24.0)))))",
+          "rawSql": "SELECT COUNT(*) AS \"Volt Warn\" FROM station_dashboard_data d JOIN stations s ON s.sid = d.station_id WHERE d.station_status IS NULL AND d.health_check IS NULL AND d.voltage IS NOT NULL AND (d.status_details LIKE '%Voltage%' OR (d.is_online = false AND ((COALESCE(s.power_type, 'battery') = 'battery' AND (d.voltage < 11.8 OR d.voltage > 15.0)) OR (s.power_type = 'dcdc' AND (d.voltage < 12.0 OR d.voltage > 16.5)) OR (s.power_type = 'mains' AND (d.voltage < 15.0 OR d.voltage > 25.0)))))",
           "refId": "A"
         }
       ],
@@ -687,7 +688,7 @@
           "links": [
             {
               "title": "View ${__data.fields.sid} details",
-              "url": "/d/gps-station-detail/gps-station-detail?var-station=${__data.fields.sid}&var-area=$area&var-receiver=$receiver&var-antenna=$antenna&${__url_time_range}"
+              "url": "/d/gps-station-detail/gps-station-detail?var-station=${__data.fields.sid}&var-area=$area&var-owner=$owner&var-receiver=$receiver&var-antenna=$antenna&${__url_time_range}"
             }
           ]
         },
@@ -731,7 +732,7 @@
                   "mode": "mod"
                 },
                 "size": {
-                  "fixed": 8,
+                  "fixed": 10,
                   "max": 12,
                   "min": 4
                 },
@@ -753,7 +754,49 @@
               "longitude": "longitude",
               "mode": "coords"
             },
-            "name": "Stations",
+            "name": "Health (outer)",
+            "tooltip": true,
+            "type": "markers"
+          },
+          {
+            "config": {
+              "showLegend": false,
+              "style": {
+                "color": {
+                  "field": "data_status_code",
+                  "fixed": "dark-green"
+                },
+                "opacity": 0.9,
+                "rotation": {
+                  "fixed": 0,
+                  "max": 360,
+                  "min": -360,
+                  "mode": "mod"
+                },
+                "size": {
+                  "fixed": 5,
+                  "max": 7,
+                  "min": 2
+                },
+                "symbol": {
+                  "fixed": "img/icons/marker/circle.svg",
+                  "mode": "fixed"
+                },
+                "textConfig": {
+                  "fontSize": 10,
+                  "offsetX": 0,
+                  "offsetY": 0,
+                  "textAlign": "center",
+                  "textBaseline": "middle"
+                }
+              }
+            },
+            "location": {
+              "latitude": "latitude",
+              "longitude": "longitude",
+              "mode": "coords"
+            },
+            "name": "Data (inner)",
             "tooltip": true,
             "type": "markers"
           }
@@ -779,7 +822,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  d.station_id AS sid,\n  d.latitude,\n  d.longitude,\n  d.overall_status,\n  CASE\n    WHEN d.overall_status = 'healthy' THEN 3\n    WHEN d.overall_status = 'warning' THEN 2\n    WHEN d.overall_status = 'critical' THEN 1\n    ELSE 0\n  END AS status_code,\n  d.receiver_type,\n  d.connection_status,\n  CASE\n    WHEN d.is_online IS NULL THEN NULL\n    WHEN d.is_online THEN 'online ' || format_duration(d.state_duration)\n    ELSE 'offline ' || format_duration(d.state_duration)\n  END AS conn,\n  d.voltage,\n  d.temperature,\n  d.satellites_tracked,\n  d.disk_usage_pct,\n  d.ntrip_status,\n  d.seconds_since_update,\n  d.status_details\nFROM station_dashboard_data d\nLEFT JOIN station_data_flow_status f ON f.sid = d.station_id\nLEFT JOIN stations s ON s.sid = d.station_id\nWHERE d.latitude IS NOT NULL\n  AND d.longitude IS NOT NULL\n  AND ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = d.station_id AND sam.area_id = '$area'))\n  AND (${station:singlequote} = 'all' OR d.station_id = ${station:singlequote})\n  AND (${receiver:singlequote} = 'all' OR (${receiver:singlequote} = 'NONE' AND d.receiver_type IS NULL) OR d.receiver_type = ${receiver:singlequote})\n  AND (${antenna:singlequote} = 'all' OR (${antenna:singlequote} = 'NONE' AND d.antenna_type IS NULL) OR d.antenna_type = ${antenna:singlequote})\n  AND ('$status_filter' = 'all'\n    OR ('$status_filter' = 'online' AND d.is_online = true)\n    OR ('$status_filter' = 'offline' AND d.is_online = false)\n    OR ('$status_filter' = 'critical' AND d.overall_status = 'critical')\n    OR ('$status_filter' = 'warning' AND d.overall_status = 'warning')\n    OR ('$status_filter' = 'ping_failed' AND d.status_details LIKE '%Ping%' AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'ftp_down' AND d.ftp_open = false AND d.is_online = true AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'ctrl_refused' AND d.control_open = false AND d.is_online = true)\n    OR ('$status_filter' = 'disk_warning' AND d.status_details LIKE '%Disk%' AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'discontinued' AND d.station_status = 'discontinued')\n    OR ('$status_filter' = 'passive' AND d.health_check = 'passive')\n    OR ('$status_filter' = 'inactive' AND d.station_status = 'inactive')\n    OR ('$status_filter' = '24hr_rinex_missing' AND f.status_24h = 2 AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = '1hr_rinex_missing' AND f.status_1hz = 2 AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'voltage_warning' AND d.voltage IS NOT NULL AND (d.status_details LIKE '%Voltage%' OR (d.is_online = false AND ((COALESCE(s.power_type, 'battery') = 'battery' AND (d.voltage < 11.8 OR d.voltage > 15.0)) OR (s.power_type = 'dcdc' AND (d.voltage < 12.0 OR d.voltage > 16.5)) OR (s.power_type = 'mains' AND (d.voltage < 15.0 OR d.voltage > 24.0))))))\n  )\n  AND ('$status_filter' IN ('discontinued', 'passive', 'inactive') OR d.station_status IS NULL AND d.health_check IS NULL)\nORDER BY d.station_id",
+          "rawSql": "SELECT\n  d.station_id AS sid,\n  d.latitude,\n  d.longitude,\n  d.overall_status,\n  CASE\n    WHEN d.station_status IS NOT NULL THEN 0\n    WHEN d.overall_status = 'healthy' THEN 3\n    WHEN d.overall_status = 'warning' THEN 2\n    WHEN d.overall_status = 'critical' THEN 1\n    ELSE 0\n  END AS status_code,\n  d.receiver_type,\n  d.connection_status,\n  CASE\n    WHEN d.station_status IS NOT NULL THEN d.station_status\n    WHEN d.health_check = 'passive' THEN 'passive'\n    WHEN d.connection_state IS NULL THEN 'unknown'\n    WHEN d.connection_state = 'online' THEN 'online ' || format_duration(d.state_duration)\n    WHEN d.connection_state = 'degraded' THEN 'degraded ' || format_duration(d.state_duration)\n    ELSE 'offline ' || format_duration(d.state_duration)\n  END AS conn,\n  d.voltage,\n  d.temperature,\n  d.satellites_tracked,\n  d.disk_usage_pct,\n  d.ntrip_status,\n  d.seconds_since_update,\n  d.status_details,\n  CASE\n    WHEN f.status_24h = 0 THEN 3\n    WHEN f.status_24h = 1 THEN 2\n    WHEN f.status_24h = 2 THEN 1\n    ELSE 0\n  END AS data_status_code\nFROM station_dashboard_data d\nLEFT JOIN station_data_flow_status f ON f.sid = d.station_id\nLEFT JOIN stations s ON s.sid = d.station_id\nWHERE d.latitude IS NOT NULL\n  AND d.longitude IS NOT NULL\n  AND ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = d.station_id AND sam.area_id = '$area'))\n  AND (${station:singlequote} = 'all' OR d.station_id = ${station:singlequote})\n  AND (${receiver:singlequote} = 'all' OR (${receiver:singlequote} = 'NONE' AND d.receiver_type IS NULL) OR d.receiver_type = ${receiver:singlequote})\n  AND (${antenna:singlequote} = 'all' OR (${antenna:singlequote} = 'NONE' AND d.antenna_type IS NULL) OR d.antenna_type = ${antenna:singlequote})\n  AND (${owner:singlequote} = 'all' OR s.station_owner = ${owner:singlequote})\n  AND ('$status_filter' = 'all'\n    OR ('$status_filter' = 'online' AND d.is_online = true AND d.station_status IS NULL)\n    OR ('$status_filter' = 'offline' AND d.is_online = false AND d.station_status IS NULL)\n    OR ('$status_filter' = 'critical' AND d.overall_status = 'critical' AND d.station_status IS NULL)\n    OR ('$status_filter' = 'warning' AND d.overall_status = 'warning' AND d.station_status IS NULL)\n    OR ('$status_filter' = 'ping_failed' AND d.status_details LIKE '%Ping%' AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'ftp_down' AND d.ftp_open = false AND d.is_online = true AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'ctrl_refused' AND d.control_open = false AND d.is_online = true)\n    OR ('$status_filter' = 'disk_warning' AND d.status_details LIKE '%Disk%' AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'discontinued' AND d.station_status = 'discontinued')\n    OR ('$status_filter' = 'passive' AND d.health_check = 'passive')\n    OR ('$status_filter' = 'inactive' AND d.station_status = 'inactive')\n    OR ('$status_filter' = '24hr_rinex_missing' AND d.is_online = true AND d.station_status IS NULL AND d.health_check IS NULL\n        AND f.status_24h = 1)\n    OR ('$status_filter' = '1hr_rinex_missing' AND f.status_1hz = 2 AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = '24hr_raw_missing' AND d.is_online = true AND d.station_status IS NULL AND d.health_check IS NULL\n        AND f.status_24h = 2)\n    OR ('$status_filter' = 'voltage_warning' AND d.voltage IS NOT NULL AND (d.status_details LIKE '%Voltage%' OR (d.is_online = false AND ((COALESCE(s.power_type, 'battery') = 'battery' AND (d.voltage < 11.8 OR d.voltage > 15.0)) OR (s.power_type = 'dcdc' AND (d.voltage < 12.0 OR d.voltage > 16.5)) OR (s.power_type = 'mains' AND (d.voltage < 15.0 OR d.voltage > 25.0))))))\n  )\n  AND ('$status_filter' IN ('discontinued', 'inactive') OR d.station_status IS NULL)\nORDER BY d.station_id",
           "refId": "A"
         }
       ],
@@ -830,10 +873,22 @@
                 "value": [
                   {
                     "title": "View station detail",
-                    "url": "/d/gps-station-detail/gps-station-detail?var-station=${__data.fields.Station}&var-area=$area&var-receiver=$receiver&var-antenna=$antenna&${__url_time_range}",
+                    "url": "/d/gps-station-detail/gps-station-detail?var-station=${__data.fields.Station}&var-area=$area&var-owner=$owner&var-receiver=$receiver&var-antenna=$antenna&${__url_time_range}",
                     "targetBlank": false
                   }
                 ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Agency"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 63
               }
             ]
           },
@@ -893,10 +948,20 @@
                   },
                   {
                     "options": {
+                      "pattern": "^degraded.*",
+                      "result": {
+                        "color": "orange",
+                        "index": 1
+                      }
+                    },
+                    "type": "regex"
+                  },
+                  {
+                    "options": {
                       "pattern": "^offline \\d+[mh]$",
                       "result": {
                         "color": "yellow",
-                        "index": 1
+                        "index": 2
                       }
                     },
                     "type": "regex"
@@ -906,7 +971,7 @@
                       "pattern": "^offline.*",
                       "result": {
                         "color": "red",
-                        "index": 2
+                        "index": 3
                       }
                     },
                     "type": "regex"
@@ -916,7 +981,7 @@
                       "match": "null",
                       "result": {
                         "color": "text",
-                        "index": 3,
+                        "index": 4,
                         "text": "-"
                       }
                     },
@@ -926,7 +991,7 @@
                     "options": {
                       "N/A": {
                         "color": "dark-gray",
-                        "index": 4
+                        "index": 5
                       }
                     },
                     "type": "value"
@@ -1271,71 +1336,6 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "24h"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 60
-              },
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "mode": "basic",
-                  "type": "color-background"
-                }
-              },
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "options": {
-                      "0": {
-                        "color": "green",
-                        "index": 0,
-                        "text": "OK"
-                      },
-                      "1": {
-                        "color": "yellow",
-                        "index": 1,
-                        "text": "Late"
-                      },
-                      "2": {
-                        "color": "red",
-                        "index": 2,
-                        "text": "Missing"
-                      },
-                      "-1": {
-                        "color": "#464646",
-                        "index": 3,
-                        "text": "-"
-                      },
-                      "-2": {
-                        "color": "text",
-                        "index": 4,
-                        "text": "N/A"
-                      }
-                    },
-                    "type": "value"
-                  },
-                  {
-                    "options": {
-                      "match": "null",
-                      "result": {
-                        "color": "text",
-                        "index": 5,
-                        "text": "-"
-                      }
-                    },
-                    "type": "special"
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
               "options": "1Hz Data"
             },
             "properties": [
@@ -1460,83 +1460,6 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Status"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "options": {
-                      "OK": {
-                        "color": "green",
-                        "index": 0
-                      },
-                      "offline": {
-                        "color": "red",
-                        "index": 1
-                      },
-                      "port forward missing": {
-                        "color": "red",
-                        "index": 2
-                      },
-                      "unknown": {
-                        "color": "text",
-                        "index": 3
-                      },
-                      "Discontinued": {
-                        "color": "dark-gray",
-                        "index": 6
-                      },
-                      "Passive": {
-                        "color": "dark-gray",
-                        "index": 7
-                      },
-                      "Inactive": {
-                        "color": "dark-gray",
-                        "index": 8
-                      }
-                    },
-                    "type": "value"
-                  },
-                  {
-                    "options": {
-                      "pattern": "^CRITICAL:[\\s\\S]*",
-                      "result": {
-                        "color": "red",
-                        "index": 4
-                      }
-                    },
-                    "type": "regex"
-                  },
-                  {
-                    "options": {
-                      "pattern": "^WARNING:[\\s\\S]*",
-                      "result": {
-                        "color": "yellow",
-                        "index": 5
-                      }
-                    },
-                    "type": "regex"
-                  }
-                ]
-              },
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "mode": "basic",
-                  "type": "color-background"
-                }
-              },
-              {
-                "id": "custom.width",
-                "value": 180
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
               "options": "Checked"
             },
             "properties": [
@@ -1596,6 +1519,261 @@
                 ]
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Health"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 60
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "OK"
+                      },
+                      "1": {
+                        "color": "yellow",
+                        "index": 1,
+                        "text": "Warning"
+                      },
+                      "2": {
+                        "color": "red",
+                        "index": 2,
+                        "text": "Critical"
+                      },
+                      "-1": {
+                        "color": "#464646",
+                        "index": 3,
+                        "text": "-"
+                      },
+                      "-2": {
+                        "color": "text",
+                        "index": 4,
+                        "text": "N/A"
+                      }
+                    }
+                  },
+                  {
+                    "type": "special",
+                    "options": {
+                      "match": "null",
+                      "result": {
+                        "color": "text",
+                        "index": 5,
+                        "text": "-"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Data"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 60
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "OK"
+                      },
+                      "1": {
+                        "color": "yellow",
+                        "index": 1,
+                        "text": "No RNX"
+                      },
+                      "2": {
+                        "color": "red",
+                        "index": 2,
+                        "text": "Missing"
+                      },
+                      "-1": {
+                        "color": "#464646",
+                        "index": 3,
+                        "text": "-"
+                      },
+                      "-2": {
+                        "color": "text",
+                        "index": 4,
+                        "text": "N/A"
+                      }
+                    }
+                  },
+                  {
+                    "type": "special",
+                    "options": {
+                      "match": "null",
+                      "result": {
+                        "color": "text",
+                        "index": 5,
+                        "text": "-"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Status"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 65
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "OK"
+                      },
+                      "1": {
+                        "color": "yellow",
+                        "index": 1,
+                        "text": "Warning"
+                      },
+                      "2": {
+                        "color": "red",
+                        "index": 2,
+                        "text": "Critical"
+                      },
+                      "-1": {
+                        "color": "#464646",
+                        "index": 3,
+                        "text": "-"
+                      }
+                    }
+                  },
+                  {
+                    "type": "special",
+                    "options": {
+                      "match": "null",
+                      "result": {
+                        "color": "text",
+                        "index": 5,
+                        "text": "-"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "24h Data"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 60
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "OK"
+                      },
+                      "1": {
+                        "color": "yellow",
+                        "index": 1,
+                        "text": "Late"
+                      },
+                      "2": {
+                        "color": "red",
+                        "index": 2,
+                        "text": "Missing"
+                      },
+                      "-1": {
+                        "color": "#464646",
+                        "index": 3,
+                        "text": "-"
+                      },
+                      "-2": {
+                        "color": "text",
+                        "index": 4,
+                        "text": "N/A"
+                      }
+                    }
+                  },
+                  {
+                    "type": "special",
+                    "options": {
+                      "match": "null",
+                      "result": {
+                        "color": "text",
+                        "index": 5,
+                        "text": "-"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
           }
         ]
       },
@@ -1634,7 +1812,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  d.station_id AS \"Station\",\n  d.receiver_type AS \"Receiver\",\n  d.antenna_type AS \"Antenna\",\n  EXTRACT(epoch FROM now() - d.last_check)::integer AS \"Checked\",\n  CASE\n    WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN 'N/A'\n    WHEN d.is_online IS NULL THEN NULL\n    WHEN d.is_online THEN 'online ' || format_duration(d.state_duration)\n    ELSE 'offline ' || format_duration(d.state_duration)\n  END AS \"Conn\",\n  CASE\n    WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN 'N/A'\n    WHEN d.ftp_open IS NULL AND d.http_open IS NULL THEN NULL\n    WHEN COALESCE(d.ftp_open, true) AND COALESCE(d.http_open, true) THEN 'active'\n    WHEN d.ftp_open = false THEN\n      CASE WHEN d.status_details LIKE '%FTP refused%' THEN 'dl:refused'\n           WHEN d.status_details LIKE '%FTP timeout%' THEN 'dl:timeout'\n           ELSE 'dl:down' END\n    WHEN d.http_open = false THEN\n      CASE WHEN d.status_details LIKE '%HTTP refused%' THEN 'hc:refused'\n           WHEN d.status_details LIKE '%HTTP timeout%' THEN 'hc:timeout'\n           ELSE 'hc:down' END\n    ELSE 'unknown'\n  END AS \"Port\",\n  CASE\n    WHEN d.station_status = 'discontinued' THEN 'Discontinued'\n    WHEN d.health_check = 'passive' THEN 'Passive'\n    WHEN d.station_status = 'inactive' THEN 'Inactive'\n    WHEN d.is_online = false THEN 'offline'\n    WHEN d.overall_status = 'critical' THEN 'CRITICAL: ' || COALESCE(d.status_details, '')\n    WHEN d.overall_status = 'warning' THEN 'WARNING: ' || COALESCE(d.status_details, '')\n    WHEN d.overall_status = 'healthy' THEN 'OK'\n    ELSE COALESCE(d.overall_status, 'unknown')\n  END AS \"Status\",\n  CASE WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN NULL ELSE d.voltage END AS \"Voltage\",\n  CASE WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN NULL WHEN d.receiver_type = 'NetR5' THEN -1 ELSE d.satellites_tracked END AS \"Sats\",\n  CASE WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN 'N/A' ELSE d.ntrip_status END AS \"NTRIP\",\n  CASE WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN NULL ELSE f.status_24h END AS \"24h\",\n  CASE WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN NULL ELSE f.status_1hz END AS \"1Hz Data\",\n  CASE WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN NULL ELSE d.uptime_seconds END AS \"Uptime\"\nFROM station_dashboard_data d\nLEFT JOIN station_data_flow_status f ON f.sid = d.station_id\nLEFT JOIN stations s ON s.sid = d.station_id\nWHERE ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = d.station_id AND sam.area_id = '$area'))\n  AND (${station:singlequote} = 'all' OR d.station_id = ${station:singlequote})\n  AND (${receiver:singlequote} = 'all' OR (${receiver:singlequote} = 'NONE' AND d.receiver_type IS NULL) OR d.receiver_type = ${receiver:singlequote})\n  AND (${antenna:singlequote} = 'all' OR (${antenna:singlequote} = 'NONE' AND d.antenna_type IS NULL) OR d.antenna_type = ${antenna:singlequote})\n  AND ('$status_filter' = 'all'\n    OR ('$status_filter' = 'online' AND d.is_online = true AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'offline' AND d.is_online = false AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'critical' AND d.overall_status = 'critical' AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'warning' AND d.overall_status = 'warning' AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'ping_failed' AND d.status_details LIKE '%Ping%' AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'ftp_down' AND d.ftp_open = false AND d.is_online = true AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'ctrl_refused' AND d.control_open = false AND d.is_online = true AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'disk_warning' AND d.status_details LIKE '%Disk%' AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'discontinued' AND d.station_status = 'discontinued')\n    OR ('$status_filter' = 'passive' AND d.health_check = 'passive')\n    OR ('$status_filter' = 'inactive' AND d.station_status = 'inactive')\n    OR ('$status_filter' = '24hr_rinex_missing' AND f.status_24h = 2 AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = '1hr_rinex_missing' AND f.status_1hz = 2 AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'voltage_warning' AND d.voltage IS NOT NULL AND (d.status_details LIKE '%Voltage%' OR (d.is_online = false AND ((COALESCE(s.power_type, 'battery') = 'battery' AND (d.voltage < 11.8 OR d.voltage > 15.0)) OR (s.power_type = 'dcdc' AND (d.voltage < 12.0 OR d.voltage > 16.5)) OR (s.power_type = 'mains' AND (d.voltage < 15.0 OR d.voltage > 24.0))))))\n  )\n  AND ('$status_filter' IN ('discontinued', 'passive', 'inactive') OR d.station_status IS NULL AND d.health_check IS NULL)\nORDER BY d.station_id",
+          "rawSql": "SELECT\n  d.station_id AS \"Station\",\n  s.station_owner AS \"Agency\",\n  d.receiver_type AS \"Receiver\",\n  d.antenna_type AS \"Antenna\",\n  CASE WHEN d.station_status IS NOT NULL THEN NULL ELSE f.combined_status END AS \"Status\",\n  CASE WHEN d.station_status IS NOT NULL THEN NULL ELSE f.status_24h END AS \"Data\",\n  CASE WHEN d.station_status IS NOT NULL THEN NULL ELSE f.health_status END AS \"Health\",\n  EXTRACT(epoch FROM now() - d.last_check)::integer AS \"Checked\",\n  CASE\n    WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN 'N/A'\n    WHEN d.connection_state IS NULL THEN NULL\n    WHEN d.connection_state = 'online' THEN 'online ' || format_duration(d.state_duration)\n    WHEN d.connection_state = 'degraded' THEN 'degraded ' || format_duration(d.state_duration)\n    ELSE 'offline ' || format_duration(d.state_duration)\n  END AS \"Conn\",\n  CASE\n    WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN 'N/A'\n    WHEN d.ftp_open IS NULL AND d.http_open IS NULL THEN NULL\n    WHEN COALESCE(d.ftp_open, true) AND COALESCE(d.http_open, true) THEN 'active'\n    WHEN d.ftp_open = false THEN\n      CASE WHEN d.status_details LIKE '%FTP refused%' THEN 'dl:refused'\n           WHEN d.status_details LIKE '%FTP timeout%' THEN 'dl:timeout'\n           ELSE 'dl:down' END\n    WHEN d.http_open = false THEN\n      CASE WHEN d.status_details LIKE '%HTTP refused%' THEN 'hc:refused'\n           WHEN d.status_details LIKE '%HTTP timeout%' THEN 'hc:timeout'\n           ELSE 'hc:down' END\n    ELSE 'unknown'\n  END AS \"Port\",\n  CASE WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN NULL ELSE d.voltage END AS \"Voltage\",\n  CASE WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN 'N/A' ELSE d.ntrip_status END AS \"NTRIP\",\n  CASE WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN NULL WHEN d.receiver_type = 'NetR5' THEN -1 ELSE d.satellites_tracked END AS \"Sats\",\n  CASE WHEN d.station_status IS NOT NULL THEN NULL ELSE f.rinex_24h_status END AS \"24h Data\",\n  CASE WHEN d.station_status IS NOT NULL THEN NULL ELSE f.status_1hz END AS \"1Hz Data\",\n  CASE WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN NULL ELSE d.uptime_seconds END AS \"Uptime\"\nFROM station_dashboard_data d\nLEFT JOIN station_data_flow_status f ON f.sid = d.station_id\nLEFT JOIN stations s ON s.sid = d.station_id\nWHERE ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = d.station_id AND sam.area_id = '$area'))\n  AND (${station:singlequote} = 'all' OR d.station_id = ${station:singlequote})\n  AND (${receiver:singlequote} = 'all' OR (${receiver:singlequote} = 'NONE' AND d.receiver_type IS NULL) OR d.receiver_type = ${receiver:singlequote})\n  AND (${antenna:singlequote} = 'all' OR (${antenna:singlequote} = 'NONE' AND d.antenna_type IS NULL) OR d.antenna_type = ${antenna:singlequote})\n  AND (${owner:singlequote} = 'all' OR s.station_owner = ${owner:singlequote})\n  AND ('$status_filter' = 'all'\n    OR ('$status_filter' = 'online' AND d.is_online = true AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'offline' AND d.is_online = false AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'critical' AND f.combined_status = 2 AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'warning' AND f.combined_status = 1 AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'ping_failed' AND d.status_details LIKE '%Ping%' AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'ftp_down' AND d.ftp_open = false AND d.is_online = true AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'ctrl_refused' AND d.control_open = false AND d.is_online = true AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'disk_warning' AND d.status_details LIKE '%Disk%' AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'discontinued' AND d.station_status = 'discontinued')\n    OR ('$status_filter' = 'passive' AND d.health_check = 'passive')\n    OR ('$status_filter' = 'inactive' AND d.station_status = 'inactive')\n    OR ('$status_filter' = '24hr_rinex_missing' AND d.is_online = true AND d.station_status IS NULL AND d.health_check IS NULL\n        AND f.status_24h = 1)\n    OR ('$status_filter' = '1hr_rinex_missing' AND f.status_1hz = 2 AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = '24hr_raw_missing' AND d.is_online = true AND d.station_status IS NULL AND d.health_check IS NULL\n        AND f.status_24h = 2)\n    OR ('$status_filter' = 'voltage_warning' AND d.voltage IS NOT NULL AND (d.status_details LIKE '%Voltage%' OR (d.is_online = false AND ((COALESCE(s.power_type, 'battery') = 'battery' AND (d.voltage < 11.8 OR d.voltage > 15.0)) OR (s.power_type = 'dcdc' AND (d.voltage < 12.0 OR d.voltage > 16.5)) OR (s.power_type = 'mains' AND (d.voltage < 15.0 OR d.voltage > 25.0))))))\n  )\n  AND ('$status_filter' IN ('discontinued', 'inactive') OR d.station_status IS NULL)\nORDER BY d.station_id",
           "refId": "A"
         }
       ],
@@ -1681,7 +1859,7 @@
                 "value": [
                   {
                     "title": "View station detail",
-                    "url": "/d/gps-station-detail/gps-station-detail?var-station=${__data.fields.Station}&var-area=$area&var-receiver=$receiver&var-antenna=$antenna&${__url_time_range}",
+                    "url": "/d/gps-station-detail/gps-station-detail?var-station=${__data.fields.Station}&var-area=$area&var-owner=$owner&var-receiver=$receiver&var-antenna=$antenna&${__url_time_range}",
                     "targetBlank": false
                   }
                 ]
@@ -1810,7 +1988,7 @@
                 "value": [
                   {
                     "title": "View station detail",
-                    "url": "/d/gps-station-detail/gps-station-detail?var-station=${__data.fields.Station}&var-area=$area&var-receiver=$receiver&var-antenna=$antenna&${__url_time_range}",
+                    "url": "/d/gps-station-detail/gps-station-detail?var-station=${__data.fields.Station}&var-area=$area&var-owner=$owner&var-receiver=$receiver&var-antenna=$antenna&${__url_time_range}",
                     "targetBlank": false
                   }
                 ]
@@ -1914,8 +2092,6 @@
             "axisColorMode": "text",
             "axisLabel": "Voltage (V)",
             "axisPlacement": "auto",
-            "axisSoftMin": 11,
-            "axisSoftMax": 14,
             "barAlignment": 0,
             "drawStyle": "line",
             "fillOpacity": 10,
@@ -1939,8 +2115,10 @@
               "mode": "none"
             },
             "thresholdsStyle": {
-              "mode": "line+area"
-            }
+              "mode": "off"
+            },
+            "axisMin": 10,
+            "axisMax": 16
           },
           "decimals": 2,
           "mappings": [],
@@ -1948,28 +2126,14 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
+                "color": "green",
                 "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 11
-              },
-              {
-                "color": "transparent",
-                "value": 11.8
-              },
-              {
-                "color": "yellow",
-                "value": 15
-              },
-              {
-                "color": "red",
-                "value": 16
               }
             ]
           },
-          "unit": "volt"
+          "unit": "volt",
+          "min": 10,
+          "max": 16
         },
         "overrides": []
       },
@@ -2002,11 +2166,11 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  p.ts AS time,\n  p.sid AS metric,\n  p.voltage AS value\nFROM block_power_status p\nJOIN stations s ON s.sid = p.sid\nWHERE $__timeFilter(p.ts)\n  AND ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = p.sid AND sam.area_id = '$area'))\n  AND COALESCE(s.power_type, 'battery') != 'mains'\nORDER BY p.ts",
+          "rawSql": "SELECT\n  p.ts AS time,\n  p.sid AS metric,\n  p.voltage AS value\nFROM block_power_status p\nJOIN stations s ON s.sid = p.sid\nWHERE $__timeFilter(p.ts)\n  AND ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = p.sid AND sam.area_id = '$area'))\n  AND (${owner:singlequote} = 'all' OR s.station_owner = ${owner:singlequote})\n  AND COALESCE(s.power_type, 'battery') = 'battery'\nORDER BY p.ts",
           "refId": "A"
         }
       ],
-      "title": "Voltage Over Time - $area",
+      "title": "Battery Voltage - $area",
       "type": "timeseries"
     }
   ],
@@ -2038,6 +2202,30 @@
         "name": "area",
         "options": [],
         "query": "SELECT 'all' AS __value, 'All Stations' AS __text UNION ALL SELECT area_id AS __value, area_name || ' (' || area_type || ')' AS __text FROM station_areas ORDER BY __text",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "all",
+          "value": "all"
+        },
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "gps_health"
+        },
+        "definition": "SELECT 'all' AS station_owner UNION ALL SELECT DISTINCT station_owner FROM stations WHERE station_owner IS NOT NULL ORDER BY station_owner",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Agency",
+        "multi": false,
+        "name": "owner",
+        "options": [],
+        "query": "SELECT 'all' AS station_owner UNION ALL SELECT DISTINCT station_owner FROM stations WHERE station_owner IS NOT NULL ORDER BY station_owner",
         "refresh": 1,
         "regex": "",
         "skipUrlSync": false,
@@ -2143,6 +2331,11 @@
           },
           {
             "selected": false,
+            "text": "24hr_raw_missing",
+            "value": "24hr_raw_missing"
+          },
+          {
+            "selected": false,
             "text": "Critical",
             "value": "critical"
           },
@@ -2202,7 +2395,7 @@
             "value": "voltage_warning"
           }
         ],
-        "query": "all,online,offline,critical,warning,ping_failed,ftp_down,ctrl_refused,disk_warning,discontinued,passive,inactive,24hr_rinex_missing,1hr_rinex_missing,voltage_warning",
+        "query": "all,online,offline,critical,warning,ping_failed,ftp_down,ctrl_refused,disk_warning,discontinued,passive,inactive,24hr_raw_missing,24hr_rinex_missing,1hr_rinex_missing,voltage_warning",
         "skipUrlSync": false,
         "type": "custom"
       }

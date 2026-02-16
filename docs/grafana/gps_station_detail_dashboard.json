@@ -85,7 +85,7 @@
             "properties": [
               {
                 "id": "max",
-                "value": 25
+                "value": 35
               },
               {
                 "id": "min",
@@ -110,11 +110,11 @@
                     },
                     {
                       "color": "yellow",
-                      "value": 22
+                      "value": 25
                     },
                     {
                       "color": "red",
-                      "value": 24
+                      "value": 30
                     }
                   ]
                 }
@@ -1138,6 +1138,21 @@
           {
             "matcher": {
               "id": "byName",
+              "options": "degraded"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
               "options": "offline"
             },
             "properties": [
@@ -1185,7 +1200,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COALESCE(EXTRACT(EPOCH FROM d.state_duration)::integer, 0) AS \"online\"\nFROM station_dashboard_data d\nWHERE d.station_id = '$station' AND d.is_online = true",
+          "rawSql": "SELECT COALESCE(EXTRACT(EPOCH FROM d.state_duration)::integer, 0) AS \"online\"\nFROM station_dashboard_data d\nWHERE d.station_id = '$station' AND d.connection_state = 'online'",
           "refId": "A"
         },
         {
@@ -1196,7 +1211,18 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COALESCE(EXTRACT(EPOCH FROM d.state_duration)::integer, 0) AS \"offline\"\nFROM station_dashboard_data d\nWHERE d.station_id = '$station' AND d.is_online = false",
+          "rawSql": "SELECT COALESCE(EXTRACT(EPOCH FROM d.state_duration)::integer, 0) AS \"degraded\"\nFROM station_dashboard_data d\nWHERE d.station_id = '$station' AND d.connection_state = 'degraded'",
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(EXTRACT(EPOCH FROM d.state_duration)::integer, 0) AS \"offline\"\nFROM station_dashboard_data d\nWHERE d.station_id = '$station' AND d.connection_state = 'offline'",
           "refId": "B"
         }
       ],
@@ -1787,7 +1813,7 @@
               },
               {
                 "id": "custom.axisSoftMax",
-                "value": 24
+                "value": 35
               },
               {
                 "id": "custom.thresholdsStyle",

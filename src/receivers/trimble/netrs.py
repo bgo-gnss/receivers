@@ -434,30 +434,35 @@ class NetRS(BaseReceiver):
             self.logger.info(f"Missing files: {len(missing_files_dict)}")
 
             # Filter out known missing files using download tracker
+            # Skip this filter when retry_missing=True (scheduler always retries)
             import re
-            try:
-                with DownloadTracker(self.station_id, session) as tracker:
-                    if tracker._connected:
-                        filtered_missing = {}
-                        skipped_count = 0
-                        for filename, remote_dir in missing_files_dict.items():
-                            # Parse date from NetRS filename: BLEI202601170000A.T00
-                            match = re.match(rf"^{re.escape(self.station_id)}(\d{{4}})(\d{{2}})(\d{{2}})(\d{{2}})(\d{{2}})", filename, re.IGNORECASE)
-                            if match:
-                                from datetime import date
-                                file_date = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
-                                file_hour = int(match.group(4))
-                                track_hour = file_hour if "1hr" in session.lower() else None
-                                if tracker.is_file_missing(file_date, track_hour):
-                                    self.logger.info(f"⏭️  Skipping {filename} (known missing, not retrying)")
-                                    skipped_count += 1
-                                    continue
-                            filtered_missing[filename] = remote_dir
-                        if skipped_count > 0:
-                            self.logger.info(f"Skipped {skipped_count} known missing files")
-                        missing_files_dict = filtered_missing
-            except Exception as e:
-                self.logger.debug(f"File tracking check failed: {e}")
+            retry_missing = kwargs.get('retry_missing', False)
+            if retry_missing:
+                self.logger.debug("Retry mode: skipping known-missing filter")
+            else:
+                try:
+                    with DownloadTracker(self.station_id, session) as tracker:
+                        if tracker._connected:
+                            filtered_missing = {}
+                            skipped_count = 0
+                            for filename, remote_dir in missing_files_dict.items():
+                                # Parse date from NetRS filename: BLEI202601170000A.T00
+                                match = re.match(rf"^{re.escape(self.station_id)}(\d{{4}})(\d{{2}})(\d{{2}})(\d{{2}})(\d{{2}})", filename, re.IGNORECASE)
+                                if match:
+                                    from datetime import date
+                                    file_date = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+                                    file_hour = int(match.group(4))
+                                    track_hour = file_hour if "1hr" in session.lower() else None
+                                    if tracker.is_file_missing(file_date, track_hour):
+                                        self.logger.info(f"⏭️  Skipping {filename} (known missing, not retrying)")
+                                        skipped_count += 1
+                                        continue
+                                filtered_missing[filename] = remote_dir
+                            if skipped_count > 0:
+                                self.logger.info(f"Skipped {skipped_count} known missing files")
+                            missing_files_dict = filtered_missing
+                except Exception as e:
+                    self.logger.debug(f"File tracking check failed: {e}")
 
             # Log connection info and remote paths (matching NetR9 pattern)
             if missing_files_dict:

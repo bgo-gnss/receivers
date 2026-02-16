@@ -310,32 +310,37 @@ class LeicaG10(BaseReceiver):
             self.logger.info(f"Missing files: {len(missing_files_dict)} (out of {len(files_dict)} total)")
 
             # Filter out known missing files using download tracker
+            # Skip this filter when retry_missing=True (scheduler always retries)
             import re
             from datetime import date, timedelta
-            try:
-                with DownloadTracker(self.station_id, session) as tracker:
-                    if tracker._connected:
-                        filtered_missing = {}
-                        skipped_count = 0
-                        for filename, remote_dir in missing_files_dict.items():
-                            # Parse date from filename
-                            match = re.match(rf"^{self.station_id}(\d{{3}})([a-x])", filename, re.IGNORECASE)
-                            if match:
-                                day_of_year = int(match.group(1))
-                                session_letter = match.group(2).lower()
-                                file_year = start.year if hasattr(start, 'year') else datetime.now().year
-                                file_date = date(file_year, 1, 1) + timedelta(days=day_of_year - 1)
-                                file_hour = None if session_letter == 'a' else ord(session_letter) - ord('a')
-                                if tracker.is_file_missing(file_date, file_hour):
-                                    self.logger.info(f"⏭️  Skipping {filename} (known missing, not retrying)")
-                                    skipped_count += 1
-                                    continue
-                            filtered_missing[filename] = remote_dir
-                        if skipped_count > 0:
-                            self.logger.info(f"Skipped {skipped_count} known missing files")
-                        missing_files_dict = filtered_missing
-            except Exception as e:
-                self.logger.debug(f"File tracking check failed: {e}")
+            retry_missing = kwargs.get('retry_missing', False)
+            if retry_missing:
+                self.logger.debug("Retry mode: skipping known-missing filter")
+            else:
+                try:
+                    with DownloadTracker(self.station_id, session) as tracker:
+                        if tracker._connected:
+                            filtered_missing = {}
+                            skipped_count = 0
+                            for filename, remote_dir in missing_files_dict.items():
+                                # Parse date from filename
+                                match = re.match(rf"^{self.station_id}(\d{{3}})([a-x])", filename, re.IGNORECASE)
+                                if match:
+                                    day_of_year = int(match.group(1))
+                                    session_letter = match.group(2).lower()
+                                    file_year = start.year if hasattr(start, 'year') else datetime.now().year
+                                    file_date = date(file_year, 1, 1) + timedelta(days=day_of_year - 1)
+                                    file_hour = None if session_letter == 'a' else ord(session_letter) - ord('a')
+                                    if tracker.is_file_missing(file_date, file_hour):
+                                        self.logger.info(f"⏭️  Skipping {filename} (known missing, not retrying)")
+                                        skipped_count += 1
+                                        continue
+                                filtered_missing[filename] = remote_dir
+                            if skipped_count > 0:
+                                self.logger.info(f"Skipped {skipped_count} known missing files")
+                            missing_files_dict = filtered_missing
+                except Exception as e:
+                    self.logger.debug(f"File tracking check failed: {e}")
 
             # Download files if sync is enabled
             downloaded_files = []
