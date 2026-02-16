@@ -1995,7 +1995,11 @@
               },
               {
                 "id": "decimals",
-                "value": 2
+                "value": 1
+              },
+              {
+                "id": "custom.width",
+                "value": 70
               },
               {
                 "id": "custom.cellOptions",
@@ -2238,7 +2242,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH last_voltage AS (\n  SELECT DISTINCT ON (sid) sid, voltage\n  FROM block_power_status\n  WHERE voltage IS NOT NULL\n  ORDER BY sid, ts DESC\n)\nSELECT\n  d.station_id AS \"Station\",\n  CASE\n    WHEN f.health_status = 2 THEN 'critical'\n    WHEN d.connection_state = 'degraded' THEN 'degraded'\n    ELSE 'offline'\n  END AS \"State\",\n  CASE\n    WHEN f.health_status = 2 THEN d.status_details\n    WHEN lv.voltage IS NOT NULL AND lv.voltage < 5.0 THEN 'power failure (' || round(lv.voltage::numeric, 1) || 'V)'\n    WHEN lv.voltage IS NOT NULL AND lv.voltage < 11.0 THEN 'low voltage (' || round(lv.voltage::numeric, 1) || 'V)'\n    WHEN lv.voltage IS NOT NULL AND lv.voltage < 11.8 THEN 'battery low (' || round(lv.voltage::numeric, 1) || 'V)'\n    WHEN lv.voltage IS NOT NULL THEN 'connection lost'\n    ELSE 'unreachable'\n  END AS \"Cause\",\n  d.packet_loss AS \"Loss\",\n  COALESCE(d.voltage, lv.voltage) AS \"Voltage\",\n  EXTRACT(EPOCH FROM d.state_duration)::integer AS \"Duration\",\n  d.last_check AS \"Last Update\"\nFROM station_dashboard_data d\nLEFT JOIN station_data_flow_status f ON f.sid = d.station_id\nLEFT JOIN last_voltage lv ON lv.sid = d.station_id\nWHERE (f.health_status = 2 OR (d.is_online = false AND d.station_status IS NULL AND d.health_check IS NULL))\nORDER BY\n  CASE WHEN f.health_status = 2 THEN 0 ELSE 1 END,\n  d.station_id",
+          "rawSql": "WITH last_voltage AS (\n  SELECT DISTINCT ON (sid) sid, voltage\n  FROM block_power_status\n  WHERE voltage IS NOT NULL\n  ORDER BY sid, ts DESC\n)\nSELECT\n  d.station_id AS \"Station\",\n  CASE\n    WHEN f.health_status = 2 THEN d.status_details\n    WHEN lv.voltage IS NOT NULL AND lv.voltage < 5.0 THEN 'power failure (' || round(lv.voltage::numeric, 1) || 'V)'\n    WHEN lv.voltage IS NOT NULL AND lv.voltage < 11.0 THEN 'low voltage (' || round(lv.voltage::numeric, 1) || 'V)'\n    WHEN lv.voltage IS NOT NULL AND lv.voltage < 11.8 THEN 'battery low (' || round(lv.voltage::numeric, 1) || 'V)'\n    WHEN lv.voltage IS NOT NULL THEN 'connection lost'\n    ELSE 'unreachable'\n  END AS \"Cause\",\n  d.packet_loss AS \"Loss\",\n  COALESCE(d.voltage, lv.voltage) AS \"Voltage\",\n  CASE\n    WHEN f.health_status = 2 THEN 'critical'\n    WHEN d.connection_state = 'degraded' THEN 'degraded'\n    ELSE 'offline'\n  END AS \"State\",\n  EXTRACT(EPOCH FROM d.state_duration)::integer AS \"Duration\",\n  d.last_check AS \"Last Update\"\nFROM station_dashboard_data d\nLEFT JOIN station_data_flow_status f ON f.sid = d.station_id\nLEFT JOIN last_voltage lv ON lv.sid = d.station_id\nWHERE (f.health_status = 2 OR (d.is_online = false AND d.station_status IS NULL AND d.health_check IS NULL))\nORDER BY\n  CASE WHEN f.health_status = 2 THEN 0 ELSE 1 END,\n  d.station_id",
           "refId": "A"
         }
       ],
