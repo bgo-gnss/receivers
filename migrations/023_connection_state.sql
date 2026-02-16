@@ -157,6 +157,7 @@ SELECT
     sc.state_since,
     sc.state_duration,
     sc.response_time_ms AS ping_response_ms,
+    sc.packet_loss,
     lh.overall_status, lh.status_details,
     lh.ftp_open, lh.http_open, lh.control_open,
     lh.ftp_port, lh.http_port AS health_http_port, lh.control_port,
@@ -236,19 +237,46 @@ latest_rinex_1hz AS (
       AND status IN ('downloaded', 'archived')
     ORDER BY sid, file_date DESC, file_hour DESC NULLS LAST
 ),
+-- Consecutive critical streak per station (for debounce)
+health_streak AS (
+    SELECT sid,
+           COALESCE(
+               MIN(rn) FILTER (WHERE overall_status != 'critical'), 7
+           ) - 1 AS consecutive_critical
+    FROM (
+        SELECT sid, overall_status,
+               ROW_NUMBER() OVER (PARTITION BY sid ORDER BY ts DESC) AS rn
+        FROM block_health_summary
+    ) recent
+    WHERE rn <= 6
+    GROUP BY sid
+),
 base AS (
     SELECT
         d.station_id AS sid,
+        -- Two-level debounce:
+        --   1) Connectivity-only critical + debounced-online → capped at Warning
+        --   2) All critical: need 2+ consecutive checks (~10 min) before Critical
         CASE
             WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN -2
             WHEN d.overall_status = 'healthy' THEN 0
             WHEN d.overall_status = 'warning' THEN 1
-            WHEN d.overall_status = 'critical' THEN 2
+            WHEN d.overall_status = 'critical'
+                 AND d.connection_state = 'online'
+                 AND (d.status_details IS NULL
+                      OR d.status_details !~* '(Voltage|Temperature|Disk|Satellite)')
+                 THEN 1
+            WHEN d.overall_status = 'critical'
+                 AND COALESCE(hs.consecutive_critical, 1) >= 2
+                 THEN 2
+            WHEN d.overall_status = 'critical' THEN 1
             ELSE -1
         END AS health_status,
         CASE
             WHEN d.station_status IS NOT NULL THEN -2
-            WHEN NOT COALESCE(l.session_15s_24hr, false) AND r24.file_date IS NULL THEN -2
+            WHEN d.receiver_type IS NULL
+                 AND NOT COALESCE(l.session_15s_24hr, false)
+                 AND r24.file_date IS NULL THEN -2
             WHEN r24.file_date IS NULL OR r24.file_date < CURRENT_DATE - 1 THEN 2
             WHEN x24.file_date IS NULL OR x24.file_date < r24.file_date THEN 1
             ELSE 0
@@ -263,7 +291,9 @@ base AS (
         END AS status_1hz,
         CASE
             WHEN d.station_status IS NOT NULL THEN -2
-            WHEN NOT COALESCE(l.session_15s_24hr, false) AND r24.file_date IS NULL THEN -2
+            WHEN d.receiver_type IS NULL
+                 AND NOT COALESCE(l.session_15s_24hr, false)
+                 AND r24.file_date IS NULL THEN -2
             WHEN x24.file_date >= CURRENT_DATE - 1 THEN 0
             WHEN x24.file_date IS NULL AND r24.file_date IS NOT NULL THEN 2
             WHEN x24.file_date IS NULL THEN -1
@@ -283,10 +313,11 @@ base AS (
         r1h.latest_ts AS raw_1hz_ts,
         x24.file_date AS rinex_24h_date,
         x1h.latest_ts AS rinex_1hz_ts,
-        COALESCE(l.session_15s_24hr, false) OR r24.file_date IS NOT NULL AS logging_15s,
+        d.receiver_type IS NOT NULL OR COALESCE(l.session_15s_24hr, false) OR r24.file_date IS NOT NULL AS logging_15s,
         COALESCE(l.session_1hz_1hr, false) OR r1h.latest_ts IS NOT NULL AS logging_1hz
     FROM station_dashboard_data d
     LEFT JOIN station_logging_status l ON l.sid = d.station_id
+    LEFT JOIN health_streak hs ON hs.sid = d.station_id
     LEFT JOIN latest_raw_24h r24 ON r24.sid = d.station_id
     LEFT JOIN latest_raw_1hz r1h ON r1h.sid = d.station_id
     LEFT JOIN latest_rinex_24h x24 ON x24.sid = d.station_id

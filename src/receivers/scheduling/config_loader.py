@@ -126,7 +126,7 @@ def get_default_config() -> Dict[str, Any]:
         },
         'stations': {},
         'recovery': {
-            'auto_recovery_enabled': False,
+            'auto_recovery_enabled': True,
             'max_recovery_days': 30,
             'backfill_enabled': False
         },
@@ -167,6 +167,7 @@ def get_default_config() -> Dict[str, Any]:
             'window_end': 55,
             'schedule': '5m',
             'archiving_mode': 'bulk',
+            'strategy': 'round_robin',
             'sessions': ['status_1hr', '1Hz_1hr', '15s_24hr'],
         },
         'gap_detection': {
@@ -180,6 +181,25 @@ def get_default_config() -> Dict[str, Any]:
             'schedule': '6h',
             'days_back': 30,
             'sessions': ['15s_24hr', '1Hz_1hr'],
+        },
+        'load_monitoring': {
+            'enabled': False,
+            'max_cpu_load': 8.0,
+            'max_network_mbps': 80,
+            'max_active_jobs': 80,
+            'check_interval': 10,
+            'priority_thresholds': {
+                'realtime': 1.0,
+                'standard': 0.8,
+                'backfill': 0.6,
+                'maintenance': 0.4,
+            },
+        },
+        'bootstrap': {
+            'enabled': True,
+            'distribution_window': 10,
+            'initial_lookback_days': 3,
+            'full_lookback_days': 30,
         },
         'priorities': {
             'realtime': {
@@ -255,7 +275,8 @@ def merge_with_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
     # Ensure new pipeline sections exist
     for section in ['resource_pools', 'pipelines', 'status_monitoring',
                     'priorities', 'sync', 'monitoring',
-                    'backfill', 'gap_detection', 'archive_reconciler']:
+                    'backfill', 'gap_detection', 'archive_reconciler',
+                    'load_monitoring', 'bootstrap']:
         if section not in config:
             config[section] = defaults.get(section, {})
         else:
@@ -418,7 +439,7 @@ archive_reconciler:
 stations: {}
 
 recovery:
-  auto_recovery_enabled: false
+  auto_recovery_enabled: true
   max_recovery_days: 30
   backfill_enabled: false
 '''

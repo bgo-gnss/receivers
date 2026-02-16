@@ -878,16 +878,24 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
         if file_parts:
             print(f"  Files: {' '.join(file_parts)}")
 
-    # 24hr processing status
+    # Archive status from file_tracking database (what we actually have)
+    archive_status = health.get("archive_status", {})
+    if archive_status:
+        status = archive_status.get("status", "unknown")
+        message = archive_status.get("message", "")
+        if status != "unknown":
+            emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+            print(f"  Archive: {emoji} {message}")
+
+    # 24hr GAMIT timeseries (production processing — separate from our downloads)
     proc_status = health.get("processing_24hr", {})
     if proc_status:
         status = proc_status.get("status", "unknown")
         message = proc_status.get("message", "")
         if status != "unknown":
             emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
-            # Shorten the message for display
             short_msg = message.replace("24hr processing ", "").replace("OK - ", "").replace("CRITICAL - ", "")
-            print(f"  Processing: {emoji} {short_msg}")
+            print(f"  Timeseries: {emoji} {short_msg}")
 
 
 def _write_connectivity_status(station_id: str, health_data: Dict[str, Any], logger: logging.Logger) -> None:

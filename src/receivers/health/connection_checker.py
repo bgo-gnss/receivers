@@ -196,9 +196,19 @@ class ConnectionChecker:
                             pass
 
                 # Determine status based on latency and packet loss
-                if packet_loss >= 50:
+                # Thresholds loaded from ThresholdConfig (configurable via
+                # ~/.config/gpsconfig/thresholds.yaml)
+                try:
+                    from .metrics import load_thresholds
+                    tc = load_thresholds()
+                    loss_warn = tc.packet_loss_warning    # default 20.0
+                    loss_crit = tc.packet_loss_critical   # default 70.0
+                except Exception:
+                    loss_warn, loss_crit = 20.0, 70.0
+
+                if packet_loss >= loss_crit:
                     status = HealthStatus.CRITICAL
-                elif packet_loss > 0 or (latency_ms and latency_ms > 500):
+                elif packet_loss >= loss_warn or (latency_ms and latency_ms > 500):
                     status = HealthStatus.WARNING
                 else:
                     status = HealthStatus.OK

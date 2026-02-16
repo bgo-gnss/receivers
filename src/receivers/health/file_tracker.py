@@ -566,16 +566,10 @@ class ArchiveFileChecker:
 
     def _get_extension(self, receiver_type: Optional[str] = None) -> str:
         """Get file extension based on receiver type."""
+        from ..config.receiver_registry import get_raw_extension
+
         if receiver_type:
-            rt = receiver_type.lower()
-            if "polarx" in rt or "septentrio" in rt:
-                return ".sbf.gz"
-            elif "netr9" in rt:
-                return ".T02"
-            elif "netrs" in rt:
-                return ".T00"
-            elif "g10" in rt or "leica" in rt:
-                return ".m00.gz"
+            return get_raw_extension(receiver_type)
         return ".sbf.gz"  # Default
 
     def build_archive_path(
@@ -1517,6 +1511,102 @@ class ProcessingStatusChecker:
                 "days_behind": None,
                 "file_exists": True,
                 "message": f"Error reading time series: {e}",
+            }
+
+    def check_archive_status(self, station_id: str) -> Dict[str, Any]:
+        """Check archive status from file_tracking database.
+
+        Queries the file_tracking table for the latest raw and RINEX file
+        dates, providing an accurate view of what data we actually have
+        archived (as opposed to check_24hr_processing which reads production
+        GAMIT timeseries).
+
+        Args:
+            station_id: Station ID (e.g., 'THOB')
+
+        Returns:
+            Dict with:
+            - has_data: Whether any file_tracking entries exist
+            - latest_raw_date: Latest 15s_24hr raw file date (or None)
+            - latest_rinex_date: Latest 15s_24hr_rinex file date (or None)
+            - status: 'ok', 'warning', 'critical', 'unknown'
+            - message: Human-readable status message
+        """
+        try:
+            from ..health.database_factory import DatabaseConnectionFactory
+
+            conn = DatabaseConnectionFactory.get_connection(database="gps_health")
+            cur = conn.cursor()
+
+            cur.execute(
+                """
+                SELECT session_type, MAX(file_date) as latest_date
+                FROM file_tracking
+                WHERE sid = %s
+                  AND session_type IN ('15s_24hr', '15s_24hr_rinex')
+                GROUP BY session_type
+                """,
+                (station_id,),
+            )
+
+            dates: Dict[str, Any] = {}
+            for row in cur.fetchall():
+                dates[row[0]] = row[1]
+
+            conn.close()
+
+            latest_raw = dates.get("15s_24hr")
+            latest_rinex = dates.get("15s_24hr_rinex")
+
+            if not latest_raw:
+                return {
+                    "has_data": False,
+                    "latest_raw_date": None,
+                    "latest_rinex_date": None,
+                    "status": "unknown",
+                    "message": "no data in archive",
+                }
+
+            # Determine status based on how current the data is
+            from datetime import date as date_type
+
+            today = date_type.today()
+            yesterday = today - timedelta(days=1)
+            days_behind = (yesterday - latest_raw).days
+
+            raw_str = latest_raw.strftime("%Y-%m-%d")
+            rinex_str = latest_rinex.strftime("%Y-%m-%d") if latest_rinex else "none"
+
+            if days_behind <= 0:
+                status = "ok"
+                message = f"latest: {raw_str}, rinex: {rinex_str}"
+            elif days_behind == 1:
+                status = "warning"
+                message = f"latest: {raw_str} (1 day behind), rinex: {rinex_str}"
+            elif days_behind <= 3:
+                status = "warning"
+                message = f"latest: {raw_str} ({days_behind} days behind), rinex: {rinex_str}"
+            else:
+                status = "critical"
+                message = f"latest: {raw_str} ({days_behind} days behind), rinex: {rinex_str}"
+
+            return {
+                "has_data": True,
+                "latest_raw_date": latest_raw.isoformat(),
+                "latest_rinex_date": latest_rinex.isoformat() if latest_rinex else None,
+                "days_behind": days_behind,
+                "status": status,
+                "message": message,
+            }
+
+        except Exception as e:
+            logger.debug(f"Archive status check failed for {station_id}: {e}")
+            return {
+                "has_data": False,
+                "latest_raw_date": None,
+                "latest_rinex_date": None,
+                "status": "unknown",
+                "message": f"DB check failed: {e}",
             }
 
 

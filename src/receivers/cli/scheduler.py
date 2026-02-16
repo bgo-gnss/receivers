@@ -411,7 +411,7 @@ def cmd_scheduler_backfill(args) -> int:
 
 
 def cmd_scheduler_reconcile(args) -> int:
-    """Manually trigger SBF->RINEX archive reconciliation."""
+    """Manually trigger raw->RINEX archive reconciliation."""
 
     days_back = getattr(args, 'days', 30)
     dry_run = getattr(args, 'dry_run', False)
@@ -423,26 +423,35 @@ def cmd_scheduler_reconcile(args) -> int:
 
     try:
         from ..cli.main import get_all_station_configs
+        from ..config.receiver_registry import has_rinex_converter
         from ..health.file_tracker import ArchiveFileChecker
         from ..scheduling.archive_reconciler import (
-            _find_sbf_file, _find_rinex_file, _convert_sbf_to_rinex,
+            _find_raw_file, _find_rinex_file, _convert_raw_to_rinex,
         )
         from datetime import date, datetime, timedelta, timezone
 
         all_stations = get_all_station_configs()
 
         if stations:
-            polarx5_stations = [s.upper() for s in stations]
+            # User-specified stations: use as-is, look up receiver types
+            target_stations = {}
+            for s in stations:
+                sid = s.upper()
+                cfg = all_stations.get(sid, {})
+                rt = cfg.get('receiver_type', '').lower()
+                target_stations[sid] = rt if rt else 'polarx5'
         else:
-            polarx5_stations = [
-                sid for sid, cfg in all_stations.items()
+            # All active stations with RINEX converters
+            target_stations = {
+                sid: cfg.get('receiver_type', '').lower()
+                for sid, cfg in all_stations.items()
                 if cfg.get('enabled', True)
-                and cfg.get('receiver_type', '').lower() == 'polarx5'
+                and has_rinex_converter(cfg.get('receiver_type', ''))
                 and cfg.get('station_status') not in ('discontinued', 'inactive')
-            ]
+            }
 
         session_types = ['15s_24hr', '1Hz_1hr']
-        print(f"Scanning {len(polarx5_stations)} PolaRX5 stations, sessions: {session_types}")
+        print(f"Scanning {len(target_stations)} stations, sessions: {session_types}")
 
         checker = ArchiveFileChecker()
         end_date = date.today() - timedelta(days=1)
@@ -451,7 +460,8 @@ def cmd_scheduler_reconcile(args) -> int:
         total_missing = 0
         total_converted = 0
 
-        for station_id in sorted(polarx5_stations):
+        for station_id in sorted(target_stations):
+            receiver_type = target_stations[station_id]
             for session_type in session_types:
                 current = start_date
                 while current <= end_date:
@@ -462,25 +472,31 @@ def cmd_scheduler_reconcile(args) -> int:
                     hours = [0] if session_type == "15s_24hr" else list(range(24))
                     for hour in hours:
                         file_dt = dt.replace(hour=hour)
-                        sbf_path = _find_sbf_file(station_id, session_type, file_dt, checker)
-                        if sbf_path is None:
+                        raw_path = _find_raw_file(
+                            station_id, session_type, file_dt, checker,
+                            receiver_type=receiver_type,
+                        )
+                        if raw_path is None:
                             continue
-                        rinex_path = _find_rinex_file(sbf_path)
+                        rinex_path = _find_rinex_file(raw_path)
                         if rinex_path is not None:
                             continue
 
                         total_missing += 1
                         if dry_run:
-                            print(f"  MISSING RINEX: {sbf_path}")
+                            print(f"  MISSING RINEX: {raw_path}")
                         else:
-                            success = _convert_sbf_to_rinex(station_id, sbf_path)
+                            success = _convert_raw_to_rinex(
+                                station_id, raw_path,
+                                receiver_type=receiver_type,
+                            )
                             if success:
                                 total_converted += 1
 
                     current += timedelta(days=1)
 
         if dry_run:
-            print(f"\nDry run complete: {total_missing} SBF files missing RINEX")
+            print(f"\nDry run complete: {total_missing} raw files missing RINEX")
         else:
             print(f"\nReconciliation complete: {total_missing} missing, {total_converted} converted")
 
@@ -491,6 +507,248 @@ def cmd_scheduler_reconcile(args) -> int:
         return 1
     except Exception as e:
         print(f"Reconciliation failed: {e}")
+        return 1
+
+
+def cmd_scheduler_pipeline_status(args) -> int:
+    """Show pipeline job status and history."""
+    try:
+        from ..scheduling.pipeline import PipelineStateStore
+
+        store = PipelineStateStore()
+        station = getattr(args, 'station', None)
+        session = getattr(args, 'session', None)
+        limit = getattr(args, 'limit', 20)
+
+        if station:
+            jobs = store.load_jobs_by_station(
+                station.upper(),
+                session_type=session,
+                limit=limit,
+            )
+            print(f"Pipeline jobs for {station.upper()}" + (f" ({session})" if session else ""))
+        else:
+            # Show stats and recent incomplete jobs
+            stats = store.get_stats()
+            print("Pipeline Statistics")
+            print("=" * 50)
+            print(f"Total jobs:      {stats['total_jobs']}")
+            print(f"Complete:        {stats['complete_jobs']}")
+            print(f"Incomplete:      {stats['incomplete_jobs']}")
+
+            if stats['by_session_type']:
+                print("\nBy session type:")
+                for session_type, count in sorted(stats['by_session_type'].items()):
+                    print(f"  {session_type}: {count}")
+
+            jobs = store.load_incomplete_jobs()
+            if not jobs:
+                print("\nNo incomplete pipeline jobs")
+                return 0
+            print(f"\nIncomplete jobs ({len(jobs)}):")
+
+        if not jobs:
+            print("  No matching pipeline jobs found")
+            return 0
+
+        print(f"\n{'Station':<8} {'Session':<12} {'Stages':<40} {'Updated':<20}")
+        print("-" * 80)
+
+        for job in jobs[:limit]:
+            stages_str = []
+            for stage, result in job.stages.items():
+                icon = {
+                    'pending': '⏳',
+                    'running': '🔄',
+                    'completed': '✅',
+                    'failed': '❌',
+                    'skipped': '⏭️',
+                }.get(result.status.value, '?')
+                stages_str.append(f"{icon}{stage.value}")
+
+            updated = job.updated_at.strftime('%Y-%m-%d %H:%M') if job.updated_at else 'N/A'
+            print(f"{job.station_id:<8} {job.session_type:<12} {' '.join(stages_str):<40} {updated:<20}")
+
+        return 0
+
+    except ImportError as e:
+        print(f"Pipeline tracking not available: {e}")
+        return 1
+    except Exception as e:
+        print(f"Failed to get pipeline status: {e}")
+        return 1
+
+
+def cmd_scheduler_load_status(args) -> int:
+    """Show current system load and throttling status."""
+    try:
+        from ..scheduling.load_monitor import LoadMonitor
+        from ..scheduling.config_loader import load_scheduler_config
+
+        config = load_scheduler_config()
+        load_cfg = config.get('load_monitoring', {})
+
+        if not load_cfg.get('enabled', False):
+            print("Load monitoring is disabled in scheduler.yaml")
+            print("Enable it with: load_monitoring: { enabled: true }")
+            return 0
+
+        monitor = LoadMonitor(load_cfg)
+        status = monitor.get_status()
+
+        print("System Load Status")
+        print("=" * 50)
+        print(f"CPU load (1m):     {status['cpu_load_1m']:.2f}  (max: {status['thresholds']['max_cpu_load']})")
+        print(f"CPU load (5m):     {status['cpu_load_5m']:.2f}")
+        print(f"Active threads:    {status['active_threads']}  (max: {status['thresholds']['max_active_jobs']})")
+        print(f"Network:           {status['network_mbps']:.1f} Mbps  (max: {status['thresholds']['max_network_mbps']})")
+
+        print(f"\nJob admission by priority:")
+        for priority_name, allowed in status['can_start'].items():
+            icon = "✅" if allowed else "❌"
+            print(f"  {icon} {priority_name}")
+
+        return 0
+
+    except ImportError as e:
+        print(f"Load monitoring not available: {e}")
+        return 1
+    except Exception as e:
+        print(f"Failed to get load status: {e}")
+        return 1
+
+
+def cmd_scheduler_bootstrap(args) -> int:
+    """Manually trigger bootstrap (cold-start) downloads."""
+    if not HAS_APSCHEDULER:
+        print("APScheduler not available. Install with: pip install apscheduler")
+        return 1
+
+    try:
+        from ..scheduling.bootstrap import schedule_bootstrap
+
+        days = getattr(args, 'days', 3)
+        stations_arg = getattr(args, 'stations', None)
+        station_filter = [s.upper() for s in stations_arg] if stations_arg else None
+
+        scheduler = BulkDownloadScheduler(
+            production_mode=not getattr(args, 'verbose', False),
+            station_filter=station_filter,
+        )
+
+        bootstrap_cfg = {
+            'distribution_window': getattr(args, 'window', 10),
+            'initial_lookback_days': days,
+        }
+
+        jobs = schedule_bootstrap(
+            scheduler=scheduler.scheduler,
+            stations=scheduler.stations,
+            session_configs=scheduler.schedule_configs,
+            bootstrap_cfg=bootstrap_cfg,
+            production_mode=scheduler.production_mode,
+            station_filter=station_filter,
+        )
+
+        if jobs == 0:
+            print("No bootstrap jobs created (no eligible stations)")
+            return 0
+
+        print(f"Created {jobs} bootstrap download jobs (lookback={days} days)")
+        print("Starting scheduler to execute bootstrap jobs...")
+
+        import signal
+
+        def signal_handler(signum, frame):
+            print("\nStopping bootstrap...")
+            scheduler.stop()
+            import sys
+            sys.exit(0)
+
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+
+        scheduler.start()
+
+        # Wait for jobs to complete
+        while True:
+            time.sleep(1)
+
+    except KeyboardInterrupt:
+        print("\nBootstrap stopped by user")
+        return 0
+    except Exception as e:
+        print(f"Bootstrap failed: {e}")
+        return 1
+
+
+def cmd_scheduler_backfill_status(args) -> int:
+    """Show backfill progress and priority queue."""
+    try:
+        from ..health.database_factory import DatabaseConnectionFactory
+
+        session = getattr(args, 'session', None)
+
+        with DatabaseConnectionFactory.connection() as conn:
+            with conn.cursor() as cur:
+                if session:
+                    cur.execute("""
+                        SELECT sid, session_type, status, next_date, backfill_end,
+                               files_found, files_imported, files_missing, files_error,
+                               last_run
+                        FROM backfill_progress
+                        WHERE session_type = %s
+                        ORDER BY status, last_run ASC NULLS FIRST
+                    """, (session,))
+                else:
+                    cur.execute("""
+                        SELECT sid, session_type, status, next_date, backfill_end,
+                               files_found, files_imported, files_missing, files_error,
+                               last_run
+                        FROM backfill_progress
+                        ORDER BY session_type, status, last_run ASC NULLS FIRST
+                    """)
+
+                rows = cur.fetchall()
+
+        if not rows:
+            print("No backfill progress entries found")
+            return 0
+
+        # Summary
+        by_status = {}
+        for row in rows:
+            status = row[2]
+            by_status[status] = by_status.get(status, 0) + 1
+
+        title = f"Backfill Status" + (f" ({session})" if session else "")
+        print(title)
+        print("=" * 60)
+        for status, count in sorted(by_status.items()):
+            print(f"  {status}: {count} stations")
+
+        # Detail table
+        print(f"\n{'Station':<8} {'Session':<12} {'Status':<12} {'Next Date':<12} {'End':<12} {'Found':<6} {'Import':<6} {'Miss':<6} {'Err':<4}")
+        print("-" * 90)
+
+        limit = getattr(args, 'limit', 30)
+        for row in rows[:limit]:
+            sid, sess, status, next_dt, end_dt = row[0], row[1], row[2], row[3], row[4]
+            found, imported, missing, errors = row[5] or 0, row[6] or 0, row[7] or 0, row[8] or 0
+            next_str = str(next_dt) if next_dt else 'N/A'
+            end_str = str(end_dt) if end_dt else 'N/A'
+            print(f"{sid:<8} {sess:<12} {status:<12} {next_str:<12} {end_str:<12} {found:<6} {imported:<6} {missing:<6} {errors:<4}")
+
+        if len(rows) > limit:
+            print(f"... and {len(rows) - limit} more")
+
+        return 0
+
+    except ImportError as e:
+        print(f"Database not available: {e}")
+        return 1
+    except Exception as e:
+        print(f"Failed to get backfill status: {e}")
         return 1
 
 
@@ -771,6 +1029,85 @@ def create_scheduler_parser(subparsers):
     )
     restart_parser.set_defaults(func=cmd_scheduler_restart)
 
+    # Pipeline status command
+    pipeline_parser = scheduler_subparsers.add_parser(
+        "pipeline-status",
+        help="Show pipeline job status and history"
+    )
+    pipeline_parser.add_argument(
+        "--station",
+        type=str,
+        help="Filter by station ID"
+    )
+    pipeline_parser.add_argument(
+        "--session",
+        type=str,
+        choices=["15s_24hr", "1Hz_1hr", "status_1hr"],
+        help="Filter by session type"
+    )
+    pipeline_parser.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Maximum number of jobs to show (default: 20)"
+    )
+    pipeline_parser.set_defaults(func=cmd_scheduler_pipeline_status)
+
+    # Load status command
+    load_parser = scheduler_subparsers.add_parser(
+        "load-status",
+        help="Show current system load and throttling status"
+    )
+    load_parser.set_defaults(func=cmd_scheduler_load_status)
+
+    # Bootstrap command
+    bootstrap_parser = scheduler_subparsers.add_parser(
+        "bootstrap",
+        help="Trigger bootstrap (cold-start) downloads"
+    )
+    bootstrap_parser.add_argument(
+        "--days",
+        type=int,
+        default=3,
+        help="Number of days to look back (default: 3)"
+    )
+    bootstrap_parser.add_argument(
+        "--stations",
+        nargs="+",
+        help="Only bootstrap these specific stations"
+    )
+    bootstrap_parser.add_argument(
+        "--window",
+        type=int,
+        default=10,
+        help="Distribution window in minutes (default: 10)"
+    )
+    bootstrap_parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Enable verbose logging"
+    )
+    bootstrap_parser.set_defaults(func=cmd_scheduler_bootstrap)
+
+    # Backfill status command
+    backfill_status_parser = scheduler_subparsers.add_parser(
+        "backfill-status",
+        help="Show backfill progress and priority queue"
+    )
+    backfill_status_parser.add_argument(
+        "--session",
+        type=str,
+        choices=["15s_24hr", "1Hz_1hr", "status_1hr"],
+        help="Filter by session type"
+    )
+    backfill_status_parser.add_argument(
+        "--limit",
+        type=int,
+        default=30,
+        help="Maximum number of entries to show (default: 30)"
+    )
+    backfill_status_parser.set_defaults(func=cmd_scheduler_backfill_status)
+
     # Gaps command
     gaps_parser = scheduler_subparsers.add_parser(
         "gaps",
@@ -885,7 +1222,7 @@ def handle_scheduler_command(args) -> int:
 
     if not hasattr(args, 'scheduler_command') or not args.scheduler_command:
         print("❌ No scheduler command specified")
-        print("Available commands: start, stop, restart, status, config, test, gaps, backfill, reconcile")
+        print("Available commands: start, stop, restart, status, config, test, gaps, backfill, backfill-status, reconcile, pipeline-status, load-status, bootstrap")
         return 1
 
     return args.func(args)

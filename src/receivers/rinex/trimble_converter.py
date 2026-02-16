@@ -221,7 +221,15 @@ class TrimbleConverter(RawToRinexConverter):
         ]
 
         self.logger.info(f"Running runpkr00 for {raw_file.name}")
-        self._run_subprocess(cmd, timeout=300, cwd=output_dir)
+        try:
+            self._run_subprocess(cmd, timeout=300, cwd=output_dir)
+        except ConversionError as e:
+            # runpkr00 sometimes segfaults on exit (code -11/139) but still
+            # produces valid output. Check for output before raising.
+            if "exit code -11" in str(e) or "exit code 139" in str(e):
+                self.logger.debug(f"runpkr00 crashed on exit but may have produced output")
+            else:
+                raise
 
         # Find output file (runpkr00 naming can vary)
         # runpkr00 produces:

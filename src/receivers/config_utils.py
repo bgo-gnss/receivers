@@ -168,6 +168,7 @@ def get_station_config(station_id: str) -> Optional[Dict[str, Any]]:
             'ntrip_importance': raw_config.get('ntrip_importance'),
             'station_status': raw_config.get('station_status'),
             'health_check': raw_config.get('health_check'),
+            'station_owner': raw_config.get('station_owner'),
         }
 
         logger.debug(f"Successfully loaded configuration for {station_id}")
