@@ -285,7 +285,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(*) as \"Critical\" FROM (SELECT DISTINCT ON (sid) sid, overall_status FROM block_health_summary WHERE $__timeFilter(ts) ORDER BY sid, ts DESC) latest WHERE overall_status = 'critical' AND sid NOT IN (SELECT sid FROM stations WHERE station_status IS NOT NULL OR health_check IS NOT NULL)",
+          "rawSql": "SELECT COUNT(*) as \"Critical\" FROM station_data_flow_status WHERE health_status = 2",
           "refId": "A"
         }
       ],
@@ -357,7 +357,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(*) as \"Warnings\" FROM (SELECT DISTINCT ON (sid) sid, overall_status FROM block_health_summary WHERE $__timeFilter(ts) ORDER BY sid, ts DESC) latest WHERE overall_status = 'warning' AND sid NOT IN (SELECT sid FROM stations WHERE station_status IS NOT NULL OR health_check IS NOT NULL)",
+          "rawSql": "SELECT COUNT(*) as \"Warnings\" FROM station_data_flow_status WHERE health_status = 1",
           "refId": "A"
         }
       ],
@@ -2087,7 +2087,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  d.station_id AS \"Station\",\n  d.status_details AS \"Cause\",\n  d.packet_loss AS \"Loss\",\n  d.voltage AS \"Voltage\",\n  d.last_check AS \"Last Update\"\nFROM station_dashboard_data d\nWHERE d.overall_status = 'critical' AND d.station_status IS NULL AND d.health_check IS NULL\nORDER BY d.station_id",
+          "rawSql": "SELECT\n  d.station_id AS \"Station\",\n  d.status_details AS \"Cause\",\n  d.packet_loss AS \"Loss\",\n  d.voltage AS \"Voltage\",\n  d.last_check AS \"Last Update\"\nFROM station_dashboard_data d\nJOIN station_data_flow_status f ON f.sid = d.station_id\nWHERE f.health_status = 2\nORDER BY d.station_id",
           "refId": "A"
         }
       ],
@@ -2289,11 +2289,237 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  d.station_id AS \"Station\",\n  d.status_details AS \"Cause\",\n  d.packet_loss AS \"Loss\",\n  d.voltage AS \"Voltage\",\n  d.last_check AS \"Last Update\"\nFROM station_dashboard_data d\nWHERE d.overall_status = 'warning' AND d.station_status IS NULL AND d.health_check IS NULL\nORDER BY d.station_id",
+          "rawSql": "SELECT\n  d.station_id AS \"Station\",\n  d.status_details AS \"Cause\",\n  d.packet_loss AS \"Loss\",\n  d.voltage AS \"Voltage\",\n  d.last_check AS \"Last Update\"\nFROM station_dashboard_data d\nJOIN station_data_flow_status f ON f.sid = d.station_id\nWHERE f.health_status = 1\nORDER BY d.station_id",
           "refId": "A"
         }
       ],
       "title": "Warnings",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "dark-purple",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Station"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View station detail",
+                    "url": "/d/gps-station-detail/gps-station-detail?var-station=${__data.fields.Station}&var-area=$area&var-owner=$owner&var-receiver=$receiver&var-antenna=$antenna&${__url_time_range}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Last V"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "volt"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 11.0
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 11.8
+                    },
+                    {
+                      "color": "green",
+                      "value": 12.5
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Suspected Reason"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "pattern": "^power failure.*",
+                      "result": {
+                        "color": "red",
+                        "index": 0
+                      }
+                    },
+                    "type": "regex"
+                  },
+                  {
+                    "options": {
+                      "pattern": "^low voltage.*",
+                      "result": {
+                        "color": "orange",
+                        "index": 1
+                      }
+                    },
+                    "type": "regex"
+                  },
+                  {
+                    "options": {
+                      "pattern": "^battery low.*",
+                      "result": {
+                        "color": "yellow",
+                        "index": 2
+                      }
+                    },
+                    "type": "regex"
+                  },
+                  {
+                    "options": {
+                      "pattern": "^connection lost.*",
+                      "result": {
+                        "color": "blue",
+                        "index": 3
+                      }
+                    },
+                    "type": "regex"
+                  },
+                  {
+                    "options": {
+                      "pattern": ".*",
+                      "result": {
+                        "color": "text",
+                        "index": 4
+                      }
+                    },
+                    "type": "regex"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Offline"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dtdurations"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      },
+      "id": 20,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "Suspected Reason"
+          }
+        ]
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH last_voltage AS (\n  SELECT DISTINCT ON (sid) sid, voltage, ts AS voltage_ts\n  FROM block_power_status\n  WHERE voltage IS NOT NULL\n  ORDER BY sid, ts DESC\n)\nSELECT\n  d.station_id AS \"Station\",\n  d.receiver_type AS \"Receiver\",\n  CASE\n    WHEN d.connection_state = 'offline' THEN 'offline'\n    WHEN d.connection_state = 'degraded' THEN 'degraded'\n    ELSE 'down'\n  END AS \"State\",\n  EXTRACT(EPOCH FROM d.state_duration)::integer AS \"Offline\",\n  lv.voltage AS \"Last V\",\n  CASE\n    WHEN lv.voltage IS NOT NULL AND lv.voltage < 5.0\n         THEN 'power failure (' || round(lv.voltage::numeric, 1) || 'V)'\n    WHEN lv.voltage IS NOT NULL AND lv.voltage < 11.0\n         THEN 'low voltage (' || round(lv.voltage::numeric, 1) || 'V)'\n    WHEN lv.voltage IS NOT NULL AND lv.voltage < 11.8\n         THEN 'battery low (' || round(lv.voltage::numeric, 1) || 'V)'\n    WHEN lv.voltage IS NOT NULL\n         THEN 'connection lost (' || round(lv.voltage::numeric, 1) || 'V)'\n    ELSE 'unreachable'\n  END AS \"Suspected Reason\",\n  d.last_check AS \"Last Seen\"\nFROM station_dashboard_data d\nLEFT JOIN last_voltage lv ON lv.sid = d.station_id\nWHERE d.is_online = false\n  AND d.station_status IS NULL AND d.health_check IS NULL\nORDER BY\n  CASE\n    WHEN lv.voltage IS NOT NULL AND lv.voltage < 5.0 THEN 0\n    WHEN lv.voltage IS NOT NULL AND lv.voltage < 11.0 THEN 1\n    WHEN lv.voltage IS NOT NULL AND lv.voltage < 11.8 THEN 2\n    ELSE 3\n  END,\n  d.station_id",
+          "refId": "A"
+        }
+      ],
+      "title": "Offline Stations",
       "type": "table"
     },
     {
@@ -2360,7 +2586,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 25
+        "y": 33
       },
       "id": 7,
       "options": {

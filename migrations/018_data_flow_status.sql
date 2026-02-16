@@ -94,12 +94,14 @@ base AS (
         d.station_id AS sid,
 
         -- Health status (from connectivity/hardware checks)
-        -- Two-level debounce:
-        --   1) Connectivity-only critical + debounced-online → capped at Warning
-        --   2) All critical: need 2+ consecutive critical checks (~10 min)
-        --      before showing Critical.  Healthy/Warning take effect immediately.
+        -- Rules:
+        --   Offline/degraded stations → -1 (unknown) — can't assess health
+        --   Connectivity-only critical + online → capped at Warning
+        --   All critical: need 2+ consecutive checks before Critical
+        --   Healthy/Warning take effect immediately
         CASE
           WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN -2  -- inactive/passive
+          WHEN d.is_online = false THEN -1                                         -- offline → unknown (separate category)
           WHEN d.overall_status = 'healthy' THEN 0                                 -- immediate healthy
           WHEN d.overall_status = 'warning' THEN 1                                 -- immediate warning
           WHEN d.overall_status = 'critical'

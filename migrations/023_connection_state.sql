@@ -254,11 +254,12 @@ health_streak AS (
 base AS (
     SELECT
         d.station_id AS sid,
-        -- Two-level debounce:
-        --   1) Connectivity-only critical + debounced-online → capped at Warning
-        --   2) All critical: need 2+ consecutive checks (~10 min) before Critical
+        -- Offline → unknown (separate category, shown in Offline panel)
+        -- Connectivity-only critical + online → capped at Warning
+        -- All critical: need 2+ consecutive checks before Critical
         CASE
             WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN -2
+            WHEN d.is_online = false THEN -1
             WHEN d.overall_status = 'healthy' THEN 0
             WHEN d.overall_status = 'warning' THEN 1
             WHEN d.overall_status = 'critical'
