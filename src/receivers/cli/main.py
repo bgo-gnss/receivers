@@ -291,6 +291,29 @@ def cmd_download(args) -> int:
     total_downloaded = 0
     total_errors = 0
 
+    # Parallel mode: grouped batching with stagger and retry
+    if getattr(args, 'parallel', False) and len(args.stations) > 1:
+        from .parallel import download_parallel
+
+        summary = download_parallel(
+            stations=args.stations,
+            args=args,
+            logger=logger,
+            start_time=start_time,
+            end_time=end_time,
+            ffrequency=ffrequency,
+            afrequency=afrequency,
+            reverse_chronological=reverse_chronological,
+            _audit_logger=audit_logger,
+        )
+        total_downloaded = summary.total_files
+        total_errors = summary.failed + summary.unreachable
+
+        logger.info(
+            f"Download complete. Total files: {total_downloaded}, Errors: {total_errors}"
+        )
+        return 0 if total_errors == 0 else 1
+
     # Network-first mode: when using -d (reverse_chronological) with multiple stations,
     # iterate day→station so all stations get the latest data first.
     network_first = reverse_chronological and len(args.stations) > 1

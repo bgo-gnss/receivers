@@ -207,6 +207,37 @@ Examples:
         help='Override acquisition frequency (auto-detected from session)'
     )
 
+    # Parallel download options
+    parallel_group = parser.add_argument_group('parallel download options')
+    parallel_group.add_argument(
+        '--parallel',
+        action='store_true',
+        help='Download stations in parallel (grouped batches with stagger)'
+    )
+    parallel_group.add_argument(
+        '--batches',
+        type=int,
+        default=None,
+        metavar='N',
+        help='Number of batch groups (default: from scheduler.yaml or 10)'
+    )
+    parallel_group.add_argument(
+        '--distribution-window',
+        type=float,
+        default=None,
+        metavar='MINUTES',
+        dest='distribution_window',
+        help='Minutes to spread batch groups across (default: from scheduler.yaml)'
+    )
+    parallel_group.add_argument(
+        '--retry-delay',
+        type=float,
+        default=90.0,
+        metavar='SECONDS',
+        dest='retry_delay',
+        help='Seconds before retrying unreachable stations (default: 90)'
+    )
+
     add_verbose_flag(parser)
 
     return parser

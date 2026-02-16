@@ -18,6 +18,10 @@ class BaseReceiver(ABC):
     must follow to ensure consistency across different receiver types.
     """
 
+    _ping_count: int = 4
+    _ping_timeout: int = 2
+    _tcp_timeout: int = 5
+
     def __init__(self, station_id: str, station_info: Dict[str, Any]):
         """Initialize receiver with station information.
 
@@ -37,14 +41,17 @@ class BaseReceiver(ABC):
         self.data_prepath = self.receivers_config.get_data_prepath()
 
     def _quick_ping(self) -> bool:
-        """Quick ICMP ping to check if receiver is reachable (1 packet, 2s timeout).
+        """Quick ICMP ping to check if receiver is reachable (4 packets, 2s timeout).
 
         Uses the router IP from station_info to perform a fast reachability check
         before attempting downloads. This avoids wasting time on connection timeouts
         when a station is completely offline.
 
+        Sends 4 packets to tolerate dropped ICMP responses, which is common
+        on lossy 3G/4G links (up to 20% packet loss) and under concurrent load.
+
         Returns:
-            True if host responded to ping, False otherwise
+            True if host responded to at least one ping, False otherwise
         """
         host = self.station_info.get("router", {}).get("ip")
         if not host:
@@ -52,9 +59,9 @@ class BaseReceiver(ABC):
             return True
         try:
             result = subprocess.run(
-                ["ping", "-c", "1", "-W", "2", host],
+                ["ping", "-c", str(self._ping_count), "-W", str(self._ping_timeout), host],
                 capture_output=True,
-                timeout=3,
+                timeout=self._ping_count * self._ping_timeout + 2,
             )
             return result.returncode == 0
         except (subprocess.TimeoutExpired, Exception):
@@ -84,7 +91,7 @@ class BaseReceiver(ABC):
 
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(3)
+            sock.settimeout(self._tcp_timeout)
             sock.connect((host, port))
             sock.close()
             return True if not return_details else {'success': True}
@@ -94,7 +101,7 @@ class BaseReceiver(ABC):
             result = {
                 'success': False,
                 'error_type': 'timeout',
-                'message': f'Port {port} timeout (no response in 3s)'
+                'message': f'Port {port} timeout (no response in {self._tcp_timeout}s)'
             }
             return False if not return_details else result
 
