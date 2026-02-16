@@ -88,6 +88,7 @@ def get_default_config() -> Dict[str, Any]:
                 'enabled': True,
                 'schedule_minute': 10,
                 'distribution_window': 10,
+                'batches': 10,
                 'frequency': 'daily',
                 'lookback_periods': 1,
                 'max_concurrent': 3,
@@ -101,6 +102,7 @@ def get_default_config() -> Dict[str, Any]:
                 'enabled': True,
                 'schedule_minute': 15,
                 'distribution_window': 10,
+                'batches': 10,
                 'frequency': 'hourly',
                 'lookback_periods': 1,
                 'max_concurrent': 4,
@@ -114,6 +116,7 @@ def get_default_config() -> Dict[str, Any]:
                 'enabled': True,
                 'schedule_minute': 25,
                 'distribution_window': 5,
+                'batches': 10,
                 'frequency': 'hourly',
                 'lookback_periods': 1,
                 'max_concurrent': 5,
@@ -380,10 +383,14 @@ scheduler:
     misfire_grace_time: 300
 
 sessions:
+  # distribution_window: minutes to spread all stations across
+  # batches: number of batch groups (group_size = stations/batches,
+  #          group_delay = window*60/batches). Used by --parallel mode.
   15s_24hr:
     enabled: true
     schedule: "00:01"
     distribution_window: 15
+    batches: 10
     lookback_periods: 1
     max_concurrent: 3
     timeout_minutes: 45
@@ -394,6 +401,7 @@ sessions:
     enabled: true
     schedule: ":01"
     distribution_window: 10
+    batches: 10
     midnight_offset: 15
     lookback_periods: 1
     max_concurrent: 4
@@ -405,6 +413,7 @@ sessions:
     enabled: true
     schedule: ":15"
     distribution_window: 10
+    batches: 10
     lookback_periods: 1
     max_concurrent: 5
     timeout_minutes: 15
