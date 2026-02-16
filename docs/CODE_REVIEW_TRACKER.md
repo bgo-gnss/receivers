@@ -180,6 +180,19 @@ Tracking document for code weaknesses, recurring issues, and optimization opport
 - **Root cause**: Station detail showed File Status (raw file age) and Logging (active sessions) but no RINEX conversion status.
 - **Fix**: Added "RINEX Status" panel (id:51) between File Status and Logging panels with 15s/1Hz columns and color-coded value mappings.
 
+### RECONCILER-001: RINEX reconciler false-positive detection + recent-first processing
+- **Category**: SCHEDULER
+- **Severity**: High
+- **Found**: 2026-02-12
+- **Resolved**: 2026-02-12
+- **Files**: `scheduling/archive_reconciler.py`
+- **Root cause**: `_find_rinex_file()` used `stem[:4]` (station ID only) to glob for RINEX files, matching ANY RINEX file for the station regardless of date. Even when `_find_rinex_file_by_format()` correctly returned `None` for a missing date, the unconditional fallback at line 182 called the buggy function and overrode the correct result with a false positive.
+- **Example**: Looking for RINEX for ELDC Feb 11 (DOY 042): `_find_rinex_file_by_format()` → `None` (correct), but `_find_rinex_file()` → globs `ELDC*d.Z` → finds `ELDC0340.26d.Z` (DOY 034 = Feb 3) → false positive.
+- **Fix**: Three changes:
+  1. `_find_rinex_file()`: Extract DOY from SBF filename and use DOY-based pattern (e.g., `ELDC0420*d.Z`) instead of station-only glob
+  2. Fallback logic: Only use `_find_rinex_file()` when FormatResolver is unavailable (`else` branch), not as unconditional fallback
+  3. Date iteration: Reverse to newest-first so 1-3 day old files get RINEX conversion priority over older files
+
 ### DASHBOARD-015: File Status panel shows N/A for archived files
 - **Category**: DASHBOARD
 - **Severity**: High
@@ -419,25 +432,37 @@ Tracking document for code weaknesses, recurring issues, and optimization opport
 - **Description**: The connection checker runs 3 levels: `router_ping`, `http_port`, `protocol`. For HTTP-only receivers (NetR9, NetRS, G10), `http_port` and `protocol` are identical. CONN-001 fixed the false CRITICAL by reusing the result, but the model still conceptually has 3 levels. Consider simplifying to 2 levels (ping + primary port) for non-PolaRX5 receivers, or making the number of levels dynamic based on receiver capabilities.
 - **Files**: `health/connection_checker.py`
 
-### SCHEDULER-013: Outage recovery should prioritize 24hr download + RINEX
+### SCHEDULER-013: Outage recovery — dynamic lookback for daily catch-up
 - **Category**: SCHEDULER
 - **Severity**: High
-- **Status**: Open
+- **Status**: Resolved
 - **Found**: 2026-02-12
-- **Description**: When the scheduler restarts after an outage (laptop powered off overnight, server reboot), 15s_24hr daily data should be prioritized over 1Hz_1hr and status_1hr. Currently `_schedule_daily_catchup()` schedules one-shot downloads with `lookback_periods=1` (yesterday only), but after a multi-day outage the gap is larger. The backfill system eventually catches up, but it processes stations alphabetically and interleaves with other work — taking many hours. Meanwhile, 130+ stations show "Missing" in the dashboard.
-- **Current behavior**:
-  1. Daily catch-up fires with `lookback_periods=1` — only catches yesterday
-  2. Gap detection runs at startup (60s delay) and identifies all missing files
-  3. Backfill processes stations alphabetically in the :25-:55 window — very slow for 130+ stations
-  4. 1Hz_1hr and status_1hr downloads compete for workers during catch-up
-- **Proposal**: Outage-aware recovery mode:
-  1. On startup, detect gap size (query `file_tracking` for latest date per session, compare to today)
-  2. If gap > 1 day for 15s_24hr: increase lookback_periods to cover the gap
-  3. Prioritize 15s_24hr catch-up over 1Hz_1hr/status_1hr (defer hourly sessions until daily is done)
-  4. Run RINEX conversion immediately after each 24hr download (not waiting for reconciler)
-  5. Consider dedicated "recovery executor" that doesn't compete with regular downloads
-- **Impact**: After overnight outage, 130+ stations showed "Missing 24h" for hours. Daily data is the highest-value product and most time-sensitive (receivers may overwrite old files).
-- **Files**: `scheduling/bulk_scheduler.py` (`_schedule_daily_catchup()`, `_schedule_gap_detection()`)
+- **Resolved**: 2026-02-12
+- **Description**: When the scheduler restarted after an outage, `_schedule_daily_catchup()` used `lookback_periods=1` (yesterday only), so multi-day gaps were never closed by catch-up. The backfill system processed one station-day every 5 minutes — far too slow for 130+ stations.
+- **Root cause**: `_schedule_daily_catchup()` passed `config.lookback_periods` (hardcoded 1) to catch-up jobs. The `recovery` config section existed but was never read by the scheduler.
+- **Fix**: Added `_detect_outage_gap()` method that queries `file_tracking` for the most recent successful daily download, computes the gap in days (min 1, capped by `max_recovery_days`), and passes it as `lookback_periods` to catch-up jobs. Safe because `sync=True` skips already-archived files. Enabled `auto_recovery_enabled: true` by default. Guarded by recovery config flag.
+- **Files**: `scheduling/bulk_scheduler.py` (`_detect_outage_gap()`, `_schedule_daily_catchup()`), `scheduling/config_loader.py`, `tests/test_scheduler_basic.py`
+
+### SCHEDULER-014: Gap detection marks non-PolaRX5 files as "removed" (extension mismatch)
+- **Category**: SCHEDULER / DATA-MODEL
+- **Severity**: High
+- **Status**: Resolved
+- **Found**: 2026-02-12
+- **Resolved**: 2026-02-12
+- **Description**: Gap detection (`sync_archive_to_db`) checked archive paths using default `.sbf.gz` extension for ALL stations because `receiver_type` was never propagated from `gap_scheduler.py` → `get_gap_summary()`. NetR9 (`.T02`), NetRS (`.T00`), and G10 (`.m00`) files were never found at the expected path and wrongly marked `status='removed'`, affecting 1,621 file_tracking entries. Also, `_get_extension()` did not recognize NetR5 (same `.T02` as NetR9).
+- **Root cause**: `_run_gap_detection_job()` called `detector.get_gap_summary()` without passing `receiver_types` dict. All stations defaulted to `.sbf.gz` in `build_archive_path()`.
+- **Fix**: Build `receiver_types` dict from `all_stations` config in `gap_scheduler.py` and pass it to `get_gap_summary()`. Added `netr5` to `_get_extension()`. Self-healing: next gap detection run will find the files at correct paths and flip them back to `'archived'`.
+- **Files**: `scheduling/gap_scheduler.py`, `health/file_tracker.py` (`_get_extension()`)
+
+### REVIEW-001: Receiver capability registry + generalized RINEX reconciler
+- **Category**: SCHEDULER / CONFIG
+- **Severity**: High
+- **Status**: Resolved
+- **Found**: 2026-02-12
+- **Resolved**: 2026-02-12
+- **Description**: ~65 of 136 stations with raw files had no RINEX conversion because the archive reconciler was hardcoded to PolaRX5 only. Meanwhile, all receiver types (NetR9, NetRS, G10) already had working converter classes. Receiver type checks were scattered across 7+ files using inconsistent patterns (substring matching, exact string comparison, different casing).
+- **Fix**: Created centralized `ReceiverCapability` registry (`config/receiver_registry.py`) as single source of truth for raw extensions, converter classes, and supported sessions. Generalized archive reconciler to use registry — `_find_sbf_file()` → `_find_raw_file()`, `_convert_sbf_to_rinex()` → `_convert_raw_to_rinex()`, station filter uses `has_rinex_converter()` instead of `== 'polarx5'`. Updated gap_scheduler RINEX scan to use registry. Updated CLI reconcile command.
+- **Files**: `config/receiver_registry.py` (NEW), `scheduling/archive_reconciler.py`, `health/file_tracker.py`, `scheduling/gap_scheduler.py`, `cli/scheduler.py`, `tests/test_receiver_registry.py` (NEW)
 
 ### DB-013: Ping packet loss severity threshold too aggressive
 - **Category**: DB-WRITER
@@ -449,6 +474,66 @@ Tracking document for code weaknesses, recurring issues, and optimization opport
   - 10-60%: WARNING
   - \>60%: CRITICAL
 - **Files**: `health/db_writer.py` (`_build_status_details()` and/or `_calculate_overall_status()`), possibly `health/connection_checker.py` if thresholds are defined there
+
+### SCHEDULER-015: Download→RINEX chain silently broken (archived_files key)
+- **Category**: SCHEDULER
+- **Severity**: Critical
+- **Status**: Resolved
+- **Found**: 2026-02-12
+- **Resolved**: 2026-02-12
+- **Description**: `_download_station_data_job()` read `result.get('archived_files', [])` on line 180 for RINEX conversion input, but `download_data()` returns `downloaded_files`. This meant `rinex: true` in scheduler.yaml did nothing — RINEX conversion was silently skipped for all live downloads.
+- **Fix**: Changed to `result.get('downloaded_files', [])`. Added 5 unit tests (`TestRinexAfterDownload`).
+- **Files**: `scheduling/bulk_scheduler.py` (line 180), `tests/test_scheduler_basic.py`
+
+### SCHEDULER-016: Backfill pipeline doesn't trigger RINEX conversion
+- **Category**: SCHEDULER
+- **Severity**: High
+- **Status**: Resolved
+- **Found**: 2026-02-12
+- **Resolved**: 2026-02-12
+- **Description**: `backfill.py` downloaded raw files but never converted them to RINEX. The 6h archive reconciler eventually caught up, but this created up to 6h latency for backfill RINEX data.
+- **Fix**: Added `run_rinex` parameter through backfill chain. `_backfill_station_day_generic()` calls `_run_backfill_rinex()` after successful download when `rinex: true` is set. Skipped for `status_1hr` (no RINEX). `_schedule_multi_session_backfill()` reads rinex flag from session config and passes it. Added 5 unit tests (`TestBackfillRinex`).
+- **Files**: `scheduling/backfill.py`, `scheduling/bulk_scheduler.py`, `tests/test_scheduler_basic.py`
+
+### SCHEDULER-017: Pipeline state tracking (observability)
+- **Category**: SCHEDULER
+- **Severity**: Medium
+- **Status**: Resolved
+- **Found**: 2026-02-12
+- **Resolved**: 2026-02-12
+- **Description**: No visibility into multi-stage job execution. Couldn't tell if a station's download succeeded but RINEX failed. `pipeline.py` (PipelineJob, PipelineStateStore) existed but was never wired into the scheduler.
+- **Fix**: Added module-level `_pipeline_store` and `_get_pipeline_store()` to `bulk_scheduler.py`. `_download_station_data_job()` now creates a PipelineJob at start, marks stages (DOWNLOAD, RINEX, HEALTH) as started/completed/failed, and persists to SQLite. All pipeline operations are wrapped in try/except — non-critical, never blocks downloads. Added `pipeline-status` CLI command. Added 5 unit tests (`TestPipelineTracking`).
+- **Files**: `scheduling/bulk_scheduler.py`, `cli/scheduler.py`, `tests/test_scheduler_basic.py`
+
+### SCHEDULER-018: Load monitor + dynamic throttling
+- **Category**: SCHEDULER
+- **Severity**: Medium
+- **Status**: Resolved
+- **Found**: 2026-02-12
+- **Resolved**: 2026-02-12
+- **Description**: 100 max_workers with 173 stations can overwhelm the server. No CPU/network monitoring or feedback loop to throttle when the system is under pressure.
+- **Fix**: Created `load_monitor.py` with `LoadMonitor` class. Monitors CPU load (`os.getloadavg()`), active threads (`threading.active_count()`), and network throughput (`/proc/net/dev`). Priority-based thresholds: REALTIME always proceeds, STANDARD needs load < 80%, BACKFILL needs load < 60%. Results cached for `check_interval` seconds. Integrated as module-level `_load_monitor` in `bulk_scheduler.py` — jobs check before starting. Added `load-status` CLI command. Disabled by default (`load_monitoring.enabled: false`). Added 6 unit tests (`TestLoadMonitor`).
+- **Files**: `scheduling/load_monitor.py` (NEW), `scheduling/bulk_scheduler.py`, `scheduling/config_loader.py`, `cli/scheduler.py`, `tests/test_scheduler_basic.py`
+
+### SCHEDULER-019: Bootstrap / cold-start mode
+- **Category**: SCHEDULER
+- **Severity**: Medium
+- **Status**: Resolved
+- **Found**: 2026-02-12
+- **Resolved**: 2026-02-12
+- **Description**: When starting from scratch (empty archive, no file_tracking data), the scheduler only downloads the most recent period. No efficient way to catch up to a full historical archive.
+- **Fix**: Created `bootstrap.py` with `detect_cold_start()` (checks file_tracking count < 10) and `schedule_bootstrap()` (creates one-shot download jobs in 3 waves: 15s_24hr → 1Hz_1hr → status_1hr). Each wave distributed across a configurable window. `_schedule_bootstrap()` method added to `BulkDownloadScheduler` — called at end of `schedule_all_sessions()`, only triggers on cold start. Added `bootstrap` CLI command for manual triggering. Added 5 unit tests (`TestBootstrap`).
+- **Files**: `scheduling/bootstrap.py` (NEW), `scheduling/bulk_scheduler.py`, `scheduling/config_loader.py`, `cli/scheduler.py`, `tests/test_scheduler_basic.py`
+
+### SCHEDULER-020: DB-driven gap backfill prioritization
+- **Category**: SCHEDULER
+- **Severity**: Medium
+- **Status**: Resolved
+- **Found**: 2026-02-12
+- **Resolved**: 2026-02-12
+- **Description**: Backfill processed stations round-robin (by oldest `last_run`). Stations with many gaps got no more priority than stations nearly caught up.
+- **Fix**: Added `_pick_station_by_gap_count()` to `backfill.py` — queries `file_tracking` to count archived files per station and picks the one with fewest (most gaps). New `strategy` parameter on `_backfill_next_station_for_session()`: `'gap_priority'` uses DB query, falls back to round-robin if query fails or returns None. `'round_robin'` (default) preserves legacy behavior. Configurable via `backfill.strategy` in scheduler.yaml. Added 5 unit tests (`TestGapBackfill`).
+- **Files**: `scheduling/backfill.py`, `scheduling/bulk_scheduler.py`, `scheduling/config_loader.py`, `tests/test_scheduler_basic.py`
 
 ---
 
@@ -482,5 +567,5 @@ When reviewing a file, check for these patterns:
 ---
 
 **Created**: 2026-02-09
-**Last updated**: 2026-02-12
+**Last updated**: 2026-02-12 (SCHEDULER-015 through SCHEDULER-020)
 **Purpose**: Track code quality issues for systematic review and optimization

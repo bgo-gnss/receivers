@@ -63,6 +63,19 @@ def gather_comprehensive_health(
                     f"Mains-powered {station_id}: voltage status "
                     f"{old_status} -> ok"
                 )
+                # Recalculate overall_status since we changed a metric
+                existing = []
+                for key, val in metrics.items():
+                    if isinstance(val, dict) and "status" in val and key != "ports":
+                        s = val["status"]
+                        if s in ("ok", "warning", "critical"):
+                            existing.append(s)
+                health["overall_status"] = _recalculate_overall_status(existing)
+                summary = health.get("status_summary", {})
+                summary["healthy"] = sum(1 for s in existing if s == "ok")
+                summary["warning"] = sum(1 for s in existing if s == "warning")
+                summary["critical"] = sum(1 for s in existing if s == "critical")
+                health["status_summary"] = summary
 
     # NTRIP / RTK checks
     if include_ntrip:
@@ -200,8 +213,13 @@ def gather_comprehensive_health(
             if stats and stats.get("dir_exists", False) and stats.get("files_found", 0) > 0:
                 health["file_status"]["50Hz_1hr"] = stats
 
-            # Check 24hr processing status
+            # Check archive status from file_tracking database
             proc_checker = ProcessingStatusChecker()
+            archive_result = proc_checker.check_archive_status(station_id)
+            if archive_result.get("has_data", False):
+                health["archive_status"] = archive_result
+
+            # Check 24hr GAMIT timeseries (production processing)
             proc_result = proc_checker.check_24hr_processing(station_id)
             if proc_result.get("file_exists", False):
                 health["processing_24hr"] = proc_result

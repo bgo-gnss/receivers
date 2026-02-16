@@ -22,6 +22,8 @@ def _backfill_next_station_for_session(
     window_start: int = 25,
     window_end: int = 55,
     archiving_mode: str = "bulk",
+    run_rinex: bool = False,
+    strategy: str = "round_robin",
 ) -> None:
     """Pick the next station needing backfill for a given session type.
 
@@ -33,6 +35,8 @@ def _backfill_next_station_for_session(
         window_start: Minute of hour when backfill window opens (default 25)
         window_end: Minute of hour when backfill window closes (default 55)
         archiving_mode: 'bulk' (download all then archive) or 'immediate'
+        run_rinex: Whether to run RINEX conversion after download
+        strategy: 'round_robin' (legacy, by last_run) or 'gap_priority' (most gaps first)
     """
     # Self-gating: return immediately if outside backfill window
     now_minute = datetime.now().minute
@@ -46,32 +50,40 @@ def _backfill_next_station_for_session(
     try:
         from ..health.database_factory import DatabaseConnectionFactory
 
-        with DatabaseConnectionFactory.connection() as conn:
-            with conn.cursor() as cur:
-                # Pick station processed least recently for this session type
-                cur.execute("""
-                    SELECT sid, next_date, backfill_start, backfill_end
-                    FROM backfill_progress
-                    WHERE session_type = %s
-                      AND status IN ('pending', 'in_progress')
-                    ORDER BY last_run ASC NULLS FIRST, sid
-                    LIMIT 1
-                """, (session_type,))
-                row = cur.fetchone()
+        row = None
 
-            if not row:
-                logger.debug(f"No stations pending backfill for {session_type}")
-                return
+        if strategy == "gap_priority":
+            row = _pick_station_by_gap_count(session_type)
 
-            station_id = row[0]
-            current_dt = row[1]
-            backfill_end = row[3]
+        # Fall back to round-robin if gap_priority didn't return a result
+        if row is None:
+            with DatabaseConnectionFactory.connection() as conn:
+                with conn.cursor() as cur:
+                    # Pick station processed least recently for this session type
+                    cur.execute("""
+                        SELECT sid, next_date, backfill_start, backfill_end
+                        FROM backfill_progress
+                        WHERE session_type = %s
+                          AND status IN ('pending', 'in_progress')
+                        ORDER BY last_run ASC NULLS FIRST, sid
+                        LIMIT 1
+                    """, (session_type,))
+                    row = cur.fetchone()
+
+        if not row:
+            logger.debug(f"No stations pending backfill for {session_type}")
+            return
+
+        station_id = row[0]
+        current_dt = row[1]
+        backfill_end = row[3]
 
         logger.info(f"Backfill {session_type}: {station_id} processing {current_dt}")
         use_immediate = archiving_mode != "bulk"
         has_more = _backfill_station_day_generic(
             station_id, current_dt, backfill_end, session_type,
             immediate_archive=use_immediate,
+            run_rinex=run_rinex,
         )
 
         if not has_more:
@@ -81,6 +93,62 @@ def _backfill_next_station_for_session(
         logger.debug("psycopg2 not available - backfill disabled")
     except Exception as e:
         logger.error(f"Backfill {session_type} job error: {type(e).__name__}: {e}")
+
+
+def _pick_station_by_gap_count(
+    session_type: str,
+    days_back: int = 30,
+) -> Optional[tuple]:
+    """Pick the pending backfill station with the most gaps in file_tracking.
+
+    Joins backfill_progress (pending/in_progress) with file_tracking to count
+    how many expected files are missing. Returns the station with the largest
+    gap count, falling back to NULL if no data or the query fails.
+
+    Args:
+        session_type: Session type to check
+        days_back: How many days back to count gaps
+
+    Returns:
+        Tuple (sid, next_date, backfill_start, backfill_end) or None
+    """
+    try:
+        from ..health.database_factory import DatabaseConnectionFactory
+
+        with DatabaseConnectionFactory.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    WITH pending AS (
+                        SELECT sid, next_date, backfill_start, backfill_end
+                        FROM backfill_progress
+                        WHERE session_type = %s
+                          AND status IN ('pending', 'in_progress')
+                    ),
+                    gap_counts AS (
+                        SELECT p.sid,
+                               p.next_date,
+                               p.backfill_start,
+                               p.backfill_end,
+                               COUNT(ft.id) AS archived_count
+                        FROM pending p
+                        LEFT JOIN file_tracking ft
+                            ON ft.sid = p.sid
+                           AND ft.session_type = %s
+                           AND ft.status IN ('downloaded', 'archived')
+                           AND ft.file_date >= CURRENT_DATE - %s
+                        GROUP BY p.sid, p.next_date, p.backfill_start, p.backfill_end
+                    )
+                    SELECT sid, next_date, backfill_start, backfill_end
+                    FROM gap_counts
+                    ORDER BY archived_count ASC, sid
+                    LIMIT 1
+                """, (session_type, session_type, days_back))
+
+                return cur.fetchone()
+
+    except Exception as e:
+        logger.debug(f"Gap priority query failed for {session_type}: {e}")
+        return None
 
 
 def _backfill_next_station() -> None:
@@ -216,10 +284,12 @@ def _backfill_station_day_generic(
     backfill_end: date,
     session_type: str,
     immediate_archive: bool = False,
+    run_rinex: bool = False,
 ) -> bool:
     """Process one day of backfill for any session type.
 
     Downloads that day's files, optionally extracts health data (status_1hr only),
+    optionally runs RINEX conversion (when run_rinex=True for 15s_24hr/1Hz_1hr),
     writes to DB, and advances the backfill_progress cursor.
 
     Args:
@@ -229,6 +299,7 @@ def _backfill_station_day_generic(
         session_type: Session type ('status_1hr', '1Hz_1hr', '15s_24hr')
         immediate_archive: If True, archive each file immediately.
                           If False (bulk), download all then archive.
+        run_rinex: If True, run RINEX conversion after successful download.
 
     Returns:
         True if there's more work to do, False if backfill is complete
@@ -277,6 +348,10 @@ def _backfill_station_day_generic(
                         station_id, downloaded_files, logger
                     )
                     files_imported = imported
+
+                # Run RINEX conversion for data sessions (15s_24hr, 1Hz_1hr)
+                if run_rinex and downloaded_files and session_type != "status_1hr":
+                    _run_backfill_rinex(station_id, session_type, downloaded_files)
 
         # Advance cursor
         next_date = process_date + timedelta(days=1)
@@ -438,6 +513,40 @@ def _download_day(
     except Exception as e:
         logger.error(f"Download error {station_id}/{process_date}: {e}")
         return None
+
+
+def _run_backfill_rinex(
+    station_id: str,
+    session_type: str,
+    downloaded_files: List[str],
+) -> None:
+    """Run RINEX conversion on backfilled files.
+
+    Reuses the same _run_rinex_conversion() from bulk_scheduler to maintain
+    consistent behavior between live downloads and backfill.
+
+    Args:
+        station_id: Station identifier
+        session_type: Session type ('15s_24hr', '1Hz_1hr')
+        downloaded_files: List of downloaded raw file paths
+    """
+    try:
+        from .bulk_scheduler import _run_rinex_conversion
+        from ..cli.main import get_station_config
+
+        station_config = get_station_config(station_id)
+        if not station_config:
+            logger.warning(f"Backfill RINEX: no config for {station_id}")
+            return
+
+        _run_rinex_conversion(
+            station_id, session_type, downloaded_files, station_config, logger,
+        )
+
+    except ImportError as e:
+        logger.debug(f"Backfill RINEX not available: {e}")
+    except Exception as e:
+        logger.warning(f"Backfill RINEX failed for {station_id}: {e}")
 
 
 def _extract_and_store_health(

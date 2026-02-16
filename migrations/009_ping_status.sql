@@ -1,9 +1,15 @@
 -- Migration: 009_ping_status.sql
 -- Description: Add ping status tracking table for online/offline monitoring
 -- Date: 2026-02-07
+-- Updated: 2026-02-13  3-check debounce (ping+port), NTRIP override,
+--                      debounced state_since tracking
 --
 -- Tracks ping checks to determine if stations are online (reachable) or offline
 -- Stores state transitions to calculate duration of current state
+--
+-- Online:  NTRIP connected, OR (any of last 3 pings OK AND any of last 3 port checks OK)
+-- Offline: All 3 recent pings failed, OR all 3 recent port checks failed
+-- State duration tracks debounced state transitions (not raw ping flips)
 --
 -- Usage:
 --   psql -h localhost -U bgo -d gps_health -f migrations/009_ping_status.sql
@@ -31,77 +37,109 @@ CREATE INDEX IF NOT EXISTS idx_ping_status_sid_ts ON block_ping_status(sid, ts D
 CREATE INDEX IF NOT EXISTS idx_ping_status_ts ON block_ping_status(ts DESC);
 
 -- ============================================================================
--- STATE TRANSITION TRACKING VIEW
+-- CONNECTIVITY STATE VIEW
 -- ============================================================================
 
--- View to get current state and duration for each station.
--- Requires 2 consecutive failed pings before reporting offline.
--- A single failed ping after a success is still shown as online to
--- avoid false-offline reports on lossy 3G/4G links.
+-- View to get current connectivity state and duration for each station.
+-- Updated: 2026-02-13  3-check debounce for ping+port, NTRIP override,
+--                      debounced state_since tracking
+--
+-- Online/Offline logic:
+--   Online:  NTRIP connected, OR (any of last 3 pings OK AND any of last 3 port checks OK)
+--   Offline: All 3 recent pings failed, OR all 3 recent port checks failed
+--
+-- State duration (state_since) tracks debounced state transitions:
+--   Computes debounced_online per ping timestamp using a 3-row rolling window,
+--   then tracks when that debounced state flips. This prevents short blips
+--   from resetting the state_since timer on flapping stations.
+--
 CREATE OR REPLACE VIEW station_connectivity AS
-WITH latest_two AS (
-    -- Get the two most recent pings for each station
+WITH latest_pings AS (
     SELECT sid, ts, is_online, response_time_ms, packet_loss, error_message,
         ROW_NUMBER() OVER (PARTITION BY sid ORDER BY ts DESC) AS rn
     FROM block_ping_status
 ),
+ping_debounced AS (
+    -- Any of the 3 most recent pings succeeded → ping OK
+    SELECT sid,
+        bool_or(is_online) FILTER (WHERE rn <= 3) AS ping_any_ok
+    FROM latest_pings
+    WHERE rn <= 3
+    GROUP BY sid
+),
 latest_ping AS (
+    -- Most recent ping for response details
     SELECT sid, ts, is_online, response_time_ms, packet_loss, error_message
-    FROM latest_two WHERE rn = 1
+    FROM latest_pings WHERE rn = 1
 ),
-prev_ping AS (
-    SELECT sid, is_online AS prev_online
-    FROM latest_two WHERE rn = 2
+latest_ports AS (
+    SELECT sid, ts, download_status,
+        ROW_NUMBER() OVER (PARTITION BY sid ORDER BY ts DESC) AS rn
+    FROM block_port_status
 ),
-effective_state AS (
-    -- Only report offline if BOTH latest pings failed.
-    -- Single failure after success stays online (lossy link tolerance).
-    SELECT
-        lp.sid,
-        lp.ts,
-        CASE
-            WHEN lp.is_online THEN true
-            WHEN pp.prev_online IS NULL THEN lp.is_online  -- only 1 ping exists
-            WHEN pp.prev_online = false THEN false          -- 2 consecutive failures
-            ELSE true                                        -- single failure, prev was ok
-        END AS is_online,
-        lp.response_time_ms,
-        lp.packet_loss,
-        lp.error_message
-    FROM latest_ping lp
-    LEFT JOIN prev_ping pp ON lp.sid = pp.sid
+port_debounced AS (
+    -- Any of the 3 most recent port checks succeeded → port OK
+    SELECT sid,
+        bool_or(download_status IN ('open', 'ok')) FILTER (WHERE rn <= 3) AS port_any_ok
+    FROM latest_ports
+    WHERE rn <= 3
+    GROUP BY sid
 ),
-state_changes AS (
-    -- Find when the current state started by looking at state transitions
-    SELECT
-        p.sid,
-        p.ts,
-        p.is_online,
-        LAG(p.is_online) OVER (PARTITION BY p.sid ORDER BY p.ts) as prev_state
-    FROM block_ping_status p
+latest_ntrip AS (
+    -- Most recent NTRIP status from either server or client table
+    SELECT DISTINCT ON (sid) sid, status AS ntrip_status
+    FROM (
+        SELECT sid, ts, status FROM block_ntrip_server
+        UNION ALL
+        SELECT sid, ts, status FROM block_ntrip_client
+    ) ntrip_all
+    ORDER BY sid, ts DESC
 ),
-state_start AS (
-    -- Get the timestamp when the current state started
-    SELECT DISTINCT ON (sid)
-        sid,
-        ts as state_since
-    FROM state_changes
-    WHERE is_online != prev_state OR prev_state IS NULL
+-- Debounced state tracking: compute rolling 3-row debounced_online per ping,
+-- then find transitions of that debounced state for state_since.
+ping_with_debounced AS (
+    SELECT sid, ts, is_online,
+        bool_or(is_online) OVER (
+            PARTITION BY sid ORDER BY ts
+            ROWS BETWEEN 2 PRECEDING AND CURRENT ROW
+        ) AS debounced_online
+    FROM block_ping_status
+),
+debounced_state_changes AS (
+    SELECT sid, ts, debounced_online,
+        LAG(debounced_online) OVER (PARTITION BY sid ORDER BY ts) AS prev_debounced
+    FROM ping_with_debounced
+),
+debounced_state_start AS (
+    -- Most recent debounced state transition per station
+    SELECT DISTINCT ON (sid) sid, ts AS state_since
+    FROM debounced_state_changes
+    WHERE debounced_online != prev_debounced OR prev_debounced IS NULL
     ORDER BY sid, ts DESC
 )
 SELECT
-    es.sid,
-    es.ts as last_check,
-    es.is_online,
-    es.response_time_ms,
-    es.packet_loss,
-    es.error_message,
-    COALESCE(ss.state_since, es.ts) as state_since,
-    NOW() - COALESCE(ss.state_since, es.ts) as state_duration
-FROM effective_state es
-LEFT JOIN state_start ss ON es.sid = ss.sid;
+    lp.sid,
+    lp.ts AS last_check,
+    -- Online if ANY signal positive: NTRIP connected, any ping OK, or any port OK
+    -- Offline only when ALL signals fail (tolerates slow telemetry links)
+    CASE
+        WHEN COALESCE(nt.ntrip_status, '') = 'connected' THEN true
+        WHEN COALESCE(pd.ping_any_ok, false) THEN true
+        WHEN COALESCE(prd.port_any_ok, false) THEN true
+        ELSE false
+    END AS is_online,
+    lp.response_time_ms,
+    lp.packet_loss,
+    lp.error_message,
+    COALESCE(dss.state_since, lp.ts) AS state_since,
+    NOW() - COALESCE(dss.state_since, lp.ts) AS state_duration
+FROM latest_ping lp
+LEFT JOIN ping_debounced pd ON pd.sid = lp.sid
+LEFT JOIN port_debounced prd ON prd.sid = lp.sid
+LEFT JOIN latest_ntrip nt ON nt.sid = lp.sid
+LEFT JOIN debounced_state_start dss ON dss.sid = lp.sid;
 
-COMMENT ON VIEW station_connectivity IS 'Current connectivity state per station (requires 2 consecutive failed pings for offline)';
+COMMENT ON VIEW station_connectivity IS 'Current connectivity state per station (3-check ping+port debounce, NTRIP override, debounced state_since)';
 
 -- ============================================================================
 -- HELPER FUNCTION - Format duration for display

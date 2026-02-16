@@ -202,6 +202,20 @@ class TrimbleHTTPExtractor:
                 ):
                     statuses.append("warning")
 
+        # Fallback: if /prog/show? didn't return tracking/position, try posData.xml
+        if not tracking_data or not position_data:
+            pos_xml = self._fetch_individual_xml("posData.xml")
+            if pos_xml:
+                if not tracking_data:
+                    tracking_data = self._parse_satellites_from_pos_xml(pos_xml)
+                    if tracking_data:
+                        health_data["metrics"]["satellites"] = tracking_data
+                        statuses.append(tracking_data.get("status", "unknown"))
+                if not position_data:
+                    position_data = self._parse_position_from_pos_xml(pos_xml)
+                    if position_data:
+                        health_data["metrics"]["position"] = position_data
+
         # Fetch system info (serial, firmware)
         system_data = self._fetch_system_info()
         if system_data:
@@ -581,6 +595,10 @@ class TrimbleHTTPExtractor:
         Discovers the CACHEDIR path from the root page, then fetches
         merge.xml with powerData and dataLogger parameters.
 
+        If merge.xml returns empty data (newer ASTRA firmware), falls back
+        to individual XML endpoints (powerData.xml, posData.xml) which work
+        across all firmware versions.
+
         Returns:
             Raw XML text or None
         """
@@ -596,16 +614,57 @@ class TrimbleHTTPExtractor:
                 return None
 
             cache_dir = match.group(1)
+            self._cache_dir = cache_dir  # Store for individual XML fallback
+
             url = f"{self.base_url}/{cache_dir}/xml/dynamic/merge.xml?powerData=&dataLogger="
             response = requests.get(url, auth=self.auth, timeout=self.timeout)
             if response.status_code != 200:
                 return None
 
-            return response.text
+            xml_text = response.text
+
+            # If merge.xml returned empty/no power data (newer ASTRA firmware),
+            # fetch individual XML files which work on all firmware versions
+            if "<power>" not in xml_text:
+                self.logger.debug("merge.xml has no power data, trying powerData.xml")
+                power_xml = self._fetch_individual_xml("powerData.xml")
+                if power_xml:
+                    # Inject power data into the XML so existing parsers work
+                    xml_text = xml_text.replace("</data>", power_xml + "</data>")
+
+            return xml_text
 
         except Exception as e:
             self.logger.debug(f"Could not fetch merge.xml: {e}")
             return None
+
+    def _fetch_individual_xml(self, filename: str) -> Optional[str]:
+        """Fetch an individual dynamic XML file from the Trimble web UI.
+
+        Works on all firmware versions. Individual XML endpoints include:
+        - powerData.xml: voltage, temperature, uptime
+        - posData.xml: position, satellites, DOP
+        - trackingData.xml: detailed satellite tracking
+
+        Args:
+            filename: XML filename (e.g., 'powerData.xml')
+
+        Returns:
+            Raw XML text or None
+        """
+        cache_dir = getattr(self, '_cache_dir', None)
+        if not cache_dir:
+            return None
+
+        try:
+            url = f"{self.base_url}/{cache_dir}/xml/dynamic/{filename}"
+            response = requests.get(url, auth=self.auth, timeout=self.timeout)
+            if response.status_code == 200 and response.text.strip():
+                return response.text
+        except Exception as e:
+            self.logger.debug(f"Could not fetch {filename}: {e}")
+
+        return None
 
     def _parse_uptime_from_merge_xml(self, xml_text: Optional[str]) -> Optional[Dict[str, Any]]:
         """Parse uptime from merge.xml response.
@@ -698,23 +757,37 @@ class TrimbleHTTPExtractor:
               <B1><voltage>8.37</voltage><capacity>100</capacity></B1>
             </power>
 
-        Uses P1 (primary external power) as the main voltage reading.
+        Selects the active power port (has <active>TRUE</active>), falling back
+        to P1 then P2 if no active marker is found.
         """
         if not xml_text:
             return None
 
-        # Extract P1 (primary power input) voltage
-        p1_match = re.search(
-            r"<P1>\s*<voltage>([\d.]+)</voltage>", xml_text
+        # First, try to find the active power port (P1 or P2 with <active>TRUE</active>)
+        active_match = re.search(
+            r"<(P[12])><voltage>([\d.]+)</voltage>.*?<active>TRUE</active>.*?</\1>",
+            xml_text, re.DOTALL
         )
-        if not p1_match:
-            return None
+        if active_match:
+            voltage = float(active_match.group(2))
+            port_name = active_match.group(1)
+        else:
+            # Fall back to P1 then P2 (whichever exists with non-zero voltage)
+            for port in ["P1", "P2"]:
+                match = re.search(
+                    rf"<{port}>\s*<voltage>([\d.]+)</voltage>", xml_text
+                )
+                if match and float(match.group(1)) > 1.0:
+                    voltage = float(match.group(1))
+                    port_name = port
+                    break
+            else:
+                return None
 
-        voltage = float(p1_match.group(1))
         status = self._voltage_status(voltage)
 
         self.logger.debug(
-            f"Voltage from merge.xml: {voltage:.1f}V (status: {status})"
+            f"Voltage from XML ({port_name}): {voltage:.1f}V (status: {status})"
         )
 
         return {
@@ -1129,6 +1202,185 @@ class TrimbleHTTPExtractor:
 
         except Exception as e:
             self.logger.error(f"Error parsing position response: {e}")
+            return None
+
+    def _parse_satellites_from_pos_xml(self, xml_text: str) -> Optional[Dict[str, Any]]:
+        """Parse satellite tracking data from posData.xml.
+
+        Used as fallback when /prog/show?TrackingStatus is unavailable
+        (NetR5, or NetR9 with newer ASTRA firmware).
+
+        XML format:
+            <numFixSvs>34</numFixSvs>
+            <SvsUsed>
+                <sv sys="0" antenna="0">24</sv>   <!-- GPS -->
+                <sv sys="2" antenna="0">4</sv>    <!-- GLONASS -->
+                <sv sys="3" antenna="0">12</sv>   <!-- Galileo -->
+            </SvsUsed>
+
+        Trimble sys codes: 0=GPS, 1=SBAS, 2=GLONASS, 3=Galileo, 4=BeiDou, 5=QZSS.
+
+        Returns:
+            Satellite tracking dict compatible with _fetch_and_parse_tracking output,
+            or None if parsing fails.
+        """
+        try:
+            sys_map = {
+                "0": "GPS",
+                "1": "SBAS",
+                "2": "GLONASS",
+                "3": "Galileo",
+                "4": "BeiDou",
+                "5": "QZSS",
+            }
+
+            # Count satellites by constellation from <sv sys="N"> elements
+            sv_matches = re.findall(r'<sv\s+sys="(\d)"[^>]*>(\d+)</sv>', xml_text)
+
+            if not sv_matches:
+                return None
+
+            gps_count = 0
+            glonass_count = 0
+            galileo_count = 0
+            beidou_count = 0
+            sbas_count = 0
+
+            for sys_code, _prn in sv_matches:
+                name = sys_map.get(sys_code, "")
+                if name == "GPS":
+                    gps_count += 1
+                elif name == "GLONASS":
+                    glonass_count += 1
+                elif name == "Galileo":
+                    galileo_count += 1
+                elif name == "BeiDou":
+                    beidou_count += 1
+                elif name == "SBAS":
+                    sbas_count += 1
+
+            total = len(sv_matches)
+
+            # Prefer <numFixSvs> if available (may differ from sv count)
+            num_fix_match = re.search(r"<numFixSvs>(\d+)</numFixSvs>", xml_text)
+            if num_fix_match:
+                total = int(num_fix_match.group(1))
+
+            status = self._satellite_status(total)
+
+            self.logger.debug(
+                f"Satellites from posData.xml: {total} total "
+                f"(GPS={gps_count}, GLO={glonass_count}, GAL={galileo_count})"
+            )
+
+            return {
+                "total": total,
+                "visible": total,
+                "status": status,
+                "by_constellation": {
+                    "GPS": gps_count,
+                    "GLONASS": glonass_count,
+                    "Galileo": galileo_count,
+                    "BeiDou": beidou_count,
+                    "SBAS": sbas_count,
+                },
+                "source": "posData.xml",
+                "threshold_warning": self.metric_checker.config.sat_warning,
+                "threshold_critical": self.metric_checker.config.sat_critical,
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error parsing satellites from posData.xml: {e}")
+            return None
+
+    def _parse_position_from_pos_xml(self, xml_text: str) -> Optional[Dict[str, Any]]:
+        """Parse position and DOP data from posData.xml.
+
+        Used as fallback when /prog/show?Position is unavailable
+        (NetR5, or NetR9 with newer ASTRA firmware).
+
+        XML format:
+            <lat>63.454993011</lat>
+            <lon>-18.307764444</lon>
+            <hgt>81.099</hgt>
+            <fixType>PosAutonString</fixType>   (or <posType> on NetR5)
+            <DOP><PDOP>0.7</PDOP><HDOP>0.4</HDOP><VDOP>0.6</VDOP><TDOP>0.4</TDOP></DOP>
+
+        Returns:
+            Position dict compatible with _fetch_and_parse_position output,
+            or None if parsing fails.
+        """
+        try:
+            position_data: Dict[str, Any] = {}
+
+            lat_match = re.search(r"<lat>([-\d.]+)</lat>", xml_text)
+            if lat_match:
+                position_data["latitude"] = float(lat_match.group(1))
+
+            lon_match = re.search(r"<lon>([-\d.]+)</lon>", xml_text)
+            if lon_match:
+                position_data["longitude"] = float(lon_match.group(1))
+
+            hgt_match = re.search(r"<hgt>([-\d.]+)</hgt>", xml_text)
+            if hgt_match:
+                position_data["height"] = float(hgt_match.group(1))
+
+            # Fix type: try <fixType> first, then <posType>, then <soln>
+            for tag in ["fixType", "posType", "soln"]:
+                fix_match = re.search(rf"<{tag}>([^<]+)</{tag}>", xml_text)
+                if fix_match:
+                    position_data["fix_type"] = fix_match.group(1)
+                    break
+
+            # DOP values
+            pdop_match = re.search(r"<PDOP>([\d.]+)</PDOP>", xml_text)
+            if pdop_match:
+                position_data["pdop"] = float(pdop_match.group(1))
+
+            hdop_match = re.search(r"<HDOP>([\d.]+)</HDOP>", xml_text)
+            if hdop_match:
+                position_data["hdop"] = float(hdop_match.group(1))
+
+            vdop_match = re.search(r"<VDOP>([\d.]+)</VDOP>", xml_text)
+            if vdop_match:
+                position_data["vdop"] = float(vdop_match.group(1))
+
+            tdop_match = re.search(r"<TDOP>([\d.]+)</TDOP>", xml_text)
+            if tdop_match:
+                position_data["tdop"] = float(tdop_match.group(1))
+
+            # Satellite count from position fix
+            sv_matches = re.findall(r'<sv\s+sys="\d"', xml_text)
+            if sv_matches:
+                position_data["satellites_used"] = len(sv_matches)
+
+            if "latitude" not in position_data and "fix_type" not in position_data:
+                return None
+
+            # Determine status from fix type
+            fix_type = position_data.get("fix_type", "")
+            if "3D" in fix_type or "Auton" in fix_type:
+                position_data["status"] = "ok"
+            elif "2D" in fix_type:
+                position_data["status"] = "warning"
+            elif fix_type:
+                position_data["status"] = "warning"
+            else:
+                position_data["status"] = "unknown"
+
+            position_data["source"] = "posData.xml"
+
+            self.logger.debug(
+                f"Position from posData.xml: "
+                f"{position_data.get('latitude', '?')}, "
+                f"{position_data.get('longitude', '?')}, "
+                f"PDOP={position_data.get('pdop', '?')}"
+            )
+
+            return position_data
+
+        except Exception as e:
+            self.logger.error(f"Error parsing position from posData.xml: {e}")
             return None
 
     def _fetch_system_info(self) -> Optional[Dict[str, Any]]:

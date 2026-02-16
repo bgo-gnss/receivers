@@ -108,6 +108,7 @@ class HealthDatabaseWriter:
         ip_address = None
         http_port = None
         station_name = None
+        station_owner = None
         try:
             from ..config_utils import get_station_config
             cfg = get_station_config(station_id)
@@ -138,6 +139,13 @@ class HealthDatabaseWriter:
                     http_port = int(http_port_raw)
                 if not power_type:
                     power_type = cfg.get("power_type") or None
+                # Station owner: explicit field first, fall back to rinex_agency
+                # if it's not purely "IMO" (implies external partner)
+                station_owner = cfg.get("station_owner") or None
+                if not station_owner and agency and agency != "IMO":
+                    station_owner = agency
+                if not station_owner:
+                    station_owner = "IMO"
         except Exception as e:
             self.logger.debug(f"Could not load config for {station_id}: {e}")
 
@@ -147,9 +155,9 @@ class HealthDatabaseWriter:
                     INSERT INTO stations (sid, receiver_type, power_type,
                         antenna_type, marker_name, marker_number,
                         observer, agency, ip_address, http_port,
-                        station_name)
+                        station_name, station_owner)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::inet, %s,
-                        %s)
+                        %s, %s)
                     ON CONFLICT (sid) DO UPDATE SET
                         receiver_type = EXCLUDED.receiver_type,
                         power_type = COALESCE(EXCLUDED.power_type, stations.power_type),
@@ -161,12 +169,13 @@ class HealthDatabaseWriter:
                         ip_address = COALESCE(EXCLUDED.ip_address, stations.ip_address),
                         http_port = COALESCE(EXCLUDED.http_port, stations.http_port),
                         station_name = COALESCE(EXCLUDED.station_name, stations.station_name),
+                        station_owner = COALESCE(EXCLUDED.station_owner, stations.station_owner),
                         updated_at = NOW()
                     RETURNING sid
                 """, (station_id, receiver_type, power_type,
                       antenna_type, marker_name, marker_number,
                       observer, agency, ip_address, http_port,
-                      station_name))
+                      station_name, station_owner))
                 self._conn.commit()
                 self._station_cache.add(station_id)
                 return True

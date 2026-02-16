@@ -174,7 +174,7 @@ class ThresholdConfig:
 
     # Packet loss (%)
     packet_loss_warning: float = 20.0
-    packet_loss_critical: float = 50.0
+    packet_loss_critical: float = 70.0
 
 
 def get_thresholds_config_path() -> Path:
