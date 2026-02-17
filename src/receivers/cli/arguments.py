@@ -880,4 +880,8 @@ For subcommand help: receivers <command> --help
     except ImportError:
         pass
 
+    # Database management
+    from .db import create_db_parser
+    create_db_parser(subparsers)
+
     return parser

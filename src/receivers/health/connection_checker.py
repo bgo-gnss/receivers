@@ -196,8 +196,7 @@ class ConnectionChecker:
                             pass
 
                 # Determine status based on latency and packet loss
-                # Thresholds loaded from ThresholdConfig (configurable via
-                # ~/.config/gpsconfig/thresholds.yaml)
+                # Thresholds loaded from database.cfg via ThresholdConfig
                 try:
                     from .metrics import load_thresholds
                     tc = load_thresholds()

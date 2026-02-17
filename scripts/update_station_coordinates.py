@@ -2,6 +2,10 @@
 """
 Update station coordinates in the database from XYZ coordinate file.
 
+DEPRECATED: Use 'receivers db seed --only coordinates' instead.
+First run scripts/populate_stations_llh.py to write LLH to stations.cfg,
+then use 'receivers db seed --only coordinates' to update the database.
+
 Reads XYZ coordinates from station_coord.xyz, converts to lat/lon using
 the geofunc library, and updates the stations table in the database.
 
@@ -159,6 +163,13 @@ def update_database(llh_coords, dry_run=False):
 
 
 def main():
+    import warnings
+    warnings.warn(
+        "update_station_coordinates.py is deprecated. Use 'receivers db seed --only coordinates' instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    print("WARNING: This script is deprecated. Use 'receivers db seed --only coordinates' instead.\n")
     parser = argparse.ArgumentParser(description="Update station coordinates from XYZ file")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be updated without making changes")
     parser.add_argument("--xyz-file", default="/home/bgo/work/projects/gps/gpslibrary_new/gps-config-data/station_coord.xyz",

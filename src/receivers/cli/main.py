@@ -2891,6 +2891,12 @@ def main() -> int:
             print(f"   Error: {e}")
             return 1
 
+    # Handle database management subcommands
+    if args.command == "db":
+        from .db import handle_db_command
+
+        return handle_db_command(args)
+
     try:
         return args.func(args)
     except KeyboardInterrupt:

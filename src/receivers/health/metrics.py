@@ -7,29 +7,30 @@ of truth for status determination across:
 - Icinga monitoring integration
 - Health data extractors (PolaRX5, Trimble, etc.)
 
-Thresholds can be configured via YAML file (hybrid approach):
-- Default thresholds are defined in ThresholdConfig dataclass
-- Optional config file (~/.config/gpsconfig/thresholds.yaml) can override defaults
-- Per-receiver-type overrides are supported
+Threshold loading:
+1. ThresholdConfig dataclass defaults (fallback)
+2. database.cfg threshold sections (primary config)
+3. database.cfg power-type voltage ([voltage_dcdc], [voltage_mains])
+
+All thresholds live in database.cfg. Power-type-specific voltage
+ranges are in [voltage_dcdc] and [voltage_mains] sections.
 
 Usage:
     from receivers.health.metrics import MetricChecker, ThresholdConfig, load_thresholds
 
-    # Use defaults
-    checker = MetricChecker()
-
-    # Load from config file (with defaults fallback)
+    # Use defaults from database.cfg
     config = load_thresholds()
     checker = MetricChecker(config)
 
-    # Get config for specific receiver type
-    config = load_thresholds(receiver_type="NetRS")
+    # With power-type voltage overrides
+    config = load_thresholds(power_type="dcdc")
     checker = MetricChecker(config)
 
     result = checker.check_voltage(13.5)
     print(f"{result.status.value}: {result.message}")
 """
 
+import configparser
 import logging
 import os
 from dataclasses import dataclass
@@ -177,205 +178,120 @@ class ThresholdConfig:
     packet_loss_critical: float = 70.0
 
 
-def get_thresholds_config_path() -> Path:
-    """Get the path to the thresholds config file.
+def _get_config_dir() -> Path:
+    """Get the GPS config directory path."""
+    return Path(os.environ.get("GPS_CONFIG_PATH", os.path.expanduser("~/.config/gpsconfig")))
 
-    Respects GPS_CONFIG_PATH environment variable if set.
 
-    Returns:
-        Path to thresholds.yaml config file
-    """
-    config_base = os.environ.get("GPS_CONFIG_PATH", os.path.expanduser("~/.config/gpsconfig"))
-    return Path(config_base) / "thresholds.yaml"
+def _load_database_cfg() -> configparser.ConfigParser:
+    """Load and cache database.cfg parser."""
+    cfg_path = _get_config_dir() / "database.cfg"
+    parser = configparser.ConfigParser()
+    if cfg_path.exists():
+        parser.read(str(cfg_path))
+    return parser
 
 
 def load_thresholds(
-    receiver_type: Optional[str] = None,
-    config_path: Optional[Path] = None,
+    receiver_type: Optional[str] = None,  # noqa: ARG001 — backward compat
+    config_path: Optional[Path] = None,  # noqa: ARG001 — backward compat
     power_type: Optional[str] = None,
 ) -> ThresholdConfig:
-    """Load threshold configuration from YAML file with defaults fallback.
+    """Load threshold configuration from database.cfg.
 
-    This implements the hybrid approach:
-    1. Start with default ThresholdConfig values
-    2. Override with values from config file 'defaults' section (if file exists)
-    3. Override with receiver-type-specific values (if specified and present)
+    Loading order:
+    1. ThresholdConfig dataclass defaults
+    2. database.cfg threshold sections ([voltage], [temperature], etc.)
+    3. database.cfg power-type voltage section ([voltage_dcdc], [voltage_mains])
 
     Args:
-        receiver_type: Optional receiver type for type-specific overrides
-                      (e.g., 'PolaRX5', 'NetRS', 'NetR9')
-        config_path: Optional path to config file. If None, uses default location.
+        receiver_type: Ignored (kept for backward compatibility).
+        config_path: Ignored (kept for backward compatibility).
+        power_type: Power type ('battery', 'dcdc', 'mains') for voltage overrides.
 
     Returns:
-        ThresholdConfig with merged values
-
-    Example config file (~/.config/gpsconfig/thresholds.yaml):
-        defaults:
-          voltage:
-            warning_low: 11.8
-            critical_low: 11.0
-            warning_high: 15.0
-            critical_high: 16.0
-          temperature:
-            warning_high: 50.0
-            critical_high: 60.0
-          satellites:
-            warning: 8
-            critical: 4
-
-        receiver_types:
-          NetRS:
-            voltage:
-              warning_low: 11.5
-          PolaRX5:
-            temperature:
-              critical_high: 70.0
+        ThresholdConfig with merged values.
     """
-    # Start with defaults
+    del receiver_type, config_path  # unused, backward compat only
     config = ThresholdConfig()
+    parser = _load_database_cfg()
 
-    # Determine config file path
-    if config_path is None:
-        config_path = get_thresholds_config_path()
+    def _getfloat(section: str, key: str) -> Optional[float]:
+        try:
+            return parser.getfloat(section, key)
+        except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
+            return None
 
-    # Built-in DC/DC voltage thresholds (13.5-16.5V normal range)
-    _dcdc_voltage_overrides = {
-        "voltage": {
-            "warning_low": 12.0,
-            "critical_low": 11.0,
-            "warning_high": 16.5,
-            "critical_high": 18.0,
-        }
-    }
+    def _getint(section: str, key: str) -> Optional[int]:
+        try:
+            return parser.getint(section, key)
+        except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
+            return None
 
-    # Try to load from file
-    if not config_path.exists():
-        logger.debug(f"No thresholds config file at {config_path}, using defaults")
-        if power_type == "dcdc":
-            config = _apply_config_section(config, _dcdc_voltage_overrides)
-        return config
+    # Voltage (default / battery)
+    for key, attr in [
+        ("critical_low", "voltage_critical_low"),
+        ("warning_low", "voltage_warning_low"),
+        ("warning_high", "voltage_warning_high"),
+        ("critical_high", "voltage_critical_high"),
+    ]:
+        v = _getfloat("voltage", key)
+        if v is not None:
+            setattr(config, attr, v)
 
-    try:
-        import yaml
+    # Temperature
+    for key, attr in [
+        ("critical_low", "temp_critical_low"),
+        ("warning_low", "temp_warning_low"),
+        ("warning_high", "temp_warning_high"),
+        ("critical_high", "temp_critical_high"),
+    ]:
+        v = _getfloat("temperature", key)
+        if v is not None:
+            setattr(config, attr, v)
 
-        with open(config_path) as f:
-            yaml_config = yaml.safe_load(f)
+    # CPU
+    for key, attr in [("warning", "cpu_warning"), ("critical", "cpu_critical")]:
+        i = _getint("cpu", key)
+        if i is not None:
+            setattr(config, attr, i)
 
-        if not yaml_config:
-            return config
+    # Satellites
+    for key, attr in [("warning", "sat_warning"), ("critical", "sat_critical")]:
+        i = _getint("satellites", key)
+        if i is not None:
+            setattr(config, attr, i)
 
-        # Apply defaults section
-        defaults = yaml_config.get("defaults", {})
-        config = _apply_config_section(config, defaults)
+    # Disk
+    for key, attr in [("warning", "disk_warning"), ("critical", "disk_critical")]:
+        v = _getfloat("disk", key)
+        if v is not None:
+            setattr(config, attr, v)
 
-        # Apply receiver-type-specific overrides
-        if receiver_type:
-            receiver_types = yaml_config.get("receiver_types", {})
-            # Try exact match first, then case-insensitive
-            type_config = receiver_types.get(receiver_type)
-            if type_config is None:
-                # Case-insensitive lookup
-                for key, value in receiver_types.items():
-                    if key.lower() == receiver_type.lower():
-                        type_config = value
-                        break
+    # Ping
+    for key, attr in [("warning", "ping_warning"), ("critical", "ping_critical")]:
+        v = _getfloat("ping", key)
+        if v is not None:
+            setattr(config, attr, v)
 
-            if type_config:
-                config = _apply_config_section(config, type_config)
-                logger.debug(f"Applied receiver-type overrides for {receiver_type}")
+    # Packet loss
+    for key, attr in [("warning", "packet_loss_warning"), ("critical", "packet_loss_critical")]:
+        v = _getfloat("packet_loss", key)
+        if v is not None:
+            setattr(config, attr, v)
 
-        # Apply power-type-specific overrides
-        if power_type:
-            power_types = yaml_config.get("power_types", {})
-            pt_config = power_types.get(power_type)
-            if pt_config:
-                config = _apply_config_section(config, pt_config)
-                logger.debug(f"Applied power-type overrides for {power_type}")
-            elif power_type == "dcdc":
-                config = _apply_config_section(config, _dcdc_voltage_overrides)
-                logger.debug("Applied built-in DC/DC voltage thresholds")
-
-        logger.debug(f"Loaded thresholds from {config_path}")
-        return config
-
-    except ImportError:
-        logger.warning("PyYAML not installed, using default thresholds")
-        return config
-    except Exception as e:
-        logger.warning(f"Error loading thresholds config: {e}, using defaults")
-        return config
-
-
-def _apply_config_section(config: ThresholdConfig, section: Dict[str, Any]) -> ThresholdConfig:
-    """Apply a config section to ThresholdConfig.
-
-    Args:
-        config: Current ThresholdConfig
-        section: Dict with config values to apply
-
-    Returns:
-        Updated ThresholdConfig
-    """
-    # Voltage thresholds
-    voltage = section.get("voltage", {})
-    if "critical_low" in voltage:
-        config.voltage_critical_low = float(voltage["critical_low"])
-    if "warning_low" in voltage:
-        config.voltage_warning_low = float(voltage["warning_low"])
-    if "warning_high" in voltage:
-        config.voltage_warning_high = float(voltage["warning_high"])
-    if "critical_high" in voltage:
-        config.voltage_critical_high = float(voltage["critical_high"])
-    if "min" in voltage:
-        config.voltage_min = float(voltage["min"])
-    if "max" in voltage:
-        config.voltage_max = float(voltage["max"])
-
-    # Temperature thresholds
-    temp = section.get("temperature", {})
-    if "critical_low" in temp:
-        config.temp_critical_low = float(temp["critical_low"])
-    if "warning_low" in temp:
-        config.temp_warning_low = float(temp["warning_low"])
-    if "warning_high" in temp:
-        config.temp_warning_high = float(temp["warning_high"])
-    if "critical_high" in temp:
-        config.temp_critical_high = float(temp["critical_high"])
-
-    # CPU thresholds
-    cpu = section.get("cpu", {})
-    if "warning" in cpu:
-        config.cpu_warning = int(cpu["warning"])
-    if "critical" in cpu:
-        config.cpu_critical = int(cpu["critical"])
-
-    # Satellite thresholds
-    sats = section.get("satellites", {})
-    if "warning" in sats:
-        config.sat_warning = int(sats["warning"])
-    if "critical" in sats:
-        config.sat_critical = int(sats["critical"])
-
-    # Disk thresholds
-    disk = section.get("disk", {})
-    if "warning" in disk:
-        config.disk_warning = float(disk["warning"])
-    if "critical" in disk:
-        config.disk_critical = float(disk["critical"])
-
-    # Ping thresholds
-    ping = section.get("ping", {})
-    if "warning" in ping:
-        config.ping_warning = float(ping["warning"])
-    if "critical" in ping:
-        config.ping_critical = float(ping["critical"])
-
-    # Packet loss thresholds
-    packet_loss = section.get("packet_loss", {})
-    if "warning" in packet_loss:
-        config.packet_loss_warning = float(packet_loss["warning"])
-    if "critical" in packet_loss:
-        config.packet_loss_critical = float(packet_loss["critical"])
+    # Power-type voltage overrides ([voltage_dcdc], [voltage_mains])
+    if power_type and power_type != "battery":
+        section = f"voltage_{power_type}"
+        for key, attr in [
+            ("critical_low", "voltage_critical_low"),
+            ("warning_low", "voltage_warning_low"),
+            ("warning_high", "voltage_warning_high"),
+            ("critical_high", "voltage_critical_high"),
+        ]:
+            v = _getfloat(section, key)
+            if v is not None:
+                setattr(config, attr, v)
 
     return config
 

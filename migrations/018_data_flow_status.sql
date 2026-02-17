@@ -5,6 +5,7 @@
 -- Updated: 2026-02-13  Evidence-based session detection (file_tracking overrides probe)
 -- Updated: 2026-02-16  Debounce health_status: soften critical→warning when
 --                       debounced-online and issues are connectivity-only
+-- Updated: 2026-02-17  Grey status for stations never health-checked (no data dir)
 --
 -- Joins file_tracking + station_logging_status + station_dashboard_data to produce:
 --   health_status:    hardware/connectivity health (from overall_status)
@@ -88,6 +89,10 @@ health_streak AS (
     WHERE rn <= 6
     GROUP BY sid
 ),
+-- Stations that have been health-checked at least once (proxy for "data dir exists")
+ever_checked AS (
+    SELECT DISTINCT sid FROM block_health_summary
+),
 -- Base query: compute health_status and data status independently
 base AS (
     SELECT
@@ -122,12 +127,13 @@ base AS (
         --   Probe says false but file_tracking has files → true (evidence wins)
         --   No receiver_type + probe says false + no files → N/A
 
-        -- 24h data flow: N/A → Missing → Raw only → OK
+        -- 24h data flow: N/A → Never checked → Missing → Raw only → OK
         CASE
           WHEN d.station_status IS NOT NULL THEN -2                           -- inactive/discontinued
           WHEN d.receiver_type IS NULL
                AND NOT COALESCE(l.session_15s_24hr, false)
                AND r24.file_date IS NULL THEN -2                              -- unknown receiver + no probe + no files → N/A
+          WHEN ec.sid IS NULL AND r24.file_date IS NULL THEN -1               -- never health-checked + no files → grey
           WHEN r24.file_date IS NULL OR r24.file_date < CURRENT_DATE - 1
                THEN 2                                                         -- no recent raw → red
           WHEN x24.file_date IS NULL OR x24.file_date < r24.file_date
@@ -140,6 +146,7 @@ base AS (
           WHEN d.station_status IS NOT NULL THEN -2
           WHEN NOT COALESCE(l.session_1hz_1hr, false)
                AND r1h.latest_ts IS NULL THEN -2                              -- probe says no + no files → N/A
+          WHEN ec.sid IS NULL AND r1h.latest_ts IS NULL THEN -1               -- never health-checked + no files → grey
           WHEN r1h.latest_ts >= NOW() - INTERVAL '90 minutes' THEN 0         -- green
           WHEN r1h.latest_ts >= NOW() - INTERVAL '6 hours' THEN 1            -- yellow
           WHEN r1h.latest_ts IS NOT NULL THEN 2                               -- red
@@ -152,6 +159,7 @@ base AS (
           WHEN d.receiver_type IS NULL
                AND NOT COALESCE(l.session_15s_24hr, false)
                AND r24.file_date IS NULL THEN -2                              -- no evidence of session
+          WHEN ec.sid IS NULL AND x24.file_date IS NULL AND r24.file_date IS NULL THEN -1  -- never checked
           WHEN x24.file_date >= CURRENT_DATE - 1 THEN 0
           WHEN x24.file_date IS NULL AND r24.file_date IS NOT NULL THEN 2
           WHEN x24.file_date IS NULL THEN -1
@@ -164,6 +172,7 @@ base AS (
           WHEN d.station_status IS NOT NULL THEN -2
           WHEN NOT COALESCE(l.session_1hz_1hr, false)
                AND r1h.latest_ts IS NULL THEN -2                              -- no evidence of session
+          WHEN ec.sid IS NULL AND x1h.latest_ts IS NULL AND r1h.latest_ts IS NULL THEN -1  -- never checked
           WHEN x1h.latest_ts >= NOW() - INTERVAL '90 minutes' THEN 0
           WHEN x1h.latest_ts IS NULL THEN -1
           WHEN x1h.latest_ts >= NOW() - INTERVAL '6 hours' THEN 1
@@ -183,6 +192,7 @@ base AS (
     FROM station_dashboard_data d
     LEFT JOIN station_logging_status l ON l.sid = d.station_id
     LEFT JOIN health_streak hs ON hs.sid = d.station_id
+    LEFT JOIN ever_checked ec ON ec.sid = d.station_id
     LEFT JOIN latest_raw_24h r24 ON r24.sid = d.station_id
     LEFT JOIN latest_raw_1hz r1h ON r1h.sid = d.station_id
     LEFT JOIN latest_rinex_24h x24 ON x24.sid = d.station_id

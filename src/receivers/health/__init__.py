@@ -32,7 +32,6 @@ from .metrics import (
     MetricResult,
     MetricChecker,
     load_thresholds,
-    get_thresholds_config_path,
 )
 from .status_formatter import StatusFormatter
 
@@ -59,6 +58,5 @@ __all__ = [
     "MetricResult",
     "MetricChecker",
     "load_thresholds",
-    "get_thresholds_config_path",
     "StatusFormatter",
 ]
