@@ -232,6 +232,15 @@ def cmd_download(args) -> int:
         logger = setup_logging(args.loglevel)
         audit_logger = None
 
+    # Expand --all to all configured stations
+    if getattr(args, 'all_stations', False):
+        all_configs = get_all_station_configs()
+        args.stations = sorted(all_configs.keys())
+        logger.info(f"--all: resolved {len(args.stations)} stations")
+    elif not args.stations:
+        logger.error("No stations specified. Use station IDs or --all")
+        return 1
+
     logger.info(f"Starting download for stations: {args.stations}")
 
     # Process time arguments (from getSeptentrio3 logic)
