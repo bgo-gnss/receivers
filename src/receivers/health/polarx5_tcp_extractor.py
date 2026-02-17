@@ -71,7 +71,7 @@ class PolaRX5TCPExtractor:
         self.station_id = station_id
         self.port = port
         self.timeout = timeout
-        self.logger = logging.getLogger(f"receivers.health.tcp.{station_id}")
+        self.logger = logging.getLogger(f"receivers.health.{station_id}")
         self._connection_id = None  # Will be detected from prompt (e.g., "IP11")
 
         # Initialize centralized metric checker for consistent threshold evaluation

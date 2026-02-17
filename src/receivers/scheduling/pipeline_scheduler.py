@@ -468,7 +468,7 @@ def _run_pipeline_job(
         production_mode: Use production logging
         priority_name: Priority level name (REALTIME, STANDARD, BACKFILL)
     """
-    logger = logging.getLogger(f'gps_scheduler.pipeline.{station_id}')
+    logger = logging.getLogger(f'receivers.pipeline.{station_id}')
 
     try:
         priority = TaskPriority[priority_name.upper()]

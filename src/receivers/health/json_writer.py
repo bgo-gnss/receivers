@@ -25,7 +25,7 @@ class HealthJSONWriter:
         """
         self.base_path = Path(base_path)
         self.station_id = station_id.upper()
-        self.logger = logging.getLogger(f"receivers.health.json.{station_id}")
+        self.logger = logging.getLogger(f"receivers.health.{station_id}")
 
     def write_health_data(self, health_data: Dict[str, Any]) -> Path:
         """Write health data to JSON file.

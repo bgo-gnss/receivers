@@ -94,7 +94,7 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
     exec_start_time = datetime.now(timezone.utc)
 
     # Set up logging
-    logger = logging.getLogger(f'gps_scheduler.job.{station_id}')
+    logger = logging.getLogger(f'receivers.download.{station_id}')
 
     # Load-aware throttling: check system load before starting
     monitor = _get_load_monitor()
@@ -154,7 +154,7 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
             recv_logger = prod_config.create_station_logger(station_id)
             audit_logger = prod_config.get_audit_logger()
         else:
-            recv_logger = logging.getLogger(f'receiver.{station_id}')
+            recv_logger = logging.getLogger(f'receivers.download.{station_id}')
             audit_logger = None
 
         # Get station configuration
@@ -572,7 +572,7 @@ def _status_check_job(station_id: str, send_to_db: bool = True, send_to_icinga: 
         send_to_db: Write health data to PostgreSQL
         send_to_icinga: Send passive checks to Icinga
     """
-    logger = logging.getLogger(f'gps_scheduler.health.{station_id}')
+    logger = logging.getLogger(f'receivers.health.{station_id}')
 
     try:
         logger.info(f"Starting health check: {station_id}")
@@ -871,32 +871,13 @@ class BulkDownloadScheduler:
         return result
 
     def _setup_logging(self):
-        """Set up scheduler logging."""
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        
-        self.logger = logging.getLogger('gps_scheduler')
-        self.logger.setLevel(logging.INFO)
-        
-        # Remove existing handlers
-        for handler in self.logger.handlers[:]:
-            self.logger.removeHandler(handler)
-        
-        # File handler for scheduler logs
-        log_file = self.log_dir / 'scheduler.log'
-        file_handler = logging.handlers.RotatingFileHandler(
-            log_file, maxBytes=10*1024*1024, backupCount=3
+        """Set up scheduler logging via the unified logging system."""
+        from ..logging_config import setup_logging
+
+        self.logger = setup_logging(
+            log_dir=self.log_dir,
+            component="scheduler",
         )
-        file_handler.setFormatter(logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        ))
-        self.logger.addHandler(file_handler)
-        
-        # Console handler
-        console_handler = logging.StreamHandler()
-        console_handler.setFormatter(logging.Formatter(
-            '%(asctime)s - %(levelname)s - %(message)s'
-        ))
-        self.logger.addHandler(console_handler)
         
     def _setup_scheduler(self):
         """Initialize APScheduler with persistent storage."""

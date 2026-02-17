@@ -14,7 +14,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-logger = logging.getLogger("gps_scheduler.backfill")
+logger = logging.getLogger("receivers.scheduler.backfill")
 
 
 def _backfill_next_station_for_session(

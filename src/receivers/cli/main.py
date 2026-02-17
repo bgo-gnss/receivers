@@ -41,21 +41,18 @@ except ImportError:
 # Import station config from utility to avoid circular imports
 from ..config_utils import get_station_config
 
+# Module-level logger for functions that don't receive a logger argument
+_logger = logging.getLogger(__name__)
+
 
 def setup_logging(level: int = logging.INFO) -> logging.Logger:
     """Set up logging for CLI commands.
 
-    Uses force=True because imports (gps_parser, gtimes) may have already
-    called basicConfig(), making a non-forced call a no-op that silently
-    swallows all output.
+    Delegates to the unified :func:`receivers.logging_config.setup_logging`.
     """
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-        force=True,
-    )
-    return logging.getLogger("receivers")
+    from ..logging_config import setup_logging as _setup
+
+    return _setup(level=level)
 
 
 def parse_datetime(date_str: str) -> datetime:
@@ -2233,7 +2230,7 @@ def get_all_station_configs() -> Dict[str, Dict[str, Any]]:
         Dictionary mapping station_id to configuration
     """
     if not HAS_GPS_PARSER:
-        logging.error("gps_parser not available - cannot load all stations")
+        _logger.error("gps_parser not available - cannot load all stations")
         return {}
 
     try:
@@ -2250,11 +2247,11 @@ def get_all_station_configs() -> Dict[str, Dict[str, Any]]:
                 if station_config:
                     stations[section] = station_config
             except Exception as e:
-                logging.debug(f"Could not load config for {section}: {e}")
+                _logger.debug(f"Could not load config for {section}: {e}")
 
         return stations
     except Exception as e:
-        logging.error(f"Could not load all station configurations: {e}")
+        _logger.error(f"Could not load all station configurations: {e}")
         return {}
 
 
@@ -2276,7 +2273,7 @@ def apply_receiver_type_corrections(
     # 3. Writing back to stations.cfg
     # 4. Validating the changes
 
-    logging.warning(
+    _logger.warning(
         "Auto-correction not yet implemented - use --report to get manual corrections"
     )
     return 0
@@ -2912,7 +2909,7 @@ def main() -> int:
         print("\nOperation cancelled by user")
         return 130
     except Exception as e:
-        logging.error(f"Unexpected error: {e}")
+        _logger.error(f"Unexpected error: {e}")
         return 1
 
 

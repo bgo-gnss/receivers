@@ -91,7 +91,7 @@ class TrimbleHTTPExtractor:
         self.receiver_type = receiver_type
         self.base_url = f"http://{host}:{port}"
         self.timeout = timeout
-        self.logger = logging.getLogger(f"receivers.health.trimble.{station_id}")
+        self.logger = logging.getLogger(f"receivers.health.{station_id}")
 
         # Initialize centralized metric checker for consistent threshold evaluation
         from .metrics import load_thresholds

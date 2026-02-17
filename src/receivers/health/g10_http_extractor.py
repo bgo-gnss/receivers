@@ -66,7 +66,7 @@ class G10HTTPExtractor:
         self.timeout = timeout
         self.username = username
         self.password = password
-        self.logger = logging.getLogger(f"receivers.health.g10_http.{station_id}")
+        self.logger = logging.getLogger(f"receivers.health.{station_id}")
 
         # Initialize centralized metric checker
         from .metrics import load_thresholds

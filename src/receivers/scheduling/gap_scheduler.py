@@ -11,7 +11,7 @@ APScheduler-compatible entry point.
 import logging
 from typing import List
 
-logger = logging.getLogger("gps_scheduler.gap_detection")
+logger = logging.getLogger("receivers.scheduler.gaps")
 
 
 def _run_gap_detection_job(

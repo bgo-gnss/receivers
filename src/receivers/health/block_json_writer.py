@@ -38,7 +38,7 @@ class BlockJsonWriter:
         self.blocks_dir = self.output_dir / 'blocks'
         self.blocks_dir.mkdir(parents=True, exist_ok=True)
 
-        self.logger = logging.getLogger(f'receivers.health.blocks.{station_id}')
+        self.logger = logging.getLogger(f'receivers.health.{station_id}')
 
     def extract_all_blocks(self, sbf_files: List[Path], target_date: date,
                           skip_blocks: Optional[List[str]] = None) -> Dict[str, int]:
