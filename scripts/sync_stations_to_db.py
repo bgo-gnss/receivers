@@ -2,6 +2,10 @@
 """
 Sync all stations from stations.cfg to the database.
 
+DEPRECATED: Use 'receivers db seed --only stations' instead.
+This script is kept for backward compatibility but will be removed
+in a future release.
+
 This ensures all configured stations appear in the Grafana map,
 even if they haven't been polled for health data yet. Stations
 without health data will appear as grey markers.
@@ -90,7 +94,7 @@ def sync_to_database(stations, dry_run=False):
         cursor.execute("SELECT sid FROM stations WHERE sid = %s", (sid,))
         exists = cursor.fetchone() is not None
 
-        receiver_type = data.get("receiver_type")
+        receiver_type = data.get("receiver_type") or "unknown"
         power_type = data.get("power_type")
 
         if dry_run:
@@ -135,6 +139,13 @@ def sync_to_database(stations, dry_run=False):
 
 
 def main():
+    import warnings
+    warnings.warn(
+        "sync_stations_to_db.py is deprecated. Use 'receivers db seed --only stations' instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    print("WARNING: This script is deprecated. Use 'receivers db seed --only stations' instead.\n")
     parser = argparse.ArgumentParser(description="Sync stations from stations.cfg to database")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be done without making changes")
     args = parser.parse_args()

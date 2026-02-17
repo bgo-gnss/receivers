@@ -670,7 +670,7 @@ class HealthDatabaseWriter:
                 if isinstance(conn_level, dict):
                     conn_status = conn_level.get("status", "").lower()
                     if conn_status == "critical" and not conn_level.get("accessible", True):
-                        err = conn_level.get("error_message", "")
+                        err = conn_level.get("error_message", "") or conn_level.get("error", "")
                         if "timeout" in err.lower():
                             problems.append(f"{conn_label} timeout")
                         elif "refused" in err.lower():

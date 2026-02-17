@@ -179,11 +179,11 @@ class PolaRX5(BaseReceiver):
 
         # Test 1: Router connectivity (ping)
         try:
-            # Ping with 2 second timeout, 1 packet
+            # Ping with 2 second timeout, 3 packets (tolerate lossy links)
             result = subprocess.run(
-                ['ping', '-c', '1', '-W', '2', self.ip_number],
+                ['ping', '-c', '3', '-W', '2', self.ip_number],
                 capture_output=True,
-                timeout=3
+                timeout=8
             )
             router_ok = (result.returncode == 0)
         except Exception as e:
@@ -823,45 +823,27 @@ class PolaRX5(BaseReceiver):
         connection_start = time.time()
 
         if not skip_ping_check:
-            # Fast-fail check 1: Ping with retries (detect unreachable hosts)
-            # Retry ping up to 3 times to handle momentary connectivity issues
+            # Fast-fail check 1: Ping (detect unreachable hosts)
+            # Send 3 packets to tolerate lossy 3G/4G links
             import subprocess
             self.logger.info(f"Checking connectivity to {self.ip_number}...")
-            ping_retries = 3
-            ping_delay = 1.0  # seconds between retries
             ping_success = False
 
-            for ping_attempt in range(ping_retries):
-                try:
-                    ping_result = subprocess.run(
-                        ['ping', '-c', '1', '-W', '2', self.ip_number],
-                        capture_output=True,
-                        timeout=3
-                    )
-                    if ping_result.returncode == 0:
-                        ping_success = True
-                        break
-                    else:
-                        if ping_attempt < ping_retries - 1:
-                            self.logger.warning(
-                                f"⚠️  Ping attempt {ping_attempt + 1}/{ping_retries} failed, "
-                                f"retrying in {ping_delay}s..."
-                            )
-                            time.sleep(ping_delay)
-                except subprocess.TimeoutExpired:
-                    if ping_attempt < ping_retries - 1:
-                        self.logger.warning(
-                            f"⚠️  Ping attempt {ping_attempt + 1}/{ping_retries} timed out, "
-                            f"retrying in {ping_delay}s..."
-                        )
-                        time.sleep(ping_delay)
-                except Exception as e:
-                    self.logger.debug(f"Ping check error: {e}")
-                    ping_success = True  # Skip ping on error, let FTP handle it
-                    break
+            try:
+                ping_result = subprocess.run(
+                    ['ping', '-c', '3', '-W', '2', self.ip_number],
+                    capture_output=True,
+                    timeout=8
+                )
+                ping_success = (ping_result.returncode == 0)
+            except subprocess.TimeoutExpired:
+                pass
+            except Exception as e:
+                self.logger.debug(f"Ping check error: {e}")
+                ping_success = True  # Skip ping on error, let FTP handle it
 
             if not ping_success:
-                self.logger.error(f"❌ Network unreachable: {self.ip_number} - ping failed after {ping_retries} attempts")
+                self.logger.error(f"❌ Network unreachable: {self.ip_number} - ping failed")
                 self.logger.error("💡 Check network connectivity or wait for receiver to come online")
                 self._last_connection_time = time.time() - connection_start
                 return None

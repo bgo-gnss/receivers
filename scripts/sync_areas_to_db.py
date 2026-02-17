@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""Sync station_areas.yaml to database."""
+"""Sync station_areas.yaml to database.
+
+DEPRECATED: Use 'receivers db seed --only areas' instead.
+"""
+import warnings
+warnings.warn(
+    "sync_areas_to_db.py is deprecated. Use 'receivers db seed --only areas' instead.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+print("WARNING: This script is deprecated. Use 'receivers db seed --only areas' instead.\n")
 import yaml
 import psycopg2
 

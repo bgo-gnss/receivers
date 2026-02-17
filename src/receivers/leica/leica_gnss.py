@@ -91,12 +91,12 @@ class Leica(BaseReceiver):
         
         try:
             import subprocess
-            # Simple ping test
+            # Ping test (3 packets to tolerate lossy links)
             result = subprocess.run(
-                ['ping', '-c', '1', '-W', '5', self.ip],
+                ['ping', '-c', '3', '-W', '2', self.ip],
                 capture_output=True,
                 text=True,
-                timeout=10
+                timeout=8
             )
             success = (result.returncode == 0)
             if not success:

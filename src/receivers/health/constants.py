@@ -3,10 +3,30 @@
 Centralizes color schemes and threshold constants used across Grafana
 dashboards, CLI output, and health monitoring code.
 
-The threshold values here are for dashboard display only. For metric
-evaluation thresholds (voltage, temperature, etc.), use metrics.py
-ThresholdConfig which supports per-receiver-type overrides via YAML.
+Dashboard display thresholds are loaded from database.cfg [checked] and
+[dashboard_satellites] sections with fallback to the defaults below.
+For metric evaluation thresholds (voltage, temperature, etc.), use
+metrics.py ThresholdConfig.
 """
+
+import configparser
+import os
+from pathlib import Path
+
+
+def _load_cfg_value(section: str, key: str, default: int) -> int:
+    """Load an int from database.cfg, returning default if missing."""
+    cfg_path = Path(
+        os.environ.get("GPS_CONFIG_PATH", os.path.expanduser("~/.config/gpsconfig"))
+    ) / "database.cfg"
+    if not cfg_path.exists():
+        return default
+    parser = configparser.ConfigParser()
+    parser.read(str(cfg_path))
+    try:
+        return parser.getint(section, key)
+    except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
+        return default
 
 
 class Colors:
@@ -25,24 +45,22 @@ class CheckedThresholds:
     """Thresholds for "Last Checked" display (seconds).
 
     Used in Grafana dashboard to color-code how recently a station
-    was checked.
+    was checked. Values loaded from database.cfg [checked] section.
     """
 
-    GREEN_MAX = 7200  # 2 hours - recently checked
-    YELLOW_MAX = 86400  # 24 hours - stale
+    GREEN_MAX = _load_cfg_value("checked", "green_max", 7200)
+    YELLOW_MAX = _load_cfg_value("checked", "yellow_max", 86400)
 
 
 class SatelliteThresholds:
-    """Standardized satellite count thresholds.
+    """Standardized satellite count thresholds for dashboard display.
 
-    Used across overview and detail dashboards for consistent display.
-    The metrics.py ThresholdConfig uses warning=8, critical=4 for
-    Icinga alerting. Dashboard display uses higher thresholds for
-    visual color coding.
-
-    Standardized on 16 for green status per user decision.
+    These are separate from the alerting thresholds in metrics.py
+    (warning=8, critical=4). Dashboard display uses higher thresholds
+    for visual color coding. Values loaded from database.cfg
+    [dashboard_satellites] section.
     """
 
-    GREEN_MIN = 16  # Healthy: >= 16 satellites (green)
-    YELLOW_MIN = 8  # Warning: 8-15 satellites (yellow)
-    # Critical: < 8 satellites (red)
+    GREEN_MIN = _load_cfg_value("dashboard_satellites", "green_min", 16)
+    YELLOW_MIN = _load_cfg_value("dashboard_satellites", "yellow_min", 8)
+    # Critical: < YELLOW_MIN satellites (red)
