@@ -17,6 +17,8 @@ import sys
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
+logger = logging.getLogger(__name__)
+
 # Check for tostools availability
 try:
     from tostools.api.tos_client import TOSClient
@@ -48,7 +50,7 @@ def get_stations_from_config() -> List[str]:
             if s not in excluded_sections and s.isupper() and len(s) == 4
         ]
     except Exception as e:
-        logging.warning(f"Could not get station list from config: {e}")
+        logger.warning(f"Could not get station list from config: {e}")
         return []
 
 
@@ -191,14 +193,14 @@ def _update_stations_cfg(cfg_path: str, coordinates: Dict[str, Dict[str, Any]]) 
                     station_config["height"] = coords["height"]
                     updated_count += 1
             except Exception as e:
-                logging.warning(f"Could not update {sid}: {e}")
+                logger.warning(f"Could not update {sid}: {e}")
 
         # Save config
         config.save()
         return updated_count > 0
 
     except Exception as e:
-        logging.error(f"Failed to update stations.cfg: {e}")
+        logger.error(f"Failed to update stations.cfg: {e}")
         return False
 
 

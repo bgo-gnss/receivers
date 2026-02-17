@@ -29,7 +29,7 @@ class G10FTPHealthInferrer:
         self.host = host
         self.station_id = station_id
         self.timeout = timeout
-        self.logger = logging.getLogger(f"receivers.health.g10.{station_id}")
+        self.logger = logging.getLogger(f"receivers.health.{station_id}")
 
     def infer_health_from_ftp(
         self, ftp_path: str = "/data", username: str = "anonymous", password: str = ""

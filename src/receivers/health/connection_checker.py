@@ -60,7 +60,7 @@ class ConnectionChecker:
         """
         self.host = host
         self.station_id = station_id
-        self.logger = logging.getLogger(f"receivers.health.connection.{station_id}")
+        self.logger = logging.getLogger(f"receivers.health.{station_id}")
 
     def check_all_levels(
         self,

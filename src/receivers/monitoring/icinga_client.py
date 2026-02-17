@@ -36,6 +36,8 @@ from urllib.parse import quote
 from ..health.metrics import MetricChecker, MetricResult, HealthStatus, ThresholdConfig
 from ..config.icinga_config import get_icinga_config, IcingaThresholds
 
+logger = logging.getLogger(__name__)
+
 # Icinga service domain (configurable via env var)
 ICINGA_SERVICE_DOMAIN = os.getenv("ICINGA_SERVICE_DOMAIN", "gps.vedur.is")
 
@@ -1324,7 +1326,7 @@ Examples:
 
     # For live/all checks, fetch health data from receiver
     if args.check_type in ('all', 'live', 'ping', 'temp', 'volt', 'satellites', 'position', 'logging', 'receiver_status'):
-        print(f"Fetching health data from {args.station}...")
+        logger.info(f"Fetching health data from {args.station}...")
         try:
             result = subprocess.run(
                 ['receivers', 'health', args.station, '--json'],
@@ -1333,20 +1335,20 @@ Examples:
                 timeout=60
             )
             if result.returncode != 0:
-                print(f"ERROR: Failed to get health data: {result.stderr}")
+                logger.error(f"Failed to get health data: {result.stderr}")
                 return 1
 
             health_data = json.loads(result.stdout)
-            print(f"Got health data: overall_status={health_data.get('overall_status', 'unknown')}")
+            logger.info(f"Got health data: overall_status={health_data.get('overall_status', 'unknown')}")
 
             if args.dry_run:
-                print("\n=== DRY RUN - Would send the following checks ===")
-                print(f"Station: {health_data.get('station_id')}")
-                print(f"Temperature: {health_data.get('metrics', {}).get('temperature', {})}")
-                print(f"Satellites: {health_data.get('metrics', {}).get('satellites', {})}")
-                print(f"Position: {health_data.get('metrics', {}).get('position', {})}")
-                print(f"Ports: {health_data.get('metrics', {}).get('ports', {})}")
-                print(f"Disk: {health_data.get('data_quality', {}).get('disk', {})}")
+                logger.info("=== DRY RUN - Would send the following checks ===")
+                logger.info(f"Station: {health_data.get('station_id')}")
+                logger.info(f"Temperature: {health_data.get('metrics', {}).get('temperature', {})}")
+                logger.info(f"Satellites: {health_data.get('metrics', {}).get('satellites', {})}")
+                logger.info(f"Position: {health_data.get('metrics', {}).get('position', {})}")
+                logger.info(f"Ports: {health_data.get('metrics', {}).get('ports', {})}")
+                logger.info(f"Disk: {health_data.get('data_quality', {}).get('disk', {})}")
                 return 0
 
             # Determine which checks to send
@@ -1359,26 +1361,26 @@ Examples:
             responses = client.send_health_from_json(health_data, checks=checks)
 
             # Print results
-            print(f"\n=== Results for {args.station} ===")
+            logger.info(f"=== Results for {args.station} ===")
             all_success = True
             for check_name, response in responses.items():
                 status = "✅" if response.get("success") else "❌"
                 code = response.get("code", "N/A")
                 msg = response.get("message", "Unknown")
-                print(f"{status} {check_name}: {code} - {msg}")
+                logger.info(f"{status} {check_name}: {code} - {msg}")
                 if not response.get("success"):
                     all_success = False
 
             return 0 if all_success else 1
 
         except subprocess.TimeoutExpired:
-            print("ERROR: Timeout fetching health data")
+            logger.error("Timeout fetching health data")
             return 1
         except json.JSONDecodeError as e:
-            print(f"ERROR: Failed to parse health JSON: {e}")
+            logger.error(f"Failed to parse health JSON: {e}")
             return 1
         except FileNotFoundError:
-            print("ERROR: 'receivers' command not found")
+            logger.error("'receivers' command not found")
             return 1
 
     # Test data for ping/health checks
@@ -1398,8 +1400,8 @@ Examples:
             metrics={"voltage": 13.2, "cpu_load": 45, "temperature": 42}
         )
 
-    # Print response
-    print(f"\nResponse: {json.dumps(response, indent=2)}")
+    # Log response
+    logger.info(f"Response: {json.dumps(response, indent=2)}")
 
     return 0 if response["success"] else 1
 

@@ -32,7 +32,7 @@ class ProductionFormatter(logging.Formatter):
         
         # Extract station ID from logger name if available
         station_id = ""
-        if 'receiver.' in record.name:
+        if 'receivers.' in record.name and record.name.count('.') >= 2:
             station_id = f"[{record.name.split('.')[-1]}] "
         elif hasattr(record, 'station_id'):
             station_id = f"[{record.station_id}] "
@@ -65,7 +65,7 @@ class JSONFormatter(logging.Formatter):
         }
         
         # Add station context if available
-        if 'receiver.' in record.name:
+        if 'receivers.' in record.name and record.name.count('.') >= 2:
             log_entry['station_id'] = record.name.split('.')[-1]
         elif hasattr(record, 'station_id'):
             log_entry['station_id'] = record.station_id
@@ -97,7 +97,7 @@ class AuditLogger:
         self.audit_file = log_dir / 'download_audit.jsonl'
         
         # Set up audit logger
-        self.logger = logging.getLogger('gps_receivers.audit')
+        self.logger = logging.getLogger('receivers.audit')
         self.logger.setLevel(logging.INFO)
         
         # Remove existing handlers to avoid duplicates
@@ -174,48 +174,18 @@ class ProductionLoggingConfig:
         self.audit_logger = AuditLogger(self.log_dir)
         
     def setup_production_logging(self) -> logging.Logger:
-        """Set up production-optimized logging configuration."""
-        
-        # Create log directory
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Configure root logger
-        root_logger = logging.getLogger()
-        root_logger.setLevel(logging.DEBUG if self.verbose else logging.INFO)
-        
-        # Remove default handlers to avoid duplicates
-        for handler in root_logger.handlers[:]:
-            root_logger.removeHandler(handler)
-        
-        # Console handler with production formatter
-        console_handler = logging.StreamHandler(sys.stdout)
-        if self.json_output:
-            console_handler.setFormatter(JSONFormatter())
-        else:
-            console_handler.setFormatter(ProductionFormatter())
-        
-        console_handler.setLevel(logging.INFO)
-        root_logger.addHandler(console_handler)
-        
-        # File handler for persistent logging
-        log_file = self.log_dir / 'receivers.log'
-        file_handler = logging.handlers.RotatingFileHandler(
-            log_file,
-            maxBytes=20*1024*1024,  # 20MB
-            backupCount=3
+        """Set up production-optimized logging configuration.
+
+        Delegates to the unified :func:`receivers.logging_config.setup_logging`.
+        """
+        from ..logging_config import setup_logging
+
+        level = logging.DEBUG if self.verbose else logging.INFO
+        return setup_logging(
+            level=level,
+            json_output=self.json_output,
+            log_dir=self.log_dir,
         )
-        file_handler.setFormatter(JSONFormatter())
-        file_handler.setLevel(logging.DEBUG if self.verbose else logging.INFO)
-        root_logger.addHandler(file_handler)
-        
-        # Configure specific logger levels for production
-        if not self.verbose:
-            # Reduce verbosity of specific components
-            logging.getLogger('urllib3').setLevel(logging.WARNING)
-            logging.getLogger('ftplib').setLevel(logging.WARNING)
-            logging.getLogger('gps_parser').setLevel(logging.WARNING)
-        
-        return root_logger
     
     def get_audit_logger(self) -> AuditLogger:
         """Get the audit logger instance."""
@@ -223,7 +193,7 @@ class ProductionLoggingConfig:
     
     def create_station_logger(self, station_id: str) -> logging.Logger:
         """Create a logger for a specific station."""
-        logger = logging.getLogger(f'receiver.{station_id}')
+        logger = logging.getLogger(f'receivers.download.{station_id}')
         
         # Add station ID to all log records
         class StationContextFilter(logging.Filter):

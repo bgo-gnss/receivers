@@ -44,7 +44,7 @@ class TimeSeriesHealthExtractor:
         """
         self.station_id = station_id
         self.receiver_type = receiver_type
-        self.logger = logging.getLogger(f"receivers.health.timeseries.{station_id}")
+        self.logger = logging.getLogger(f"receivers.health.{station_id}")
 
     def extract_daily_health(
         self,

@@ -54,7 +54,7 @@ class RxToolsExtractor:
             station_id: Station identifier for logging
         """
         self.station_id = station_id
-        self.logger = logging.getLogger(f"receivers.health.rxtools.{station_id}")
+        self.logger = logging.getLogger(f"receivers.health.{station_id}")
         self._bin2asc_path = None
 
     def check_rxtools_available(self) -> bool:

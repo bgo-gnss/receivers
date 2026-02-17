@@ -148,7 +148,7 @@ class ScheduledTask(ABC):
         """
         self.station_id = station_id
         self.config = config
-        self.logger = logger or logging.getLogger(f'task.{station_id}')
+        self.logger = logger or logging.getLogger(f'receivers.task.{station_id}')
 
     @abstractmethod
     def get_time_parameters(self) -> Tuple[datetime, datetime]:

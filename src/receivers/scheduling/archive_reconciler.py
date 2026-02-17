@@ -17,7 +17,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-logger = logging.getLogger("gps_scheduler.archive_reconciler")
+logger = logging.getLogger("receivers.scheduler.reconciler")
 
 
 def _get_format_resolver():
