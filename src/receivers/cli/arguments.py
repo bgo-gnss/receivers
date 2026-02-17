@@ -120,12 +120,19 @@ Examples:
         '''
     )
 
-    # Positional: stations (multiple)
+    # Positional: stations (multiple, optional when --all is used)
     parser.add_argument(
         'stations',
-        nargs='+',
+        nargs='*',
         metavar='STATION',
         help='Station IDs to download (e.g., ELDC THOB)'
+    )
+
+    parser.add_argument(
+        '--all',
+        action='store_true',
+        dest='all_stations',
+        help='Download all configured stations'
     )
 
     # Date/time options
