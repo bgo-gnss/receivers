@@ -128,6 +128,9 @@ class NetR9HTTPDownloader:
         # Track connection time for metrics
         self._last_connection_time = 0.0
 
+        # Track remote file sizes from HTTP directory listing (filename -> size in bytes)
+        self.remote_sizes: Dict[str, int] = {}
+
         # Base path handling for NetR5 CACHEDIR prefix (hybrid approach)
         # Check if explicit base_path is configured in stations.cfg
         receiver_config = station_config.get("receiver", {})
@@ -534,6 +537,10 @@ class NetR9HTTPDownloader:
             dir_files = self.get_directory_listing(remote_dir)
             file_info = next((f for f in dir_files if f[0] == filename), None)
             expected_size = file_info[1] if file_info else None
+
+            # Store remote file size for tracking
+            if expected_size and expected_size > 0:
+                self.remote_sizes[filename] = expected_size
 
             local_file_path = tmp_dir / filename
 

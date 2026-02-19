@@ -486,6 +486,9 @@ class NetR9(BaseReceiver):
             # Track downloaded files in database (only when sync is enabled)
             if sync:
                 try:
+                    # Collect remote file sizes from HTTP downloader (if available)
+                    http_remote_sizes = getattr(self.http_downloader, 'remote_sizes', {})
+
                     with DownloadTracker(self.station_id, session) as tracker:
                         if tracker._connected:
                             from datetime import date
@@ -494,6 +497,11 @@ class NetR9(BaseReceiver):
                             downloaded_dates = set()  # Set of (date, hour) tuples
                             for file_path in downloaded_files:
                                 filename = Path(file_path).name
+                                # Look up remote size by filename (original name without .gz)
+                                remote_size = http_remote_sizes.get(filename)
+                                if not remote_size:
+                                    base_name = filename.removesuffix('.gz')
+                                    remote_size = http_remote_sizes.get(base_name)
                                 # Parse date from NetR9 filename: MANA202601170000A.T02 or .T02.gz
                                 match = re.match(rf"^{re.escape(self.station_id)}_*(\d{{4}})(\d{{2}})(\d{{2}})(\d{{2}})(\d{{2}})", filename, re.IGNORECASE)
                                 if match:
@@ -501,7 +509,7 @@ class NetR9(BaseReceiver):
                                     file_hour = int(match.group(4))
                                     track_hour = file_hour if "1hr" in session.lower() else None
                                     file_size = Path(file_path).stat().st_size if Path(file_path).exists() else None
-                                    tracker.mark_downloaded(file_date, track_hour, filename, file_size)
+                                    tracker.mark_downloaded(file_date, track_hour, filename, file_size, remote_file_size=remote_size)
                                     downloaded_dates.add((file_date, track_hour))
 
                             # Track missing files (requested but not downloaded) - compare by date/hour
@@ -547,7 +555,7 @@ class NetR9(BaseReceiver):
             }
 
     def _track_validated_files(self, files_dict: Dict, session: str) -> None:
-        """Track already-archived files as downloaded in file_tracking database.
+        """Register already-archived files in file_tracking database.
 
         This ensures the dashboard reflects files that were validated in the
         archive even if they were downloaded before the tracker was active.
@@ -567,10 +575,10 @@ class NetR9(BaseReceiver):
                             file_date = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
                             file_hour = int(match.group(4))
                             track_hour = file_hour if "1hr" in session.lower() else None
-                            tracker.mark_downloaded(file_date, track_hour, filename)
+                            tracker.mark_archived(file_date, track_hour, filename)
                             tracked += 1
                     if tracked:
-                        self.logger.debug(f"Tracked {tracked} validated files in database")
+                        self.logger.debug(f"Registered {tracked} archived files in file_tracking")
         except Exception as e:
             self.logger.debug(f"File tracking for validated files failed: {e}")
 

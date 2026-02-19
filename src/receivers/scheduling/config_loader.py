@@ -185,6 +185,14 @@ def get_default_config() -> Dict[str, Any]:
             'days_back': 30,
             'sessions': ['15s_24hr', '1Hz_1hr'],
         },
+        'integrity_checker': {
+            'enabled': True,
+            'schedule': '6h',
+            'days_back': 7,
+            'sessions': ['15s_24hr', '1Hz_1hr', 'status_1hr'],
+            'check_receiver': True,
+            'size_tolerance_pct': 50.0,
+        },
         'load_monitoring': {
             'enabled': False,
             'max_cpu_load': 8.0,
@@ -279,7 +287,7 @@ def merge_with_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
     for section in ['resource_pools', 'pipelines', 'status_monitoring',
                     'priorities', 'sync', 'monitoring',
                     'backfill', 'gap_detection', 'archive_reconciler',
-                    'load_monitoring', 'bootstrap']:
+                    'integrity_checker', 'load_monitoring', 'bootstrap']:
         if section not in config:
             config[section] = defaults.get(section, {})
         else:
@@ -444,6 +452,14 @@ archive_reconciler:
   schedule: "6h"
   days_back: 30
   sessions: [15s_24hr, 1Hz_1hr]
+
+integrity_checker:
+  enabled: true
+  schedule: "6h"
+  days_back: 7
+  sessions: [15s_24hr, 1Hz_1hr, status_1hr]
+  check_receiver: true
+  size_tolerance_pct: 50.0
 
 stations: {}
 

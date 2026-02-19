@@ -128,6 +128,9 @@ class NetRSHTTPDownloader:
         # Track connection time for metrics
         self._last_connection_time = 0.0
 
+        # Track remote file sizes from HTTP Content-Length (filename -> size in bytes)
+        self.remote_sizes: Dict[str, int] = {}
+
         self.logger.info(f"Initialized NetRS HTTP downloader for {self.station_id}")
 
     def _get_logger(self, level: int = logging.INFO) -> logging.Logger:
@@ -210,6 +213,10 @@ class NetRSHTTPDownloader:
                 # Get expected size from headers if not provided
                 if not expected_size:
                     expected_size = int(response.headers.get('content-length', 0))
+
+                # Store remote file size for tracking
+                if expected_size and expected_size > 0:
+                    self.remote_sizes[filename] = expected_size
 
                 # Write response to file
                 local_path.parent.mkdir(parents=True, exist_ok=True)

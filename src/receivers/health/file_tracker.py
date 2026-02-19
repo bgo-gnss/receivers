@@ -204,6 +204,7 @@ class FileTracker:
         file_hour: Optional[int] = None,
         filename: Optional[str] = None,
         file_size: Optional[int] = None,
+        remote_file_size: Optional[int] = None,
     ) -> bool:
         """Mark a file as successfully downloaded.
 
@@ -214,6 +215,7 @@ class FileTracker:
             file_hour: Hour for hourly files
             filename: Filename
             file_size: File size in bytes
+            remote_file_size: File size reported by receiver (FTP SIZE / HTTP Content-Length)
 
         Returns:
             True if successfully recorded
@@ -225,8 +227,8 @@ class FileTracker:
         try:
             with self._conn.cursor() as cur:
                 cur.execute(
-                    """SELECT upsert_file_tracking(%s, %s, %s, %s::smallint, %s, 'downloaded', %s)""",
-                    (station_id, session_type, file_date, file_hour, filename, file_size),
+                    """SELECT upsert_file_tracking(%s, %s, %s, %s::smallint, %s, 'downloaded', %s, NULL, NULL, NULL, NULL, %s)""",
+                    (station_id, session_type, file_date, file_hour, filename, file_size, remote_file_size),
                 )
             self._conn.commit()
             logger.debug(f"Marked file as downloaded: {station_id}/{session_type}/{file_date}")
@@ -245,6 +247,7 @@ class FileTracker:
         file_hour: Optional[int] = None,
         filename: Optional[str] = None,
         file_size: Optional[int] = None,
+        remote_file_size: Optional[int] = None,
     ) -> bool:
         """Mark a file as successfully archived.
 
@@ -255,6 +258,7 @@ class FileTracker:
             file_hour: Hour for hourly files
             filename: Filename
             file_size: File size in bytes
+            remote_file_size: File size reported by receiver (FTP SIZE / HTTP Content-Length)
 
         Returns:
             True if successfully recorded
@@ -266,14 +270,107 @@ class FileTracker:
         try:
             with self._conn.cursor() as cur:
                 cur.execute(
-                    """SELECT upsert_file_tracking(%s, %s, %s, %s::smallint, %s, 'archived', %s)""",
-                    (station_id, session_type, file_date, file_hour, filename, file_size),
+                    """SELECT upsert_file_tracking(%s, %s, %s, %s::smallint, %s, 'archived', %s, NULL, NULL, NULL, NULL, %s)""",
+                    (station_id, session_type, file_date, file_hour, filename, file_size, remote_file_size),
                 )
             self._conn.commit()
             logger.debug(f"Marked file as archived: {station_id}/{session_type}/{file_date}")
             return True
         except Exception as e:
             logger.debug(f"Error marking file as archived: {e}")
+            if self._conn:
+                self._conn.rollback()
+            return False
+
+    def mark_file_suspect(
+        self,
+        station_id: str,
+        session_type: str,
+        file_date: date,
+        file_hour: Optional[int] = None,
+        filename: Optional[str] = None,
+        file_size: Optional[int] = None,
+        reason: Optional[str] = None,
+    ) -> bool:
+        """Mark a file as suspect (failed integrity check).
+
+        Suspect files are preserved on disk but flagged in the database.
+        Dashboard views filter on status IN ('downloaded', 'archived') so
+        suspect files appear as "missing data" (correct — they shouldn't be trusted).
+
+        Args:
+            station_id: Station identifier
+            session_type: Session type
+            file_date: Date of the file
+            file_hour: Hour for hourly files
+            filename: Filename
+            file_size: File size in bytes
+            reason: Why the file is suspect (stored in last_error)
+
+        Returns:
+            True if successfully recorded
+        """
+        if not self._conn:
+            if not self.connect():
+                return False
+
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    """SELECT upsert_file_tracking(%s, %s, %s, %s::smallint, %s, 'suspect', %s, NULL, NULL, NULL, %s)""",
+                    (station_id, session_type, file_date, file_hour, filename, file_size, reason),
+                )
+            self._conn.commit()
+            logger.debug(f"Marked file as suspect: {station_id}/{session_type}/{file_date} — {reason}")
+            return True
+        except Exception as e:
+            logger.debug(f"Error marking file as suspect: {e}")
+            if self._conn:
+                self._conn.rollback()
+            return False
+
+    def mark_integrity_checked(
+        self,
+        station_id: str,
+        session_type: str,
+        file_date: date,
+        file_hour: Optional[int] = None,
+    ) -> bool:
+        """Mark a file as having passed integrity check.
+
+        Updates integrity_checked_at timestamp without changing status.
+
+        Args:
+            station_id: Station identifier
+            session_type: Session type
+            file_date: Date of the file
+            file_hour: Hour for hourly files
+
+        Returns:
+            True if successfully updated
+        """
+        if not self._conn:
+            if not self.connect():
+                return False
+
+        try:
+            with self._conn.cursor() as cur:
+                if file_hour is None:
+                    cur.execute(
+                        """UPDATE file_tracking SET integrity_checked_at = NOW(), updated_at = NOW()
+                        WHERE sid = %s AND session_type = %s AND file_date = %s AND file_hour IS NULL""",
+                        (station_id, session_type, file_date),
+                    )
+                else:
+                    cur.execute(
+                        """UPDATE file_tracking SET integrity_checked_at = NOW(), updated_at = NOW()
+                        WHERE sid = %s AND session_type = %s AND file_date = %s AND file_hour = %s""",
+                        (station_id, session_type, file_date, file_hour),
+                    )
+            self._conn.commit()
+            return True
+        except Exception as e:
+            logger.debug(f"Error marking integrity checked: {e}")
             if self._conn:
                 self._conn.rollback()
             return False

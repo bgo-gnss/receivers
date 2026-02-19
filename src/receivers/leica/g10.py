@@ -428,6 +428,9 @@ class LeicaG10(BaseReceiver):
             # Track downloaded files in database (only when sync is enabled)
             if sync:
                 try:
+                    # Collect remote file sizes from FTP downloader (if available)
+                    ftp_remote_sizes = getattr(self.ftp_downloader, 'remote_sizes', {})
+
                     with DownloadTracker(self.station_id, session) as tracker:
                         if tracker._connected:
                             import re
@@ -437,6 +440,8 @@ class LeicaG10(BaseReceiver):
                             downloaded_dates = set()  # Set of (date, hour) tuples
                             for file_path in final_files:
                                 filename = Path(file_path).name
+                                # Look up remote size by original filename (may be .zip name)
+                                remote_size = ftp_remote_sizes.get(filename)
 
                                 # Try archive format first: SKFC202601180000a.m00.gz (YYYYMMDDHHMM + session)
                                 match = re.match(
@@ -453,7 +458,7 @@ class LeicaG10(BaseReceiver):
                                     file_hour_from_name = int(hhmm[:2])
                                     file_hour = None if file_hour_from_name == 0 else file_hour_from_name
                                     file_size = Path(file_path).stat().st_size if Path(file_path).exists() else None
-                                    tracker.mark_downloaded(file_date, file_hour, filename, file_size)
+                                    tracker.mark_downloaded(file_date, file_hour, filename, file_size, remote_file_size=remote_size)
                                     downloaded_dates.add((file_date, file_hour))
                                 else:
                                     # Try original Leica format: SKFC018a.m00 (DOY + session)
@@ -465,7 +470,7 @@ class LeicaG10(BaseReceiver):
                                         file_date = date(file_year, 1, 1) + timedelta(days=day_of_year - 1)
                                         file_hour = None if session_letter == 'a' else ord(session_letter) - ord('a')
                                         file_size = Path(file_path).stat().st_size if Path(file_path).exists() else None
-                                        tracker.mark_downloaded(file_date, file_hour, filename, file_size)
+                                        tracker.mark_downloaded(file_date, file_hour, filename, file_size, remote_file_size=remote_size)
                                         downloaded_dates.add((file_date, file_hour))
 
                             # Track missing files (requested but not downloaded) - compare by date/hour
@@ -843,7 +848,7 @@ class LeicaG10(BaseReceiver):
         return session_letter
 
     def _track_validated_files(self, files_dict: Dict, session: str, start: Any) -> None:
-        """Track already-archived files as downloaded in file_tracking database."""
+        """Register already-archived files in file_tracking database."""
         import re
         from datetime import date, datetime, timedelta
         try:
@@ -873,10 +878,10 @@ class LeicaG10(BaseReceiver):
                                 file_hour = None if session_letter == 'a' else ord(session_letter) - ord('a')
                             else:
                                 continue
-                        tracker.mark_downloaded(file_date, file_hour, filename)
+                        tracker.mark_archived(file_date, file_hour, filename)
                         tracked += 1
                     if tracked:
-                        self.logger.debug(f"Tracked {tracked} validated files in database")
+                        self.logger.debug(f"Registered {tracked} archived files in file_tracking")
         except Exception as e:
             self.logger.debug(f"File tracking for validated files failed: {e}")
 

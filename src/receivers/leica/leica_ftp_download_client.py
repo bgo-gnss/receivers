@@ -143,6 +143,9 @@ class LeicaFTPDownloader:
         # Track connection time for metrics
         self._last_connection_time = 0.0
 
+        # Track remote file sizes from FTP SIZE (filename -> size in bytes)
+        self.remote_sizes: Dict[str, int] = {}
+
         self.logger.info(f"Initialized Leica FTP downloader for {self.station_id}")
 
     def _get_logger(self, level: int = logging.INFO) -> logging.Logger:
@@ -224,6 +227,10 @@ class LeicaFTPDownloader:
                     expected_size = ftp.size(remote_filename)
                 except:
                     expected_size = 0
+
+            # Store remote file size for tracking
+            if expected_size and expected_size > 0:
+                self.remote_sizes[remote_filename] = expected_size
 
             # Initialize progress bar
             progress_bar = None
@@ -327,6 +334,10 @@ class LeicaFTPDownloader:
                             expected_size = ftp.size(remote_filename)
                         except:
                             expected_size = 0
+
+                    # Store remote file size for tracking
+                    if expected_size and expected_size > 0:
+                        self.remote_sizes[remote_filename] = expected_size
 
                     # Download file
                     bytes_written = 0

@@ -80,6 +80,11 @@ receivers scheduler backfill --session status_1hr --stations ELDC THOB
 # SBF→RINEX reconciliation
 receivers scheduler reconcile --days 30 --dry-run
 receivers scheduler reconcile --stations ELDC THOB
+
+# File integrity checking
+receivers scheduler integrity --session 15s_24hr --days 7
+receivers scheduler integrity --session all --days 30 --no-receiver
+receivers scheduler integrity --stations ENTC ELDC --tolerance 20
 ```
 
 ## Architecture
@@ -130,6 +135,7 @@ receivers download STATION --sync --archive  # Phase 1 is always active
 - **Multi-session backfill**: All three sessions backfilled via self-gating interval jobs
 - **Gap detection**: Periodic scan for missing files (every 2h, configurable)
 - **Archive reconciler**: SBF→RINEX conversion for orphaned raw files (every 6h)
+- **Integrity checker**: Validates archives, detects untracked files, flags size anomalies (every 6h)
 - **Persistence**: SQLite job store survives restarts
 - **Manual compatibility**: All manual operations remain fully functional
 - **Extensibility**: Task interface allows scheduling any operation type (status, health, validation)
@@ -247,11 +253,78 @@ Falls back to `[archive_paths] data_prepath` when no `[storage_locations]` secti
 
 Seed to database: `seed_storage_locations()` from `receivers.config.receivers_config`.
 
-### Production Logging
-- **Concise output**: Timestamp, level icon, station, message format
-- **JSON mode**: Structured logs for monitoring system integration
-- **Audit trail**: Separate download statistics and performance metrics
-- **Log rotation**: Automatic rotation with size limits
+### Unified Logging System
+**Status**: ✅ Implemented — `src/receivers/logging_config.py`
+
+Single `setup_logging()` function replaces all previous logging setup. All loggers use the `receivers.*` hierarchy.
+
+#### Setup
+```python
+from receivers.logging_config import setup_logging
+
+# Basic usage — returns a logger under receivers.*
+logger = setup_logging(component='scheduler')  # → receivers.scheduler
+
+# With options
+logger = setup_logging(
+    level=logging.DEBUG,
+    json_output=True,       # JSON on console (for monitoring pipelines)
+    log_dir=Path('/tmp'),   # Custom log directory
+    component='download',   # → receivers.download
+)
+```
+
+- **Idempotent**: safe to call multiple times (second call is a no-op)
+- **Console handler**: `ProductionFormatter` with emoji level icons (stderr)
+- **File handler**: JSON, rotating (20 MB, 3 backups) → `receivers.log`
+- **Third-party suppression**: urllib3, ftplib, gps_parser, apscheduler → WARNING
+- **Audit trail**: Separate `receivers.audit` logger → `download_audit.jsonl`
+
+#### Logger Naming Hierarchy
+
+| Logger Name | Used By |
+|-------------|---------|
+| `receivers` | Root — all receivers output |
+| `receivers.download.{station}` | Download jobs (CLI and scheduler) |
+| `receivers.health.{station}` | All health extractors (TCP, HTTP, FTP) |
+| `receivers.scheduler` | Scheduler core (`bulk_scheduler.py`) |
+| `receivers.scheduler.backfill` | Backfill jobs |
+| `receivers.scheduler.gaps` | Gap detection |
+| `receivers.scheduler.reconciler` | Archive reconciler |
+| `receivers.scheduler.integrity` | Integrity checker |
+| `receivers.pipeline.{station}` | Pipeline tracking |
+| `receivers.task.{station}` | Task interface |
+| `receivers.audit` | Audit trail (separate file, no propagation) |
+| `receivers.cli.*` | CLI modules (via `__name__`) |
+| `receivers.health.*` | Health modules (via `__name__`) |
+| `receivers.monitoring.*` | Monitoring modules (via `__name__`) |
+
+#### Per-Component Level Overrides
+
+Add to `database.cfg`:
+```ini
+[logging]
+# Override levels for specific components (optional)
+# receivers.health = DEBUG
+# receivers.scheduler = WARNING
+# receivers.download = INFO
+```
+
+#### For New Code
+
+```python
+# Module-level (preferred for most files):
+import logging
+logger = logging.getLogger(__name__)  # e.g. receivers.health.db_writer
+
+# Station-specific (for extractors/jobs):
+logger = logging.getLogger(f"receivers.health.{station_id}")
+logger = logging.getLogger(f"receivers.download.{station_id}")
+```
+
+#### Key Files
+- **`src/receivers/logging_config.py`** — Unified setup function (single source of truth)
+- **`src/receivers/base/production_logging.py`** — Formatters (`ProductionFormatter`, `JSONFormatter`), `AuditLogger`, backward-compatible `ProductionLoggingConfig` wrapper
 
 ### File Management
 - **Immediate archiving**: Files archived after each download for fault tolerance
@@ -310,6 +383,7 @@ receivers scheduler config --create
 # - backfill: window_start/end, schedule, archiving_mode, sessions
 # - gap_detection: schedule, days_back, sessions
 # - archive_reconciler: schedule, days_back, sessions
+# - integrity_checker: schedule, days_back, sessions, check_receiver, size_tolerance_pct
 # - status_monitoring: schedule, distribution_window, targets
 ```
 
@@ -454,10 +528,10 @@ receivers download STATION --sync --archive -v
 ```
 
 ### Log Locations
-- **Main logs**: `~/.cache/gps_receivers/logs/receivers.log`
-- **Scheduler logs**: `~/.cache/gps_receivers/logs/scheduler.log`  
-- **Audit trail**: `~/.cache/gps_receivers/logs/download_audit.jsonl`
-- **Console output**: Concise production format or JSON
+- **Main logs**: `~/.cache/gps_receivers/logs/receivers.log` (JSON, rotating 20 MB × 3)
+- **Audit trail**: `~/.cache/gps_receivers/logs/download_audit.jsonl` (JSON, rotating 50 MB × 5)
+- **Console output**: `ProductionFormatter` (emoji icons) or JSON (`--json-log`)
+- Scheduler and all components write to the same `receivers.log` — filter by `logger` field in JSON
 
 ## Performance Notes
 
@@ -501,9 +575,9 @@ All receivers use Phase 1 utilities by default:
 
 ---
 
-**Last updated**: 2026-02-11
+**Last updated**: 2026-02-18
 **Package version**: Development (gpslibrary_new)
-**Phase Status**: Phase 3C Complete - Distribution window optimization, midnight offset, multi-session backfill, gap detection, archive reconciler, archive format system
+**Phase Status**: Phase 3C Complete - Distribution window optimization, midnight offset, multi-session backfill, gap detection, archive reconciler, integrity checker, archive format system, unified logging
 
 ## TODO / Known Issues
 
@@ -518,6 +592,9 @@ A systematic review is needed to address recurring patterns of issues found duri
 - **Codebase review**: Full audit of db_writer.py, connectivity_writer.py, and all extractors for protocol assumptions
 - **Test coverage**: Integration tests for Trimble health flow end-to-end (extractor → db_writer → dashboard views)
 - **Error handling patterns**: Standardize SAVEPOINT usage, transaction management, and value truncation across all DB writers
+
+### Integrity Checker — Future Work
+- **Suspect files dashboard indicator**: Add a count box or column to the Grafana overview dashboard showing files with `status = 'suspect'`, so operators can monitor integrity check results without querying the DB directly.
 
 ### Archive Format System — Future Work
 - **RINEX format converter tool**: Read any stored RINEX → output in any desired format (R2/R3/R4, short/long naming, .YYd/.YYo, .Z/.gz/none). R2→R3 is lossy, all other conversions feasible. The `archive_format` table provides the metadata needed to drive this.

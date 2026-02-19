@@ -87,6 +87,7 @@ class DownloadTracker:
         file_hour: Optional[int] = None,
         filename: Optional[str] = None,
         file_size: Optional[int] = None,
+        remote_file_size: Optional[int] = None,
     ) -> bool:
         """Mark a file as successfully downloaded.
 
@@ -95,6 +96,7 @@ class DownloadTracker:
             file_hour: Hour for hourly files (0-23), None for daily
             filename: Original filename
             file_size: File size in bytes
+            remote_file_size: File size reported by receiver (FTP SIZE / HTTP Content-Length)
 
         Returns:
             True if successfully recorded
@@ -104,7 +106,37 @@ class DownloadTracker:
 
         hour = file_hour if self.is_hourly else None
         return self._tracker.mark_file_downloaded(
-            self.station_id, self.session, file_date, hour, filename, file_size
+            self.station_id, self.session, file_date, hour, filename, file_size,
+            remote_file_size=remote_file_size,
+        )
+
+    def mark_archived(
+        self,
+        file_date: date,
+        file_hour: Optional[int] = None,
+        filename: Optional[str] = None,
+        file_size: Optional[int] = None,
+        remote_file_size: Optional[int] = None,
+    ) -> bool:
+        """Mark a file as successfully archived.
+
+        Args:
+            file_date: Date of the file
+            file_hour: Hour for hourly files (0-23), None for daily
+            filename: Original filename
+            file_size: File size in bytes
+            remote_file_size: File size reported by receiver
+
+        Returns:
+            True if successfully recorded
+        """
+        if not self._connected:
+            return False
+
+        hour = file_hour if self.is_hourly else None
+        return self._tracker.mark_file_archived(
+            self.station_id, self.session, file_date, hour, filename, file_size,
+            remote_file_size=remote_file_size,
         )
 
     def mark_missing(
