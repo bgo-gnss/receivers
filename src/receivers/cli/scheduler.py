@@ -510,6 +510,54 @@ def cmd_scheduler_reconcile(args) -> int:
         return 1
 
 
+def cmd_scheduler_integrity(args) -> int:
+    """Manually trigger file integrity checking."""
+
+    session_arg = getattr(args, 'session', 'all')
+    days_back = getattr(args, 'days', 7)
+    stations = getattr(args, 'stations', None)
+    no_receiver = getattr(args, 'no_receiver', False)
+    tolerance = getattr(args, 'tolerance', 50.0)
+
+    if session_arg == 'all':
+        sessions = ['15s_24hr', '1Hz_1hr', 'status_1hr']
+    else:
+        sessions = [session_arg]
+
+    print(f"Integrity check: {', '.join(sessions)}, {days_back} days back")
+    if no_receiver:
+        print("  Receiver comparison: disabled")
+    else:
+        print(f"  Receiver comparison: enabled (tolerance={tolerance}%)")
+    if stations:
+        print(f"  Stations: {', '.join(s.upper() for s in stations)}")
+
+    try:
+        from ..scheduling.integrity_checker import _run_integrity_check_job
+
+        result = _run_integrity_check_job(
+            session_types=sessions,
+            days_back=days_back,
+            check_receiver=not no_receiver,
+            size_tolerance_pct=tolerance,
+            station_filter=[s.upper() for s in stations] if stations else None,
+        )
+
+        if result is None:
+            print("\nIntegrity check completed (no summary returned)")
+        else:
+            print(f"\nIntegrity check completed")
+
+        return 0
+
+    except ImportError as e:
+        print(f"Required modules not available: {e}")
+        return 1
+    except Exception as e:
+        print(f"Integrity check failed: {e}")
+        return 1
+
+
 def cmd_scheduler_pipeline_status(args) -> int:
     """Show pipeline job status and history."""
     try:
@@ -1213,6 +1261,41 @@ def create_scheduler_parser(subparsers):
     )
     reconcile_parser.set_defaults(func=cmd_scheduler_reconcile)
 
+    # Integrity check command
+    integrity_parser = scheduler_subparsers.add_parser(
+        "integrity",
+        help="Run file integrity checks on archived data"
+    )
+    integrity_parser.add_argument(
+        "--session",
+        type=str,
+        default="all",
+        help="Session type to check, or 'all' (default: all)"
+    )
+    integrity_parser.add_argument(
+        "--days",
+        type=int,
+        default=7,
+        help="Number of days to check (default: 7)"
+    )
+    integrity_parser.add_argument(
+        "--stations",
+        nargs="+",
+        help="Only check these specific stations (e.g., ENTC ELDC)"
+    )
+    integrity_parser.add_argument(
+        "--no-receiver",
+        action="store_true",
+        help="Skip remote receiver comparison (FTP SIZE / HTTP Content-Length)"
+    )
+    integrity_parser.add_argument(
+        "--tolerance",
+        type=float,
+        default=50.0,
+        help="Size deviation tolerance percentage (default: 50.0)"
+    )
+    integrity_parser.set_defaults(func=cmd_scheduler_integrity)
+
     return scheduler_parser
 
 
@@ -1222,7 +1305,7 @@ def handle_scheduler_command(args) -> int:
 
     if not hasattr(args, 'scheduler_command') or not args.scheduler_command:
         print("❌ No scheduler command specified")
-        print("Available commands: start, stop, restart, status, config, test, gaps, backfill, backfill-status, reconcile, pipeline-status, load-status, bootstrap")
+        print("Available commands: start, stop, restart, status, config, test, gaps, backfill, backfill-status, reconcile, integrity, pipeline-status, load-status, bootstrap")
         return 1
 
     return args.func(args)

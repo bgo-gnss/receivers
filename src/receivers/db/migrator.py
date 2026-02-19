@@ -26,7 +26,8 @@ class Migrator:
     have already been applied, then applies pending ones in order.
 
     On a fresh database (no schema_migrations table), applies
-    000_consolidated_schema.sql and marks 001-023 as applied.
+    000_consolidated_schema.sql (marks 001-023 as applied), then
+    applies any remaining migrations (024+) individually.
     """
 
     def __init__(
@@ -133,8 +134,8 @@ class Migrator:
         """Apply pending migrations.
 
         On a fresh database:
-          - Applies 000_consolidated_schema.sql
-          - All 001-023 are marked as applied (subsumed by 000)
+          - Applies 000_consolidated_schema.sql (subsumes 001-023)
+          - Then applies any remaining migrations (024+) individually
 
         On an existing database:
           - Applies only unapplied migrations in numeric order
@@ -154,7 +155,7 @@ class Migrator:
             has_tables = self._has_any_tables(conn)
             all_files = self._get_migration_files()
 
-            # Fresh database: use consolidated schema
+            # Fresh database: use consolidated schema, then apply remaining
             if not has_tables and not applied:
                 consolidated = self.migrations_dir / "000_consolidated_schema.sql"
                 if consolidated.exists():
@@ -170,9 +171,11 @@ class Migrator:
                         conn.commit()
                         applied_list.append(name)
                         logger.info("Consolidated schema applied — all 001-023 marked as applied")
-                    return applied_list
+                    # Refresh applied set (000 marks 001-023 as applied)
+                    # then fall through to apply any remaining migrations
+                    applied = self._get_applied(conn)
 
-            # Existing database: apply pending migrations in order
+            # Apply pending migrations in order
             for f in all_files:
                 name = self._migration_name(f)
                 # Skip consolidated schema on existing databases

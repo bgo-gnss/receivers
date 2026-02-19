@@ -1273,10 +1273,11 @@ class BulkDownloadScheduler:
         # Schedule config file watcher (every 5 minutes)
         self._schedule_config_watcher()
 
-        # Schedule backfill, gap detection, and archive reconciler
+        # Schedule backfill, gap detection, archive reconciler, and integrity checker
         self._schedule_multi_session_backfill()
         self._schedule_gap_detection()
         self._schedule_archive_reconciler()
+        self._schedule_integrity_checker()
 
         # Catch up any missed daily downloads (e.g., 15s_24hr if scheduler started after midnight)
         self._schedule_daily_catchup(session_stations)
@@ -1450,6 +1451,56 @@ class BulkDownloadScheduler:
         )
 
         self.logger.info(f"Scheduled archive reconciler ({base_trigger.description}, {days_back} days back, immediate first run)")
+
+    def _schedule_integrity_checker(self) -> None:
+        """Schedule periodic file integrity checking.
+
+        Scans archive for untracked files, validates gzip integrity,
+        checks file sizes against median for anomalies, and optionally
+        compares with remote receiver via FTP SIZE / HTTP Content-Length.
+        """
+        checker_cfg = self.yaml_config.get('integrity_checker', {})
+        if not checker_cfg.get('enabled', True):
+            self.logger.info("Integrity checker disabled in config")
+            return
+
+        from .integrity_checker import _run_integrity_check_job
+
+        schedule = checker_cfg.get('schedule', '6h')
+        days_back = checker_cfg.get('days_back', 7)
+        sessions = checker_cfg.get('sessions', ['15s_24hr', '1Hz_1hr', 'status_1hr'])
+        check_receiver = checker_cfg.get('check_receiver', True)
+        size_tolerance_pct = checker_cfg.get('size_tolerance_pct', 50.0)
+
+        base_trigger = parse_schedule(schedule)
+
+        self.scheduler.add_job(
+            func=_run_integrity_check_job,
+            trigger=base_trigger.trigger_type,
+            args=[sessions, days_back, check_receiver, size_tolerance_pct],
+            id='integrity_checker',
+            replace_existing=True,
+            max_instances=1,
+            executor='backfill',
+            **base_trigger.trigger_kwargs
+        )
+
+        # Delayed first run (3 minutes after start)
+        self.scheduler.add_job(
+            func=_run_integrity_check_job,
+            trigger='date',
+            run_date=datetime.now() + timedelta(seconds=180),
+            args=[sessions, days_back, check_receiver, size_tolerance_pct],
+            id='integrity_checker_startup',
+            replace_existing=True,
+            executor='backfill',
+        )
+
+        self.logger.info(
+            f"Scheduled integrity checker ({base_trigger.description}, "
+            f"{days_back} days back, tolerance={size_tolerance_pct}%, "
+            f"receiver_check={'on' if check_receiver else 'off'}, immediate first run)"
+        )
 
     def _detect_outage_gap(self, session_type: str = '15s_24hr') -> int:
         """Detect how many days of data are missing since the last successful download.

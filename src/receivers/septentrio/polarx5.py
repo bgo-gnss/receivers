@@ -407,6 +407,11 @@ class PolaRX5(BaseReceiver):
 
         if not all_missing_files:
             self.logger.info("Archive is up to date")
+
+            # Register validated archived files in file_tracking
+            # (ensures files found on disk appear in the dashboard)
+            self._register_archived_files(file_date_dict, session)
+
             # Record performance metrics for successful up-to-date case
             performance_metrics.update(
                 {
@@ -688,6 +693,44 @@ class PolaRX5(BaseReceiver):
         self.logger.info(f"Phase 1 validation: {validated_count} files checked, {found_count} found, {len(missing_files_dict)} missing")
 
         return all_missing_files, validated_count, 0, files_archived_from_tmp  # missing, validated, corrupted_removed, archived_from_tmp
+
+    def _register_archived_files(self, file_date_dict: dict, session: str) -> None:
+        """Register already-archived files in file_tracking.
+
+        When --sync finds all files already in the archive, we still need
+        to ensure they have file_tracking entries so the dashboard shows them.
+        """
+        try:
+            from ..health import FileTracker
+
+            file_tracker = FileTracker()
+            if not file_tracker.connect():
+                self.logger.debug("Could not connect to DB for archive registration")
+                return
+
+            is_hourly = "1hr" in session.lower()
+            registered = 0
+
+            for dt, (archive_path, igs_filename) in file_date_dict.items():
+                file_date = dt.date() if hasattr(dt, 'date') else dt
+                file_hour = dt.hour if is_hourly else None
+
+                # Get file size from the archive on disk
+                archive_file = Path(archive_path)
+                file_size = archive_file.stat().st_size if archive_file.exists() else None
+
+                if file_tracker.mark_file_archived(
+                    self.station_id, session, file_date, file_hour,
+                    igs_filename, file_size,
+                ):
+                    registered += 1
+
+            file_tracker.close()
+
+            if registered:
+                self.logger.info(f"Registered {registered} archived files in file_tracking")
+        except Exception as e:
+            self.logger.debug(f"Could not register archived files: {e}")
 
     def _process_time_parameters(self, start, end, session, ffrequency):
         """Process and validate time parameters using Phase 1 TimeParameterProcessor."""
@@ -1254,7 +1297,8 @@ class PolaRX5(BaseReceiver):
                                     track_hour = file_dt.hour if is_hourly_session else None
                                     file_tracker.mark_file_downloaded(
                                         self.station_id, session, track_date, track_hour,
-                                        file_name, local_file_size
+                                        file_name, local_file_size,
+                                        remote_file_size=remote_file_size,
                                     )
 
                         # Immediate archiving if enabled
@@ -1277,10 +1321,20 @@ class PolaRX5(BaseReceiver):
                                 file_datetime,
                                 {file_datetime: missing_file_dict[file_datetime]},
                             ):
-                                # File successfully archived - add archive path to downloaded files
-                                downloaded_files.append(
-                                    missing_file_dict[file_datetime][0]
-                                )
+                                # File successfully archived - mark as archived with remote size
+                                archive_path = missing_file_dict[file_datetime][0]
+                                downloaded_files.append(archive_path)
+                                if file_tracker and session:
+                                    file_dt = get_file_datetime(file_name)
+                                    if file_dt:
+                                        track_date = file_dt.date() if hasattr(file_dt, 'date') else file_dt
+                                        track_hour = file_dt.hour if is_hourly_session else None
+                                        archive_size = Path(archive_path).stat().st_size if Path(archive_path).exists() else local_file_size
+                                        file_tracker.mark_file_archived(
+                                            self.station_id, session, track_date, track_hour,
+                                            file_name, archive_size,
+                                            remote_file_size=remote_file_size,
+                                        )
                             else:
                                 # Archive failed - add tmp file path
                                 downloaded_files.append(str(local_file))
@@ -1337,7 +1391,8 @@ class PolaRX5(BaseReceiver):
                                 fallback_size = local_file.stat().st_size if local_file.exists() else None
                                 file_tracker.mark_file_downloaded(
                                     self.station_id, session, track_date, track_hour,
-                                    file_name, fallback_size
+                                    file_name, fallback_size,
+                                    remote_file_size=remote_file_size,
                                 )
 
                         # Immediate archiving if enabled (same logic as progress bar path)
@@ -1360,10 +1415,20 @@ class PolaRX5(BaseReceiver):
                                 file_datetime,
                                 {file_datetime: missing_file_dict[file_datetime]},
                             ):
-                                # File successfully archived - add archive path to downloaded files
-                                downloaded_files.append(
-                                    missing_file_dict[file_datetime][0]
-                                )
+                                # File successfully archived - mark as archived with remote size
+                                archive_path_fb = missing_file_dict[file_datetime][0]
+                                downloaded_files.append(archive_path_fb)
+                                if file_tracker and session:
+                                    file_dt = get_file_datetime(file_name)
+                                    if file_dt:
+                                        track_date = file_dt.date() if hasattr(file_dt, 'date') else file_dt
+                                        track_hour = file_dt.hour if is_hourly_session else None
+                                        archive_size_fb = Path(archive_path_fb).stat().st_size if Path(archive_path_fb).exists() else None
+                                        file_tracker.mark_file_archived(
+                                            self.station_id, session, track_date, track_hour,
+                                            file_name, archive_size_fb,
+                                            remote_file_size=remote_file_size,
+                                        )
                                 self.logger.info(
                                     f"Successfully downloaded and archived {file_name} (fallback path)"
                                 )
