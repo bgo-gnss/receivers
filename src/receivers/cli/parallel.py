@@ -1,8 +1,9 @@
-"""Parallel download orchestrator with grouped batching, stagger, and retry.
+"""Parallel download orchestrator with time-staggered batching and retry.
 
-Splits stations into groups of N, launches each group concurrently via
-ThreadPoolExecutor, waits for completion, then staggers the next group.
-Stations that fail connectivity checks are retried after a delay.
+Splits stations into groups of N and submits them to a shared
+ThreadPoolExecutor with staggered timing.  Group 2 starts group_delay
+seconds after group 1 is *submitted* (not finished), so slow 3G stations
+in earlier groups never block later groups.
 
 Thread safety:
 - Each worker creates its own receiver instance (independent FTP/HTTP connections)
@@ -16,7 +17,7 @@ from __future__ import annotations
 import logging
 import math
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -35,6 +36,19 @@ class StationResult:
     attempt: int = 1  # 1=first, 2=retry
     error_message: str | None = None
 
+    def to_dict(self) -> dict:
+        """Serialize to dict for JSON output."""
+        d: dict = {
+            "station_id": self.station_id,
+            "status": self.status,
+            "files_downloaded": self.files_downloaded,
+            "duration": round(self.duration, 2),
+            "attempt": self.attempt,
+        }
+        if self.error_message:
+            d["error_message"] = self.error_message
+        return d
+
 
 @dataclass
 class ParallelSummary:
@@ -50,6 +64,23 @@ class ParallelSummary:
     retried: int = 0
     retry_recovered: int = 0
     results: dict[str, StationResult] = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        """Serialize to dict for JSON output (experiment runner)."""
+        return {
+            "total_stations": self.total_stations,
+            "successful": self.successful,
+            "unreachable": self.unreachable,
+            "failed": self.failed,
+            "skipped": self.skipped,
+            "total_files": self.total_files,
+            "total_duration": round(self.total_duration, 2),
+            "retried": self.retried,
+            "retry_recovered": self.retry_recovered,
+            "stations": {
+                sid: r.to_dict() for sid, r in self.results.items()
+            },
+        }
 
 
 def _split_into_groups(items: list, group_size: int) -> list[list]:
@@ -190,10 +221,11 @@ def download_parallel(
 
     Algorithm:
     1. Split stations into groups of group_size
-    2. For each group: submit all to ThreadPoolExecutor, wait for completion
-    3. Sleep group_delay seconds between groups
-    4. Collect unreachable stations
-    5. Wait retry_delay seconds, retry unreachable (same grouped approach)
+    2. Submit each group to a shared ThreadPoolExecutor with group_delay
+       stagger between submissions (groups run concurrently — no blocking)
+    3. Wait for all futures to complete
+    4. Collect unreachable/failed stations
+    5. Wait retry_delay seconds, retry them (same staggered approach)
     6. Return ParallelSummary
 
     Args:
@@ -307,6 +339,12 @@ def download_parallel(
     # Print summary
     _print_summary(summary, logger)
 
+    # Emit structured JSON for experiment runner
+    if getattr(args, "json_log", False):
+        import json
+
+        print(f"EXPERIMENT_RESULT:{json.dumps(summary.to_dict())}")
+
     return summary
 
 
@@ -322,18 +360,29 @@ def _process_groups(
     group_delay: float,
     attempt: int,
 ) -> dict[str, StationResult]:
-    """Process groups of stations sequentially, stations within each group in parallel."""
+    """Process groups with time-staggered starts — groups don't wait for each other.
+
+    All groups share a single ThreadPoolExecutor.  Each group is submitted
+    after a ``group_delay`` sleep, but we never wait for the previous group
+    to finish first.  This means slow stations (e.g. 3G links) in group 1
+    do not block groups 2, 3, …  After every group has been submitted we
+    wait for *all* futures to complete and collect results.
+    """
+    total_workers = sum(len(g) for g in groups)
+    all_futures: dict[Future[StationResult], str] = {}
     results: dict[str, StationResult] = {}
 
-    for i, group in enumerate(groups):
-        group_label = f"[{i + 1}/{len(groups)}]"
-        logger.info(
-            f"Group {group_label}: {len(group)} stations — {' '.join(group)}"
-        )
+    with ThreadPoolExecutor(max_workers=total_workers) as executor:
+        # Submit groups with staggered timing
+        for i, group in enumerate(groups):
+            group_label = f"[{i + 1}/{len(groups)}]"
+            logger.info(
+                f"Group {group_label}: submitting {len(group)} stations — "
+                f"{' '.join(group)}"
+            )
 
-        with ThreadPoolExecutor(max_workers=len(group)) as executor:
-            futures = {
-                executor.submit(
+            for sid in group:
+                future = executor.submit(
                     _download_one_station,
                     sid,
                     args,
@@ -343,44 +392,46 @@ def _process_groups(
                     afrequency,
                     reverse_chronological,
                     attempt,
-                ): sid
-                for sid in group
-            }
+                )
+                all_futures[future] = sid
 
-            for future in as_completed(futures):
-                sid = futures[future]
-                try:
-                    result = future.result()
-                except Exception as e:
-                    result = StationResult(
-                        station_id=sid,
-                        status="failed",
-                        attempt=attempt,
-                        error_message=f"Thread error: {e}",
-                    )
-                results[sid] = result
+            # Stagger delay before next group (skip after last group)
+            if i < len(groups) - 1:
+                logger.info(
+                    f"Stagger delay: {group_delay:.0f}s before next group"
+                )
+                time.sleep(group_delay)
 
-                # Log individual result
-                status_icon = {
-                    "completed": "OK",
-                    "up_to_date": "OK (up to date)",
-                    "unreachable": "UNREACHABLE",
-                    "failed": "FAILED",
-                    "skipped": "SKIPPED",
-                }.get(result.status, result.status)
+        # Collect ALL results (groups run concurrently)
+        for future in as_completed(all_futures):
+            sid = all_futures[future]
+            try:
+                result = future.result()
+            except Exception as e:
+                result = StationResult(
+                    station_id=sid,
+                    status="failed",
+                    attempt=attempt,
+                    error_message=f"Thread error: {e}",
+                )
+            results[sid] = result
 
-                msg = f"  {result.station_id}: {status_icon}"
-                if result.files_downloaded > 0:
-                    msg += f" ({result.files_downloaded} files)"
-                msg += f" [{result.duration:.1f}s]"
-                if result.error_message:
-                    msg += f" — {result.error_message}"
-                logger.info(msg)
+            # Log individual result
+            status_icon = {
+                "completed": "OK",
+                "up_to_date": "OK (up to date)",
+                "unreachable": "UNREACHABLE",
+                "failed": "FAILED",
+                "skipped": "SKIPPED",
+            }.get(result.status, result.status)
 
-        # Delay between groups (skip after last group)
-        if i < len(groups) - 1:
-            logger.info(f"Group {group_label} done, waiting {group_delay}s...")
-            time.sleep(group_delay)
+            msg = f"  {result.station_id}: {status_icon}"
+            if result.files_downloaded > 0:
+                msg += f" ({result.files_downloaded} files)"
+            msg += f" [{result.duration:.1f}s]"
+            if result.error_message:
+                msg += f" — {result.error_message}"
+            logger.info(msg)
 
     return results
 
