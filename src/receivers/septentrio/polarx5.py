@@ -134,9 +134,12 @@ class PolaRX5(BaseReceiver):
             )
 
         # Per-station stall timeout override (DB > receivers.cfg > gps_parser default)
+        # For PolaRX5: overrides progress_timeout (hard ceiling per attempt).
+        # PolaRX5 supports FTP resume so killing a slow download is cheap.
+        # inactivity_timeout stays at gps_parser default (typically 60s).
         from ..utils.stall_timeout import get_stall_timeout
-        self.inactivity_timeout = get_stall_timeout(
-            self.station_id, "polarx5", default=self.inactivity_timeout
+        self.progress_timeout = get_stall_timeout(
+            self.station_id, "polarx5", default=self.progress_timeout
         )
 
     def _setup_connection_info(self):
@@ -1289,7 +1292,7 @@ class PolaRX5(BaseReceiver):
                                 self.station_id, session or "unknown", "failed",
                                 filename=file_name, duration_seconds=_dl_duration,
                                 bytes_downloaded=local_file_size, file_size=remote_file_size,
-                                stall_timeout_used=self.inactivity_timeout,
+                                stall_timeout_used=self.progress_timeout,
                                 message=f"Validation failed: {validation_result.get('error', 'unknown')}",
                             )
                             try:
@@ -1308,7 +1311,7 @@ class PolaRX5(BaseReceiver):
                                 self.station_id, session or "unknown", "completed",
                                 filename=file_name, duration_seconds=_dl_duration,
                                 bytes_downloaded=local_file_size, file_size=remote_file_size,
-                                stall_timeout_used=self.inactivity_timeout,
+                                stall_timeout_used=self.progress_timeout,
                             )
 
                             # Mark file as downloaded in tracker
@@ -1377,7 +1380,7 @@ class PolaRX5(BaseReceiver):
                             self.station_id, session or "unknown", "failed",
                             filename=file_name, duration_seconds=_dl_duration,
                             bytes_downloaded=local_file_size, file_size=remote_file_size,
-                            stall_timeout_used=self.inactivity_timeout,
+                            stall_timeout_used=self.progress_timeout,
                             message=f"Size mismatch: got {local_file_size}, expected {remote_file_size}",
                         )
                         # Keep partial file for resume in next attempt
@@ -1487,7 +1490,7 @@ class PolaRX5(BaseReceiver):
                     "stall_timeout" if is_stall else "failed",
                     filename=file_name, duration_seconds=_exc_duration,
                     file_size=remote_file_size if 'remote_file_size' in dir() else None,
-                    stall_timeout_used=self.inactivity_timeout,
+                    stall_timeout_used=self.progress_timeout,
                     message=str(e)[:500],
                 )
                 continue
@@ -1637,7 +1640,9 @@ class PolaRX5(BaseReceiver):
                                     f"Download timed out: no progress for {time_since_last_progress:.1f}s"
                                 )
 
-                            # Check for overall progress timeout (too slow)
+                            # Hard ceiling on single download attempt.
+                            # PolaRX5 supports FTP resume, so retry will continue
+                            # from where it left off — killing is cheap.
                             total_time = current_time - start_time
                             if total_time > self.progress_timeout:
                                 current_bytes = bytes_received[0]
@@ -1646,10 +1651,12 @@ class PolaRX5(BaseReceiver):
                                     if total_time > 0
                                     else 0
                                 )
-                                if avg_speed < self.min_speed_threshold:
-                                    raise ConnectionError(
-                                        f"Download timed out: speed {avg_speed:.0f} B/s below minimum {self.min_speed_threshold} B/s"
-                                    )
+                                raise ConnectionError(
+                                    f"Download timed out after {total_time:.0f}s "
+                                    f"(limit {self.progress_timeout}s, "
+                                    f"speed {avg_speed:.0f} B/s, "
+                                    f"{current_bytes - offset} bytes received)"
+                                )
 
                         conn.close()
                         ftp.voidresp()  # Get transfer complete response
