@@ -1524,6 +1524,10 @@
                     "type": "special"
                   }
                 ]
+              },
+              {
+                "id": "custom.width",
+                "value": 70
               }
             ]
           },
