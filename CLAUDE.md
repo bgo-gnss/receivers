@@ -584,6 +584,7 @@ All receivers use Phase 1 utilities by default:
 A systematic review is needed to address recurring patterns of issues found during dashboard and health monitoring development. See **`docs/CODE_REVIEW_TRACKER.md`** for the full tracking document with details, priorities, and status.
 
 ### High Priority
+- **Trimble health check**: BRIK (NetR9) shows CRITICAL + NTRIP Inactive despite being healthy (port 8060 open, streaming NTRIP). Health extractor assumes PolaRX5 model (FTP+HTTP+Control) — Trimble HTTP-only receivers get false CRITICAL from missing FTP/Control ports. Fix: receiver capability table defining which ports/checks apply per receiver type, skip inapplicable checks instead of marking them failed.
 - **Protocol-agnostic data model**: Views and SQL assume PolaRX5 (FTP+HTTP+Control); Trimble HTTP-only receivers produce NULL/unknown in dashboards
 - **Status value vocabulary**: Inconsistent use of `'open'`/`'ok'`/`'active'` across `block_port_status`, `station_port_status`, and health summary
 - **Receiver capability awareness**: Dashboard should know what each receiver type supports (status session, control port, NTRIP) instead of per-field NULL checks
