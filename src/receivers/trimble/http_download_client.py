@@ -119,11 +119,13 @@ class NetR9HTTPDownloader:
 
         # Get timeout settings from configuration
         from ..config.receivers_config import get_receivers_config
+        from ..utils.stall_timeout import get_stall_timeout
         receivers_config = get_receivers_config()
         netr9_config = receivers_config.get_receiver_config("netr9")
         # Increased defaults for slow/remote connections
         self.connect_timeout = netr9_config.get("http_timeout_connect", 60)
-        self.stall_timeout = netr9_config.get("http_stall_timeout", 180)
+        cfg_stall = netr9_config.get("http_stall_timeout", 180)
+        self.stall_timeout = get_stall_timeout(station_id, "netr9", default=cfg_stall)
 
         # Track connection time for metrics
         self._last_connection_time = 0.0
@@ -284,7 +286,8 @@ class NetR9HTTPDownloader:
         return files
 
     def download_file(self, remote_path: str, filename: str, local_path: Path,
-                     expected_size: Optional[int] = None, max_retries: int = 3) -> bool:
+                     expected_size: Optional[int] = None, max_retries: int = 3,
+                     session_type: str = "unknown") -> bool:
         """Download a single file from NetR9/NetR5 receiver with retry and reconnection.
 
         Args:
@@ -293,10 +296,13 @@ class NetR9HTTPDownloader:
             local_path: Local file path to save to
             expected_size: Expected file size for validation
             max_retries: Maximum number of retry attempts (default: 3)
+            session_type: Session type for download logging (e.g. '15s_24hr')
 
         Returns:
             True if download successful, False otherwise
         """
+        from ..utils.stall_timeout import record_download
+
         # Timeout/connection error patterns that require reconnection
         timeout_patterns = [
             "timed out", "timeout", "cannot read from timed out",
@@ -340,6 +346,7 @@ class NetR9HTTPDownloader:
         for attempt in range(max_retries + 1):
             # Download the file
             start_time = time.time()
+            bytes_written = 0
             if attempt == 0:
                 self.logger.info(f"Downloading {filename} from {remote_path}")
             else:
@@ -363,7 +370,6 @@ class NetR9HTTPDownloader:
 
                 # Write response to file
                 local_path.parent.mkdir(parents=True, exist_ok=True)
-                bytes_written = 0
                 last_progress_time = time.time()
 
                 # Initialize progress bar if we have expected size
@@ -372,10 +378,9 @@ class NetR9HTTPDownloader:
                     progress_bar = ProgressBar(expected_size, filename)
 
                 with open(local_path, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=1024):  # Same chunk size as syncdata
+                    for chunk in response.iter_content(chunk_size=65536):
                         if chunk:
                             f.write(chunk)
-                            f.flush()  # Flush like syncdata
                             bytes_written += len(chunk)
                             current_time = time.time()
 
@@ -398,13 +403,17 @@ class NetR9HTTPDownloader:
                                     f"(downloaded {bytes_written:,} bytes)"
                                 )
 
+                    # Ensure all data is flushed to disk before closing
+                    f.flush()
+                    os.fsync(f.fileno())
+
                 # Complete progress bar
                 if progress_bar:
                     progress_bar.finish()
 
                 # Validate downloaded file and log detailed size comparison (like PolaRX5)
                 download_time = time.time() - start_time
-                local_file_size = bytes_written  # Use actual bytes written
+                local_file_size = local_path.stat().st_size  # Trust disk, not memory
 
                 if expected_size is not None:
                     # Log file size comparison (matching PolaRX5 pattern)
@@ -420,6 +429,13 @@ class NetR9HTTPDownloader:
                         if not validation['valid']:
                             self.logger.warning(f"Downloaded file failed validation: {validation['error']}")
                             self.logger.info(f"Removing invalid downloaded file: {local_path}")
+                            record_download(
+                                self.station_id, session_type, "failed",
+                                filename=filename, duration_seconds=download_time,
+                                bytes_downloaded=local_file_size, file_size=expected_size,
+                                stall_timeout_used=self.stall_timeout, attempt=attempt + 1,
+                                message=f"Validation failed: {validation.get('error', 'unknown')}",
+                            )
                             try:
                                 local_path.unlink()
                                 return False
@@ -429,20 +445,46 @@ class NetR9HTTPDownloader:
                         else:
                             self.logger.debug(f"Downloaded file validated: {validation['compression']} compression, {validation['size']} bytes")
 
+                        record_download(
+                            self.station_id, session_type, "completed",
+                            filename=filename, duration_seconds=download_time,
+                            bytes_downloaded=local_file_size, file_size=expected_size,
+                            stall_timeout_used=self.stall_timeout, attempt=attempt + 1,
+                        )
                         return True
                     else:
                         self.logger.error(f"❌ Download incomplete for {filename}: size mismatch of {size_diff} bytes")
                         self.logger.error(f"   Expected: {expected_size:,} bytes, Got: {local_file_size:,} bytes")
                         self.logger.info(f"   Partial file kept for resume: {local_path}")
+                        record_download(
+                            self.station_id, session_type, "failed",
+                            filename=filename, duration_seconds=download_time,
+                            bytes_downloaded=local_file_size, file_size=expected_size,
+                            stall_timeout_used=self.stall_timeout, attempt=attempt + 1,
+                            message=f"Size mismatch: got {local_file_size}, expected {expected_size}",
+                        )
                         return False
                 else:
                     # No expected size - just validate what we can
                     validation = self.file_validator.validate_file(str(local_path))
                     if validation['valid']:
                         self.logger.info(f"✅ Downloaded {filename} ({local_file_size:,} bytes) - integrity validated")
+                        record_download(
+                            self.station_id, session_type, "completed",
+                            filename=filename, duration_seconds=download_time,
+                            bytes_downloaded=local_file_size,
+                            stall_timeout_used=self.stall_timeout, attempt=attempt + 1,
+                        )
                         return True
                     else:
                         self.logger.error(f"❌ Download validation failed for {filename}: {validation['error']}")
+                        record_download(
+                            self.station_id, session_type, "failed",
+                            filename=filename, duration_seconds=download_time,
+                            bytes_downloaded=local_file_size,
+                            stall_timeout_used=self.stall_timeout, attempt=attempt + 1,
+                            message=f"Validation failed: {validation.get('error', 'unknown')}",
+                        )
                         try:
                             local_path.unlink()
                         except OSError:
@@ -451,6 +493,17 @@ class NetR9HTTPDownloader:
 
             except (TimeoutError, requests.exceptions.RequestException, Exception) as e:
                 error_msg = str(e).lower()
+                duration = time.time() - start_time
+                is_stall = isinstance(e, TimeoutError) or "stall" in error_msg
+                outcome = "stall_timeout" if is_stall else "failed"
+
+                record_download(
+                    self.station_id, session_type, outcome,
+                    filename=filename, duration_seconds=duration,
+                    bytes_downloaded=bytes_written, file_size=expected_size,
+                    stall_timeout_used=self.stall_timeout, attempt=attempt + 1,
+                    message=str(e)[:500],
+                )
 
                 # If this was the last attempt, give up
                 if attempt >= max_retries:

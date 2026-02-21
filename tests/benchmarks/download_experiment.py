@@ -187,9 +187,14 @@ def _reset_archives(
 def _reset_file_tracking(
     session: str, start_date: datetime, end_date: datetime
 ) -> int:
-    """Reset file_tracking entries for the test date range.
+    """Delete file_tracking entries for the test date range.
 
-    Sets status back to 'missing' so downloads are re-attempted.
+    DELETES rows rather than setting status='missing', because the
+    is_file_missing() DB function treats status='missing' as "known missing
+    on receiver — skip download", which prevents re-downloads between trials.
+
+    Also clears related file_locations rows (CASCADE) and backfill_progress.
+
     Uses DatabaseConnectionFactory (same as all other receivers components).
     Returns number of rows affected.
     """
@@ -199,20 +204,27 @@ def _reset_file_tracking(
         conn = DatabaseConnectionFactory.get_connection(database="gps_health")
         try:
             with conn.cursor() as cur:
+                # Delete file_tracking rows (file_locations CASCADE-deletes)
                 cur.execute(
                     """\
-                    UPDATE file_tracking
-                    SET status = 'missing',
-                        file_size = NULL,
-                        remote_file_size = NULL
+                    DELETE FROM file_tracking
                     WHERE session_type = %s
                       AND file_date >= %s
                       AND file_date <= %s
-                      AND status IN ('downloaded', 'archived')
                     """,
                     (session, start_date.date(), end_date.date()),
                 )
                 affected = cur.rowcount
+
+                # Also reset backfill_progress for this session
+                cur.execute(
+                    """\
+                    DELETE FROM backfill_progress
+                    WHERE session_type = %s
+                      AND backfill_end >= %s
+                    """,
+                    (session, start_date.date()),
+                )
             conn.commit()
             return affected
         finally:
