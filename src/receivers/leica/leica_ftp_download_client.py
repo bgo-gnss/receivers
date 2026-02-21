@@ -128,11 +128,13 @@ class LeicaFTPDownloader:
 
         # Get timeout settings from configuration
         from ..config.receivers_config import get_receivers_config
+        from ..utils.stall_timeout import get_stall_timeout
         receivers_config = get_receivers_config()
         leica_config = receivers_config.get_receiver_config("g10")
         self.ftp_port = int(leica_config.get("ftp_port", 2160))
         self.connect_timeout = leica_config.get("ftp_timeout_connect", 30)
-        self.data_timeout = leica_config.get("ftp_timeout_data", 120)
+        cfg_data_timeout = leica_config.get("ftp_timeout_data", 120)
+        self.data_timeout = get_stall_timeout(station_id, "g10", default=cfg_data_timeout)
 
         # Get FTP mode from station config (active/passive)
         # Station config has format: station_config['router']['ftp_mode'] = 'active'|'passive'|'auto'
@@ -374,7 +376,8 @@ class LeicaFTPDownloader:
 
     def download_file(self, remote_filename: str, local_path: Path,
                      remote_dir: str = "/SD Card/Data/15s_24hr/",
-                     expected_size: Optional[int] = None, retry_count: int = 3) -> bool:
+                     expected_size: Optional[int] = None, retry_count: int = 3,
+                     session_type: str = "unknown") -> bool:
         """Download a single file from Leica receiver via FTP with retry and reconnection logic.
 
         Args:
@@ -383,10 +386,13 @@ class LeicaFTPDownloader:
             remote_dir: Remote directory path (e.g., '/SD Card/Data/1s_1hr/')
             expected_size: Expected file size for validation (optional)
             retry_count: Number of retries on timeout (default: 3)
+            session_type: Session type for download logging (e.g. '15s_24hr')
 
         Returns:
             True if download successful, False otherwise
         """
+        from ..utils.stall_timeout import record_download
+
         # Timeout/connection error patterns that require reconnection
         timeout_patterns = [
             "timed out", "timeout", "cannot read from timed out",
@@ -404,6 +410,7 @@ class LeicaFTPDownloader:
 
         # Try download with retries and reconnection
         for attempt in range(retry_count + 1):
+            start_time = time.time()
             if attempt == 0:
                 self.logger.info(f"Downloading {remote_filename}")
             else:
@@ -415,17 +422,53 @@ class LeicaFTPDownloader:
             try:
                 # Attempt single download (this creates fresh FTP connection)
                 success = self._download_file_single_attempt(remote_filename, local_path, remote_dir, expected_size)
+                duration = time.time() - start_time
+                dl_size = local_path.stat().st_size if local_path.exists() else 0
+
                 if success:
+                    record_download(
+                        self.station_id, session_type, "completed",
+                        filename=remote_filename, duration_seconds=duration,
+                        bytes_downloaded=dl_size,
+                        file_size=self.remote_sizes.get(remote_filename),
+                        stall_timeout_used=self.data_timeout, attempt=attempt + 1,
+                    )
                     return True
                 elif attempt < retry_count:
+                    record_download(
+                        self.station_id, session_type, "failed",
+                        filename=remote_filename, duration_seconds=duration,
+                        bytes_downloaded=dl_size,
+                        file_size=self.remote_sizes.get(remote_filename),
+                        stall_timeout_used=self.data_timeout, attempt=attempt + 1,
+                        message="Download returned failure",
+                    )
                     self.logger.warning(f"⚠️ Download attempt {attempt + 1} failed, retrying {remote_filename}...")
                     continue
                 else:
+                    record_download(
+                        self.station_id, session_type, "failed",
+                        filename=remote_filename, duration_seconds=duration,
+                        bytes_downloaded=dl_size,
+                        file_size=self.remote_sizes.get(remote_filename),
+                        stall_timeout_used=self.data_timeout, attempt=attempt + 1,
+                        message=f"Failed after {retry_count + 1} attempts",
+                    )
                     self.logger.error(f"❌ Download failed after {retry_count + 1} attempts: {remote_filename}")
                     return False
 
             except (TimeoutError, ConnectionError) as e:
                 error_msg = str(e).lower()
+                duration = time.time() - start_time
+                is_stall = isinstance(e, TimeoutError) or "stall" in error_msg
+                record_download(
+                    self.station_id, session_type,
+                    "stall_timeout" if is_stall else "failed",
+                    filename=remote_filename, duration_seconds=duration,
+                    file_size=self.remote_sizes.get(remote_filename),
+                    stall_timeout_used=self.data_timeout, attempt=attempt + 1,
+                    message=str(e)[:500],
+                )
 
                 # If this was the last attempt, give up
                 if attempt >= retry_count:
@@ -441,6 +484,14 @@ class LeicaFTPDownloader:
 
             except Exception as e:
                 error_msg = str(e).lower()
+                duration = time.time() - start_time
+                record_download(
+                    self.station_id, session_type, "failed",
+                    filename=remote_filename, duration_seconds=duration,
+                    file_size=self.remote_sizes.get(remote_filename),
+                    stall_timeout_used=self.data_timeout, attempt=attempt + 1,
+                    message=str(e)[:500],
+                )
 
                 # If this was the last attempt, give up
                 if attempt >= retry_count:

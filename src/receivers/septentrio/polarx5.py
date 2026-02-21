@@ -133,6 +133,12 @@ class PolaRX5(BaseReceiver):
                 f"Data transfer: {self.data_transfer_timeout}s"
             )
 
+        # Per-station stall timeout override (DB > receivers.cfg > gps_parser default)
+        from ..utils.stall_timeout import get_stall_timeout
+        self.inactivity_timeout = get_stall_timeout(
+            self.station_id, "polarx5", default=self.inactivity_timeout
+        )
+
     def _setup_connection_info(self):
         """Extract and validate connection information from station_info."""
         try:
@@ -1246,10 +1252,13 @@ class PolaRX5(BaseReceiver):
 
                 if remote_file_size is not None:
                     # Use progress bar download with immediate retry logic
+                    from ..utils.stall_timeout import record_download
+                    _dl_start = time.time()
                     diff, ftp = self._download_with_immediate_retry(
                         ftp, remote_file, str(local_file), remote_file_size, offset,
                         max_retries=max_retries, initial_delay=retry_initial_delay
                     )
+                    _dl_duration = time.time() - _dl_start
 
                     # Validate download completeness (like getSeptentrio3)
                     local_file_size = local_file.stat().st_size
@@ -1276,6 +1285,13 @@ class PolaRX5(BaseReceiver):
                             self.logger.info(
                                 f"Removing invalid downloaded file: {local_file}"
                             )
+                            record_download(
+                                self.station_id, session or "unknown", "failed",
+                                filename=file_name, duration_seconds=_dl_duration,
+                                bytes_downloaded=local_file_size, file_size=remote_file_size,
+                                stall_timeout_used=self.inactivity_timeout,
+                                message=f"Validation failed: {validation_result.get('error', 'unknown')}",
+                            )
                             try:
                                 os.unlink(local_file)
                                 continue  # Skip this file
@@ -1287,6 +1303,12 @@ class PolaRX5(BaseReceiver):
                         else:
                             self.logger.debug(
                                 f"Downloaded file validated: {validation_result['compression']} compression, {validation_result['size']} bytes"
+                            )
+                            record_download(
+                                self.station_id, session or "unknown", "completed",
+                                filename=file_name, duration_seconds=_dl_duration,
+                                bytes_downloaded=local_file_size, file_size=remote_file_size,
+                                stall_timeout_used=self.inactivity_timeout,
                             )
 
                             # Mark file as downloaded in tracker
@@ -1350,6 +1372,13 @@ class PolaRX5(BaseReceiver):
                         )
                         self.logger.info(
                             f"   Partial file kept for resume: {local_file}"
+                        )
+                        record_download(
+                            self.station_id, session or "unknown", "failed",
+                            filename=file_name, duration_seconds=_dl_duration,
+                            bytes_downloaded=local_file_size, file_size=remote_file_size,
+                            stall_timeout_used=self.inactivity_timeout,
+                            message=f"Size mismatch: got {local_file_size}, expected {remote_file_size}",
                         )
                         # Keep partial file for resume in next attempt
 
@@ -1449,6 +1478,18 @@ class PolaRX5(BaseReceiver):
 
             except Exception as e:
                 self.logger.error(f"Failed to download {file_name}: {e}")
+                _exc_duration = time.time() - _dl_start if '_dl_start' in dir() else 0.0
+                error_msg = str(e).lower()
+                is_stall = isinstance(e, TimeoutError) or "stall" in error_msg or "watchdog" in error_msg
+                from ..utils.stall_timeout import record_download as _rec_dl
+                _rec_dl(
+                    self.station_id, session or "unknown",
+                    "stall_timeout" if is_stall else "failed",
+                    filename=file_name, duration_seconds=_exc_duration,
+                    file_size=remote_file_size if 'remote_file_size' in dir() else None,
+                    stall_timeout_used=self.inactivity_timeout,
+                    message=str(e)[:500],
+                )
                 continue
 
         # Close file tracker connection
