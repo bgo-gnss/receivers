@@ -1549,7 +1549,9 @@ class PolaRX5(BaseReceiver):
 
                     def watchdog():
                         """Kill connection if stuck at 0% for too long."""
-                        timeout = self.data_transfer_timeout
+                        # When resuming (offset > 0) the server needs time to seek
+                        # to the REST position, especially under concurrent load.
+                        timeout = max(self.data_transfer_timeout, 30) if offset > 0 else self.data_transfer_timeout
                         check_interval = 0.5  # Check every 500ms
                         elapsed = 0
 
@@ -1758,6 +1760,17 @@ class PolaRX5(BaseReceiver):
                     self.logger.warning(
                         f"⚠️  Download attempt {attempt + 1} failed: {e}"
                     )
+
+                    # Update offset to resume from where we left off.
+                    # PolaRX5 FTP supports REST (resume), so partial data is not wasted.
+                    if os.path.isfile(local_file):
+                        new_offset = os.path.getsize(local_file)
+                        if new_offset > offset:
+                            self.logger.info(
+                                f"📦 Partial download: {new_offset} bytes on disk, "
+                                f"will resume from byte {new_offset}"
+                            )
+                            offset = new_offset
 
                     # Check if we need to reconnect (timeout/connection errors)
                     if any(pattern in error_msg for pattern in timeout_patterns):
