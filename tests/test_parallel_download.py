@@ -182,7 +182,7 @@ class TestDownloadOneStation:
         mock_receiver = MagicMock()
         mock_receiver._quick_ping.return_value = True
         mock_validate.return_value = mock_receiver
-        mock_download.return_value = (5, 0)
+        mock_download.return_value = (5, 0, 24)
 
         args = Mock()
         args.session = "15s_24hr"
@@ -204,7 +204,7 @@ class TestDownloadOneStation:
         mock_receiver = MagicMock()
         mock_receiver._quick_ping.return_value = True
         mock_validate.return_value = mock_receiver
-        mock_download.return_value = (0, 0)
+        mock_download.return_value = (0, 0, 1)
 
         args = Mock()
         args.session = "15s_24hr"
@@ -256,7 +256,7 @@ class TestDownloadOneStation:
         mock_receiver = MagicMock()
         mock_receiver._quick_ping.return_value = True
         mock_validate.return_value = mock_receiver
-        mock_download.return_value = (2, 1)
+        mock_download.return_value = (2, 1, 5)
 
         args = Mock()
         args.session = "15s_24hr"
@@ -297,7 +297,7 @@ class TestDownloadOneStation:
         mock_receiver = MagicMock()
         mock_receiver._quick_ping.return_value = True
         mock_validate.return_value = mock_receiver
-        mock_download.return_value = (1, 0)
+        mock_download.return_value = (1, 0, 1)
 
         args = Mock()
         args.session = "15s_24hr"
@@ -316,7 +316,7 @@ class TestDownloadOneStation:
         mock_receiver = MagicMock()
         mock_receiver._quick_ping.return_value = True
         mock_validate.return_value = mock_receiver
-        mock_download.return_value = (1, 0)
+        mock_download.return_value = (1, 0, 1)
 
         args = Mock()
         args.session = "15s_24hr"
@@ -629,3 +629,151 @@ class TestSingleStationIgnoresParallel:
 
         use_parallel = getattr(args, "parallel", False) and len(args.stations) > 1
         assert use_parallel
+
+
+@pytest.mark.unit
+class TestDownloadStationPeriod:
+    """Test _download_station_period failure propagation.
+
+    Verifies that download_data() returning status='failed' with
+    files_downloaded=0 is correctly propagated as errors >= 1,
+    preventing the parallel orchestrator from misclassifying
+    failures as 'up_to_date'.
+    """
+
+    def _make_args(self, **overrides):
+        args = Mock()
+        args.session = "15s_24hr"
+        args.ffrequency = "1D"
+        args.afrequency = "15s"
+        args.compression = ".gz"
+        args.sync = True
+        args.clean_tmp = False
+        args.archive = True
+        args.loglevel = 30  # WARNING
+        args.test_connection = False
+        for k, v in overrides.items():
+            setattr(args, k, v)
+        return args
+
+    def test_failed_status_propagates_as_error(self):
+        """download_data returning status=failed with 0 files sets errors >= 1."""
+        from receivers.cli.main import _download_station_period
+
+        receiver = MagicMock()
+        receiver.download_data.return_value = {
+            "status": "failed",
+            "files_downloaded": 0,
+            "error_message": "Timeout (progress)",
+            "duration": 600.0,
+        }
+
+        args = self._make_args()
+        logger = MagicMock()
+
+        files, errors, checked = _download_station_period(
+            receiver, "INTA", datetime(2026, 2, 22), datetime(2026, 2, 23),
+            args, logger, ffrequency="1D", afrequency="15s",
+        )
+
+        assert files == 0
+        assert errors >= 1
+
+    def test_up_to_date_does_not_set_error(self):
+        """download_data returning status=up_to_date with files_checked > 0 keeps errors=0."""
+        from receivers.cli.main import _download_station_period
+
+        receiver = MagicMock()
+        receiver.download_data.return_value = {
+            "status": "up_to_date",
+            "files_downloaded": 0,
+            "files_checked": 24,
+            "duration": 0.5,
+        }
+
+        args = self._make_args()
+        logger = MagicMock()
+
+        files, errors, checked = _download_station_period(
+            receiver, "ELDC", datetime(2026, 2, 22), datetime(2026, 2, 23),
+            args, logger, ffrequency="1D", afrequency="15s",
+        )
+
+        assert files == 0
+        assert errors == 0
+        assert checked == 24
+
+    def test_up_to_date_with_zero_files_checked_is_error(self):
+        """download_data returning up_to_date with files_checked=0 sets errors >= 1.
+
+        This catches the case where file_date_dict is empty (no timestamps
+        generated), which means the station didn't actually check any files
+        and shouldn't be classified as up-to-date.
+        """
+        from receivers.cli.main import _download_station_period
+
+        receiver = MagicMock()
+        receiver.download_data.return_value = {
+            "status": "up_to_date",
+            "files_downloaded": 0,
+            "files_checked": 0,
+            "duration": 0.3,
+        }
+
+        args = self._make_args()
+        logger = MagicMock()
+
+        files, errors, checked = _download_station_period(
+            receiver, "AFST", datetime(2026, 2, 22), datetime(2026, 2, 23),
+            args, logger, ffrequency="1D", afrequency="15s",
+        )
+
+        assert files == 0
+        assert errors >= 1
+        assert checked == 0
+
+    def test_completed_with_files_no_error(self):
+        """download_data returning status=completed with files keeps errors=0."""
+        from receivers.cli.main import _download_station_period
+
+        receiver = MagicMock()
+        receiver.download_data.return_value = {
+            "status": "completed",
+            "files_downloaded": 3,
+            "downloaded_files": ["/tmp/a", "/tmp/b", "/tmp/c"],
+            "duration": 120.0,
+        }
+
+        args = self._make_args()
+        logger = MagicMock()
+
+        files, errors, _checked = _download_station_period(
+            receiver, "THOB", datetime(2026, 2, 22), datetime(2026, 2, 23),
+            args, logger, ffrequency="1D", afrequency="15s",
+        )
+
+        assert files == 3
+        assert errors == 0
+
+    def test_configuration_error_status_propagates(self):
+        """download_data returning configuration_error with 0 files sets errors >= 1."""
+        from receivers.cli.main import _download_station_period
+
+        receiver = MagicMock()
+        receiver.download_data.return_value = {
+            "status": "configuration_error",
+            "files_downloaded": 0,
+            "error": "Invalid IP range",
+            "duration": 0.1,
+        }
+
+        args = self._make_args()
+        logger = MagicMock()
+
+        files, errors, _checked = _download_station_period(
+            receiver, "BADCFG", datetime(2026, 2, 22), datetime(2026, 2, 23),
+            args, logger, ffrequency="1D", afrequency="15s",
+        )
+
+        assert files == 0
+        assert errors >= 1
