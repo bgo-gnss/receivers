@@ -421,12 +421,30 @@ def run_trial(
     t0 = time.monotonic()
 
     try:
-        result = subprocess.run(
+        # Use Popen with process group so we can kill the entire tree on timeout.
+        # subprocess.run(capture_output=True, timeout=...) can deadlock when the
+        # child has zombie threads holding pipe FDs open after SIGTERM.
+        import os
+        import signal
+
+        proc = subprocess.Popen(
             cmd,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=7200,  # 2 hours max per trial
             cwd=str(_project_root),
+            start_new_session=True,  # New process group for clean kill
+        )
+        try:
+            stdout, stderr = proc.communicate(timeout=7200)
+        except subprocess.TimeoutExpired:
+            # Kill entire process group (SIGKILL) to handle zombie threads
+            os.killpg(proc.pid, signal.SIGKILL)
+            # Drain any remaining output (non-blocking after SIGKILL)
+            stdout, stderr = proc.communicate(timeout=10)
+            raise  # Re-raise TimeoutExpired
+        result = subprocess.CompletedProcess(
+            cmd, proc.returncode, stdout, stderr
         )
         wall_clock = time.monotonic() - t0
     except subprocess.TimeoutExpired:

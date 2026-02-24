@@ -974,6 +974,7 @@ class PolaRX5(BaseReceiver):
             f"Connecting to FTP {self.ip_number}:{self.ip_port}..."
         )
 
+        ftp = None
         try:
             ftp = FTP()
             ftp.connect(self.ip_number, self.ip_port, timeout=timeout)
@@ -987,6 +988,15 @@ class PolaRX5(BaseReceiver):
 
             return ftp
         except Exception as e:
+            # Close the partially-open FTP socket to prevent zombie connections.
+            # If ftp.connect() succeeded but login() failed, the TCP socket is
+            # in ESTAB state and will linger indefinitely without explicit close.
+            if ftp is not None:
+                try:
+                    ftp.close()
+                except Exception:
+                    pass
+
             connection_time = time.time() - connection_start
             error_str = str(e).lower()
 
