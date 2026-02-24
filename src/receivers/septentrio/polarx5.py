@@ -142,6 +142,32 @@ class PolaRX5(BaseReceiver):
             self.station_id, "polarx5", default=self.progress_timeout
         )
 
+    def _get_effective_timeout(
+        self,
+        session_type: Optional[str] = None,
+        expected_file_size: Optional[int] = None,
+    ) -> int:
+        """Get progress timeout, adapted for this station's speed if data available.
+
+        Uses the full priority chain: DB override > adaptive > receivers.cfg > default.
+        When session_type is provided, the adaptive tier queries download_log for
+        historical speed and computes a data-driven timeout.
+
+        Args:
+            session_type: Session type for adaptive lookup (e.g. '15s_24hr').
+            expected_file_size: Remote file size for adaptive calculation.
+
+        Returns:
+            Timeout in seconds.
+        """
+        from ..utils.stall_timeout import get_stall_timeout
+        return get_stall_timeout(
+            self.station_id, "polarx5",
+            default=self.progress_timeout,
+            session_type=session_type,
+            expected_file_size=expected_file_size,
+        )
+
     def _setup_connection_info(self):
         """Extract and validate connection information from station_info."""
         try:
@@ -1259,7 +1285,8 @@ class PolaRX5(BaseReceiver):
                     _dl_start = time.time()
                     diff, ftp = self._download_with_immediate_retry(
                         ftp, remote_file, str(local_file), remote_file_size, offset,
-                        max_retries=max_retries, initial_delay=retry_initial_delay
+                        max_retries=max_retries, initial_delay=retry_initial_delay,
+                        session_type=session,
                     )
                     _dl_duration = time.time() - _dl_start
 
@@ -1292,7 +1319,7 @@ class PolaRX5(BaseReceiver):
                                 self.station_id, session or "unknown", "failed",
                                 filename=file_name, duration_seconds=_dl_duration,
                                 bytes_downloaded=local_file_size, file_size=remote_file_size,
-                                stall_timeout_used=self.progress_timeout,
+                                stall_timeout_used=getattr(self, '_last_effective_timeout', self.progress_timeout),
                                 message=f"Validation failed: {validation_result.get('error', 'unknown')}",
                             )
                             try:
@@ -1311,7 +1338,7 @@ class PolaRX5(BaseReceiver):
                                 self.station_id, session or "unknown", "completed",
                                 filename=file_name, duration_seconds=_dl_duration,
                                 bytes_downloaded=local_file_size, file_size=remote_file_size,
-                                stall_timeout_used=self.progress_timeout,
+                                stall_timeout_used=getattr(self, '_last_effective_timeout', self.progress_timeout),
                             )
 
                             # Mark file as downloaded in tracker
@@ -1380,7 +1407,7 @@ class PolaRX5(BaseReceiver):
                             self.station_id, session or "unknown", "failed",
                             filename=file_name, duration_seconds=_dl_duration,
                             bytes_downloaded=local_file_size, file_size=remote_file_size,
-                            stall_timeout_used=self.progress_timeout,
+                            stall_timeout_used=getattr(self, '_last_effective_timeout', self.progress_timeout),
                             message=f"Size mismatch: got {local_file_size}, expected {remote_file_size}",
                         )
                         # Keep partial file for resume in next attempt
@@ -1490,7 +1517,7 @@ class PolaRX5(BaseReceiver):
                     "stall_timeout" if is_stall else "failed",
                     filename=file_name, duration_seconds=_exc_duration,
                     file_size=remote_file_size if 'remote_file_size' in dir() else None,
-                    stall_timeout_used=self.progress_timeout,
+                    stall_timeout_used=getattr(self, '_last_effective_timeout', self.progress_timeout),
                     message=str(e)[:500],
                 )
                 continue
@@ -1502,7 +1529,8 @@ class PolaRX5(BaseReceiver):
         return downloaded_files
 
     def _download_with_progressbar(
-        self, ftp, remote_file, local_file, remote_file_size, offset=0
+        self, ftp, remote_file, local_file, remote_file_size, offset=0,
+        session_type=None,
     ):
         """Download file with progress bar display and intelligent timeout handling.
 
@@ -1512,6 +1540,18 @@ class PolaRX5(BaseReceiver):
         - Speed-based timeouts (timeout if too slow overall)
         - Station-specific thresholds for mobile/remote stations
         """
+        # Compute effective timeout: adaptive (data-driven) when possible,
+        # otherwise falls back to self.progress_timeout from _setup_timeouts().
+        effective_timeout = self._get_effective_timeout(
+            session_type=session_type, expected_file_size=remote_file_size
+        )
+        # Store for callers that need to log which timeout was actually used
+        self._last_effective_timeout = effective_timeout
+        if effective_timeout != self.progress_timeout:
+            self.logger.info(
+                f"Adaptive timeout: {effective_timeout}s "
+                f"(default {self.progress_timeout}s) for {Path(remote_file).name}"
+            )
         if not progressbar_available:
             # Fallback without progress bar
             file_mode = "ab" if offset > 0 else "wb"
@@ -1646,7 +1686,7 @@ class PolaRX5(BaseReceiver):
                             # PolaRX5 supports FTP resume, so retry will continue
                             # from where it left off — killing is cheap.
                             total_time = current_time - start_time
-                            if total_time > self.progress_timeout:
+                            if total_time > effective_timeout:
                                 current_bytes = bytes_received[0]
                                 avg_speed = (
                                     (current_bytes - offset) / total_time
@@ -1655,7 +1695,7 @@ class PolaRX5(BaseReceiver):
                                 )
                                 raise ConnectionError(
                                     f"Download timed out after {total_time:.0f}s "
-                                    f"(limit {self.progress_timeout}s, "
+                                    f"(limit {effective_timeout}s, "
                                     f"speed {avg_speed:.0f} B/s, "
                                     f"{current_bytes - offset} bytes received)"
                                 )
@@ -1666,6 +1706,17 @@ class PolaRX5(BaseReceiver):
                     except Exception as e:
                         download_done.set()
                         watchdog_thread.join(timeout=1)
+                        # Force-close data socket — watchdog only handles 0%-stall,
+                        # progress_timeout fires when data IS flowing (just slowly)
+                        try:
+                            if data_socket[0]:
+                                data_socket[0].close()
+                        except Exception:
+                            pass
+                        try:
+                            ftp.close()
+                        except Exception:
+                            pass
                         # If watchdog killed the connection, raise TimeoutError instead
                         if watchdog_killed[0]:
                             raise TimeoutError(
@@ -1681,7 +1732,7 @@ class PolaRX5(BaseReceiver):
 
     def _download_with_immediate_retry(
         self, ftp, remote_file, local_file, remote_file_size, offset=0,
-        max_retries=3, initial_delay=0.5
+        max_retries=3, initial_delay=0.5, session_type=None,
     ):
         """Download with immediate retries on transient failures.
 
@@ -1699,6 +1750,7 @@ class PolaRX5(BaseReceiver):
             offset: Resume offset
             max_retries: Maximum number of retries (default: 3)
             initial_delay: Initial retry delay in seconds (default: 0.5)
+            session_type: Session type for adaptive timeout (optional)
 
         Returns:
             Tuple of (download_result, ftp_connection):
@@ -1736,7 +1788,8 @@ class PolaRX5(BaseReceiver):
             try:
                 # Delegate to existing FTP mode retry logic
                 result = self._download_with_progressbar_and_retry(
-                    ftp, remote_file, local_file, remote_file_size, offset
+                    ftp, remote_file, local_file, remote_file_size, offset,
+                    session_type=session_type,
                 )
                 return result, ftp  # Return both result and (potentially new) connection
 
@@ -1800,13 +1853,15 @@ class PolaRX5(BaseReceiver):
                     raise last_exception
 
     def _download_with_progressbar_and_retry(
-        self, ftp, remote_file, local_file, remote_file_size, offset=0
+        self, ftp, remote_file, local_file, remote_file_size, offset=0,
+        session_type=None,
     ):
         """Download with progress bar and intelligent FTP mode retry on connection issues."""
         try:
             # Try with current FTP mode first
             return self._download_with_progressbar(
-                ftp, remote_file, local_file, remote_file_size, offset
+                ftp, remote_file, local_file, remote_file_size, offset,
+                session_type=session_type,
             )
         except Exception as e:
             error_msg = str(e).lower()
@@ -1837,7 +1892,8 @@ class PolaRX5(BaseReceiver):
 
                     # Retry download with switched mode
                     result = self._download_with_progressbar(
-                        ftp, remote_file, local_file, remote_file_size, offset
+                        ftp, remote_file, local_file, remote_file_size, offset,
+                        session_type=session_type,
                     )
                     self.logger.info(
                         f"✅ Success with {self._get_ftp_mode_description(new_pasv)} mode - updating station config"

@@ -575,9 +575,9 @@ All receivers use Phase 1 utilities by default:
 
 ---
 
-**Last updated**: 2026-02-18
+**Last updated**: 2026-02-24
 **Package version**: Development (gpslibrary_new)
-**Phase Status**: Phase 3C Complete - Distribution window optimization, midnight offset, multi-session backfill, gap detection, archive reconciler, integrity checker, archive format system, unified logging
+**Phase Status**: Phase 3C Complete - Distribution window optimization, midnight offset, multi-session backfill, gap detection, archive reconciler, integrity checker, archive format system, unified logging, adaptive download timeouts
 
 ## TODO / Known Issues
 

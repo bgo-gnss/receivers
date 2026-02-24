@@ -74,6 +74,28 @@ def _write_connectivity_status(station_id: str, health_data: Dict[str, Any], log
     writer.write_connectivity_status(station_id, health_data)
 
 
+def _is_retryable_download(result: Dict[str, Any]) -> bool:
+    """Check whether a failed download result is worth retrying.
+
+    Retryable: timeout, connection reset, stall, broken pipe.
+    NOT retryable: unreachable, configuration_error, 404, auth failures.
+    """
+    status = result.get('status', '')
+    if status in ('unreachable', 'configuration_error'):
+        return False
+
+    error_msg = result.get('error_message', '').lower()
+    # Permanent errors — no point retrying
+    permanent_patterns = ['not found', '404', '401', '530', 'configuration', 'invalid ip']
+    if any(p in error_msg for p in permanent_patterns):
+        return False
+
+    # Retryable errors
+    retryable_patterns = ['timed out', 'timeout', 'connection reset', 'stall',
+                          'broken pipe', 'watchdog', 'no progress']
+    return any(p in error_msg for p in retryable_patterns)
+
+
 # Module-level download function for APScheduler serialization
 def _download_station_data_job(station_id: str, session_type: str, production_mode: bool = False, lookback_periods: int = 1, timeout_minutes: int = 30, run_rinex: bool = False):
     """Download data for a single station (standalone job function for APScheduler).
@@ -191,11 +213,40 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
             loglevel=logging.INFO
         )
 
+        # In-job retry: if the download failed with a retryable error and
+        # we have enough time remaining, wait briefly and try once more.
+        # PolaRX5 supports FTP resume so partial progress is preserved.
+        success_statuses = ('completed', 'up_to_date', 'dry_run')
+        status = result.get('status', 'completed')
+        if status not in success_statuses and _is_retryable_download(result):
+            elapsed = time.time() - job_start_time
+            remaining = (timeout_minutes * 60) - elapsed
+            # Only retry if we used less than 60% of the budget and have ≥2min left
+            if elapsed < (timeout_minutes * 60 * 0.6) and remaining > 120:
+                logger.info(
+                    f"🔄 Retrying {station_id} ({session_type}) after 60s cooldown "
+                    f"({remaining:.0f}s remaining in job budget)"
+                )
+                time.sleep(60)
+                result = receiver.download_data(
+                    start=start_time,
+                    end=end_time,
+                    session=session_type,
+                    ffrequency=frequency,
+                    sync=True,
+                    archive=True,
+                    immediate_archive=True,
+                    clean_tmp=False,  # Keep partial files for resume
+                    compression='.gz',
+                    reverse_chronological=True,
+                    retry_missing=True,
+                    loglevel=logging.INFO
+                )
+                status = result.get('status', 'completed')
+
         # Check result status to determine success/failure
         # Possible statuses: completed, up_to_date, dry_run (success)
         #                    failed, unreachable, configuration_error (failure)
-        success_statuses = ('completed', 'up_to_date', 'dry_run')
-        status = result.get('status', 'completed')
         files_downloaded = result.get('files_downloaded', 0)
         duration = result.get('duration', 0)
         downloaded_files = result.get('downloaded_files', [])
