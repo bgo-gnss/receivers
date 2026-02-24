@@ -127,7 +127,7 @@ def compute_adaptive_timeout(
                          AND outcome = 'completed'
                          AND avg_speed_bps > 0
                          AND file_size > 0
-                         AND created_at > NOW() - INTERVAL '7 days'""",
+                         AND ts > NOW() - INTERVAL '7 days'""",
                     (station_id, session_type),
                 )
                 row = cur.fetchone()

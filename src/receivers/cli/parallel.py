@@ -16,11 +16,19 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
+
+# Per-station wall-clock timeout (seconds).  This is the absolute ceiling
+# for a single station download including all retries.  If a thread hangs
+# (zombie FTP socket, kernel-level recv block) this ensures the parallel
+# orchestrator still makes progress.  The daemon thread is abandoned and
+# cleaned up when the process exits.
+_STATION_WALL_TIMEOUT = 2400  # 40 minutes
 
 logger = logging.getLogger("receivers.parallel")
 
@@ -167,53 +175,54 @@ def _download_one_station(
             error_message="Ping check failed",
         )
 
-    # Attempt download
-    try:
-        files_downloaded, errors, files_checked = _download_station_period(
-            receiver,
-            station_id,
-            start_time,
-            end_time,
-            args,
-            worker_logger,
-            audit_logger=None,  # No audit in parallel mode (thread safety)
-            ffrequency=ffrequency,
-            afrequency=afrequency,
-            reverse_chronological=reverse_chronological,
-        )
+    # Attempt download with a wall-clock timeout.
+    # We run the download in a daemon thread so that if it hangs on a zombie
+    # FTP socket we can abandon it after _STATION_WALL_TIMEOUT seconds.
+    result_container: list[tuple[int, int, int] | Exception] = []
 
+    def _do_download() -> None:
+        try:
+            result_container.append(
+                _download_station_period(
+                    receiver,
+                    station_id,
+                    start_time,
+                    end_time,
+                    args,
+                    worker_logger,
+                    audit_logger=None,
+                    ffrequency=ffrequency,
+                    afrequency=afrequency,
+                    reverse_chronological=reverse_chronological,
+                )
+            )
+        except Exception as exc:
+            result_container.append(exc)
+
+    dl_thread = threading.Thread(target=_do_download, daemon=True)
+    dl_thread.start()
+    dl_thread.join(timeout=_STATION_WALL_TIMEOUT)
+
+    if dl_thread.is_alive():
+        # Thread hung — abandon it (daemon=True means it dies with the process)
         duration = time.monotonic() - t0
-
-        if errors > 0:
-            msg = f"{errors} error(s) during download"
-            _record_parallel_outcome(
-                station_id, args, "failed", duration, attempt, msg,
-            )
-            return StationResult(
-                station_id=station_id,
-                status="failed",
-                files_downloaded=files_downloaded,
-                duration=duration,
-                attempt=attempt,
-                error_message=msg,
-            )
-
-        status = "completed" if files_downloaded > 0 else "up_to_date"
+        msg = f"Station download timed out after {_STATION_WALL_TIMEOUT}s (zombie connection)"
+        worker_logger.error(f"⏰ {station_id}: {msg}")
         _record_parallel_outcome(
-            station_id, args, status, duration, attempt,
-            f"{files_downloaded} file(s), {files_checked} checked",
+            station_id, args, "stall_timeout", duration, attempt, msg,
         )
         return StationResult(
             station_id=station_id,
-            status=status,
-            files_downloaded=files_downloaded,
+            status="failed",
             duration=duration,
             attempt=attempt,
+            error_message=msg,
         )
 
-    except Exception as e:
+    # Thread completed — check result
+    if not result_container:
         duration = time.monotonic() - t0
-        msg = f"{type(e).__name__}: {e}"
+        msg = "Download returned no result"
         _record_parallel_outcome(
             station_id, args, "failed", duration, attempt, msg,
         )
@@ -224,6 +233,51 @@ def _download_one_station(
             attempt=attempt,
             error_message=msg,
         )
+
+    result = result_container[0]
+    if isinstance(result, Exception):
+        duration = time.monotonic() - t0
+        msg = f"{type(result).__name__}: {result}"
+        _record_parallel_outcome(
+            station_id, args, "failed", duration, attempt, msg,
+        )
+        return StationResult(
+            station_id=station_id,
+            status="failed",
+            duration=duration,
+            attempt=attempt,
+            error_message=msg,
+        )
+
+    files_downloaded, errors, files_checked = result
+    duration = time.monotonic() - t0
+
+    if errors > 0:
+        msg = f"{errors} error(s) during download"
+        _record_parallel_outcome(
+            station_id, args, "failed", duration, attempt, msg,
+        )
+        return StationResult(
+            station_id=station_id,
+            status="failed",
+            files_downloaded=files_downloaded,
+            duration=duration,
+            attempt=attempt,
+            error_message=msg,
+        )
+
+    status = "completed" if files_downloaded > 0 else "up_to_date"
+    _record_parallel_outcome(
+        station_id, args, status, duration, attempt,
+        f"{files_downloaded} file(s), {files_checked} checked",
+    )
+    return StationResult(
+        station_id=station_id,
+        status=status,
+        files_downloaded=files_downloaded,
+        duration=duration,
+        attempt=attempt,
+    )
 
 
 def _get_session_defaults(session_type: str) -> dict[str, Any]:
