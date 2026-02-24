@@ -136,10 +136,11 @@ def _download_station_period(
     """Download a single period for one station.
 
     Returns:
-        Tuple of (files_downloaded, errors).
+        Tuple of (files_downloaded, errors, files_checked).
     """
     files_downloaded = 0
     errors = 0
+    files_checked = 0
 
     try:
         # Test connection if requested
@@ -149,7 +150,7 @@ def _download_station_period(
                 logger.error(
                     f"Connection test failed for {station_id}: {status.get('error')}"
                 )
-                return 0, 1
+                return 0, 1, 0
             logger.info(f"Connection test successful for {station_id}")
 
         # Download data
@@ -169,6 +170,21 @@ def _download_station_period(
 
         # Report results
         files_downloaded = result.get("files_downloaded", 0)
+        files_checked = result.get("files_checked", 0)
+
+        # Propagate failure status from download_data() as an error.
+        # download_data() catches its own exceptions (timeouts, stalls,
+        # FTP errors) and returns status="failed" without re-raising.
+        # Without this check, _download_one_station sees (0, 0) and
+        # misclassifies the failure as "up_to_date".
+        result_status = result.get("status", "unknown")
+        if result_status in ("failed", "configuration_error") and files_downloaded == 0:
+            errors += 1
+        # Guard: "up_to_date" with 0 files checked means no timestamps were
+        # generated (empty file_date_dict) — treat as error so the parallel
+        # orchestrator doesn't misclassify it as genuinely up-to-date.
+        elif result_status == "up_to_date" and result.get("files_checked", 1) == 0:
+            errors += 1
 
         # Log to audit trail if production logging enabled
         if audit_logger:
@@ -209,7 +225,7 @@ def _download_station_period(
         logger.debug(f"Traceback:\n{traceback.format_exc()}")
         errors += 1
 
-    return files_downloaded, errors
+    return files_downloaded, errors, files_checked
 
 
 def cmd_download(args) -> int:
@@ -350,7 +366,7 @@ def cmd_download(args) -> int:
                 logger.info(f"--- {period_start.strftime('%Y-%m-%d %H:%M')} ---")
             for sid, receiver in receivers_map.items():
                 logger.info(f"Processing station: {sid}")
-                dl, err = _download_station_period(
+                dl, err, _checked = _download_station_period(
                     receiver, sid, period_start, period_end,
                     args, logger, audit_logger,
                     ffrequency=ffrequency, afrequency=afrequency,
@@ -369,7 +385,7 @@ def cmd_download(args) -> int:
                 total_errors += 1
                 continue
 
-            dl, err = _download_station_period(
+            dl, err, _checked = _download_station_period(
                 receiver, station_id, start_time, end_time,
                 args, logger, audit_logger,
                 ffrequency=ffrequency, afrequency=afrequency,

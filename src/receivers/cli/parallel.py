@@ -83,6 +83,31 @@ class ParallelSummary:
         }
 
 
+def _record_parallel_outcome(
+    station_id: str,
+    args: Any,
+    outcome: str,
+    duration: float,
+    attempt: int,
+    message: str,
+) -> None:
+    """Record a download outcome to download_log (fire-and-forget)."""
+    try:
+        from ..utils.stall_timeout import record_download
+
+        session_type = getattr(args, "session", None) or "15s_24hr"
+        record_download(
+            station_id,
+            session_type,
+            outcome,
+            duration_seconds=duration,
+            attempt=attempt,
+            message=message,
+        )
+    except Exception:
+        pass  # Fire-and-forget — DB issues must not crash parallel downloads
+
+
 def _split_into_groups(items: list, group_size: int) -> list[list]:
     """Split a list into groups of at most group_size."""
     return [items[i : i + group_size] for i in range(0, len(items), group_size)]
@@ -116,6 +141,10 @@ def _download_one_station(
         station_id, worker_logger, session=args.session
     )
     if receiver is None:
+        _record_parallel_outcome(
+            station_id, args, "failed", time.monotonic() - t0,
+            attempt, "Station validation failed (config/session)",
+        )
         return StationResult(
             station_id=station_id,
             status="skipped",
@@ -126,6 +155,10 @@ def _download_one_station(
 
     # Quick connectivity check before attempting download
     if not receiver._quick_ping():
+        _record_parallel_outcome(
+            station_id, args, "unreachable", time.monotonic() - t0,
+            attempt, "Ping check failed",
+        )
         return StationResult(
             station_id=station_id,
             status="unreachable",
@@ -136,7 +169,7 @@ def _download_one_station(
 
     # Attempt download
     try:
-        files_downloaded, errors = _download_station_period(
+        files_downloaded, errors, files_checked = _download_station_period(
             receiver,
             station_id,
             start_time,
@@ -152,30 +185,44 @@ def _download_one_station(
         duration = time.monotonic() - t0
 
         if errors > 0:
+            msg = f"{errors} error(s) during download"
+            _record_parallel_outcome(
+                station_id, args, "failed", duration, attempt, msg,
+            )
             return StationResult(
                 station_id=station_id,
                 status="failed",
                 files_downloaded=files_downloaded,
                 duration=duration,
                 attempt=attempt,
-                error_message=f"{errors} error(s) during download",
+                error_message=msg,
             )
 
+        status = "completed" if files_downloaded > 0 else "up_to_date"
+        _record_parallel_outcome(
+            station_id, args, status, duration, attempt,
+            f"{files_downloaded} file(s), {files_checked} checked",
+        )
         return StationResult(
             station_id=station_id,
-            status="completed" if files_downloaded > 0 else "up_to_date",
+            status=status,
             files_downloaded=files_downloaded,
             duration=duration,
             attempt=attempt,
         )
 
     except Exception as e:
+        duration = time.monotonic() - t0
+        msg = f"{type(e).__name__}: {e}"
+        _record_parallel_outcome(
+            station_id, args, "failed", duration, attempt, msg,
+        )
         return StationResult(
             station_id=station_id,
             status="failed",
-            duration=time.monotonic() - t0,
+            duration=duration,
             attempt=attempt,
-            error_message=f"{type(e).__name__}: {e}",
+            error_message=msg,
         )
 
 

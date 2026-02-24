@@ -488,7 +488,8 @@ class NetRS(BaseReceiver):
                         tmp_dir_path,
                         clean_tmp,
                         archive_files_dict=archive_files_dict if archive else None,
-                        use_phase1_utilities=archive  # Always use Phase 1 when archiving
+                        use_phase1_utilities=archive,  # Always use Phase 1 when archiving
+                        session_type=session,
                     )
                 else:
                     self.logger.info("Archive is up to date - no files to download")
@@ -575,6 +576,20 @@ class NetRS(BaseReceiver):
                                         tracker.mark_missing(file_date, track_hour, req_filename)
                 except Exception as e:
                     self.logger.debug(f"File tracking failed: {e}")
+
+            # All files failed — don't report "completed" with 0 downloads
+            if sync and missing_files_dict and not final_files:
+                return {
+                    "station_id": self.station_id,
+                    "receiver_type": "NetRS",
+                    "status": "failed",
+                    "error_message": f"All file downloads failed (0 of {len(missing_files_dict)} succeeded)",
+                    "files_checked": len(files_dict),
+                    "files_missing": len(missing_files_dict),
+                    "files_downloaded": 0,
+                    "downloaded_files": [],
+                    "duration": duration,
+                }
 
             return {
                 "station_id": self.station_id,
