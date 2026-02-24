@@ -2,18 +2,21 @@
 
 Provides:
     - get_stall_timeout(): Resolve effective stall timeout for a station
+    - compute_adaptive_timeout(): Data-driven timeout from download_log history
     - record_download(): Log every download attempt to download_log table
 
 Timeout priority:
     1. DB stations.stall_timeout_override (per-station)
-    2. receivers.cfg [receiver_type] stall_timeout
-    3. receivers.cfg [receiver_defaults] stall_timeout
-    4. Hardcoded fallback (300s)
+    2. Adaptive timeout from download_log history (data-driven)
+    3. receivers.cfg [receiver_type] stall_timeout
+    4. receivers.cfg [receiver_defaults] stall_timeout
+    5. Hardcoded fallback (300s)
 """
 
 import logging
+import math
 import time
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +24,9 @@ logger = logging.getLogger(__name__)
 _override_cache: Optional[Dict[str, int]] = None
 _cache_loaded_at: float = 0.0
 _CACHE_TTL = 300.0  # Reload every 5 minutes
+
+# Module-level cache for adaptive timeouts: {(station_id, session_type): (timeout, loaded_at)}
+_adaptive_cache: Dict[Tuple[str, str], Tuple[int, float]] = {}
 
 
 def _load_overrides() -> Dict[str, int]:
@@ -65,33 +71,127 @@ def _get_overrides() -> Dict[str, int]:
 
 def invalidate_cache() -> None:
     """Force reload of overrides on next call to get_stall_timeout()."""
-    global _override_cache, _cache_loaded_at
+    global _override_cache, _cache_loaded_at, _adaptive_cache
     _override_cache = None
     _cache_loaded_at = 0.0
+    _adaptive_cache.clear()
+
+
+def compute_adaptive_timeout(
+    station_id: str,
+    session_type: str,
+    expected_file_size: Optional[int] = None,
+    safety_factor: float = 1.5,
+    min_timeout: int = 300,
+    max_timeout: int = 1800,
+) -> Optional[int]:
+    """Compute a data-driven timeout from download_log history.
+
+    Queries the last 7 days of completed downloads for this station+session
+    to determine average speed, then calculates how long a full download
+    should take with a safety margin.
+
+    Args:
+        station_id: Station identifier.
+        session_type: Session type (e.g. '15s_24hr', '1Hz_1hr').
+        expected_file_size: Expected file size in bytes. If None, uses
+            average file_size from history.
+        safety_factor: Multiplier applied to estimated transfer time.
+        min_timeout: Minimum timeout in seconds.
+        max_timeout: Maximum timeout in seconds.
+
+    Returns:
+        Adaptive timeout in seconds, or None if insufficient data
+        (fewer than 2 completed downloads in last 7 days).
+    """
+    station_id = station_id.upper()
+
+    # Check cache first
+    cache_key = (station_id, session_type)
+    now = time.monotonic()
+    if cache_key in _adaptive_cache:
+        cached_timeout, cached_at = _adaptive_cache[cache_key]
+        if (now - cached_at) < _CACHE_TTL:
+            return cached_timeout
+
+    try:
+        from ..health.database_factory import DatabaseConnectionFactory
+
+        with DatabaseConnectionFactory.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT AVG(avg_speed_bps), AVG(file_size), COUNT(*)
+                       FROM download_log
+                       WHERE sid = %s
+                         AND session_type = %s
+                         AND outcome = 'completed'
+                         AND avg_speed_bps > 0
+                         AND file_size > 0
+                         AND created_at > NOW() - INTERVAL '7 days'""",
+                    (station_id, session_type),
+                )
+                row = cur.fetchone()
+
+        if row is None or row[2] < 2:
+            # Insufficient data
+            return None
+
+        avg_speed: float = row[0]
+        avg_file_size: float = row[1]
+        sample_count: int = row[2]
+
+        file_size = expected_file_size if expected_file_size else avg_file_size
+        if avg_speed <= 0:
+            return None
+
+        timeout = math.ceil(file_size / avg_speed * safety_factor)
+        timeout = max(min_timeout, min(timeout, max_timeout))
+
+        logger.debug(
+            "Station %s (%s): adaptive timeout = %ds "
+            "(avg_speed=%.0f B/s, file_size=%.0f, samples=%d)",
+            station_id, session_type, timeout, avg_speed, file_size, sample_count,
+        )
+
+        # Cache the result
+        _adaptive_cache[cache_key] = (timeout, now)
+        return timeout
+
+    except Exception as e:
+        logger.debug("Could not compute adaptive timeout for %s/%s: %s",
+                     station_id, session_type, e)
+        return None
 
 
 def get_stall_timeout(
-    station_id: str, receiver_type: str, default: int = 300
+    station_id: str,
+    receiver_type: str,
+    default: int = 300,
+    session_type: Optional[str] = None,
+    expected_file_size: Optional[int] = None,
 ) -> int:
     """Resolve the effective stall timeout for a station.
 
     Priority:
         1. DB stations.stall_timeout_override (per-station)
-        2. receivers.cfg [receiver_type] stall_timeout
-        3. receivers.cfg [receiver_defaults] stall_timeout
-        4. ``default`` argument (fallback)
+        2. Adaptive timeout from download_log history (data-driven)
+        3. receivers.cfg [receiver_type] stall_timeout
+        4. receivers.cfg [receiver_defaults] stall_timeout
+        5. ``default`` argument (fallback)
 
     Args:
         station_id: Station identifier (e.g. 'LAHC').
         receiver_type: Receiver type key (e.g. 'netr9', 'polarx5').
         default: Hardcoded fallback if nothing else is configured.
+        session_type: Session type for adaptive lookup (optional).
+        expected_file_size: Expected file size for adaptive calculation (optional).
 
     Returns:
         Timeout in seconds.
     """
     station_id = station_id.upper()
 
-    # 1. Per-station DB override
+    # 1. Per-station DB override (highest priority — manual control)
     overrides = _get_overrides()
     if station_id in overrides:
         timeout = overrides[station_id]
@@ -100,7 +200,18 @@ def get_stall_timeout(
         )
         return timeout
 
-    # 2-3. receivers.cfg: [receiver_type] stall_timeout -> [receiver_defaults] stall_timeout
+    # 2. Adaptive timeout from download_log history
+    if session_type:
+        adaptive = compute_adaptive_timeout(
+            station_id, session_type, expected_file_size
+        )
+        if adaptive is not None:
+            logger.debug(
+                "Station %s: using adaptive timeout = %ds", station_id, adaptive
+            )
+            return adaptive
+
+    # 3-4. receivers.cfg: [receiver_type] stall_timeout -> [receiver_defaults] stall_timeout
     try:
         from ..config.receivers_config import get_receivers_config
 
@@ -112,7 +223,7 @@ def get_stall_timeout(
     except Exception as e:
         logger.debug("Could not read stall_timeout from receivers.cfg: %s", e)
 
-    # 4. Hardcoded fallback
+    # 5. Hardcoded fallback
     return default
 
 
