@@ -326,7 +326,6 @@ def check_station_health_gate(
     Skip conditions (any one triggers skip):
     - satellites_tracked = 0 → "no_satellites"
     - disk_usage_pct > 98 → "disk_full"
-    - Session logging inactive (PolaRX5 only) → "logging_inactive"
     - All health checks require data fresher than 30 minutes (stale → proceed)
 
     Args:
@@ -390,41 +389,9 @@ def _query_health_gate(
                             if disk_pct is not None and disk_pct > 98:
                                 return "disk_full"
 
-                # Check logging status (session-specific)
-                if session_type:
-                    # Map session type to column name
-                    col_map = {
-                        "15s_24hr": "session_15s_24hr",
-                        "1Hz_1hr": "session_1hz_1hr",
-                        "1hz_1hr": "session_1hz_1hr",
-                        "status_1hr": "session_status_1hr",
-                    }
-                    col = col_map.get(session_type)
-                    if col:
-                        cur.execute(
-                            f"""SELECT {col}, last_check
-                                FROM station_logging_status
-                                WHERE sid = %s""",
-                            (station_id,),
-                        )
-                        log_row = cur.fetchone()
-                        if log_row is not None:
-                            session_active, last_check = log_row
-
-                            # Only act on fresh data
-                            if last_check is not None:
-                                cur.execute(
-                                    "SELECT EXTRACT(EPOCH FROM NOW() - %s)",
-                                    (last_check,),
-                                )
-                                log_age = cur.fetchone()[0]
-
-                                if (
-                                    log_age is not None
-                                    and log_age < 1800
-                                    and session_active is False
-                                ):
-                                    return "logging_inactive"
+                # Note: logging_inactive check removed — too many false positives.
+                # Stations with inactive logging often still have historical files
+                # on FTP.  The no_satellites and disk_full checks are sufficient.
 
     except Exception as e:
         logger.debug("Health gate check failed for %s: %s", station_id, e)
@@ -478,6 +445,7 @@ def _query_consecutive_failures(station_id: str) -> bool:
                 cur.execute(
                     """SELECT outcome FROM download_log
                        WHERE sid = %s
+                         AND ts > NOW() - INTERVAL '48 hours'
                        ORDER BY ts DESC
                        LIMIT 5""",
                     (station_id,),
