@@ -1133,6 +1133,20 @@ class PolaRX5(BaseReceiver):
         # Iterate in the order provided by _sync_missing_files (already sorted by datetime)
         # DO NOT re-sort here - filename-based sorting breaks year boundary ordering
         for file_name, remote_dir in files_dict.items():
+            # Guard: reconnect if FTP connection was killed by error handler or watchdog
+            if ftp is None or getattr(ftp, 'sock', None) is None:
+                self.logger.warning("FTP connection dead, reconnecting...")
+                try:
+                    if ftp is not None:
+                        ftp.close()
+                except Exception:
+                    pass
+                ftp = self._ftp_open_connection(skip_ping_check=True)
+                if not ftp:
+                    self.logger.error("Failed to reconnect FTP - aborting remaining files")
+                    break
+                self.logger.info("FTP reconnected after dead connection")
+
             # Check if file is known to be missing (skip download attempt)
             # Skip this filter when retry_missing=True (scheduler always retries)
             if file_tracker and session and not retry_missing:
@@ -1586,6 +1600,14 @@ class PolaRX5(BaseReceiver):
             watchdog_killed = [False]
             data_socket = [None]  # Store data socket so watchdog can close it
 
+            # Packet-loss-aware watchdog: stations with high packet loss
+            # need longer watchdog timeouts to avoid premature kills
+            try:
+                from ..utils.stall_timeout import get_packet_loss_factor
+                _loss_factor = get_packet_loss_factor(self.station_id)
+            except Exception:
+                _loss_factor = 1.0
+
             with tqdm(
                 total=remote_file_size,
                 initial=offset,
@@ -1601,7 +1623,9 @@ class PolaRX5(BaseReceiver):
                         """Kill connection if stuck at 0% for too long."""
                         # When resuming (offset > 0) the server needs time to seek
                         # to the REST position, especially under concurrent load.
-                        timeout = max(self.data_transfer_timeout, 30) if offset > 0 else self.data_transfer_timeout
+                        base_timeout = max(self.data_transfer_timeout, 30) if offset > 0 else self.data_transfer_timeout
+                        # Scale by packet loss factor (1.0x–2.0x)
+                        timeout = base_timeout * _loss_factor
                         check_interval = 0.5  # Check every 500ms
                         elapsed = 0
 

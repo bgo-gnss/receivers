@@ -133,7 +133,7 @@ class PolaRX5TCPExtractor:
             # Query DiskStatus for disk usage
             disk_data = self._query_disk_status()
             if disk_data:
-                health_data["data_quality"]["disk"] = disk_data
+                health_data["metrics"]["disk"] = disk_data
 
             # Query PVTGeodetic2 for position and accuracy
             position_data = self._query_pvt_geodetic()
@@ -597,8 +597,30 @@ class PolaRX5TCPExtractor:
             if sock:
                 sock.close()
 
+    # DiskStatus disk status codes (from SBF reference)
+    _DISK_STATUS_MAP = {
+        0: "unavailable",
+        1: "mounted",
+        2: "full",
+        3: "error",
+        4: "unmounted",
+    }
+
     def _query_disk_status(self) -> Optional[Dict[str, Any]]:
-        """Query DiskStatus SBF block for disk usage.
+        """Query DiskStatus SBF block (4059) for disk usage.
+
+        SBF DiskStatus structure (after 8-byte header):
+            TOW      (4B, uint32) - Time of week in ms
+            WNc      (2B, uint16) - GPS week number
+            N        (1B, uint8)  - Number of disk descriptors
+            SBLength (1B, uint8)  - Size of each disk descriptor
+
+        Each disk descriptor (SBLength bytes):
+            DiskID          (1B, uint8)  - Disk identifier
+            Status          (1B, uint8)  - 0=unavailable, 1=mounted, 2=full, 3=error, 4=unmounted
+            DiskUsage       (2B, uint16) - Usage in 0.01% units (0-10000)
+            DiskSize        (4B, uint32) - Total size in KB
+            CreateDeleteCount (4B, uint32) - File create/delete operations
 
         Returns:
             Dictionary with disk metrics or None on failure
@@ -608,16 +630,73 @@ class PolaRX5TCPExtractor:
             return None
 
         try:
-            # Block ID already verified in _send_sbf_request
             _, length = self._parse_sbf_header(sbf_data)
 
-            # DiskStatus has variable structure, extract what we can
-            if length >= 28 and len(sbf_data) >= 28:
-                # Try to extract disk info (structure varies by firmware)
-                return {
-                    "status": "ok",
-                    "raw_length": length,
+            # Minimum: 8B header + 4B TOW + 2B WNc + 1B N + 1B SBLength = 16 bytes
+            if length < 16 or len(sbf_data) < 16:
+                self.logger.debug(f"DiskStatus too short: {length} bytes")
+                return None
+
+            # Parse after header (offset 8)
+            n_disks = struct.unpack_from('<B', sbf_data, 14)[0]
+            sb_length = struct.unpack_from('<B', sbf_data, 15)[0]
+
+            if n_disks == 0 or sb_length < 8:
+                self.logger.debug(f"DiskStatus: {n_disks} disks, sb_length={sb_length}")
+                return {"status": "unavailable", "disks": []}
+
+            disks: List[Dict[str, Any]] = []
+            total_size_kb = 0
+            total_used_kb = 0
+            worst_status = "mounted"
+            status_priority = {"mounted": 0, "full": 1, "unmounted": 2, "error": 3, "unavailable": 4}
+
+            for i in range(n_disks):
+                offset = 16 + i * sb_length
+                if offset + 8 > len(sbf_data):
+                    break
+
+                disk_id = struct.unpack_from('<B', sbf_data, offset)[0]
+                status_code = struct.unpack_from('<B', sbf_data, offset + 1)[0]
+                usage_raw = struct.unpack_from('<H', sbf_data, offset + 2)[0]
+                disk_size_kb = struct.unpack_from('<I', sbf_data, offset + 4)[0]
+
+                status_str = self._DISK_STATUS_MAP.get(status_code, f"unknown({status_code})")
+                usage_pct = usage_raw / 100.0  # 0.01% units → percentage
+
+                disk_info: Dict[str, Any] = {
+                    "disk_id": disk_id,
+                    "status": status_str,
+                    "usage_percent": round(usage_pct, 2),
+                    "total_mb": round(disk_size_kb / 1024, 1),
                 }
+
+                if status_str == "mounted" and disk_size_kb > 0:
+                    used_kb = int(disk_size_kb * usage_pct / 100)
+                    disk_info["used_mb"] = round(used_kb / 1024, 1)
+                    total_size_kb += disk_size_kb
+                    total_used_kb += used_kb
+
+                if status_priority.get(status_str, 4) > status_priority.get(worst_status, 0):
+                    worst_status = status_str
+
+                disks.append(disk_info)
+
+            # Aggregate totals
+            result: Dict[str, Any] = {
+                "status": worst_status,
+                "disks": disks,
+            }
+            if total_size_kb > 0:
+                result["total_mb"] = round(total_size_kb / 1024, 1)
+                result["used_mb"] = round(total_used_kb / 1024, 1)
+                result["usage_percent"] = round(total_used_kb / total_size_kb * 100, 2)
+            else:
+                result["total_mb"] = 0
+                result["used_mb"] = 0
+                result["usage_percent"] = 0.0
+
+            return result
 
         except Exception as e:
             self.logger.error(f"Error parsing DiskStatus: {e}")

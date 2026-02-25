@@ -33,6 +33,41 @@ _STATION_WALL_TIMEOUT = 2400  # 40 minutes
 logger = logging.getLogger("receivers.parallel")
 
 
+class RouterFailureCache:
+    """Thread-safe cache of recently-failed router IPs.
+
+    When a router is unreachable, all stations behind it will also fail.
+    This cache lets subsequent stations skip the connectivity check
+    for 5 minutes after the first failure.
+    """
+
+    _TTL = 300.0  # 5 minutes
+
+    def __init__(self) -> None:
+        self._failed: dict[str, float] = {}  # {router_ip: monotonic_timestamp}
+        self._lock = threading.Lock()
+
+    def mark_failed(self, router_ip: str) -> None:
+        """Record a router as unreachable."""
+        with self._lock:
+            self._failed[router_ip] = time.monotonic()
+
+    def is_failed(self, router_ip: str) -> bool:
+        """Check if a router was recently marked as failed."""
+        with self._lock:
+            ts = self._failed.get(router_ip)
+            if ts is None:
+                return False
+            if (time.monotonic() - ts) > self._TTL:
+                del self._failed[router_ip]
+                return False
+            return True
+
+
+# Module-level router cache shared across all parallel downloads
+_router_cache = RouterFailureCache()
+
+
 @dataclass
 class StationResult:
     """Result of downloading data for a single station."""
@@ -161,8 +196,74 @@ def _download_one_station(
             error_message="Station validation failed (config/session)",
         )
 
+    # --- Pre-download gates (skip known-bad stations quickly) ---
+    session_type = getattr(args, "session", None)
+
+    # Health gate: skip stations with hardware/config issues
+    try:
+        from ..utils.stall_timeout import check_station_health_gate
+
+        health_skip = check_station_health_gate(station_id, session_type)
+        if health_skip:
+            msg = f"Health gate: {health_skip}"
+            worker_logger.info(f"⏭️  {station_id}: {msg}")
+            _record_parallel_outcome(
+                station_id, args, "failed", time.monotonic() - t0,
+                attempt, msg,
+            )
+            return StationResult(
+                station_id=station_id,
+                status="skipped",
+                duration=time.monotonic() - t0,
+                attempt=attempt,
+                error_message=msg,
+            )
+    except Exception:
+        pass  # Health gate is advisory — failures must not block downloads
+
+    # Consecutive failure backoff: skip stations that keep failing
+    try:
+        from ..utils.stall_timeout import should_skip_station
+
+        if should_skip_station(station_id):
+            msg = "Consecutive failure backoff (last 5 attempts failed)"
+            worker_logger.info(f"⏭️  {station_id}: {msg}")
+            _record_parallel_outcome(
+                station_id, args, "failed", time.monotonic() - t0,
+                attempt, msg,
+            )
+            return StationResult(
+                station_id=station_id,
+                status="skipped",
+                duration=time.monotonic() - t0,
+                attempt=attempt,
+                error_message=msg,
+            )
+    except Exception:
+        pass  # Backoff is advisory
+
+    # Router group skip: if router was recently unreachable, skip all stations behind it
+    router_ip = receiver.station_info.get("router", {}).get("ip")
+    if router_ip and _router_cache.is_failed(router_ip):
+        msg = f"Router {router_ip} group skip (recently unreachable)"
+        worker_logger.info(f"⏭️  {station_id}: {msg}")
+        _record_parallel_outcome(
+            station_id, args, "unreachable", time.monotonic() - t0,
+            attempt, msg,
+        )
+        return StationResult(
+            station_id=station_id,
+            status="unreachable",
+            duration=time.monotonic() - t0,
+            attempt=attempt,
+            error_message=msg,
+        )
+
     # Quick connectivity check before attempting download
     if not receiver._quick_ping():
+        # Mark this router as failed so other stations behind it skip quickly
+        if router_ip:
+            _router_cache.mark_failed(router_ip)
         _record_parallel_outcome(
             station_id, args, "unreachable", time.monotonic() - t0,
             attempt, "Ping check failed",
