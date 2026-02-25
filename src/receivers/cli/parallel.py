@@ -222,23 +222,31 @@ def _download_one_station(
         pass  # Health gate is advisory — failures must not block downloads
 
     # Consecutive failure backoff: skip stations that keep failing
+    # But override if a quick ping shows the station is online now
     try:
-        from ..utils.stall_timeout import should_skip_station
+        from ..utils.stall_timeout import should_skip_station, clear_backoff_cache
 
         if should_skip_station(station_id):
-            msg = "Consecutive failure backoff (last 5 attempts failed)"
-            worker_logger.info(f"⏭️  {station_id}: {msg}")
-            _record_parallel_outcome(
-                station_id, args, "failed", time.monotonic() - t0,
-                attempt, msg,
-            )
-            return StationResult(
-                station_id=station_id,
-                status="skipped",
-                duration=time.monotonic() - t0,
-                attempt=attempt,
-                error_message=msg,
-            )
+            # Check if station is actually online now — don't rely on stale history
+            if not receiver._quick_ping():
+                msg = "Consecutive failure backoff (last 5 attempts failed, still offline)"
+                worker_logger.info(f"⏭️  {station_id}: {msg}")
+                _record_parallel_outcome(
+                    station_id, args, "failed", time.monotonic() - t0,
+                    attempt, msg,
+                )
+                return StationResult(
+                    station_id=station_id,
+                    status="skipped",
+                    duration=time.monotonic() - t0,
+                    attempt=attempt,
+                    error_message=msg,
+                )
+            else:
+                worker_logger.info(
+                    f"🔄 {station_id}: Backoff overridden — station responds to ping"
+                )
+                clear_backoff_cache(station_id)
     except Exception:
         pass  # Backoff is advisory
 
