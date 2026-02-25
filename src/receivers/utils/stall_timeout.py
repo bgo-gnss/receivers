@@ -1,9 +1,13 @@
-"""Per-station stall timeout resolver and download performance recorder.
+"""Per-station stall timeout resolver, download performance recorder, and
+pre-download health checks.
 
 Provides:
     - get_stall_timeout(): Resolve effective stall timeout for a station
     - compute_adaptive_timeout(): Data-driven timeout from download_log history
     - record_download(): Log every download attempt to download_log table
+    - check_station_health_gate(): Skip stations with known hardware/config issues
+    - should_skip_station(): Backoff for stations with consecutive failures
+    - get_packet_loss_factor(): Watchdog timeout multiplier for lossy links
 
 Timeout priority:
     1. DB stations.stall_timeout_override (per-station)
@@ -70,11 +74,15 @@ def _get_overrides() -> Dict[str, int]:
 
 
 def invalidate_cache() -> None:
-    """Force reload of overrides on next call to get_stall_timeout()."""
+    """Force reload of all caches on next call."""
     global _override_cache, _cache_loaded_at, _adaptive_cache
+    global _health_gate_cache, _backoff_cache, _loss_factor_cache
     _override_cache = None
     _cache_loaded_at = 0.0
     _adaptive_cache.clear()
+    _health_gate_cache.clear()
+    _backoff_cache.clear()
+    _loss_factor_cache.clear()
 
 
 def compute_adaptive_timeout(
@@ -295,3 +303,264 @@ def record_download(
                 )
     except Exception as e:
         logger.debug("Could not record download to download_log: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# Health gate: skip stations with known hardware/config issues
+# ---------------------------------------------------------------------------
+
+# Cache: {station_id: (skip_reason_or_None, monotonic_timestamp)}
+_health_gate_cache: Dict[str, Tuple[Optional[str], float]] = {}
+_HEALTH_GATE_TTL = 300.0  # 5 minutes
+
+
+def check_station_health_gate(
+    station_id: str,
+    session_type: Optional[str] = None,
+) -> Optional[str]:
+    """Check if a station should be skipped based on its last health data.
+
+    Queries station_latest_metrics and station_logging_status views.
+    Returns a skip reason string, or None if the station is OK to download.
+
+    Skip conditions (any one triggers skip):
+    - satellites_tracked = 0 → "no_satellites"
+    - disk_usage_pct > 98 → "disk_full"
+    - Session logging inactive (PolaRX5 only) → "logging_inactive"
+    - All health checks require data fresher than 30 minutes (stale → proceed)
+
+    Args:
+        station_id: Station identifier.
+        session_type: Session type (e.g. '15s_24hr') for logging status check.
+
+    Returns:
+        Skip reason string, or None if station should proceed.
+    """
+    station_id = station_id.upper()
+
+    # Check cache
+    now = time.monotonic()
+    if station_id in _health_gate_cache:
+        cached_reason, cached_at = _health_gate_cache[station_id]
+        if (now - cached_at) < _HEALTH_GATE_TTL:
+            return cached_reason
+
+    try:
+        reason = _query_health_gate(station_id, session_type)
+    except Exception as e:
+        logger.debug("Health gate query failed for %s: %s", station_id, e)
+        reason = None
+    _health_gate_cache[station_id] = (reason, now)
+    return reason
+
+
+def _query_health_gate(
+    station_id: str,
+    session_type: Optional[str] = None,
+) -> Optional[str]:
+    """Internal: query DB for health gate decision."""
+    try:
+        from ..health.database_factory import DatabaseConnectionFactory
+
+        with DatabaseConnectionFactory.connection() as conn:
+            with conn.cursor() as cur:
+                # Check latest metrics (satellites, disk)
+                cur.execute(
+                    """SELECT satellites_tracked, disk_usage_pct, last_update
+                       FROM station_latest_metrics
+                       WHERE station_id = %s""",
+                    (station_id,),
+                )
+                row = cur.fetchone()
+
+                if row is not None:
+                    sats, disk_pct, last_update = row
+
+                    # Only act on fresh data (< 30 min old)
+                    if last_update is not None:
+                        cur.execute(
+                            "SELECT EXTRACT(EPOCH FROM NOW() - %s)",
+                            (last_update,),
+                        )
+                        age_seconds = cur.fetchone()[0]
+
+                        if age_seconds is not None and age_seconds < 1800:
+                            if sats is not None and sats == 0:
+                                return "no_satellites"
+                            if disk_pct is not None and disk_pct > 98:
+                                return "disk_full"
+
+                # Check logging status (session-specific)
+                if session_type:
+                    # Map session type to column name
+                    col_map = {
+                        "15s_24hr": "session_15s_24hr",
+                        "1Hz_1hr": "session_1hz_1hr",
+                        "1hz_1hr": "session_1hz_1hr",
+                        "status_1hr": "session_status_1hr",
+                    }
+                    col = col_map.get(session_type)
+                    if col:
+                        cur.execute(
+                            f"""SELECT {col}, last_check
+                                FROM station_logging_status
+                                WHERE sid = %s""",
+                            (station_id,),
+                        )
+                        log_row = cur.fetchone()
+                        if log_row is not None:
+                            session_active, last_check = log_row
+
+                            # Only act on fresh data
+                            if last_check is not None:
+                                cur.execute(
+                                    "SELECT EXTRACT(EPOCH FROM NOW() - %s)",
+                                    (last_check,),
+                                )
+                                log_age = cur.fetchone()[0]
+
+                                if (
+                                    log_age is not None
+                                    and log_age < 1800
+                                    and session_active is False
+                                ):
+                                    return "logging_inactive"
+
+    except Exception as e:
+        logger.debug("Health gate check failed for %s: %s", station_id, e)
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Consecutive failure backoff
+# ---------------------------------------------------------------------------
+
+# Cache: {station_id: (should_skip, monotonic_timestamp)}
+_backoff_cache: Dict[str, Tuple[bool, float]] = {}
+_BACKOFF_CACHE_TTL = 600.0  # 10 minutes
+
+
+def should_skip_station(station_id: str) -> bool:
+    """Check if a station has too many consecutive failures to be worth retrying.
+
+    Queries the last 5 download_log entries. If all are non-completed
+    (failed/unreachable/stall_timeout), returns True.
+
+    Cached for 10 minutes — a successful download breaks the streak.
+
+    Args:
+        station_id: Station identifier.
+
+    Returns:
+        True if station should be skipped (consecutive failure backoff).
+    """
+    station_id = station_id.upper()
+
+    now = time.monotonic()
+    if station_id in _backoff_cache:
+        cached_skip, cached_at = _backoff_cache[station_id]
+        if (now - cached_at) < _BACKOFF_CACHE_TTL:
+            return cached_skip
+
+    skip = _query_consecutive_failures(station_id)
+    _backoff_cache[station_id] = (skip, now)
+    return skip
+
+
+def _query_consecutive_failures(station_id: str) -> bool:
+    """Internal: query download_log for consecutive failures."""
+    try:
+        from ..health.database_factory import DatabaseConnectionFactory
+
+        with DatabaseConnectionFactory.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT outcome FROM download_log
+                       WHERE sid = %s
+                       ORDER BY ts DESC
+                       LIMIT 5""",
+                    (station_id,),
+                )
+                rows = cur.fetchall()
+
+        if len(rows) < 5:
+            return False  # Not enough history — give it a chance
+
+        return all(
+            row[0] in ("failed", "unreachable", "stall_timeout")
+            for row in rows
+        )
+
+    except Exception as e:
+        logger.debug("Backoff check failed for %s: %s", station_id, e)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Packet loss factor for watchdog timeout
+# ---------------------------------------------------------------------------
+
+# Cache: {station_id: (factor, monotonic_timestamp)}
+_loss_factor_cache: Dict[str, Tuple[float, float]] = {}
+_LOSS_FACTOR_TTL = 300.0  # 5 minutes
+
+
+def get_packet_loss_factor(station_id: str) -> float:
+    """Get a watchdog timeout multiplier based on packet loss.
+
+    Queries station_connectivity for packet_loss percentage and returns
+    a multiplier:
+    - 0–20% loss: 1.0x
+    - 20–50% loss: linear 1.0x to 2.0x
+    - 50%+ loss: 2.0x (capped)
+
+    Args:
+        station_id: Station identifier.
+
+    Returns:
+        Multiplier (1.0 to 2.0). Returns 1.0 if data unavailable.
+    """
+    station_id = station_id.upper()
+
+    now = time.monotonic()
+    if station_id in _loss_factor_cache:
+        cached_factor, cached_at = _loss_factor_cache[station_id]
+        if (now - cached_at) < _LOSS_FACTOR_TTL:
+            return cached_factor
+
+    factor = _query_packet_loss_factor(station_id)
+    _loss_factor_cache[station_id] = (factor, now)
+    return factor
+
+
+def _query_packet_loss_factor(station_id: str) -> float:
+    """Internal: query station_connectivity for packet loss."""
+    try:
+        from ..health.database_factory import DatabaseConnectionFactory
+
+        with DatabaseConnectionFactory.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT packet_loss FROM station_connectivity
+                       WHERE sid = %s""",
+                    (station_id,),
+                )
+                row = cur.fetchone()
+
+        if row is None or row[0] is None:
+            return 1.0
+
+        loss_pct: float = row[0]
+
+        if loss_pct <= 20:
+            return 1.0
+        elif loss_pct >= 50:
+            return 2.0
+        else:
+            # Linear interpolation: 20% → 1.0x, 50% → 2.0x
+            return 1.0 + (loss_pct - 20) / 30.0
+
+    except Exception as e:
+        logger.debug("Packet loss query failed for %s: %s", station_id, e)
+        return 1.0
