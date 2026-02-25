@@ -1168,6 +1168,7 @@ class PolaRX5(BaseReceiver):
             local_file = local_dir / file_name
             # Initialize offset for download resumption
             offset = 0
+            size_mismatch_retried = False
 
             remote_file = f"{remote_dir}{file_name}"
 
@@ -1324,99 +1325,13 @@ class PolaRX5(BaseReceiver):
                     )
 
                     if diff == 0:
-                        self.logger.info(
-                            f"✅ Successfully downloaded {file_name} ({local_file_size:,} bytes)"
+                        self._handle_successful_download(
+                            file_name, local_file, local_file_size, remote_file_size,
+                            session, _dl_duration, downloaded_files, file_tracker,
+                            is_hourly_session, immediate_archive, archive,
+                            missing_file_dict, record_download,
+                            get_file_datetime=get_file_datetime,
                         )
-
-                        # Validate downloaded file integrity
-                        validation_result = self.file_validator.validate_file(
-                            str(local_file)
-                        )
-                        if not validation_result["valid"]:
-                            self.logger.warning(
-                                f"Downloaded file failed validation: {validation_result['error']}"
-                            )
-                            self.logger.info(
-                                f"Removing invalid downloaded file: {local_file}"
-                            )
-                            record_download(
-                                self.station_id, session or "unknown", "failed",
-                                filename=file_name, duration_seconds=_dl_duration,
-                                bytes_downloaded=local_file_size, file_size=remote_file_size,
-                                stall_timeout_used=getattr(self, '_last_effective_timeout', self.progress_timeout),
-                                message=f"Validation failed: {validation_result.get('error', 'unknown')}",
-                            )
-                            try:
-                                os.unlink(local_file)
-                                continue  # Skip this file
-                            except OSError as e:
-                                self.logger.error(
-                                    f"Could not remove invalid file {local_file}: {e}"
-                                )
-                                continue
-                        else:
-                            self.logger.debug(
-                                f"Downloaded file validated: {validation_result['compression']} compression, {validation_result['size']} bytes"
-                            )
-                            record_download(
-                                self.station_id, session or "unknown", "completed",
-                                filename=file_name, duration_seconds=_dl_duration,
-                                bytes_downloaded=local_file_size, file_size=remote_file_size,
-                                stall_timeout_used=getattr(self, '_last_effective_timeout', self.progress_timeout),
-                            )
-
-                            # Mark file as downloaded in tracker
-                            if file_tracker and session:
-                                file_dt = get_file_datetime(file_name)
-                                if file_dt:
-                                    track_date = file_dt.date() if hasattr(file_dt, 'date') else file_dt
-                                    track_hour = file_dt.hour if is_hourly_session else None
-                                    file_tracker.mark_file_downloaded(
-                                        self.station_id, session, track_date, track_hour,
-                                        file_name, local_file_size,
-                                        remote_file_size=remote_file_size,
-                                    )
-
-                        # Immediate archiving if enabled
-                        if immediate_archive and archive and missing_file_dict:
-                            # Find the datetime key for this file by matching the downloaded filename
-                            file_datetime = None
-                            for dt_key, (
-                                arch_path,
-                                igs_filename,
-                            ) in missing_file_dict.items():
-                                if file_name == igs_filename:
-                                    file_datetime = dt_key
-                                    self.logger.info(
-                                        f"✅ Found match: {file_name} -> {dt_key}"
-                                    )
-                                    break
-
-                            if file_datetime and self._archive_single_file(
-                                str(local_file),
-                                file_datetime,
-                                {file_datetime: missing_file_dict[file_datetime]},
-                            ):
-                                # File successfully archived - mark as archived with remote size
-                                archive_path = missing_file_dict[file_datetime][0]
-                                downloaded_files.append(archive_path)
-                                if file_tracker and session:
-                                    file_dt = get_file_datetime(file_name)
-                                    if file_dt:
-                                        track_date = file_dt.date() if hasattr(file_dt, 'date') else file_dt
-                                        track_hour = file_dt.hour if is_hourly_session else None
-                                        archive_size = Path(archive_path).stat().st_size if Path(archive_path).exists() else local_file_size
-                                        file_tracker.mark_file_archived(
-                                            self.station_id, session, track_date, track_hour,
-                                            file_name, archive_size,
-                                            remote_file_size=remote_file_size,
-                                        )
-                            else:
-                                # Archive failed - add tmp file path
-                                downloaded_files.append(str(local_file))
-                        else:
-                            # No immediate archiving - add tmp file path
-                            downloaded_files.append(str(local_file))
                     else:
                         self.logger.error(
                             f"❌ Download incomplete for {file_name}: size mismatch of {diff} bytes"
@@ -1424,17 +1339,64 @@ class PolaRX5(BaseReceiver):
                         self.logger.error(
                             f"   Expected: {remote_file_size:,} bytes, Got: {local_file_size:,} bytes"
                         )
-                        self.logger.info(
-                            f"   Partial file kept for resume: {local_file}"
-                        )
-                        record_download(
-                            self.station_id, session or "unknown", "failed",
-                            filename=file_name, duration_seconds=_dl_duration,
-                            bytes_downloaded=local_file_size, file_size=remote_file_size,
-                            stall_timeout_used=getattr(self, '_last_effective_timeout', self.progress_timeout),
-                            message=f"Size mismatch: got {local_file_size}, expected {remote_file_size}",
-                        )
-                        # Keep partial file for resume in next attempt
+
+                        # Delete corrupt file and retry once clean (no resume)
+                        if not size_mismatch_retried:
+                            self.logger.info(
+                                f"🔄 Deleting corrupt file and retrying clean download..."
+                            )
+                            try:
+                                os.unlink(local_file)
+                            except OSError:
+                                pass
+                            size_mismatch_retried = True
+
+                            _dl_start = time.time()
+                            try:
+                                diff, ftp = self._download_with_immediate_retry(
+                                    ftp, remote_file, str(local_file), remote_file_size, 0,
+                                    max_retries=1, initial_delay=1.0,
+                                    session_type=session,
+                                )
+                            except Exception as retry_e:
+                                self.logger.error(
+                                    f"❌ Clean retry failed for {file_name}: {retry_e}"
+                                )
+                                record_download(
+                                    self.station_id, session or "unknown", "failed",
+                                    filename=file_name, duration_seconds=time.time() - _dl_start,
+                                    file_size=remote_file_size,
+                                    stall_timeout_used=getattr(self, '_last_effective_timeout', self.progress_timeout),
+                                    message=f"Size mismatch clean retry failed: {retry_e}",
+                                )
+                                continue
+
+                            _dl_duration = time.time() - _dl_start
+                            local_file_size = local_file.stat().st_size if local_file.exists() else 0
+
+                            if diff == 0:
+                                self._handle_successful_download(
+                                    file_name, local_file, local_file_size, remote_file_size,
+                                    session, _dl_duration, downloaded_files, file_tracker,
+                                    is_hourly_session, immediate_archive, archive,
+                                    missing_file_dict, record_download,
+                                )
+                            else:
+                                record_download(
+                                    self.station_id, session or "unknown", "failed",
+                                    filename=file_name, duration_seconds=_dl_duration,
+                                    bytes_downloaded=local_file_size, file_size=remote_file_size,
+                                    stall_timeout_used=getattr(self, '_last_effective_timeout', self.progress_timeout),
+                                    message=f"Size mismatch after clean retry: got {local_file_size}, expected {remote_file_size}",
+                                )
+                        else:
+                            record_download(
+                                self.station_id, session or "unknown", "failed",
+                                filename=file_name, duration_seconds=_dl_duration,
+                                bytes_downloaded=local_file_size, file_size=remote_file_size,
+                                stall_timeout_used=getattr(self, '_last_effective_timeout', self.progress_timeout),
+                                message=f"Size mismatch: got {local_file_size}, expected {remote_file_size}",
+                            )
 
                 else:
                     # Fallback to simple download without progress
@@ -1552,6 +1514,100 @@ class PolaRX5(BaseReceiver):
 
         return downloaded_files
 
+    def _handle_successful_download(
+        self, file_name, local_file, local_file_size, remote_file_size,
+        session, _dl_duration, downloaded_files, file_tracker, is_hourly_session,
+        immediate_archive, archive, missing_file_dict, record_download,
+        get_file_datetime=None,
+    ) -> bool:
+        """Validate, record, track, and archive a successfully downloaded file.
+
+        Returns True if file was handled (valid or removed), False if validation
+        failed and file could not be removed.
+        """
+        self.logger.info(
+            f"✅ Successfully downloaded {file_name} ({local_file_size:,} bytes)"
+        )
+
+        # Validate downloaded file integrity
+        validation_result = self.file_validator.validate_file(str(local_file))
+        if not validation_result["valid"]:
+            self.logger.warning(
+                f"Downloaded file failed validation: {validation_result['error']}"
+            )
+            self.logger.info(
+                f"Removing invalid downloaded file: {local_file}"
+            )
+            record_download(
+                self.station_id, session or "unknown", "failed",
+                filename=file_name, duration_seconds=_dl_duration,
+                bytes_downloaded=local_file_size, file_size=remote_file_size,
+                stall_timeout_used=getattr(self, '_last_effective_timeout', self.progress_timeout),
+                message=f"Validation failed: {validation_result.get('error', 'unknown')}",
+            )
+            try:
+                os.unlink(local_file)
+            except OSError as e:
+                self.logger.error(
+                    f"Could not remove invalid file {local_file}: {e}"
+                )
+            return True  # Handled (skip this file)
+
+        self.logger.debug(
+            f"Downloaded file validated: {validation_result['compression']} compression, {validation_result['size']} bytes"
+        )
+        record_download(
+            self.station_id, session or "unknown", "completed",
+            filename=file_name, duration_seconds=_dl_duration,
+            bytes_downloaded=local_file_size, file_size=remote_file_size,
+            stall_timeout_used=getattr(self, '_last_effective_timeout', self.progress_timeout),
+        )
+
+        # Mark file as downloaded in tracker
+        if file_tracker and session and get_file_datetime:
+            file_dt = get_file_datetime(file_name)
+            if file_dt:
+                track_date = file_dt.date() if hasattr(file_dt, 'date') else file_dt
+                track_hour = file_dt.hour if is_hourly_session else None
+                file_tracker.mark_file_downloaded(
+                    self.station_id, session, track_date, track_hour,
+                    file_name, local_file_size,
+                    remote_file_size=remote_file_size,
+                )
+
+        # Immediate archiving if enabled
+        if immediate_archive and archive and missing_file_dict:
+            file_datetime = None
+            for dt_key, (_arch_path, igs_filename) in missing_file_dict.items():
+                if file_name == igs_filename:
+                    file_datetime = dt_key
+                    self.logger.info(f"✅ Found match: {file_name} -> {dt_key}")
+                    break
+
+            if file_datetime and self._archive_single_file(
+                str(local_file), file_datetime,
+                {file_datetime: missing_file_dict[file_datetime]},
+            ):
+                archive_path = missing_file_dict[file_datetime][0]
+                downloaded_files.append(archive_path)
+                if file_tracker and session and get_file_datetime:
+                    file_dt = get_file_datetime(file_name)
+                    if file_dt:
+                        track_date = file_dt.date() if hasattr(file_dt, 'date') else file_dt
+                        track_hour = file_dt.hour if is_hourly_session else None
+                        archive_size = Path(archive_path).stat().st_size if Path(archive_path).exists() else local_file_size
+                        file_tracker.mark_file_archived(
+                            self.station_id, session, track_date, track_hour,
+                            file_name, archive_size,
+                            remote_file_size=remote_file_size,
+                        )
+            else:
+                downloaded_files.append(str(local_file))
+        else:
+            downloaded_files.append(str(local_file))
+
+        return True
+
     def _download_with_progressbar(
         self, ftp, remote_file, local_file, remote_file_size, offset=0,
         session_type=None,
@@ -1592,6 +1648,7 @@ class PolaRX5(BaseReceiver):
             last_progress_time = time.time()
             last_bytes = offset
             start_time = time.time()
+            timeout_extended = False  # One-time extension flag for near-complete downloads
 
             # Shared state for watchdog thread
             import threading
@@ -1722,6 +1779,21 @@ class PolaRX5(BaseReceiver):
                             total_time = current_time - start_time
                             if total_time > effective_timeout:
                                 current_bytes = bytes_received[0]
+
+                                # One-time extension: if >70% done, let it finish
+                                if not timeout_extended and (remote_file_size - offset) > 0:
+                                    progress_pct = (current_bytes - offset) / (remote_file_size - offset) * 100
+                                    if progress_pct > 70:
+                                        extension = effective_timeout * 0.5
+                                        effective_timeout += extension
+                                        timeout_extended = True
+                                        self.logger.info(
+                                            f"⏱️  Timeout extended by {extension:.0f}s "
+                                            f"(progress {progress_pct:.0f}%, "
+                                            f"new limit {effective_timeout:.0f}s)"
+                                        )
+                                        continue  # Re-check with new limit
+
                                 avg_speed = (
                                     (current_bytes - offset) / total_time
                                     if total_time > 0
@@ -1821,7 +1893,7 @@ class PolaRX5(BaseReceiver):
         for attempt in range(max_retries + 1):  # +1 for initial attempt
             try:
                 # Delegate to existing FTP mode retry logic
-                result = self._download_with_progressbar_and_retry(
+                result, ftp = self._download_with_progressbar_and_retry(
                     ftp, remote_file, local_file, remote_file_size, offset,
                     session_type=session_type,
                 )
@@ -1890,13 +1962,19 @@ class PolaRX5(BaseReceiver):
         self, ftp, remote_file, local_file, remote_file_size, offset=0,
         session_type=None,
     ):
-        """Download with progress bar and intelligent FTP mode retry on connection issues."""
+        """Download with progress bar and intelligent FTP mode retry on connection issues.
+
+        Returns:
+            Tuple of (size_diff, ftp_connection) — ftp_connection may be a new
+            connection if a mode-switch reconnect was needed.
+        """
         try:
             # Try with current FTP mode first
-            return self._download_with_progressbar(
+            result = self._download_with_progressbar(
                 ftp, remote_file, local_file, remote_file_size, offset,
                 session_type=session_type,
             )
+            return result, ftp
         except Exception as e:
             error_msg = str(e).lower()
 
@@ -1947,9 +2025,9 @@ class PolaRX5(BaseReceiver):
                     # Update our internal mode preference for this station
                     self.pasv = new_pasv
 
-                    # Replace the caller's ftp reference via the object attribute
-                    # so subsequent files use the working connection
-                    return result
+                    # Return the NEW working connection so the caller can
+                    # use it for subsequent files
+                    return result, ftp_new
 
                 except Exception as retry_e:
                     self.logger.error(

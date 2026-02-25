@@ -435,6 +435,11 @@ def should_skip_station(station_id: str) -> bool:
     return skip
 
 
+def clear_backoff_cache(station_id: str) -> None:
+    """Clear backoff cache for a station (e.g., when ping confirms it's online)."""
+    _backoff_cache.pop(station_id.upper(), None)
+
+
 def _query_consecutive_failures(station_id: str) -> bool:
     """Internal: query download_log for consecutive failures."""
     try:
