@@ -355,7 +355,7 @@ def download_parallel(
     elif session_defaults.get("batches") is not None:
         batches = session_defaults["batches"]
     else:
-        batches = 10
+        batches = 2
 
     if cli_window is not None:
         distribution_window = cli_window
