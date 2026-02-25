@@ -182,9 +182,9 @@ class PolaRX5(BaseReceiver):
             elif ftp_mode == "passive":
                 self.pasv = True
             else:
-                # If ftp_mode is "auto" or not set, it was already determined by CLI
-                # using gps_parser.getStationFtpMode() and passed in station_info
-                self.pasv = ftp_mode == "passive"
+                # Default to passive — almost all stations are behind NAT
+                # routers where active mode PORT commands fail (IP mismatch).
+                self.pasv = True
 
             self.logger.info(
                 f"Station {self.station_id} - Address: {self.ip_number}:{self.ip_port}, FTP Passive: {self.pasv}"
@@ -1915,18 +1915,29 @@ class PolaRX5(BaseReceiver):
                     f"⚠️  Data connection failed with {self._get_ftp_mode_description()}: {e}"
                 )
 
-                # Try switching FTP mode
+                # Try switching FTP mode — reconnect first since the 500
+                # error typically kills the control connection.
                 original_pasv = ftp.passiveserver
+                new_pasv = not original_pasv
                 try:
-                    new_pasv = not original_pasv
-                    ftp.set_pasv(new_pasv)
-                    self.logger.info(
-                        f"🔄 Retrying with {self._get_ftp_mode_description(new_pasv)} mode..."
-                    )
+                    try:
+                        ftp.close()
+                    except Exception:
+                        pass
 
-                    # Retry download with switched mode
+                    self.logger.info(
+                        f"🔄 Reconnecting with {self._get_ftp_mode_description(new_pasv)} mode..."
+                    )
+                    ftp_new = self._ftp_open_connection(skip_ping_check=True)
+                    if not ftp_new:
+                        self.logger.error("❌ Failed to reconnect for mode switch")
+                        raise e
+
+                    ftp_new.set_pasv(new_pasv)
+
+                    # Retry download with switched mode on fresh connection
                     result = self._download_with_progressbar(
-                        ftp, remote_file, local_file, remote_file_size, offset,
+                        ftp_new, remote_file, local_file, remote_file_size, offset,
                         session_type=session_type,
                     )
                     self.logger.info(
@@ -1936,11 +1947,11 @@ class PolaRX5(BaseReceiver):
                     # Update our internal mode preference for this station
                     self.pasv = new_pasv
 
+                    # Replace the caller's ftp reference via the object attribute
+                    # so subsequent files use the working connection
                     return result
 
                 except Exception as retry_e:
-                    # Restore original mode and re-raise original error
-                    ftp.set_pasv(original_pasv)
                     self.logger.error(
                         f"❌ Both FTP modes failed. Original: {e}, Retry: {retry_e}"
                     )
