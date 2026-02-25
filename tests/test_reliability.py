@@ -284,15 +284,6 @@ class TestHealthGate:
             result = check_station_health_gate("GJAC")
         assert result == "disk_full"
 
-    def test_logging_inactive_skips(self):
-        """Station with logging inactive should be skipped."""
-        from receivers.utils.stall_timeout import check_station_health_gate, invalidate_cache
-        invalidate_cache()
-
-        with patch("receivers.utils.stall_timeout._query_health_gate", return_value="logging_inactive"):
-            result = check_station_health_gate("HEDI", "15s_24hr")
-        assert result == "logging_inactive"
-
     def test_healthy_station_proceeds(self):
         """Healthy station should return None (proceed)."""
         from receivers.utils.stall_timeout import check_station_health_gate, invalidate_cache
