@@ -207,7 +207,7 @@ def load_thresholds(
     Args:
         receiver_type: Ignored (kept for backward compatibility).
         config_path: Ignored (kept for backward compatibility).
-        power_type: Power type ('battery', 'dcdc', 'mains') for voltage overrides.
+        power_type: Power type ('battery', 'dcdc', 'dcdc24', 'mains') for voltage overrides.
 
     Returns:
         ThresholdConfig with merged values.
@@ -280,7 +280,7 @@ def load_thresholds(
         if v is not None:
             setattr(config, attr, v)
 
-    # Power-type voltage overrides ([voltage_dcdc], [voltage_mains])
+    # Power-type voltage overrides ([voltage_dcdc], [voltage_dcdc24], [voltage_mains])
     if power_type and power_type != "battery":
         section = f"voltage_{power_type}"
         for key, attr in [

@@ -1886,6 +1886,8 @@ class PolaRX5(BaseReceiver):
             "connection reset",
             "broken pipe",
             "watchdog",  # Watchdog killed stalled connection
+            "sendall",  # Dead socket: ftp.sock = None after close
+            "nonetype",  # Any NoneType attribute error on ftp object
         ]
 
         last_exception = None

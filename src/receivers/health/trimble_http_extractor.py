@@ -331,7 +331,7 @@ class TrimbleHTTPExtractor:
                 }
         except requests.Timeout:
             return {
-                "status": "critical",
+                "status": "warning",
                 "port": self.port,
                 "accessible": False,
                 "error": f"Timeout after {self.timeout}s",
@@ -1032,6 +1032,22 @@ class TrimbleHTTPExtractor:
                     matches = [(prn, "GPS", elv, azm) for prn, elv, azm in netrs_matches]
 
             if not matches:
+                # Valid response with 0 satellites (e.g. antenna disconnected)
+                # vs unrecognized format — check for expected delimiters
+                if "TrackingStatus" in response:
+                    self.logger.info("TrackingStatus: 0 satellites tracking")
+                    return {
+                        "total": 0,
+                        "visible": 0,
+                        "status": self._satellite_status(0),
+                        "by_constellation": {
+                            "GPS": 0, "GLONASS": 0, "Galileo": 0,
+                            "BeiDou": 0, "SBAS": 0,
+                        },
+                        "satellites": [],
+                        "threshold_warning": self.metric_checker.config.sat_warning,
+                        "threshold_critical": self.metric_checker.config.sat_critical,
+                    }
                 self.logger.warning(
                     f"TrackingStatus response did not match expected format "
                     f"(first 200 chars): {response[:200]}"
@@ -1238,6 +1254,23 @@ class TrimbleHTTPExtractor:
             sv_matches = re.findall(r'<sv\s+sys="(\d)"[^>]*>(\d+)</sv>', xml_text)
 
             if not sv_matches:
+                # Check if XML is valid but reports 0 satellites
+                num_fix_match = re.search(r"<numFixSvs>(\d+)</numFixSvs>", xml_text)
+                if num_fix_match or "<SvsUsed" in xml_text:
+                    total = int(num_fix_match.group(1)) if num_fix_match else 0
+                    self.logger.info(f"posData.xml: {total} satellites (no sv elements)")
+                    return {
+                        "total": total,
+                        "visible": total,
+                        "status": self._satellite_status(total),
+                        "by_constellation": {
+                            "GPS": 0, "GLONASS": 0, "Galileo": 0,
+                            "BeiDou": 0, "SBAS": 0,
+                        },
+                        "source": "posData.xml",
+                        "threshold_warning": self.metric_checker.config.sat_warning,
+                        "threshold_critical": self.metric_checker.config.sat_critical,
+                    }
                 return None
 
             gps_count = 0
