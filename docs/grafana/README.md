@@ -114,6 +114,48 @@ export GF_DATASOURCE_PASSWORD=your_password
 docker compose up -d grafana
 ```
 
+## Syncing to grafana.vedur.is
+
+The `scripts/grafana_sync.py` tool pushes local dashboard JSON to the production Grafana instance. It remaps datasource UIDs and inter-dashboard link UIDs automatically.
+
+```bash
+# Preview changes
+python scripts/grafana_sync.py diff --target vedur -v
+
+# Push all dashboards
+python scripts/grafana_sync.py push --target vedur
+
+# Check version status
+python scripts/grafana_sync.py status --target vedur
+```
+
+### Authentication
+
+**Preferred**: Service account token (once available):
+```bash
+export GRAFANA_VEDUR_TOKEN="glsa_..."
+# Or save to ~/.config/gpsconfig/grafana_tokens.yaml:
+#   vedur: "glsa_..."
+```
+
+**Temporary**: Session cookie (Grafana has token rotation enabled — cookie is invalidated after each request):
+
+1. Log into grafana.vedur.is
+2. DevTools → Application → Cookies → copy `grafana_session` and `grafana_session_expiry`
+3. Update `~/.config/gpsconfig/grafana_cookies.yaml`:
+   ```yaml
+   vedur: "grafana_session=<value>; grafana_session_expiry=<value>"
+   ```
+4. Run `push` **immediately** — the cookie rotates on the next browser request
+
+### Dashboard UIDs on vedur
+
+| Dashboard | UID |
+|-----------|-----|
+| GPS Receiver Health Overview | `bgp9jh6` |
+| GPS Station Map | `45d42ce0-48b5-4ff6-a58c-a36d3ced2e69` |
+| GPS Station Detail | `bgqb686` |
+
 ## Voltage Thresholds
 
 The dashboard uses consistent voltage thresholds across all panels:
