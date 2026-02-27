@@ -544,7 +544,8 @@ class NetR9HTTPDownloader:
     def download_files(self, files_dict: Dict[str, str], tmp_dir: Path,
                       clean_tmp: bool = True,
                       archive_files_dict: Optional[Dict[str, str]] = None,
-                      use_phase1_utilities: bool = False) -> List[str]:
+                      use_phase1_utilities: bool = False,
+                      session_type: str = "unknown") -> List[str]:
         """Download multiple files from NetR9 receiver.
 
         Args:
@@ -606,7 +607,8 @@ class NetR9HTTPDownloader:
                     continue
 
             # Download the file
-            success = self.download_file(remote_dir, filename, local_file_path, expected_size)
+            success = self.download_file(remote_dir, filename, local_file_path, expected_size,
+                                        session_type=session_type)
 
             if success:
                 # Archive immediately after download if enabled

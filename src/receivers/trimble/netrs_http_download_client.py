@@ -399,7 +399,8 @@ class NetRSHTTPDownloader:
     def download_files(self, files_dict: Dict[str, str], tmp_dir: Path,
                       clean_tmp: bool = True,
                       archive_files_dict: Optional[Dict[str, str]] = None,
-                      use_phase1_utilities: bool = False) -> List[str]:
+                      use_phase1_utilities: bool = False,
+                      session_type: str = "unknown") -> List[str]:
         """Download multiple files from NetRS receiver.
 
         Args:
@@ -408,6 +409,7 @@ class NetRSHTTPDownloader:
             clean_tmp: Whether to clean temporary directory first
             archive_files_dict: Optional dict mapping filename -> archive_path (for immediate archiving)
             use_phase1_utilities: Whether to use Phase 1 FileArchiver for immediate archiving
+            session_type: Session type for download logging (e.g. '15s_24hr')
 
         Returns:
             List of successfully downloaded/archived file paths
@@ -453,7 +455,8 @@ class NetRSHTTPDownloader:
                     continue
 
             # Download the file (expected_size unknown for NetRS without directory listing)
-            success = self.download_file(remote_dir, filename, local_file_path, expected_size=None)
+            success = self.download_file(remote_dir, filename, local_file_path, expected_size=None,
+                                        session_type=session_type)
 
             if success:
                 # Archive immediately after download if enabled

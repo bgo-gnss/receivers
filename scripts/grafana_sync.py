@@ -12,10 +12,25 @@ Usage:
     python scripts/grafana_sync.py status [--target vedur]    # Show versions
 
 Environment:
-    GRAFANA_VEDUR_TOKEN  — Service account token for grafana.vedur.is
+    GRAFANA_VEDUR_TOKEN  — Service account token for grafana.vedur.is (preferred)
     GRAFANA_LOCAL_TOKEN  — Token for local Grafana (optional, basic auth default)
 
-Auth fallback: If no token is set, prompts for session cookie.
+Auth priority:
+    1. Environment variable (GRAFANA_<TARGET>_TOKEN)
+    2. Token file (~/.config/gpsconfig/grafana_tokens.yaml)
+    3. Cookie file (~/.config/gpsconfig/grafana_cookies.yaml)
+    4. Interactive prompt
+
+Cookie auth (temporary workaround until service account tokens are available):
+    Grafana has session token rotation enabled — the cookie is invalidated after
+    each request. You must grab a FRESH cookie from the browser immediately before
+    running the push. Both grafana_session and grafana_session_expiry are required.
+
+    1. Log into grafana.vedur.is
+    2. DevTools → Application → Cookies → copy both values
+    3. Update ~/.config/gpsconfig/grafana_cookies.yaml:
+         vedur: "grafana_session=<value>; grafana_session_expiry=<value>"
+    4. Run the push IMMEDIATELY (cookie rotates on next browser request)
 """
 
 from __future__ import annotations

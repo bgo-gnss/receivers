@@ -782,7 +782,11 @@ class NetR9(BaseReceiver):
             )
 
             # Remote directory format: /Internal/YYYYMM/session_directory/
-            date_format = self.netr9_config.get("remote_date_format", "%Y%m")
+            # Per-station override (e.g., VARG uses %Y%m/%d since Jan 2026)
+            date_format = (
+                self.station_info.get("receiver", {}).get("remote_date_format")
+                or self.netr9_config.get("remote_date_format", "%Y%m")
+            )
             remote_dir = f"{base_path.rstrip('/')}/{file_dt.strftime(date_format)}/{remote_subdir}"
 
             files_dict[filename] = remote_dir

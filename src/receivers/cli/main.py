@@ -178,7 +178,7 @@ def _download_station_period(
         # Without this check, _download_one_station sees (0, 0) and
         # misclassifies the failure as "up_to_date".
         result_status = result.get("status", "unknown")
-        if result_status in ("failed", "configuration_error") and files_downloaded == 0:
+        if result_status in ("failed", "configuration_error", "unreachable") and files_downloaded == 0:
             errors += 1
         # Guard: "up_to_date" with 0 files checked means no timestamps were
         # generated (empty file_date_dict) — treat as error so the parallel

@@ -120,7 +120,9 @@ def get_station_config(station_id: str) -> Optional[Dict[str, Any]]:
                 'user': raw_config.get('receiver_user', ''),
                 'pwd': raw_config.get('receiver_pwd', ''),
                 # Firmware bug handling
-                'firmware_underscore_pad': raw_config.get('receiver_firmware_underscore_pad', '').lower() in ['true', '1', 'yes']
+                'firmware_underscore_pad': raw_config.get('receiver_firmware_underscore_pad', '').lower() in ['true', '1', 'yes'],
+                # Per-station path override (e.g., VARG uses %Y%m/%d since Jan 2026)
+                'remote_date_format': raw_config.get('receiver_remote_date_format', '')
             },
 
             # Connection and timing configuration
