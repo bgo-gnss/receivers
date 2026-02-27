@@ -192,7 +192,11 @@ class TimeSeriesHealthExtractor:
             if dt:
                 disk = record.get('DiskUsagePercent [%]')
                 if disk is not None:
-                    data_by_time[dt]['disk_usage'] = {'value': disk, 'unit': '%'}
+                    data_by_time[dt]['disk'] = {
+                        'usage_percent': disk,
+                        'used_mb': None,
+                        'total_mb': None,
+                    }
 
         # Merge quality/satellite data (total count from QualityInd)
         for record in quality_data:

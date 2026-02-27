@@ -164,6 +164,50 @@
                 }
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "DC/DC 24V"
+            },
+            "properties": [
+              {
+                "id": "max",
+                "value": 35
+              },
+              {
+                "id": "min",
+                "value": 15
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 18
+                    },
+                    {
+                      "color": "green",
+                      "value": 20
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 28
+                    },
+                    {
+                      "color": "red",
+                      "value": 30
+                    }
+                  ]
+                }
+              }
+            ]
           }
         ]
       },
@@ -220,6 +264,17 @@
           "rawQuery": true,
           "rawSql": "SELECT p.voltage as \"DC/DC\"\nFROM block_power_status p\nWHERE p.sid = '$station'\n  AND '$power_type' = 'dcdc'\n  AND $__timeFilter(p.ts)\nORDER BY p.ts DESC\nLIMIT 1",
           "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT p.voltage as \"DC/DC 24V\"\nFROM block_power_status p\nWHERE p.sid = '$station'\n  AND '$power_type' = 'dcdc24'\n  AND $__timeFilter(p.ts)\nORDER BY p.ts DESC\nLIMIT 1",
+          "refId": "D"
         }
       ],
       "title": "Current Voltage - $station",
@@ -1895,6 +1950,17 @@
           "rawQuery": true,
           "rawSql": "SELECT\n  ts AS time,\n  voltage AS \"DC/DC\"\nFROM block_power_status\nWHERE sid = '$station'\n  AND '$power_type' = 'dcdc'\n  AND $__timeFilter(ts)\nORDER BY ts",
           "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  ts AS time,\n  voltage AS \"DC/DC 24V\"\nFROM block_power_status\nWHERE sid = '$station'\n  AND '$power_type' = 'dcdc24'\n  AND $__timeFilter(ts)\nORDER BY ts",
+          "refId": "D"
         }
       ],
       "title": "Voltage History - $station",
@@ -2127,7 +2193,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  date_trunc('hour', ts) AS time,\n  avg_speed_bps / 1024 AS \"Speed (KB/s)\"\nFROM download_log\nWHERE sid = '$station'\n  AND outcome = 'completed'\n  AND ts BETWEEN $__timeFrom() AND $__timeTo()\nGROUP BY date_trunc('hour', ts)\nORDER BY time",
+          "rawSql": "SELECT\n  date_trunc('hour', ts) AS time,\n  AVG(avg_speed_bps) / 1024 AS \"Speed (KB/s)\"\nFROM download_log\nWHERE sid = '$station'\n  AND outcome = 'completed'\n  AND avg_speed_bps IS NOT NULL\n  AND ts BETWEEN $__timeFrom() AND $__timeTo()\nGROUP BY date_trunc('hour', ts)\nORDER BY time",
           "refId": "A"
         }
       ],
@@ -2283,7 +2349,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT ROUND(AVG(avg_speed_bps) / 1024)::INTEGER AS \"Avg Speed (KB/s)\"\nFROM download_log\nWHERE sid = '$station'\n  AND outcome = 'completed'\n  AND ts BETWEEN $__timeFrom() AND $__timeTo()",
+          "rawSql": "SELECT ROUND(AVG(avg_speed_bps) / 1024)::INTEGER AS \"Avg Speed (KB/s)\"\nFROM download_log\nWHERE sid = '$station'\n  AND outcome = 'completed'\n  AND avg_speed_bps IS NOT NULL\n  AND ts BETWEEN $__timeFrom() AND $__timeTo()",
           "refId": "A"
         }
       ],

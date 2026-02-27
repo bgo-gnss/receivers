@@ -517,7 +517,7 @@ class HealthDatabaseWriter:
     ) -> None:
         """Write to block_satellite_tracking table."""
         total = satellites.get("total")
-        by_const = satellites.get("by_constellation", {})
+        by_const = satellites.get("by_constellation") or satellites.get("by_system", {})
 
         if total is None and not by_const:
             return
@@ -669,7 +669,7 @@ class HealthDatabaseWriter:
                 conn_level = connection.get(conn_key, {})
                 if isinstance(conn_level, dict):
                     conn_status = conn_level.get("status", "").lower()
-                    if conn_status == "critical" and not conn_level.get("accessible", True):
+                    if conn_status in ("critical", "warning") and not conn_level.get("accessible", True):
                         err = conn_level.get("error_message", "") or conn_level.get("error", "")
                         if "timeout" in err.lower():
                             problems.append(f"{conn_label} timeout")
