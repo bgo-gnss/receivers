@@ -1065,35 +1065,39 @@ class TrimbleHTTPExtractor:
             satellites = []
             for prn, sys, elv, azm in matches:
                 elevation = int(elv)
-                # Only count satellites above horizon (elevation > 0)
-                if elevation > 0:
-                    total_tracking += 1
-                    sat_info = {
-                        "prn": int(prn),
-                        "system": sys,
-                        "elevation": elevation,
-                        "azimuth": int(azm),
-                    }
+                if elevation <= 0:
+                    continue
 
-                    # Try to get SNR for this satellite (case-insensitive PRN)
-                    line_match = re.search(
-                        rf"PRN?={prn}\s+.*?L1snr=(\d+)", response, re.IGNORECASE
-                    )
-                    if line_match:
-                        sat_info["l1_snr"] = int(line_match.group(1))
+                # Check for actual signal lock (L1 SNR) — almanac-only
+                # entries have no SNR (e.g. HEDI with disconnected antenna
+                # reports 12 satellites at predicted positions but 0 tracked)
+                line_match = re.search(
+                    rf"PRN?={prn}\s+.*?L1snr=(\d+)", response, re.IGNORECASE
+                )
+                l1_snr = int(line_match.group(1)) if line_match else 0
+                if l1_snr == 0:
+                    continue  # Satellite visible but not tracked (no signal lock)
 
-                    satellites.append(sat_info)
+                total_tracking += 1
+                sat_info = {
+                    "prn": int(prn),
+                    "system": sys,
+                    "elevation": elevation,
+                    "azimuth": int(azm),
+                    "l1_snr": l1_snr,
+                }
+                satellites.append(sat_info)
 
-                    if sys == "GPS":
-                        gps_count += 1
-                    elif sys == "GLN":
-                        glonass_count += 1
-                    elif sys == "GAL":
-                        galileo_count += 1
-                    elif sys == "BDS":
-                        beidou_count += 1
-                    elif sys == "SBS":
-                        sbas_count += 1
+                if sys == "GPS":
+                    gps_count += 1
+                elif sys == "GLN":
+                    glonass_count += 1
+                elif sys == "GAL":
+                    galileo_count += 1
+                elif sys == "BDS":
+                    beidou_count += 1
+                elif sys == "SBS":
+                    sbas_count += 1
 
             status = self._satellite_status(total_tracking)
 

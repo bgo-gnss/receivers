@@ -151,6 +151,31 @@ def _record_parallel_outcome(
         pass  # Fire-and-forget — DB issues must not crash parallel downloads
 
 
+def _check_health_ping_online(station_id: str) -> bool | None:
+    """Check health monitor's debounced ping status for a station.
+
+    Uses station_connectivity.is_online from the health monitor (updated
+    every 5 min, requires 2 consecutive failures to mark offline).
+    Returns None if no recent data is available.
+    """
+    try:
+        from ..health.database_factory import DatabaseConnectionFactory
+
+        with DatabaseConnectionFactory.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT is_online FROM station_connectivity
+                    WHERE sid = %s AND last_check > NOW() - INTERVAL '10 minutes'
+                    """,
+                    (station_id,),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+    except Exception:
+        return None
+
+
 def _split_into_groups(items: list, group_size: int) -> list[list]:
     """Split a list into groups of at most group_size."""
     return [items[i : i + group_size] for i in range(0, len(items), group_size)]
@@ -222,13 +247,20 @@ def _download_one_station(
         pass  # Health gate is advisory — failures must not block downloads
 
     # Consecutive failure backoff: skip stations that keep failing
-    # But override if a quick ping shows the station is online now
+    # But override if health monitor or a quick ping shows the station is online
+    # TODO: TANC shares battery with repeater → repeater dies first → station
+    # flaps online/offline. Need "flapping station" detection that doesn't
+    # penalize power-related connectivity issues.
     try:
         from ..utils.stall_timeout import should_skip_station, clear_backoff_cache
 
         if should_skip_station(station_id):
-            # Check if station is actually online now — don't rely on stale history
-            if not receiver._quick_ping():
+            # Prefer health monitor's debounced ping (2-consecutive-failure
+            # threshold, updated every 5 min) over a single fresh ping
+            online = _check_health_ping_online(station_id)
+            if online is None:
+                online = receiver._quick_ping()  # Fallback if no health data
+            if not online:
                 msg = "Consecutive failure backoff (last 5 attempts failed, still offline)"
                 worker_logger.info(f"⏭️  {station_id}: {msg}")
                 _record_parallel_outcome(
@@ -243,8 +275,9 @@ def _download_one_station(
                     error_message=msg,
                 )
             else:
+                source = "health monitor" if online is True else "ping"
                 worker_logger.info(
-                    f"🔄 {station_id}: Backoff overridden — station responds to ping"
+                    f"🔄 {station_id}: Backoff overridden — station online ({source})"
                 )
                 clear_backoff_cache(station_id)
     except Exception:
