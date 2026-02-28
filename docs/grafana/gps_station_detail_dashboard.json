@@ -2371,16 +2371,20 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "red",
                 "value": null
               },
               {
-                "color": "yellow",
-                "value": 1
+                "color": "orange",
+                "value": 4
               },
               {
-                "color": "red",
-                "value": 3
+                "color": "yellow",
+                "value": 8
+              },
+              {
+                "color": "green",
+                "value": 12
               }
             ]
           }
@@ -2418,11 +2422,11 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(*) AS \"Stalls\"\nFROM download_log\nWHERE sid = '$station'\n  AND outcome = 'stall_timeout'\n  AND ts BETWEEN $__timeFrom() AND $__timeTo()",
+          "rawSql": "SELECT total AS \"Satellites\"\nFROM block_satellite_tracking\nWHERE sid = '$station'\nORDER BY ts DESC\nLIMIT 1",
           "refId": "A"
         }
       ],
-      "title": "Stall Count",
+      "title": "Satellites",
       "type": "stat"
     },
     {
