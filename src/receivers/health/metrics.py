@@ -1065,8 +1065,10 @@ class MetricChecker:
             return HealthStatus.CRITICAL
         elif HealthStatus.WARNING in health_statuses:
             return HealthStatus.WARNING
-        elif all(s == HealthStatus.OK for s in health_statuses if s != HealthStatus.UNKNOWN):
-            return HealthStatus.OK
+        else:
+            non_unknown = [s for s in health_statuses if s != HealthStatus.UNKNOWN]
+            if non_unknown and all(s == HealthStatus.OK for s in non_unknown):
+                return HealthStatus.OK
         return HealthStatus.UNKNOWN
 
     def get_status_string(self, status: HealthStatus) -> str:
