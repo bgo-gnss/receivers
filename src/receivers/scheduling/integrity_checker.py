@@ -150,11 +150,11 @@ def _check_station_session(
     result["untracked"] = len(untracked)
 
     # Register untracked files that pass validation
+    from ..utils.archive_validator import ArchiveValidator
+    validator = ArchiveValidator()
+
     for file_path, file_date, file_hour in untracked:
         try:
-            from ..utils.archive_validator import ArchiveValidator
-
-            validator = ArchiveValidator()
             if validator.validate_archived_file(Path(file_path)):
                 file_size = os.path.getsize(file_path)
                 filename = os.path.basename(file_path)
@@ -443,6 +443,7 @@ def _get_remote_size_ftp(
         receiver_config = station_config.get("receiver", {})
         ftp_port = int(receiver_config.get("ftpport", 2160))
 
+        ftp = None
         ftp = FTP()
         ftp.connect(ip, ftp_port, timeout=15)
         ftp.login()
@@ -493,6 +494,12 @@ def _get_remote_size_ftp(
             return None
 
     except Exception as e:
+        # Close FTP socket if connect() succeeded but a later call raised
+        if ftp is not None:
+            try:
+                ftp.close()
+            except Exception:
+                pass
         logger.debug(f"FTP SIZE check failed for {station_id}: {e}")
         return None
 

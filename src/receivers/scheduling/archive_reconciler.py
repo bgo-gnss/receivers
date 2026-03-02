@@ -28,7 +28,11 @@ def _get_format_resolver():
         resolver = FormatResolver()
         if resolver.connect():
             # Check if format data is actually loaded
-            formats = resolver.list_formats(file_category="rinex")
+            try:
+                formats = resolver.list_formats(file_category="rinex")
+            except Exception:
+                resolver.close()
+                return None
             if formats:
                 return resolver
         resolver.close()

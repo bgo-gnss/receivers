@@ -56,6 +56,11 @@ def load_scheduler_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
         with open(config_path) as f:
             config = yaml.safe_load(f)
 
+        # yaml.safe_load returns None for empty files or comments-only files
+        if config is None:
+            logger.info(f"Empty configuration file {config_path}, using defaults")
+            return get_default_config()
+
         logger.info(f"Loaded scheduler configuration from {config_path}")
 
         # Merge with defaults (in case YAML is incomplete)
@@ -301,8 +306,12 @@ def merge_with_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
 
 def get_session_config(config: Dict[str, Any],
                        session_type: str,
-                       station_id: Optional[str] = None) -> ScheduleConfig:
+                       station_id: Optional[str] = None) -> "ScheduleConfig":
     """Get ScheduleConfig for a session, applying station overrides.
+
+    .. deprecated::
+        This function does not support the new flexible ``schedule`` format.
+        BulkDownloadScheduler uses its own inline loading logic instead.
 
     Args:
         config: Loaded scheduler configuration
@@ -312,6 +321,15 @@ def get_session_config(config: Dict[str, Any],
     Returns:
         ScheduleConfig object
     """
+    import warnings
+    warnings.warn(
+        "get_session_config() is deprecated and does not support the new "
+        "flexible schedule format. Use BulkDownloadScheduler's inline config "
+        "loading instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
     # Start with session defaults
     session_cfg = config['sessions'].get(session_type, {})
 
@@ -323,17 +341,33 @@ def get_session_config(config: Dict[str, Any],
             # Merge override with session defaults
             session_cfg = {**session_cfg, **override}
 
-    # Create ScheduleConfig object
-    return ScheduleConfig(
-        session_type=session_type,
-        schedule_minute=session_cfg['schedule_minute'],
-        distribution_window=session_cfg['distribution_window'],
-        frequency=session_cfg['frequency'],
-        enabled=session_cfg.get('enabled', True),
-        max_concurrent=session_cfg.get('max_concurrent', 3),
-        timeout_minutes=session_cfg.get('timeout_minutes', 30),
-        midnight_offset=session_cfg.get('midnight_offset', 0),
-    )
+    # Support both new schedule format and legacy format
+    schedule = session_cfg.get('schedule')
+    schedule_minute = session_cfg.get('schedule_minute')
+    frequency = session_cfg.get('frequency')
+
+    from .bulk_scheduler import ScheduleConfig
+    if schedule is not None:
+        return ScheduleConfig(
+            session_type=session_type,
+            schedule=schedule,
+            distribution_window=session_cfg.get('distribution_window', 10),
+            enabled=session_cfg.get('enabled', True),
+            max_concurrent=session_cfg.get('max_concurrent', 3),
+            timeout_minutes=session_cfg.get('timeout_minutes', 30),
+            midnight_offset=session_cfg.get('midnight_offset', 0),
+        )
+    else:
+        return ScheduleConfig(
+            session_type=session_type,
+            schedule_minute=schedule_minute or 10,
+            distribution_window=session_cfg.get('distribution_window', 10),
+            frequency=frequency or 'daily',
+            enabled=session_cfg.get('enabled', True),
+            max_concurrent=session_cfg.get('max_concurrent', 3),
+            timeout_minutes=session_cfg.get('timeout_minutes', 30),
+            midnight_offset=session_cfg.get('midnight_offset', 0),
+        )
 
 
 def create_default_config_file(output_path: Optional[Path] = None) -> Path:
