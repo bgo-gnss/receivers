@@ -2,7 +2,7 @@
 -- Description: Complete from-scratch schema for GPS health database
 -- Date: 2026-02-17
 --
--- This file represents the final-state schema combining migrations 001-023.
+-- This file represents the final-state schema combining migrations 001-028.
 -- Used for fresh installs only. On existing databases, run individual migrations.
 --
 -- Usage:
@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS stations (
     identity_last_checked TIMESTAMPTZ,
     station_name VARCHAR(100),              -- Full name (Icelandic place name)
     station_owner VARCHAR(60),              -- Operating organization
+    stall_timeout_override INTEGER,       -- Per-station stall timeout in seconds (NULL = receiver-type default)
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -381,6 +382,8 @@ CREATE TABLE IF NOT EXISTS file_tracking (
     last_error TEXT,
     error_count INTEGER DEFAULT 0,
     format_id VARCHAR(40),
+    remote_file_size BIGINT,              -- File size reported by receiver (FTP SIZE / HTTP Content-Length)
+    integrity_checked_at TIMESTAMPTZ,     -- Last time integrity was verified by periodic checker
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -439,6 +442,34 @@ CREATE TABLE IF NOT EXISTS file_locations (
     PRIMARY KEY (file_tracking_id, location_id)
 );
 COMMENT ON TABLE file_locations IS 'Tracks which files exist at which storage locations';
+
+-- ============================================================================
+-- DOWNLOAD PERFORMANCE LOGGING
+-- ============================================================================
+
+-- Download performance logging
+CREATE TABLE IF NOT EXISTS download_log (
+    id SERIAL PRIMARY KEY,
+    sid VARCHAR(4) NOT NULL REFERENCES stations(sid) ON DELETE CASCADE,
+    session_type VARCHAR(20) NOT NULL,
+    ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    outcome VARCHAR(20) NOT NULL,        -- 'completed', 'stall_timeout', 'failed', 'unreachable'
+    file_date DATE,
+    filename VARCHAR(100),
+    duration_seconds REAL,               -- wall-clock time for this attempt
+    bytes_downloaded BIGINT,             -- actual bytes received
+    file_size BIGINT,                    -- expected/total file size
+    avg_speed_bps REAL,                  -- bytes/second average
+    stall_timeout_used INTEGER,          -- effective timeout value in seconds
+    attempt INTEGER DEFAULT 1,           -- which retry attempt (1-based)
+    message TEXT                          -- error message or context
+);
+
+CREATE INDEX IF NOT EXISTS idx_download_log_sid_ts ON download_log(sid, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_download_log_outcome ON download_log(outcome, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_download_log_ts ON download_log(ts DESC);
+
+COMMENT ON TABLE download_log IS 'One row per download attempt (success or failure) for performance monitoring';
 
 -- ============================================================================
 -- STATION AREAS
@@ -522,6 +553,12 @@ CREATE INDEX idx_file_tracking_missing
     ON file_tracking(sid, session_type, file_date) WHERE status = 'missing';
 CREATE INDEX idx_file_tracking_updated ON file_tracking(updated_at DESC);
 CREATE INDEX idx_file_tracking_format ON file_tracking(format_id) WHERE format_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_file_tracking_needs_integrity
+    ON file_tracking (sid, session_type, file_date)
+    WHERE status IN ('downloaded', 'archived') AND integrity_checked_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_file_tracking_suspect
+    ON file_tracking (sid, session_type)
+    WHERE status = 'suspect';
 
 -- File locations indexes
 CREATE INDEX idx_file_locations_location ON file_locations(location_id);
@@ -631,12 +668,16 @@ WITH latest_pings AS (
     FROM block_ping_status
 ),
 ping_debounced AS (
-    SELECT sid, bool_or(is_online) FILTER (WHERE rn <= 3) AS ping_any_ok
-    FROM latest_pings WHERE rn <= 3 GROUP BY sid
+    SELECT sid,
+           bool_or(is_online) FILTER (WHERE rn <= 3) AS ping_any_ok
+    FROM latest_pings
+    WHERE rn <= 3
+    GROUP BY sid
 ),
 latest_ping AS (
     SELECT sid, ts, is_online, response_time_ms, packet_loss, error_message
-    FROM latest_pings WHERE rn = 1
+    FROM latest_pings
+    WHERE rn = 1
 ),
 latest_ports AS (
     SELECT sid, ts, download_status,
@@ -647,7 +688,10 @@ port_debounced AS (
     SELECT sid,
            bool_or(download_status IN ('open', 'ok')) FILTER (WHERE rn <= 3) AS port_any_ok,
            bool_and(download_status IN ('refused', 'timeout', 'unreachable', 'critical')) FILTER (WHERE rn <= 3) AS port_all_fail
-    FROM latest_ports WHERE rn <= 3 GROUP BY sid
+    FROM latest_ports
+    WHERE rn <= 3
+      AND ts > NOW() - INTERVAL '1 hour'   -- staleness guard: ignore port records older than 1h
+    GROUP BY sid
 ),
 latest_ntrip AS (
     SELECT DISTINCT ON (sid) sid, status AS ntrip_status
@@ -655,12 +699,13 @@ latest_ntrip AS (
         SELECT sid, ts, status FROM block_ntrip_server
         UNION ALL
         SELECT sid, ts, status FROM block_ntrip_client
-    ) ntrip_all ORDER BY sid, ts DESC
+    ) ntrip_all
+    WHERE ts > NOW() - INTERVAL '1 hour'   -- staleness guard: ignore NTRIP records older than 1h
+    ORDER BY sid, ts DESC
 ),
 ping_with_debounced AS (
     SELECT sid, ts, is_online,
-           bool_or(is_online) OVER (PARTITION BY sid ORDER BY ts
-               ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS debounced_online
+           bool_or(is_online) OVER (PARTITION BY sid ORDER BY ts ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS debounced_online
     FROM block_ping_status
 ),
 debounced_state_changes AS (
@@ -704,47 +749,69 @@ LEFT JOIN ping_debounced pd ON pd.sid = lp.sid
 LEFT JOIN port_debounced prd ON prd.sid = lp.sid
 LEFT JOIN latest_ntrip nt ON nt.sid = lp.sid
 LEFT JOIN debounced_state_start dss ON dss.sid = lp.sid;
-COMMENT ON VIEW station_connectivity IS 'Current connectivity state per station (3-check debounce, NTRIP override, connection_state)';
+COMMENT ON VIEW station_connectivity IS 'Current connectivity state per station (3-check debounce, NTRIP override, connection_state, staleness guards)';
 
--- 5. station_dashboard_data (depends on station_latest_metrics, station_connectivity, station_port_status)
+-- 5. station_download_summary (depends on download_log, created before station_dashboard_data)
+CREATE OR REPLACE VIEW station_download_summary AS
+SELECT
+    sid,
+    COUNT(*) AS total_attempts,
+    COUNT(*) FILTER (WHERE outcome = 'completed') AS completions,
+    COUNT(*) FILTER (WHERE outcome = 'stall_timeout') AS stalls,
+    COUNT(*) FILTER (WHERE outcome IN ('failed', 'unreachable')) AS failures,
+    ROUND(AVG(avg_speed_bps) FILTER (WHERE outcome = 'completed'))::BIGINT AS avg_speed_bps,
+    ROUND(AVG(duration_seconds) FILTER (WHERE outcome = 'completed')::NUMERIC, 1) AS avg_duration_s,
+    ROUND(AVG(duration_seconds) FILTER (WHERE outcome = 'stall_timeout')::NUMERIC, 1) AS avg_stall_duration_s,
+    MAX(ts) AS last_download_at,
+    MAX(ts) FILTER (WHERE outcome = 'stall_timeout') AS last_stall_at
+FROM download_log
+WHERE ts > NOW() - INTERVAL '5 days'
+GROUP BY sid;
+COMMENT ON VIEW station_download_summary IS 'Per-station download performance summary over rolling 5-day window';
+
+-- 6. station_dashboard_data (depends on station_latest_metrics, station_connectivity, station_port_status, station_download_summary)
 CREATE VIEW station_dashboard_data AS
 WITH health_ranked AS (
     SELECT sid, ts, overall_status, status_details,
-           ftp_open, http_open, control_open, ftp_port, http_port, control_port,
-           ROW_NUMBER() OVER (PARTITION BY sid ORDER BY ts DESC) AS rn
+           ftp_open, http_open, control_open,
+           ftp_port, http_port, control_port,
+           row_number() OVER (PARTITION BY sid ORDER BY ts DESC) AS rn
     FROM block_health_summary
 ),
 health_debounced_ports AS (
     SELECT sid,
-        BOOL_OR(ftp_open) FILTER (WHERE rn <= 3) AS ftp_open_db,
-        BOOL_OR(http_open) FILTER (WHERE rn <= 3) AS http_open_db,
-        BOOL_OR(control_open) FILTER (WHERE rn <= 3) AS control_open_db
-    FROM health_ranked WHERE rn <= 3 GROUP BY sid
+        bool_or(ftp_open)     FILTER (WHERE rn <= 3) AS ftp_open_db,
+        bool_or(http_open)    FILTER (WHERE rn <= 3) AS http_open_db,
+        bool_or(control_open) FILTER (WHERE rn <= 3) AS control_open_db
+    FROM health_ranked
+    WHERE rn <= 3
+    GROUP BY sid
 ),
 latest_health AS (
-    SELECT DISTINCT ON (r.sid)
-        r.sid,
+    SELECT DISTINCT ON (r.sid) r.sid,
         COALESCE(good.overall_status, r.overall_status) AS overall_status,
         COALESCE(good.status_details, r.status_details) AS status_details,
-        dp.ftp_open_db AS ftp_open,
-        dp.http_open_db AS http_open,
+        dp.ftp_open_db     AS ftp_open,
+        dp.http_open_db    AS http_open,
         dp.control_open_db AS control_open,
-        COALESCE(r.ftp_port, good.ftp_port) AS ftp_port,
-        COALESCE(r.http_port, good.http_port) AS http_port,
+        COALESCE(r.ftp_port,     good.ftp_port)     AS ftp_port,
+        COALESCE(r.http_port,    good.http_port)    AS http_port,
         COALESCE(r.control_port, good.control_port) AS control_port,
         r.ts AS health_ts
     FROM health_ranked r
     JOIN health_debounced_ports dp ON dp.sid = r.sid
     LEFT JOIN LATERAL (
-        SELECT overall_status, status_details, ftp_port, http_port, control_port
+        SELECT g.overall_status, g.status_details,
+               g.ftp_port, g.http_port, g.control_port
         FROM health_ranked g
         WHERE g.sid = r.sid AND g.rn <= 3
           AND (NOT dp.control_open_db OR g.control_open)
-          AND (NOT dp.ftp_open_db OR g.ftp_open)
-          AND (NOT dp.http_open_db OR g.http_open)
+          AND (NOT dp.ftp_open_db     OR g.ftp_open)
+          AND (NOT dp.http_open_db    OR g.http_open)
         ORDER BY g.ts DESC LIMIT 1
     ) good ON true
-    WHERE r.rn = 1 ORDER BY r.sid
+    WHERE r.rn = 1
+    ORDER BY r.sid
 ),
 latest_ntrip AS (
     SELECT DISTINCT ON (sid) sid, status AS ntrip_status
@@ -752,97 +819,217 @@ latest_ntrip AS (
         SELECT sid, ts, status FROM block_ntrip_server
         UNION ALL
         SELECT sid, ts, status FROM block_ntrip_client
-    ) ntrip_all ORDER BY sid, ts DESC
+    ) ntrip_all
+    WHERE ts > NOW() - INTERVAL '1 hour'   -- staleness guard: ignore NTRIP records older than 1h
+    ORDER BY sid, ts DESC
 ),
 latest_sat_breakdown AS (
-    SELECT DISTINCT ON (sid) sid, gps AS gps_sats, glonass AS glonass_sats,
-           galileo AS galileo_sats, beidou AS beidou_sats
-    FROM block_satellite_tracking ORDER BY sid, ts DESC
+    SELECT DISTINCT ON (sid) sid,
+        gps AS gps_sats, glonass AS glonass_sats,
+        galileo AS galileo_sats, beidou AS beidou_sats
+    FROM block_satellite_tracking
+    ORDER BY sid, ts DESC
 )
 SELECT
-    m.station_id, m.station_name,
-    s.receiver_type, s.antenna_type, s.ip_address, s.power_type,
+    m.station_id,
+    m.station_name,
+    s.receiver_type,
+    s.antenna_type,
+    s.ip_address,
+    s.power_type,
     s.http_port AS station_http_port,
+
     m.voltage, m.power_source, m.power_ts,
-    m.cpu_load, m.temperature, m.uptime_seconds, m.rx_status, m.rx_error, m.receiver_ts,
-    m.latitude AS metrics_latitude, m.longitude AS metrics_longitude, m.height AS metrics_height,
+    m.cpu_load, m.temperature, m.uptime_seconds,
+    m.rx_status, m.rx_error, m.receiver_ts,
+
+    m.latitude AS metrics_latitude,
+    m.longitude AS metrics_longitude,
+    m.height AS metrics_height,
     m.satellites_used, m.h_accuracy, m.v_accuracy, m.position_ts,
+
     COALESCE(s.latitude, m.latitude) AS latitude,
     COALESCE(s.longitude, m.longitude) AS longitude,
+
     m.satellites_tracked, m.sat_ts,
     lsb.gps_sats, lsb.glonass_sats, lsb.galileo_sats, lsb.beidou_sats,
+
     m.disk_usage_pct, m.free_space_mb, m.disk_ts,
+
     COALESCE(m.seconds_since_update, EXTRACT(EPOCH FROM (NOW() - sc.last_check))::integer) AS seconds_since_update,
     COALESCE(m.last_update, sc.last_check) AS last_update,
-    sc.is_online, sc.connection_state, sc.last_check, sc.state_since, sc.state_duration,
-    sc.response_time_ms AS ping_response_ms, sc.packet_loss,
-    lh.overall_status, lh.status_details,
+
+    sc.is_online,
+    sc.connection_state,
+    sc.last_check,
+    sc.state_since,
+    sc.state_duration,
+    sc.response_time_ms AS ping_response_ms,
+    sc.packet_loss,
+
+    -- Corrected overall_status: override stale voltage-critical when the
+    -- power-type-aware thresholds say voltage is NOT critical.
+    -- Outer BETWEEN = "not critical" range; inner = "ok" range for healthy vs warning.
+    CASE
+        WHEN lh.overall_status IS DISTINCT FROM 'critical' THEN lh.overall_status
+        WHEN lh.status_details IS NULL OR lh.status_details NOT LIKE '%Voltage%' THEN lh.overall_status
+        WHEN m.voltage IS NULL THEN lh.overall_status
+        -- Voltage flagged critical by extractor, but not critical under current thresholds:
+        WHEN s.power_type = 'dcdc24'
+             AND m.voltage BETWEEN 18.0 AND 30.0 THEN
+            CASE WHEN lh.status_details = 'Voltage' AND m.voltage BETWEEN 20.0 AND 28.0 THEN 'healthy'
+                 ELSE 'warning' END
+        WHEN s.power_type = 'mains'
+             AND m.voltage BETWEEN 15.0 AND 30.0 THEN
+            CASE WHEN lh.status_details = 'Voltage' AND m.voltage BETWEEN 18.0 AND 28.0 THEN 'healthy'
+                 ELSE 'warning' END
+        WHEN s.power_type = 'dcdc'
+             AND m.voltage BETWEEN 11.0 AND 18.0 THEN
+            CASE WHEN lh.status_details = 'Voltage' AND m.voltage BETWEEN 12.0 AND 16.5 THEN 'healthy'
+                 ELSE 'warning' END
+        WHEN COALESCE(s.power_type, 'battery') = 'battery'
+             AND m.voltage BETWEEN 11.0 AND 16.0 THEN
+            CASE WHEN lh.status_details = 'Voltage' AND m.voltage BETWEEN 11.8 AND 15.0 THEN 'healthy'
+                 ELSE 'warning' END
+        ELSE lh.overall_status
+    END AS overall_status,
+    CASE
+        WHEN lh.status_details = 'Voltage'
+             AND lh.overall_status = 'critical'
+             AND m.voltage IS NOT NULL
+             AND (
+                 (s.power_type = 'dcdc24' AND m.voltage BETWEEN 20.0 AND 28.0) OR
+                 (s.power_type = 'mains' AND m.voltage BETWEEN 18.0 AND 28.0) OR
+                 (s.power_type = 'dcdc' AND m.voltage BETWEEN 12.0 AND 16.5) OR
+                 (COALESCE(s.power_type, 'battery') = 'battery' AND m.voltage BETWEEN 11.8 AND 15.0)
+             )
+        THEN NULL
+        ELSE lh.status_details
+    END AS status_details,
     lh.ftp_open, lh.http_open, lh.control_open,
     lh.ftp_port, lh.http_port AS health_http_port, lh.control_port,
+
     ln.ntrip_status,
-    sp.download_status, sp.health_status AS port_health_status,
-    CASE WHEN m.seconds_since_update IS NULL THEN 'unknown'
-         WHEN m.seconds_since_update > 3600 THEN 'offline'
-         WHEN m.seconds_since_update > 300 THEN 'stale'
-         ELSE 'online' END AS connection_status,
-    CASE WHEN m.voltage IS NULL THEN 'unknown'
-         WHEN m.voltage < 11.0 OR m.voltage > 16.0 THEN 'critical'
-         WHEN m.voltage < 11.8 OR m.voltage > 15.0 THEN 'warning'
-         ELSE 'ok' END AS voltage_status,
-    CASE WHEN m.temperature IS NULL THEN 'unknown'
-         WHEN m.temperature > 60 THEN 'critical'
-         WHEN m.temperature > 50 THEN 'warning'
-         ELSE 'ok' END AS temperature_status,
-    CASE WHEN m.cpu_load IS NULL THEN 'unknown'
-         WHEN m.cpu_load > 90 THEN 'critical'
-         WHEN m.cpu_load > 75 THEN 'warning'
-         ELSE 'ok' END AS cpu_status,
-    CASE WHEN m.satellites_used IS NULL THEN 'unknown'
-         WHEN m.satellites_used < 4 THEN 'critical'
-         WHEN m.satellites_used < 8 THEN 'warning'
-         ELSE 'ok' END AS satellite_status,
-    s.station_status, s.health_check
+
+    sp.download_status,
+    sp.health_status AS port_health_status,
+
+    -- Download performance (from station_download_summary)
+    ds.avg_speed_bps,
+    ds.completions,
+    ds.stalls,
+    ds.failures AS download_failures,
+    ds.avg_stall_duration_s,
+    ds.last_download_at,
+    ds.last_stall_at,
+    s.stall_timeout_override,
+
+    CASE
+        WHEN m.seconds_since_update IS NULL THEN 'unknown'
+        WHEN m.seconds_since_update > 3600 THEN 'offline'
+        WHEN m.seconds_since_update > 300 THEN 'stale'
+        ELSE 'online'
+    END AS connection_status,
+
+    -- Power-type-aware voltage thresholds (match database.cfg sections)
+    CASE
+        WHEN m.voltage IS NULL THEN 'unknown'
+        WHEN s.power_type = 'dcdc24' THEN
+            CASE WHEN m.voltage < 18.0 OR m.voltage > 30.0 THEN 'critical'
+                 WHEN m.voltage < 20.0 OR m.voltage > 28.0 THEN 'warning'
+                 ELSE 'ok'
+            END
+        WHEN s.power_type = 'mains' THEN
+            CASE WHEN m.voltage < 15.0 OR m.voltage > 30.0 THEN 'critical'
+                 WHEN m.voltage < 18.0 OR m.voltage > 28.0 THEN 'warning'
+                 ELSE 'ok'
+            END
+        WHEN s.power_type = 'dcdc' THEN
+            CASE WHEN m.voltage < 11.0 OR m.voltage > 18.0 THEN 'critical'
+                 WHEN m.voltage < 12.0 OR m.voltage > 16.5 THEN 'warning'
+                 ELSE 'ok'
+            END
+        ELSE -- battery (default)
+            CASE WHEN m.voltage < 11.0 OR m.voltage > 16.0 THEN 'critical'
+                 WHEN m.voltage < 11.8 OR m.voltage > 15.0 THEN 'warning'
+                 ELSE 'ok'
+            END
+    END AS voltage_status,
+
+    CASE
+        WHEN m.temperature IS NULL THEN 'unknown'
+        WHEN m.temperature > 60 THEN 'critical'
+        WHEN m.temperature > 50 THEN 'warning'
+        ELSE 'ok'
+    END AS temperature_status,
+
+    CASE
+        WHEN m.cpu_load IS NULL THEN 'unknown'
+        WHEN m.cpu_load > 90 THEN 'critical'
+        WHEN m.cpu_load > 75 THEN 'warning'
+        ELSE 'ok'
+    END AS cpu_status,
+
+    CASE
+        WHEN m.satellites_used IS NULL THEN 'unknown'
+        WHEN m.satellites_used < 4 THEN 'critical'
+        WHEN m.satellites_used < 8 THEN 'warning'
+        ELSE 'ok'
+    END AS satellite_status,
+
+    s.station_status,
+    s.health_check
+
 FROM station_latest_metrics m
 JOIN stations s ON s.sid = m.station_id
 LEFT JOIN latest_health lh ON lh.sid = m.station_id
 LEFT JOIN latest_ntrip ln ON ln.sid = m.station_id
 LEFT JOIN latest_sat_breakdown lsb ON lsb.sid = m.station_id
 LEFT JOIN station_connectivity sc ON sc.sid = m.station_id
-LEFT JOIN station_port_status sp ON sp.sid = m.station_id;
-COMMENT ON VIEW station_dashboard_data IS 'Unified dashboard data with 3-check port debounce';
+LEFT JOIN station_port_status sp ON sp.sid = m.station_id
+LEFT JOIN station_download_summary ds ON ds.sid = m.station_id;
+COMMENT ON VIEW station_dashboard_data IS 'Unified dashboard data for all Grafana dashboards - one row per station with all metrics, status, connectivity, and download performance';
 
--- 6. station_data_flow_status (depends on station_dashboard_data, station_logging_status, file_tracking)
+-- 7. station_data_flow_status (depends on station_dashboard_data, station_logging_status, file_tracking)
 CREATE VIEW station_data_flow_status AS
 WITH latest_raw_24h AS (
     SELECT DISTINCT ON (sid) sid, file_date
-    FROM file_tracking WHERE session_type = '15s_24hr' AND status IN ('downloaded', 'archived')
+    FROM file_tracking
+    WHERE session_type = '15s_24hr' AND status IN ('downloaded', 'archived')
     ORDER BY sid, file_date DESC
 ),
 latest_raw_1hz AS (
     SELECT DISTINCT ON (sid) sid,
            file_date + COALESCE(file_hour, 0) * INTERVAL '1 hour' AS latest_ts
-    FROM file_tracking WHERE session_type = '1Hz_1hr' AND status IN ('downloaded', 'archived')
+    FROM file_tracking
+    WHERE session_type = '1Hz_1hr' AND status IN ('downloaded', 'archived')
     ORDER BY sid, file_date DESC, file_hour DESC NULLS LAST
 ),
 latest_rinex_24h AS (
     SELECT DISTINCT ON (sid) sid, file_date
-    FROM file_tracking WHERE session_type = '15s_24hr_rinex' AND status IN ('downloaded', 'archived')
+    FROM file_tracking
+    WHERE session_type = '15s_24hr_rinex' AND status IN ('downloaded', 'archived')
     ORDER BY sid, file_date DESC
 ),
 latest_rinex_1hz AS (
     SELECT DISTINCT ON (sid) sid,
            file_date + COALESCE(file_hour, 0) * INTERVAL '1 hour' AS latest_ts
-    FROM file_tracking WHERE session_type = '1Hz_1hr_rinex' AND status IN ('downloaded', 'archived')
+    FROM file_tracking
+    WHERE session_type = '1Hz_1hr_rinex' AND status IN ('downloaded', 'archived')
     ORDER BY sid, file_date DESC, file_hour DESC NULLS LAST
 ),
 health_streak AS (
     SELECT sid,
-           COALESCE(MIN(rn) FILTER (WHERE overall_status != 'critical'), 7) - 1 AS consecutive_critical
+           COALESCE(
+               MIN(rn) FILTER (WHERE overall_status != 'critical'), 7
+           ) - 1 AS consecutive_critical
     FROM (
         SELECT sid, overall_status,
                ROW_NUMBER() OVER (PARTITION BY sid ORDER BY ts DESC) AS rn
         FROM block_health_summary
-    ) recent WHERE rn <= 6 GROUP BY sid
+    ) recent
+    WHERE rn <= 6
+    GROUP BY sid
 ),
 ever_checked AS (
     SELECT DISTINCT sid FROM block_health_summary
@@ -850,68 +1037,81 @@ ever_checked AS (
 base AS (
     SELECT
         d.station_id AS sid,
+
         CASE
-            WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN -2
-            WHEN d.is_online = false THEN -1
-            WHEN d.overall_status = 'healthy' THEN 0
-            WHEN d.overall_status = 'warning' THEN 1
-            WHEN d.overall_status = 'critical'
-                 AND d.connection_state = 'online'
-                 AND (d.status_details IS NULL
-                      OR d.status_details !~* '(Voltage|Temperature|Disk|Satellite)')
-                 THEN 1
-            WHEN d.overall_status = 'critical'
-                 AND COALESCE(hs.consecutive_critical, 1) >= 2 THEN 2
-            WHEN d.overall_status = 'critical' THEN 1
-            ELSE -1
+          WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN -2
+          WHEN d.is_online = false THEN -1
+          WHEN d.overall_status = 'healthy' THEN 0
+          WHEN d.overall_status = 'warning' THEN 1
+          WHEN d.overall_status = 'critical'
+               AND d.connection_state = 'online'
+               AND (d.status_details IS NULL
+                    OR d.status_details !~* '(Voltage|Temperature|Disk|Satellite)')
+               THEN 1
+          WHEN d.overall_status = 'critical'
+               AND COALESCE(hs.consecutive_critical, 1) >= 2
+               THEN 2
+          WHEN d.overall_status = 'critical' THEN 1
+          ELSE -1
         END AS health_status,
+
         CASE
-            WHEN d.station_status IS NOT NULL THEN -2
-            WHEN d.receiver_type IS NULL
-                 AND NOT COALESCE(l.session_15s_24hr, false)
-                 AND r24.file_date IS NULL THEN -2
-            WHEN ec.sid IS NULL AND r24.file_date IS NULL THEN -1
-            WHEN r24.file_date IS NULL OR r24.file_date < CURRENT_DATE - 1 THEN 2
-            WHEN x24.file_date IS NULL OR x24.file_date < r24.file_date THEN 1
-            ELSE 0
+          WHEN d.station_status IS NOT NULL THEN -2
+          WHEN d.receiver_type IS NULL
+               AND NOT COALESCE(l.session_15s_24hr, false)
+               AND r24.file_date IS NULL THEN -2
+          WHEN ec.sid IS NULL AND r24.file_date IS NULL THEN -1
+          WHEN r24.file_date IS NULL OR r24.file_date < CURRENT_DATE - 1
+               THEN 2
+          WHEN x24.file_date IS NULL OR x24.file_date < r24.file_date
+               THEN 1
+          ELSE 0
         END AS status_24h,
+
         CASE
-            WHEN d.station_status IS NOT NULL THEN -2
-            WHEN NOT COALESCE(l.session_1hz_1hr, false) AND r1h.latest_ts IS NULL THEN -2
-            WHEN ec.sid IS NULL AND r1h.latest_ts IS NULL THEN -1
-            WHEN r1h.latest_ts >= NOW() - INTERVAL '1.5 hours' THEN 0
-            WHEN r1h.latest_ts >= NOW() - INTERVAL '6 hours' THEN 1
-            WHEN r1h.latest_ts IS NOT NULL THEN 2
-            ELSE 2
+          WHEN d.station_status IS NOT NULL THEN -2
+          WHEN NOT COALESCE(l.session_1hz_1hr, false)
+               AND r1h.latest_ts IS NULL THEN -2
+          WHEN ec.sid IS NULL AND r1h.latest_ts IS NULL THEN -1
+          WHEN r1h.latest_ts >= NOW() - INTERVAL '90 minutes' THEN 0
+          WHEN r1h.latest_ts >= NOW() - INTERVAL '6 hours' THEN 1
+          WHEN r1h.latest_ts IS NOT NULL THEN 2
+          ELSE 2
         END AS status_1hz,
+
         CASE
-            WHEN d.station_status IS NOT NULL THEN -2
-            WHEN d.receiver_type IS NULL
-                 AND NOT COALESCE(l.session_15s_24hr, false)
-                 AND r24.file_date IS NULL THEN -2
-            WHEN ec.sid IS NULL AND x24.file_date IS NULL AND r24.file_date IS NULL THEN -1
-            WHEN x24.file_date >= CURRENT_DATE - 1 THEN 0
-            WHEN x24.file_date IS NULL AND r24.file_date IS NOT NULL THEN 2
-            WHEN x24.file_date IS NULL THEN -1
-            WHEN EXTRACT(HOUR FROM NOW()) >= 12 THEN 2
-            WHEN EXTRACT(HOUR FROM NOW()) >= 2 THEN 1
-            ELSE 0
+          WHEN d.station_status IS NOT NULL THEN -2
+          WHEN d.receiver_type IS NULL
+               AND NOT COALESCE(l.session_15s_24hr, false)
+               AND r24.file_date IS NULL THEN -2
+          WHEN ec.sid IS NULL AND x24.file_date IS NULL AND r24.file_date IS NULL THEN -1
+          WHEN x24.file_date >= CURRENT_DATE - 1 THEN 0
+          WHEN x24.file_date IS NULL AND r24.file_date IS NOT NULL THEN 2
+          WHEN x24.file_date IS NULL THEN -1
+          WHEN EXTRACT(HOUR FROM NOW()) >= 12 THEN 2
+          WHEN EXTRACT(HOUR FROM NOW()) >= 2 THEN 1
+          ELSE 0
         END AS rinex_24h_status,
+
         CASE
-            WHEN d.station_status IS NOT NULL THEN -2
-            WHEN NOT COALESCE(l.session_1hz_1hr, false) AND r1h.latest_ts IS NULL THEN -2
-            WHEN ec.sid IS NULL AND x1h.latest_ts IS NULL AND r1h.latest_ts IS NULL THEN -1
-            WHEN x1h.latest_ts >= NOW() - INTERVAL '1.5 hours' THEN 0
-            WHEN x1h.latest_ts IS NULL THEN -1
-            WHEN x1h.latest_ts >= NOW() - INTERVAL '6 hours' THEN 1
-            ELSE 2
+          WHEN d.station_status IS NOT NULL THEN -2
+          WHEN NOT COALESCE(l.session_1hz_1hr, false)
+               AND r1h.latest_ts IS NULL THEN -2
+          WHEN ec.sid IS NULL AND x1h.latest_ts IS NULL AND r1h.latest_ts IS NULL THEN -1
+          WHEN x1h.latest_ts >= NOW() - INTERVAL '90 minutes' THEN 0
+          WHEN x1h.latest_ts IS NULL THEN -1
+          WHEN x1h.latest_ts >= NOW() - INTERVAL '6 hours' THEN 1
+          ELSE 2
         END AS rinex_1hz_status,
+
         r24.file_date AS raw_24h_date,
         r1h.latest_ts AS raw_1hz_ts,
         x24.file_date AS rinex_24h_date,
         x1h.latest_ts AS rinex_1hz_ts,
+
         d.receiver_type IS NOT NULL OR COALESCE(l.session_15s_24hr, false) OR r24.file_date IS NOT NULL AS logging_15s,
         COALESCE(l.session_1hz_1hr, false) OR r1h.latest_ts IS NOT NULL AS logging_1hz
+
     FROM station_dashboard_data d
     LEFT JOIN station_logging_status l ON l.sid = d.station_id
     LEFT JOIN health_streak hs ON hs.sid = d.station_id
@@ -921,25 +1121,22 @@ base AS (
     LEFT JOIN latest_rinex_24h x24 ON x24.sid = d.station_id
     LEFT JOIN latest_rinex_1hz x1h ON x1h.sid = d.station_id
 )
-SELECT sid, health_status, status_24h, status_1hz,
-    rinex_24h_status, rinex_1hz_status,
-    raw_24h_date, raw_1hz_ts, rinex_24h_date, rinex_1hz_ts,
-    logging_15s, logging_1hz,
+SELECT base.*,
     CASE
-        WHEN health_status < 0 AND status_24h < 0 THEN -1
-        WHEN health_status = 2 AND status_24h = 2 THEN 2
-        WHEN GREATEST(
-            CASE WHEN health_status < 0 THEN 0 ELSE health_status END,
-            CASE WHEN status_24h < 0 THEN 0 ELSE status_24h END
-        ) = 2 THEN 1
-        WHEN GREATEST(
-            CASE WHEN health_status < 0 THEN 0 ELSE health_status END,
-            CASE WHEN status_24h < 0 THEN 0 ELSE status_24h END
-        ) = 1 THEN 1
-        ELSE 0
+      WHEN base.health_status < 0 AND base.status_24h < 0 THEN -1
+      WHEN base.health_status = 2 AND base.status_24h = 2 THEN 2
+      WHEN GREATEST(
+             CASE WHEN base.health_status < 0 THEN 0 ELSE base.health_status END,
+             CASE WHEN base.status_24h < 0 THEN 0 ELSE base.status_24h END
+           ) = 2 THEN 1
+      WHEN GREATEST(
+             CASE WHEN base.health_status < 0 THEN 0 ELSE base.health_status END,
+             CASE WHEN base.status_24h < 0 THEN 0 ELSE base.status_24h END
+           ) = 1 THEN 1
+      ELSE 0
     END AS combined_status
 FROM base;
-COMMENT ON VIEW station_data_flow_status IS 'Time-based data flow status codes per station';
+COMMENT ON VIEW station_data_flow_status IS 'Station health, data flow, and combined status codes for dashboards and maps';
 
 -- Other views (no complex dependencies)
 
@@ -1140,25 +1337,41 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION upsert_file_tracking(
-    p_sid VARCHAR(4), p_session_type VARCHAR(20), p_date DATE, p_hour SMALLINT,
-    p_filename VARCHAR(100), p_status VARCHAR(20),
-    p_file_size BIGINT DEFAULT NULL, p_samples INTEGER DEFAULT NULL,
-    p_checksum VARCHAR(64) DEFAULT NULL, p_json_path VARCHAR(255) DEFAULT NULL,
-    p_error TEXT DEFAULT NULL
+    p_sid VARCHAR(4),
+    p_session_type VARCHAR(20),
+    p_date DATE,
+    p_hour SMALLINT,
+    p_filename VARCHAR(100),
+    p_status VARCHAR(20),
+    p_file_size BIGINT DEFAULT NULL,
+    p_samples INTEGER DEFAULT NULL,
+    p_checksum VARCHAR(64) DEFAULT NULL,
+    p_json_path VARCHAR(255) DEFAULT NULL,
+    p_error TEXT DEFAULT NULL,
+    p_remote_file_size BIGINT DEFAULT NULL
 ) RETURNS INTEGER AS $$
-DECLARE v_id INTEGER;
+DECLARE
+    v_id INTEGER;
 BEGIN
+    -- Try to find existing record
     IF p_hour IS NULL THEN
         SELECT id INTO v_id FROM file_tracking
-        WHERE sid = p_sid AND session_type = p_session_type AND file_date = p_date AND file_hour IS NULL;
+        WHERE sid = p_sid AND session_type = p_session_type
+          AND file_date = p_date AND file_hour IS NULL;
     ELSE
         SELECT id INTO v_id FROM file_tracking
-        WHERE sid = p_sid AND session_type = p_session_type AND file_date = p_date AND file_hour = p_hour;
+        WHERE sid = p_sid AND session_type = p_session_type
+          AND file_date = p_date AND file_hour = p_hour;
     END IF;
+
     IF v_id IS NOT NULL THEN
+        -- Update existing
         UPDATE file_tracking SET
-            filename = COALESCE(p_filename, filename), status = p_status,
-            file_size = COALESCE(p_file_size, file_size), last_checked = NOW(),
+            filename = COALESCE(p_filename, filename),
+            status = p_status,
+            file_size = COALESCE(p_file_size, file_size),
+            remote_file_size = COALESCE(p_remote_file_size, remote_file_size),
+            last_checked = NOW(),
             last_attempt = CASE WHEN p_status IN ('downloaded', 'missing', 'error') THEN NOW() ELSE last_attempt END,
             download_count = CASE WHEN p_status IN ('downloaded', 'missing') THEN download_count + 1 ELSE download_count END,
             imported_to_db = CASE WHEN p_samples IS NOT NULL THEN TRUE ELSE imported_to_db END,
@@ -1173,19 +1386,23 @@ BEGIN
             updated_at = NOW()
         WHERE id = v_id;
     ELSE
+        -- Insert new
         INSERT INTO file_tracking (
             sid, session_type, file_date, file_hour, filename, status, file_size,
+            remote_file_size,
             first_checked, last_checked, last_attempt, download_count,
             imported_to_db, imported_at, samples_imported, import_checksum,
             json_written, json_path, json_written_at, last_error, error_count
         ) VALUES (
             p_sid, p_session_type, p_date, p_hour, p_filename, p_status, p_file_size,
+            p_remote_file_size,
             NOW(), NOW(), NOW(), 1,
             p_samples IS NOT NULL, CASE WHEN p_samples IS NOT NULL THEN NOW() END, p_samples, p_checksum,
             p_json_path IS NOT NULL, p_json_path, CASE WHEN p_json_path IS NOT NULL THEN NOW() END,
             p_error, CASE WHEN p_error IS NOT NULL THEN 1 ELSE 0 END
         ) RETURNING id INTO v_id;
     END IF;
+
     RETURN v_id;
 END;
 $$ LANGUAGE plpgsql;
@@ -1283,6 +1500,11 @@ INSERT INTO schema_migrations (migration_name) VALUES
     ('021_archive_format'),
     ('022_station_owner'),
     ('023_connection_state'),
+    ('024_data_flow_no_dir'),
+    ('025_file_integrity'),
+    ('026_download_performance'),
+    ('027_staleness_guards'),
+    ('028_dcdc24_voltage'),
     ('000_consolidated_schema')
 ON CONFLICT (migration_name) DO NOTHING;
 
