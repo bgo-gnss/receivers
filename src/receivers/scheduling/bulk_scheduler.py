@@ -765,7 +765,7 @@ class BulkDownloadScheduler:
             raise ImportError("APScheduler not available. Install with: pip install apscheduler")
 
         # Load YAML configuration (with fallback to defaults)
-        from .config_loader import load_scheduler_config, get_session_config
+        from .config_loader import load_scheduler_config
         self.yaml_config = load_scheduler_config(config_path)
 
         # Apply configuration (CLI args override YAML)
