@@ -225,18 +225,21 @@ class PolaRX5(BaseReceiver):
             error_msg = f"Router ping failed: {e}"
 
         # Test 2: Receiver HTTP web interface (port 8060)
+        sock = None
         try:
             # Try to connect to HTTP port 8060
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(2)
             result = sock.connect_ex((self.ip_number, 8060))
-            sock.close()
             receiver_ok = (result == 0)
             if not receiver_ok and not error_msg:
                 error_msg = f"HTTP port 8060 not responding"
         except Exception as e:
             if not error_msg:
                 error_msg = f"Receiver test failed: {e}"
+        finally:
+            if sock is not None:
+                sock.close()
 
         status = {
             "router": router_ok,
@@ -878,9 +881,19 @@ class PolaRX5(BaseReceiver):
                 retry_missing=retry_missing,
             )
 
-            downloaded_files_dict = dict(
-                zip(updated_missing_file_dict, downloaded_files)
-            )
+            # Build dict by matching file paths to datetime keys (not positional)
+            # zip() misaligns when files are skipped (known missing, 550, errors)
+            downloaded_files_dict = {}
+            _path_to_dt = {}
+            for dt_key, (arch_path, igs_filename) in updated_missing_file_dict.items():
+                _path_to_dt[arch_path] = dt_key
+                _path_to_dt[igs_filename] = dt_key
+            for dl_path in downloaded_files:
+                dt_key = _path_to_dt.get(dl_path) or _path_to_dt.get(
+                    os.path.basename(dl_path)
+                )
+                if dt_key is not None:
+                    downloaded_files_dict[dt_key] = dl_path
 
             # Archive files (only if not using immediate archiving)
             if downloaded_files_dict and archive and not immediate_archive:
@@ -934,11 +947,11 @@ class PolaRX5(BaseReceiver):
             port_success = False
 
             for port_attempt in range(port_retries):
+                sock = None
                 try:
                     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     sock.settimeout(3)
                     result = sock.connect_ex((self.ip_number, self.ip_port))
-                    sock.close()
                     if result == 0:
                         port_success = True
                         break
@@ -960,6 +973,9 @@ class PolaRX5(BaseReceiver):
                     self.logger.debug(f"Port check error: {e}")
                     port_success = True  # Skip on error, let FTP handle it
                     break
+                finally:
+                    if sock is not None:
+                        sock.close()
 
             if not port_success:
                 self.logger.error(f"❌ FTP port {self.ip_port} not responding after {port_retries} attempts")
@@ -1169,6 +1185,8 @@ class PolaRX5(BaseReceiver):
             # Initialize offset for download resumption
             offset = 0
             size_mismatch_retried = False
+            _dl_start = None
+            remote_file_size = None
 
             remote_file = f"{remote_dir}{file_name}"
 
@@ -1380,6 +1398,7 @@ class PolaRX5(BaseReceiver):
                                     session, _dl_duration, downloaded_files, file_tracker,
                                     is_hourly_session, immediate_archive, archive,
                                     missing_file_dict, record_download,
+                                    get_file_datetime=get_file_datetime,
                                 )
                             else:
                                 record_download(
@@ -1494,7 +1513,7 @@ class PolaRX5(BaseReceiver):
 
             except Exception as e:
                 self.logger.error(f"Failed to download {file_name}: {e}")
-                _exc_duration = time.time() - _dl_start if '_dl_start' in dir() else 0.0
+                _exc_duration = (time.time() - _dl_start) if _dl_start is not None else 0.0
                 error_msg = str(e).lower()
                 is_stall = isinstance(e, TimeoutError) or "stall" in error_msg or "watchdog" in error_msg
                 from ..utils.stall_timeout import record_download as _rec_dl
@@ -1502,7 +1521,7 @@ class PolaRX5(BaseReceiver):
                     self.station_id, session or "unknown",
                     "stall_timeout" if is_stall else "failed",
                     filename=file_name, duration_seconds=_exc_duration,
-                    file_size=remote_file_size if 'remote_file_size' in dir() else None,
+                    file_size=remote_file_size,
                     stall_timeout_used=getattr(self, '_last_effective_timeout', self.progress_timeout),
                     message=str(e)[:500],
                 )

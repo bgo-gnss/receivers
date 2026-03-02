@@ -82,8 +82,8 @@ class PolaRX5TCPExtractor:
             cfg = get_station_config(station_id)
             if cfg:
                 power_type = cfg.get("power_type") or None
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.debug(f"Could not load station config for thresholds: {e}")
         config = load_thresholds(receiver_type="PolaRX5", power_type=power_type)
         self.metric_checker = MetricChecker(config)
 
@@ -556,7 +556,7 @@ class PolaRX5TCPExtractor:
             self.logger.debug(f"ASCII command connection as {conn_id}")
 
             # Send command
-            sock.send((command + "\n").encode("utf-8"))
+            sock.sendall((command + "\n").encode("utf-8"))
 
             # Collect text response until prompt reappears or timeout
             response = b""
@@ -730,7 +730,7 @@ class PolaRX5TCPExtractor:
             # Send SBF once request using detected connection ID
             # The esoc command streams SBF data to the specified connection
             cmd = f"esoc, {conn_id}, {block_name}\n"
-            sock.send(cmd.encode())
+            sock.sendall(cmd.encode())
 
             # Collect data and scan for expected block
             # Use overall timeout to avoid hanging on receivers with continuous output
@@ -883,15 +883,18 @@ class PolaRX5TCPExtractor:
         Returns:
             True if connection successful, False otherwise
         """
+        sock = None
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(self.timeout)
             sock.connect((self.host, self.port))
-            sock.close()
             return True
         except Exception as e:
             self.logger.debug(f"Connection test failed: {e}")
             return False
+        finally:
+            if sock is not None:
+                sock.close()
 
     def _check_port_status(self) -> Dict[str, Any]:
         """Check status of configured ports (FTP, HTTP, control).
@@ -932,11 +935,11 @@ class PolaRX5TCPExtractor:
         """
         import errno
 
+        sock = None
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(5.0)  # 5s for slow 3G/4G links
             result = sock.connect_ex((self.host, port_num))
-            sock.close()
 
             is_open = result == 0
             if is_open:
@@ -951,6 +954,9 @@ class PolaRX5TCPExtractor:
             return {"port": port_num, "open": False, "status": "warning", "detail": "refused"}
         except Exception as e:
             return {"port": port_num, "open": False, "status": "error", "detail": str(e)}
+        finally:
+            if sock is not None:
+                sock.close()
 
     def _query_pvt_geodetic(self) -> Optional[Dict[str, Any]]:
         """Query PVTGeodetic2 SBF block for position and accuracy.
@@ -1143,17 +1149,18 @@ class PolaRX5TCPExtractor:
         # Invalid SVIDs
         if svid == 0 or svid == 255:
             return None
+        # Ranges per Septentrio SBF Reference Guide v4.x (non-overlapping)
         elif 1 <= svid <= 37:
             return "GPS"
         elif 38 <= svid <= 62:
             return "GLONASS"
         elif 63 <= svid <= 106:
             return "Galileo"
-        elif 120 <= svid <= 158:
+        elif 120 <= svid <= 140:
             return "SBAS"
         elif 141 <= svid <= 180:
             return "BeiDou"
-        elif 181 <= svid <= 202:
+        elif 181 <= svid <= 187:
             return "QZSS"
         elif 191 <= svid <= 197:
             return "IRNSS"
