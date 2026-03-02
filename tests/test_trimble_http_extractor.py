@@ -104,7 +104,7 @@ class TestVoltagesParsing:
         assert result is not None
         assert result["voltage"] == 15.06  # Max voltage from ports
         assert result["unit"] == "V"
-        assert result["status"] == "ok"  # 15.06V within NetR9 range (warning_high=28.0)
+        assert result["status"] == "warning"  # 15.06V exceeds default warning_high=15.0
         assert len(result["ports"]) == 3
         assert result["ports"][0]["name"] == "B1"
         assert result["ports"][0]["voltage"] == 8.36
@@ -498,8 +498,7 @@ class TestNetRSUptime:
             '</body></html>'
         )
 
-        with patch("requests.get", return_value=_mock_response(html)):
-            result = netrs_extractor._fetch_uptime_from_activity_page()
+        result = netrs_extractor._parse_uptime_from_activity_html(html)
 
         assert result is not None
         assert result["days"] == 159

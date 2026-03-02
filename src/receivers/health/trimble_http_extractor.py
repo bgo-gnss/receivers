@@ -101,8 +101,8 @@ class TrimbleHTTPExtractor:
             cfg = get_station_config(station_id)
             if cfg:
                 power_type = cfg.get("power_type") or None
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.debug(f"Could not load station config for power_type: {e}")
         config = load_thresholds(receiver_type=receiver_type, power_type=power_type)
         self.metric_checker = MetricChecker(config)
 
@@ -283,6 +283,10 @@ class TrimbleHTTPExtractor:
                 # Also fix the connection status
                 health_data["connection"]["http_port"]["accessible"] = True
                 health_data["connection"]["http_port"]["status"] = "ok"
+                # Fix stale status in overall calculation list —
+                # the initial connection test status (index 0) is now wrong
+                if statuses and statuses[0] in ("critical", "warning"):
+                    statuses[0] = "ok"
 
         # Network features not available on Trimble
         health_data["network"]["ntrip_client"] = {"available": False}
@@ -392,15 +396,18 @@ class TrimbleHTTPExtractor:
         Returns:
             True if port is open, False otherwise
         """
+        sock = None
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(5)
             result = sock.connect_ex((host, port))
-            sock.close()
             return result == 0
         except Exception as e:
             self.logger.debug(f"Port check failed for {host}:{port}: {e}")
             return False
+        finally:
+            if sock is not None:
+                sock.close()
 
     def _fetch_endpoint(self, endpoint_name: str) -> Optional[str]:
         """Fetch data from HTTP endpoint.
@@ -807,7 +814,7 @@ class TrimbleHTTPExtractor:
         if not xml_text:
             return None
 
-        temp_match = re.search(r"<celsius>([\d.]+)</celsius>", xml_text)
+        temp_match = re.search(r"<celsius>([-\d.]+)</celsius>", xml_text)
         if not temp_match:
             return None
 
@@ -973,10 +980,10 @@ class TrimbleHTTPExtractor:
 
         try:
             # Parse: Temperature temp=XX.X
-            match = re.search(r"temp=([\d.]+)", response, re.IGNORECASE)
+            match = re.search(r"temp=([-\d.]+)", response, re.IGNORECASE)
             if not match:
                 # Try alternative patterns
-                match = re.search(r"([\d.]+)\s*°?C", response)
+                match = re.search(r"([-\d.]+)\s*°?C", response)
 
             if not match:
                 return None
@@ -1525,8 +1532,10 @@ class TrimbleHTTPExtractor:
             return "critical"
         elif "warning" in statuses:
             return "warning"
-        elif all(s == "ok" for s in statuses if s != "unknown"):
-            return "healthy"
+        else:
+            non_unknown = [s for s in statuses if s != "unknown"]
+            if non_unknown and all(s == "ok" for s in non_unknown):
+                return "healthy"
         return "unknown"
 
     def _count_statuses(self, statuses: List[str]) -> Dict[str, int]:

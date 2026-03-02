@@ -259,13 +259,13 @@ class ConnectionChecker:
         """
         self.logger.debug(f"Testing HTTP port {port} on {self.host}")
 
+        sock = None
         try:
             start_time = time.time()
 
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(timeout)
             sock.connect((self.host, port))
-            sock.close()
 
             elapsed_ms = (time.time() - start_time) * 1000
 
@@ -315,6 +315,9 @@ class ConnectionChecker:
                 error_message=f"HTTP port test error: {str(e)}",
                 details={"port": port, "error_type": "error"},
             )
+        finally:
+            if sock is not None:
+                sock.close()
 
     def check_ftp(self, port: int = 21, timeout: int = 10) -> ConnectionStatus:
         """Check FTP connection.
@@ -328,6 +331,7 @@ class ConnectionChecker:
         """
         self.logger.debug(f"Testing FTP connection on {self.host}:{port}")
 
+        sock = None
         try:
             start_time = time.time()
 
@@ -346,8 +350,6 @@ class ConnectionChecker:
                     banner_text = raw_banner.strip()
             except Exception:
                 has_banner = False
-
-            sock.close()
 
             elapsed_ms = (time.time() - start_time) * 1000
 
@@ -383,10 +385,10 @@ class ConnectionChecker:
             import errno
             if e.errno == errno.EHOSTUNREACH:
                 error_type = "unreachable"
-                msg = f"Host unreachable"
+                msg = "Host unreachable"
             elif e.errno == errno.ENETUNREACH:
                 error_type = "unreachable"
-                msg = f"Network unreachable"
+                msg = "Network unreachable"
             else:
                 error_type = "error"
                 msg = str(e)
@@ -404,6 +406,9 @@ class ConnectionChecker:
                 error_message=f"FTP connection error: {str(e)}",
                 details={"type": "ftp", "port": port, "error_type": "error"},
             )
+        finally:
+            if sock is not None:
+                sock.close()
 
     def check_http(self, port: int = 8060, timeout: int = 5) -> ConnectionStatus:
         """Check HTTP protocol connectivity via TCP socket connect.
@@ -422,13 +427,13 @@ class ConnectionChecker:
         """
         self.logger.debug(f"Testing HTTP connection on {self.host}:{port}")
 
+        sock = None
         try:
             start_time = time.time()
 
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(timeout)
             sock.connect((self.host, port))
-            sock.close()
 
             elapsed_ms = (time.time() - start_time) * 1000
 
@@ -479,6 +484,9 @@ class ConnectionChecker:
                 error_message=f"HTTP connection error: {str(e)}",
                 details={"type": "http", "port": port},
             )
+        finally:
+            if sock is not None:
+                sock.close()
 
     def check_tcp(self, port: int, timeout: int = 5) -> ConnectionStatus:
         """Check generic TCP connection.
@@ -492,13 +500,13 @@ class ConnectionChecker:
         """
         self.logger.debug(f"Testing TCP connection on {self.host}:{port}")
 
+        sock = None
         try:
             start_time = time.time()
 
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(timeout)
             sock.connect((self.host, port))
-            sock.close()
 
             elapsed_ms = (time.time() - start_time) * 1000
 
@@ -535,6 +543,9 @@ class ConnectionChecker:
                 error_message=f"TCP connection error: {str(e)}",
                 details={"type": "tcp", "port": port},
             )
+        finally:
+            if sock is not None:
+                sock.close()
 
     @staticmethod
     def _get_default_port(protocol_type: str) -> int:
