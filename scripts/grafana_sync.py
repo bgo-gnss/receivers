@@ -76,7 +76,9 @@ def warn(msg: str) -> None:
 
 
 def error(msg: str) -> None:
+    sys.stdout.flush()  # keep error output in order with info lines
     print(f"{RED}[ERROR]{NC} {msg}", file=sys.stderr)
+    sys.stderr.flush()
 
 
 def header(msg: str) -> None:
@@ -161,6 +163,41 @@ def get_auth_headers(target: dict[str, Any], target_name: str) -> dict[str, str]
     sys.exit(1)
 
 
+# ── Cookie persistence ───────────────────────────────────────────────────
+
+# Track which target we're pushing to (set by cmd_push)
+_active_target: str = ""
+
+
+def _save_rotated_cookie(new_cookie: str) -> None:
+    """Persist a rotated Grafana session cookie to disk.
+
+    Called after each successful API request that returns Set-Cookie headers,
+    so the next script invocation uses the rotated token.
+    """
+    if not _active_target:
+        return
+    config_dir = Path(
+        os.environ.get("GPS_CONFIG_PATH", "~/.config/gpsconfig")
+    ).expanduser()
+    cookie_file = config_dir / "grafana_cookies.yaml"
+    if not cookie_file.exists():
+        return
+    try:
+        with open(cookie_file) as f:
+            cookies = yaml.safe_load(f) or {}
+        cookies[_active_target] = new_cookie
+        with open(cookie_file, "w") as f:
+            f.write(
+                "# Grafana session cookies — temporary auth until"
+                " service account tokens are available\n"
+                "# Auto-updated by grafana_sync.py on cookie rotation\n"
+            )
+            yaml.dump(cookies, f, default_flow_style=False)
+    except Exception:
+        pass  # best-effort, don't break the push
+
+
 # ── HTTP helpers ─────────────────────────────────────────────────────────────
 
 
@@ -184,7 +221,12 @@ def api_get(
 def api_post(
     url: str, headers: dict[str, str], payload: dict[str, Any]
 ) -> dict[str, Any]:
-    """POST JSON to a Grafana API endpoint, return parsed JSON."""
+    """POST JSON to a Grafana API endpoint, return parsed JSON.
+
+    Handles Grafana session token rotation: if the response includes a
+    Set-Cookie header, the cookie in ``headers`` is updated in-place so
+    subsequent requests use the rotated session token.
+    """
     data = json.dumps(payload).encode("utf-8")
     req = Request(
         url,
@@ -194,6 +236,25 @@ def api_post(
     )
     try:
         with urlopen(req, timeout=60) as resp:
+            # Handle cookie rotation: capture all Set-Cookie headers
+            # (Grafana sends separate headers for grafana_session and
+            # grafana_session_expiry)
+            if "Cookie" in headers:
+                new_parts = {}
+                for raw in resp.headers.get_all("Set-Cookie") or []:
+                    # Each Set-Cookie value: "key=val; Path=/; ..."
+                    first = raw.split(";", 1)[0].strip()
+                    if "=" in first:
+                        k, v = first.split("=", 1)
+                        if k.strip().startswith("grafana_session"):
+                            new_parts[k.strip()] = v.strip()
+                if new_parts:
+                    new_cookie = "; ".join(
+                        f"{k}={v}" for k, v in new_parts.items()
+                    )
+                    headers["Cookie"] = new_cookie
+                    # Persist rotated cookie to disk for subsequent runs
+                    _save_rotated_cookie(new_cookie)
             return json.loads(resp.read())
     except HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
@@ -318,7 +379,9 @@ def cmd_export(_args: argparse.Namespace) -> None:
 
 def cmd_push(args: argparse.Namespace) -> None:
     """Push local dashboards to a remote Grafana target."""
+    global _active_target
     target_name = args.target
+    _active_target = target_name
     config = load_targets()
     target = get_target(config, target_name)
     headers = get_auth_headers(target, target_name)

@@ -643,7 +643,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(DISTINCT s.sid) AS \"Low Sats\"\nFROM block_satellite_tracking s\nINNER JOIN (\n  SELECT sid, MAX(ts) AS max_ts\n  FROM block_satellite_tracking\n  GROUP BY sid\n) latest ON s.sid = latest.sid AND s.ts = latest.max_ts\nWHERE s.total < 4",
+          "rawSql": "SELECT COUNT(DISTINCT s.sid) AS \"Low Sats\"\nFROM block_satellite_tracking s\nINNER JOIN (\n  SELECT sid, MAX(ts) AS max_ts\n  FROM block_satellite_tracking\n  WHERE ts > NOW() - INTERVAL '1 hour'\n  GROUP BY sid\n) latest ON s.sid = latest.sid AND s.ts = latest.max_ts\nWHERE s.total < 4",
           "refId": "A"
         }
       ],
