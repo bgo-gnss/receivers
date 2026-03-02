@@ -524,29 +524,35 @@ class HealthDatabaseWriter:
 
         try:
             with self._conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO block_satellite_tracking
-                        (sid, ts, total, gps, glonass, galileo, beidou, sbas, qzss, irnss)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (sid, ts) DO UPDATE SET
-                        total = EXCLUDED.total,
-                        gps = EXCLUDED.gps,
-                        glonass = EXCLUDED.glonass,
-                        galileo = EXCLUDED.galileo,
-                        beidou = EXCLUDED.beidou,
-                        sbas = EXCLUDED.sbas,
-                        qzss = EXCLUDED.qzss,
-                        irnss = EXCLUDED.irnss
-                """, (
-                    sid, ts, total,
-                    by_const.get("GPS"),
-                    by_const.get("GLONASS"),
-                    by_const.get("Galileo"),
-                    by_const.get("BeiDou"),
-                    by_const.get("SBAS"),
-                    by_const.get("QZSS"),
-                    by_const.get("IRNSS")
-                ))
+                cur.execute("SAVEPOINT satellite_tracking")
+                try:
+                    cur.execute("""
+                        INSERT INTO block_satellite_tracking
+                            (sid, ts, total, gps, glonass, galileo, beidou, sbas, qzss, irnss)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (sid, ts) DO UPDATE SET
+                            total = EXCLUDED.total,
+                            gps = EXCLUDED.gps,
+                            glonass = EXCLUDED.glonass,
+                            galileo = EXCLUDED.galileo,
+                            beidou = EXCLUDED.beidou,
+                            sbas = EXCLUDED.sbas,
+                            qzss = EXCLUDED.qzss,
+                            irnss = EXCLUDED.irnss
+                    """, (
+                        sid, ts, total,
+                        by_const.get("GPS"),
+                        by_const.get("GLONASS"),
+                        by_const.get("Galileo"),
+                        by_const.get("BeiDou"),
+                        by_const.get("SBAS"),
+                        by_const.get("QZSS"),
+                        by_const.get("IRNSS")
+                    ))
+                    cur.execute("RELEASE SAVEPOINT satellite_tracking")
+                except Exception:
+                    cur.execute("ROLLBACK TO SAVEPOINT satellite_tracking")
+                    raise
         except Exception as e:
             self.logger.warning(f"block_satellite_tracking write failed: {e}")
 
@@ -556,6 +562,9 @@ class HealthDatabaseWriter:
         """Write to block_logging_status table."""
         active_sessions = logging_data.get("active_sessions", 0)
         status = logging_data.get("status", "unknown")
+        # Truncate to VARCHAR(10) column limit
+        if status and len(status) > 10:
+            status = status[:10]
 
         # Determine which sessions are active
         sessions = logging_data.get("sessions", [])
@@ -567,19 +576,25 @@ class HealthDatabaseWriter:
 
         try:
             with self._conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO block_logging_status
-                        (sid, ts, active_sessions, session_15s_24hr,
-                         session_1hz_1hr, session_status_1hr, status)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (sid, ts) DO UPDATE SET
-                        active_sessions = EXCLUDED.active_sessions,
-                        session_15s_24hr = EXCLUDED.session_15s_24hr,
-                        session_1hz_1hr = EXCLUDED.session_1hz_1hr,
-                        session_status_1hr = EXCLUDED.session_status_1hr,
-                        status = EXCLUDED.status
-                """, (sid, ts, active_sessions,
-                      session_15s, session_1hz, session_status, status))
+                cur.execute("SAVEPOINT logging_status")
+                try:
+                    cur.execute("""
+                        INSERT INTO block_logging_status
+                            (sid, ts, active_sessions, session_15s_24hr,
+                             session_1hz_1hr, session_status_1hr, status)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (sid, ts) DO UPDATE SET
+                            active_sessions = EXCLUDED.active_sessions,
+                            session_15s_24hr = EXCLUDED.session_15s_24hr,
+                            session_1hz_1hr = EXCLUDED.session_1hz_1hr,
+                            session_status_1hr = EXCLUDED.session_status_1hr,
+                            status = EXCLUDED.status
+                    """, (sid, ts, active_sessions,
+                          session_15s, session_1hz, session_status, status))
+                    cur.execute("RELEASE SAVEPOINT logging_status")
+                except Exception:
+                    cur.execute("ROLLBACK TO SAVEPOINT logging_status")
+                    raise
         except Exception as e:
             self.logger.warning(f"block_logging_status write failed: {e}")
 
@@ -602,26 +617,32 @@ class HealthDatabaseWriter:
 
         try:
             with self._conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO block_health_summary
-                        (sid, ts, overall_status, ftp_open, http_open, control_open,
-                         ftp_port, http_port, control_port, status_details)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (sid, ts) DO UPDATE SET
-                        overall_status = EXCLUDED.overall_status,
-                        ftp_open = EXCLUDED.ftp_open,
-                        http_open = EXCLUDED.http_open,
-                        control_open = EXCLUDED.control_open,
-                        ftp_port = EXCLUDED.ftp_port,
-                        http_port = EXCLUDED.http_port,
-                        control_port = EXCLUDED.control_port,
-                        status_details = EXCLUDED.status_details
-                """, (
-                    sid, ts, overall_status,
-                    ftp.get("open"), http.get("open"), control.get("open"),
-                    ftp.get("port"), http.get("port"), control.get("port"),
-                    status_details,
-                ))
+                cur.execute("SAVEPOINT health_summary")
+                try:
+                    cur.execute("""
+                        INSERT INTO block_health_summary
+                            (sid, ts, overall_status, ftp_open, http_open, control_open,
+                             ftp_port, http_port, control_port, status_details)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (sid, ts) DO UPDATE SET
+                            overall_status = EXCLUDED.overall_status,
+                            ftp_open = EXCLUDED.ftp_open,
+                            http_open = EXCLUDED.http_open,
+                            control_open = EXCLUDED.control_open,
+                            ftp_port = EXCLUDED.ftp_port,
+                            http_port = EXCLUDED.http_port,
+                            control_port = EXCLUDED.control_port,
+                            status_details = EXCLUDED.status_details
+                    """, (
+                        sid, ts, overall_status,
+                        ftp.get("open"), http.get("open"), control.get("open"),
+                        ftp.get("port"), http.get("port"), control.get("port"),
+                        status_details,
+                    ))
+                    cur.execute("RELEASE SAVEPOINT health_summary")
+                except Exception:
+                    cur.execute("ROLLBACK TO SAVEPOINT health_summary")
+                    raise
         except Exception as e:
             self.logger.debug(f"block_health_summary write failed: {e}")
 

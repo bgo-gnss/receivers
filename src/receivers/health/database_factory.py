@@ -173,12 +173,15 @@ class _DualConnection:
         self._mirror = mirror
         self._mirror_host = mirror_host
 
-    def cursor(self, *args: Any, **kwargs: Any) -> _DualCursor:
-        return _DualCursor(
-            self._primary.cursor(*args, **kwargs),
-            self._mirror.cursor(*args, **kwargs),
-            self._mirror_host,
-        )
+    def cursor(self, *args: Any, **kwargs: Any) -> Any:
+        primary_cur = self._primary.cursor(*args, **kwargs)
+        try:
+            mirror_cur = self._mirror.cursor(*args, **kwargs)
+        except Exception as exc:
+            logger.warning("Mirror %s cursor failed, degrading to primary-only: %s",
+                           self._mirror_host, exc)
+            return primary_cur
+        return _DualCursor(primary_cur, mirror_cur, self._mirror_host)
 
     def commit(self) -> None:
         self._primary.commit()

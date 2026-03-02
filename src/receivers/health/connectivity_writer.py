@@ -248,6 +248,12 @@ class ConnectivityWriter:
             health_status = "unknown"
             health_response_ms = None
 
+        # Truncate status values to VARCHAR(20) column limit
+        if download_status and len(download_status) > 20:
+            download_status = download_status[:20]
+        if health_status and len(health_status) > 20:
+            health_status = health_status[:20]
+
         # Also check connection.protocol and connection.http_port as fallback
         # (status_task.py format)
         if download_port is None and protocol_info:
