@@ -323,25 +323,37 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
         if run_rinex and status in success_statuses:
             raw_files = result.get('downloaded_files', [])
             if raw_files:
-                # Mark RINEX stage started in pipeline
-                if pipeline_job is not None and pipeline_store is not None:
-                    try:
-                        from .pipeline import PipelineStage
-                        pipeline_job.mark_stage_started(PipelineStage.RINEX)
-                        pipeline_store.save_job(pipeline_job)
-                    except Exception:
-                        pass
+                try:
+                    from ..rinex.async_converter import submit_rinex_conversion
 
-                _run_rinex_conversion(station_id, session_type, raw_files, station_config, logger)
+                    future = submit_rinex_conversion(
+                        station_id, session_type, start_time, end_time
+                    )
 
-                # Mark RINEX stage complete in pipeline
-                if pipeline_job is not None and pipeline_store is not None:
-                    try:
-                        from .pipeline import PipelineStage
-                        pipeline_job.mark_stage_complete(PipelineStage.RINEX)
-                        pipeline_store.save_job(pipeline_job)
-                    except Exception:
-                        pass
+                    # Attach pipeline tracking to the future
+                    if future and pipeline_job is not None and pipeline_store is not None:
+                        try:
+                            from .pipeline import PipelineStage
+                            pipeline_job.mark_stage_started(PipelineStage.RINEX)
+                            pipeline_store.save_job(pipeline_job)
+                        except Exception:
+                            pass
+
+                        def _on_rinex_done(f, pj=pipeline_job, ps=pipeline_store):
+                            try:
+                                from .pipeline import PipelineStage
+                                exc = f.exception()
+                                if exc:
+                                    pj.mark_stage_failed(PipelineStage.RINEX, str(exc))
+                                else:
+                                    pj.mark_stage_complete(PipelineStage.RINEX)
+                                ps.save_job(pj)
+                            except Exception:
+                                pass
+
+                        future.add_done_callback(_on_rinex_done)
+                except Exception as e:
+                    logger.warning(f"⚠️  RINEX submission failed for {station_id}: {e}")
 
         # Extract health data from status_1hr SBF files and write to DB
         if session_type == 'status_1hr' and status in success_statuses:

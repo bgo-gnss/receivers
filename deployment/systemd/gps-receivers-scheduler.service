@@ -3,7 +3,7 @@ Description=GPS Receivers Pipeline Scheduler - Automated GNSS Data Processing
 Documentation=https://github.com/bennigo/receivers
 After=network-online.target postgresql.service
 Wants=network-online.target
-# Optional: Requires=postgresql.service  # Uncomment if DB is required
+Requires=postgresql.service
 
 [Service]
 Type=simple
@@ -14,7 +14,7 @@ WorkingDirectory=/opt/receivers
 # Environment setup
 Environment="GPS_CONFIG_PATH=/etc/gpsconfig"
 Environment="GPS_CACHE_DIR=/var/cache/gps_receivers"
-Environment="PYTHONPATH=/opt/receivers/lib/gtimes/src:/opt/receivers/lib/gps_parser/src:/opt/receivers/src"
+Environment="LANG=en_US.UTF-8"
 
 # Command to run - Pipeline scheduler schedules ALL stations from stations.cfg
 # Use --stations flag only for testing subsets
@@ -49,7 +49,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/cache/gps_receivers /mnt/gpsdata /tmp
+ReadWritePaths=/var/cache/gps_receivers /mnt/gpsdata /tmp /opt/receivers
 
 # Watchdog (restart if no keep-alive for 5 minutes)
 WatchdogSec=300s

@@ -43,7 +43,6 @@ from typing import List, Optional
 from .converter_base import (
     ConversionError,
     NamingConvention,
-    OutputFormat,
     RawToRinexConverter,
     RinexVersion,
 )
@@ -71,9 +70,10 @@ class LeicaConverter(RawToRinexConverter):
         self,
         station_id: str,
         rinex_version: RinexVersion = RinexVersion.RINEX_3,
-        output_format: OutputFormat = OutputFormat.MODERN,
         naming_convention: Optional[NamingConvention] = None,
         apply_header_corrections: bool = True,
+        apply_hatanaka: Optional[bool] = None,
+        compression_format=None,
         teqc_config: Optional[Path] = None,
         keep_intermediate: bool = False,
         loglevel: int = logging.INFO,
@@ -83,10 +83,11 @@ class LeicaConverter(RawToRinexConverter):
         Args:
             station_id: Station identifier (e.g., 'SKFC')
             rinex_version: Target RINEX version (2 or 3)
-            output_format: Output format (modern or legacy)
             naming_convention: Filename convention (SHORT or LONG).
                               If None, defaults based on rinex_version.
             apply_header_corrections: Whether to apply TOS metadata corrections
+            apply_hatanaka: Apply Hatanaka compression (None = read from config)
+            compression_format: File compression format (None = read from config)
             teqc_config: Optional path to teqc configuration file (for teqc fallback)
             keep_intermediate: Keep intermediate files
             loglevel: Logging level
@@ -94,9 +95,10 @@ class LeicaConverter(RawToRinexConverter):
         super().__init__(
             station_id=station_id,
             rinex_version=rinex_version,
-            output_format=output_format,
             naming_convention=naming_convention,
             apply_header_corrections=apply_header_corrections,
+            apply_hatanaka=apply_hatanaka,
+            compression_format=compression_format,
             loglevel=loglevel,
         )
         self.teqc_config = teqc_config

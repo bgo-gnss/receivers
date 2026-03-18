@@ -205,15 +205,15 @@ def _download_station_period(
                 },
             )
 
-        logger.info(f"Station {station_id}: {files_downloaded} files downloaded")
-        logger.info(
+        logger.debug(f"Station {station_id}: {files_downloaded} files downloaded")
+        logger.debug(
             f"Status: {result.get('status')}, Duration: {result.get('duration', 0):.2f}s"
         )
 
         if files_downloaded > 0:
-            logger.info("Downloaded files:")
+            logger.debug("Downloaded files:")
             for file_path in result.get("downloaded_files", []):
-                logger.info(f"  - {file_path}")
+                logger.debug(f"  - {file_path}")
 
     except (ConfigurationError, ConnectionError) as e:
         logger.error(f"Error processing {station_id}: {e}")
@@ -226,6 +226,24 @@ def _download_station_period(
         errors += 1
 
     return files_downloaded, errors, files_checked
+
+
+def _setup_rinex_callbacks(receivers_map: Dict[str, Any], session: str) -> None:
+    """Set per-file RINEX callbacks on receivers that support it.
+
+    Each receiver gets an ``_on_file_archived`` callback that submits the
+    archived file to the RINEX process pool for fire-and-forget conversion.
+    """
+    try:
+        from ..rinex.async_converter import submit_file_rinex
+
+        for sid, receiver in receivers_map.items():
+            def _on_archived(archive_path: str, _sid=sid, _session=session) -> None:
+                submit_file_rinex(_sid, _session, archive_path)
+
+            receiver._on_file_archived = _on_archived
+    except Exception:
+        pass
 
 
 def cmd_download(args) -> int:
@@ -331,6 +349,11 @@ def cmd_download(args) -> int:
         total_downloaded = summary.total_files
         total_errors = summary.failed + summary.unreachable
 
+        # Wait for any pending RINEX conversions before exiting
+        if getattr(args, 'rinex', False):
+            from ..rinex.async_converter import shutdown_rinex_pool
+            shutdown_rinex_pool(wait=True)
+
         logger.info(
             f"Download complete. Total files: {total_downloaded}, Errors: {total_errors}"
         )
@@ -354,6 +377,10 @@ def cmd_download(args) -> int:
         if not receivers_map:
             logger.error("No valid stations to download")
             return 1
+
+        # Set up per-file RINEX callbacks
+        if getattr(args, 'rinex', False):
+            _setup_rinex_callbacks(receivers_map, args.session)
 
         # Outer: periods (newest first), Inner: stations
         periods = generate_period_ranges(
@@ -385,6 +412,10 @@ def cmd_download(args) -> int:
                 total_errors += 1
                 continue
 
+            # Set up per-file RINEX callback
+            if getattr(args, 'rinex', False):
+                _setup_rinex_callbacks({station_id: receiver}, args.session)
+
             dl, err, _checked = _download_station_period(
                 receiver, station_id, start_time, end_time,
                 args, logger, audit_logger,
@@ -393,6 +424,11 @@ def cmd_download(args) -> int:
             )
             total_downloaded += dl
             total_errors += err
+
+    # Wait for pending RINEX conversions before exit (non-parallel paths)
+    if getattr(args, 'rinex', False):
+        from ..rinex.async_converter import shutdown_rinex_pool
+        shutdown_rinex_pool(wait=True)
 
     # Final summary
     logger.info(
@@ -2296,8 +2332,9 @@ def apply_receiver_type_corrections(
 
 
 def _create_rinex_converter(
-    station_id: str, args, rinex_version, output_format, naming_convention,
-    observation_types, logger: logging.Logger, rinex_config: dict = None,
+    station_id: str, args, rinex_version, apply_hatanaka, compression_format,
+    naming_convention, observation_types, logger: logging.Logger,
+    rinex_config: dict = None,
 ):
     """Create appropriate RINEX converter for a station.
 
@@ -2326,7 +2363,8 @@ def _create_rinex_converter(
         converter = SBFConverter(
             station_id=station_id,
             rinex_version=rinex_version,
-            output_format=output_format,
+            apply_hatanaka=apply_hatanaka,
+            compression_format=compression_format,
             naming_convention=naming_convention,
             apply_header_corrections=not getattr(args, "no_header_correction", False),
             observation_types=observation_types,
@@ -2354,7 +2392,8 @@ def _create_rinex_converter(
             converter = TrimbleNativeConverter(
                 station_id=station_id,
                 rinex_version=rinex_version,
-                output_format=output_format,
+                apply_hatanaka=apply_hatanaka,
+                compression_format=compression_format,
                 naming_convention=naming_convention,
                 apply_header_corrections=not getattr(args, "no_header_correction", False),
                 loglevel=args.loglevel,
@@ -2363,7 +2402,8 @@ def _create_rinex_converter(
             converter = TrimbleConverter(
                 station_id=station_id,
                 rinex_version=rinex_version,
-                output_format=output_format,
+                apply_hatanaka=apply_hatanaka,
+                compression_format=compression_format,
                 naming_convention=naming_convention,
                 apply_header_corrections=not getattr(args, "no_header_correction", False),
                 keep_intermediate=getattr(args, "keep_intermediate", False),
@@ -2391,7 +2431,8 @@ def _create_rinex_converter(
             converter = TrimbleNativeConverter(
                 station_id=station_id,
                 rinex_version=rinex_version,
-                output_format=output_format,
+                apply_hatanaka=apply_hatanaka,
+                compression_format=compression_format,
                 naming_convention=naming_convention,
                 apply_header_corrections=not getattr(args, "no_header_correction", False),
                 loglevel=args.loglevel,
@@ -2400,7 +2441,8 @@ def _create_rinex_converter(
             converter = TrimbleConverter(
                 station_id=station_id,
                 rinex_version=rinex_version,
-                output_format=output_format,
+                apply_hatanaka=apply_hatanaka,
+                compression_format=compression_format,
                 naming_convention=naming_convention,
                 apply_header_corrections=not getattr(args, "no_header_correction", False),
                 keep_intermediate=getattr(args, "keep_intermediate", False),
@@ -2411,7 +2453,8 @@ def _create_rinex_converter(
         converter = LeicaConverter(
             station_id=station_id,
             rinex_version=rinex_version,
-            output_format=output_format,
+            apply_hatanaka=apply_hatanaka,
+            compression_format=compression_format,
             naming_convention=naming_convention,
             apply_header_corrections=not getattr(args, "no_header_correction", False),
             keep_intermediate=getattr(args, "keep_intermediate", False),
@@ -2552,9 +2595,9 @@ def cmd_rinex(args) -> int:
             SBFConverter,
             TrimbleConverter,
             RinexVersion,
-            OutputFormat,
             NamingConvention,
         )
+        from ..rinex.converter_base import CompressionFormat
     except ImportError as e:
         logger.error(f"RINEX module not available: {e}")
         return 1
@@ -2586,13 +2629,17 @@ def cmd_rinex(args) -> int:
         config_version = rinex_config.get("default_version", 3)
         rinex_version = version_map.get(config_version, RinexVersion.RINEX_3)
 
-    # Parse output format (None means use config defaults)
+    # Parse output format → apply_hatanaka + compression_format
+    # None means "read from config" (the default)
     if args.output_format == "legacy":
-        output_format = OutputFormat.LEGACY
+        apply_hatanaka = True
+        compression_format = CompressionFormat.Z
     elif args.output_format == "modern":
-        output_format = OutputFormat.MODERN
+        apply_hatanaka = False
+        compression_format = CompressionFormat.GZ
     else:
-        output_format = None  # Let converter use config defaults
+        apply_hatanaka = None  # Let converter read from config
+        compression_format = None
 
     # Parse naming convention (CLI overrides config)
     if args.naming is not None:
@@ -2668,8 +2715,9 @@ def cmd_rinex(args) -> int:
         converters: Dict[str, tuple] = {}
         for station_id in stations:
             conv, ext, _ = _create_rinex_converter(
-                station_id, args, rinex_version, output_format,
-                naming_convention, observation_types, logger, rinex_config,
+                station_id, args, rinex_version, apply_hatanaka,
+                compression_format, naming_convention, observation_types,
+                logger, rinex_config,
             )
             if conv is not None:
                 converters[station_id] = (conv, ext)
@@ -2707,8 +2755,9 @@ def cmd_rinex(args) -> int:
             logger.info(f"{'='*60}")
 
             conv, ext, _ = _create_rinex_converter(
-                station_id, args, rinex_version, output_format,
-                naming_convention, observation_types, logger, rinex_config,
+                station_id, args, rinex_version, apply_hatanaka,
+                compression_format, naming_convention, observation_types,
+                logger, rinex_config,
             )
             if conv is None:
                 total_skipped += 1

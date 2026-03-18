@@ -8,22 +8,21 @@ Using bin2asc ensures we get the official Septentrio-validated values
 without needing to manually parse the binary format.
 """
 
-import subprocess
 import csv
-import tempfile
 import shutil
-from pathlib import Path
-from typing import List, Dict, Optional
+import subprocess
+import tempfile
 from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Dict, List, Optional
 
-from .compression_detector import CompressionDetector, CompressionConverter
-
+from .compression_detector import CompressionConverter, CompressionDetector
 
 # GPS epoch: January 6, 1980 00:00:00 UTC
 GPS_EPOCH = datetime(1980, 1, 6, 0, 0, 0)
 
 # RxTools bin2asc location - find from PATH or fallback to default
-BIN2ASC_PATH = shutil.which('bin2asc') or '/usr/local/rxtools/bin/bin2asc'
+BIN2ASC_PATH = shutil.which("bin2asc") or "/usr/local/rxtools/bin/bin2asc"
 
 
 def gps_time_to_datetime(tow_seconds: float, wnc: int) -> datetime:
@@ -31,8 +30,9 @@ def gps_time_to_datetime(tow_seconds: float, wnc: int) -> datetime:
     return GPS_EPOCH + timedelta(weeks=wnc, seconds=tow_seconds)
 
 
-def extract_sbf_message(sbf_file: Path, message_name: str,
-                        output_dir: Optional[Path] = None) -> Path:
+def extract_sbf_message(
+    sbf_file: Path, message_name: str, output_dir: Optional[Path] = None
+) -> Path:
     """
     Extract a specific SBF message type to CSV using bin2asc.
 
@@ -81,7 +81,7 @@ def extract_sbf_message(sbf_file: Path, message_name: str,
         # Get base name without compression extension
         # If stem already ends with .sbf, use it; otherwise add .sbf
         base_name = sbf_file.stem
-        if not base_name.endswith('.sbf'):
+        if not base_name.endswith(".sbf"):
             base_name = f"{base_name}.sbf"
 
         temp_decompressed = output_dir / base_name
@@ -96,19 +96,17 @@ def extract_sbf_message(sbf_file: Path, message_name: str,
         # Output filename format: input_SBF_MessageName.txt
         cmd = [
             BIN2ASC_PATH,
-            '-f', str(file_to_process),
-            '-m', message_name,
-            '-t',  # Include title columns
-            '-p', str(output_dir)
+            "-f",
+            str(file_to_process),
+            "-m",
+            message_name,
+            "-t",  # Include title columns
+            "-p",
+            str(output_dir),
         ]
 
         try:
-            result = subprocess.run(
-                cmd,
-                check=True,
-                capture_output=True,
-                text=True
-            )
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
         except subprocess.CalledProcessError as e:
             raise RuntimeError(
                 f"bin2asc failed for {message_name}:\n"
@@ -144,12 +142,12 @@ def parse_csv_to_dict(csv_file: Path, skip_separator: bool = True) -> List[Dict]
     """
     data = []
 
-    with open(csv_file, 'r') as f:
+    with open(csv_file) as f:
         reader = csv.DictReader(f)
 
         for row in reader:
             # Skip separator line (usually starts with dashes)
-            if skip_separator and any(v.startswith('---') for v in row.values()):
+            if skip_separator and any(v.startswith("---") for v in row.values()):
                 continue
 
             # Convert numeric fields
@@ -166,72 +164,48 @@ def parse_csv_to_dict(csv_file: Path, skip_separator: bool = True) -> List[Dict]
     return data
 
 
+def _enrich_rows_with_datetime(rows: List[Dict]) -> None:
+    """Add a ``datetime`` key to each row that has GPS time fields (TOW + WNc)."""
+    for row in rows:
+        if "TOW [s]" in row and "WNc [w]" in row:
+            row["datetime"] = gps_time_to_datetime(row["TOW [s]"], int(row["WNc [w]"]))
+
+
+def _extract_simple_block(sbf_file: Path, message_name: str) -> List[Dict]:
+    """Extract an SBF message, parse CSV, enrich with datetime, clean up."""
+    csv_file = extract_sbf_message(sbf_file, message_name)
+    data = parse_csv_to_dict(csv_file)
+    _enrich_rows_with_datetime(data)
+    csv_file.unlink()
+    return data
+
+
 def extract_power_status(sbf_file: Path) -> List[Dict]:
-    """
-    Extract PowerStatus data from SBF file.
+    """Extract PowerStatus data from SBF file.
 
     Returns:
         List of dicts with keys: TOW, WNc, PowerSource, VinVoltage, datetime
     """
-    csv_file = extract_sbf_message(sbf_file, 'PowerStatus')
-    data = parse_csv_to_dict(csv_file)
-
-    # Add datetime field
-    for row in data:
-        if 'TOW [s]' in row and 'WNc [w]' in row:
-            row['datetime'] = gps_time_to_datetime(row['TOW [s]'], int(row['WNc [w]']))
-
-    # Clean up temp file
-    csv_file.unlink()
-
-    return data
+    return _extract_simple_block(sbf_file, "PowerStatus")
 
 
 def extract_receiver_status(sbf_file: Path) -> List[Dict]:
-    """
-    Extract ReceiverStatus2 data from SBF file.
+    """Extract ReceiverStatus2 data from SBF file.
 
     Returns:
         List of dicts with receiver status fields including datetime
     """
-    csv_file = extract_sbf_message(sbf_file, 'ReceiverStatus2')
-    data = parse_csv_to_dict(csv_file)
-
-    # Add datetime field
-    for row in data:
-        if 'TOW [s]' in row and 'WNc [w]' in row:
-            row['datetime'] = gps_time_to_datetime(row['TOW [s]'], int(row['WNc [w]']))
-
-    # Clean up temp file
-    csv_file.unlink()
-
-    return data
+    return _extract_simple_block(sbf_file, "ReceiverStatus2")
 
 
 def extract_disk_status(sbf_file: Path) -> List[Dict]:
     """Extract DiskStatus data from SBF file."""
-    csv_file = extract_sbf_message(sbf_file, 'DiskStatus')
-    data = parse_csv_to_dict(csv_file)
-
-    for row in data:
-        if 'TOW [s]' in row and 'WNc [w]' in row:
-            row['datetime'] = gps_time_to_datetime(row['TOW [s]'], int(row['WNc [w]']))
-
-    csv_file.unlink()
-    return data
+    return _extract_simple_block(sbf_file, "DiskStatus")
 
 
 def extract_quality_ind(sbf_file: Path) -> List[Dict]:
     """Extract QualityInd data from SBF file."""
-    csv_file = extract_sbf_message(sbf_file, 'QualityInd')
-    data = parse_csv_to_dict(csv_file)
-
-    for row in data:
-        if 'TOW [s]' in row and 'WNc [w]' in row:
-            row['datetime'] = gps_time_to_datetime(row['TOW [s]'], int(row['WNc [w]']))
-
-    csv_file.unlink()
-    return data
+    return _extract_simple_block(sbf_file, "QualityInd")
 
 
 def extract_channel_status(sbf_file: Path) -> List[Dict]:
@@ -251,45 +225,49 @@ def extract_channel_status(sbf_file: Path) -> List[Dict]:
     """
     from collections import defaultdict
 
-    csv_file = extract_sbf_message(sbf_file, 'ChannelStatus')
+    csv_file = extract_sbf_message(sbf_file, "ChannelStatus")
     data = parse_csv_to_dict(csv_file)
 
     # Group by timestamp and count satellites by GNSS system
-    timestamps = defaultdict(lambda: {
-        'GPS': 0,
-        'GLONASS': 0,
-        'Galileo': 0,
-        'BeiDou': 0,
-        'QZSS': 0,
-        'IRNSS': 0,
-        'SBAS': 0
-    })
+    timestamps = defaultdict(
+        lambda: {
+            "GPS": 0,
+            "GLONASS": 0,
+            "Galileo": 0,
+            "BeiDou": 0,
+            "QZSS": 0,
+            "IRNSS": 0,
+            "SBAS": 0,
+        }
+    )
 
     # GNSS system mapping based on SVID prefix
     gnss_map = {
-        'G': 'GPS',
-        'R': 'GLONASS',
-        'E': 'Galileo',
-        'C': 'BeiDou',
-        'J': 'QZSS',
-        'I': 'IRNSS',
-        'S': 'SBAS'
+        "G": "GPS",
+        "R": "GLONASS",
+        "E": "Galileo",
+        "C": "BeiDou",
+        "J": "QZSS",
+        "I": "IRNSS",
+        "S": "SBAS",
     }
 
+    _enrich_rows_with_datetime(data)
+
     for row in data:
-        if 'TOW [s]' not in row or 'WNc [w]' not in row:
+        dt = row.get("datetime")
+        if dt is None:
             continue
 
-        dt = gps_time_to_datetime(row['TOW [s]'], int(row['WNc [w]']))
-        svid = row.get('SVID', '')
+        svid = row.get("SVID", "")
 
         # Check if satellite is being tracked (not just visible)
         # TrackingStatus Sig 1 should be "Tracking" (not "Idle", "Search", or "Not Used")
-        tracking_status = row.get('TrackingStatus Sig 1', '')
-        pvt_status = row.get('PVTStatus Sig 1', '')
+        tracking_status = row.get("TrackingStatus Sig 1", "")
+        pvt_status = row.get("PVTStatus Sig 1", "")
 
         # Count satellite if it's being tracked and used in solution
-        if tracking_status == 'Tracking' and pvt_status == 'Used':
+        if tracking_status == "Tracking" and pvt_status == "Used":
             if svid and len(svid) > 0:
                 prefix = svid[0]
                 gnss_system = gnss_map.get(prefix)
@@ -299,8 +277,8 @@ def extract_channel_status(sbf_file: Path) -> List[Dict]:
     # Convert to list of dicts
     result = []
     for dt, counts in sorted(timestamps.items()):
-        counts['datetime'] = dt
-        counts['total'] = sum(counts[sys] for sys in gnss_map.values())
+        counts["datetime"] = dt
+        counts["total"] = sum(counts[sys] for sys in gnss_map.values())
         result.append(counts)
 
     csv_file.unlink()
@@ -325,26 +303,26 @@ def extract_pvt_geodetic(sbf_file: Path) -> List[Dict]:
     """
     import math
 
-    csv_file = extract_sbf_message(sbf_file, 'PVTGeodetic2')
+    csv_file = extract_sbf_message(sbf_file, "PVTGeodetic2")
     data = parse_csv_to_dict(csv_file)
+    _enrich_rows_with_datetime(data)
 
     result = []
     for row in data:
-        if 'TOW [s]' not in row or 'WNc [w]' not in row:
+        dt = row.get("datetime")
+        if dt is None:
             continue
-
-        dt = gps_time_to_datetime(row['TOW [s]'], int(row['WNc [w]']))
 
         # Extract latitude (convert from radians if needed)
         lat = None
-        for key in ['Latitude [rad]', 'Latitude [deg]', 'Latitude']:
+        for key in ["Latitude [rad]", "Latitude [deg]", "Latitude"]:
             if key in row:
                 try:
                     val = float(row[key])
                     if math.isnan(val):
                         break
                     # Convert radians to degrees if needed
-                    if '[rad]' in key or abs(val) < math.pi:
+                    if "[rad]" in key or abs(val) < math.pi:
                         val = math.degrees(val)
                     if abs(val) <= 90:
                         lat = round(val, 8)
@@ -354,14 +332,14 @@ def extract_pvt_geodetic(sbf_file: Path) -> List[Dict]:
 
         # Extract longitude (convert from radians if needed)
         lon = None
-        for key in ['Longitude [rad]', 'Longitude [deg]', 'Longitude']:
+        for key in ["Longitude [rad]", "Longitude [deg]", "Longitude"]:
             if key in row:
                 try:
                     val = float(row[key])
                     if math.isnan(val):
                         break
                     # Convert radians to degrees if needed
-                    if '[rad]' in key or abs(val) < math.pi:
+                    if "[rad]" in key or abs(val) < math.pi:
                         val = math.degrees(val)
                     if abs(val) <= 180:
                         lon = round(val, 8)
@@ -371,7 +349,7 @@ def extract_pvt_geodetic(sbf_file: Path) -> List[Dict]:
 
         # Extract height
         height = None
-        for key in ['Height [m]', 'Height']:
+        for key in ["Height [m]", "Height"]:
             if key in row:
                 try:
                     val = float(row[key])
@@ -383,7 +361,7 @@ def extract_pvt_geodetic(sbf_file: Path) -> List[Dict]:
 
         # Extract accuracy
         h_accuracy = None
-        for key in ['HAccuracy [m]', 'HAccuracy']:
+        for key in ["HAccuracy [m]", "HAccuracy"]:
             if key in row:
                 try:
                     val = float(row[key])
@@ -394,7 +372,7 @@ def extract_pvt_geodetic(sbf_file: Path) -> List[Dict]:
                     pass
 
         v_accuracy = None
-        for key in ['VAccuracy [m]', 'VAccuracy']:
+        for key in ["VAccuracy [m]", "VAccuracy"]:
             if key in row:
                 try:
                     val = float(row[key])
@@ -406,7 +384,7 @@ def extract_pvt_geodetic(sbf_file: Path) -> List[Dict]:
 
         # Extract number of satellites
         nr_sv = None
-        for key in ['NrSV', 'NrSv']:
+        for key in ["NrSV", "NrSv"]:
             if key in row:
                 try:
                     nr_sv = int(row[key])
@@ -416,20 +394,20 @@ def extract_pvt_geodetic(sbf_file: Path) -> List[Dict]:
 
         # Extract fix type
         fix_type = None
-        for key in ['Type', 'Mode']:
+        for key in ["Type", "Mode"]:
             if key in row:
                 fix_type = str(row[key]).strip()
                 break
 
         record = {
-            'datetime': dt,
-            'latitude': lat,
-            'longitude': lon,
-            'height': height,
-            'h_accuracy': h_accuracy,
-            'v_accuracy': v_accuracy,
-            'nr_sv': nr_sv,
-            'fix_type': fix_type
+            "datetime": dt,
+            "latitude": lat,
+            "longitude": lon,
+            "height": height,
+            "h_accuracy": h_accuracy,
+            "v_accuracy": v_accuracy,
+            "nr_sv": nr_sv,
+            "fix_type": fix_type,
         }
         result.append(record)
 
@@ -446,32 +424,62 @@ def extract_wifi_status(sbf_file: Path) -> List[Dict]:
             - wifi_enabled: bool (True if WiFi AP is active)
             - status: str (raw status value for debugging)
     """
-    csv_file = extract_sbf_message(sbf_file, 'WiFiAPStatus')
+    csv_file = extract_sbf_message(sbf_file, "WiFiAPStatus")
     data = parse_csv_to_dict(csv_file)
+    _enrich_rows_with_datetime(data)
 
     result = []
     for row in data:
-        if 'TOW [s]' not in row or 'WNc [w]' not in row:
+        dt = row.get("datetime")
+        if dt is None:
             continue
-
-        dt = gps_time_to_datetime(row['TOW [s]'], int(row['WNc [w]']))
 
         # Extract status field - typical values might be:
         # "Running", "Active", "Enabled" = WiFi is on
         # "Disabled", "Stopped", "Inactive" = WiFi is off
-        status_raw = row.get('Status', row.get('State', 'Unknown'))
+        status_raw = row.get("Status", row.get("State", "Unknown"))
 
         # Determine if WiFi is enabled based on status value
-        enabled = status_raw.lower() in ['running', 'active', 'enabled', 'on']
+        enabled = status_raw.lower() in ["running", "active", "enabled", "on"]
 
-        result.append({
-            'datetime': dt,
-            'wifi_enabled': enabled,
-            'status': status_raw
-        })
+        result.append({"datetime": dt, "wifi_enabled": enabled, "status": status_raw})
 
     csv_file.unlink()
     return result
+
+
+def parse_sbf_bytes(sbf_data: bytes, message_name: str) -> List[Dict]:
+    """Parse raw SBF bytes through bin2asc and return parsed CSV records.
+
+    Saves sbf_data to a temp file, runs bin2asc, and parses the CSV output.
+    Handles the full bin2asc subprocess lifecycle.
+
+    Args:
+        sbf_data: Raw SBF binary data
+        message_name: SBF message name (e.g., 'DiskStatus', 'ReceiverStatus2')
+
+    Returns:
+        List of parsed record dicts (empty if no data or bin2asc fails)
+
+    Raises:
+        FileNotFoundError: If bin2asc is not available
+    """
+    if not Path(BIN2ASC_PATH).exists():
+        raise FileNotFoundError(f"bin2asc not found at {BIN2ASC_PATH}")
+
+    tmp_dir = tempfile.mkdtemp(prefix="sbf_parse_")
+    try:
+        sbf_path = Path(tmp_dir) / "data.sbf"
+        sbf_path.write_bytes(sbf_data)
+
+        csv_file = extract_sbf_message(sbf_path, message_name, output_dir=Path(tmp_dir))
+        data = parse_csv_to_dict(csv_file)
+        _enrich_rows_with_datetime(data)
+        return data
+    except (RuntimeError, subprocess.CalledProcessError):
+        return []
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def list_available_messages() -> List[str]:
@@ -484,14 +492,14 @@ def list_available_messages() -> List[str]:
     if not Path(BIN2ASC_PATH).exists():
         raise FileNotFoundError(f"RxTools bin2asc not found at {BIN2ASC_PATH}")
 
-    cmd = [BIN2ASC_PATH, '-l']
+    cmd = [BIN2ASC_PATH, "-l"]
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     # Parse output to get message names
     messages = []
-    for line in result.stdout.split('\n'):
+    for line in result.stdout.split("\n"):
         line = line.strip()
-        if line.startswith('-'):
+        if line.startswith("-"):
             # Message line format: "- MessageName"
             msg_name = line[1:].strip()
             if msg_name:
@@ -516,7 +524,11 @@ def detect_blocks_in_file(sbf_file: Path) -> List[str]:
         raise FileNotFoundError(f"SBF file not found: {sbf_file}")
 
     # sbfanalyzer can be sbfanalyzer or sbfblocks
-    sbfanalyzer_path = shutil.which('sbfanalyzer') or shutil.which('sbfblocks') or '/usr/local/rxtools/bin/sbfanalyzer'
+    sbfanalyzer_path = (
+        shutil.which("sbfanalyzer")
+        or shutil.which("sbfblocks")
+        or "/usr/local/rxtools/bin/sbfanalyzer"
+    )
 
     if not Path(sbfanalyzer_path).exists():
         raise FileNotFoundError(f"RxTools sbfanalyzer not found at {sbfanalyzer_path}")
@@ -532,7 +544,7 @@ def detect_blocks_in_file(sbf_file: Path) -> List[str]:
     if compression_info:
         format_name, _ = compression_info
         base_name = sbf_file.stem
-        if not base_name.endswith('.sbf'):
+        if not base_name.endswith(".sbf"):
             base_name = f"{base_name}.sbf"
 
         temp_decompressed = Path(tempfile.gettempdir()) / base_name
@@ -550,7 +562,7 @@ def detect_blocks_in_file(sbf_file: Path) -> List[str]:
         # Parse output to extract block names
         # Output format varies, but typically shows block names
         blocks = set()
-        for line in result.stdout.split('\n'):
+        for line in result.stdout.split("\n"):
             # Look for block names (usually capitalized words)
             # sbfanalyzer output shows block IDs and names
             parts = line.strip().split()
@@ -582,14 +594,14 @@ def clean_field_name(field_name: str) -> tuple[str, Optional[str]]:
     import re
 
     # Extract unit from brackets
-    unit_match = re.search(r'\[([^\]]+)\]', field_name)
+    unit_match = re.search(r"\[([^\]]+)\]", field_name)
     unit = unit_match.group(1) if unit_match else None
 
     # Remove unit brackets
-    clean = re.sub(r'\s*\[[^\]]+\]', '', field_name)
+    clean = re.sub(r"\s*\[[^\]]+\]", "", field_name)
 
     # Remove spaces
-    clean = clean.replace(' ', '')
+    clean = clean.replace(" ", "")
 
     return clean, unit
 
@@ -614,26 +626,25 @@ def extract_block_with_metadata(sbf_file: Path, block_name: str) -> Dict:
 
     if not raw_data:
         csv_file.unlink()
-        return {'fields': {}, 'data': []}
+        return {"fields": {}, "data": []}
 
     # Build field metadata
     fields = {}
     sample_row = raw_data[0]
     for raw_field in sample_row.keys():
         clean_name, unit = clean_field_name(raw_field)
-        fields[clean_name] = {
-            'raw_name': raw_field,
-            'unit': unit
-        }
+        fields[clean_name] = {"raw_name": raw_field, "unit": unit}
+
+    # Enrich with datetime before cleaning field names
+    _enrich_rows_with_datetime(raw_data)
 
     # Clean up data
     cleaned_data = []
     for row in raw_data:
         cleaned_row = {}
 
-        # Add datetime if available
-        if 'TOW [s]' in row and 'WNc [w]' in row:
-            cleaned_row['datetime'] = gps_time_to_datetime(row['TOW [s]'], int(row['WNc [w]']))
+        if "datetime" in row:
+            cleaned_row["datetime"] = row["datetime"]
 
         # Clean field names
         for raw_field, value in row.items():
@@ -644,10 +655,7 @@ def extract_block_with_metadata(sbf_file: Path, block_name: str) -> Dict:
 
     csv_file.unlink()
 
-    return {
-        'fields': fields,
-        'data': cleaned_data
-    }
+    return {"fields": fields, "data": cleaned_data}
 
 
 def main():
@@ -669,9 +677,11 @@ def main():
     print(f"Found {len(power_data)} PowerStatus records")
     if power_data:
         for i, record in enumerate(power_data[:3]):
-            print(f"  [{i}] {record['datetime']}: "
-                  f"{record.get('Vin Voltage [V]', 'N/A')}V "
-                  f"({record.get('Power Source', 'N/A')})")
+            print(
+                f"  [{i}] {record['datetime']}: "
+                f"{record.get('Vin Voltage [V]', 'N/A')}V "
+                f"({record.get('Power Source', 'N/A')})"
+            )
 
     # Extract ReceiverStatus
     print("\n=== ReceiverStatus2 ===")
@@ -682,9 +692,9 @@ def main():
             print(f"  [{i}] {record['datetime']}")
             # Print available fields
             for key in list(record.keys())[:5]:
-                if key != 'datetime':
+                if key != "datetime":
                     print(f"      {key}: {record[key]}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

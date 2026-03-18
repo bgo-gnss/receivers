@@ -120,9 +120,7 @@ class ParallelSummary:
             "total_duration": round(self.total_duration, 2),
             "retried": self.retried,
             "retry_recovered": self.retry_recovered,
-            "stations": {
-                sid: r.to_dict() for sid, r in self.results.items()
-            },
+            "stations": {sid: r.to_dict() for sid, r in self.results.items()},
         }
 
 
@@ -152,11 +150,18 @@ def _record_parallel_outcome(
 
 
 def _check_health_ping_online(station_id: str) -> bool | None:
-    """Check health monitor's debounced ping status for a station.
+    """Check health monitor's debounced reachability for a station.
 
-    Uses station_connectivity.is_online from the health monitor (updated
-    every 5 min, requires 2 consecutive failures to mark offline).
-    Returns None if no recent data is available.
+    Checks two sources in a single query:
+    1. ICMP ping (block_ping_status) — debounced, any of last 3 OK
+    2. Download port status (block_port_status) — fallback for Trimble
+       receivers that don't respond to ICMP but have open FTP/HTTP ports
+
+    Does NOT trust NTRIP-only connectivity (station_connectivity view)
+    since NTRIP proves the receiver has internet but NOT that the download
+    server can reach its private 10.x IP.
+
+    Returns True if ping OR port is OK, False if both fail, None if no data.
     """
     try:
         from ..health.database_factory import DatabaseConnectionFactory
@@ -165,15 +170,68 @@ def _check_health_ping_online(station_id: str) -> bool | None:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT is_online FROM station_connectivity
-                    WHERE sid = %s AND last_check > NOW() - INTERVAL '10 minutes'
+                    SELECT
+                        (SELECT bool_or(is_online) FROM (
+                            SELECT is_online FROM block_ping_status
+                            WHERE sid = %s AND ts > NOW() - INTERVAL '1 hour'
+                            ORDER BY ts DESC LIMIT 3
+                        ) p) AS ping_ok,
+                        (SELECT bool_or(download_status IN ('open', 'ok')) FROM (
+                            SELECT download_status FROM block_port_status
+                            WHERE sid = %s AND ts > NOW() - INTERVAL '1 hour'
+                            ORDER BY ts DESC LIMIT 3
+                        ) q) AS port_ok
                     """,
-                    (station_id,),
+                    (station_id, station_id),
                 )
                 row = cur.fetchone()
-                return row[0] if row else None
+                if row is None:
+                    return None
+                ping_ok, port_ok = row
+                if ping_ok is True or port_ok is True:
+                    return True
+                # Both failed or no data
+                has_data = ping_ok is not None or port_ok is not None
+                return False if has_data else None
     except Exception:
         return None
+
+
+def _bail(
+    station_id: str,
+    args: Any,
+    t0: float,
+    attempt: int,
+    status: str,
+    msg: str,
+    router_ip: str | None = None,
+    files_downloaded: int = 0,
+    outcome_override: str | None = None,
+) -> StationResult:
+    """Record outcome and return a StationResult for early/post-download exit paths.
+
+    Args:
+        outcome_override: If set, use this as the download_log outcome instead
+            of ``status``.  Needed when StationResult.status differs from the
+            download_log outcome (e.g. wall-timeout: status="failed" but
+            outcome="stall_timeout").
+    """
+    if router_ip:
+        _router_cache.mark_failed(router_ip)
+    duration = time.monotonic() - t0
+    _record_parallel_outcome(
+        station_id, args, outcome_override or status, duration, attempt, msg
+    )
+    # Only populate error_message for non-success statuses
+    is_success = status in ("completed", "up_to_date")
+    return StationResult(
+        station_id=station_id,
+        status=status,
+        files_downloaded=files_downloaded,
+        duration=duration,
+        attempt=attempt,
+        error_message=None if is_success else msg,
+    )
 
 
 def _split_into_groups(items: list, group_size: int) -> list[list]:
@@ -190,6 +248,7 @@ def _download_one_station(
     afrequency: str,
     reverse_chronological: bool,
     attempt: int = 1,
+    skip_backoff_check: bool = False,
 ) -> StationResult:
     """Download data for a single station (runs in a thread worker).
 
@@ -200,7 +259,7 @@ def _download_one_station(
     t0 = time.monotonic()
 
     # Lazy import to avoid circular dependencies
-    from .main import _validate_station_for_download, _download_station_period
+    from .main import _download_station_period, _validate_station_for_download
 
     worker_logger = logging.getLogger(f"receivers.parallel.{station_id}")
 
@@ -209,16 +268,13 @@ def _download_one_station(
         station_id, worker_logger, session=args.session
     )
     if receiver is None:
-        _record_parallel_outcome(
-            station_id, args, "failed", time.monotonic() - t0,
-            attempt, "Station validation failed (config/session)",
-        )
-        return StationResult(
-            station_id=station_id,
-            status="skipped",
-            duration=time.monotonic() - t0,
-            attempt=attempt,
-            error_message="Station validation failed (config/session)",
+        return _bail(
+            station_id,
+            args,
+            t0,
+            attempt,
+            "skipped",
+            "Station validation failed (config/session)",
         )
 
     # --- Pre-download gates (skip known-bad stations quickly) ---
@@ -232,19 +288,12 @@ def _download_one_station(
         if health_skip:
             msg = f"Health gate: {health_skip}"
             worker_logger.info(f"⏭️  {station_id}: {msg}")
-            _record_parallel_outcome(
-                station_id, args, "failed", time.monotonic() - t0,
-                attempt, msg,
-            )
-            return StationResult(
-                station_id=station_id,
-                status="skipped",
-                duration=time.monotonic() - t0,
-                attempt=attempt,
-                error_message=msg,
-            )
+            return _bail(station_id, args, t0, attempt, "skipped", msg)
     except Exception:
         pass  # Health gate is advisory — failures must not block downloads
+
+    # Single health-ping lookup, reused by backoff override and connectivity check
+    ping_online = _check_health_ping_online(station_id)
 
     # Consecutive failure backoff: skip stations that keep failing
     # But override if health monitor or a quick ping shows the station is online
@@ -252,28 +301,18 @@ def _download_one_station(
     # flaps online/offline. Need "flapping station" detection that doesn't
     # penalize power-related connectivity issues.
     try:
-        from ..utils.stall_timeout import should_skip_station, clear_backoff_cache
+        from ..utils.stall_timeout import clear_backoff_cache, should_skip_station
 
-        if should_skip_station(station_id):
+        if not skip_backoff_check and should_skip_station(station_id):
             # Prefer health monitor's debounced ping (2-consecutive-failure
             # threshold, updated every 5 min) over a single fresh ping
-            online = _check_health_ping_online(station_id)
+            online = ping_online
             if online is None:
                 online = receiver._quick_ping()  # Fallback if no health data
             if not online:
                 msg = "Consecutive failure backoff (last 5 attempts failed, still offline)"
                 worker_logger.info(f"⏭️  {station_id}: {msg}")
-                _record_parallel_outcome(
-                    station_id, args, "failed", time.monotonic() - t0,
-                    attempt, msg,
-                )
-                return StationResult(
-                    station_id=station_id,
-                    status="skipped",
-                    duration=time.monotonic() - t0,
-                    attempt=attempt,
-                    error_message=msg,
-                )
+                return _bail(station_id, args, t0, attempt, "skipped", msg)
             else:
                 source = "health monitor" if online is True else "ping"
                 worker_logger.info(
@@ -288,34 +327,54 @@ def _download_one_station(
     if router_ip and _router_cache.is_failed(router_ip):
         msg = f"Router {router_ip} group skip (recently unreachable)"
         worker_logger.info(f"⏭️  {station_id}: {msg}")
-        _record_parallel_outcome(
-            station_id, args, "unreachable", time.monotonic() - t0,
-            attempt, msg,
-        )
-        return StationResult(
-            station_id=station_id,
-            status="unreachable",
-            duration=time.monotonic() - t0,
-            attempt=attempt,
-            error_message=msg,
-        )
+        return _bail(station_id, args, t0, attempt, "unreachable", msg)
 
-    # Quick connectivity check before attempting download
-    if not receiver._quick_ping():
-        # Mark this router as failed so other stations behind it skip quickly
-        if router_ip:
-            _router_cache.mark_failed(router_ip)
-        _record_parallel_outcome(
-            station_id, args, "unreachable", time.monotonic() - t0,
-            attempt, "Ping check failed",
+    # Quick connectivity check before attempting download.
+    # Prefer the health monitor's debounced view (tolerates lossy 3G/4G links)
+    # over a single live ICMP ping that fails on 25% packet loss.
+    if ping_online is True:
+        # Health monitor confirms station is online — skip the live ping
+        pass
+    elif ping_online is False:
+        # Health monitor confirms station is offline — skip without pinging
+        return _bail(
+            station_id,
+            args,
+            t0,
+            attempt,
+            "unreachable",
+            "Connectivity check: offline (health monitor)",
+            router_ip=router_ip,
         )
-        return StationResult(
-            station_id=station_id,
-            status="unreachable",
-            duration=time.monotonic() - t0,
-            attempt=attempt,
-            error_message="Ping check failed",
-        )
+    else:
+        # No recent health data — fall back to live ICMP ping
+        if not receiver._quick_ping():
+            return _bail(
+                station_id,
+                args,
+                t0,
+                attempt,
+                "unreachable",
+                "Ping check failed",
+                router_ip=router_ip,
+            )
+
+    # Set up per-file RINEX callback if --rinex flag is set.
+    # PolaRX5 calls _on_file_archived after each file is archived, so RINEX
+    # conversion starts immediately — not after the whole station finishes.
+    # Non-PolaRX5 receivers ignore this; per-station fallback fires below.
+    _rinex_file_count = []  # tracks per-file callbacks (thread-safe append)
+    if getattr(args, "rinex", False):
+        try:
+            from ..rinex.async_converter import submit_file_rinex
+
+            def _on_archived(archive_path: str) -> None:
+                submit_file_rinex(station_id, args.session, archive_path)
+                _rinex_file_count.append(1)
+
+            receiver._on_file_archived = _on_archived
+        except Exception:
+            pass  # If import fails, fall back to per-station
 
     # Attempt download with a wall-clock timeout.
     # We run the download in a daemon thread so that if it hangs on a zombie
@@ -347,78 +406,48 @@ def _download_one_station(
 
     if dl_thread.is_alive():
         # Thread hung — abandon it (daemon=True means it dies with the process)
-        duration = time.monotonic() - t0
         msg = f"Station download timed out after {_STATION_WALL_TIMEOUT}s (zombie connection)"
         worker_logger.error(f"⏰ {station_id}: {msg}")
-        _record_parallel_outcome(
-            station_id, args, "stall_timeout", duration, attempt, msg,
-        )
-        return StationResult(
-            station_id=station_id,
-            status="failed",
-            duration=duration,
-            attempt=attempt,
-            error_message=msg,
+        return _bail(
+            station_id, args, t0, attempt, "failed", msg,
+            outcome_override="stall_timeout",
         )
 
     # Thread completed — check result
     if not result_container:
-        duration = time.monotonic() - t0
-        msg = "Download returned no result"
-        _record_parallel_outcome(
-            station_id, args, "failed", duration, attempt, msg,
-        )
-        return StationResult(
-            station_id=station_id,
-            status="failed",
-            duration=duration,
-            attempt=attempt,
-            error_message=msg,
-        )
+        return _bail(station_id, args, t0, attempt, "failed", "Download returned no result")
 
     result = result_container[0]
     if isinstance(result, Exception):
-        duration = time.monotonic() - t0
-        msg = f"{type(result).__name__}: {result}"
-        _record_parallel_outcome(
-            station_id, args, "failed", duration, attempt, msg,
-        )
-        return StationResult(
-            station_id=station_id,
-            status="failed",
-            duration=duration,
-            attempt=attempt,
-            error_message=msg,
+        return _bail(
+            station_id, args, t0, attempt, "failed",
+            f"{type(result).__name__}: {result}",
         )
 
     files_downloaded, errors, files_checked = result
-    duration = time.monotonic() - t0
 
     if errors > 0:
-        msg = f"{errors} error(s) during download"
-        _record_parallel_outcome(
-            station_id, args, "failed", duration, attempt, msg,
-        )
-        return StationResult(
-            station_id=station_id,
-            status="failed",
+        return _bail(
+            station_id, args, t0, attempt, "failed",
+            f"{errors} error(s) during download",
             files_downloaded=files_downloaded,
-            duration=duration,
-            attempt=attempt,
-            error_message=msg,
         )
 
     status = "completed" if files_downloaded > 0 else "up_to_date"
-    _record_parallel_outcome(
-        station_id, args, status, duration, attempt,
+
+    # Per-station RINEX fallback: for receivers that don't support the per-file
+    # callback (Trimble, Leica), submit a batch conversion after download.
+    if status == "completed" and getattr(args, "rinex", False) and not _rinex_file_count:
+        try:
+            from ..rinex.async_converter import submit_rinex_conversion
+            submit_rinex_conversion(station_id, args.session, start_time, end_time)
+        except Exception:
+            pass  # RINEX submission must never fail a download
+
+    return _bail(
+        station_id, args, t0, attempt, status,
         f"{files_downloaded} file(s), {files_checked} checked",
-    )
-    return StationResult(
-        station_id=station_id,
-        status=status,
         files_downloaded=files_downloaded,
-        duration=duration,
-        attempt=attempt,
     )
 
 
@@ -430,6 +459,7 @@ def _get_session_defaults(session_type: str) -> dict[str, Any]:
     """
     try:
         from ..scheduling.config_loader import load_scheduler_config
+
         config = load_scheduler_config()
         session_cfg = config.get("sessions", {}).get(session_type, {})
         return {
@@ -530,41 +560,116 @@ def download_parallel(
 
     # First pass: process all groups
     results = _process_groups(
-        groups, args, logger, start_time, end_time,
-        ffrequency, afrequency, reverse_chronological,
-        group_delay, attempt=1,
+        groups,
+        args,
+        logger,
+        start_time,
+        end_time,
+        ffrequency,
+        afrequency,
+        reverse_chronological,
+        group_delay,
+        attempt=1,
     )
     summary.results.update(results)
 
-    # Collect unreachable and failed stations for retry.
+    # --- Retry loop ---
     # Transient failures (FTP timeout, busy receiver, packet loss) often
-    # succeed on a second attempt once the initial batch pressure subsides.
-    retryable = [
-        sid for sid, r in results.items()
-        if r.status in ("unreachable", "failed")
-    ]
+    # succeed on subsequent attempts once batch pressure subsides.
+    # Wall-timeout and hardware-issue stations are excluded.
+    NON_RETRYABLE_PATTERNS = ("timed out after", "zombie connection", "disk_full", "no_satellites")
+    max_retries = getattr(args, "max_retries", 3)
 
-    if retryable:
-        summary.retried = len(retryable)
+    for retry_pass in range(2, max_retries + 2):  # attempt 2, 3, ..., max_retries+1
+        retryable = [
+            sid for sid, r in summary.results.items()
+            if r.status in ("unreachable", "failed")
+            and not any(p in (r.error_message or "") for p in NON_RETRYABLE_PATTERNS)
+        ]
+
+        if not retryable:
+            break
+
+        # Circuit breaker: skip if >80% failed (network/VPN issue)
+        total_attempted = len(summary.results)
+        if total_attempted > 10:
+            failure_rate = len(retryable) / total_attempted
+            if failure_rate >= 0.80:
+                logger.warning(
+                    f"⚠️  {len(retryable)}/{total_attempted} stations "
+                    f"({failure_rate:.0%}) failed — "
+                    f"possible network issue. Skipping retries."
+                )
+                break
+
+        # Network-wide recovery: clear stale backoff entries (first retry only)
+        skip_backoff_ids = None
+        if retry_pass == 2:
+            backoff_exempt: set[str] = set()
+            if total_attempted > 10:
+                success_count = sum(
+                    1 for r in summary.results.values()
+                    if r.status in ("completed", "up_to_date")
+                )
+                success_rate = success_count / total_attempted
+                backoff_skipped = [
+                    sid
+                    for sid, r in summary.results.items()
+                    if r.status in ("failed", "skipped")
+                    and r.error_message
+                    and "backoff" in r.error_message.lower()
+                ]
+                if success_rate >= 0.30 and backoff_skipped:
+                    try:
+                        from ..utils.stall_timeout import clear_all_backoff_cache
+
+                        clear_all_backoff_cache()
+                        backoff_exempt = set(backoff_skipped)
+                        logger.info(
+                            f"🔄 Network recovery detected ({success_rate:.0%} success) — "
+                            f"cleared backoff cache, adding {len(backoff_skipped)} stations to retry"
+                        )
+                        retryable_set = set(retryable)
+                        for sid in backoff_skipped:
+                            if sid not in retryable_set:
+                                retryable.append(sid)
+                                retryable_set.add(sid)
+                    except Exception:
+                        pass  # Backoff clearing is advisory
+            skip_backoff_ids = backoff_exempt or None
+
+        # Increasing delay: retry_delay * pass_number (90s, 180s, 270s, ...)
+        delay = retry_delay * (retry_pass - 1)
+        retry_num = retry_pass - 1
         logger.info(
-            f"{len(retryable)} stations to retry "
-            f"(unreachable/failed), waiting {retry_delay}s: "
+            f"🔄 Retry pass {retry_num}/{max_retries}: "
+            f"{len(retryable)} stations, waiting {delay:.0f}s: "
             f"{' '.join(retryable)}"
         )
-        time.sleep(retry_delay)
+        time.sleep(delay)
 
         retry_groups = _split_into_groups(retryable, group_size)
         retry_results = _process_groups(
-            retry_groups, args, logger, start_time, end_time,
-            ffrequency, afrequency, reverse_chronological,
-            group_delay, attempt=2,
+            retry_groups,
+            args,
+            logger,
+            start_time,
+            end_time,
+            ffrequency,
+            afrequency,
+            reverse_chronological,
+            group_delay,
+            attempt=retry_pass,
+            skip_backoff_ids=skip_backoff_ids,
         )
 
-        # Update results with retry outcomes
+        # Update results
         for sid, result in retry_results.items():
             if result.status in ("completed", "up_to_date"):
                 summary.retry_recovered += 1
             summary.results[sid] = result
+
+        summary.retried += len(retryable)
 
     # Calculate summary totals
     summary.total_duration = time.monotonic() - t0
@@ -578,6 +683,14 @@ def download_parallel(
             summary.skipped += 1
         else:
             summary.failed += 1
+
+    # Wait for pending RINEX conversions before printing summary
+    if getattr(args, "rinex", False):
+        try:
+            from ..rinex.async_converter import shutdown_rinex_pool
+            shutdown_rinex_pool(wait=True)
+        except Exception:
+            pass
 
     # Print summary
     _print_summary(summary, logger)
@@ -602,6 +715,7 @@ def _process_groups(
     reverse_chronological: bool,
     group_delay: float,
     attempt: int,
+    skip_backoff_ids: set[str] | None = None,
 ) -> dict[str, StationResult]:
     """Process groups with time-staggered starts — groups don't wait for each other.
 
@@ -635,14 +749,13 @@ def _process_groups(
                     afrequency,
                     reverse_chronological,
                     attempt,
+                    skip_backoff_ids is not None and sid in skip_backoff_ids,
                 )
                 all_futures[future] = sid
 
             # Stagger delay before next group (skip after last group)
             if i < len(groups) - 1:
-                logger.info(
-                    f"Stagger delay: {group_delay:.0f}s before next group"
-                )
+                logger.info(f"Stagger delay: {group_delay:.0f}s before next group")
                 time.sleep(group_delay)
 
         # Collect ALL results (groups run concurrently)
@@ -684,10 +797,7 @@ def _print_summary(summary: ParallelSummary, logger: logging.Logger) -> None:
     logger.info("=" * 60)
     logger.info("Parallel download summary:")
     logger.info(f"  Total stations: {summary.total_stations}")
-    logger.info(
-        f"  Successful: {summary.successful} "
-        f"({summary.total_files} files)"
-    )
+    logger.info(f"  Successful: {summary.successful} " f"({summary.total_files} files)")
     if summary.unreachable > 0:
         logger.info(f"  Unreachable: {summary.unreachable}")
     if summary.failed > 0:
@@ -696,8 +806,7 @@ def _print_summary(summary: ParallelSummary, logger: logging.Logger) -> None:
         logger.info(f"  Skipped: {summary.skipped}")
     if summary.retried > 0:
         logger.info(
-            f"  Retried: {summary.retried}, "
-            f"recovered: {summary.retry_recovered}"
+            f"  Retried: {summary.retried}, " f"recovered: {summary.retry_recovered}"
         )
     logger.info(f"  Duration: {summary.total_duration:.1f}s")
     logger.info("=" * 60)

@@ -22,6 +22,7 @@ Disadvantages:
 """
 
 import logging
+import re
 import shutil
 import subprocess
 import tempfile
@@ -32,7 +33,6 @@ from typing import List, Optional
 from .converter_base import (
     ConversionError,
     NamingConvention,
-    OutputFormat,
     RawToRinexConverter,
     RinexVersion,
 )
@@ -62,9 +62,10 @@ class TrimbleNativeConverter(RawToRinexConverter):
         self,
         station_id: str,
         rinex_version: RinexVersion = RinexVersion.RINEX_3,
-        output_format: OutputFormat = OutputFormat.MODERN,
         naming_convention: Optional[NamingConvention] = None,
         apply_header_corrections: bool = True,
+        apply_hatanaka: Optional[bool] = None,
+        compression_format=None,
         docker_image: Optional[str] = None,
         loglevel: int = logging.INFO,
     ):
@@ -73,18 +74,20 @@ class TrimbleNativeConverter(RawToRinexConverter):
         Args:
             station_id: Station identifier (e.g., 'MANA')
             rinex_version: Target RINEX version (3.02-3.05)
-            output_format: Output format (modern or legacy)
             naming_convention: Filename convention (SHORT or LONG)
             apply_header_corrections: Whether to apply TOS metadata corrections
+            apply_hatanaka: Apply Hatanaka compression (None = read from config)
+            compression_format: File compression format (None = read from config)
             docker_image: Override Docker image name (default: trm2rinex:cli-light)
             loglevel: Logging level
         """
         super().__init__(
             station_id=station_id,
             rinex_version=rinex_version,
-            output_format=output_format,
             naming_convention=naming_convention,
             apply_header_corrections=apply_header_corrections,
+            apply_hatanaka=apply_hatanaka,
+            compression_format=compression_format,
             loglevel=loglevel,
         )
         self.docker_image = docker_image or self.DOCKER_IMAGE
@@ -235,6 +238,9 @@ class TrimbleNativeConverter(RawToRinexConverter):
             final_file = output_dir / rinex_file.name
             shutil.move(rinex_file, final_file)
 
+            # Normalize epoch lines so rnx2crx (Hatanaka) succeeds
+            self._normalize_epoch_lines(final_file)
+
             return final_file
 
         except subprocess.TimeoutExpired:
@@ -248,6 +254,52 @@ class TrimbleNativeConverter(RawToRinexConverter):
             raise ConversionError(str(e), raw_file)
         finally:
             self._cleanup_temp_dirs()
+
+    def _normalize_epoch_lines(self, rinex_file: Path) -> None:
+        """Normalize RINEX 3 epoch line clock offsets to spec-compliant columns.
+
+        The Trimble native converter (trm2rinex) outputs epoch lines with the
+        receiver clock offset field misaligned — it uses 13 spaces + 14 chars
+        instead of the RINEX 3.04 spec format: 6X,F15.12 (columns 41-55).
+        This causes rnx2crx (Hatanaka compression) to fail with
+        "invalid format for clock offset".
+
+        This method rewrites epoch lines in-place to conform to the spec.
+        Only data records (lines starting with '> ') are affected; header
+        and observation lines are untouched.
+        """
+        # RINEX 3 epoch line pattern:
+        # > YYYY MM DD HH MM SS.SSSSSSS  F NNN      clock_offset
+        # Columns: 1-35 = time fields, 36-40 = flag+nsats, 41-55 = 6X+F15.12
+        _EPOCH_RE = re.compile(
+            r'^(> \d{4} \d{2} \d{2} \d{2} \d{2} [ \d]\d\.\d{7}  \d[ \d]{3})'
+            r'\s+'
+            r'([-\d][\d.]+)\s*$',
+            re.MULTILINE,
+        )
+
+        try:
+            content = rinex_file.read_text(encoding='ascii', errors='replace')
+        except Exception as e:
+            self.logger.warning(f"Could not read {rinex_file.name} for epoch normalization: {e}")
+            return
+
+        fixed_count = 0
+
+        def _fix_epoch(match: re.Match) -> str:
+            nonlocal fixed_count
+            prefix = match.group(1)       # first 35 chars (time + flag + nsats)
+            offset_val = float(match.group(2))
+            fixed_count += 1
+            return prefix + '%21.12f' % offset_val  # 6 spaces + 15-char number
+
+        normalized = _EPOCH_RE.sub(_fix_epoch, content)
+
+        if fixed_count > 0:
+            rinex_file.write_text(normalized, encoding='ascii')
+            self.logger.debug(
+                f"Normalized {fixed_count} epoch lines in {rinex_file.name}"
+            )
 
     def _find_output_file(
         self,

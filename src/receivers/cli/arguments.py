@@ -244,6 +244,22 @@ Examples:
         dest='retry_delay',
         help='Seconds before retrying unreachable stations (default: 90)'
     )
+    parallel_group.add_argument(
+        '--max-retries',
+        type=int,
+        default=3,
+        metavar='N',
+        dest='max_retries',
+        help='Maximum retry passes for failed stations (default: 3)'
+    )
+
+    # Post-download processing
+    post_group = parser.add_argument_group('post-download processing')
+    post_group.add_argument(
+        '--rinex',
+        action='store_true',
+        help='Convert raw files to RINEX after download (fire-and-forget, non-blocking)'
+    )
 
     add_verbose_flag(parser)
 

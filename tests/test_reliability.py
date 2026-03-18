@@ -20,18 +20,22 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 # ── Error classifier tests (#6c) ──────────────────────────────────────────
+
 
 class TestErrorClassifier:
     """Tests for classify_download_error()."""
 
     def setup_method(self):
         from receivers.utils.error_classifier import classify_download_error
+
         self.classify = classify_download_error
 
     def test_dead_connection_sendall(self):
-        assert self.classify("'NoneType' object has no attribute 'sendall'") == "dead_connection"
+        assert (
+            self.classify("'NoneType' object has no attribute 'sendall'")
+            == "dead_connection"
+        )
 
     def test_dead_connection_broken_pipe(self):
         assert self.classify("Broken pipe") == "dead_connection"
@@ -40,7 +44,10 @@ class TestErrorClassifier:
         assert self.classify("Connection reset by peer") == "dead_connection"
 
     def test_stall_timeout_watchdog(self):
-        assert self.classify("Watchdog: No data received in 10.0s, killing connection") == "stall_timeout"
+        assert (
+            self.classify("Watchdog: No data received in 10.0s, killing connection")
+            == "stall_timeout"
+        )
 
     def test_stall_timeout_timed_out(self):
         assert self.classify("FTP connection timed out") == "stall_timeout"
@@ -76,10 +83,16 @@ class TestErrorClassifier:
         assert self.classify("disk unmounted") == "disk_error"
 
     def test_validation_failed(self):
-        assert self.classify("Validation failed: corrupt gzip header") == "validation_failed"
+        assert (
+            self.classify("Validation failed: corrupt gzip header")
+            == "validation_failed"
+        )
 
     def test_validation_size_mismatch(self):
-        assert self.classify("Size mismatch: got 12345, expected 67890") == "validation_failed"
+        assert (
+            self.classify("Size mismatch: got 12345, expected 67890")
+            == "validation_failed"
+        )
 
     def test_unknown_empty(self):
         assert self.classify("") == "unknown"
@@ -90,45 +103,57 @@ class TestErrorClassifier:
 
 # ── DiskStatus SBF parser tests (#6a) ─────────────────────────────────────
 
-def _build_disk_status_sbf(disks: list[dict]) -> bytes:
-    """Build a raw DiskStatus SBF block from disk descriptors.
 
-    Each disk dict: {disk_id, status_code, usage_raw, disk_size_kb}
+def _build_disk_status_sbf(disks: list[dict]) -> bytes:
+    """Build a raw DiskStatus SBF block matching real PolaRX5 firmware layout.
+
+    Real firmware layout (confirmed via bin2asc on GFUM/ENTC):
+    Sub-block (16 bytes per disk):
+      - bytes 0-3:  float32 (internal use, not disk usage %)
+      - byte 4:     DiskID (uint8)
+      - byte 5:     Status bitmask (bit 0=DISK_MOUNTED)
+      - bytes 6-7:  Reserved (uint16)
+      - bytes 8-11: Internal (uint32)
+      - bytes 12-15: DiskSize in MB (uint32)
+
+    Each disk dict: {disk_id, status_flags, disk_size_mb}
+    status_flags: bit 0=mounted, bit 2=activity, bit 3=logging
     """
-    sb_length = 12  # Minimum descriptor size
+    sb_length = 16
     n_disks = len(disks)
 
-    # SBF header: sync($@) + CRC(0) + ID(4059, rev=0) + length
-    body_length = 8 + 8 + n_disks * sb_length  # header(8) + TOW+WNc+N+SBLen(8) + descriptors
-    header = b'$@'
-    header += struct.pack('<H', 0)  # CRC placeholder
-    header += struct.pack('<H', 4059)  # Block ID (no revision bits)
-    header += struct.pack('<H', body_length)
+    # SBF header
+    body_length = 8 + 8 + n_disks * sb_length + 20  # header + fields + disks + trailer
+    header = b"$@"
+    header += struct.pack("<H", 0)  # CRC
+    header += struct.pack("<H", 4059 | (1 << 13))  # Block ID rev=1
+    header += struct.pack("<H", body_length)
 
-    # Body: TOW(4B) + WNc(2B) + N(1B) + SBLength(1B)
-    body = struct.pack('<I', 0)  # TOW
-    body += struct.pack('<H', 0)  # WNc
-    body += struct.pack('<B', n_disks)
-    body += struct.pack('<B', sb_length)
+    # TOW(4B) + WNc(2B) + N(1B) + SBLength(1B)
+    body = struct.pack("<I", 0) + struct.pack("<H", 0)
+    body += struct.pack("<B", n_disks) + struct.pack("<B", sb_length)
 
-    # Disk descriptors
     for d in disks:
-        desc = struct.pack('<B', d['disk_id'])
-        desc += struct.pack('<B', d['status_code'])
-        desc += struct.pack('<H', d['usage_raw'])
-        desc += struct.pack('<I', d['disk_size_kb'])
-        # CreateDeleteCount (4B) - pad to sb_length
-        desc += b'\x00' * (sb_length - len(desc))
+        desc = struct.pack("<f", 0.0)  # float32 placeholder
+        desc += struct.pack("<B", d["disk_id"])
+        desc += struct.pack("<B", d["status_flags"])
+        desc += struct.pack("<H", 0)  # reserved
+        desc += struct.pack("<I", 0)  # internal
+        desc += struct.pack("<I", d["disk_size_mb"])
         body += desc
+
+    # 20-byte trailer (CreateDeleteCount + rates)
+    body += b"\x00" * 20
 
     return header + body
 
 
 class TestDiskStatusParser:
-    """Tests for _query_disk_status() SBF parsing."""
+    """Tests for DiskStatus parsing (header-only fallback when bin2asc unavailable)."""
 
     def setup_method(self):
         from receivers.health.polarx5_tcp_extractor import PolaRX5TCPExtractor
+
         self.extractor = PolaRX5TCPExtractor.__new__(PolaRX5TCPExtractor)
         self.extractor.host = "127.0.0.1"
         self.extractor.port = 28784
@@ -137,79 +162,93 @@ class TestDiskStatusParser:
         self.extractor.logger = MagicMock()
 
     def test_single_mounted_disk(self):
-        """Normal disk: 50% usage on 32GB disk."""
-        sbf_data = _build_disk_status_sbf([
-            {"disk_id": 0, "status_code": 1, "usage_raw": 5000, "disk_size_kb": 32 * 1024 * 1024},
-        ])
-        with patch.object(self.extractor, '_send_sbf_request', return_value=sbf_data):
-            result = self.extractor._query_disk_status()
+        """Mounted disk with 8192 MB total — header-only parse extracts size + status."""
+        sbf_data = _build_disk_status_sbf(
+            [
+                {
+                    "disk_id": 1,
+                    "status_flags": 0x0D,
+                    "disk_size_mb": 8192,
+                },  # mounted+activity+logging
+            ]
+        )
+        # Force header-only fallback (no bin2asc)
+        result = self.extractor._parse_disk_header_only(sbf_data)
 
         assert result is not None
         assert result["status"] == "mounted"
-        assert result["usage_percent"] == 50.0
-        assert result["total_mb"] == pytest.approx(32768.0, abs=1)
-        assert result["used_mb"] == pytest.approx(16384.0, abs=1)
+        assert result["total_mb"] == 8192.0
         assert len(result["disks"]) == 1
+        assert result["disks"][0]["disk_id"] == 1
 
-    def test_nearly_full_disk(self):
-        """Disk at 99.5% usage."""
-        sbf_data = _build_disk_status_sbf([
-            {"disk_id": 0, "status_code": 1, "usage_raw": 9950, "disk_size_kb": 32 * 1024 * 1024},
-        ])
-        with patch.object(self.extractor, '_send_sbf_request', return_value=sbf_data):
-            result = self.extractor._query_disk_status()
-
-        assert result is not None
-        assert result["usage_percent"] == 99.5
-
-    def test_unmounted_disk_gjac_case(self):
-        """GJAC scenario: disk status=4 (unmounted) — broken disk."""
-        sbf_data = _build_disk_status_sbf([
-            {"disk_id": 0, "status_code": 4, "usage_raw": 0, "disk_size_kb": 0},
-        ])
-        with patch.object(self.extractor, '_send_sbf_request', return_value=sbf_data):
-            result = self.extractor._query_disk_status()
+    def test_unmounted_disk(self):
+        """Unmounted disk (status bit 0 = 0)."""
+        sbf_data = _build_disk_status_sbf(
+            [
+                {"disk_id": 1, "status_flags": 0x00, "disk_size_mb": 0},
+            ]
+        )
+        result = self.extractor._parse_disk_header_only(sbf_data)
 
         assert result is not None
         assert result["status"] == "unmounted"
-        assert result["total_mb"] == 0
-        assert result["used_mb"] == 0
+        assert result["disks"][0]["status"] == "unmounted"
 
-    def test_error_disk(self):
-        """Disk with error status=3."""
-        sbf_data = _build_disk_status_sbf([
-            {"disk_id": 0, "status_code": 3, "usage_raw": 0, "disk_size_kb": 16 * 1024 * 1024},
-        ])
-        with patch.object(self.extractor, '_send_sbf_request', return_value=sbf_data):
-            result = self.extractor._query_disk_status()
-
-        assert result is not None
-        assert result["status"] == "error"
-
-    def test_two_disks_worst_status(self):
-        """Two disks: one mounted, one unmounted — worst status wins."""
-        sbf_data = _build_disk_status_sbf([
-            {"disk_id": 0, "status_code": 1, "usage_raw": 5000, "disk_size_kb": 32 * 1024 * 1024},
-            {"disk_id": 1, "status_code": 4, "usage_raw": 0, "disk_size_kb": 0},
-        ])
-        with patch.object(self.extractor, '_send_sbf_request', return_value=sbf_data):
-            result = self.extractor._query_disk_status()
+    def test_two_disks(self):
+        """Two disks: one mounted, one unmounted."""
+        sbf_data = _build_disk_status_sbf(
+            [
+                {"disk_id": 0, "status_flags": 0x01, "disk_size_mb": 8192},
+                {"disk_id": 1, "status_flags": 0x00, "disk_size_mb": 0},
+            ]
+        )
+        result = self.extractor._parse_disk_header_only(sbf_data)
 
         assert result is not None
-        assert result["status"] == "unmounted"
         assert len(result["disks"]) == 2
+        assert result["total_mb"] == 8192.0
 
     def test_no_data_returns_none(self):
         """No SBF data received."""
-        with patch.object(self.extractor, '_send_sbf_request', return_value=None):
+        with patch.object(self.extractor, "_send_sbf_request", return_value=None):
             result = self.extractor._query_disk_status()
         assert result is None
 
+    def test_bin2asc_parse(self):
+        """bin2asc-based parse returns correct disk metrics."""
+        # Build a real-format SBF block
+        sbf_data = _build_disk_status_sbf(
+            [
+                {"disk_id": 1, "status_flags": 0x0D, "disk_size_mb": 14894},
+            ]
+        )
+        # Mock parse_sbf_bytes to return known parsed records
+        parsed_rows = [
+            {
+                "DiskID": 1.0,
+                "DISK_MOUNTED": 1.0,
+                "DISK_FULL": 0.0,
+                "DiskSize [MB]": 14894.0,
+                "DiskUsagePercent [%]": 88.0,
+                "Error": "No error",
+            },
+        ]
+        with patch(
+            "receivers.utils.rxtools_extractor.parse_sbf_bytes",
+            return_value=parsed_rows,
+        ):
+            result = self.extractor._parse_disk_via_bin2asc(sbf_data)
+
+        assert result is not None
+        assert result["status"] == "mounted"
+        assert result["usage_percent"] == 88.0
+        assert result["total_mb"] == 14894.0
+        assert result["used_mb"] == pytest.approx(13106.7, abs=1)
+
     def test_zero_disks(self):
-        """Zero disk descriptors."""
+        """Zero disk descriptors — header-only fallback."""
         sbf_data = _build_disk_status_sbf([])
-        with patch.object(self.extractor, '_send_sbf_request', return_value=sbf_data):
-            result = self.extractor._query_disk_status()
+        result = self.extractor._parse_disk_header_only(sbf_data)
 
         assert result is not None
         assert result["status"] == "unavailable"
@@ -217,6 +256,7 @@ class TestDiskStatusParser:
 
 
 # ── Data routing fix test (#6b) ────────────────────────────────────────────
+
 
 class TestDiskDataRouting:
     """Test that disk data is stored in metrics (not data_quality)."""
@@ -235,16 +275,23 @@ class TestDiskDataRouting:
 
         disk_result = {"status": "mounted", "used_mb": 100, "total_mb": 1000}
 
-        with patch.object(ext, '_check_port_status', return_value=None), \
-             patch.object(ext, '_query_power_status', return_value=None), \
-             patch.object(ext, '_query_receiver_status', return_value=None), \
-             patch.object(ext, '_query_disk_status', return_value=disk_result), \
-             patch.object(ext, '_query_pvt_geodetic', return_value=None), \
-             patch.object(ext, '_query_satellite_tracking', return_value=None), \
-             patch.object(ext, '_query_ntrip_client_status', return_value=None), \
-             patch.object(ext, '_query_ntrip_server_status', return_value=None), \
-             patch.object(ext, '_query_receiver_setup', return_value=None), \
-             patch.object(ext, '_query_logging_sessions', return_value=None):
+        with patch.object(ext, "_check_port_status", return_value=None), patch.object(
+            ext, "_query_power_status", return_value=None
+        ), patch.object(ext, "_query_receiver_status", return_value=None), patch.object(
+            ext, "_query_disk_status", return_value=disk_result
+        ), patch.object(
+            ext, "_query_pvt_geodetic", return_value=None
+        ), patch.object(
+            ext, "_query_satellite_tracking", return_value=None
+        ), patch.object(
+            ext, "_query_ntrip_client_status", return_value=None
+        ), patch.object(
+            ext, "_query_ntrip_server_status", return_value=None
+        ), patch.object(
+            ext, "_query_receiver_setup", return_value=None
+        ), patch.object(
+            ext, "_query_logging_sessions", return_value=None
+        ):
             health = ext.extract_health_data()
 
         # Disk should be in metrics (where db_writer looks for it), not data_quality
@@ -255,6 +302,7 @@ class TestDiskDataRouting:
 
 # ── Health gate tests (#4) ─────────────────────────────────────────────────
 
+
 class TestHealthGate:
     """Tests for check_station_health_gate().
 
@@ -264,51 +312,100 @@ class TestHealthGate:
 
     def setup_method(self):
         from receivers.utils.stall_timeout import invalidate_cache
+
         invalidate_cache()
 
     def test_no_satellites_skips(self):
         """Station with 0 satellites tracked should be skipped."""
-        from receivers.utils.stall_timeout import check_station_health_gate, invalidate_cache
+        from receivers.utils.stall_timeout import (
+            check_station_health_gate,
+            invalidate_cache,
+        )
+
         invalidate_cache()
 
-        with patch("receivers.utils.stall_timeout._query_health_gate", return_value="no_satellites"):
+        with patch(
+            "receivers.utils.stall_timeout._query_health_gate",
+            return_value="no_satellites",
+        ):
             result = check_station_health_gate("GJAC")
         assert result == "no_satellites"
 
     def test_disk_full_skips(self):
         """Station with >98% disk usage should be skipped."""
-        from receivers.utils.stall_timeout import check_station_health_gate, invalidate_cache
+        from receivers.utils.stall_timeout import (
+            check_station_health_gate,
+            invalidate_cache,
+        )
+
         invalidate_cache()
 
-        with patch("receivers.utils.stall_timeout._query_health_gate", return_value="disk_full"):
+        with patch(
+            "receivers.utils.stall_timeout._query_health_gate", return_value="disk_full"
+        ):
             result = check_station_health_gate("GJAC")
         assert result == "disk_full"
 
-    def test_healthy_station_proceeds(self):
-        """Healthy station should return None (proceed)."""
-        from receivers.utils.stall_timeout import check_station_health_gate, invalidate_cache
+    def test_disk_broken_skips(self):
+        """Station with broken disk (total_mb=0) should be skipped."""
+        from receivers.utils.stall_timeout import (
+            check_station_health_gate,
+            invalidate_cache,
+        )
+
         invalidate_cache()
 
-        with patch("receivers.utils.stall_timeout._query_health_gate", return_value=None):
+        with patch(
+            "receivers.utils.stall_timeout._query_health_gate",
+            return_value="disk_broken",
+        ):
+            result = check_station_health_gate("GJAC")
+        assert result == "disk_broken"
+
+    def test_healthy_station_proceeds(self):
+        """Healthy station should return None (proceed)."""
+        from receivers.utils.stall_timeout import (
+            check_station_health_gate,
+            invalidate_cache,
+        )
+
+        invalidate_cache()
+
+        with patch(
+            "receivers.utils.stall_timeout._query_health_gate", return_value=None
+        ):
             result = check_station_health_gate("GOOD")
         assert result is None
 
     def test_db_failure_proceeds(self):
         """Database connection failure should not block downloads."""
-        from receivers.utils.stall_timeout import check_station_health_gate, invalidate_cache
+        from receivers.utils.stall_timeout import (
+            check_station_health_gate,
+            invalidate_cache,
+        )
+
         invalidate_cache()
 
-        with patch("receivers.utils.stall_timeout._query_health_gate", side_effect=Exception("DB down")):
+        with patch(
+            "receivers.utils.stall_timeout._query_health_gate",
+            side_effect=Exception("DB down"),
+        ):
             # The wrapper catches exceptions from _query and returns None
             result = check_station_health_gate("NODB")
             assert result is None
 
     def test_cache_prevents_repeated_queries(self):
         """Second call should use cached result."""
-        from receivers.utils.stall_timeout import check_station_health_gate, invalidate_cache
+        from receivers.utils.stall_timeout import (
+            check_station_health_gate,
+            invalidate_cache,
+        )
+
         invalidate_cache()
 
-        with patch("receivers.utils.stall_timeout._query_health_gate", return_value="disk_full") as mock_q:
+        with patch(
+            "receivers.utils.stall_timeout._query_health_gate", return_value="disk_full"
+        ) as mock_q:
             check_station_health_gate("CACHED")
             check_station_health_gate("CACHED")  # Should hit cache
             assert mock_q.call_count == 1
@@ -316,11 +413,13 @@ class TestHealthGate:
 
 # ── _query_health_gate integration tests ────────────────────────────────────
 
+
 class TestQueryHealthGateIntegration:
     """Test _query_health_gate with mocked DB connection."""
 
     def setup_method(self):
         from receivers.utils.stall_timeout import invalidate_cache
+
         invalidate_cache()
 
     @patch("receivers.health.database_factory.DatabaseConnectionFactory")
@@ -334,10 +433,9 @@ class TestQueryHealthGateIntegration:
         mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cur)
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        # station_latest_metrics → sats=0, age=60s (fresh)
+        # station_latest_metrics → sats=0, fresh (age computed in Python)
         mock_cur.fetchone.side_effect = [
             (0, 50.0, datetime.now(timezone.utc)),
-            (60.0,),
         ]
 
         result = _query_health_gate("GJAC")
@@ -354,10 +452,9 @@ class TestQueryHealthGateIntegration:
         mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cur)
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        # sats=12 (OK), disk=99.5% (>98), age=60s (fresh)
+        # sats=12 (OK), disk=99.5% (>98), fresh (age computed in Python)
         mock_cur.fetchone.side_effect = [
             (12, 99.5, datetime.now(timezone.utc)),
-            (60.0,),
         ]
 
         result = _query_health_gate("DISKFULL")
@@ -374,10 +471,13 @@ class TestQueryHealthGateIntegration:
         mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cur)
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        # sats=0, disk=99%, but age=3600s (stale → proceed)
+        # sats=0, disk=99%, but stale (1 hour old → proceed)
+        from datetime import timedelta
+
+        stale_time = datetime.now(timezone.utc) - timedelta(hours=1)
         mock_cur.fetchone.side_effect = [
-            (0, 99.0, datetime.now(timezone.utc)),
-            (3600.0,),
+            (0, 99.0, stale_time),
+            None,  # block_disk_status → no data (disk_pct=99, not 0/None)
         ]
 
         result = _query_health_gate("STALE")
@@ -399,35 +499,113 @@ class TestQueryHealthGateIntegration:
         result = _query_health_gate("NODATA")
         assert result is None
 
+    @patch("receivers.health.database_factory.DatabaseConnectionFactory")
+    def test_healthy_station_no_skip(self, mock_dbf):
+        """Healthy station should return None (proceed)."""
+        from receivers.utils.stall_timeout import _query_health_gate
+
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_dbf.connection.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_dbf.connection.return_value.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cur)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        # Healthy station: sats=15, disk=50%, fresh (age computed in Python)
+        # disk_pct=50 → block_disk_status query not reached
+        mock_cur.fetchone.side_effect = [
+            (15, 50.0, datetime.now(timezone.utc)),
+        ]
+
+        result = _query_health_gate("GOOD")
+        assert result is None
+
+    @patch("receivers.health.database_factory.DatabaseConnectionFactory")
+    def test_disk_broken_detected(self, mock_dbf):
+        """Broken disk (total_mb=0) should trigger disk_broken skip."""
+        from receivers.utils.stall_timeout import _query_health_gate
+
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_dbf.connection.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_dbf.connection.return_value.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cur)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        # Healthy metrics, but broken disk (total_mb=0)
+        # Age computed in Python (fresh), disk_pct=0 → triggers block_disk_status query
+        mock_cur.fetchone.side_effect = [
+            (15, 0.0, datetime.now(timezone.utc)),
+            (0,),  # block_disk_status → total_mb=0 → broken
+        ]
+
+        result = _query_health_gate("GJAC")
+        assert result == "disk_broken"
+
+    @patch("receivers.health.database_factory.DatabaseConnectionFactory")
+    def test_disk_broken_no_data(self, mock_dbf):
+        """No disk data in block_disk_status should not trigger disk_broken."""
+        from receivers.utils.stall_timeout import _query_health_gate
+
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_dbf.connection.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_dbf.connection.return_value.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cur)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        # Healthy metrics, no disk data in block_disk_status
+        # disk_pct=50 → block_disk_status query not reached
+        mock_cur.fetchone.side_effect = [
+            (15, 50.0, datetime.now(timezone.utc)),
+        ]
+
+        result = _query_health_gate("NODISK")
+        assert result is None
+
 
 # ── Consecutive failure backoff tests (#3) ─────────────────────────────────
+
 
 class TestConsecutiveFailureBackoff:
     """Tests for should_skip_station()."""
 
     def setup_method(self):
         from receivers.utils.stall_timeout import invalidate_cache
+
         invalidate_cache()
 
     def test_five_failures_triggers_backoff(self):
         from receivers.utils.stall_timeout import should_skip_station, invalidate_cache
+
         invalidate_cache()
 
-        with patch("receivers.utils.stall_timeout._query_consecutive_failures", return_value=True):
+        with patch(
+            "receivers.utils.stall_timeout._query_consecutive_failures",
+            return_value=True,
+        ):
             assert should_skip_station("BADST") is True
 
     def test_mixed_results_no_backoff(self):
         from receivers.utils.stall_timeout import should_skip_station, invalidate_cache
+
         invalidate_cache()
 
-        with patch("receivers.utils.stall_timeout._query_consecutive_failures", return_value=False):
+        with patch(
+            "receivers.utils.stall_timeout._query_consecutive_failures",
+            return_value=False,
+        ):
             assert should_skip_station("MIXED") is False
 
     def test_cache_prevents_repeated_queries(self):
         from receivers.utils.stall_timeout import should_skip_station, invalidate_cache
+
         invalidate_cache()
 
-        with patch("receivers.utils.stall_timeout._query_consecutive_failures", return_value=True) as mock_q:
+        with patch(
+            "receivers.utils.stall_timeout._query_consecutive_failures",
+            return_value=True,
+        ) as mock_q:
             should_skip_station("CACHED")
             should_skip_station("CACHED")
             assert mock_q.call_count == 1
@@ -438,6 +616,7 @@ class TestQueryConsecutiveFailuresIntegration:
 
     def setup_method(self):
         from receivers.utils.stall_timeout import invalidate_cache
+
         invalidate_cache()
 
     @patch("receivers.health.database_factory.DatabaseConnectionFactory")
@@ -452,7 +631,11 @@ class TestQueryConsecutiveFailuresIntegration:
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
         mock_cur.fetchall.return_value = [
-            ("failed",), ("unreachable",), ("stall_timeout",), ("failed",), ("failed",),
+            ("failed",),
+            ("unreachable",),
+            ("stall_timeout",),
+            ("failed",),
+            ("failed",),
         ]
 
         assert _query_consecutive_failures("BADST") is True
@@ -469,7 +652,11 @@ class TestQueryConsecutiveFailuresIntegration:
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
         mock_cur.fetchall.return_value = [
-            ("completed",), ("failed",), ("failed",), ("failed",), ("failed",),
+            ("completed",),
+            ("failed",),
+            ("failed",),
+            ("failed",),
+            ("failed",),
         ]
 
         assert _query_consecutive_failures("MIXED") is False
@@ -492,25 +679,39 @@ class TestQueryConsecutiveFailuresIntegration:
 
 # ── Packet loss factor tests (#5) ─────────────────────────────────────────
 
+
 class TestPacketLossFactor:
     """Tests for get_packet_loss_factor()."""
 
     def setup_method(self):
         from receivers.utils.stall_timeout import invalidate_cache
+
         invalidate_cache()
 
     def test_zero_loss(self):
-        from receivers.utils.stall_timeout import get_packet_loss_factor, invalidate_cache
+        from receivers.utils.stall_timeout import (
+            get_packet_loss_factor,
+            invalidate_cache,
+        )
+
         invalidate_cache()
 
-        with patch("receivers.utils.stall_timeout._query_packet_loss_factor", return_value=1.0):
+        with patch(
+            "receivers.utils.stall_timeout._query_packet_loss_factor", return_value=1.0
+        ):
             assert get_packet_loss_factor("GOOD") == 1.0
 
     def test_high_loss_capped(self):
-        from receivers.utils.stall_timeout import get_packet_loss_factor, invalidate_cache
+        from receivers.utils.stall_timeout import (
+            get_packet_loss_factor,
+            invalidate_cache,
+        )
+
         invalidate_cache()
 
-        with patch("receivers.utils.stall_timeout._query_packet_loss_factor", return_value=2.0):
+        with patch(
+            "receivers.utils.stall_timeout._query_packet_loss_factor", return_value=2.0
+        ):
             assert get_packet_loss_factor("BAD") == 2.0
 
 
@@ -591,28 +792,33 @@ class TestQueryPacketLossFactorIntegration:
 
 # ── Router failure cache tests (#2) ───────────────────────────────────────
 
+
 class TestRouterFailureCache:
     """Tests for RouterFailureCache."""
 
     def test_unknown_router_not_failed(self):
         from receivers.cli.parallel import RouterFailureCache
+
         cache = RouterFailureCache()
         assert cache.is_failed("10.4.1.43") is False
 
     def test_mark_and_check(self):
         from receivers.cli.parallel import RouterFailureCache
+
         cache = RouterFailureCache()
         cache.mark_failed("10.4.1.43")
         assert cache.is_failed("10.4.1.43") is True
 
     def test_different_router_not_affected(self):
         from receivers.cli.parallel import RouterFailureCache
+
         cache = RouterFailureCache()
         cache.mark_failed("10.4.1.43")
         assert cache.is_failed("10.4.1.44") is False
 
     def test_expiry(self):
         from receivers.cli.parallel import RouterFailureCache
+
         cache = RouterFailureCache()
         cache._TTL = 0.1  # 100ms for testing
         cache.mark_failed("10.4.1.43")
@@ -623,6 +829,7 @@ class TestRouterFailureCache:
     def test_thread_safety(self):
         """Concurrent mark/check should not crash."""
         from receivers.cli.parallel import RouterFailureCache
+
         cache = RouterFailureCache()
         errors = []
 
@@ -656,12 +863,14 @@ class TestRouterFailureCache:
 
 # ── Fix 1: Mode-switch returns new FTP connection ─────────────────────────
 
+
 class TestModeSwitchFtpReturn:
     """Test that _download_with_progressbar_and_retry returns (result, ftp) tuple
     and that a mode-switch reconnect returns the NEW ftp connection."""
 
     def _make_receiver(self):
         from receivers.septentrio.polarx5 import PolaRX5
+
         rx = PolaRX5.__new__(PolaRX5)
         rx.station_id = "TEST"
         rx.logger = MagicMock()
@@ -676,9 +885,13 @@ class TestModeSwitchFtpReturn:
         rx = self._make_receiver()
         ftp_orig = MagicMock()
 
-        with patch.object(rx, '_download_with_progressbar', return_value=0):
+        with patch.object(rx, "_download_with_progressbar", return_value=0):
             result, ftp_out = rx._download_with_progressbar_and_retry(
-                ftp_orig, "/remote/file", "/local/file", 1000, 0,
+                ftp_orig,
+                "/remote/file",
+                "/local/file",
+                1000,
+                0,
             )
 
         assert result == 0
@@ -692,17 +905,24 @@ class TestModeSwitchFtpReturn:
 
         # First call raises connection error, triggering mode switch
         call_count = [0]
+
         def side_effect(*args, **kwargs):
             call_count[0] += 1
             if call_count[0] == 1:
                 raise ConnectionError("500 I won't open a connection to X (only to Y)")
             return 0
 
-        with patch.object(rx, '_download_with_progressbar', side_effect=side_effect), \
-             patch.object(rx, '_ftp_open_connection', return_value=ftp_new), \
-             patch.object(rx, '_get_ftp_mode_description', return_value="passive"):
+        with patch.object(
+            rx, "_download_with_progressbar", side_effect=side_effect
+        ), patch.object(rx, "_ftp_open_connection", return_value=ftp_new), patch.object(
+            rx, "_get_ftp_mode_description", return_value="passive"
+        ):
             result, ftp_out = rx._download_with_progressbar_and_retry(
-                ftp_orig, "/remote/file", "/local/file", 1000, 0,
+                ftp_orig,
+                "/remote/file",
+                "/local/file",
+                1000,
+                0,
             )
 
         assert result == 0
@@ -715,9 +935,15 @@ class TestModeSwitchFtpReturn:
         ftp_orig = MagicMock()
         ftp_new = MagicMock()
 
-        with patch.object(rx, '_download_with_progressbar_and_retry', return_value=(0, ftp_new)):
+        with patch.object(
+            rx, "_download_with_progressbar_and_retry", return_value=(0, ftp_new)
+        ):
             result, ftp_out = rx._download_with_immediate_retry(
-                ftp_orig, "/remote/file", "/local/file", 1000, 0,
+                ftp_orig,
+                "/remote/file",
+                "/local/file",
+                1000,
+                0,
             )
 
         assert result == 0
@@ -726,57 +952,80 @@ class TestModeSwitchFtpReturn:
 
 # ── Fix 2: Ping-override for backoff ──────────────────────────────────────
 
+
 class TestBackoffPingOverride:
     """Test that should_skip_station() can be overridden by a successful ping."""
 
     def setup_method(self):
         from receivers.utils.stall_timeout import invalidate_cache
+
         invalidate_cache()
 
     def test_clear_backoff_cache(self):
         """clear_backoff_cache removes the station from the cache."""
         from receivers.utils.stall_timeout import (
-            should_skip_station, clear_backoff_cache, invalidate_cache,
+            should_skip_station,
+            clear_backoff_cache,
+            invalidate_cache,
         )
+
         invalidate_cache()
 
-        with patch("receivers.utils.stall_timeout._query_consecutive_failures", return_value=True):
+        with patch(
+            "receivers.utils.stall_timeout._query_consecutive_failures",
+            return_value=True,
+        ):
             assert should_skip_station("PING1") is True
 
         clear_backoff_cache("PING1")
 
         # After clearing, it should re-query (which we now make return False)
-        with patch("receivers.utils.stall_timeout._query_consecutive_failures", return_value=False):
+        with patch(
+            "receivers.utils.stall_timeout._query_consecutive_failures",
+            return_value=False,
+        ):
             assert should_skip_station("PING1") is False
 
     def test_clear_backoff_cache_case_insensitive(self):
         """clear_backoff_cache normalizes station ID to uppercase."""
         from receivers.utils.stall_timeout import (
-            should_skip_station, clear_backoff_cache, invalidate_cache,
+            should_skip_station,
+            clear_backoff_cache,
+            invalidate_cache,
         )
+
         invalidate_cache()
 
-        with patch("receivers.utils.stall_timeout._query_consecutive_failures", return_value=True):
+        with patch(
+            "receivers.utils.stall_timeout._query_consecutive_failures",
+            return_value=True,
+        ):
             assert should_skip_station("PING2") is True
 
         clear_backoff_cache("ping2")  # lowercase
 
-        with patch("receivers.utils.stall_timeout._query_consecutive_failures", return_value=False):
+        with patch(
+            "receivers.utils.stall_timeout._query_consecutive_failures",
+            return_value=False,
+        ):
             assert should_skip_station("PING2") is False
 
     def test_clear_nonexistent_station_no_error(self):
         """Clearing cache for unknown station doesn't raise."""
         from receivers.utils.stall_timeout import clear_backoff_cache
+
         clear_backoff_cache("DOESNOTEXIST")  # Should not raise
 
 
 # ── Fix 3: Progress-aware timeout extension ───────────────────────────────
+
 
 class TestTimeoutExtension:
     """Test that near-complete downloads get a one-time timeout extension."""
 
     def _make_receiver(self):
         from receivers.septentrio.polarx5 import PolaRX5
+
         rx = PolaRX5.__new__(PolaRX5)
         rx.station_id = "TEST"
         rx.logger = MagicMock()
@@ -866,11 +1115,13 @@ class TestTimeoutExtension:
 
 # ── Fix 4: Size mismatch clean retry ─────────────────────────────────────
 
+
 class TestSizeMismatchRetry:
     """Test the size mismatch → delete → retry clean logic."""
 
     def _make_receiver(self):
         from receivers.septentrio.polarx5 import PolaRX5
+
         rx = PolaRX5.__new__(PolaRX5)
         rx.station_id = "TEST"
         rx.logger = MagicMock()
@@ -880,13 +1131,16 @@ class TestSizeMismatchRetry:
         rx._last_effective_timeout = 600
         rx.file_validator = MagicMock()
         rx.file_validator.validate_file.return_value = {
-            "valid": True, "compression": "gzip", "size": 1000,
+            "valid": True,
+            "compression": "gzip",
+            "size": 1000,
         }
         return rx
 
     def test_handle_successful_download_valid(self):
         """_handle_successful_download records completed for valid files."""
         import tempfile, os
+
         rx = self._make_receiver()
         record = MagicMock()
         downloaded = []
@@ -897,10 +1151,21 @@ class TestSizeMismatchRetry:
 
         try:
             from pathlib import Path
+
             result = rx._handle_successful_download(
-                "test.sbf.gz", Path(tmp_path), 100, 100,
-                "15s_24hr", 1.0, downloaded, None, False,
-                False, False, None, record,
+                "test.sbf.gz",
+                Path(tmp_path),
+                100,
+                100,
+                "15s_24hr",
+                1.0,
+                downloaded,
+                None,
+                False,
+                False,
+                False,
+                None,
+                record,
             )
             assert result is True
             record.assert_called_once()
@@ -913,9 +1178,11 @@ class TestSizeMismatchRetry:
     def test_handle_successful_download_invalid(self):
         """_handle_successful_download records failed and removes invalid files."""
         import tempfile, os
+
         rx = self._make_receiver()
         rx.file_validator.validate_file.return_value = {
-            "valid": False, "error": "corrupt gzip",
+            "valid": False,
+            "error": "corrupt gzip",
         }
         record = MagicMock()
         downloaded = []
@@ -926,10 +1193,21 @@ class TestSizeMismatchRetry:
 
         try:
             from pathlib import Path
+
             result = rx._handle_successful_download(
-                "test.sbf.gz", Path(tmp_path), 100, 100,
-                "15s_24hr", 1.0, downloaded, None, False,
-                False, False, None, record,
+                "test.sbf.gz",
+                Path(tmp_path),
+                100,
+                100,
+                "15s_24hr",
+                1.0,
+                downloaded,
+                None,
+                False,
+                False,
+                False,
+                None,
+                record,
             )
             assert result is True
             record.assert_called_once()
@@ -952,3 +1230,97 @@ class TestSizeMismatchRetry:
         # Next file iteration resets it
         size_mismatch_retried = False
         assert size_mismatch_retried is False
+
+
+# ── Session bootstrap timeout tests (R8) ─────────────────────────────────
+
+
+class TestSessionBootstrapTimeout:
+    """Tests for session-aware bootstrap timeout (tier 2b)."""
+
+    def test_bootstrap_used_when_no_adaptive_data(self):
+        """15s_24hr sessions get 900s bootstrap when adaptive returns None."""
+        from receivers.utils.stall_timeout import get_stall_timeout
+
+        with patch(
+            "receivers.utils.stall_timeout._get_overrides", return_value={}
+        ), patch(
+            "receivers.utils.stall_timeout.compute_adaptive_timeout", return_value=None
+        ):
+            timeout = get_stall_timeout(
+                "BRTT",
+                "polarx5",
+                default=300,
+                session_type="15s_24hr",
+            )
+            assert timeout == 900
+
+    def test_adaptive_takes_priority_over_bootstrap(self):
+        """Adaptive timeout (tier 2) overrides bootstrap (tier 2b)."""
+        from receivers.utils.stall_timeout import get_stall_timeout
+
+        with patch(
+            "receivers.utils.stall_timeout._get_overrides", return_value={}
+        ), patch(
+            "receivers.utils.stall_timeout.compute_adaptive_timeout", return_value=1200
+        ):
+            timeout = get_stall_timeout(
+                "BRTT",
+                "polarx5",
+                default=300,
+                session_type="15s_24hr",
+            )
+            assert timeout == 1200
+
+    def test_db_override_takes_priority_over_bootstrap(self):
+        """DB override (tier 1) overrides bootstrap (tier 2b)."""
+        from receivers.utils.stall_timeout import get_stall_timeout
+
+        with patch(
+            "receivers.utils.stall_timeout._get_overrides", return_value={"BRTT": 500}
+        ), patch(
+            "receivers.utils.stall_timeout.compute_adaptive_timeout"
+        ) as mock_adaptive:
+            timeout = get_stall_timeout(
+                "BRTT",
+                "polarx5",
+                default=300,
+                session_type="15s_24hr",
+            )
+            assert timeout == 500
+            mock_adaptive.assert_not_called()
+
+    def test_no_bootstrap_for_hourly_sessions(self):
+        """1Hz_1hr sessions fall through to receivers.cfg (no bootstrap defined)."""
+        from receivers.utils.stall_timeout import get_stall_timeout
+
+        with patch(
+            "receivers.utils.stall_timeout._get_overrides", return_value={}
+        ), patch(
+            "receivers.utils.stall_timeout.compute_adaptive_timeout", return_value=None
+        ), patch(
+            "receivers.config.receivers_config.get_receivers_config"
+        ) as mock_cfg:
+            mock_cfg.return_value.get_receiver_config.return_value = {
+                "stall_timeout": 600
+            }
+            timeout = get_stall_timeout(
+                "ELDC",
+                "polarx5",
+                default=300,
+                session_type="1Hz_1hr",
+            )
+            assert timeout == 600
+
+    def test_no_bootstrap_without_session_type(self):
+        """Without session_type, falls through to receivers.cfg."""
+        from receivers.utils.stall_timeout import get_stall_timeout
+
+        with patch(
+            "receivers.utils.stall_timeout._get_overrides", return_value={}
+        ), patch("receivers.config.receivers_config.get_receivers_config") as mock_cfg:
+            mock_cfg.return_value.get_receiver_config.return_value = {
+                "stall_timeout": 600
+            }
+            timeout = get_stall_timeout("ELDC", "polarx5", default=300)
+            assert timeout == 600

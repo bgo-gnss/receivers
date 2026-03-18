@@ -30,7 +30,6 @@ from typing import List, Optional
 from .converter_base import (
     ConversionError,
     NamingConvention,
-    OutputFormat,
     RawToRinexConverter,
     RinexVersion,
 )
@@ -55,9 +54,10 @@ class SBFConverter(RawToRinexConverter):
         self,
         station_id: str,
         rinex_version: RinexVersion = RinexVersion.RINEX_3,
-        output_format: Optional[OutputFormat] = None,
         naming_convention: Optional["NamingConvention"] = None,
         apply_header_corrections: bool = True,
+        apply_hatanaka: Optional[bool] = None,
+        compression_format=None,
         observation_types: Optional[List[str]] = None,
         loglevel: int = logging.INFO,
     ):
@@ -66,21 +66,22 @@ class SBFConverter(RawToRinexConverter):
         Args:
             station_id: Station identifier (e.g., 'ELDC')
             rinex_version: Target RINEX version (2, 3, or 4)
-            output_format: Output format (modern or legacy).
-                          If None, reads from config (default_hatanaka, default_compression).
             naming_convention: Filename convention (SHORT or LONG).
                               If None, reads from config default_naming,
                               then falls back based on rinex_version.
             apply_header_corrections: Whether to apply TOS metadata corrections
+            apply_hatanaka: Apply Hatanaka compression (None = read from config)
+            compression_format: File compression format (None = read from config)
             observation_types: List of observation types to include (default: all)
             loglevel: Logging level
         """
         super().__init__(
             station_id=station_id,
             rinex_version=rinex_version,
-            output_format=output_format,
             naming_convention=naming_convention,
             apply_header_corrections=apply_header_corrections,
+            apply_hatanaka=apply_hatanaka,
+            compression_format=compression_format,
             loglevel=loglevel,
         )
         self.observation_types = observation_types

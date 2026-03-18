@@ -1,0 +1,43 @@
+# GPS Receivers - Server Deployment (Grafana only)
+# Purpose: Grafana dashboards on dev/production server
+# The scheduler runs via systemd, not Docker.
+#
+# Usage:
+#   cd /opt/receivers/deployment/server
+#   docker compose up -d
+#
+# Update dashboards:
+#   docker restart gps-grafana
+
+services:
+  grafana:
+    image: grafana/grafana:12.3.1
+    container_name: gps-grafana
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - GF_SERVER_HTTP_PORT=3000
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_ADMIN_PASSWORD:-admin}
+      - GF_DATASOURCE_USER=${GF_DATASOURCE_USER:-gpsops}
+      - GF_DATASOURCE_PASSWORD=${GF_DATASOURCE_PASSWORD:-}
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - TZ=Atlantic/Reykjavik
+    volumes:
+      # Dashboard provisioning
+      - ../../docs/grafana/provisioning/dashboards/dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml:ro
+      - ../../docs/grafana/gps_health_dashboard.json:/etc/grafana/provisioning/dashboards/json/gps_health_dashboard.json:ro
+      - ../../docs/grafana/gps_station_detail_dashboard.json:/etc/grafana/provisioning/dashboards/json/gps_station_detail_dashboard.json:ro
+      - ../../docs/grafana/gps_map_dashboard.json:/etc/grafana/provisioning/dashboards/json/gps_map_dashboard.json:ro
+      # Datasource provisioning
+      - ../../docs/grafana/provisioning/datasources/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      # Persistent state
+      - grafana-data:/var/lib/grafana
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  grafana-data:
