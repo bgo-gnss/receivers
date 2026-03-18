@@ -42,8 +42,8 @@ readonly NFS_OPTS="mountvers=3,auto,nofail,nolock,tcp,ro"
 readonly REPO_RECEIVERS="https://github.com/bennigo/receivers.git"
 readonly REPO_GTIMES="https://github.com/bennigo/gtimes.git"
 readonly REPO_GPS_PARSER="https://github.com/bennigo/gps_parser.git"
-readonly REPO_CONFIG="git@git.vedur.is:bgo/gps-config-data.git"
-readonly REPO_TOOLS="git@git.vedur.is:gps/gps-tools.git"
+readonly REPO_CONFIG="https://git.vedur.is/bgo/gps-config-data.git"
+readonly REPO_TOOLS="https://git.vedur.is/gps/gps-tools.git"
 
 # ── Flags ──────────────────────────────────────────────────────────────────
 FLAG_WIPE=false
