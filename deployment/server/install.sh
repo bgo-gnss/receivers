@@ -195,6 +195,15 @@ else
     ok "User exists: $SERVICE_USER"
 fi
 
+# Create service group if it doesn't exist (AD/LDAP users may not have a matching local group)
+if ! getent group "$SERVICE_GROUP" &>/dev/null; then
+    groupadd "$SERVICE_GROUP"
+    usermod -aG "$SERVICE_GROUP" "$SERVICE_USER"
+    ok "Created group: $SERVICE_GROUP (added $SERVICE_USER)"
+else
+    ok "Group exists: $SERVICE_GROUP"
+fi
+
 # Add admin to service group
 if ! id -nG "$ADMIN_USER" 2>/dev/null | grep -qw "$SERVICE_GROUP"; then
     usermod -aG "$SERVICE_GROUP" "$ADMIN_USER"
