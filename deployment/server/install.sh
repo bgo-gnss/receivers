@@ -157,6 +157,10 @@ done
 
 if [[ ${#MISSING[@]} -gt 0 ]]; then
     echo "  Installing: ${MISSING[*]}"
+    # Temporarily disable third-party repos that may not support this Ubuntu release
+    for f in /etc/apt/sources.list.d/pgdg.{list,sources}; do
+        [[ -f "$f" ]] && mv "$f" "${f}.disabled" && warn "Disabled $f (unsupported Ubuntu release)"
+    done
     apt-get update -qq
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${MISSING[@]}"
     ok "Installed ${#MISSING[@]} packages"
