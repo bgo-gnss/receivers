@@ -48,8 +48,8 @@ SyslogIdentifier=gps-scheduler
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/cache/gps_receivers /mnt/gpsdata /tmp /opt/receivers
+ProtectHome=false
+ReadWritePaths=/var/cache/gps_receivers /mnt/gpsdata /tmp
 
 # Watchdog (restart if no keep-alive for 5 minutes)
 WatchdogSec=300s

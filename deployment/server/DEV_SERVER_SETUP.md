@@ -14,14 +14,13 @@
 ## Quick Install
 
 ```bash
-# Clone the receivers repo (if not already on the server)
-sudo mkdir -p /opt/receivers
-sudo chown bgo:bgo /opt/receivers
-git clone git@github.com:bennigo/receivers.git /opt/receivers
+# Clone the receivers repo
+mkdir -p ~/git
+git clone https://github.com/bennigo/receivers.git ~/git/receivers
 
 # Run the install script
-cd /opt/receivers
-sudo ./deployment/server/install.sh
+cd ~/git/receivers
+sudo bash deployment/server/install.sh
 ```
 
 The script is idempotent — running it again updates everything without breaking existing state.
@@ -40,13 +39,13 @@ PostgreSQL, Python 3, Git, NFS client, Docker.
 
 ### Phase 3: Git repositories
 Clones/updates four repos to `/opt/`:
-- `/opt/receivers` — main package
-- `/opt/gtimes` — GPS time library
+- `~/git/receivers` — main package
+- `~/git/gtimes` — GPS time library
 - `/opt/gps_parser` — config management
-- `/opt/gps-config-data` — station configs from git.vedur.is
+- `~/git/gps-config-data` — station configs from git.vedur.is
 
 ### Phase 4: Python virtual environment
-Creates `/opt/receivers/venv/` owned by `gpsops`, installs all packages in editable mode.
+Creates `~/git/receivers/venv/` owned by `gpsops`, installs all packages in editable mode.
 
 ### Phase 5: Configuration
 Copies configs from gps-config-data to `/etc/gpsconfig/`, patches:
@@ -78,15 +77,15 @@ Checks CLI, config files, database, tools, Grafana. Prints summary.
 
 ```bash
 # As bgo:
-cd /opt/receivers && git pull
-sudo -u gpsops /opt/receivers/venv/bin/pip install -e .
+cd ~/git/receivers && git pull
+sudo -u gpsops ~/git/receivers/venv/bin/pip install -e .
 sudo systemctl restart gps-receivers-scheduler
 ```
 
 ### Updating Configuration
 
 ```bash
-cd /opt/gps-config-data && git pull
+cd ~/git/gps-config-data && git pull
 sudo cp stations.cfg receivers.cfg database.cfg scheduler.yaml /etc/gpsconfig/
 sudo chown root:gpsops /etc/gpsconfig/*
 sudo chmod 640 /etc/gpsconfig/*
@@ -99,7 +98,7 @@ sudo systemctl restart gps-receivers-scheduler
 ### Running Migrations
 
 ```bash
-cd /opt/receivers
+cd ~/git/receivers
 psql -d gps_health -f migrations/NNN_whatever.sql
 sudo systemctl restart gps-receivers-scheduler
 ```
@@ -114,15 +113,15 @@ sudo ./deployment/server/install.sh
 ```bash
 # Run as gpsops with config path set
 sudo -u gpsops GPS_CONFIG_PATH=/etc/gpsconfig \
-  /opt/receivers/venv/bin/receivers download ELDC --sync --archive
+  ~/git/receivers/venv/bin/receivers download ELDC --sync --archive
 
 # Test connection
 sudo -u gpsops GPS_CONFIG_PATH=/etc/gpsconfig \
-  /opt/receivers/venv/bin/receivers download ELDC --test-connection
+  ~/git/receivers/venv/bin/receivers download ELDC --test-connection
 
 # Health check
 sudo -u gpsops GPS_CONFIG_PATH=/etc/gpsconfig \
-  /opt/receivers/venv/bin/receivers health THOB --verbose
+  ~/git/receivers/venv/bin/receivers health THOB --verbose
 ```
 
 ### Viewing Logs
@@ -148,7 +147,7 @@ sudo systemctl status gps-receivers-scheduler
 
 # Check scheduler state
 sudo -u gpsops GPS_CONFIG_PATH=/etc/gpsconfig \
-  /opt/receivers/venv/bin/receivers scheduler status --show-jobs
+  ~/git/receivers/venv/bin/receivers scheduler status --show-jobs
 ```
 
 ### Grafana
@@ -161,7 +160,7 @@ docker restart gps-grafana
 docker logs gps-grafana -f
 
 # Full restart
-cd /opt/receivers/deployment/server
+cd ~/git/receivers/deployment/server
 docker compose down && docker compose up -d
 ```
 
@@ -196,7 +195,7 @@ docker tag geodesyewsp/trm2rinex:cli-light trm2rinex:cli-light
 
 # Convert Trimble files (native RINEX 3)
 sudo -u gpsops GPS_CONFIG_PATH=/etc/gpsconfig \
-  /opt/receivers/venv/bin/receivers rinex MANA --native-trimble -d 1
+  ~/git/receivers/venv/bin/receivers rinex MANA --native-trimble -d 1
 ```
 
 The fallback chain (`runpkr00` → `teqc` → `gfzrnx`) is available via the gps-tools repo but produces reformatted RINEX 3 (not native observation codes). Use only when Docker is unavailable.
@@ -206,7 +205,7 @@ The fallback chain (`runpkr00` → `teqc` → `gfzrnx`) is available via the gps
 Proprietary tools are managed via the `gps/gps-tools` repo on git.vedur.is:
 
 ```
-/opt/gps-tools/
+~/git/gps-tools/
 ├── rxtools/
 │   ├── bin/        # bin2asc, sbf2rin, sbfanalyzer
 │   └── lib/        # Qt6, libcomms, libgeod shared libraries
@@ -218,7 +217,7 @@ The install script symlinks these to `/usr/local/bin/` and configures `ld.so.con
 If the gps-tools repo is not available, install manually:
 ```bash
 # Copy RxTools from laptop
-scp -r /usr/local/rxtools/ server:/opt/gps-tools/rxtools/
+scp -r /usr/local/rxtools/ server:~/git/gps-tools/rxtools/
 
 # Open-source tools
 # teqc: https://www.unavco.org/software/data-processing/teqc/teqc.html
@@ -302,7 +301,7 @@ ping -c 1 ananas.vedur.is
 which bin2asc sbf2rin teqc gfzrnx RNX2CRX
 
 # If RxTools fails with shared library errors
-ldd /opt/gps-tools/rxtools/bin/bin2asc
+ldd ~/git/gps-tools/rxtools/bin/bin2asc
 sudo ldconfig
 ```
 
