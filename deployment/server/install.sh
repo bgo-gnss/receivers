@@ -22,11 +22,12 @@ readonly SERVICE_USER="gpsops"
 readonly SERVICE_GROUP="gpsops"
 readonly ADMIN_USER="bgo"
 
-readonly INSTALL_DIR="/opt/receivers"
-readonly GTIMES_DIR="/opt/gtimes"
-readonly GPS_PARSER_DIR="/opt/gps_parser"
-readonly CONFIG_REPO_DIR="/opt/gps-config-data"
-readonly TOOLS_DIR="/opt/gps-tools"
+readonly GIT_BASE="/home/${ADMIN_USER}/git"
+readonly INSTALL_DIR="${GIT_BASE}/receivers"
+readonly GTIMES_DIR="${GIT_BASE}/gtimes"
+readonly GPS_PARSER_DIR="${GIT_BASE}/gps_parser"
+readonly CONFIG_REPO_DIR="${GIT_BASE}/gps-config-data"
+readonly TOOLS_DIR="${GIT_BASE}/gps-tools"
 readonly CONFIG_DIR="/etc/gpsconfig"
 readonly CACHE_DIR="/var/cache/gps_receivers"
 readonly DATA_DIR="/mnt/gpsdata"
@@ -38,9 +39,9 @@ readonly NFS_SOURCE="ananas.vedur.is:/gps/gpsdata"
 readonly NFS_OPTS="mountvers=3,auto,nofail,nolock,tcp,ro"
 
 # Git repositories
-readonly REPO_RECEIVERS="git@github.com:bennigo/receivers.git"
-readonly REPO_GTIMES="git@github.com:bennigo/gtimes.git"
-readonly REPO_GPS_PARSER="git@github.com:bennigo/gps_parser.git"
+readonly REPO_RECEIVERS="https://github.com/bennigo/receivers.git"
+readonly REPO_GTIMES="https://github.com/bennigo/gtimes.git"
+readonly REPO_GPS_PARSER="https://github.com/bennigo/gps_parser.git"
 readonly REPO_CONFIG="git@git.vedur.is:bgo/gps-config-data.git"
 readonly REPO_TOOLS="git@git.vedur.is:gps/gps-tools.git"
 
@@ -269,6 +270,9 @@ fi
 # Phase 3: Clone/update git repositories
 # ===========================================================================
 phase 3 "Git repositories"
+
+# Ensure base directory exists (owned by admin user)
+sudo -u "$ADMIN_USER" mkdir -p "$GIT_BASE"
 
 clone_or_update() {
     local repo_url="$1" target_dir="$2" owner="${3:-$ADMIN_USER}" group="${4:-$SERVICE_GROUP}"
@@ -629,8 +633,10 @@ fi
 # ===========================================================================
 phase 10 "systemd + logrotate"
 
-# Install service file
-cp "$INSTALL_DIR/deployment/systemd/gps-receivers-scheduler.service" /etc/systemd/system/
+# Install service file (patch paths for this installation)
+sed -e "s|/opt/receivers|$INSTALL_DIR|g" \
+    "$INSTALL_DIR/deployment/systemd/gps-receivers-scheduler.service" \
+    > /etc/systemd/system/gps-receivers-scheduler.service
 systemctl daemon-reload
 systemctl enable gps-receivers-scheduler
 ok "systemd service installed and enabled"
