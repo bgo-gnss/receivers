@@ -157,9 +157,9 @@ done
 
 if [[ ${#MISSING[@]} -gt 0 ]]; then
     echo "  Installing: ${MISSING[*]}"
-    # Temporarily disable third-party repos that may not support this Ubuntu release
-    for f in /etc/apt/sources.list.d/pgdg.{list,sources}; do
-        [[ -f "$f" ]] && mv "$f" "${f}.disabled" && warn "Disabled $f (unsupported Ubuntu release)"
+    # Temporarily disable third-party PostgreSQL repos that may not support this Ubuntu release
+    for f in /etc/apt/sources.list.d/*pgdg* /etc/apt/sources.list.d/*postgresql*; do
+        [[ -f "$f" ]] && mv "$f" "${f}.disabled" && warn "Disabled $(basename "$f") (unsupported Ubuntu release)"
     done
     apt-get update -qq
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${MISSING[@]}"
