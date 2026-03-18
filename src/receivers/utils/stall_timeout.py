@@ -12,6 +12,7 @@ Provides:
 Timeout priority:
     1. DB stations.stall_timeout_override (per-station)
     2. Adaptive timeout from download_log history (data-driven)
+    2b. Session bootstrap for large-file sessions without adaptive data
     3. receivers.cfg [receiver_type] stall_timeout
     4. receivers.cfg [receiver_defaults] stall_timeout
     5. Hardcoded fallback (300s)
@@ -20,6 +21,7 @@ Timeout priority:
 import logging
 import math
 import time
+from datetime import datetime, timezone
 from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -31,6 +33,14 @@ _CACHE_TTL = 300.0  # Reload every 5 minutes
 
 # Module-level cache for adaptive timeouts: {(station_id, session_type): (timeout, loaded_at)}
 _adaptive_cache: Dict[Tuple[str, str], Tuple[int, float]] = {}
+
+# Session-type bootstrap timeouts for stations without adaptive history.
+# Breaks the bootstrap deadlock where slow 3G stations always time out at
+# the receivers.cfg default (600s) and never complete the 2 downloads
+# needed for the adaptive system to kick in.
+_SESSION_BOOTSTRAP_TIMEOUTS: Dict[str, int] = {
+    "15s_24hr": 900,  # Daily SBF (3-5 MB) on slow 3G can take 600-1500s
+}
 
 
 def _load_overrides() -> Dict[str, int]:
@@ -158,7 +168,12 @@ def compute_adaptive_timeout(
         logger.debug(
             "Station %s (%s): adaptive timeout = %ds "
             "(avg_speed=%.0f B/s, file_size=%.0f, samples=%d)",
-            station_id, session_type, timeout, avg_speed, file_size, sample_count,
+            station_id,
+            session_type,
+            timeout,
+            avg_speed,
+            file_size,
+            sample_count,
         )
 
         # Cache the result
@@ -166,8 +181,12 @@ def compute_adaptive_timeout(
         return timeout
 
     except Exception as e:
-        logger.debug("Could not compute adaptive timeout for %s/%s: %s",
-                     station_id, session_type, e)
+        logger.debug(
+            "Could not compute adaptive timeout for %s/%s: %s",
+            station_id,
+            session_type,
+            e,
+        )
         return None
 
 
@@ -183,6 +202,7 @@ def get_stall_timeout(
     Priority:
         1. DB stations.stall_timeout_override (per-station)
         2. Adaptive timeout from download_log history (data-driven)
+        2b. Session bootstrap for large-file sessions without adaptive data
         3. receivers.cfg [receiver_type] stall_timeout
         4. receivers.cfg [receiver_defaults] stall_timeout
         5. ``default`` argument (fallback)
@@ -218,6 +238,19 @@ def get_stall_timeout(
                 "Station %s: using adaptive timeout = %ds", station_id, adaptive
             )
             return adaptive
+
+    # 2b. Session bootstrap: generous default for large-file sessions
+    # without adaptive history.  Lets slow 3G stations complete at least
+    # twice so the adaptive system can take over with real data.
+    if session_type and session_type in _SESSION_BOOTSTRAP_TIMEOUTS:
+        bootstrap = _SESSION_BOOTSTRAP_TIMEOUTS[session_type]
+        logger.debug(
+            "Station %s (%s): no adaptive data, using bootstrap timeout = %ds",
+            station_id,
+            session_type,
+            bootstrap,
+        )
+        return bootstrap
 
     # 3-4. receivers.cfg: [receiver_type] stall_timeout -> [receiver_defaults] stall_timeout
     try:
@@ -377,21 +410,34 @@ def _query_health_gate(
 
                     # Only act on fresh data (< 30 min old)
                     if last_update is not None:
-                        cur.execute(
-                            "SELECT EXTRACT(EPOCH FROM NOW() - %s)",
-                            (last_update,),
-                        )
-                        age_seconds = cur.fetchone()[0]
+                        # Ensure timezone-aware comparison
+                        if last_update.tzinfo is None:
+                            last_update = last_update.replace(tzinfo=timezone.utc)
+                        age_seconds = (
+                            datetime.now(tz=timezone.utc) - last_update
+                        ).total_seconds()
 
-                        if age_seconds is not None and age_seconds < 1800:
+                        if age_seconds < 1800:
                             if sats is not None and sats == 0:
                                 return "no_satellites"
                             if disk_pct is not None and disk_pct > 98:
                                 return "disk_full"
 
-                # Note: logging_inactive check removed — too many false positives.
-                # Stations with inactive logging often still have historical files
-                # on FTP.  The no_satellites and disk_full checks are sufficient.
+                    # Check for broken disk (total_mb = 0 with recent data).
+                    # Distinct from disk_full: total_mb=0 means the disk is
+                    # broken or unmounted (GJAC pattern), not just nearly full.
+                    # Only query block_disk_status when disk_pct is 0 or NULL
+                    # (1-2 stations), skipping the query for all healthy stations.
+                    if disk_pct is None or disk_pct == 0:
+                        cur.execute(
+                            """SELECT total_mb FROM block_disk_status
+                               WHERE sid = %s AND ts > NOW() - INTERVAL '1 hour'
+                               ORDER BY ts DESC LIMIT 1""",
+                            (station_id,),
+                        )
+                        disk_row = cur.fetchone()
+                        if disk_row and disk_row[0] is not None and disk_row[0] == 0:
+                            return "disk_broken"
 
     except Exception as e:
         logger.debug("Health gate check failed for %s: %s", station_id, e)
@@ -440,6 +486,16 @@ def clear_backoff_cache(station_id: str) -> None:
     _backoff_cache.pop(station_id.upper(), None)
 
 
+def clear_all_backoff_cache() -> None:
+    """Clear the entire backoff cache.
+
+    Called when the network is confirmed working (e.g., majority of first-pass
+    downloads succeeded), so stale backoff entries from a previous outage
+    don't prevent stations from being retried.
+    """
+    _backoff_cache.clear()
+
+
 def _query_consecutive_failures(station_id: str) -> bool:
     """Internal: query download_log for consecutive failures."""
     try:
@@ -460,10 +516,7 @@ def _query_consecutive_failures(station_id: str) -> bool:
         if len(rows) < 5:
             return False  # Not enough history — give it a chance
 
-        return all(
-            row[0] in ("failed", "unreachable", "stall_timeout")
-            for row in rows
-        )
+        return all(row[0] in ("failed", "unreachable", "stall_timeout") for row in rows)
 
     except Exception as e:
         logger.debug("Backoff check failed for %s: %s", station_id, e)

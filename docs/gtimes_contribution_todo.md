@@ -195,7 +195,8 @@ Once gtimes PR is merged and released:
 
 **Created**: 2025-11-13
 **Updated**: 2025-11-13
-**Status**: ✅ Phase 3 Complete (Implementation and Testing) - Ready for PR
+**Status**: ✅ PR Submitted - Awaiting Review
+**PR**: https://github.com/bennigo/gtimes/pull/3
 **Priority**: Medium (working local implementation exists, but contribution benefits the community)
 **Dependencies**: None (gtimes is actively maintained)
 
@@ -223,7 +224,15 @@ Once gtimes PR is merged and released:
 - **Commit**: `a357f28` - "fix: respect lfrequency parameter in datepathlist for hourly data"
 - **Location**: `/home/bgo/work/projects/gps/gpslibrary_new/gtimes`
 
+### ✅ PR Submitted
+- **Phase 5**: Documentation (complete - comprehensive PR description)
+- **Phase 6**: Pull request created ✅
+  - PR #3: https://github.com/bennigo/gtimes/pull/3
+  - Branch: `fix/datepathlist-hourly-frequency-bug`
+  - Status: Awaiting review
+
 ### Next Steps
-- **Phase 5**: Documentation updates (if needed for PR)
-- **Phase 6**: Create pull request to gtimes main branch
 - **Phase 7**: After merge, integrate back to receivers package
+  - Update receivers to optionally use gtimes fix
+  - Add minimum gtimes version requirement
+  - Deprecate local workaround with migration period

@@ -1,7 +1,7 @@
 """CLI subcommand for database management.
 
 Provides `receivers db` commands for setup, migration, seeding,
-status, dump, and restore of the gps_health database.
+status, dump, restore, and station removal for the gps_health database.
 
 Usage:
     receivers db setup [--host HOST]
@@ -10,6 +10,7 @@ Usage:
     receivers db status [--host HOST]
     receivers db dump
     receivers db restore FILE [--host HOST]
+    receivers db drop-station STATION [--dry-run] [--force] [--host HOST]
 """
 
 from __future__ import annotations
@@ -306,6 +307,99 @@ def cmd_db_restore(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_db_drop_station(args: argparse.Namespace) -> int:
+    """Remove a station and all its data from the database."""
+    from ..db.connection import get_connection
+
+    station_id = args.station_id.upper()
+    host = getattr(args, "host", None)
+    dry_run = getattr(args, "dry_run", False)
+    force = getattr(args, "force", False)
+
+    try:
+        conn = get_connection(host_override=host)
+    except Exception as e:
+        print(f"Cannot connect: {e}")
+        return 1
+
+    try:
+        with conn.cursor() as cur:
+            # Verify station exists
+            cur.execute("SELECT sid FROM stations WHERE sid = %s", (station_id,))
+            if not cur.fetchone():
+                print(f"Station '{station_id}' not found in database.")
+                conn.close()
+                return 1
+
+            # Find all tables with a sid column (except stations itself)
+            cur.execute("""
+                SELECT table_name FROM information_schema.columns
+                WHERE column_name = 'sid' AND table_schema = 'public'
+                  AND table_name != 'stations'
+                ORDER BY table_name
+            """)
+            tables = [row[0] for row in cur.fetchall()]
+
+            # Count rows per table
+            if tables:
+                union_sql = " UNION ALL ".join(
+                    f"SELECT '{t}' AS tbl, COUNT(*) FROM {t} WHERE sid = %s"
+                    for t in tables
+                )
+                cur.execute(union_sql, tuple(station_id for _ in tables))
+                counts = [(row[0], row[1]) for row in cur.fetchall()]
+            else:
+                counts = []
+
+            # Display summary
+            total = sum(c for _, c in counts)
+            non_zero = [(t, c) for t, c in counts if c > 0]
+
+            print(f"Station: {station_id}")
+            print(f"Tables with data: {len(non_zero)} / {len(counts)}")
+            if non_zero:
+                max_name = max(len(t) for t, _ in non_zero)
+                for tbl, cnt in sorted(non_zero, key=lambda x: -x[1]):
+                    print(f"  {tbl:<{max_name}}  {cnt:>8} rows")
+            print(f"  {'TOTAL':<20}  {total:>8} rows")
+            print("  + 1 row in stations")
+
+            if dry_run:
+                print("\n(dry run — no changes made)")
+                conn.close()
+                return 0
+
+            # Confirmation
+            if not force:
+                confirm = input(f"\nType '{station_id}' to confirm deletion: ")
+                if confirm.strip().upper() != station_id:
+                    print("Aborted.")
+                    conn.close()
+                    return 1
+
+            # Delete station_area_members explicitly (no FK cascade)
+            if "station_area_members" in tables:
+                cur.execute(
+                    "DELETE FROM station_area_members WHERE sid = %s",
+                    (station_id,),
+                )
+
+            # Delete from stations (cascades to block_* and other FK tables)
+            cur.execute("DELETE FROM stations WHERE sid = %s", (station_id,))
+
+        conn.commit()
+        conn.close()
+        print(f"\nDeleted station {station_id} and {total} related rows.")
+        return 0
+
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        print(f"Error: {e}")
+        logger.exception("drop-station failed")
+        return 1
+
+
 # ── Parser registration ───────────────────────────────────────────────────────
 
 
@@ -377,12 +471,23 @@ def create_db_parser(subparsers) -> None:
     restore_parser.add_argument("--host", help="PostgreSQL host (default: localhost)")
     restore_parser.set_defaults(func=cmd_db_restore)
 
+    # drop-station
+    drop_parser = db_subparsers.add_parser(
+        "drop-station",
+        help="Remove a station and all its data",
+    )
+    drop_parser.add_argument("station_id", help="Station ID to remove (e.g. SFEH)")
+    drop_parser.add_argument("--dry-run", action="store_true", help="Show what would be deleted")
+    drop_parser.add_argument("--force", action="store_true", help="Skip confirmation prompt")
+    drop_parser.add_argument("--host", help="PostgreSQL host (default: from config)")
+    drop_parser.set_defaults(func=cmd_db_drop_station)
+
 
 def handle_db_command(args: argparse.Namespace) -> int:
     """Handle db subcommands."""
     if not hasattr(args, "db_command") or not args.db_command:
         print("No db command specified.")
-        print("Available commands: setup, migrate, seed, status, dump, restore")
+        print("Available commands: setup, migrate, seed, status, dump, restore, drop-station")
         print("Run 'receivers db <command> --help' for details.")
         return 1
 

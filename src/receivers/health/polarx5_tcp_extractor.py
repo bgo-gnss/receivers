@@ -55,7 +55,7 @@ class PolaRX5TCPExtractor:
         station_id: str,
         port: int = CONTROL_PORT,
         timeout: float = 10.0,
-        port_config: Optional[Dict[str, int]] = None
+        port_config: Optional[Dict[str, int]] = None,
     ):
         """Initialize TCP health extractor.
 
@@ -79,6 +79,7 @@ class PolaRX5TCPExtractor:
         power_type = None
         try:
             from ..config_utils import get_station_config
+
             cfg = get_station_config(station_id)
             if cfg:
                 power_type = cfg.get("power_type") or None
@@ -88,11 +89,7 @@ class PolaRX5TCPExtractor:
         self.metric_checker = MetricChecker(config)
 
         # Port configuration for status checks
-        self.port_config = port_config or {
-            "ftp": 2160,
-            "http": 8060,
-            "control": 28784
-        }
+        self.port_config = port_config or {"ftp": 2160, "http": 8060, "control": 28784}
 
     def extract_health_data(self) -> Dict[str, Any]:
         """Extract health data from all available SBF blocks.
@@ -126,7 +123,9 @@ class PolaRX5TCPExtractor:
                 if "temperature" in receiver_data:
                     health_data["metrics"]["temperature"] = receiver_data["temperature"]
                 if "uptime_seconds" in receiver_data:
-                    health_data["metrics"]["uptime_seconds"] = receiver_data["uptime_seconds"]
+                    health_data["metrics"]["uptime_seconds"] = receiver_data[
+                        "uptime_seconds"
+                    ]
                 if "rx_status" in receiver_data:
                     health_data["metrics"]["rx_status"] = receiver_data["rx_status"]
 
@@ -195,7 +194,7 @@ class PolaRX5TCPExtractor:
             # Formula verified against Septentrio bin2asc official output
             if length >= 16 and len(sbf_data) >= 16:
                 # Read bytes 14-15 as 16-bit little-endian
-                power_info = struct.unpack('<H', sbf_data[14:16])[0]
+                power_info = struct.unpack("<H", sbf_data[14:16])[0]
                 # Voltage = upper 12 bits / 40
                 voltage = (power_info >> 4) / 40.0
 
@@ -248,11 +247,11 @@ class PolaRX5TCPExtractor:
                 }
 
                 # UpTime at offset 16-19
-                uptime = struct.unpack('<I', sbf_data[16:20])[0]
+                uptime = struct.unpack("<I", sbf_data[16:20])[0]
                 result["uptime_seconds"] = uptime
 
                 # RxStatus at offset 20-23 (uint32 bitfield)
-                rx_status = struct.unpack('<I', sbf_data[20:24])[0]
+                rx_status = struct.unpack("<I", sbf_data[20:24])[0]
                 result["rx_status"] = rx_status
 
                 # Temperature at offset 31 (int8, formula: temp = raw - 100)
@@ -387,9 +386,7 @@ class PolaRX5TCPExtractor:
         Returns:
             Dictionary with receiver identity or None on failure
         """
-        sbf_data = self._send_sbf_request(
-            "ReceiverSetup", self.BLOCK_RECEIVER_SETUP
-        )
+        sbf_data = self._send_sbf_request("ReceiverSetup", self.BLOCK_RECEIVER_SETUP)
         if not sbf_data:
             return None
 
@@ -398,14 +395,12 @@ class PolaRX5TCPExtractor:
 
             # Need at least 214 bytes to extract through RxVersion
             if length < 214 or len(sbf_data) < 214:
-                self.logger.debug(
-                    f"ReceiverSetup response too short: {length} bytes"
-                )
+                self.logger.debug(f"ReceiverSetup response too short: {length} bytes")
                 return None
 
             def _extract_string(data: bytes, start: int, size: int) -> str:
                 """Extract null-terminated string from fixed-size field."""
-                raw = data[start:start + size]
+                raw = data[start : start + size]
                 return raw.split(b"\x00", 1)[0].decode("ascii", errors="ignore").strip()
 
             serial_number = _extract_string(sbf_data, 154, 20)
@@ -455,9 +450,7 @@ class PolaRX5TCPExtractor:
 
         return self._parse_log_session_response(response)
 
-    def _parse_log_session_response(
-        self, response: str
-    ) -> Optional[Dict[str, Any]]:
+    def _parse_log_session_response(self, response: str) -> Optional[Dict[str, Any]]:
         """Parse getLogSession response to extract active sessions.
 
         Response format (one line per LOG slot):
@@ -571,10 +564,7 @@ class PolaRX5TCPExtractor:
 
                         # Check if response ends with prompt (IPxx>)
                         decoded = response.decode("utf-8", errors="ignore")
-                        if (
-                            decoded.rstrip().endswith(">")
-                            and "IP" in decoded[-20:]
-                        ):
+                        if decoded.rstrip().endswith(">") and "IP" in decoded[-20:]:
                             break
                 except socket.timeout:
                     if response:
@@ -609,18 +599,14 @@ class PolaRX5TCPExtractor:
     def _query_disk_status(self) -> Optional[Dict[str, Any]]:
         """Query DiskStatus SBF block (4059) for disk usage.
 
-        SBF DiskStatus structure (after 8-byte header):
-            TOW      (4B, uint32) - Time of week in ms
-            WNc      (2B, uint16) - GPS week number
-            N        (1B, uint8)  - Number of disk descriptors
-            SBLength (1B, uint8)  - Size of each disk descriptor
+        The DiskStatus sub-block layout varies by firmware revision and cannot
+        be reliably parsed with hardcoded offsets (the sub-block contains a
+        float32, status bitmask, 64-bit usage-in-bytes, and size-in-MB whose
+        positions differ from the SBF v1 documentation).
 
-        Each disk descriptor (SBLength bytes):
-            DiskID          (1B, uint8)  - Disk identifier
-            Status          (1B, uint8)  - 0=unavailable, 1=mounted, 2=full, 3=error, 4=unmounted
-            DiskUsage       (2B, uint16) - Usage in 0.01% units (0-10000)
-            DiskSize        (4B, uint32) - Total size in KB
-            CreateDeleteCount (4B, uint32) - File create/delete operations
+        We delegate to bin2asc, the reference Septentrio parser, which handles
+        all revisions correctly.  The SBF block is only ~52 bytes so the
+        subprocess overhead is negligible (<10 ms).
 
         Returns:
             Dictionary with disk metrics or None on failure
@@ -629,79 +615,150 @@ class PolaRX5TCPExtractor:
         if not sbf_data:
             return None
 
+        return self._parse_disk_via_bin2asc(sbf_data)
+
+    def _parse_disk_via_bin2asc(self, sbf_data: bytes) -> Optional[Dict[str, Any]]:
+        """Parse DiskStatus SBF block using bin2asc.
+
+        Delegates SBF→CSV conversion to the shared parse_sbf_bytes() utility,
+        then applies DiskStatus-specific domain logic (aggregation, worst-status).
+
+        Returns:
+            Dictionary with disk metrics or None on failure
+        """
+        try:
+            from ..utils.rxtools_extractor import parse_sbf_bytes
+        except ImportError:
+            self.logger.debug(
+                "rxtools_extractor not available, falling back to header-only"
+            )
+            return self._parse_disk_header_only(sbf_data)
+
+        try:
+            rows = parse_sbf_bytes(sbf_data, "DiskStatus")
+        except FileNotFoundError:
+            self.logger.debug(
+                "bin2asc not available, falling back to header-only parse"
+            )
+            return self._parse_disk_header_only(sbf_data)
+
+        if not rows:
+            self.logger.debug("bin2asc produced no DiskStatus output")
+            return None
+
+        disks: List[Dict[str, Any]] = []
+        total_mb_sum = 0.0
+        used_mb_sum = 0.0
+
+        for row in rows:
+            disk_id = int(row.get("DiskID", 0))
+            mounted = row.get("DISK_MOUNTED", 0) == 1
+            disk_full = row.get("DISK_FULL", 0) == 1
+            disk_size_mb = float(row.get("DiskSize [MB]", 0))
+            usage_pct = float(row.get("DiskUsagePercent [%]", 0))
+            error_str = row.get("Error", "")
+
+            if mounted:
+                status = "full" if disk_full else "mounted"
+            else:
+                status = "unmounted"
+            if error_str and error_str != "No error":
+                status = "error"
+
+            disk_info: Dict[str, Any] = {
+                "disk_id": disk_id,
+                "status": status,
+                "usage_percent": round(usage_pct, 2),
+                "total_mb": round(disk_size_mb, 1),
+            }
+            if mounted and disk_size_mb > 0:
+                used = round(disk_size_mb * usage_pct / 100, 1)
+                disk_info["used_mb"] = used
+                total_mb_sum += disk_size_mb
+                used_mb_sum += used
+
+            disks.append(disk_info)
+
+        if not disks:
+            return {"status": "unavailable", "disks": []}
+
+        worst = "mounted"
+        priority = {"mounted": 0, "full": 1, "unmounted": 2, "error": 3}
+        for d in disks:
+            if priority.get(d["status"], 3) > priority.get(worst, 0):
+                worst = d["status"]
+
+        result_dict: Dict[str, Any] = {"status": worst, "disks": disks}
+        if total_mb_sum > 0:
+            result_dict["total_mb"] = round(total_mb_sum, 1)
+            result_dict["used_mb"] = round(used_mb_sum, 1)
+            result_dict["usage_percent"] = round(used_mb_sum / total_mb_sum * 100, 2)
+        else:
+            result_dict["total_mb"] = 0
+            result_dict["used_mb"] = 0
+            result_dict["usage_percent"] = 0.0
+
+        return result_dict
+
+    def _parse_disk_header_only(self, sbf_data: bytes) -> Optional[Dict[str, Any]]:
+        """Minimal DiskStatus parse when bin2asc is unavailable.
+
+        Extracts only the fields at known stable offsets:
+        - N and SBLength at bytes 14-15
+        - DiskID at sub-block byte 4
+        - Status bitmask at sub-block byte 5 (bit 0 = DISK_MOUNTED)
+        - DiskSize [MB] at sub-block bytes 12-15 (uint32)
+
+        DiskUsagePercent requires bin2asc (it is computed from a 64-bit
+        usage-in-bytes field whose offset varies by firmware).
+        """
         try:
             _, length = self._parse_sbf_header(sbf_data)
-
-            # Minimum: 8B header + 4B TOW + 2B WNc + 1B N + 1B SBLength = 16 bytes
             if length < 16 or len(sbf_data) < 16:
-                self.logger.debug(f"DiskStatus too short: {length} bytes")
                 return None
 
-            # Parse after header (offset 8)
-            n_disks = struct.unpack_from('<B', sbf_data, 14)[0]
-            sb_length = struct.unpack_from('<B', sbf_data, 15)[0]
-
-            if n_disks == 0 or sb_length < 8:
-                self.logger.debug(f"DiskStatus: {n_disks} disks, sb_length={sb_length}")
+            n_disks = sbf_data[14]
+            sb_length = sbf_data[15]
+            if n_disks == 0 or sb_length < 16:
                 return {"status": "unavailable", "disks": []}
 
             disks: List[Dict[str, Any]] = []
-            total_size_kb = 0
-            total_used_kb = 0
-            worst_status = "mounted"
-            status_priority = {"mounted": 0, "full": 1, "unmounted": 2, "error": 3, "unavailable": 4}
-
+            total_mb_sum = 0.0
             for i in range(n_disks):
                 offset = 16 + i * sb_length
-                if offset + 8 > len(sbf_data):
+                if offset + 16 > len(sbf_data):
                     break
-
-                disk_id = struct.unpack_from('<B', sbf_data, offset)[0]
-                status_code = struct.unpack_from('<B', sbf_data, offset + 1)[0]
-                usage_raw = struct.unpack_from('<H', sbf_data, offset + 2)[0]
-                disk_size_kb = struct.unpack_from('<I', sbf_data, offset + 4)[0]
-
-                status_str = self._DISK_STATUS_MAP.get(status_code, f"unknown({status_code})")
-                usage_pct = usage_raw / 100.0  # 0.01% units → percentage
+                disk_id = sbf_data[offset + 4]
+                status_flags = sbf_data[offset + 5]
+                mounted = bool(status_flags & 0x01)
+                disk_size_mb = struct.unpack_from("<I", sbf_data, offset + 12)[0]
 
                 disk_info: Dict[str, Any] = {
                     "disk_id": disk_id,
-                    "status": status_str,
-                    "usage_percent": round(usage_pct, 2),
-                    "total_mb": round(disk_size_kb / 1024, 1),
+                    "status": "mounted" if mounted else "unmounted",
+                    "total_mb": round(float(disk_size_mb), 1),
                 }
-
-                if status_str == "mounted" and disk_size_kb > 0:
-                    used_kb = int(disk_size_kb * usage_pct / 100)
-                    disk_info["used_mb"] = round(used_kb / 1024, 1)
-                    total_size_kb += disk_size_kb
-                    total_used_kb += used_kb
-
-                if status_priority.get(status_str, 4) > status_priority.get(worst_status, 0):
-                    worst_status = status_str
-
+                if mounted and disk_size_mb > 0:
+                    total_mb_sum += disk_size_mb
                 disks.append(disk_info)
 
-            # Aggregate totals
-            result: Dict[str, Any] = {
-                "status": worst_status,
-                "disks": disks,
-            }
-            if total_size_kb > 0:
-                result["total_mb"] = round(total_size_kb / 1024, 1)
-                result["used_mb"] = round(total_used_kb / 1024, 1)
-                result["usage_percent"] = round(total_used_kb / total_size_kb * 100, 2)
-            else:
-                result["total_mb"] = 0
-                result["used_mb"] = 0
-                result["usage_percent"] = 0.0
+            if not disks:
+                return {"status": "unavailable", "disks": []}
 
+            result: Dict[str, Any] = {
+                "status": (
+                    "mounted"
+                    if any(d["status"] == "mounted" for d in disks)
+                    else "unmounted"
+                ),
+                "disks": disks,
+                "total_mb": round(total_mb_sum, 1),
+            }
             return result
 
         except Exception as e:
-            self.logger.error(f"Error parsing DiskStatus: {e}")
-
-        return None
+            self.logger.error(f"Error in header-only DiskStatus parse: {e}")
+            return None
 
     def _send_sbf_request(
         self, block_name: str, expected_block_id: Optional[int] = None
@@ -835,8 +892,8 @@ class PolaRX5TCPExtractor:
         """
         # Prompt format is typically "IPxx>" where xx is connection number
         try:
-            prompt_str = prompt.decode('ascii', errors='ignore').strip()
-            if prompt_str.startswith('IP') and prompt_str.endswith('>'):
+            prompt_str = prompt.decode("ascii", errors="ignore").strip()
+            if prompt_str.startswith("IP") and prompt_str.endswith(">"):
                 return prompt_str[:-1]  # Remove trailing '>'
         except Exception:
             pass
@@ -857,9 +914,9 @@ class PolaRX5TCPExtractor:
         # Bytes 2-3: CRC
         # Bytes 4-5: ID + Revision (lower 13 bits = ID)
         # Bytes 6-7: Length
-        id_rev = struct.unpack('<H', sbf_data[4:6])[0]
+        id_rev = struct.unpack("<H", sbf_data[4:6])[0]
         message_id = id_rev & 0x1FFF
-        length = struct.unpack('<H', sbf_data[6:8])[0]
+        length = struct.unpack("<H", sbf_data[6:8])[0]
         return message_id, length
 
     def _check_voltage_status(self, voltage: float) -> str:
@@ -925,9 +982,7 @@ class PolaRX5TCPExtractor:
         port_status["overall_status"] = "ok" if all_ok else "warning"
         return port_status
 
-    def _check_single_port(
-        self, _name: str, port_num: int
-    ) -> Dict[str, Any]:
+    def _check_single_port(self, _name: str, port_num: int) -> Dict[str, Any]:
         """Check a single TCP port with 5s timeout.
 
         Returns:
@@ -935,25 +990,29 @@ class PolaRX5TCPExtractor:
         """
         import errno
 
+        def _port_result(
+            is_open: bool, status: str, detail: str
+        ) -> Dict[str, Any]:
+            return {"port": port_num, "open": is_open, "status": status, "detail": detail}
+
         sock = None
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(5.0)  # 5s for slow 3G/4G links
             result = sock.connect_ex((self.host, port_num))
 
-            is_open = result == 0
-            if is_open:
-                return {"port": port_num, "open": True, "status": "ok", "detail": "open"}
+            if result == 0:
+                return _port_result(True, "ok", "open")
             elif result == errno.ECONNREFUSED:
-                return {"port": port_num, "open": False, "status": "warning", "detail": "refused"}
+                return _port_result(False, "warning", "refused")
             else:
-                return {"port": port_num, "open": False, "status": "critical", "detail": "timeout"}
+                return _port_result(False, "critical", "timeout")
         except socket.timeout:
-            return {"port": port_num, "open": False, "status": "critical", "detail": "timeout"}
+            return _port_result(False, "critical", "timeout")
         except ConnectionRefusedError:
-            return {"port": port_num, "open": False, "status": "warning", "detail": "refused"}
+            return _port_result(False, "warning", "refused")
         except Exception as e:
-            return {"port": port_num, "open": False, "status": "error", "detail": str(e)}
+            return _port_result(False, "error", str(e))
         finally:
             if sock is not None:
                 sock.close()
@@ -1007,9 +1066,9 @@ class PolaRX5TCPExtractor:
 
             if length >= 94 and len(sbf_data) >= 94:
                 # Extract position
-                lat_rad = struct.unpack('<d', sbf_data[16:24])[0]
-                lon_rad = struct.unpack('<d', sbf_data[24:32])[0]
-                height = struct.unpack('<d', sbf_data[32:40])[0]
+                lat_rad = struct.unpack("<d", sbf_data[16:24])[0]
+                lon_rad = struct.unpack("<d", sbf_data[24:32])[0]
+                height = struct.unpack("<d", sbf_data[32:40])[0]
 
                 # Convert radians to degrees
                 lat_deg = math.degrees(lat_rad)
@@ -1022,8 +1081,8 @@ class PolaRX5TCPExtractor:
                     return None
 
                 # Extract accuracy (in mm, convert to m)
-                h_accuracy_mm = struct.unpack('<H', sbf_data[90:92])[0]
-                v_accuracy_mm = struct.unpack('<H', sbf_data[92:94])[0]
+                h_accuracy_mm = struct.unpack("<H", sbf_data[90:92])[0]
+                v_accuracy_mm = struct.unpack("<H", sbf_data[92:94])[0]
 
                 # Number of satellites used
                 nr_sv = sbf_data[74]
@@ -1037,18 +1096,26 @@ class PolaRX5TCPExtractor:
                     3: "fixed",  # RTK fixed
                     4: "float",  # RTK float
                     5: "sbas",
-                    6: "ppp"
+                    6: "ppp",
                 }
 
                 return {
                     "latitude": round(lat_deg, 8),
                     "longitude": round(lon_deg, 8),
                     "height": round(height, 3),
-                    "h_accuracy_m": round(h_accuracy_mm / 1000.0, 3) if h_accuracy_mm < 65535 else None,
-                    "v_accuracy_m": round(v_accuracy_mm / 1000.0, 3) if v_accuracy_mm < 65535 else None,
+                    "h_accuracy_m": (
+                        round(h_accuracy_mm / 1000.0, 3)
+                        if h_accuracy_mm < 65535
+                        else None
+                    ),
+                    "v_accuracy_m": (
+                        round(v_accuracy_mm / 1000.0, 3)
+                        if v_accuracy_mm < 65535
+                        else None
+                    ),
                     "satellites_used": nr_sv,
                     "fix_mode": mode_names.get(mode, f"unknown_{mode}"),
-                    "status": "ok" if mode >= 1 else "warning"
+                    "status": "ok" if mode >= 1 else "warning",
                 }
 
         except Exception as e:
@@ -1067,7 +1134,9 @@ class PolaRX5TCPExtractor:
         Returns:
             Dictionary with satellite counts per constellation or None on failure
         """
-        sbf_data = self._send_sbf_request("PVTSatCartesian", self.BLOCK_PVT_SAT_CARTESIAN)
+        sbf_data = self._send_sbf_request(
+            "PVTSatCartesian", self.BLOCK_PVT_SAT_CARTESIAN
+        )
         if not sbf_data:
             return None
 
@@ -1118,7 +1187,7 @@ class PolaRX5TCPExtractor:
             return {
                 "total": n_satellites,
                 "by_constellation": tracking_counts,
-                "status": "ok" if n_satellites >= 4 else "warning"
+                "status": "ok" if n_satellites >= 4 else "warning",
             }
 
         except Exception as e:

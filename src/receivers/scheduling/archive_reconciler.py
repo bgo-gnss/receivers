@@ -195,12 +195,26 @@ def _reconcile_station_session(
                     rinex_path = _find_rinex_file(raw_path)
 
                 if rinex_path is not None:
+                    # Ensure existing RINEX is tracked in file_tracking
+                    _ensure_rinex_tracked(
+                        station_id, session_type, rinex_path,
+                    )
+                    continue
+
+                # Validate raw file before attempting conversion
+                if _is_corrupt_gz(raw_path):
+                    _handle_corrupt_file(
+                        station_id, session_type, raw_path, file_dt,
+                    )
+                    errors += 1
                     continue
 
                 # Raw file exists but RINEX missing
                 missing += 1
                 success = _convert_raw_to_rinex(
-                    station_id, raw_path, receiver_type=receiver_type,
+                    station_id, raw_path,
+                    receiver_type=receiver_type,
+                    session_type=session_type,
                 )
                 if success:
                     converted += 1
@@ -402,15 +416,18 @@ def _convert_raw_to_rinex(
     station_id: str,
     raw_path: Path,
     receiver_type: str = "polarx5",
+    session_type: str = "15s_24hr",
 ) -> bool:
     """Convert a single raw file to RINEX using the appropriate converter.
 
     Dynamically loads the converter class from the receiver registry.
+    On success, records the output in file_tracking so Grafana can see it.
 
     Args:
         station_id: Station identifier
         raw_path: Path to raw file
         receiver_type: Receiver type key
+        session_type: Session type (for file_tracking)
 
     Returns:
         True if conversion succeeded
@@ -432,6 +449,16 @@ def _convert_raw_to_rinex(
 
         if result.success:
             logger.debug(f"Converted {raw_path.name} to RINEX ({receiver_type})")
+            # Track in file_tracking so Grafana dashboards see it
+            if result.rinex_file:
+                try:
+                    from .bulk_scheduler import _track_rinex_output_files
+                    _track_rinex_output_files(
+                        station_id, session_type,
+                        [str(result.rinex_file)], logger,
+                    )
+                except Exception as e:
+                    logger.debug(f"Could not track RINEX file: {e}")
             return True
         else:
             logger.warning(
@@ -445,6 +472,122 @@ def _convert_raw_to_rinex(
     except Exception as e:
         logger.warning(f"RINEX conversion error for {raw_path.name}: {e}")
         return False
+
+
+def _ensure_rinex_tracked(
+    station_id: str,
+    session_type: str,
+    rinex_path: Path,
+) -> None:
+    """Ensure an existing RINEX file is recorded in file_tracking.
+
+    Checks whether the file is already tracked under '{session_type}_rinex'.
+    If not, inserts a tracking record so Grafana dashboards can see it.
+    """
+    try:
+        from .bulk_scheduler import _track_rinex_output_files
+
+        rinex_session = f"{session_type}_rinex"
+
+        # Quick check: is it already tracked?
+        from ..health.database_factory import DatabaseConnectionFactory
+
+        with DatabaseConnectionFactory.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT 1 FROM file_tracking
+                       WHERE sid = %s AND session_type = %s
+                         AND filename = %s
+                       LIMIT 1""",
+                    (station_id, rinex_session, rinex_path.name),
+                )
+                if cur.fetchone():
+                    return  # Already tracked
+
+        # Not tracked — register it
+        _track_rinex_output_files(
+            station_id, session_type,
+            [str(rinex_path)], logger,
+        )
+        logger.debug(f"Tracked existing RINEX: {station_id}/{rinex_path.name}")
+
+    except Exception as e:
+        logger.debug(f"Could not track RINEX {rinex_path.name}: {e}")
+
+
+def _is_corrupt_gz(raw_path: Path) -> bool:
+    """Check if a .gz file has invalid gzip content.
+
+    Detects files saved with .gz extension but containing uncompressed data,
+    bzip2, or other non-gzip content.  Only checks files ending in .gz.
+
+    Returns:
+        True if file claims to be .gz but isn't valid gzip.
+    """
+    if not raw_path.name.endswith(".gz"):
+        return False
+    try:
+        with open(raw_path, "rb") as f:
+            magic = f.read(2)
+        return magic != b"\x1f\x8b"
+    except Exception:
+        return False
+
+
+def _handle_corrupt_file(
+    station_id: str,
+    session_type: str,
+    raw_path: Path,
+    file_dt: datetime,
+) -> None:
+    """Delete a corrupt raw file and reset file_tracking for re-download.
+
+    Args:
+        station_id: Station identifier
+        session_type: Session type (e.g., '15s_24hr')
+        raw_path: Path to the corrupt file
+        file_dt: Observation datetime
+    """
+    file_size = raw_path.stat().st_size if raw_path.exists() else 0
+    logger.warning(
+        f"Corrupt .gz file: {raw_path.name} ({file_size} bytes) — "
+        f"deleting for re-download"
+    )
+
+    # Delete the corrupt file
+    try:
+        raw_path.unlink()
+    except Exception as e:
+        logger.error(f"Could not delete {raw_path}: {e}")
+        return
+
+    # Reset file_tracking so the next download re-fetches it
+    # file_tracking may store filename with or without .gz extension
+    raw_name = raw_path.name
+    name_without_gz = raw_name[:-3] if raw_name.endswith(".gz") else raw_name
+    try:
+        from ..health.database_factory import DatabaseConnectionFactory
+
+        with DatabaseConnectionFactory.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """DELETE FROM file_tracking
+                       WHERE sid = %s
+                         AND session_type = %s
+                         AND file_date = %s
+                         AND filename IN (%s, %s)""",
+                    (station_id, session_type,
+                     file_dt.date(), raw_name, name_without_gz),
+                )
+                deleted = cur.rowcount
+            conn.commit()
+        if deleted:
+            logger.info(
+                f"Reset file_tracking for {station_id}/{raw_path.name} "
+                f"— will be re-downloaded"
+            )
+    except Exception as e:
+        logger.warning(f"Could not reset file_tracking for {raw_path.name}: {e}")
 
 
 # Backward-compatible aliases for imports in cli/scheduler.py

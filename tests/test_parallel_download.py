@@ -168,16 +168,19 @@ class TestGetSessionDefaults:
 
 
 @pytest.mark.unit
+@patch("receivers.cli.parallel._check_health_ping_online", return_value=True)
 class TestDownloadOneStation:
     """Test _download_one_station worker function.
 
     The function lazily imports _validate_station_for_download and
     _download_station_period from receivers.cli.main, so we mock them there.
+    The class-level _check_health_ping_online patch prevents DB queries
+    during unit tests (returns True = station online).
     """
 
     @patch("receivers.cli.main._download_station_period")
     @patch("receivers.cli.main._validate_station_for_download")
-    def test_success(self, mock_validate, mock_download):
+    def test_success(self, mock_validate, mock_download, _mock_ping):
         """Successful download returns completed status."""
         mock_receiver = MagicMock()
         mock_receiver._quick_ping.return_value = True
@@ -199,7 +202,7 @@ class TestDownloadOneStation:
 
     @patch("receivers.cli.main._download_station_period")
     @patch("receivers.cli.main._validate_station_for_download")
-    def test_up_to_date(self, mock_validate, mock_download):
+    def test_up_to_date(self, mock_validate, mock_download, _mock_ping):
         """Zero files downloaded returns up_to_date status."""
         mock_receiver = MagicMock()
         mock_receiver._quick_ping.return_value = True
@@ -217,25 +220,23 @@ class TestDownloadOneStation:
         assert result.status == "up_to_date"
 
     @patch("receivers.cli.main._validate_station_for_download")
-    def test_unreachable(self, mock_validate):
-        """Ping failure returns unreachable status."""
-        mock_receiver = MagicMock()
-        mock_receiver._quick_ping.return_value = False
-        mock_validate.return_value = mock_receiver
+    def test_unreachable_no_health_data(self, mock_validate, mock_ping):
+        """Ping failure with no health data returns unreachable status."""
+        mock_validate.return_value = MagicMock()
+        mock_ping.return_value = False  # ping says offline, no health data
 
         args = Mock()
         args.session = "15s_24hr"
 
         result = _download_one_station(
-            "ELDC", args, datetime(2026, 2, 10), datetime(2026, 2, 11),
+            "FAKE", args, datetime(2026, 2, 10), datetime(2026, 2, 11),
             "1D", "15s", False,
         )
 
         assert result.status == "unreachable"
-        assert "Ping" in result.error_message
 
     @patch("receivers.cli.main._validate_station_for_download")
-    def test_validation_failure(self, mock_validate):
+    def test_validation_failure(self, mock_validate, _mock_ping):
         """Station validation failure returns skipped status."""
         mock_validate.return_value = None
 
@@ -251,7 +252,7 @@ class TestDownloadOneStation:
 
     @patch("receivers.cli.main._download_station_period")
     @patch("receivers.cli.main._validate_station_for_download")
-    def test_download_errors(self, mock_validate, mock_download):
+    def test_download_errors(self, mock_validate, mock_download, _mock_ping):
         """Download with errors returns failed status."""
         mock_receiver = MagicMock()
         mock_receiver._quick_ping.return_value = True
@@ -272,7 +273,7 @@ class TestDownloadOneStation:
 
     @patch("receivers.cli.main._download_station_period")
     @patch("receivers.cli.main._validate_station_for_download")
-    def test_exception_during_download(self, mock_validate, mock_download):
+    def test_exception_during_download(self, mock_validate, mock_download, _mock_ping):
         """Exception during download returns failed status."""
         mock_receiver = MagicMock()
         mock_receiver._quick_ping.return_value = True
@@ -292,7 +293,7 @@ class TestDownloadOneStation:
 
     @patch("receivers.cli.main._download_station_period")
     @patch("receivers.cli.main._validate_station_for_download")
-    def test_station_id_uppercased(self, mock_validate, mock_download):
+    def test_station_id_uppercased(self, mock_validate, mock_download, _mock_ping):
         """Station ID is uppercased."""
         mock_receiver = MagicMock()
         mock_receiver._quick_ping.return_value = True
@@ -311,7 +312,7 @@ class TestDownloadOneStation:
 
     @patch("receivers.cli.main._download_station_period")
     @patch("receivers.cli.main._validate_station_for_download")
-    def test_attempt_passed_through(self, mock_validate, mock_download):
+    def test_attempt_passed_through(self, mock_validate, mock_download, _mock_ping):
         """Attempt number is passed through to result."""
         mock_receiver = MagicMock()
         mock_receiver._quick_ping.return_value = True
@@ -345,6 +346,7 @@ class TestDownloadParallel:
         args.batches = None  # Use config defaults
         args.distribution_window = None  # Use config defaults
         args.retry_delay = 0.0  # No delay in tests
+        args.max_retries = 3  # Default retry passes
         for k, v in overrides.items():
             setattr(args, k, v)
         return args
@@ -355,8 +357,8 @@ class TestDownloadParallel:
         """All stations succeed."""
         mock_defaults.return_value = {"batches": 3, "distribution_window": 0}
 
-        def mock_fn(sid, *_rest):
-            attempt = _rest[-1] if _rest else 1
+        def mock_fn(sid, *_rest, **_kw):
+            attempt = _rest[-2] if len(_rest) >= 2 else 1
             return StationResult(
                 station_id=sid.upper(), status="completed",
                 files_downloaded=3, duration=5.0, attempt=attempt,
@@ -387,8 +389,9 @@ class TestDownloadParallel:
         """Unreachable stations on attempt 1 succeed on attempt 2 (retry)."""
         mock_defaults.return_value = {"batches": 2, "distribution_window": 0}
 
-        def mock_fn(sid, *_rest):
-            attempt = _rest[-1] if _rest else 1
+        def mock_fn(sid, *_rest, **_kw):
+            # attempt is second-to-last positional arg (last is skip_backoff_check)
+            attempt = _rest[-2] if len(_rest) >= 2 else 1
             sid = sid.upper()
             if sid == "THOB" and attempt == 1:
                 return StationResult(
@@ -426,8 +429,8 @@ class TestDownloadParallel:
         """Failed stations on attempt 1 succeed on attempt 2 (retry)."""
         mock_defaults.return_value = {"batches": 2, "distribution_window": 0}
 
-        def mock_fn(sid, *_rest):
-            attempt = _rest[-1] if _rest else 1
+        def mock_fn(sid, *_rest, **_kw):
+            attempt = _rest[-2] if len(_rest) >= 2 else 1
             sid = sid.upper()
             if sid == "THOB" and attempt == 1:
                 return StationResult(
@@ -465,8 +468,8 @@ class TestDownloadParallel:
         """Station still unreachable after retry is counted as unreachable."""
         mock_defaults.return_value = {"batches": 2, "distribution_window": 0}
 
-        def mock_fn(sid, *_rest):
-            attempt = _rest[-1] if _rest else 1
+        def mock_fn(sid, *_rest, **_kw):
+            attempt = _rest[-2] if len(_rest) >= 2 else 1
             sid = sid.upper()
             if sid == "GRVM":
                 return StationResult(
@@ -494,8 +497,208 @@ class TestDownloadParallel:
 
         assert summary.successful == 1
         assert summary.unreachable == 1
-        assert summary.retried == 1
+        assert summary.retried == 3  # retried in all 3 passes
         assert summary.retry_recovered == 0
+
+    @patch("receivers.cli.parallel._get_session_defaults")
+    @patch("receivers.cli.parallel._download_one_station")
+    def test_multi_pass_retry_succeeds_on_third(self, mock_worker, mock_defaults):
+        """Station fails pass 1+2, succeeds on pass 3."""
+        mock_defaults.return_value = {"batches": 2, "distribution_window": 0}
+
+        def mock_fn(sid, *_rest, **_kw):
+            attempt = _rest[-2] if len(_rest) >= 2 else 1
+            sid = sid.upper()
+            if sid == "VOGC" and attempt < 3:
+                return StationResult(
+                    station_id=sid, status="failed",
+                    duration=1.0, attempt=attempt,
+                    error_message="Could not reconnect to FTP server",
+                )
+            return StationResult(
+                station_id=sid, status="completed",
+                files_downloaded=2, duration=5.0, attempt=attempt,
+            )
+        mock_worker.side_effect = mock_fn
+
+        args = self._make_args(max_retries=3)
+        logger = MagicMock()
+
+        summary = download_parallel(
+            stations=["ELDC", "VOGC"],
+            args=args, logger=logger,
+            start_time=datetime(2026, 2, 10),
+            end_time=datetime(2026, 2, 11),
+            ffrequency="1D", afrequency="15s",
+            reverse_chronological=False,
+        )
+
+        assert summary.successful == 2
+        assert summary.failed == 0
+        assert summary.retry_recovered == 1
+        assert summary.results["VOGC"].attempt == 3
+
+    @patch("receivers.cli.parallel._get_session_defaults")
+    @patch("receivers.cli.parallel._download_one_station")
+    def test_wall_timeout_not_retried(self, mock_worker, mock_defaults):
+        """Station with wall-timeout error is excluded from retries."""
+        mock_defaults.return_value = {"batches": 2, "distribution_window": 0}
+
+        def mock_fn(sid, *_rest, **_kw):
+            attempt = _rest[-2] if len(_rest) >= 2 else 1
+            sid = sid.upper()
+            if sid == "HVEH":
+                return StationResult(
+                    station_id=sid, status="failed",
+                    duration=2400.0, attempt=attempt,
+                    error_message="Station download timed out after 2400s (zombie connection)",
+                )
+            if sid == "VOGC" and attempt == 1:
+                return StationResult(
+                    station_id=sid, status="failed",
+                    duration=1.0, attempt=attempt,
+                    error_message="FTP timeout",
+                )
+            return StationResult(
+                station_id=sid, status="completed",
+                files_downloaded=2, duration=5.0, attempt=attempt,
+            )
+        mock_worker.side_effect = mock_fn
+
+        args = self._make_args(max_retries=3)
+        logger = MagicMock()
+
+        summary = download_parallel(
+            stations=["ELDC", "HVEH", "VOGC"],
+            args=args, logger=logger,
+            start_time=datetime(2026, 2, 10),
+            end_time=datetime(2026, 2, 11),
+            ffrequency="1D", afrequency="15s",
+            reverse_chronological=False,
+        )
+
+        assert summary.successful == 2
+        assert summary.failed == 1  # HVEH stays failed
+        assert summary.retry_recovered == 1  # VOGC recovered
+        # HVEH was never retried — only VOGC was
+        assert summary.results["HVEH"].attempt == 1
+
+    @patch("receivers.cli.parallel._get_session_defaults")
+    @patch("receivers.cli.parallel._download_one_station")
+    def test_max_retries_zero(self, mock_worker, mock_defaults):
+        """max_retries=0 means no retries at all."""
+        mock_defaults.return_value = {"batches": 2, "distribution_window": 0}
+
+        def mock_fn(sid, *_rest, **_kw):
+            attempt = _rest[-2] if len(_rest) >= 2 else 1
+            sid = sid.upper()
+            if sid == "THOB":
+                return StationResult(
+                    station_id=sid, status="failed",
+                    duration=1.0, attempt=attempt,
+                    error_message="FTP timeout",
+                )
+            return StationResult(
+                station_id=sid, status="completed",
+                files_downloaded=2, duration=5.0, attempt=attempt,
+            )
+        mock_worker.side_effect = mock_fn
+
+        args = self._make_args(max_retries=0)
+        logger = MagicMock()
+
+        summary = download_parallel(
+            stations=["ELDC", "THOB"],
+            args=args, logger=logger,
+            start_time=datetime(2026, 2, 10),
+            end_time=datetime(2026, 2, 11),
+            ffrequency="1D", afrequency="15s",
+            reverse_chronological=False,
+        )
+
+        assert summary.successful == 1
+        assert summary.failed == 1
+        assert summary.retried == 0
+        assert summary.retry_recovered == 0
+
+    @patch("receivers.cli.parallel._get_session_defaults")
+    @patch("receivers.cli.parallel._download_one_station")
+    def test_circuit_breaker_stops_retry_loop(self, mock_worker, mock_defaults):
+        """Circuit breaker triggers when >80% fail — no retries."""
+        mock_defaults.return_value = {"batches": 15, "distribution_window": 0}
+
+        station_names = [f"ST{i:02d}" for i in range(15)]
+
+        def mock_fn(sid, *_rest, **_kw):
+            attempt = _rest[-2] if len(_rest) >= 2 else 1
+            sid = sid.upper()
+            # Only ST00 succeeds (1/15 = 6.7% success < 20%)
+            if sid == "ST00":
+                return StationResult(
+                    station_id=sid, status="completed",
+                    files_downloaded=1, duration=2.0, attempt=attempt,
+                )
+            return StationResult(
+                station_id=sid, status="failed",
+                duration=1.0, attempt=attempt,
+                error_message="Connection refused",
+            )
+        mock_worker.side_effect = mock_fn
+
+        args = self._make_args(max_retries=3)
+        logger = MagicMock()
+
+        summary = download_parallel(
+            stations=station_names,
+            args=args, logger=logger,
+            start_time=datetime(2026, 2, 10),
+            end_time=datetime(2026, 2, 11),
+            ffrequency="1D", afrequency="15s",
+            reverse_chronological=False,
+        )
+
+        assert summary.successful == 1
+        assert summary.failed == 14
+        assert summary.retried == 0  # circuit breaker prevented retries
+
+    @patch("receivers.cli.parallel._get_session_defaults")
+    @patch("receivers.cli.parallel._download_one_station")
+    def test_retry_loop_stops_when_all_recovered(self, mock_worker, mock_defaults):
+        """Retry loop exits early when all stations recover."""
+        mock_defaults.return_value = {"batches": 2, "distribution_window": 0}
+
+        def mock_fn(sid, *_rest, **_kw):
+            attempt = _rest[-2] if len(_rest) >= 2 else 1
+            sid = sid.upper()
+            if sid == "THOB" and attempt == 1:
+                return StationResult(
+                    station_id=sid, status="failed",
+                    duration=1.0, attempt=attempt,
+                    error_message="FTP timeout",
+                )
+            return StationResult(
+                station_id=sid, status="completed",
+                files_downloaded=2, duration=5.0, attempt=attempt,
+            )
+        mock_worker.side_effect = mock_fn
+
+        args = self._make_args(max_retries=3)
+        logger = MagicMock()
+
+        summary = download_parallel(
+            stations=["ELDC", "THOB"],
+            args=args, logger=logger,
+            start_time=datetime(2026, 2, 10),
+            end_time=datetime(2026, 2, 11),
+            ffrequency="1D", afrequency="15s",
+            reverse_chronological=False,
+        )
+
+        assert summary.successful == 2
+        assert summary.retried == 1  # only 1 pass needed
+        assert summary.retry_recovered == 1
+        # Worker called 3 times total: ELDC pass1, THOB pass1, THOB pass2
+        assert mock_worker.call_count == 3
 
     @patch("receivers.cli.parallel._get_session_defaults")
     @patch("receivers.cli.parallel._download_one_station")
@@ -505,8 +708,8 @@ class TestDownloadParallel:
 
         call_count = []
 
-        def mock_fn(sid, *_rest):
-            attempt = _rest[-1] if _rest else 1
+        def mock_fn(sid, *_rest, **_kw):
+            attempt = _rest[-2] if len(_rest) >= 2 else 1
             call_count.append(sid.upper())
             return StationResult(
                 station_id=sid.upper(), status="completed",
@@ -539,8 +742,8 @@ class TestDownloadParallel:
 
         call_count = []
 
-        def mock_fn(sid, *_rest):
-            attempt = _rest[-1] if _rest else 1
+        def mock_fn(sid, *_rest, **_kw):
+            attempt = _rest[-2] if len(_rest) >= 2 else 1
             call_count.append(sid.upper())
             return StationResult(
                 station_id=sid.upper(), status="completed",
@@ -577,8 +780,8 @@ class TestDownloadParallel:
             "ISFS": ("skipped", 0),
         }
 
-        def mock_fn(sid, *_rest):
-            attempt = _rest[-1] if _rest else 1
+        def mock_fn(sid, *_rest, **_kw):
+            attempt = _rest[-2] if len(_rest) >= 2 else 1
             sid = sid.upper()
             status, files = results_map[sid]
             return StationResult(

@@ -14,9 +14,10 @@ The `receivers` package provides GPS receiver management functionality for the I
 - **Production logging** - Structured output for automated systems
 - **Immediate archiving** - Fault-tolerant file handling
 - **Comprehensive validation** - Receiver type detection and configuration validation
+- **Health monitoring** - ✅ RxTools-based SBF health data extraction (voltage, CPU, temperature, disk)
 
 ### Supported Receivers
-- **Septentrio PolaRX5** - Primary receiver type with full feature support
+- **Septentrio PolaRX5** - Full feature support with RxTools health monitoring
 - **Leica/Trimble receivers** - Basic download support
 - **Generic receivers** - Configurable via type detection system
 
@@ -31,11 +32,16 @@ receivers download ELDC THOB --sync --archive
 # Download specific time period
 receivers download ELDC --start 20250905 --end 20250906 --session 1Hz_1hr
 
-# Check receiver status
+# Check receiver connection status
 receivers status ELDC THOB
 
-# Get health information
+# Get comprehensive health information (uses RxTools to extract SBF health data)
 receivers health THOB --verbose
+
+# Health output options
+receivers health THOB --json              # JSON output
+receivers health THOB --save-json         # Save to JSON file
+receivers health THOB --save-db           # Save to database
 
 # Validate receiver configuration
 receivers validate ELDC --verbose
@@ -593,6 +599,16 @@ A systematic review is needed to address recurring patterns of issues found duri
 - **Codebase review**: Full audit of db_writer.py, connectivity_writer.py, and all extractors for protocol assumptions
 - **Test coverage**: Integration tests for Trimble health flow end-to-end (extractor → db_writer → dashboard views)
 - **Error handling patterns**: Standardize SAVEPOINT usage, transaction management, and value truncation across all DB writers
+
+### Disk Status Detection — TODO
+- **PolaRX5 disk-not-mounted detection**: Currently 88 PolaRX5 stations report `total_mb = 0, usage_percent = 0` in `block_disk_status` because the SBF DiskStatus block (4059) is either absent or not parsed. The `disk_status` view flags all of them as `2` (critical) — over-flagging. Need to investigate:
+  1. Does the PolaRX5 DiskStatus SBF block (4059) distinguish "no disk" vs "disk unmounted" vs "disk present, 0% used"? Check the Septentrio SBF reference manual for DiskStatus fields (disk state, mount status).
+  2. Does `rxtools_extractor.extract_disk_status()` return any data beyond `DiskUsagePercent [%]`? The RxTools CSV output may include total/free columns that we're not parsing.
+  3. The `timeseries_extractor.py` (line 195) explicitly writes `total_mb: None, used_mb: None` — should it omit the disk dict entirely when only `usage_percent` is available?
+  4. If the SBF block IS present but reports 0/0 for a mounted disk, that's a broken disk (GJAC pattern). If the block is absent or reports "not mounted", that's "no data" and should be `-1`.
+  5. Consider: `db_writer._write_disk_status()` should skip the INSERT when all fields are NULL/0, so `block_disk_status` only contains meaningful data.
+- **Affected stations**: GJAC (confirmed broken disk, 0% since install). All 88 stations with `total_mb = 0` need audit once detection is improved.
+- **Temporary workaround**: `usage_percent = 0 → disk_status = 2` in migration 032. Remove once extractor properly distinguishes the cases.
 
 ### Integrity Checker — Future Work
 - **Suspect files dashboard indicator**: Add a count box or column to the Grafana overview dashboard showing files with `status = 'suspect'`, so operators can monitor integrity check results without querying the DB directly.

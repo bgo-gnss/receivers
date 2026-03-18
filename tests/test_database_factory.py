@@ -1,10 +1,16 @@
 """Tests for DatabaseConnectionFactory."""
 
 import os
+import threading
+import time
 import pytest
 from unittest.mock import patch, MagicMock
 
-from receivers.health.database_factory import DatabaseConnectionFactory
+from receivers.health.database_factory import (
+    DatabaseConnectionFactory,
+    _conn_semaphore,
+    _MAX_POOL_CONN,
+)
 
 
 class TestGetConnectionParams:
@@ -138,3 +144,90 @@ class TestConnectionContextManager:
                     pass
 
             mock_conn.close.assert_called_once()
+
+
+class TestConnectionSemaphore:
+    """Test connection pool semaphore limiting."""
+
+    def test_semaphore_default_limit(self):
+        """Semaphore allows _MAX_POOL_CONN concurrent connections."""
+        assert _MAX_POOL_CONN == 20
+
+    def test_semaphore_released_on_success(self):
+        """Semaphore is released after successful context manager exit."""
+        mock_conn = MagicMock()
+        with patch.object(
+            DatabaseConnectionFactory, "get_connection", return_value=mock_conn
+        ):
+            with DatabaseConnectionFactory.connection():
+                pass
+        # If semaphore leaked, subsequent acquires would eventually block.
+        # Quick check: acquire and release immediately.
+        assert _conn_semaphore.acquire(timeout=0.1)
+        _conn_semaphore.release()
+
+    def test_semaphore_released_on_exception(self):
+        """Semaphore is released even when the caller raises."""
+        mock_conn = MagicMock()
+        with patch.object(
+            DatabaseConnectionFactory, "get_connection", return_value=mock_conn
+        ):
+            with pytest.raises(RuntimeError):
+                with DatabaseConnectionFactory.connection():
+                    raise RuntimeError("boom")
+        assert _conn_semaphore.acquire(timeout=0.1)
+        _conn_semaphore.release()
+
+    def test_semaphore_released_on_connect_failure(self):
+        """Semaphore is released when get_connection() itself fails."""
+        with patch.object(
+            DatabaseConnectionFactory,
+            "get_connection",
+            side_effect=Exception("connection refused"),
+        ):
+            with pytest.raises(Exception, match="connection refused"):
+                with DatabaseConnectionFactory.connection():
+                    pass
+        assert _conn_semaphore.acquire(timeout=0.1)
+        _conn_semaphore.release()
+
+    def test_semaphore_limits_concurrency(self):
+        """Threads beyond _MAX_POOL_CONN block until a slot opens."""
+        # Use a small semaphore for this test to avoid needing 20+ threads.
+        test_sem = threading.BoundedSemaphore(2)
+        inside = threading.Event()
+        gate = threading.Event()
+        blocked = threading.Event()
+
+        def _hold_slot():
+            test_sem.acquire()
+            try:
+                inside.set()
+                gate.wait(timeout=5)
+            finally:
+                test_sem.release()
+
+        def _try_slot():
+            got = test_sem.acquire(timeout=0.3)
+            if not got:
+                blocked.set()
+            else:
+                test_sem.release()
+
+        # Fill 2 slots
+        t1 = threading.Thread(target=_hold_slot)
+        t2 = threading.Thread(target=_hold_slot)
+        t1.start()
+        t2.start()
+        inside.wait(timeout=2)
+
+        # Third thread should block
+        t3 = threading.Thread(target=_try_slot)
+        t3.start()
+        t3.join(timeout=2)
+        assert blocked.is_set(), "Third thread should have been blocked"
+
+        # Release and clean up
+        gate.set()
+        t1.join(timeout=2)
+        t2.join(timeout=2)

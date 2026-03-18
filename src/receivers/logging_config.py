@@ -39,7 +39,15 @@ _configured = False
 _DEFAULT_LOG_DIR = Path.home() / ".cache" / "gps_receivers" / "logs"
 
 # Third-party loggers to suppress at WARNING level
-_NOISY_LOGGERS = ("urllib3", "ftplib", "gps_parser", "apscheduler")
+_NOISY_LOGGERS = (
+    "urllib3", "ftplib", "gps_parser", "apscheduler",
+    # Internal receivers plumbing — suppress to WARNING so errors still surface
+    "receivers.monitoring.icinga",
+    "receivers.health.database_factory",
+    "receivers.health.db",
+    "receivers.config_utils",
+    "receivers.config.receivers_config",
+)
 
 
 def _load_level_overrides() -> dict[str, int]:

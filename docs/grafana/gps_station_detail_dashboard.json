@@ -487,8 +487,12 @@
                 "value": null
               },
               {
-                "color": "green",
+                "color": "red",
                 "value": 0
+              },
+              {
+                "color": "green",
+                "value": 1
               },
               {
                 "color": "yellow",

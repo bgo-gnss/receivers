@@ -9,6 +9,13 @@ Configuration priority (highest to lowest):
     2. Config file (~/.config/gpsconfig/database.cfg or $GPS_CONFIG_PATH/database.cfg)
     3. Built-in defaults
 
+Connection limiting:
+    The ``connection()`` context manager uses a bounded semaphore (default 20)
+    to prevent PostgreSQL ``max_connections`` exhaustion when 95+ parallel
+    download threads each make DB queries.  Threads beyond the limit block
+    until a slot opens.  ``get_connection()`` is NOT limited — use it only
+    for long-lived singleton connections (e.g. HealthDatabaseWriter).
+
 Dual-write mode:
     Set ``mirror_host`` in ``[postgresql]`` to write to two databases simultaneously.
     The mirror is best-effort: failures are logged but never break the primary.
@@ -16,12 +23,12 @@ Dual-write mode:
 Usage:
     from receivers.health.database_factory import DatabaseConnectionFactory
 
-    # Context manager (recommended)
+    # Context manager (recommended — connection-limited)
     with DatabaseConnectionFactory.connection() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT 1")
 
-    # Direct connection
+    # Direct connection (NOT limited — for long-lived connections only)
     conn = DatabaseConnectionFactory.get_connection()
     try:
         ...
@@ -35,6 +42,8 @@ Usage:
 import configparser
 import logging
 import os
+import threading
+import time as _time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Generator, Optional
@@ -46,6 +55,14 @@ Connection = Any
 
 # Cache for parsed config file
 _config_cache: Optional[Dict[str, str]] = None
+
+# Limit concurrent DB connections to prevent PostgreSQL exhaustion.
+# With 95+ parallel download threads each making 3-4 DB queries, the
+# default max_connections (100) gets overwhelmed.  The semaphore caps
+# pooled connections at _MAX_POOL_CONN, leaving headroom for health
+# monitor, Grafana, and manual psql sessions.
+_MAX_POOL_CONN = 20
+_conn_semaphore = threading.BoundedSemaphore(_MAX_POOL_CONN)
 
 
 def _load_config_file() -> Dict[str, str]:
@@ -81,7 +98,9 @@ def _load_config_file() -> Dict[str, str]:
             if parser.has_option("postgresql", key):
                 result[key] = parser.get("postgresql", key)
 
-    logger.debug("Loaded database config from %s (host=%s)", config_path, result.get("host"))
+    logger.debug(
+        "Loaded database config from %s (host=%s)", config_path, result.get("host")
+    )
     _config_cache = result
     return _config_cache
 
@@ -178,8 +197,11 @@ class _DualConnection:
         try:
             mirror_cur = self._mirror.cursor(*args, **kwargs)
         except Exception as exc:
-            logger.warning("Mirror %s cursor failed, degrading to primary-only: %s",
-                           self._mirror_host, exc)
+            logger.warning(
+                "Mirror %s cursor failed, degrading to primary-only: %s",
+                self._mirror_host,
+                exc,
+            )
             return primary_cur
         return _DualCursor(primary_cur, mirror_cur, self._mirror_host)
 
@@ -236,6 +258,10 @@ class DatabaseConnectionFactory:
         POSTGRES_PASSWORD: Database password
     """
 
+    # Mirror retry cooldown: after a failure, skip mirror for 1 hour then retry.
+    # Prevents permanent mirror disable in the long-running scheduler.
+    _mirror_failed_until: float = 0.0
+
     @classmethod
     def get_connection_params(cls, database: Optional[str] = None) -> Dict[str, str]:
         """Get connection parameters from config file and environment.
@@ -267,7 +293,11 @@ class DatabaseConnectionFactory:
         """Create a mirror connection if mirror_host is configured.
 
         Returns None if no mirror is configured or connection fails.
+        After a failure, retries after 1 hour (not permanently disabled).
         """
+        if cls._mirror_failed_until > _time.monotonic():
+            return None
+
         cfg = _load_config_file()
         mirror_host = cfg.get("mirror_host")
         if not mirror_host:
@@ -290,7 +320,12 @@ class DatabaseConnectionFactory:
             )
             return conn
         except Exception as exc:
-            logger.warning("Mirror connection to %s failed: %s", mirror_host, exc)
+            cls._mirror_failed_until = _time.monotonic() + 3600  # retry after 1 hour
+            logger.warning(
+                "Mirror connection to %s failed (will retry after 1h): %s",
+                mirror_host,
+                exc,
+            )
             return None
 
     @classmethod
@@ -342,6 +377,9 @@ class DatabaseConnectionFactory:
         Commits on success, rolls back on exception, always closes.
         If mirror_host is configured, both databases are committed/rolled back.
 
+        Uses a bounded semaphore to limit concurrent connections and prevent
+        PostgreSQL ``max_connections`` exhaustion under parallel downloads.
+
         Args:
             database: Override database name.
             connection_string: Full connection string (overrides env vars).
@@ -349,12 +387,16 @@ class DatabaseConnectionFactory:
         Yields:
             psycopg2 connection object (or _DualConnection wrapper).
         """
-        conn = cls.get_connection(database, connection_string)
+        _conn_semaphore.acquire()
         try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+            conn = cls.get_connection(database, connection_string)
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
         finally:
-            conn.close()
+            _conn_semaphore.release()

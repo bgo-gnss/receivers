@@ -28,12 +28,16 @@ from ..base.exceptions import (
 from ..base.receiver import BaseReceiver
 from ..utils.file_validator import FileValidator
 from ..utils.session_parser import parse_session_parameters
-from ..utils.performance_recorder import record_performance_metrics, create_performance_metrics
+from ..utils.performance_recorder import (
+    create_performance_metrics,
+    record_performance_metrics,
+)
 
 # Phase 1 utilities (feature-flagged)
 from ..utils.archive_validator import ArchiveValidator
+from ..utils.compression_detector import needs_compression
+from ..utils.file_archiver import ArchiveMode, FileArchiver
 from ..utils.time_processor import TimeParameterProcessor
-from ..utils.file_archiver import FileArchiver, ArchiveMode
 
 
 class PolaRX5(BaseReceiver):
@@ -1525,6 +1529,22 @@ class PolaRX5(BaseReceiver):
                     stall_timeout_used=getattr(self, '_last_effective_timeout', self.progress_timeout),
                     message=str(e)[:500],
                 )
+                # Guard: reconnect if the exception killed the FTP connection.
+                # Without this, the next file's ftp.size() crashes with
+                # "'NoneType' object has no attribute 'sendall'".
+                if ftp is None or getattr(ftp, 'sock', None) is None:
+                    self.logger.warning("FTP connection dead after exception, reconnecting...")
+                    try:
+                        if ftp is not None:
+                            ftp.close()
+                    except Exception:
+                        pass
+                    ftp = self._ftp_open_connection(skip_ping_check=True)
+                    if ftp:
+                        self.logger.info("✅ FTP reconnected after exception")
+                    else:
+                        self.logger.error("Failed to reconnect FTP after exception - aborting remaining files")
+                        break
                 continue
 
         # Close file tracker connection
@@ -1609,6 +1629,15 @@ class PolaRX5(BaseReceiver):
             ):
                 archive_path = missing_file_dict[file_datetime][0]
                 downloaded_files.append(archive_path)
+
+                # Per-file RINEX callback (set by --rinex flag)
+                on_archived = getattr(self, '_on_file_archived', None)
+                if on_archived:
+                    try:
+                        on_archived(archive_path)
+                    except Exception:
+                        pass  # RINEX must never fail a download
+
                 if file_tracker and session and get_file_datetime:
                     file_dt = get_file_datetime(file_name)
                     if file_dt:
@@ -1952,12 +1981,18 @@ class PolaRX5(BaseReceiver):
                             )
                             offset = new_offset
 
-                    # Check if we need to reconnect (timeout/connection errors)
-                    if any(pattern in error_msg for pattern in timeout_patterns):
+                    # Check if we need to reconnect.  Two triggers:
+                    # 1. Error pattern matches known timeout/connection issues
+                    # 2. FTP socket is dead (ftp.close() was called by a lower
+                    #    layer, e.g. watchdog or _download_with_progressbar
+                    #    exception handler, setting sock=None)
+                    ftp_dead = ftp is None or getattr(ftp, 'sock', None) is None
+                    if ftp_dead or any(pattern in error_msg for pattern in timeout_patterns):
                         self.logger.info("🔄 Closing dead FTP connection and reconnecting...")
                         try:
-                            ftp.close()
-                        except:
+                            if ftp is not None:
+                                ftp.close()
+                        except Exception:
                             pass  # Ignore errors closing dead connection
 
                         # Reconnect (skip ping check - we know network was up)
@@ -2034,9 +2069,16 @@ class PolaRX5(BaseReceiver):
 
                     ftp_new.set_pasv(new_pasv)
 
-                    # Retry download with switched mode on fresh connection
+                    # Delete partial file — passive data may be corrupt after
+                    # mode switch; appending with stale offset produces oversized files
+                    try:
+                        os.unlink(local_file)
+                    except OSError:
+                        pass
+
+                    # Retry download from scratch on fresh connection
                     result = self._download_with_progressbar(
-                        ftp_new, remote_file, local_file, remote_file_size, offset,
+                        ftp_new, remote_file, local_file, remote_file_size, offset=0,
                         session_type=session_type,
                     )
                     self.logger.info(
@@ -2081,11 +2123,15 @@ class PolaRX5(BaseReceiver):
         self.logger.debug("Using Phase 1 FileArchiver (IMMEDIATE mode)")
         destination = missing_file_dict[file_datetime][0]
 
+        # Check if file is already compressed by reading magic bytes
+        # PolaRX5 downloads .sbf.gz files (gzip compressed) - don't compress again!
+        should_compress = needs_compression(Path(tmp_file_path))
+
         with FileArchiver(mode=ArchiveMode.IMMEDIATE, logger=self.logger) as archiver:
             success = archiver.archive_file(
                 Path(tmp_file_path),
                 Path(destination),
-                compress=True,
+                compress=should_compress,  # Only compress if not already compressed
                 remove_tmp=True
             )
 
@@ -2094,15 +2140,21 @@ class PolaRX5(BaseReceiver):
     def _archive_files(self, downloaded_files_dict, missing_file_dict):
         """Move downloaded files to archive locations using Phase 1 FileArchiver (BULK mode)."""
         self.logger.debug("Using Phase 1 FileArchiver (BULK mode)")
+
         with FileArchiver(mode=ArchiveMode.BULK, logger=self.logger) as archiver:
             for ddate, tmp_file in downloaded_files_dict.items():
                 if not os.path.isfile(tmp_file):
                     continue
                 destination = missing_file_dict[ddate][0]
+
+                # Check if file is already compressed by reading magic bytes
+                # PolaRX5 downloads .sbf.gz files (gzip compressed) - don't compress again!
+                should_compress = needs_compression(Path(tmp_file))
+
                 archiver.archive_file(
                     Path(tmp_file),
                     Path(destination),
-                    compress=True,
+                    compress=should_compress,  # Only compress if not already compressed
                     remove_tmp=True
                 )
             # Auto-flushes on context exit

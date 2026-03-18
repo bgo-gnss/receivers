@@ -1040,8 +1040,10 @@ class TrimbleHTTPExtractor:
 
             if not matches:
                 # Valid response with 0 satellites (e.g. antenna disconnected)
-                # vs unrecognized format — check for expected delimiters
-                if "TrackingStatus" in response:
+                # vs unrecognized format — check for actual section delimiters,
+                # not just substring (error responses like "Unknown Command :
+                # show?TrackingStatus" also contain the word "TrackingStatus")
+                if "<Show TrackingStatus>" in response or "<ShowTrackingStatus>" in response or "<end of Show TrackingStatus>" in response:
                     self.logger.info("TrackingStatus: 0 satellites tracking")
                     return {
                         "total": 0,

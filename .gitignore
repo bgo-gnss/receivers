@@ -174,3 +174,12 @@ dumps/*.sql
 # Grafana auth tokens (if accidentally placed in project)
 grafana_tokens.yaml
 **/grafana_tokens.yaml
+
+# Runtime artifacts
+nohup.out
+
+# Database dumps directory (tracked via dumps/*.sql above, but catch all)
+dumps/
+
+# Local resource files
+resources/

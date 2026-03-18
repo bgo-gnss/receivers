@@ -111,11 +111,22 @@ def has_rinex_converter(receiver_type: str) -> bool:
 def get_converter_class(receiver_type: str) -> type | None:
     """Dynamically import and return the converter class for a receiver type.
 
+    For Trimble receivers (NetR9/NetRS), checks receivers.cfg for
+    ``use_native_trimble = true`` and returns TrimbleNativeConverter
+    when Docker is available.  Falls back to the standard converter
+    (runpkr00-based) otherwise.
+
     Returns None if receiver type is unknown or import fails.
     """
     cap = get_capability(receiver_type)
     if cap is None or cap.rinex_converter is None:
         return None
+
+    # Prefer native Trimble converter when configured and available
+    if _is_trimble_type(receiver_type) and _should_use_native_trimble():
+        native_cls = _try_import_native_trimble()
+        if native_cls is not None:
+            return native_cls
 
     module_path, class_name = cap.rinex_converter.rsplit(".", 1)
     full_module = f"receivers.{module_path}"
@@ -125,6 +136,35 @@ def get_converter_class(receiver_type: str) -> type | None:
         return getattr(module, class_name)
     except (ImportError, AttributeError) as e:
         logger.debug(f"Could not import converter {cap.rinex_converter}: {e}")
+        return None
+
+
+def _is_trimble_type(receiver_type: str) -> bool:
+    """Check if a receiver type is a Trimble variant."""
+    key = receiver_type.strip().lower()
+    return "netr9" in key or "netr5" in key or "netrs" in key
+
+
+def _should_use_native_trimble() -> bool:
+    """Check if receivers.cfg has use_native_trimble = true."""
+    try:
+        from .receivers_config import get_receivers_config
+        config = get_receivers_config()
+        rinex_cfg = config.get_rinex_config()
+        return rinex_cfg.get("use_native_trimble", False)
+    except Exception:
+        return False
+
+
+def _try_import_native_trimble() -> type | None:
+    """Import TrimbleNativeConverter and check Docker availability."""
+    try:
+        from ..rinex.trimble_native_converter import TrimbleNativeConverter
+        if TrimbleNativeConverter.is_available():
+            return TrimbleNativeConverter
+        logger.debug("Native Trimble converter configured but Docker not available")
+        return None
+    except ImportError:
         return None
 
 
