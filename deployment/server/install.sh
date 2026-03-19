@@ -364,20 +364,33 @@ fi
 # ===========================================================================
 phase 5 "Configuration"
 
-# Copy config files from gps-config-data to gpsops config dir
-CONFIG_FILES=(stations.cfg receivers.cfg postprocess.cfg scheduler.yaml database.cfg icinga.cfg)
+# Deploy config files: gps-config-data → package defaults → skip
+DEFAULTS_DIR="$INSTALL_DIR/config/defaults"
+CONFIG_FILES=(stations.cfg receivers.cfg scheduler.yaml database.cfg icinga.cfg)
 for f in "${CONFIG_FILES[@]}"; do
-    src="$CONFIG_REPO_DIR/$f"
     dst="$CONFIG_DIR/$f"
-    if [[ -f "$src" ]]; then
+    src=""
+
+    # Source priority: gps-config-data > package defaults
+    if [[ -f "$CONFIG_REPO_DIR/$f" ]]; then
+        src="$CONFIG_REPO_DIR/$f"
+    elif [[ -f "$DEFAULTS_DIR/$f" ]]; then
+        src="$DEFAULTS_DIR/$f"
+    fi
+
+    if [[ -n "$src" ]]; then
         if [[ ! -f "$dst" ]] || [[ "$src" -nt "$dst" ]] || $FLAG_WIPE; then
             cp "$src" "$dst"
-            ok "Deployed $f"
+            if [[ "$src" == "$DEFAULTS_DIR"* ]]; then
+                ok "Deployed $f (from package defaults)"
+            else
+                ok "Deployed $f"
+            fi
         else
             ok "$f unchanged"
         fi
     else
-        warn "Not found in config repo: $f"
+        warn "Not found: $f (not in config repo or package defaults)"
     fi
 done
 
