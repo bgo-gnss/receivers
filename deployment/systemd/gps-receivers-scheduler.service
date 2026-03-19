@@ -9,18 +9,18 @@ Requires=postgresql.service
 Type=simple
 User=gpsops
 Group=gpsops
-WorkingDirectory=/home/gpsops/git/receivers
+WorkingDirectory=/home/bgo/git/receivers
 
-# Environment — no GPS_CONFIG_PATH needed (gpsops home defaults work)
+# Environment — config at ~/.config/gpsconfig/ (gps_parser default, no env var needed)
 Environment="LANG=en_US.UTF-8"
 
 # Command to run - Pipeline scheduler schedules ALL stations from stations.cfg
 # Use --stations flag only for testing subsets
-ExecStart=/home/gpsops/venv/bin/receivers scheduler start \
+ExecStart=/home/bgo/git/receivers/venv/bin/receivers scheduler start \
     --max-workers 5
 
 # Graceful shutdown - allow active pipelines to complete
-ExecStop=/home/gpsops/venv/bin/receivers scheduler stop
+ExecStop=/home/bgo/git/receivers/venv/bin/receivers scheduler stop
 TimeoutStopSec=120
 
 # Restart policy
@@ -30,8 +30,6 @@ StartLimitInterval=10min
 StartLimitBurst=5
 
 # Resource limits
-# Network pool: 10 workers (I/O-bound, concurrent OK)
-# CPU pool: 4 workers (memory-limited for RINEX conversion)
 LimitNOFILE=65536
 MemoryMax=4G
 MemoryHigh=3G
