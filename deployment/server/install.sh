@@ -374,7 +374,11 @@ if [[ -f "$CONFIG_DIR/database.cfg" ]]; then
     if ! grep -q '^mirror_host' "$CONFIG_DIR/database.cfg"; then
         sed -i '/^\[postgresql\]/a mirror_host = pgdev.vedur.is' "$CONFIG_DIR/database.cfg"
     fi
-    ok "Patched database.cfg (host=localhost, user=gpsops, mirror=pgdev.vedur.is)"
+    # Mirror connects as bgo (LDAP auth on pgdev, gpsops doesn't exist there)
+    if ! grep -q '^mirror_user' "$CONFIG_DIR/database.cfg"; then
+        sed -i '/^mirror_host/a mirror_user = bgo' "$CONFIG_DIR/database.cfg"
+    fi
+    ok "Patched database.cfg (host=localhost, user=gpsops, mirror=pgdev.vedur.is as bgo)"
 fi
 
 # Patch receivers.cfg for server paths
@@ -515,6 +519,16 @@ if [[ $PENDING_COUNT -eq 0 ]]; then
 else
     ok "Applied $PENDING_COUNT new migrations"
 fi
+
+# Grant gpsops full access to all tables, views, sequences
+# (migrations run as bgo, so objects are owned by bgo — gpsops needs access)
+sudo -u "$ADMIN_USER" psql -d "$DB_NAME" -q <<GRANTS
+GRANT ALL ON ALL TABLES IN SCHEMA public TO $SERVICE_USER;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO $SERVICE_USER;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO $SERVICE_USER;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO $SERVICE_USER;
+GRANTS
+ok "Granted $SERVICE_USER full access to all database objects"
 
 else
     echo ""
