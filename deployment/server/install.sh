@@ -4,20 +4,20 @@
 # Veðurstofa Íslands
 #
 # Usage:
+#   cd ~/git/receivers
 #   sudo bash deployment/server/install.sh              # Fresh install or update
 #   sudo bash deployment/server/install.sh --wipe       # Wipe venv + redeploy config
 #   sudo bash deployment/server/install.sh --wipe-all   # Drop DB + delete data + reinstall
 #   sudo bash deployment/server/install.sh --wipe-db    # Drop and recreate database only
 #
-# Everything lives under /home/gpsops/:
-#   git/         — source repos (receivers, gtimes, gps_parser, gps-config-data)
-#   venv/        — Python virtual environment
-#   .config/gpsconfig/  — configuration files
-#   .cache/gps_receivers/ — logs, scheduler DB, tmp
+# Layout:
+#   /home/bgo/git/           — repos + venv (owned by bgo, world-readable)
+#   /home/gpsops/.config/gpsconfig/ — config (bgo:gpsops, group-readable)
+#   /home/gpsops/.cache/gps_receivers/ — logs, scheduler DB (owned by gpsops)
+#   /mnt/gpsdata/            — working data (owned by gpsops)
 #
-# Public repos are cloned as gpsops (HTTPS, no auth).
-# Internal repos (git.vedur.is) are cloned as bgo then copied.
-# The 'receivers' CLI is symlinked to /usr/local/bin/ for all users.
+# bgo owns repos + venv, does git pull + pip install directly.
+# gpsops runs the scheduler, reads config from its own ~/.config/gpsconfig/.
 # ===========================================================================
 
 set -euo pipefail
@@ -27,16 +27,21 @@ readonly SERVICE_USER="gpsops"
 readonly SERVICE_GROUP="gpsops"
 readonly ADMIN_USER="bgo"
 
+readonly ADMIN_HOME="/home/$ADMIN_USER"
 readonly GPSOPS_HOME="/home/$SERVICE_USER"
-readonly GIT_BASE="$GPSOPS_HOME/git"
+
+# Repos + venv under bgo's home
+readonly GIT_BASE="$ADMIN_HOME/git"
 readonly INSTALL_DIR="$GIT_BASE/receivers"
 readonly GTIMES_DIR="$GIT_BASE/gtimes"
 readonly GPS_PARSER_DIR="$GIT_BASE/gps_parser"
 readonly CONFIG_REPO_DIR="$GIT_BASE/gps-config-data"
 readonly TOOLS_DIR="$GIT_BASE/gps-tools"
+readonly VENV_DIR="$INSTALL_DIR/venv"
+
+# gpsops owns config + cache + data
 readonly CONFIG_DIR="$GPSOPS_HOME/.config/gpsconfig"
 readonly CACHE_DIR="$GPSOPS_HOME/.cache/gps_receivers"
-readonly VENV_DIR="$GPSOPS_HOME/venv"
 readonly DATA_DIR="/mnt/gpsdata"
 readonly NFS_MOUNT="/mnt/rawgpsdata"
 readonly DB_NAME="gps_health"
@@ -45,7 +50,6 @@ readonly NFS_SOURCE="ananas.vedur.is:/gps/gpsdata"
 readonly NFS_OPTS="mountvers=3,auto,nofail,nolock,tcp,ro"
 
 # Git repositories — public (HTTPS, no auth needed)
-readonly REPO_RECEIVERS="https://github.com/bennigo/receivers.git"
 readonly REPO_GTIMES="https://github.com/bennigo/gtimes.git"
 readonly REPO_GPS_PARSER="https://github.com/bennigo/gps_parser.git"
 # Internal (requires bgo's LDAP credentials)
@@ -95,6 +99,13 @@ done
 # ── Pre-flight checks ────────────────────────────────────────────────────
 if [[ $EUID -ne 0 ]]; then
     err "This script must be run as root (or with sudo)"
+    exit 1
+fi
+
+# Verify we're running from the receivers repo
+if [[ ! -f "$INSTALL_DIR/pyproject.toml" ]]; then
+    err "receivers repo not found at $INSTALL_DIR"
+    err "Clone it first: git clone https://github.com/bennigo/receivers.git $INSTALL_DIR"
     exit 1
 fi
 
@@ -223,8 +234,11 @@ if getent group docker &>/dev/null; then
     fi
 fi
 
-# Create directory structure under gpsops home
-sudo -u "$SERVICE_USER" mkdir -p "$GIT_BASE"
+# Ensure bgo's home + git dir are traversable by gpsops (for venv + editable installs)
+chmod o+x "$ADMIN_HOME"
+chmod o+x "$GIT_BASE"
+
+# gpsops config + cache directories
 sudo -u "$SERVICE_USER" mkdir -p "$CONFIG_DIR"
 sudo -u "$SERVICE_USER" mkdir -p "$CACHE_DIR"/{logs,tmp}
 
@@ -267,53 +281,46 @@ fi
 # ===========================================================================
 phase 3 "Git repositories"
 
-# Clone or update a public repo as gpsops (no auth needed)
-clone_public() {
+# All repos cloned/updated as bgo (HTTPS, public repos need no auth)
+clone_or_update() {
     local repo_url="$1" target_dir="$2"
     if [[ ! -d "$target_dir/.git" ]]; then
         echo "  Cloning $repo_url"
-        sudo -u "$SERVICE_USER" git clone "$repo_url" "$target_dir" 2>&1 | tail -1
+        sudo -u "$ADMIN_USER" git clone "$repo_url" "$target_dir" 2>&1 | tail -1
         ok "Cloned $(basename "$target_dir")"
     else
         cd "$target_dir"
-        sudo -u "$SERVICE_USER" git pull --ff-only 2>&1 | tail -1 || \
+        sudo -u "$ADMIN_USER" git pull --ff-only 2>&1 | tail -1 || \
             warn "git pull failed for $(basename "$target_dir")"
         ok "Updated $(basename "$target_dir")"
     fi
+    # Ensure world-readable so gpsops can access
+    chmod -R o+rX "$target_dir"
 }
 
-# Clone or update an internal repo (clone as bgo, copy to gpsops location)
-clone_internal() {
-    local repo_url="$1" target_dir="$2"
-    local tmp_dir="/tmp/_gps_clone_$(basename "$target_dir")"
+# receivers is already cloned (we're running from it)
+ok "receivers: $INSTALL_DIR"
+chmod -R o+rX "$INSTALL_DIR"
 
-    if [[ ! -d "$target_dir/.git" ]]; then
-        echo "  Cloning $repo_url (as $ADMIN_USER)"
-        rm -rf "$tmp_dir"
-        if sudo -u "$ADMIN_USER" git clone "$repo_url" "$tmp_dir" 2>&1 | tail -1; then
-            mv "$tmp_dir" "$target_dir"
-            chown -R "$SERVICE_USER":"$SERVICE_GROUP" "$target_dir"
-            ok "Cloned $(basename "$target_dir")"
-        else
-            warn "Clone failed for $(basename "$target_dir") — may need $ADMIN_USER credentials"
-            rm -rf "$tmp_dir"
-        fi
+# Dependencies
+clone_or_update "$REPO_GTIMES"     "$GTIMES_DIR"
+clone_or_update "$REPO_GPS_PARSER" "$GPS_PARSER_DIR"
+
+# Internal repo (needs bgo's LDAP credentials)
+if [[ ! -d "$CONFIG_REPO_DIR/.git" ]]; then
+    echo "  Cloning gps-config-data (needs LDAP credentials)..."
+    if sudo -u "$ADMIN_USER" git clone "$REPO_CONFIG" "$CONFIG_REPO_DIR" 2>&1 | tail -1; then
+        chmod -R o+rX "$CONFIG_REPO_DIR"
+        ok "Cloned gps-config-data"
     else
-        # Update: pull as bgo in a temp copy, rsync changes
-        cd "$target_dir"
-        # Try pulling directly (may work if git stores credentials)
-        if sudo -u "$SERVICE_USER" git pull --ff-only 2>&1 | tail -1; then
-            ok "Updated $(basename "$target_dir")"
-        else
-            warn "git pull failed for $(basename "$target_dir") — may need manual update"
-        fi
+        warn "Clone failed — run manually: git clone $REPO_CONFIG $CONFIG_REPO_DIR"
     fi
-}
-
-clone_public "$REPO_RECEIVERS"  "$INSTALL_DIR"
-clone_public "$REPO_GTIMES"     "$GTIMES_DIR"
-clone_public "$REPO_GPS_PARSER" "$GPS_PARSER_DIR"
-clone_internal "$REPO_CONFIG"   "$CONFIG_REPO_DIR"
+else
+    cd "$CONFIG_REPO_DIR"
+    sudo -u "$ADMIN_USER" git pull --ff-only 2>&1 | tail -1 || true
+    chmod -R o+rX "$CONFIG_REPO_DIR"
+    ok "Updated gps-config-data"
+fi
 
 # ===========================================================================
 # Phase 4: Python virtual environment
@@ -324,28 +331,31 @@ PYTHON_VERSION=$(python3 -c 'import sys; print(".".join(map(str, sys.version_inf
 echo "  Python: $PYTHON_VERSION"
 
 if [[ ! -d "$VENV_DIR" ]]; then
-    sudo -u "$SERVICE_USER" python3 -m venv "$VENV_DIR"
+    sudo -u "$ADMIN_USER" python3 -m venv "$VENV_DIR"
     ok "Created venv"
 else
     ok "Venv exists"
 fi
 
-# Upgrade pip + install packages (editable mode for easy updates)
-sudo -u "$SERVICE_USER" "$VENV_DIR/bin/pip" install --upgrade pip setuptools wheel -q
-sudo -u "$SERVICE_USER" "$VENV_DIR/bin/pip" install -e "$GTIMES_DIR" -q
-sudo -u "$SERVICE_USER" "$VENV_DIR/bin/pip" install -e "$GPS_PARSER_DIR" -q
-sudo -u "$SERVICE_USER" "$VENV_DIR/bin/pip" install -e "$INSTALL_DIR" -q
+# Install packages as bgo (bgo owns the venv)
+sudo -u "$ADMIN_USER" "$VENV_DIR/bin/pip" install --upgrade pip setuptools wheel -q
+sudo -u "$ADMIN_USER" "$VENV_DIR/bin/pip" install -e "$GTIMES_DIR" -q
+sudo -u "$ADMIN_USER" "$VENV_DIR/bin/pip" install -e "$GPS_PARSER_DIR" -q
+sudo -u "$ADMIN_USER" "$VENV_DIR/bin/pip" install -e "$INSTALL_DIR" -q
 ok "Packages installed"
+
+# Ensure venv is world-readable + executable
+chmod -R o+rX "$VENV_DIR"
 
 # Symlink receivers CLI to /usr/local/bin/ for all-user access
 ln -sf "$VENV_DIR/bin/receivers" /usr/local/bin/receivers
 ok "receivers CLI available system-wide (/usr/local/bin/receivers)"
 
-# Verify
+# Verify CLI works as gpsops
 if sudo -u "$SERVICE_USER" "$VENV_DIR/bin/receivers" --help &>/dev/null; then
-    ok "receivers CLI works"
+    ok "receivers CLI works as $SERVICE_USER"
 else
-    err "receivers CLI failed — check pip install output"
+    err "receivers CLI failed as $SERVICE_USER — check permissions"
     exit 1
 fi
 
@@ -371,8 +381,10 @@ for f in "${CONFIG_FILES[@]}"; do
     fi
 done
 
-# Set ownership — gpsops owns config, group-readable for bgo
-chown "$SERVICE_USER":"$SERVICE_GROUP" "$CONFIG_DIR"/*
+# Config owned by bgo:gpsops, group-readable (bgo edits, gpsops reads)
+chown ${ADMIN_USER}:${SERVICE_GROUP} "$CONFIG_DIR"
+chown ${ADMIN_USER}:${SERVICE_GROUP} "$CONFIG_DIR"/*
+chmod 750 "$CONFIG_DIR"
 chmod 640 "$CONFIG_DIR"/*
 
 # Patch database.cfg for local PostgreSQL + mirror
@@ -533,13 +545,19 @@ fi
 if ! $FLAG_SKIP_TOOLS; then
 phase 8 "External tools"
 
-# gps-tools repo (internal — clone as bgo, copy to gpsops)
+# gps-tools repo (internal, needs bgo's credentials)
 if [[ ! -d "$TOOLS_DIR/.git" ]]; then
-    echo "  Attempting to clone gps-tools..."
-    clone_internal "$REPO_TOOLS" "$TOOLS_DIR"
+    echo "  Cloning gps-tools (needs LDAP credentials)..."
+    if sudo -u "$ADMIN_USER" git clone "$REPO_TOOLS" "$TOOLS_DIR" 2>/dev/null; then
+        chmod -R o+rX "$TOOLS_DIR"
+        ok "Cloned gps-tools"
+    else
+        warn "gps-tools not available — proprietary tools must be installed manually"
+    fi
 else
     cd "$TOOLS_DIR"
-    sudo -u "$SERVICE_USER" git pull --ff-only 2>/dev/null || true
+    sudo -u "$ADMIN_USER" git pull --ff-only 2>/dev/null || true
+    chmod -R o+rX "$TOOLS_DIR"
     ok "gps-tools updated"
 fi
 
@@ -548,7 +566,6 @@ if [[ -d "$TOOLS_DIR/rxtools/bin" ]]; then
     for bin in bin2asc sbf2rin sbfanalyzer; do
         [[ -f "$TOOLS_DIR/rxtools/bin/$bin" ]] && ln -sf "$TOOLS_DIR/rxtools/bin/$bin" /usr/local/bin/
     done
-    # RxTools shared libraries
     if [[ -d "$TOOLS_DIR/rxtools/lib" ]]; then
         echo "$TOOLS_DIR/rxtools/lib" > /etc/ld.so.conf.d/rxtools.conf
         ldconfig
@@ -639,8 +656,6 @@ sed -e "s|WorkingDirectory=.*|WorkingDirectory=$INSTALL_DIR|" \
     -e "s|ExecStart=.*/receivers |ExecStart=$VENV_DIR/bin/receivers |" \
     -e "s|ExecStop=.*/receivers |ExecStop=$VENV_DIR/bin/receivers |" \
     -e "s|ReadWritePaths=.*|ReadWritePaths=$CACHE_DIR $DATA_DIR /tmp|" \
-    -e '/^Environment="GPS_CONFIG_PATH=/d' \
-    -e '/^Environment="GPS_CACHE_DIR=/d' \
     "$INSTALL_DIR/deployment/systemd/gps-receivers-scheduler.service" \
     > /etc/systemd/system/gps-receivers-scheduler.service
 
@@ -650,7 +665,10 @@ ok "systemd service installed and enabled"
 
 # Logrotate
 if [[ -f "$INSTALL_DIR/deployment/logrotate.d/gps-receivers" ]]; then
-    cp "$INSTALL_DIR/deployment/logrotate.d/gps-receivers" /etc/logrotate.d/
+    # Patch log path to match this installation
+    sed -e "s|/home/gpsops/.cache/gps_receivers|$CACHE_DIR|g" \
+        "$INSTALL_DIR/deployment/logrotate.d/gps-receivers" \
+        > /etc/logrotate.d/gps-receivers
     chmod 644 /etc/logrotate.d/gps-receivers
     ok "logrotate configured"
 fi
@@ -722,27 +740,25 @@ IP_ADDR=$(hostname -I 2>/dev/null | awk '{print $1}')
 echo ""
 echo -e "${BLUE}=== Installation Complete ===${NC}"
 echo ""
-echo "  Home:       $GPSOPS_HOME"
-echo "  Config:     $CONFIG_DIR"
-echo "  Data:       $DATA_DIR"
-echo "  Logs:       $CACHE_DIR/logs/"
-echo "  Venv:       $VENV_DIR"
-echo "  NFS:        $NFS_MOUNT"
+echo "  Repos:      $GIT_BASE (owned by $ADMIN_USER)"
+echo "  Venv:       $VENV_DIR (owned by $ADMIN_USER)"
+echo "  Config:     $CONFIG_DIR (bgo:gpsops)"
+echo "  Data:       $DATA_DIR (owned by $SERVICE_USER)"
+echo "  Logs:       $CACHE_DIR/logs/ (owned by $SERVICE_USER)"
 if [[ $WARNINGS -gt 0 ]]; then
     echo ""
     warn "$WARNINGS warnings — review output above"
 fi
 echo ""
-echo "Day-to-day operations (as bgo):"
+echo "Day-to-day operations:"
 echo ""
-echo "  # Become gpsops for admin tasks:"
-echo "  sudo su - $SERVICE_USER"
-echo ""
-echo "  # Update code + reinstall:"
-echo "  sudo su - $SERVICE_USER -c 'cd ~/git/receivers && git pull && ~/venv/bin/pip install -e .'"
+echo "  # Update code + reinstall (as bgo, no sudo needed):"
+echo "  cd ~/git/receivers && git pull"
+echo "  ~/git/receivers/venv/bin/pip install -e ."
+echo "  sudo systemctl restart gps-receivers-scheduler"
 echo ""
 echo "  # Manual download:"
-echo "  sudo su - $SERVICE_USER -c 'receivers download ELDC --sync --archive'"
+echo "  sudo -u $SERVICE_USER receivers download ELDC --sync --archive"
 echo ""
 echo "  # Service management:"
 echo "  sudo systemctl restart gps-receivers-scheduler"
