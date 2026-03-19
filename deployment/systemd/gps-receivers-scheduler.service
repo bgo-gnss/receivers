@@ -45,7 +45,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=false
-ReadWritePaths=/home/gpsops/.cache/gps_receivers /mnt/gpsdata /tmp
+ReadWritePaths=/home/gpsops/.cache/gps_receivers /mnt/data/gpsdata /tmp
 
 # Watchdog (restart if no keep-alive for 5 minutes)
 WatchdogSec=300s
