@@ -9,20 +9,18 @@ Requires=postgresql.service
 Type=simple
 User=gpsops
 Group=gpsops
-WorkingDirectory=/opt/receivers
+WorkingDirectory=/home/gpsops/git/receivers
 
-# Environment setup
-Environment="GPS_CONFIG_PATH=/etc/gpsconfig"
-Environment="GPS_CACHE_DIR=/var/cache/gps_receivers"
+# Environment — no GPS_CONFIG_PATH needed (gpsops home defaults work)
 Environment="LANG=en_US.UTF-8"
 
 # Command to run - Pipeline scheduler schedules ALL stations from stations.cfg
 # Use --stations flag only for testing subsets
-ExecStart=/opt/receivers/venv/bin/receivers scheduler start \
+ExecStart=/home/gpsops/venv/bin/receivers scheduler start \
     --max-workers 5
 
 # Graceful shutdown - allow active pipelines to complete
-ExecStop=/opt/receivers/venv/bin/receivers scheduler stop
+ExecStop=/home/gpsops/venv/bin/receivers scheduler stop
 TimeoutStopSec=120
 
 # Restart policy
@@ -49,7 +47,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=false
-ReadWritePaths=/var/cache/gps_receivers /mnt/gpsdata /tmp
+ReadWritePaths=/home/gpsops/.cache/gps_receivers /mnt/gpsdata /tmp
 
 # Watchdog (restart if no keep-alive for 5 minutes)
 WatchdogSec=300s
