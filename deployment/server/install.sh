@@ -277,6 +277,8 @@ phase 3 "Git repositories"
 
 # Ensure base directory exists (owned by admin user)
 sudo -u "$ADMIN_USER" mkdir -p "$GIT_BASE"
+# Ensure service user can traverse into git base (home dir + git dir)
+chmod o+x "/home/$ADMIN_USER" "$GIT_BASE"
 
 clone_or_update() {
     local repo_url="$1" target_dir="$2" owner="${3:-$ADMIN_USER}" group="${4:-$SERVICE_GROUP}"
