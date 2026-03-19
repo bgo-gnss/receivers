@@ -1,0 +1,86 @@
+# =============================================================================
+# GPS Receiver Scheduler — Default Configuration
+# =============================================================================
+# Institution-specific config should live in gps-config-data and be deployed
+# to ~/.config/gpsconfig/scheduler.yaml (or $GPS_CONFIG_PATH/scheduler.yaml).
+# =============================================================================
+
+scheduler:
+  database: ~/.cache/gps_receivers/scheduler.db
+  max_workers: 200
+  log_dir: ~/.cache/gps_receivers/logs
+  log_level: INFO
+  job_defaults:
+    coalesce: true
+    max_instances: 1
+    misfire_grace_time: 600
+
+# ==============================================================================
+# DOWNLOAD SESSIONS
+# ==============================================================================
+sessions:
+  15s_24hr:
+    enabled: true
+    schedule: "00:01"
+    distribution_window: 5
+    batches: 2
+    days_back: 1
+    archiving_mode: immediate
+    rinex: true
+
+  1Hz_1hr:
+    enabled: false
+
+  status_1hr:
+    enabled: true
+    schedule: ":15"
+    distribution_window: 5
+    lookback_periods: 1
+    archiving_mode: immediate
+
+# ==============================================================================
+# HEALTH MONITORING
+# ==============================================================================
+status_monitoring:
+  enabled: true
+  schedule: "5m"
+  distribution_window: 3
+  targets: [database, icinga]
+
+# ==============================================================================
+# MAINTENANCE JOBS
+# ==============================================================================
+archive_reconciler:
+  enabled: true
+  schedule: ":30"
+  days_back: 3
+  sessions:
+    - 15s_24hr
+    - 1Hz_1hr
+
+gap_detection:
+  enabled: true
+  schedule: "2h"
+  days_back: 7
+  sessions:
+    - 15s_24hr
+    - status_1hr
+
+backfill:
+  enabled: false
+
+integrity_checker:
+  enabled: true
+  schedule: "6h"
+  days_back: 7
+  sessions: [15s_24hr, status_1hr]
+  check_receiver: true
+  size_tolerance_pct: 50.0
+
+bootstrap:
+  enabled: false
+
+recovery:
+  auto_recovery_enabled: false
+
+stations: {}
