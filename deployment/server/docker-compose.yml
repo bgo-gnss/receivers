@@ -3,7 +3,7 @@
 # The scheduler runs via systemd, not Docker.
 #
 # Usage:
-#   cd /opt/receivers/deployment/server
+#   cd ~/git/receivers/deployment/server
 #   docker compose up -d
 #
 # Update dashboards:

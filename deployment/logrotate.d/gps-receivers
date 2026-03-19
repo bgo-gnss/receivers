@@ -1,7 +1,7 @@
 # Log rotation for GPS Receivers Scheduler
 # Location: /etc/logrotate.d/gps-receivers
 
-/var/cache/gps_receivers/logs/*.log {
+/home/gpsops/.cache/gps_receivers/logs/*.log {
     daily
     rotate 30
     compress
@@ -15,7 +15,7 @@
     endscript
 }
 
-/var/cache/gps_receivers/logs/*.jsonl {
+/home/gpsops/.cache/gps_receivers/logs/*.jsonl {
     daily
     rotate 90
     compress
