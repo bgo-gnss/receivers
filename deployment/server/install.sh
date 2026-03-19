@@ -293,7 +293,7 @@ clone_or_update() {
     fi
 
     chown -R "${owner}:${group}" "$target_dir"
-    chmod 750 "$target_dir"
+    chmod 755 "$target_dir"
 }
 
 clone_or_update "$REPO_RECEIVERS"  "$INSTALL_DIR"     "$ADMIN_USER" "$SERVICE_GROUP"
@@ -310,6 +310,9 @@ PYTHON_VERSION=$(python3 -c 'import sys; print(".".join(map(str, sys.version_inf
 echo "  Python: $PYTHON_VERSION"
 
 if [[ ! -d "$VENV_DIR" ]]; then
+    # Create venv dir owned by service user (inside bgo-owned repo)
+    mkdir -p "$VENV_DIR"
+    chown "$SERVICE_USER:$SERVICE_GROUP" "$VENV_DIR"
     sudo -u "$SERVICE_USER" python3 -m venv "$VENV_DIR"
     ok "Created venv"
 else
