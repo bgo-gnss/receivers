@@ -52,7 +52,14 @@ class ReceiversConfig:
         if config_path and os.path.isfile(config_path):
             return config_path
 
-        # Try gps_parser config directory first
+        # Check GPS_CONFIG_PATH environment variable first
+        gps_config_dir = os.environ.get("GPS_CONFIG_PATH")
+        if gps_config_dir:
+            receivers_cfg = os.path.join(gps_config_dir, "receivers.cfg")
+            if os.path.isfile(receivers_cfg):
+                return receivers_cfg
+
+        # Try gps_parser config directory
         if HAS_GPS_PARSER:
             try:
                 parser_config = gps_parser.ConfigParser()

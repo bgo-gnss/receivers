@@ -94,7 +94,7 @@ def _load_config_file() -> Dict[str, str]:
 
     result: Dict[str, str] = {}
     if parser.has_section("postgresql"):
-        for key in ("host", "port", "database", "user", "password", "mirror_host"):
+        for key in ("host", "port", "database", "user", "password", "mirror_host", "mirror_user"):
             if parser.has_option("postgresql", key):
                 result[key] = parser.get("postgresql", key)
 
@@ -311,6 +311,9 @@ class DatabaseConnectionFactory:
         import psycopg2
 
         mirror_params = {**params, "host": mirror_host}
+        mirror_user = cfg.get("mirror_user")
+        if mirror_user:
+            mirror_params["user"] = mirror_user
         try:
             conn = psycopg2.connect(**mirror_params)
             logger.info(
