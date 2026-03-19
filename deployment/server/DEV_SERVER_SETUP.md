@@ -56,7 +56,7 @@ The script is idempotent — running it again updates everything without breakin
     └── tmp/
 
 /usr/local/bin/receivers     # Symlink — CLI available to all users
-/mnt/gpsdata/                # Local working data (owned by gpsops)
+/mnt/data/gpsdata/                # Local working data (owned by gpsops)
 /mnt/rawgpsdata/             # NFS mount to production archive (read-only)
 ```
 
@@ -70,7 +70,7 @@ PostgreSQL, Python 3, Git, NFS client, Docker.
 - Creates `gpsops` group (if not from AD/LDAP), adds `bgo` to it
 - Makes bgo's home + git dir world-traversable (`o+x`) so gpsops can access venv
 - Creates `/home/gpsops/.config/gpsconfig/` and `/home/gpsops/.cache/gps_receivers/`
-- Creates `/mnt/gpsdata/` (local data), `/mnt/rawgpsdata/` (NFS archive)
+- Creates `/mnt/data/gpsdata/` (local data), `/mnt/rawgpsdata/` (NFS archive)
 - Adds NFS fstab entry for production archive
 - Generates SSH key for `gpsops` (for rsync to production archive)
 
@@ -83,7 +83,7 @@ Creates `~/git/receivers/venv/` owned by bgo, installs all packages in editable 
 ### Phase 5: Configuration
 Copies configs from gps-config-data to `/home/gpsops/.config/gpsconfig/`, patches:
 - `database.cfg`: host=localhost, user=gpsops, mirror_host=pgdev.vedur.is, mirror_user=bgo
-- `receivers.cfg`: data_prepath=/mnt/gpsdata/
+- `receivers.cfg`: data_prepath=/mnt/data/gpsdata/
 
 Config files are owned `bgo:gpsops` with mode 640 (bgo edits, gpsops reads).
 
@@ -241,7 +241,7 @@ The install script symlinks these to `/usr/local/bin/` and configures `ld.so.con
 
 | Location | Purpose | Access |
 |----------|---------|--------|
-| `/mnt/gpsdata/` | Local working data (downloads, processing) | Read/Write, owned by gpsops |
+| `/mnt/data/gpsdata/` | Local working data (downloads, processing) | Read/Write, owned by gpsops |
 | `/mnt/rawgpsdata/` | Production archive (read-only reference) | Read-only, NFS from ananas.vedur.is |
 | `rawdata.vedur.is` | Production archive (write target) | rsync over SSH as gpsops |
 

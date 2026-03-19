@@ -42,7 +42,7 @@ readonly VENV_DIR="$INSTALL_DIR/venv"
 # gpsops owns config + cache + data
 readonly CONFIG_DIR="$GPSOPS_HOME/.config/gpsconfig"
 readonly CACHE_DIR="$GPSOPS_HOME/.cache/gps_receivers"
-readonly DATA_DIR="/mnt/gpsdata"
+readonly DATA_DIR="/mnt/data/gpsdata"
 readonly NFS_MOUNT="/mnt/rawgpsdata"
 readonly DB_NAME="gps_health"
 
