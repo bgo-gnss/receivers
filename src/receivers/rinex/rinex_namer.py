@@ -32,29 +32,11 @@ Long format (IGS/RINEX 3+):
 """
 
 import logging
-import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Optional, Tuple
 
 from .converter_base import NamingConvention, RinexVersion
-
-# Compiled RINEX filename patterns (module-level to avoid recompile per call).
-# RINEX 3 long: SSSS00CCC_R_YYYYDDDHHMM_PPU_FFS_TT.rnx[.gz]
-_RINEX3_LONG_RE = re.compile(
-    r"^(?P<station>[A-Za-z0-9]{4})"
-    r"(?P<monument>\d{2})"
-    r"(?P<country>[A-Za-z]{3})"
-    r"_(?P<source>[RSU])"
-    r"_(?P<year>\d{4})(?P<doy>\d{3})(?P<hour>\d{2})(?P<minute>\d{2})"
-    r"_(?P<period>\d{2}[DHMS])"
-    r"_(?P<frequency>\d{2}[SMHZU])"
-    r"_(?P<ftype>[A-Z]{2})",
-)
-# RINEX 2 short: SSSSdddS.YYt (station + day-of-year + session char + 2-digit year + type)
-_RINEX2_SHORT_RE = re.compile(
-    r"^(?P<station>[A-Za-z0-9]{4})(?P<doy>\d{3})(?P<session>[0-9a-x])\.(?P<year>\d{2})(?P<ftype>[odngml])",
-)
 
 
 @dataclass
@@ -277,8 +259,9 @@ class RinexNamer:
     def parse_filename(filename: str) -> Optional[FileNameComponents]:
         """Parse a RINEX filename into components.
 
-        Accepts bare filenames, basenames with `.gz`/`.Z`/`.crx`, and Hatanaka
-        variants. Tries RINEX 3 long format first, then RINEX 2 short.
+        Delegates to gtimes.timefunc.parse_rinex3_filename /
+        parse_rinex2_filename for the canonical parser. Returns a
+        FileNameComponents dataclass (receivers-side shape).
 
         Args:
             filename: RINEX filename to parse (directory part ignored).
@@ -286,40 +269,40 @@ class RinexNamer:
         Returns:
             FileNameComponents if successfully parsed, None otherwise.
         """
+        from gtimes.timefunc import parse_rinex2_filename, parse_rinex3_filename
+
         name = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
 
-        m = _RINEX3_LONG_RE.match(name)
-        if m:
+        parsed = parse_rinex3_filename(name)
+        if parsed is not None:
             return FileNameComponents(
-                station=m.group("station").upper(),
-                monument_number=m.group("monument"),
-                country_code=m.group("country").upper(),
-                data_source=m.group("source"),
-                year=int(m.group("year")),
-                day_of_year=int(m.group("doy")),
-                hour=int(m.group("hour")),
-                minute=int(m.group("minute")),
-                file_period=m.group("period"),
-                data_frequency=m.group("frequency"),
-                file_type=m.group("ftype"),
+                station=parsed["station"].upper(),
+                monument_number=parsed["monument_number"],
+                country_code=parsed["country_code"].upper(),
+                data_source=parsed["data_source"],
+                year=parsed["year"],
+                day_of_year=parsed["doy"],
+                hour=parsed["hour"],
+                minute=parsed["minute"],
+                file_period=parsed["file_period"],
+                data_frequency=parsed["data_frequency"],
+                file_type=parsed["file_type"],
             )
 
-        m = _RINEX2_SHORT_RE.match(name)
-        if m:
-            session = m.group("session")
+        parsed = parse_rinex2_filename(name)
+        if parsed is not None:
+            session = parsed["session"]
             if session.isdigit():
                 file_sequence = int(session)
             else:
                 file_sequence = ord(session.lower()) - ord("a") + 10
             type_mapping = {"o": "MO", "n": "MN", "g": "GN", "l": "EN", "m": "MM"}
-            yy = int(m.group("year"))
-            year = yy + (2000 if yy < 80 else 1900)
             return FileNameComponents(
-                station=m.group("station").upper(),
-                year=year,
-                day_of_year=int(m.group("doy")),
+                station=parsed["station"].upper(),
+                year=parsed["year"],
+                day_of_year=parsed["doy"],
                 file_sequence=file_sequence,
-                file_type=type_mapping.get(m.group("ftype"), "MO"),
+                file_type=type_mapping.get(parsed["file_type"], "MO"),
             )
 
         return None
@@ -333,6 +316,8 @@ class RinexNamer:
         hour=None; hourly files (RINEX 2 session a-x or RINEX 3 with a
         non-zero hour) yield hour=0..23.
 
+        Delegates to gtimes.timefunc parsers for the actual regex matching.
+
         Args:
             filename: RINEX filename to parse (directory part ignored).
             station_id: If given, require parsed station to match
@@ -341,40 +326,29 @@ class RinexNamer:
         Returns:
             (file_date, file_hour) — either may be None if unparseable.
         """
+        from gtimes.timefunc import parse_rinex2_filename, parse_rinex3_filename
+
         name = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
 
-        # RINEX 3 long: station embedded in regex, check station match directly
-        m3 = _RINEX3_LONG_RE.match(name)
-        if m3:
-            parsed_station = m3.group("station").upper()
-            if station_id is not None and parsed_station != station_id.upper():
+        parsed = parse_rinex3_filename(name)
+        if parsed is not None:
+            if station_id is not None and parsed["station"].upper() != station_id.upper():
                 return None, None
-            year = int(m3.group("year"))
-            doy = int(m3.group("doy"))
-            hour = int(m3.group("hour"))
-            file_date = date(year, 1, 1) + timedelta(days=doy - 1)
-            # Daily files (01D) with no hour offset → hour=None
-            if m3.group("period") == "01D" and hour == 0 and int(m3.group("minute")) == 0:
+            file_date = date(parsed["year"], 1, 1) + timedelta(days=parsed["doy"] - 1)
+            if parsed["file_period"] == "01D" and parsed["hour"] == 0 and parsed["minute"] == 0:
                 return file_date, None
-            return file_date, hour
+            return file_date, parsed["hour"]
 
-        # RINEX 2 short: SSSSdddS.YY[odngml]
-        m2 = _RINEX2_SHORT_RE.match(name)
-        if m2:
-            parsed_station = m2.group("station").upper()
-            if station_id is not None and parsed_station != station_id.upper():
+        parsed = parse_rinex2_filename(name)
+        if parsed is not None:
+            if station_id is not None and parsed["station"].upper() != station_id.upper():
                 return None, None
-            doy = int(m2.group("doy"))
-            yy = int(m2.group("year"))
-            year = yy + (2000 if yy < 80 else 1900)
-            file_date = date(year, 1, 1) + timedelta(days=doy - 1)
-
-            session = m2.group("session")
+            file_date = date(parsed["year"], 1, 1) + timedelta(days=parsed["doy"] - 1)
+            session = parsed["session"]
             if session == "0":
                 return file_date, None
             if "a" <= session <= "x":
                 return file_date, ord(session) - ord("a")
-            # Unrecognized session character → date only
             return file_date, None
 
         return None, None
