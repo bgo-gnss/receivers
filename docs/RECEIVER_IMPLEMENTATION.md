@@ -67,7 +67,9 @@ receivers/src/receivers/trimble/
 ```
 receivers/src/receivers/leica/
 ├── __init__.py           # Package exports
-└── leica_gnss.py         # Leica receiver implementation
+├── g10.py                # LeicaG10 receiver implementation
+├── download_manager.py   # Leica download orchestration
+└── leica_ftp_download_client.py  # FTP download for .m00.zip files
 ```
 
 ### Modified Core Files
