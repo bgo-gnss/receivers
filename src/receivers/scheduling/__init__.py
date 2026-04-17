@@ -5,7 +5,6 @@ This package provides scheduling infrastructure for automated GPS data processin
 Core Components:
 - task_interface: Abstract base for scheduled tasks (ScheduledTask, TaskFactory)
 - bulk_scheduler: APScheduler-based download scheduling (BulkDownloadScheduler)
-- pipeline_scheduler: Multi-stage pipeline orchestration (PipelineScheduler)
 - resource_pools: Network/CPU resource pool management (ResourcePoolManager)
 - pipeline: Pipeline state tracking and persistence (PipelineJob, PipelineStateStore)
 
@@ -64,9 +63,3 @@ def get_bulk_scheduler():
     """Lazy import BulkDownloadScheduler (requires APScheduler)."""
     from .bulk_scheduler import BulkDownloadScheduler
     return BulkDownloadScheduler
-
-
-def get_pipeline_scheduler():
-    """Lazy import PipelineScheduler (requires APScheduler)."""
-    from .pipeline_scheduler import PipelineScheduler
-    return PipelineScheduler
