@@ -2162,59 +2162,12 @@ class GapDetector:
     ) -> tuple[Optional[date], Optional[int]]:
         """Parse a RINEX filename (short or long naming) to extract date and hour.
 
-        Supports:
-        - RINEX 2 short: SSSSdddS.YYt.Z  (e.g., ELDC0340.26d.Z)
-        - RINEX 3 long: SSSS00CCC_R_YYYYDDDHHMM_PPP_FFF_TT.rnx.gz
-
-        Returns:
-            Tuple of (file_date, file_hour) or (None, None) if unparseable.
-            file_hour is None for daily files.
+        Delegates to RinexNamer.parse_date_hour() for the shared parsing
+        logic; kept as a static method to preserve the existing call-site
+        API (self._parse_rinex_filename(...)).
         """
-        import re
-
-        # Try RINEX 3 long name first: SSSS00CCC_R_YYYYDDDHHMM_...
-        long_match = re.match(
-            rf'^{re.escape(station_id)}\d{{2}}\w{{3}}_R_(\d{{4}})(\d{{3}})(\d{{2}})(\d{{2}})_',
-            filename,
-        )
-        if long_match:
-            file_year = int(long_match.group(1))
-            doy = int(long_match.group(2))
-            hour = int(long_match.group(3))
-            file_date = date(file_year, 1, 1) + timedelta(days=doy - 1)
-            # Determine if daily (hour=0, minute=0, period=01D) or hourly
-            file_hour = None if '_01D_' in filename and hour == 0 else hour
-            return file_date, file_hour
-
-        # Try RINEX 2 short name: SSSSdddS.YYt.Z
-        if len(filename) < 12:
-            return None, None
-
-        try:
-            doy_str = filename[4:7]
-            session_char = filename[7]
-            year_str = filename[9:11]
-
-            doy = int(doy_str)
-            file_year = int(year_str)
-            if file_year < 50:
-                file_year += 2000
-            else:
-                file_year += 1900
-
-            file_date = date(file_year, 1, 1) + timedelta(days=doy - 1)
-
-            if session_char == '0':
-                file_hour = None
-            elif 'a' <= session_char <= 'x':
-                file_hour = ord(session_char) - ord('a')
-            else:
-                return None, None
-
-            return file_date, file_hour
-
-        except (ValueError, IndexError):
-            return None, None
+        from receivers.rinex.rinex_namer import RinexNamer
+        return RinexNamer.parse_date_hour(filename, station_id=station_id)
 
     def scan_rinex_files(
         self,
