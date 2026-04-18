@@ -52,8 +52,8 @@ _project_root = _script_dir.parent.parent
 sys.path.insert(0, str(_project_root / "src"))
 sys.path.insert(0, str(_script_dir))
 
-from system_sampler import SystemSampler
 from results_store import ResultsStore
+from system_sampler import SystemSampler
 
 
 def _resolve_data_prepath() -> Path:
@@ -63,6 +63,7 @@ def _resolve_data_prepath() -> Path:
     """
     try:
         from receivers.config.receivers_config import ReceiversConfig
+
         cfg = ReceiversConfig()
         return Path(cfg.get_data_prepath())
     except Exception:
@@ -73,6 +74,7 @@ def _resolve_tmp_dir() -> Path:
     """Read tmp download directory from receivers config."""
     try:
         from receivers.config.receivers_config import ReceiversConfig
+
         cfg = ReceiversConfig()
         return Path(cfg.get_tmp_dir())
     except Exception:
@@ -95,7 +97,7 @@ def _effective_concurrency(total_stations: int, batches: int) -> int:
     return math.ceil(total_stations / batches)
 
 
-def _count_stations(stations_arg: Optional[str]) -> int:
+def _count_stations(stations_arg: str | None) -> int:
     """Count how many stations will participate in the experiment.
 
     If --stations is given, count those.  Otherwise query the config
@@ -106,12 +108,13 @@ def _count_stations(stations_arg: Optional[str]) -> int:
 
     try:
         from receivers.cli.main import get_all_station_configs
+
         return len(get_all_station_configs())
     except Exception:
         return 170  # reasonable default
 
 
-def _get_station_list(stations_arg: Optional[str]) -> list[str]:
+def _get_station_list(stations_arg: str | None) -> list[str]:
     """Return explicit station list, or None to use --all."""
     if stations_arg:
         return [s.strip().upper() for s in stations_arg.split(",")]
@@ -184,9 +187,7 @@ def _reset_archives(
     }
 
 
-def _reset_file_tracking(
-    session: str, start_date: datetime, end_date: datetime
-) -> int:
+def _reset_file_tracking(session: str, start_date: datetime, end_date: datetime) -> int:
     """Delete file_tracking entries for the test date range.
 
     DELETES rows rather than setting status='missing', because the
@@ -300,24 +301,33 @@ def _build_download_command(
     else:
         cmd.append("--all")
 
-    cmd.extend([
-        "--sync", "--archive", "--parallel",
-        "--batches", str(batches),
-        "--distribution-window", str(window),
-        "--retry-delay", str(retry_delay),
-        "--session", session,
-        "-d", str(days),
-        "--json-log",
-    ])
+    cmd.extend(
+        [
+            "--sync",
+            "--archive",
+            "--parallel",
+            "--batches",
+            str(batches),
+            "--distribution-window",
+            str(window),
+            "--retry-delay",
+            str(retry_delay),
+            "--session",
+            session,
+            "-d",
+            str(days),
+            "--json-log",
+        ]
+    )
 
     return cmd
 
 
-def _parse_experiment_result(stdout: str) -> Optional[dict[str, Any]]:
+def _parse_experiment_result(stdout: str) -> dict[str, Any] | None:
     """Extract the EXPERIMENT_RESULT JSON from subprocess stdout."""
     for line in stdout.splitlines():
         if line.startswith("EXPERIMENT_RESULT:"):
-            json_str = line[len("EXPERIMENT_RESULT:"):]
+            json_str = line[len("EXPERIMENT_RESULT:") :]
             try:
                 return json.loads(json_str)
             except json.JSONDecodeError:
@@ -326,9 +336,7 @@ def _parse_experiment_result(stdout: str) -> Optional[dict[str, Any]]:
     return None
 
 
-def _calculate_time_range(
-    session: str, days: int
-) -> tuple[datetime, datetime]:
+def _calculate_time_range(session: str, days: int) -> tuple[datetime, datetime]:
     """Calculate the date range that will be downloaded.
 
     Mirrors the logic in receivers CLI: previous complete periods.
@@ -357,7 +365,7 @@ def run_trial(
     stations: list[str],
     store: ResultsStore,
     dry_run: bool = False,
-) -> Optional[int]:
+) -> int | None:
     """Execute a single experiment trial.
 
     Returns trial_id on success, None on failure.
@@ -366,16 +374,22 @@ def run_trial(
     batches = _calculate_batches(total, target_concurrency)
     effective = _effective_concurrency(total, batches)
 
-    print(f"\n{'='*70}")
-    print(f"TRIAL: concurrency={target_concurrency} (effective={effective}), "
-          f"batches={batches}, window={window}min, session={session}")
-    print(f"{'='*70}")
+    print(f"\n{'=' * 70}")
+    print(
+        f"TRIAL: concurrency={target_concurrency} (effective={effective}), "
+        f"batches={batches}, window={window}min, session={session}"
+    )
+    print(f"{'=' * 70}")
 
     if dry_run:
         print("  [DRY RUN] Would execute:")
         cmd = _build_download_command(
-            batches=batches, window=window, session=session,
-            days=days, retry_delay=retry_delay, stations=stations,
+            batches=batches,
+            window=window,
+            session=session,
+            days=days,
+            retry_delay=retry_delay,
+            stations=stations,
         )
         print(f"  {' '.join(cmd)}")
         return None
@@ -385,11 +399,15 @@ def run_trial(
     tmp_dir = _resolve_tmp_dir()
     start_date, end_date = _calculate_time_range(session, days)
 
-    print(f"  Resetting ALL data in {data_prepath} for "
-          f"{start_date.date()} to {end_date.date()}...")
+    print(
+        f"  Resetting ALL data in {data_prepath} for "
+        f"{start_date.date()} to {end_date.date()}..."
+    )
     reset = _reset_archives(data_prepath, tmp_dir, session, start_date, end_date)
-    print(f"  Removed {reset['archive_removed']} archive + "
-          f"{reset['tmp_removed']} tmp files")
+    print(
+        f"  Removed {reset['archive_removed']} archive + "
+        f"{reset['tmp_removed']} tmp files"
+    )
     if reset["remaining"] > 0:
         print(f"  WARNING: {reset['remaining']} files survived reset!")
 
@@ -414,8 +432,12 @@ def run_trial(
 
     # 4. Run download subprocess
     cmd = _build_download_command(
-        batches=batches, window=window, session=session,
-        days=days, retry_delay=retry_delay, stations=stations,
+        batches=batches,
+        window=window,
+        session=session,
+        days=days,
+        retry_delay=retry_delay,
+        stations=stations,
     )
     print(f"  Running: {' '.join(cmd)}")
     t0 = time.monotonic()
@@ -443,9 +465,7 @@ def run_trial(
             # Drain any remaining output (non-blocking after SIGKILL)
             stdout, stderr = proc.communicate(timeout=10)
             raise  # Re-raise TimeoutExpired
-        result = subprocess.CompletedProcess(
-            cmd, proc.returncode, stdout, stderr
-        )
+        result = subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
         wall_clock = time.monotonic() - t0
     except subprocess.TimeoutExpired:
         wall_clock = time.monotonic() - t0
@@ -526,11 +546,13 @@ def run_trial(
     mins = wall_clock / 60
     print(f"  Completed in {mins:.1f}m ({wall_clock:.0f}s)")
     if experiment_data:
-        print(f"  Files: {experiment_data.get('total_files', 0)}, "
-              f"OK: {experiment_data.get('successful', 0)}, "
-              f"Unreachable: {experiment_data.get('unreachable', 0)}, "
-              f"Retried: {experiment_data.get('retried', 0)}, "
-              f"Recovered: {experiment_data.get('retry_recovered', 0)}")
+        print(
+            f"  Files: {experiment_data.get('total_files', 0)}, "
+            f"OK: {experiment_data.get('successful', 0)}, "
+            f"Unreachable: {experiment_data.get('unreachable', 0)}, "
+            f"Retried: {experiment_data.get('retried', 0)}, "
+            f"Recovered: {experiment_data.get('retry_recovered', 0)}"
+        )
 
     return trial_id
 
@@ -574,7 +596,8 @@ Examples:
         help="Session type (default: 15s_24hr)",
     )
     parser.add_argument(
-        "--days", "-d",
+        "--days",
+        "-d",
         type=int,
         default=1,
         help="Days/periods to look back (default: 1)",
@@ -622,6 +645,7 @@ Examples:
     # Report mode
     if args.report:
         from report_generator import generate_report
+
         generate_report(store, output_format=args.format)
         return 0
 
@@ -662,9 +686,9 @@ Examples:
                 trial_ids.append(trial_id)
 
     if trial_ids and not args.dry_run:
-        print(f"\n{'='*70}")
+        print(f"\n{'=' * 70}")
         print(f"All trials complete. Trial IDs: {trial_ids}")
-        print(f"Run with --report to see results.")
+        print("Run with --report to see results.")
         print(f"DB: {store.db_path}")
 
     return 0

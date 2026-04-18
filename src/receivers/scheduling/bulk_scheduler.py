@@ -12,17 +12,21 @@ Features:
 """
 
 import fcntl
-import logging
 import json
+import logging
 import os
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple, Union
-from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
-from .schedule_parser import ScheduleTrigger, parse_schedule, apply_distribution_window
+from .schedule_parser import ScheduleTrigger, apply_distribution_window, parse_schedule
+
+if TYPE_CHECKING:
+    from .load_monitor import LoadMonitor
+    from .pipeline import PipelineStateStore
 
 # Module-level reference for config watcher job (APScheduler needs module-level functions)
 _scheduler_instance: Optional["BulkDownloadScheduler"] = None
@@ -40,6 +44,7 @@ def _get_pipeline_store() -> Optional["PipelineStateStore"]:
     if _pipeline_store is None:
         try:
             from .pipeline import PipelineStateStore
+
             _pipeline_store = PipelineStateStore()
         except Exception:
             pass
@@ -57,7 +62,9 @@ def _check_config_changes_job() -> None:
         _scheduler_instance._check_config_changes()
 
 
-def _write_connectivity_status(station_id: str, health_data: Dict[str, Any], logger: logging.Logger) -> None:
+def _write_connectivity_status(
+    station_id: str, health_data: Dict[str, Any], logger: logging.Logger
+) -> None:
     """Write ping and port status to database for Grafana dashboard.
 
     Delegates to shared ConnectivityWriter module. Uses health data timestamp
@@ -80,24 +87,45 @@ def _is_retryable_download(result: Dict[str, Any]) -> bool:
     Retryable: timeout, connection reset, stall, broken pipe.
     NOT retryable: unreachable, configuration_error, 404, auth failures.
     """
-    status = result.get('status', '')
-    if status in ('unreachable', 'configuration_error'):
+    status = result.get("status", "")
+    if status in ("unreachable", "configuration_error"):
         return False
 
-    error_msg = result.get('error_message', '').lower()
+    error_msg = result.get("error_message", "").lower()
     # Permanent errors — no point retrying
-    permanent_patterns = ['not found', '404', '401', '530', 'configuration', 'invalid ip']
+    permanent_patterns = [
+        "not found",
+        "404",
+        "401",
+        "530",
+        "configuration",
+        "invalid ip",
+    ]
     if any(p in error_msg for p in permanent_patterns):
         return False
 
     # Retryable errors
-    retryable_patterns = ['timed out', 'timeout', 'connection reset', 'stall',
-                          'broken pipe', 'watchdog', 'no progress']
+    retryable_patterns = [
+        "timed out",
+        "timeout",
+        "connection reset",
+        "stall",
+        "broken pipe",
+        "watchdog",
+        "no progress",
+    ]
     return any(p in error_msg for p in retryable_patterns)
 
 
 # Module-level download function for APScheduler serialization
-def _download_station_data_job(station_id: str, session_type: str, production_mode: bool = False, lookback_periods: int = 1, timeout_minutes: int = 30, run_rinex: bool = False):
+def _download_station_data_job(
+    station_id: str,
+    session_type: str,
+    production_mode: bool = False,
+    lookback_periods: int = 1,
+    timeout_minutes: int = 30,
+    run_rinex: bool = False,
+):
     """Download data for a single station (standalone job function for APScheduler).
 
     This is a module-level function to allow APScheduler to serialize it to the database.
@@ -116,14 +144,15 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
     exec_start_time = datetime.now(timezone.utc)
 
     # Set up logging
-    logger = logging.getLogger(f'receivers.download.{station_id}')
+    logger = logging.getLogger(f"receivers.download.{station_id}")
 
     # Load-aware throttling: check system load before starting
     monitor = _get_load_monitor()
     if monitor is not None:
         from .task_interface import TaskPriority as _TP
+
         priority = _TP.STANDARD
-        if session_type == 'status_1hr':
+        if session_type == "status_1hr":
             priority = _TP.STANDARD
         job_priority = priority
         if not monitor.can_start_job(job_priority):
@@ -143,9 +172,9 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
 
             # Determine enabled stages based on session type and config
             stages = [PipelineStage.DOWNLOAD]
-            if run_rinex and session_type != 'status_1hr':
+            if run_rinex and session_type != "status_1hr":
                 stages.append(PipelineStage.RINEX)
-            if session_type == 'status_1hr':
+            if session_type == "status_1hr":
                 stages.append(PipelineStage.HEALTH)
 
             pipeline_job = PipelineJob.create(
@@ -167,8 +196,8 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
         logger.info(f"Starting download: {station_id} ({session_type})")
 
         # Import receiver management here to avoid circular imports
-        from ..cli.main import get_station_config, create_receiver
         from ..base.production_logging import setup_production_logging
+        from ..cli.main import create_receiver, get_station_config
 
         # Set up production logging
         if production_mode:
@@ -176,7 +205,7 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
             recv_logger = prod_config.create_station_logger(station_id)
             audit_logger = prod_config.get_audit_logger()
         else:
-            recv_logger = logging.getLogger(f'receivers.download.{station_id}')
+            recv_logger = logging.getLogger(f"receivers.download.{station_id}")
             audit_logger = None
 
         # Get station configuration
@@ -190,12 +219,15 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
         # Determine time range based on session type and lookback_periods
         # Use time_utils for consistent time calculation between CLI and scheduler
         from ..utils.time_utils import calculate_download_time_range
-        start_time, end_time = calculate_download_time_range(session_type, lookback_periods)
 
-        if session_type == '15s_24hr':
-            frequency = '1D'
+        start_time, end_time = calculate_download_time_range(
+            session_type, lookback_periods
+        )
+
+        if session_type == "15s_24hr":
+            frequency = "1D"
         else:
-            frequency = '1H'
+            frequency = "1H"
 
         # Download data with all our enhanced features
         result = receiver.download_data(
@@ -207,17 +239,17 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
             archive=True,  # Always archive
             immediate_archive=True,  # Use fault-tolerant immediate archiving
             clean_tmp=True,
-            compression='.gz',
+            compression=".gz",
             reverse_chronological=True,  # Prioritize latest data (like -D flag)
             retry_missing=True,  # Always retry known-missing files in scheduled mode
-            loglevel=logging.INFO
+            loglevel=logging.INFO,
         )
 
         # In-job retry: if the download failed with a retryable error and
         # we have enough time remaining, wait briefly and try once more.
         # PolaRX5 supports FTP resume so partial progress is preserved.
-        success_statuses = ('completed', 'up_to_date', 'dry_run')
-        status = result.get('status', 'completed')
+        success_statuses = ("completed", "up_to_date", "dry_run")
+        status = result.get("status", "completed")
         if status not in success_statuses and _is_retryable_download(result):
             elapsed = time.time() - job_start_time
             remaining = (timeout_minutes * 60) - elapsed
@@ -237,34 +269,38 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
                     archive=True,
                     immediate_archive=True,
                     clean_tmp=False,  # Keep partial files for resume
-                    compression='.gz',
+                    compression=".gz",
                     reverse_chronological=True,
                     retry_missing=True,
-                    loglevel=logging.INFO
+                    loglevel=logging.INFO,
                 )
-                status = result.get('status', 'completed')
+                status = result.get("status", "completed")
 
         # Check result status to determine success/failure
         # Possible statuses: completed, up_to_date, dry_run (success)
         #                    failed, unreachable, configuration_error (failure)
-        files_downloaded = result.get('files_downloaded', 0)
-        duration = result.get('duration', 0)
-        downloaded_files = result.get('downloaded_files', [])
+        files_downloaded = result.get("files_downloaded", 0)
+        duration = result.get("duration", 0)
+        downloaded_files = result.get("downloaded_files", [])
 
         # Mark download stage in pipeline
         if pipeline_job is not None and pipeline_store is not None:
             try:
                 from .pipeline import PipelineStage
+
                 if status not in success_statuses:
                     pipeline_job.mark_stage_failed(
                         PipelineStage.DOWNLOAD,
-                        result.get('error_message', status),
+                        result.get("error_message", status),
                     )
                 else:
                     pipeline_job.mark_stage_complete(
                         PipelineStage.DOWNLOAD,
                         output_files=downloaded_files,
-                        metrics={'files_downloaded': files_downloaded, 'duration': duration},
+                        metrics={
+                            "files_downloaded": files_downloaded,
+                            "duration": duration,
+                        },
                     )
                 pipeline_store.save_job(pipeline_job)
             except Exception:
@@ -285,43 +321,58 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
 
         # Log results to audit trail
         if audit_logger:
-            audit_logger.log_download_session(station_id, {
-                'session': session_type,
-                'status': status,
-                'duration': duration,
-                'job_duration': job_duration_seconds,
-                'files_downloaded': files_downloaded,
-                'bytes_downloaded': result.get('total_bytes', 0),
-                'errors': result.get('errors', 0),
-                'scheduled': True,
-                'start_time': start_time.isoformat(),
-                'end_time': end_time.isoformat(),
-                'timeout_minutes': timeout_minutes,
-                'timeout_percent': (job_duration_minutes / timeout_minutes) * 100 if timeout_minutes > 0 else 0
-            })
+            audit_logger.log_download_session(
+                station_id,
+                {
+                    "session": session_type,
+                    "status": status,
+                    "duration": duration,
+                    "job_duration": job_duration_seconds,
+                    "files_downloaded": files_downloaded,
+                    "bytes_downloaded": result.get("total_bytes", 0),
+                    "errors": result.get("errors", 0),
+                    "scheduled": True,
+                    "start_time": start_time.isoformat(),
+                    "end_time": end_time.isoformat(),
+                    "timeout_minutes": timeout_minutes,
+                    "timeout_percent": (job_duration_minutes / timeout_minutes) * 100
+                    if timeout_minutes > 0
+                    else 0,
+                },
+            )
 
         # Report based on actual status with emoji-based logging style
         if status not in success_statuses:
             # Any non-success status: failed, unreachable, configuration_error, etc.
-            error_msg = result.get('error_message', status)
-            logger.error(f"❌ Failed: {station_id} ({session_type}) - {error_msg} ({duration:.1f}s)")
-        elif status == 'up_to_date':
+            error_msg = result.get("error_message", status)
+            logger.error(
+                f"❌ Failed: {station_id} ({session_type}) - {error_msg} ({duration:.1f}s)"
+            )
+        elif status == "up_to_date":
             # All files already in archive - verified on disk
-            logger.info(f"✅ Up-to-date: {station_id} ({session_type}) - {files_downloaded} files in {duration:.1f}s")
+            logger.info(
+                f"✅ Up-to-date: {station_id} ({session_type}) - {files_downloaded} files in {duration:.1f}s"
+            )
         else:
             # Completed with downloads or dry_run
             if files_downloaded > 0:
-                logger.info(f"✅ Completed: {station_id} ({session_type}) - {files_downloaded} files in {duration:.1f}s")
+                logger.info(
+                    f"✅ Completed: {station_id} ({session_type}) - {files_downloaded} files in {duration:.1f}s"
+                )
             else:
-                files_checked = result.get('files_checked', 0)
+                files_checked = result.get("files_checked", 0)
                 if files_checked > 0:
-                    logger.info(f"✅ Completed: {station_id} ({session_type}) - 0 files (already synced) in {duration:.1f}s")
+                    logger.info(
+                        f"✅ Completed: {station_id} ({session_type}) - 0 files (already synced) in {duration:.1f}s"
+                    )
                 else:
-                    logger.warning(f"⚠️  No files: {station_id} ({session_type}) - 0 files checked/downloaded in {duration:.1f}s")
+                    logger.warning(
+                        f"⚠️  No files: {station_id} ({session_type}) - 0 files checked/downloaded in {duration:.1f}s"
+                    )
 
         # Run RINEX conversion if enabled and download was successful
         if run_rinex and status in success_statuses:
-            raw_files = result.get('downloaded_files', [])
+            raw_files = result.get("downloaded_files", [])
             if raw_files:
                 try:
                     from ..rinex.async_converter import submit_rinex_conversion
@@ -331,9 +382,14 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
                     )
 
                     # Attach pipeline tracking to the future
-                    if future and pipeline_job is not None and pipeline_store is not None:
+                    if (
+                        future
+                        and pipeline_job is not None
+                        and pipeline_store is not None
+                    ):
                         try:
                             from .pipeline import PipelineStage
+
                             pipeline_job.mark_stage_started(PipelineStage.RINEX)
                             pipeline_store.save_job(pipeline_job)
                         except Exception:
@@ -342,6 +398,7 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
                         def _on_rinex_done(f, pj=pipeline_job, ps=pipeline_store):
                             try:
                                 from .pipeline import PipelineStage
+
                                 exc = f.exception()
                                 if exc:
                                     pj.mark_stage_failed(PipelineStage.RINEX, str(exc))
@@ -356,12 +413,13 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
                     logger.warning(f"⚠️  RINEX submission failed for {station_id}: {e}")
 
         # Extract health data from status_1hr SBF files and write to DB
-        if session_type == 'status_1hr' and status in success_statuses:
+        if session_type == "status_1hr" and status in success_statuses:
             if downloaded_files:
                 # Mark health stage started in pipeline
                 if pipeline_job is not None and pipeline_store is not None:
                     try:
                         from .pipeline import PipelineStage
+
                         pipeline_job.mark_stage_started(PipelineStage.HEALTH)
                         pipeline_store.save_job(pipeline_job)
                     except Exception:
@@ -373,6 +431,7 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
                 if pipeline_job is not None and pipeline_store is not None:
                     try:
                         from .pipeline import PipelineStage
+
                         pipeline_job.mark_stage_complete(PipelineStage.HEALTH)
                         pipeline_store.save_job(pipeline_job)
                     except Exception:
@@ -394,9 +453,11 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
         if pipeline_job is not None and pipeline_store is not None:
             try:
                 from .pipeline import PipelineStage
+
                 # Mark whatever stage was running as failed
                 for stage in pipeline_job.stages:
                     from .pipeline import StageStatus
+
                     if pipeline_job.stages[stage].status == StageStatus.RUNNING:
                         pipeline_job.mark_stage_failed(stage, f"{error_type}: {e}")
                 pipeline_store.save_job(pipeline_job)
@@ -404,16 +465,25 @@ def _download_station_data_job(station_id: str, session_type: str, production_mo
                 pass
 
         # Log failure to audit trail
-        if 'audit_logger' in locals() and audit_logger:
-            audit_logger.log_failure_event(station_id, {
-                'session': session_type,
-                'error_type': type(e).__name__,
-                'error_message': str(e),
-                'scheduled': True
-            })
+        if "audit_logger" in locals() and audit_logger:
+            audit_logger.log_failure_event(
+                station_id,
+                {
+                    "session": session_type,
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "scheduled": True,
+                },
+            )
 
 
-def _run_rinex_conversion(station_id: str, session_type: str, raw_files: List[str], station_config: Dict[str, Any], logger: logging.Logger):
+def _run_rinex_conversion(
+    station_id: str,
+    session_type: str,
+    raw_files: List[str],
+    station_config: Dict[str, Any],
+    logger: logging.Logger,
+):
     """Run RINEX conversion on downloaded files.
 
     Args:
@@ -424,10 +494,12 @@ def _run_rinex_conversion(station_id: str, session_type: str, raw_files: List[st
         logger: Logger instance
     """
     try:
+        from .task_interface import TaskConfig, TaskFrequency, TaskType
         from .tasks.rinex_task import RINEXTask
-        from .task_interface import TaskConfig, TaskType, TaskFrequency
 
-        logger.info(f"🔄 Starting RINEX conversion: {station_id} ({len(raw_files)} files)")
+        logger.info(
+            f"🔄 Starting RINEX conversion: {station_id} ({len(raw_files)} files)"
+        )
         start_time = time.time()
 
         # Determine RINEX output directory: sibling "rinex/" next to "raw/"
@@ -435,8 +507,8 @@ def _run_rinex_conversion(station_id: str, session_type: str, raw_files: List[st
         rinex_output_dir = None
         if raw_files:
             first_raw = Path(raw_files[0])
-            if first_raw.parent.name == 'raw':
-                rinex_output_dir = first_raw.parent.parent / 'rinex'
+            if first_raw.parent.name == "raw":
+                rinex_output_dir = first_raw.parent.parent / "rinex"
                 rinex_output_dir.mkdir(parents=True, exist_ok=True)
 
         # Create task config
@@ -445,7 +517,9 @@ def _run_rinex_conversion(station_id: str, session_type: str, raw_files: List[st
             session_type=session_type,
             schedule_minute=0,
             distribution_window=10,
-            frequency=TaskFrequency.HOURLY if session_type == '1Hz_1hr' else TaskFrequency.DAILY,
+            frequency=TaskFrequency.HOURLY
+            if session_type == "1Hz_1hr"
+            else TaskFrequency.DAILY,
             lookback_periods=1,
             max_concurrent=1,
             timeout_minutes=30,
@@ -467,14 +541,18 @@ def _run_rinex_conversion(station_id: str, session_type: str, raw_files: List[st
         duration = time.time() - start_time
 
         if result.success:
-            files_converted = result.data.get('files_converted', 0)
-            logger.info(f"✅ RINEX complete: {station_id} - {files_converted} files in {duration:.1f}s")
+            files_converted = result.data.get("files_converted", 0)
+            logger.info(
+                f"✅ RINEX complete: {station_id} - {files_converted} files in {duration:.1f}s"
+            )
         else:
             logger.warning(f"⚠️  RINEX partial/failed: {station_id} - {result.message}")
 
         # Track RINEX output files in file_tracking
         if result.output_files:
-            _track_rinex_output_files(station_id, session_type, result.output_files, logger)
+            _track_rinex_output_files(
+                station_id, session_type, result.output_files, logger
+            )
 
     except ImportError as e:
         logger.warning(f"⚠️  RINEX not available: {e}")
@@ -482,36 +560,51 @@ def _run_rinex_conversion(station_id: str, session_type: str, raw_files: List[st
         logger.error(f"❌ RINEX failed: {station_id} - {type(e).__name__}: {e}")
 
 
-def _track_rinex_output_files(station_id: str, session_type: str, output_files: List[str], logger: logging.Logger) -> None:
+def _track_rinex_output_files(
+    station_id: str, session_type: str, output_files: List[str], logger: logging.Logger
+) -> None:
     """Record RINEX output files in file_tracking as '{session_type}_rinex'.
 
     Uses the same _parse_rinex_filename logic as the archive reconciler
     to extract file_date and file_hour from RINEX filenames.
     """
-    from datetime import date as date_type, timedelta
     import os
     import re
+    from datetime import date as date_type
+    from datetime import timedelta
 
     rinex_session = f"{session_type}_rinex"
     tracked = 0
 
     try:
         from ..health.database_factory import DatabaseConnectionFactory
+
         with DatabaseConnectionFactory.connection() as conn:
             with conn.cursor() as cur:
                 for fpath in output_files:
                     try:
                         filename = os.path.basename(fpath)
-                        fsize = os.path.getsize(fpath) if os.path.exists(fpath) else None
+                        fsize = (
+                            os.path.getsize(fpath) if os.path.exists(fpath) else None
+                        )
 
                         # Parse RINEX filename to get date/hour
-                        file_date, file_hour = _parse_rinex_filename(filename, station_id)
+                        file_date, file_hour = _parse_rinex_filename(
+                            filename, station_id
+                        )
                         if file_date is None:
                             continue
 
                         cur.execute(
                             """SELECT upsert_file_tracking(%s, %s, %s, %s::smallint, %s, 'archived', %s)""",
-                            (station_id, rinex_session, file_date, file_hour, filename, fsize),
+                            (
+                                station_id,
+                                rinex_session,
+                                file_date,
+                                file_hour,
+                                filename,
+                                fsize,
+                            ),
                         )
                         tracked += 1
                     except Exception as e:
@@ -520,7 +613,9 @@ def _track_rinex_output_files(station_id: str, session_type: str, output_files: 
             conn.commit()
 
         if tracked > 0:
-            logger.debug(f"Tracked {tracked} RINEX files for {station_id}/{rinex_session}")
+            logger.debug(
+                f"Tracked {tracked} RINEX files for {station_id}/{rinex_session}"
+            )
 
     except Exception as e:
         logger.warning(f"Failed to track RINEX files for {station_id}: {e}")
@@ -534,10 +629,13 @@ def _parse_rinex_filename(filename: str, station_id: str):
     the full rinex package at job-dispatch time.
     """
     from receivers.rinex.rinex_namer import RinexNamer
+
     return RinexNamer.parse_date_hour(filename, station_id=station_id)
 
 
-def _extract_and_store_health_data(station_id: str, file_paths: List[str], logger: logging.Logger) -> None:
+def _extract_and_store_health_data(
+    station_id: str, file_paths: List[str], logger: logging.Logger
+) -> None:
     """Extract health data from status_1hr SBF files and write to database.
 
     Called after successful status_1hr downloads. Delegates to the shared
@@ -567,12 +665,14 @@ def _extract_and_store_health_data(station_id: str, file_paths: List[str], logge
 
 
 try:
-    from apscheduler.schedulers.blocking import BlockingScheduler
-    from apscheduler.schedulers.background import BackgroundScheduler
-    from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
-    from apscheduler.executors.pool import ThreadPoolExecutor
-    from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR
     import logging.handlers
+
+    from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
+    from apscheduler.executors.pool import ThreadPoolExecutor
+    from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+    from apscheduler.schedulers.background import BackgroundScheduler
+    from apscheduler.schedulers.blocking import BlockingScheduler
+
     HAS_APSCHEDULER = True
 except ImportError as e:
     HAS_APSCHEDULER = False
@@ -580,7 +680,9 @@ except ImportError as e:
 
 
 # Module-level status check function for APScheduler serialization
-def _status_check_job(station_id: str, send_to_db: bool = True, send_to_icinga: bool = True):
+def _status_check_job(
+    station_id: str, send_to_db: bool = True, send_to_icinga: bool = True
+):
     """Run health status check for a station (standalone job function for APScheduler).
 
     Uses the same code path as: receivers health STATION --save-db --icinga
@@ -593,14 +695,14 @@ def _status_check_job(station_id: str, send_to_db: bool = True, send_to_icinga: 
         send_to_db: Write health data to PostgreSQL
         send_to_icinga: Send passive checks to Icinga
     """
-    logger = logging.getLogger(f'receivers.health.{station_id}')
+    logger = logging.getLogger(f"receivers.health.{station_id}")
 
     try:
         logger.info(f"Starting health check: {station_id}")
         start_time = time.time()
 
         # Import here to avoid circular imports
-        from ..cli.main import get_station_config, create_receiver
+        from ..cli.main import create_receiver, get_station_config
         from ..health.live_health import gather_comprehensive_health
 
         # Get station configuration
@@ -615,19 +717,22 @@ def _status_check_job(station_id: str, send_to_db: bool = True, send_to_icinga: 
         # Get comprehensive health — same as CLI 'receivers health' command
         try:
             health_data = gather_comprehensive_health(
-                station_id, station_config, receiver,
+                station_id,
+                station_config,
+                receiver,
                 include_files=False,
                 include_ntrip=True,
             )
         except Exception as e:
             logger.warning(f"Could not get live health from {station_id}: {e}")
-            health_data = {'station_id': station_id, 'error': str(e)}
+            health_data = {"station_id": station_id, "error": str(e)}
 
         # Write to PostgreSQL
         db_success = False
         if send_to_db and health_data:
             try:
                 from ..health.db_writer import HealthDatabaseWriter
+
                 writer = HealthDatabaseWriter()
                 db_success = writer.write_health_data(health_data)
                 if db_success:
@@ -644,9 +749,12 @@ def _status_check_job(station_id: str, send_to_db: bool = True, send_to_icinga: 
         if send_to_icinga and health_data:
             try:
                 from ..monitoring.icinga_client import IcingaClient
+
                 client = IcingaClient()
                 results = client.send_health_from_json(health_data)
-                icinga_sent = sum(1 for r in results.values() if r.get('success', False))
+                icinga_sent = sum(
+                    1 for r in results.values() if r.get("success", False)
+                )
             except ImportError:
                 logger.debug("Icinga client not available")
             except Exception as e:
@@ -660,7 +768,9 @@ def _status_check_job(station_id: str, send_to_db: bool = True, send_to_icinga: 
             status_parts.append(f"Icinga({icinga_sent})")
 
         status_str = ", ".join(status_parts) if status_parts else "no targets"
-        logger.info(f"✅ Health check complete: {station_id} - {status_str} ({duration:.1f}s)")
+        logger.info(
+            f"✅ Health check complete: {station_id} - {status_str} ({duration:.1f}s)"
+        )
 
     except Exception as e:
         logger.error(f"❌ Health check failed: {station_id} - {type(e).__name__}: {e}")
@@ -682,12 +792,15 @@ class ScheduleConfig:
     Legacy format (still supported):
     - schedule_minute + frequency: "daily" or "hourly"
     """
+
     session_type: str
     distribution_window: int  # Minutes to spread downloads across
     enabled: bool = True
     max_concurrent: int = 3
     timeout_minutes: int = 30
-    lookback_periods: int = 1  # Number of periods to check (1=last period only, 2=last 2 periods, etc.)
+    lookback_periods: int = (
+        1  # Number of periods to check (1=last period only, 2=last 2 periods, etc.)
+    )
     rinex: bool = False  # Whether to run RINEX conversion after download
 
     # New flexible schedule format (preferred)
@@ -708,8 +821,8 @@ class ScheduleConfig:
             if self.schedule_minute is not None and self.frequency is not None:
                 # Convert legacy to dict format for parsing
                 self.schedule = {
-                    'schedule_minute': self.schedule_minute,
-                    'frequency': self.frequency
+                    "schedule_minute": self.schedule_minute,
+                    "frequency": self.frequency,
                 }
             else:
                 raise ValueError(
@@ -721,40 +834,54 @@ class ScheduleConfig:
 class BulkDownloadScheduler:
     """APScheduler-based bulk download system with full manual compatibility."""
 
-    def __init__(self,
-                 database_url: str = None,
-                 log_dir: Path = None,
-                 production_mode: bool = True,
-                 max_workers: int = None,
-                 station_filter: List[str] = None,
-                 max_stations_per_session: int = None,
-                 config_path: Path = None,
-                 scheduler_types: List[str] = None):
-
+    def __init__(
+        self,
+        database_url: str = None,
+        log_dir: Path = None,
+        production_mode: bool = True,
+        max_workers: int = None,
+        station_filter: List[str] = None,
+        max_stations_per_session: int = None,
+        config_path: Path = None,
+        scheduler_types: List[str] = None,
+    ):
         if not HAS_APSCHEDULER:
-            raise ImportError("APScheduler not available. Install with: pip install apscheduler")
+            raise ImportError(
+                "APScheduler not available. Install with: pip install apscheduler"
+            )
 
         # Load YAML configuration (with fallback to defaults)
         from .config_loader import load_scheduler_config
+
         self.yaml_config = load_scheduler_config(config_path)
 
         # Apply configuration (CLI args override YAML)
-        scheduler_cfg = self.yaml_config['scheduler']
+        scheduler_cfg = self.yaml_config["scheduler"]
 
         # Expand ~ in database path from YAML
-        db_path = scheduler_cfg.get('database', f"{Path.home()}/.cache/gps_receivers/scheduler.db")
+        db_path = scheduler_cfg.get(
+            "database", f"{Path.home()}/.cache/gps_receivers/scheduler.db"
+        )
         if isinstance(db_path, str):
             db_path = str(Path(db_path).expanduser())
         self.database_url = database_url or f"sqlite:///{db_path}"
 
         # Expand ~ in log_dir path from YAML
-        log_path = scheduler_cfg.get('log_dir', Path.home() / '.cache' / 'gps_receivers' / 'logs')
+        log_path = scheduler_cfg.get(
+            "log_dir", Path.home() / ".cache" / "gps_receivers" / "logs"
+        )
         if isinstance(log_path, str):
             log_path = Path(log_path).expanduser()
         self.log_dir = log_dir or log_path
         self.production_mode = production_mode
-        self.max_workers = max_workers if max_workers is not None else scheduler_cfg.get('max_workers', 15)
-        self.station_filter = [s.upper() for s in station_filter] if station_filter else None
+        self.max_workers = (
+            max_workers
+            if max_workers is not None
+            else scheduler_cfg.get("max_workers", 15)
+        )
+        self.station_filter = (
+            [s.upper() for s in station_filter] if station_filter else None
+        )
         self.max_stations_per_session = max_stations_per_session
 
         # Parse scheduler_types filter
@@ -775,34 +902,54 @@ class BulkDownloadScheduler:
 
         # Load schedule configurations from YAML (with defaults as fallback)
         self.schedule_configs = {}
-        for session_type in ['15s_24hr', '1Hz_1hr', 'status_1hr']:
-            session_cfg = self.yaml_config['sessions'].get(session_type, {})
+        for session_type in ["15s_24hr", "1Hz_1hr", "status_1hr"]:
+            session_cfg = self.yaml_config["sessions"].get(session_type, {})
 
             # Check for new flexible 'schedule' field first
-            schedule = session_cfg.get('schedule')
+            schedule = session_cfg.get("schedule")
 
             # If no new schedule field, use legacy format (schedule_minute + frequency)
-            midnight_offset = session_cfg.get('midnight_offset', 0)
+            midnight_offset = session_cfg.get("midnight_offset", 0)
 
             if schedule is None:
-                schedule_minute = session_cfg.get('schedule_minute',
-                    10 if session_type == '15s_24hr' else 15 if session_type == '1Hz_1hr' else 25)
-                frequency = session_cfg.get('frequency',
-                    'daily' if session_type == '15s_24hr' else 'hourly')
+                schedule_minute = session_cfg.get(
+                    "schedule_minute",
+                    10
+                    if session_type == "15s_24hr"
+                    else 15
+                    if session_type == "1Hz_1hr"
+                    else 25,
+                )
+                frequency = session_cfg.get(
+                    "frequency", "daily" if session_type == "15s_24hr" else "hourly"
+                )
 
                 self.schedule_configs[session_type] = ScheduleConfig(
                     session_type=session_type,
                     schedule_minute=schedule_minute,
                     frequency=frequency,
-                    distribution_window=session_cfg.get('distribution_window',
-                        10 if session_type != 'status_1hr' else 5),
-                    enabled=session_cfg.get('enabled', True),
-                    max_concurrent=session_cfg.get('max_concurrent',
-                        3 if session_type == '15s_24hr' else 4 if session_type == '1Hz_1hr' else 5),
-                    timeout_minutes=session_cfg.get('timeout_minutes',
-                        45 if session_type == '15s_24hr' else 30 if session_type == '1Hz_1hr' else 15),
-                    lookback_periods=session_cfg.get('lookback_periods', 1),
-                    rinex=session_cfg.get('rinex', False),
+                    distribution_window=session_cfg.get(
+                        "distribution_window", 10 if session_type != "status_1hr" else 5
+                    ),
+                    enabled=session_cfg.get("enabled", True),
+                    max_concurrent=session_cfg.get(
+                        "max_concurrent",
+                        3
+                        if session_type == "15s_24hr"
+                        else 4
+                        if session_type == "1Hz_1hr"
+                        else 5,
+                    ),
+                    timeout_minutes=session_cfg.get(
+                        "timeout_minutes",
+                        45
+                        if session_type == "15s_24hr"
+                        else 30
+                        if session_type == "1Hz_1hr"
+                        else 15,
+                    ),
+                    lookback_periods=session_cfg.get("lookback_periods", 1),
+                    rinex=session_cfg.get("rinex", False),
                     midnight_offset=midnight_offset,
                 )
             else:
@@ -810,15 +957,28 @@ class BulkDownloadScheduler:
                 self.schedule_configs[session_type] = ScheduleConfig(
                     session_type=session_type,
                     schedule=schedule,
-                    distribution_window=session_cfg.get('distribution_window',
-                        10 if session_type != 'status_1hr' else 5),
-                    enabled=session_cfg.get('enabled', True),
-                    max_concurrent=session_cfg.get('max_concurrent',
-                        3 if session_type == '15s_24hr' else 4 if session_type == '1Hz_1hr' else 5),
-                    timeout_minutes=session_cfg.get('timeout_minutes',
-                        45 if session_type == '15s_24hr' else 30 if session_type == '1Hz_1hr' else 15),
-                    lookback_periods=session_cfg.get('lookback_periods', 1),
-                    rinex=session_cfg.get('rinex', False),
+                    distribution_window=session_cfg.get(
+                        "distribution_window", 10 if session_type != "status_1hr" else 5
+                    ),
+                    enabled=session_cfg.get("enabled", True),
+                    max_concurrent=session_cfg.get(
+                        "max_concurrent",
+                        3
+                        if session_type == "15s_24hr"
+                        else 4
+                        if session_type == "1Hz_1hr"
+                        else 5,
+                    ),
+                    timeout_minutes=session_cfg.get(
+                        "timeout_minutes",
+                        45
+                        if session_type == "15s_24hr"
+                        else 30
+                        if session_type == "1Hz_1hr"
+                        else 15,
+                    ),
+                    lookback_periods=session_cfg.get("lookback_periods", 1),
+                    rinex=session_cfg.get("rinex", False),
                     midnight_offset=midnight_offset,
                 )
 
@@ -837,9 +997,10 @@ class BulkDownloadScheduler:
 
         # Initialize load monitor (module-level for access by job functions)
         global _load_monitor
-        load_cfg = self.yaml_config.get('load_monitoring', {})
-        if load_cfg.get('enabled', False):
+        load_cfg = self.yaml_config.get("load_monitoring", {})
+        if load_cfg.get("enabled", False):
             from .load_monitor import LoadMonitor
+
             _load_monitor = LoadMonitor(load_cfg)
             self.logger.info(
                 f"Load monitor enabled (CPU max={load_cfg.get('max_cpu_load', 8.0)}, "
@@ -860,13 +1021,13 @@ class BulkDownloadScheduler:
         """
         # Default: all enabled
         result = {
-            'health': True,
-            '15s_24hr': True,
-            '1Hz_1hr': True,
-            'status_1hr': True,
+            "health": True,
+            "15s_24hr": True,
+            "1Hz_1hr": True,
+            "status_1hr": True,
         }
 
-        if scheduler_types is None or 'all' in scheduler_types:
+        if scheduler_types is None or "all" in scheduler_types:
             return result
 
         # Start with all disabled
@@ -875,19 +1036,19 @@ class BulkDownloadScheduler:
         for stype in scheduler_types:
             stype = stype.lower().strip()
 
-            if stype == 'health':
-                result['health'] = True
-            elif stype == 'downloads':
+            if stype == "health":
+                result["health"] = True
+            elif stype == "downloads":
                 # Enable all download sessions
-                result['15s_24hr'] = True
-                result['1Hz_1hr'] = True
-                result['status_1hr'] = True
-            elif stype in ['15s_24hr', '15s', 'daily']:
-                result['15s_24hr'] = True
-            elif stype in ['1hz_1hr', '1hz', 'hourly']:
-                result['1Hz_1hr'] = True
-            elif stype in ['status_1hr', 'status']:
-                result['status_1hr'] = True
+                result["15s_24hr"] = True
+                result["1Hz_1hr"] = True
+                result["status_1hr"] = True
+            elif stype in ["15s_24hr", "15s", "daily"]:
+                result["15s_24hr"] = True
+            elif stype in ["1hz_1hr", "1hz", "hourly"]:
+                result["1Hz_1hr"] = True
+            elif stype in ["status_1hr", "status"]:
+                result["status_1hr"] = True
 
         return result
 
@@ -899,15 +1060,13 @@ class BulkDownloadScheduler:
             log_dir=self.log_dir,
             component="scheduler",
         )
-        
+
     def _setup_scheduler(self):
         """Initialize APScheduler with persistent storage."""
-        
+
         # Job store configuration
-        jobstores = {
-            'default': SQLAlchemyJobStore(url=self.database_url)
-        }
-        
+        jobstores = {"default": SQLAlchemyJobStore(url=self.database_url)}
+
         # Executor configuration
         # Separate executors prevent different workloads from starving each other:
         #   default  — live downloads
@@ -916,30 +1075,30 @@ class BulkDownloadScheduler:
         health_workers = max(1, min(self.max_workers // 3, 30))
         backfill_workers = max(self.max_workers // 5, 5)
         executors = {
-            'default': ThreadPoolExecutor(self.max_workers),
-            'health': ThreadPoolExecutor(health_workers),
-            'backfill': ThreadPoolExecutor(backfill_workers),
+            "default": ThreadPoolExecutor(self.max_workers),
+            "health": ThreadPoolExecutor(health_workers),
+            "backfill": ThreadPoolExecutor(backfill_workers),
         }
 
         # Job defaults — read from YAML config if available
-        yaml_job_defaults = self.yaml_config.get('scheduler', {}).get('job_defaults', {})
+        yaml_job_defaults = self.yaml_config.get("scheduler", {}).get(
+            "job_defaults", {}
+        )
         job_defaults = {
-            'coalesce': yaml_job_defaults.get('coalesce', True),
-            'max_instances': yaml_job_defaults.get('max_instances', 3),
-            'misfire_grace_time': yaml_job_defaults.get('misfire_grace_time', 300),
+            "coalesce": yaml_job_defaults.get("coalesce", True),
+            "max_instances": yaml_job_defaults.get("max_instances", 3),
+            "misfire_grace_time": yaml_job_defaults.get("misfire_grace_time", 300),
         }
-        
+
         # Initialize scheduler
         self.scheduler = BackgroundScheduler(
-            jobstores=jobstores,
-            executors=executors,
-            job_defaults=job_defaults
+            jobstores=jobstores, executors=executors, job_defaults=job_defaults
         )
-        
+
         # Add event listeners
         self.scheduler.add_listener(self._job_executed, EVENT_JOB_EXECUTED)
         self.scheduler.add_listener(self._job_error, EVENT_JOB_ERROR)
-        
+
     def _load_station_configs(self) -> Dict[str, Dict[str, Any]]:
         """Load station configurations from gps_parser."""
         stations = {}
@@ -947,34 +1106,35 @@ class BulkDownloadScheduler:
         try:
             # Use the existing station loading from CLI
             from ..cli.main import get_all_station_configs
+
             all_stations = get_all_station_configs()
 
             for station_id, config in all_stations.items():
                 # Extract relevant configuration
                 # 'active' is the default — normalize to None (NULL in DB)
-                station_status = config.get('station_status')
-                if station_status and station_status.lower() == 'active':
+                station_status = config.get("station_status")
+                if station_status and station_status.lower() == "active":
                     station_status = None
-                health_check = config.get('health_check')
-                if health_check and health_check.lower() == 'active':
+                health_check = config.get("health_check")
+                if health_check and health_check.lower() == "active":
                     health_check = None
-                receiver_type = config.get('receiver_type', 'unknown')
+                receiver_type = config.get("receiver_type", "unknown")
 
                 # Auto-detect inactive stations: flag if receiver_type is genuinely absent
                 if not station_status:
-                    rx_missing = receiver_type.lower() in ('none', '', 'unknown')
+                    rx_missing = receiver_type.lower() in ("none", "", "unknown")
                     if rx_missing:
-                        station_status = 'inactive'
+                        station_status = "inactive"
 
                 stations[station_id] = {
-                    'station_id': station_id,
-                    'receiver_type': receiver_type,
-                    'ip_number': config.get('ip_number', ''),
-                    'ip_port': config.get('ip_port', 21),
-                    'enabled': config.get('enabled', True),
-                    'timeout_category': config.get('timeout_category', 'default'),
-                    'station_status': station_status,
-                    'health_check': health_check,
+                    "station_id": station_id,
+                    "receiver_type": receiver_type,
+                    "ip_number": config.get("ip_number", ""),
+                    "ip_port": config.get("ip_port", 21),
+                    "enabled": config.get("enabled", True),
+                    "timeout_category": config.get("timeout_category", "default"),
+                    "station_status": station_status,
+                    "health_check": health_check,
                 }
 
         except Exception as e:
@@ -1002,16 +1162,24 @@ class BulkDownloadScheduler:
                     status_synced = 0
                     hc_synced = 0
                     for station_id, config in self.stations.items():
-                        station_status = config.get('station_status')
-                        health_check = config.get('health_check')
-                        cur.execute("""
+                        station_status = config.get("station_status")
+                        health_check = config.get("health_check")
+                        cur.execute(
+                            """
                             UPDATE stations
                             SET station_status = %s, health_check = %s
                             WHERE sid = %s
                               AND (station_status IS DISTINCT FROM %s
                                 OR health_check IS DISTINCT FROM %s)
-                        """, (station_status, health_check, station_id,
-                              station_status, health_check))
+                        """,
+                            (
+                                station_status,
+                                health_check,
+                                station_id,
+                                station_status,
+                                health_check,
+                            ),
+                        )
                         if cur.rowcount > 0:
                             if station_status:
                                 status_synced += 1
@@ -1023,7 +1191,9 @@ class BulkDownloadScheduler:
                             f"Synced to DB: {status_synced} station_status, {hc_synced} health_check"
                         )
                     else:
-                        self.logger.debug("station_status/health_check already in sync with DB")
+                        self.logger.debug(
+                            "station_status/health_check already in sync with DB"
+                        )
 
         except ImportError:
             self.logger.debug("psycopg2 not available — skipping status sync")
@@ -1034,6 +1204,7 @@ class BulkDownloadScheduler:
         """Get the path to stations.cfg using gps_parser."""
         try:
             import gps_parser
+
             parser = gps_parser.ConfigParser()
             return Path(parser.get_stations_config_path())
         except Exception:
@@ -1054,7 +1225,7 @@ class BulkDownloadScheduler:
         except OSError:
             return
 
-        if not hasattr(self, '_config_mtime'):
+        if not hasattr(self, "_config_mtime"):
             self._config_mtime = current_mtime
             return
 
@@ -1076,14 +1247,18 @@ class BulkDownloadScheduler:
         removed_ids = set(old_stations) - set(self.stations)
         changed = []
         for sid in set(self.stations) & set(old_stations):
-            old_ss = old_stations[sid].get('station_status')
-            new_ss = self.stations[sid].get('station_status')
-            old_hc = old_stations[sid].get('health_check')
-            new_hc = self.stations[sid].get('health_check')
+            old_ss = old_stations[sid].get("station_status")
+            new_ss = self.stations[sid].get("station_status")
+            old_hc = old_stations[sid].get("health_check")
+            new_hc = self.stations[sid].get("health_check")
             if old_ss != new_ss:
-                changed.append(f"{sid}: status {old_ss or 'active'} → {new_ss or 'active'}")
+                changed.append(
+                    f"{sid}: status {old_ss or 'active'} → {new_ss or 'active'}"
+                )
             if old_hc != new_hc:
-                changed.append(f"{sid}: health_check {old_hc or 'active'} → {new_hc or 'active'}")
+                changed.append(
+                    f"{sid}: health_check {old_hc or 'active'} → {new_hc or 'active'}"
+                )
 
         if new_ids:
             self.logger.info(f"New stations: {', '.join(sorted(new_ids))}")
@@ -1109,23 +1284,26 @@ class BulkDownloadScheduler:
             # Find receivers.cfg using gps_parser (respects GPS_CONFIG_PATH)
             try:
                 import gps_parser
+
                 parser_config = gps_parser.ConfigParser()
                 gps_config_dir = parser_config.config_path
-                config_path = Path(gps_config_dir) / 'receivers.cfg'
+                config_path = Path(gps_config_dir) / "receivers.cfg"
             except (ImportError, Exception) as e:
                 self.logger.debug(f"Could not get config dir from gps_parser: {e}")
                 # Fallback to standard location
-                config_path = Path.home() / '.config' / 'gpsconfig' / 'receivers.cfg'
+                config_path = Path.home() / ".config" / "gpsconfig" / "receivers.cfg"
 
             if not config_path.exists():
-                self.logger.warning(f"receivers.cfg not found at {config_path}, all sessions will be attempted")
+                self.logger.warning(
+                    f"receivers.cfg not found at {config_path}, all sessions will be attempted"
+                )
                 return {}
 
             config = configparser.ConfigParser()
             config.read(config_path)
 
             # Check each receiver type section
-            for receiver_type in ['polarx5', 'netr9', 'netrs', 'g10']:
+            for receiver_type in ["polarx5", "netr9", "netrs", "g10"]:
                 if receiver_type not in config:
                     continue
 
@@ -1134,19 +1312,26 @@ class BulkDownloadScheduler:
                 # Note: ConfigParser keys are case-insensitive, but we need to check the actual keys
                 # because receivers.cfg uses lowercase 'hz' (session_map_1hz_1hr) while our
                 # session name uses mixed case 'Hz' (1Hz_1hr)
-                for session in ['15s_24hr', '1Hz_1hr', 'status_1hr']:
+                for session in ["15s_24hr", "1Hz_1hr", "status_1hr"]:
                     # Try both the session name as-is and lowercase version
-                    key = f'session_map_{session}'
-                    key_lower = f'session_map_{session.lower()}'
+                    key = f"session_map_{session}"
+                    key_lower = f"session_map_{session.lower()}"
 
                     # Check if either version exists in config
-                    if key in config[receiver_type] or key_lower in config[receiver_type]:
+                    if (
+                        key in config[receiver_type]
+                        or key_lower in config[receiver_type]
+                    ):
                         sessions.append(session)
 
                 capabilities[receiver_type] = sessions
-                self.logger.debug(f"Receiver {receiver_type} supports sessions: {sessions}")
+                self.logger.debug(
+                    f"Receiver {receiver_type} supports sessions: {sessions}"
+                )
 
-            self.logger.info(f"Loaded session capabilities for {len(capabilities)} receiver types")
+            self.logger.info(
+                f"Loaded session capabilities for {len(capabilities)} receiver types"
+            )
 
         except Exception as e:
             self.logger.error(f"Failed to load receiver session capabilities: {e}")
@@ -1177,7 +1362,9 @@ class BulkDownloadScheduler:
 
             stations_for_session = self._get_stations_for_session(session_type)
             if not stations_for_session:
-                self.logger.warning(f"No stations configured for session: {session_type}")
+                self.logger.warning(
+                    f"No stations configured for session: {session_type}"
+                )
                 continue
 
             session_stations[session_type] = stations_for_session
@@ -1207,65 +1394,99 @@ class BulkDownloadScheduler:
                 # Midnight offset handling: for hourly sessions with midnight_offset,
                 # create two job sets — one for hours 1-23 (normal) and one for
                 # hour 0 (offset).  Pure cron-based, no runtime coordination.
-                if config.midnight_offset > 0 and base_trigger.trigger_type == 'cron' and 'hour' not in base_trigger.trigger_kwargs:
+                if (
+                    config.midnight_offset > 0
+                    and base_trigger.trigger_type == "cron"
+                    and "hour" not in base_trigger.trigger_kwargs
+                ):
                     # Hours 1-23: normal schedule
                     normal_trigger = ScheduleTrigger(
-                        trigger_type='cron',
-                        trigger_kwargs={**base_trigger.trigger_kwargs, 'hour': '1-23'},
+                        trigger_type="cron",
+                        trigger_kwargs={**base_trigger.trigger_kwargs, "hour": "1-23"},
                         description=f"{base_trigger.description} (hours 1-23)",
                     )
                     trigger_type, trigger_kwargs = apply_distribution_window(
-                        normal_trigger, station_index, len(stations), config.distribution_window
+                        normal_trigger,
+                        station_index,
+                        len(stations),
+                        config.distribution_window,
                     )
                     job_id = f"{session_type}_{station_id}"
                     self.scheduler.add_job(
                         func=_download_station_data_job,
                         trigger=trigger_type,
-                        args=[station_id, session_type, self.production_mode, config.lookback_periods, config.timeout_minutes, config.rinex],
+                        args=[
+                            station_id,
+                            session_type,
+                            self.production_mode,
+                            config.lookback_periods,
+                            config.timeout_minutes,
+                            config.rinex,
+                        ],
                         id=job_id,
                         replace_existing=True,
-                        **trigger_kwargs
+                        **trigger_kwargs,
                     )
                     total_jobs += 1
 
                     # Hour 0: offset schedule
-                    base_minute = base_trigger.trigger_kwargs.get('minute', 0)
+                    base_minute = base_trigger.trigger_kwargs.get("minute", 0)
                     if isinstance(base_minute, int):
                         midnight_minute = base_minute + config.midnight_offset
                     else:
                         midnight_minute = config.midnight_offset
                     midnight_trigger = ScheduleTrigger(
-                        trigger_type='cron',
-                        trigger_kwargs={'hour': 0, 'minute': midnight_minute},
+                        trigger_type="cron",
+                        trigger_kwargs={"hour": 0, "minute": midnight_minute},
                         description=f"{base_trigger.description} (hour 0, offset +{config.midnight_offset}m)",
                     )
                     trigger_type, trigger_kwargs = apply_distribution_window(
-                        midnight_trigger, station_index, len(stations), config.distribution_window
+                        midnight_trigger,
+                        station_index,
+                        len(stations),
+                        config.distribution_window,
                     )
                     midnight_job_id = f"{session_type}_midnight_{station_id}"
                     self.scheduler.add_job(
                         func=_download_station_data_job,
                         trigger=trigger_type,
-                        args=[station_id, session_type, self.production_mode, config.lookback_periods, config.timeout_minutes, config.rinex],
+                        args=[
+                            station_id,
+                            session_type,
+                            self.production_mode,
+                            config.lookback_periods,
+                            config.timeout_minutes,
+                            config.rinex,
+                        ],
                         id=midnight_job_id,
                         replace_existing=True,
-                        **trigger_kwargs
+                        **trigger_kwargs,
                     )
                     midnight_jobs += 1
                     total_jobs += 1
                 else:
                     # Standard scheduling (no midnight split)
                     trigger_type, trigger_kwargs = apply_distribution_window(
-                        base_trigger, station_index, len(stations), config.distribution_window
+                        base_trigger,
+                        station_index,
+                        len(stations),
+                        config.distribution_window,
                     )
                     job_id = f"{session_type}_{station_id}"
                     self.scheduler.add_job(
                         func=_download_station_data_job,
                         trigger=trigger_type,
-                        args=[station_id, session_type, self.production_mode, config.lookback_periods, config.timeout_minutes, config.rinex],
+                        args=[
+                            station_id,
+                            session_type,
+                            self.production_mode,
+                            config.lookback_periods,
+                            config.timeout_minutes,
+                            config.rinex,
+                        ],
                         id=job_id,
                         replace_existing=True,
-                        **trigger_kwargs
+                        **trigger_kwargs,
                     )
                     total_jobs += 1
 
@@ -1319,9 +1540,9 @@ class BulkDownloadScheduler:
 
         self.scheduler.add_job(
             func=_check_config_changes_job,
-            trigger='interval',
+            trigger="interval",
             minutes=5,
-            id='config_watcher',
+            id="config_watcher",
             replace_existing=True,
         )
         self.logger.info("Scheduled config watcher (every 5 min)")
@@ -1339,25 +1560,28 @@ class BulkDownloadScheduler:
 
         Progress is tracked in the backfill_progress table (migrations 016, 017).
         """
-        backfill_cfg = self.yaml_config.get('backfill', {})
-        if not backfill_cfg.get('enabled', True):
+        backfill_cfg = self.yaml_config.get("backfill", {})
+        if not backfill_cfg.get("enabled", True):
             self.logger.info("Backfill disabled in config")
             return
 
         from .backfill import _backfill_next_station_for_session
 
-        window_start = backfill_cfg.get('window_start', 25)
-        window_end = backfill_cfg.get('window_end', 55)
-        archiving_mode = backfill_cfg.get('archiving_mode', 'bulk')
-        schedule = backfill_cfg.get('schedule', '5m')
-        sessions = backfill_cfg.get('sessions', ['status_1hr'])
-        strategy = backfill_cfg.get('strategy', 'round_robin')
+        window_start = backfill_cfg.get("window_start", 25)
+        window_end = backfill_cfg.get("window_end", 55)
+        archiving_mode = backfill_cfg.get("archiving_mode", "bulk")
+        schedule = backfill_cfg.get("schedule", "5m")
+        sessions = backfill_cfg.get("sessions", ["status_1hr"])
+        strategy = backfill_cfg.get("strategy", "round_robin")
 
         base_trigger = parse_schedule(schedule)
 
         for session_type in sessions:
             job_id = f"backfill_{session_type}"
-            trigger_type, trigger_kwargs = base_trigger.trigger_type, base_trigger.trigger_kwargs.copy()
+            trigger_type, trigger_kwargs = (
+                base_trigger.trigger_type,
+                base_trigger.trigger_kwargs.copy(),
+            )
 
             # Pass rinex flag from session config (if session is configured)
             run_rinex = False
@@ -1367,12 +1591,19 @@ class BulkDownloadScheduler:
             self.scheduler.add_job(
                 func=_backfill_next_station_for_session,
                 trigger=trigger_type,
-                args=[session_type, window_start, window_end, archiving_mode, run_rinex, strategy],
+                args=[
+                    session_type,
+                    window_start,
+                    window_end,
+                    archiving_mode,
+                    run_rinex,
+                    strategy,
+                ],
                 id=job_id,
                 replace_existing=True,
                 max_instances=1,
-                executor='backfill',
-                **trigger_kwargs
+                executor="backfill",
+                **trigger_kwargs,
             )
 
         self.logger.info(
@@ -1385,20 +1616,22 @@ class BulkDownloadScheduler:
 
         Scans archive directories for missing files and logs gap counts.
         """
-        gap_cfg = self.yaml_config.get('gap_detection', {})
-        if not gap_cfg.get('enabled', True):
+        gap_cfg = self.yaml_config.get("gap_detection", {})
+        if not gap_cfg.get("enabled", True):
             self.logger.info("Gap detection disabled in config")
             return
 
         from .gap_scheduler import _run_gap_detection_job
 
-        schedule = gap_cfg.get('schedule', '2h')
-        days_back = gap_cfg.get('days_back', 7)
-        sessions = gap_cfg.get('sessions', ['15s_24hr', '1Hz_1hr', 'status_1hr'])
+        schedule = gap_cfg.get("schedule", "2h")
+        days_back = gap_cfg.get("days_back", 7)
+        sessions = gap_cfg.get("sessions", ["15s_24hr", "1Hz_1hr", "status_1hr"])
 
         # RINEX scan uses a longer window — defaults to archive_reconciler's days_back
-        reconciler_cfg = self.yaml_config.get('archive_reconciler', {})
-        rinex_days_back = gap_cfg.get('rinex_days_back', reconciler_cfg.get('days_back', 30))
+        reconciler_cfg = self.yaml_config.get("archive_reconciler", {})
+        rinex_days_back = gap_cfg.get(
+            "rinex_days_back", reconciler_cfg.get("days_back", 30)
+        )
 
         base_trigger = parse_schedule(schedule)
 
@@ -1406,23 +1639,23 @@ class BulkDownloadScheduler:
             func=_run_gap_detection_job,
             trigger=base_trigger.trigger_type,
             args=[sessions, days_back, rinex_days_back],
-            id='gap_detection',
+            id="gap_detection",
             replace_existing=True,
             max_instances=1,
-            executor='backfill',
-            **base_trigger.trigger_kwargs
+            executor="backfill",
+            **base_trigger.trigger_kwargs,
         )
 
         # Schedule an immediate first run (interval triggers default to
         # start_date=now+interval which delays first execution)
         self.scheduler.add_job(
             func=_run_gap_detection_job,
-            trigger='date',
+            trigger="date",
             run_date=datetime.now() + timedelta(seconds=60),
             args=[sessions, days_back, rinex_days_back],
-            id='gap_detection_startup',
+            id="gap_detection_startup",
             replace_existing=True,
-            executor='backfill',
+            executor="backfill",
         )
 
         self.logger.info(
@@ -1436,16 +1669,16 @@ class BulkDownloadScheduler:
         Scans archive for SBF files missing their RINEX counterpart and
         triggers conversion.  PolaRX5 stations only.
         """
-        reconciler_cfg = self.yaml_config.get('archive_reconciler', {})
-        if not reconciler_cfg.get('enabled', True):
+        reconciler_cfg = self.yaml_config.get("archive_reconciler", {})
+        if not reconciler_cfg.get("enabled", True):
             self.logger.info("Archive reconciler disabled in config")
             return
 
         from .archive_reconciler import _run_archive_reconciler_job
 
-        schedule = reconciler_cfg.get('schedule', '6h')
-        days_back = reconciler_cfg.get('days_back', 30)
-        sessions = reconciler_cfg.get('sessions', ['15s_24hr', '1Hz_1hr'])
+        schedule = reconciler_cfg.get("schedule", "6h")
+        days_back = reconciler_cfg.get("days_back", 30)
+        sessions = reconciler_cfg.get("sessions", ["15s_24hr", "1Hz_1hr"])
 
         base_trigger = parse_schedule(schedule)
 
@@ -1453,25 +1686,27 @@ class BulkDownloadScheduler:
             func=_run_archive_reconciler_job,
             trigger=base_trigger.trigger_type,
             args=[sessions, days_back],
-            id='archive_reconciler',
+            id="archive_reconciler",
             replace_existing=True,
             max_instances=1,
-            executor='backfill',
-            **base_trigger.trigger_kwargs
+            executor="backfill",
+            **base_trigger.trigger_kwargs,
         )
 
         # Immediate first run
         self.scheduler.add_job(
             func=_run_archive_reconciler_job,
-            trigger='date',
+            trigger="date",
             run_date=datetime.now() + timedelta(seconds=120),
             args=[sessions, days_back],
-            id='archive_reconciler_startup',
+            id="archive_reconciler_startup",
             replace_existing=True,
-            executor='backfill',
+            executor="backfill",
         )
 
-        self.logger.info(f"Scheduled archive reconciler ({base_trigger.description}, {days_back} days back, immediate first run)")
+        self.logger.info(
+            f"Scheduled archive reconciler ({base_trigger.description}, {days_back} days back, immediate first run)"
+        )
 
     def _schedule_integrity_checker(self) -> None:
         """Schedule periodic file integrity checking.
@@ -1480,18 +1715,18 @@ class BulkDownloadScheduler:
         checks file sizes against median for anomalies, and optionally
         compares with remote receiver via FTP SIZE / HTTP Content-Length.
         """
-        checker_cfg = self.yaml_config.get('integrity_checker', {})
-        if not checker_cfg.get('enabled', True):
+        checker_cfg = self.yaml_config.get("integrity_checker", {})
+        if not checker_cfg.get("enabled", True):
             self.logger.info("Integrity checker disabled in config")
             return
 
         from .integrity_checker import _run_integrity_check_job
 
-        schedule = checker_cfg.get('schedule', '6h')
-        days_back = checker_cfg.get('days_back', 7)
-        sessions = checker_cfg.get('sessions', ['15s_24hr', '1Hz_1hr', 'status_1hr'])
-        check_receiver = checker_cfg.get('check_receiver', True)
-        size_tolerance_pct = checker_cfg.get('size_tolerance_pct', 50.0)
+        schedule = checker_cfg.get("schedule", "6h")
+        days_back = checker_cfg.get("days_back", 7)
+        sessions = checker_cfg.get("sessions", ["15s_24hr", "1Hz_1hr", "status_1hr"])
+        check_receiver = checker_cfg.get("check_receiver", True)
+        size_tolerance_pct = checker_cfg.get("size_tolerance_pct", 50.0)
 
         base_trigger = parse_schedule(schedule)
 
@@ -1499,22 +1734,22 @@ class BulkDownloadScheduler:
             func=_run_integrity_check_job,
             trigger=base_trigger.trigger_type,
             args=[sessions, days_back, check_receiver, size_tolerance_pct],
-            id='integrity_checker',
+            id="integrity_checker",
             replace_existing=True,
             max_instances=1,
-            executor='backfill',
-            **base_trigger.trigger_kwargs
+            executor="backfill",
+            **base_trigger.trigger_kwargs,
         )
 
         # Delayed first run (3 minutes after start)
         self.scheduler.add_job(
             func=_run_integrity_check_job,
-            trigger='date',
+            trigger="date",
             run_date=datetime.now() + timedelta(seconds=180),
             args=[sessions, days_back, check_receiver, size_tolerance_pct],
-            id='integrity_checker_startup',
+            id="integrity_checker_startup",
             replace_existing=True,
-            executor='backfill',
+            executor="backfill",
         )
 
         self.logger.info(
@@ -1523,7 +1758,7 @@ class BulkDownloadScheduler:
             f"receiver_check={'on' if check_receiver else 'off'}, immediate first run)"
         )
 
-    def _detect_outage_gap(self, session_type: str = '15s_24hr') -> int:
+    def _detect_outage_gap(self, session_type: str = "15s_24hr") -> int:
         """Detect how many days of data are missing since the last successful download.
 
         Uses per-station worst-case gap: finds the station furthest behind
@@ -1537,14 +1772,15 @@ class BulkDownloadScheduler:
         try:
             from ..health.database_factory import DatabaseConnectionFactory
 
-            max_days = self.yaml_config.get('recovery', {}).get('max_recovery_days', 30)
+            max_days = self.yaml_config.get("recovery", {}).get("max_recovery_days", 30)
 
             with DatabaseConnectionFactory.connection() as conn:
                 with conn.cursor() as cur:
                     # Per-station gap: find the station furthest behind.
                     # Uses 5th-percentile to be robust against single-station
                     # outliers while still covering 95% of tracked stations.
-                    cur.execute("""
+                    cur.execute(
+                        """
                         WITH per_station AS (
                             SELECT sid, MAX(file_date) AS last_date
                             FROM file_tracking
@@ -1560,11 +1796,14 @@ class BulkDownloadScheduler:
                             CURRENT_DATE - MIN(last_date) AS max_gap_days,
                             CURRENT_DATE - MAX(last_date) AS min_gap_days
                         FROM per_station
-                    """, (session_type,))
+                    """,
+                        (session_type,),
+                    )
                     row = cur.fetchone()
 
                     if row and row[0] and row[0] > 0:
                         from datetime import date
+
                         tracked = row[0]
                         p5_gap = row[1] if row[1] is not None else 1
                         max_gap = row[2] if row[2] is not None else 1
@@ -1585,7 +1824,9 @@ class BulkDownloadScheduler:
         except ImportError:
             self.logger.debug("psycopg2 not available — using default lookback")
         except Exception as e:
-            self.logger.warning(f"Failed to detect outage gap: {e} — using default lookback")
+            self.logger.warning(
+                f"Failed to detect outage gap: {e} — using default lookback"
+            )
 
         return 1  # Safe fallback
 
@@ -1611,14 +1852,14 @@ class BulkDownloadScheduler:
             base_trigger = parse_schedule(config.schedule)
 
             # Only catch up daily sessions — those with a specific hour in the cron trigger
-            if base_trigger.trigger_type != 'cron':
+            if base_trigger.trigger_type != "cron":
                 continue
-            trigger_hour = base_trigger.trigger_kwargs.get('hour')
+            trigger_hour = base_trigger.trigger_kwargs.get("hour")
             if trigger_hour is None:
                 continue  # Hourly session — no catch-up needed
 
             scheduled_hour = int(trigger_hour)
-            scheduled_minute = int(base_trigger.trigger_kwargs.get('minute', 0))
+            scheduled_minute = int(base_trigger.trigger_kwargs.get("minute", 0))
 
             # Check if the scheduled time already passed today
             local_now = datetime.now()
@@ -1629,8 +1870,8 @@ class BulkDownloadScheduler:
                 continue  # Not missed — will fire at the scheduled time
 
             # Detect actual outage gap for dynamic lookback
-            recovery_cfg = self.yaml_config.get('recovery', {})
-            if recovery_cfg.get('auto_recovery_enabled', True):
+            recovery_cfg = self.yaml_config.get("recovery", {})
+            if recovery_cfg.get("auto_recovery_enabled", True):
                 lookback = self._detect_outage_gap(session_type)
             else:
                 lookback = config.lookback_periods
@@ -1647,10 +1888,16 @@ class BulkDownloadScheduler:
                 job_id = f"catchup_{session_type}_{station_id}"
                 self.scheduler.add_job(
                     func=_download_station_data_job,
-                    trigger='date',
+                    trigger="date",
                     run_date=run_time,
-                    args=[station_id, session_type, self.production_mode,
-                          lookback, config.timeout_minutes, config.rinex],
+                    args=[
+                        station_id,
+                        session_type,
+                        self.production_mode,
+                        lookback,
+                        config.timeout_minutes,
+                        config.rinex,
+                    ],
                     id=job_id,
                     replace_existing=True,
                 )
@@ -1663,7 +1910,9 @@ class BulkDownloadScheduler:
             )
 
         if catchup_count:
-            self.logger.info(f"Total catch-up: {catchup_count} one-shot download jobs scheduled")
+            self.logger.info(
+                f"Total catch-up: {catchup_count} one-shot download jobs scheduled"
+            )
 
     def _schedule_bootstrap(self) -> None:
         """Detect cold start and schedule aggressive initial downloads if needed.
@@ -1672,15 +1921,15 @@ class BulkDownloadScheduler:
         - bootstrap is disabled in config
         - file_tracking already has data (not a cold start)
         """
-        bootstrap_cfg = self.yaml_config.get('bootstrap', {})
-        if not bootstrap_cfg.get('enabled', True):
+        bootstrap_cfg = self.yaml_config.get("bootstrap", {})
+        if not bootstrap_cfg.get("enabled", True):
             self.logger.info("Bootstrap disabled in config")
             return
 
         try:
             from .bootstrap import detect_cold_start, schedule_bootstrap
 
-            bootstrap_sessions = bootstrap_cfg.get('sessions')
+            bootstrap_sessions = bootstrap_cfg.get("sessions")
             if not detect_cold_start(sessions=bootstrap_sessions):
                 self.logger.debug("Not a cold start — skipping bootstrap")
                 return
@@ -1708,13 +1957,13 @@ class BulkDownloadScheduler:
         skipped = []
 
         for station_id, config in self.stations.items():
-            if not config.get('enabled', True):
+            if not config.get("enabled", True):
                 continue
 
             # Skip non-active stations (lifecycle or monitoring mode)
-            if config.get('station_status') in ('discontinued', 'inactive'):
+            if config.get("station_status") in ("discontinued", "inactive"):
                 continue
-            if config.get('health_check') == 'passive':
+            if config.get("health_check") == "passive":
                 continue
 
             # Apply station filter if specified
@@ -1722,7 +1971,7 @@ class BulkDownloadScheduler:
                 continue
 
             # Check if receiver type supports this session
-            receiver_type = config.get('receiver_type', '').lower()
+            receiver_type = config.get("receiver_type", "").lower()
             if self.receiver_sessions and receiver_type in self.receiver_sessions:
                 supported_sessions = self.receiver_sessions[receiver_type]
                 if session_type not in supported_sessions:
@@ -1733,19 +1982,25 @@ class BulkDownloadScheduler:
 
         # Log skipped stations
         if skipped:
-            self.logger.info(f"Skipped {len(skipped)} stations for {session_type} (unsupported by receiver type): {', '.join(skipped[:5])}")
+            self.logger.info(
+                f"Skipped {len(skipped)} stations for {session_type} (unsupported by receiver type): {', '.join(skipped[:5])}"
+            )
 
         # Apply max stations limit if specified
-        if self.max_stations_per_session and len(stations) > self.max_stations_per_session:
-            stations = stations[:self.max_stations_per_session]
-            self.logger.info(f"Limited {session_type} to {self.max_stations_per_session} stations for testing")
+        if (
+            self.max_stations_per_session
+            and len(stations) > self.max_stations_per_session
+        ):
+            stations = stations[: self.max_stations_per_session]
+            self.logger.info(
+                f"Limited {session_type} to {self.max_stations_per_session} stations for testing"
+            )
 
         return stations
-        
-    def _schedule_session_downloads(self,
-                                  session_type: str,
-                                  config: ScheduleConfig,
-                                  stations: List[str]):
+
+    def _schedule_session_downloads(
+        self, session_type: str, config: ScheduleConfig, stations: List[str]
+    ):
         """Schedule downloads for a specific session type using flexible schedule format."""
 
         # Parse the schedule configuration
@@ -1764,17 +2019,24 @@ class BulkDownloadScheduler:
             self.scheduler.add_job(
                 func=_download_station_data_job,
                 trigger=trigger_type,
-                args=[station_id, session_type, self.production_mode, config.lookback_periods, config.timeout_minutes, config.rinex],
+                args=[
+                    station_id,
+                    session_type,
+                    self.production_mode,
+                    config.lookback_periods,
+                    config.timeout_minutes,
+                    config.rinex,
+                ],
                 id=job_id,
                 replace_existing=True,
-                **trigger_kwargs
+                **trigger_kwargs,
             )
 
         self.logger.info(
             f"Scheduled {len(stations)} stations for {session_type} "
             f"({base_trigger.description})"
         )
-        
+
     def _schedule_health_monitoring(self):
         """Schedule health monitoring jobs (send to Icinga + PostgreSQL).
 
@@ -1782,35 +2044,35 @@ class BulkDownloadScheduler:
         Equivalent to: receivers health STATION --icinga --save-db
         """
         # Check scheduler_types filter
-        if not self.scheduler_types.get('health', True):
+        if not self.scheduler_types.get("health", True):
             self.logger.info("Health monitoring skipped (--only filter)")
             return
 
         # Check if health monitoring is enabled in config
-        status_monitoring = self.yaml_config.get('status_monitoring', {})
-        if not status_monitoring.get('enabled', True):
+        status_monitoring = self.yaml_config.get("status_monitoring", {})
+        if not status_monitoring.get("enabled", True):
             self.logger.info("Health monitoring disabled in config")
             return
 
         # Get schedule (default: every 5 minutes)
-        schedule = status_monitoring.get('schedule', '5m')
+        schedule = status_monitoring.get("schedule", "5m")
 
         # Get stations that support health checks (all receiver types with get_health_status)
         # Supported: PolaRX5, NetR9, NetRS, NetR5, G10
-        supported_health_types = {'polarx5', 'netr9', 'netrs', 'netr5', 'g10'}
+        supported_health_types = {"polarx5", "netr9", "netrs", "netr5", "g10"}
         health_stations = []
         skipped_stations = []
         for station_id, config in self.stations.items():
-            if not config.get('enabled', True):
+            if not config.get("enabled", True):
                 continue
 
             # Skip non-active stations (lifecycle or monitoring mode)
-            station_status = config.get('station_status')
-            health_check = config.get('health_check')
-            if station_status in ('discontinued', 'inactive'):
+            station_status = config.get("station_status")
+            health_check = config.get("health_check")
+            if station_status in ("discontinued", "inactive"):
                 skipped_stations.append(station_id)
                 continue
-            if health_check == 'passive':
+            if health_check == "passive":
                 skipped_stations.append(station_id)
                 continue
 
@@ -1819,7 +2081,7 @@ class BulkDownloadScheduler:
                 continue
 
             # Check if receiver type supports health checks
-            receiver_type = config.get('receiver_type', '').lower()
+            receiver_type = config.get("receiver_type", "").lower()
             if receiver_type not in supported_health_types:
                 continue
 
@@ -1836,14 +2098,17 @@ class BulkDownloadScheduler:
             return
 
         # Apply max stations limit
-        if self.max_stations_per_session and len(health_stations) > self.max_stations_per_session:
-            health_stations = health_stations[:self.max_stations_per_session]
+        if (
+            self.max_stations_per_session
+            and len(health_stations) > self.max_stations_per_session
+        ):
+            health_stations = health_stations[: self.max_stations_per_session]
 
         # Parse schedule
         base_trigger = parse_schedule(schedule)
 
         # Distribution window for health checks (default 3 minutes)
-        distribution_window = status_monitoring.get('distribution_window', 3)
+        distribution_window = status_monitoring.get("distribution_window", 3)
 
         # Schedule health check jobs
         for i, station_id in enumerate(sorted(health_stations)):
@@ -1858,8 +2123,8 @@ class BulkDownloadScheduler:
                 args=[station_id, True, True],  # send_to_db=True, send_to_icinga=True
                 id=job_id,
                 replace_existing=True,
-                executor='health',
-                **trigger_kwargs
+                executor="health",
+                **trigger_kwargs,
             )
 
         self.logger.info(
@@ -1883,15 +2148,15 @@ class BulkDownloadScheduler:
             # Clean up
             if job_id in self.running_jobs:
                 del self.running_jobs[job_id]
-                
+
     def _job_executed(self, event):
         """Handle successful job execution."""
         self.logger.debug(f"Job executed: {event.job_id}")
-        
+
     def _job_error(self, event):
-        """Handle job execution errors.""" 
+        """Handle job execution errors."""
         self.logger.error(f"Job error: {event.job_id} - {event.exception}")
-        
+
     def _acquire_lock(self) -> None:
         """Acquire an exclusive file lock to prevent duplicate scheduler instances.
 
@@ -1956,34 +2221,36 @@ class BulkDownloadScheduler:
             self.logger.error(f"Error stopping scheduler: {e}")
         finally:
             self._release_lock()
-            
+
     def get_scheduled_jobs(self) -> List[Dict[str, Any]]:
         """Get list of all scheduled jobs."""
         jobs = []
-        
+
         for job in self.scheduler.get_jobs():
             # Handle different APScheduler versions
-            next_run = getattr(job, 'next_run_time', None)
+            next_run = getattr(job, "next_run_time", None)
             if next_run is None:
-                next_run = getattr(job, 'next_run', None)
-                
-            jobs.append({
-                'id': job.id,
-                'name': getattr(job, 'name', job.id),
-                'trigger': str(job.trigger),
-                'next_run': next_run.isoformat() if next_run else None,
-                'args': getattr(job, 'args', [])
-            })
-            
+                next_run = getattr(job, "next_run", None)
+
+            jobs.append(
+                {
+                    "id": job.id,
+                    "name": getattr(job, "name", job.id),
+                    "trigger": str(job.trigger),
+                    "next_run": next_run.isoformat() if next_run else None,
+                    "args": getattr(job, "args", []),
+                }
+            )
+
         return jobs
-        
+
     def get_job_status(self) -> Dict[str, Any]:
         """Get scheduler and job status."""
         return {
-            'scheduler_running': self.scheduler.running,
-            'total_jobs': len(self.scheduler.get_jobs()),
-            'running_jobs': len(self.running_jobs),
-            'current_jobs': list(self.running_jobs.keys())
+            "scheduler_running": self.scheduler.running,
+            "total_jobs": len(self.scheduler.get_jobs()),
+            "running_jobs": len(self.running_jobs),
+            "current_jobs": list(self.running_jobs.keys()),
         }
 
 
@@ -1994,35 +2261,36 @@ def create_scheduler_config() -> Path:
     The new function creates YAML config at ~/.config/gpsconfig/scheduler.yaml.
     """
     import warnings
+
     warnings.warn(
         "create_scheduler_config() is deprecated. "
         "Use receivers.scheduling.config_loader.create_default_config_file() instead.",
         DeprecationWarning,
-        stacklevel=2
+        stacklevel=2,
     )
     from .config_loader import create_default_config_file
+
     return create_default_config_file()
 
 
 # Example usage and testing
 if __name__ == "__main__":
-    
     if not HAS_APSCHEDULER:
         print("APScheduler not available. Install with: pip install apscheduler")
         sys.exit(1)
-        
+
     # Create scheduler
     scheduler = BulkDownloadScheduler(production_mode=True)
-    
+
     # Schedule all sessions
     scheduler.schedule_all_sessions()
-    
+
     # Show scheduled jobs
     jobs = scheduler.get_scheduled_jobs()
     print(f"Scheduled {len(jobs)} jobs:")
     for job in jobs[:5]:  # Show first 5
         print(f"  {job['id']}: {job['trigger']}")
-    
+
     print(f"\nScheduler status: {scheduler.get_job_status()}")
-    
+
     # Note: In production, you would call scheduler.start() and keep the process running

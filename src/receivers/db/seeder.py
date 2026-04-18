@@ -38,7 +38,7 @@ def _is_station_id(section: str) -> bool:
 class Seeder:
     """Seeds the gps_health database with station metadata, coordinates, and areas."""
 
-    def __init__(self, host_override: Optional[str] = None) -> None:
+    def __init__(self, host_override: str | None = None) -> None:
         self.host_override = host_override
 
     def _get_conn(self):
@@ -138,7 +138,8 @@ class Seeder:
                             updated += 1
                             continue
 
-                        cur.execute("""
+                        cur.execute(
+                            """
                             INSERT INTO stations (
                                 sid, receiver_type, power_type, antenna_type,
                                 marker_name, marker_number, observer, agency,
@@ -170,13 +171,27 @@ class Seeder:
                                 height = COALESCE(EXCLUDED.height, stations.height),
                                 updated_at = NOW()
                             RETURNING (xmax = 0) AS is_insert
-                        """, (
-                            sid, receiver_type, power_type, antenna_type,
-                            marker_name, marker_number, observer, agency,
-                            ip_address, http_port, station_name, station_owner,
-                            station_status, health_check,
-                            latitude, longitude, height,
-                        ))
+                        """,
+                            (
+                                sid,
+                                receiver_type,
+                                power_type,
+                                antenna_type,
+                                marker_name,
+                                marker_number,
+                                observer,
+                                agency,
+                                ip_address,
+                                http_port,
+                                station_name,
+                                station_owner,
+                                station_status,
+                                health_check,
+                                latitude,
+                                longitude,
+                                height,
+                            ),
+                        )
                         row = cur.fetchone()
                         if row and row[0]:
                             inserted += 1
@@ -241,7 +256,9 @@ class Seeder:
                             continue
 
                         if dry_run:
-                            print(f"  {sid}: lat={lat:.6f}, lon={lon:.6f}, height={height:.2f}")
+                            print(
+                                f"  {sid}: lat={lat:.6f}, lon={lon:.6f}, height={height:.2f}"
+                            )
                             updated += 1
                             continue
 
@@ -255,7 +272,9 @@ class Seeder:
                             skipped += 1
 
                     except Exception as e:
-                        logger.warning("Could not update coordinates for %s: %s", sid, e)
+                        logger.warning(
+                            "Could not update coordinates for %s: %s", sid, e
+                        )
                         skipped += 1
 
             if not dry_run:
@@ -273,7 +292,7 @@ class Seeder:
 
     def seed_areas(
         self,
-        areas_file: Optional[Path] = None,
+        areas_file: Path | None = None,
         dry_run: bool = False,
     ) -> dict[str, int]:
         """Seed station areas from station_areas.yaml.
@@ -323,21 +342,36 @@ class Seeder:
                     ("regional_areas", "regional"),
                 ]:
                     for area_id, area_data in config.get(area_type_key, {}).items():
-                        cur.execute("""
+                        cur.execute(
+                            """
                             INSERT INTO station_areas (area_id, area_name, area_type, description)
                             VALUES (%s, %s, %s, %s)
                             ON CONFLICT (area_id) DO UPDATE SET
                                 area_name = EXCLUDED.area_name,
                                 description = EXCLUDED.description
-                        """, (area_id, area_data["name"], db_type, area_data.get("description", "")))
+                        """,
+                            (
+                                area_id,
+                                area_data["name"],
+                                db_type,
+                                area_data.get("description", ""),
+                            ),
+                        )
                         area_count += 1
 
                         for station_entry in area_data.get("stations", []):
-                            sid = station_entry.split()[0] if isinstance(station_entry, str) else station_entry
-                            cur.execute("""
+                            sid = (
+                                station_entry.split()[0]
+                                if isinstance(station_entry, str)
+                                else station_entry
+                            )
+                            cur.execute(
+                                """
                                 INSERT INTO station_area_members (area_id, sid)
                                 VALUES (%s, %s) ON CONFLICT DO NOTHING
-                            """, (area_id, sid))
+                            """,
+                                (area_id, sid),
+                            )
                             member_count += 1
 
             conn.commit()
@@ -403,7 +437,7 @@ class Seeder:
         return cur.fetchone() is not None
 
 
-def _safe_float(value) -> Optional[float]:
+def _safe_float(value) -> float | None:
     """Convert a value to float, returning None on failure."""
     if value is None or value == "":
         return None

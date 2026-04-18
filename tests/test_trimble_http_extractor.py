@@ -3,10 +3,11 @@
 Tests parsing of real Trimble /prog/show? API response formats.
 """
 
-import pytest
-from unittest.mock import patch, MagicMock
-from receivers.health.trimble_http_extractor import TrimbleHTTPExtractor
+from unittest.mock import MagicMock, patch
 
+import pytest
+
+from receivers.health.trimble_http_extractor import TrimbleHTTPExtractor
 
 # Sample responses captured from real ARHO receiver (NetR9)
 SAMPLE_VOLTAGES = """<Show Voltages>
@@ -77,6 +78,7 @@ Chan=11 PRN=28  Elv=12   Azm=61  L1snr=37 L2snr=19 L2Csnr=0  IODE=67  URA=2.0
 
 class MockResponse:
     """Mock HTTP response."""
+
     def __init__(self, text, status_code=200):
         self.text = text
         self.status_code = status_code
@@ -86,10 +88,7 @@ class MockResponse:
 def extractor():
     """Create extractor instance for testing."""
     return TrimbleHTTPExtractor(
-        host="10.4.1.210",
-        station_id="ARHO",
-        port=8060,
-        receiver_type="NetR9"
+        host="10.4.1.210", station_id="ARHO", port=8060, receiver_type="NetR9"
     )
 
 
@@ -118,7 +117,9 @@ class TestVoltagesParsing:
             result = extractor._fetch_and_parse_voltages()
 
         assert result is not None
-        assert result["status"] == "warning"  # 11.5V between critical_low (11.0) and warning_low (11.8)
+        assert (
+            result["status"] == "warning"
+        )  # 11.5V between critical_low (11.0) and warning_low (11.8)
 
     def test_voltage_critical_threshold(self, extractor):
         """Test voltage critical status."""
@@ -135,7 +136,9 @@ class TestTemperatureParsing:
 
     def test_parse_temperature_real_format(self, extractor):
         """Test parsing of real temperature response format."""
-        with patch.object(extractor, "_fetch_endpoint", return_value=SAMPLE_TEMPERATURE):
+        with patch.object(
+            extractor, "_fetch_endpoint", return_value=SAMPLE_TEMPERATURE
+        ):
             result = extractor._fetch_and_parse_temperature()
 
         assert result is not None
@@ -150,7 +153,9 @@ class TestTemperatureParsing:
             result = extractor._fetch_and_parse_temperature()
 
         assert result is not None
-        assert result["status"] == "warning"  # 55.0°C between warning_high (50.0) and critical_high (60.0)
+        assert (
+            result["status"] == "warning"
+        )  # 55.0°C between warning_high (50.0) and critical_high (60.0)
 
     def test_temperature_critical(self, extractor):
         """Test temperature critical status."""
@@ -236,6 +241,7 @@ class TestSystemInfoParsing:
 
     def test_parse_serial_number(self, extractor):
         """Test serial number parsing."""
+
         def mock_fetch(endpoint):
             if endpoint == "serial":
                 return SAMPLE_SERIAL
@@ -249,6 +255,7 @@ class TestSystemInfoParsing:
 
     def test_parse_antenna_info(self, extractor):
         """Test antenna info parsing."""
+
         def mock_fetch(endpoint):
             if endpoint == "antenna":
                 return SAMPLE_ANTENNA
@@ -263,6 +270,7 @@ class TestSystemInfoParsing:
 
     def test_parse_refstation_name(self, extractor):
         """Test reference station name parsing."""
+
         def mock_fetch(endpoint):
             if endpoint == "refstation":
                 return SAMPLE_REFSTATION
@@ -280,6 +288,7 @@ class TestFullExtraction:
 
     def test_full_extraction_healthy(self, extractor):
         """Test full extraction returns proper structure."""
+
         def mock_fetch(endpoint):
             responses = {
                 "voltages": SAMPLE_VOLTAGES,
@@ -296,14 +305,18 @@ class TestFullExtraction:
             return {"status": "ok", "port": 8060, "accessible": True}
 
         with patch.object(extractor, "_fetch_endpoint", side_effect=mock_fetch):
-            with patch.object(extractor, "_test_connection", return_value=mock_connection()):
+            with patch.object(
+                extractor, "_test_connection", return_value=mock_connection()
+            ):
                 result = extractor.extract_health_data()
 
         # Check overall structure
         assert result["station_id"] == "ARHO"
         assert result["receiver_type"] == "NetR9"
         assert result["schema_version"] == "1.0"
-        assert result["overall_status"] == "warning"  # 15.06V >= voltage_warning_high (15.0)
+        assert (
+            result["overall_status"] == "warning"
+        )  # 15.06V >= voltage_warning_high (15.0)
 
         # Check metrics exist
         assert "power" in result["metrics"]
@@ -324,10 +337,18 @@ class TestFullExtraction:
 
     def test_full_extraction_with_connection_failure(self, extractor):
         """Test extraction handles connection failure gracefully."""
-        def mock_connection():
-            return {"status": "critical", "port": 8060, "accessible": False, "error": "Timeout"}
 
-        with patch.object(extractor, "_test_connection", return_value=mock_connection()):
+        def mock_connection():
+            return {
+                "status": "critical",
+                "port": 8060,
+                "accessible": False,
+                "error": "Timeout",
+            }
+
+        with patch.object(
+            extractor, "_test_connection", return_value=mock_connection()
+        ):
             with patch.object(extractor, "_fetch_endpoint", return_value=None):
                 result = extractor.extract_health_data()
 
@@ -373,6 +394,7 @@ class TestStatusCalculation:
 
 # --- NetRS Fixtures and Tests ---
 
+
 @pytest.fixture
 def netrs_extractor():
     """Create NetRS extractor instance for testing."""
@@ -397,6 +419,7 @@ class TestNetRSVoltages:
 
     def test_netrs_voltage_input_format(self, netrs_extractor):
         """Test parsing NetRS 'Voltage input=1 volts=12.34' format."""
+
         # /prog/show?Voltages returns ERROR → triggers fallback to input-specific endpoints
         def mock_get(url, **kwargs):
             if "input=1" in url:
@@ -417,6 +440,7 @@ class TestNetRSVoltages:
 
     def test_netrs_voltage_dual_inputs(self, netrs_extractor):
         """Test both voltage inputs returning data."""
+
         def mock_get(url, **kwargs):
             if "input=1" in url:
                 return _mock_response("Voltage input=1 volts=12.34")
@@ -438,6 +462,7 @@ class TestNetRSVoltages:
 
     def test_netrs_voltage_single_input(self, netrs_extractor):
         """Test only one voltage input responding."""
+
         def mock_get(url, **kwargs):
             if "input=1" in url:
                 return _mock_response("no data", status_code=404)
@@ -456,6 +481,7 @@ class TestNetRSVoltages:
 
     def test_netrs_voltage_fallback_on_error(self, netrs_extractor):
         """Test /prog/show?Voltages returns ERROR, triggers fallback."""
+
         # First call: _fetch_endpoint("voltages") returns "ERROR"
         # Then fallback calls requests.get for input-specific endpoints
         def mock_get(url, **kwargs):
@@ -493,9 +519,9 @@ class TestNetRSUptime:
     def test_netrs_uptime_activity_page(self, netrs_extractor):
         """Test parsing uptime from Activity CGI page."""
         html = (
-            '<html><body><b>Run Time:</b><br />'
-            'System has been running for 159 days 1 hours 31 minutes'
-            '</body></html>'
+            "<html><body><b>Run Time:</b><br />"
+            "System has been running for 159 days 1 hours 31 minutes"
+            "</body></html>"
         )
 
         result = netrs_extractor._parse_uptime_from_activity_html(html)
@@ -511,8 +537,7 @@ class TestNetRSUptime:
     def test_netrs_uptime_merge_xml_preferred(self, netrs_extractor):
         """When merge.xml provides uptime, Activity page is not called."""
         merge_xml = (
-            "<uptime><day>10</day><hour>5</hour>"
-            "<min>30</min><sec>15</sec></uptime>"
+            "<uptime><day>10</day><hour>5</hour><min>30</min><sec>15</sec></uptime>"
         )
         result = netrs_extractor._parse_uptime_from_merge_xml(merge_xml)
 
@@ -527,7 +552,9 @@ class TestNetRSTracking:
 
     def test_netrs_tracking_format(self, netrs_extractor):
         """Test parsing NetRS Chan/PRN tracking format."""
-        with patch.object(netrs_extractor, "_fetch_endpoint", return_value=SAMPLE_NETRS_TRACKING):
+        with patch.object(
+            netrs_extractor, "_fetch_endpoint", return_value=SAMPLE_NETRS_TRACKING
+        ):
             result = netrs_extractor._fetch_and_parse_tracking()
 
         assert result is not None
@@ -539,7 +566,9 @@ class TestNetRSTracking:
 
     def test_netrs_tracking_snr_parsed(self, netrs_extractor):
         """Test that SNR values are parsed from NetRS format."""
-        with patch.object(netrs_extractor, "_fetch_endpoint", return_value=SAMPLE_NETRS_TRACKING):
+        with patch.object(
+            netrs_extractor, "_fetch_endpoint", return_value=SAMPLE_NETRS_TRACKING
+        ):
             result = netrs_extractor._fetch_and_parse_tracking()
 
         # PRN=3 has L1snr=49 (highest)
@@ -579,6 +608,7 @@ class TestFullExtractionNetRS:
 
     def test_full_extraction_netrs(self, netrs_extractor):
         """Full extraction with NetRS, verify voltage fallback and disk unavailable."""
+
         def mock_fetch_endpoint(endpoint_name):
             responses = {
                 "voltages": "ERROR",  # Triggers fallback to input-specific
@@ -603,8 +633,12 @@ class TestFullExtractionNetRS:
         def mock_connection():
             return {"status": "ok", "port": 8060, "accessible": True}
 
-        with patch.object(netrs_extractor, "_fetch_endpoint", side_effect=mock_fetch_endpoint):
-            with patch.object(netrs_extractor, "_test_connection", return_value=mock_connection()):
+        with patch.object(
+            netrs_extractor, "_fetch_endpoint", side_effect=mock_fetch_endpoint
+        ):
+            with patch.object(
+                netrs_extractor, "_test_connection", return_value=mock_connection()
+            ):
                 with patch("requests.get", side_effect=mock_get):
                     result = netrs_extractor.extract_health_data()
 
@@ -627,6 +661,7 @@ class TestFullExtractionNetRS:
 
 
 # --- NetR5 Fixtures and Tests ---
+
 
 @pytest.fixture
 def netr5_extractor():
@@ -665,9 +700,15 @@ class TestNetR5Extraction:
         def mock_connection():
             return {"status": "ok", "port": 8060, "accessible": True}
 
-        with patch.object(netr5_extractor, "_fetch_endpoint", side_effect=mock_fetch) as mock_ep:
-            with patch.object(netr5_extractor, "_test_connection", return_value=mock_connection()):
-                with patch.object(netr5_extractor, "_fetch_merge_xml", return_value=merge_xml):
+        with patch.object(
+            netr5_extractor, "_fetch_endpoint", side_effect=mock_fetch
+        ) as mock_ep:
+            with patch.object(
+                netr5_extractor, "_test_connection", return_value=mock_connection()
+            ):
+                with patch.object(
+                    netr5_extractor, "_fetch_merge_xml", return_value=merge_xml
+                ):
                     result = netr5_extractor.extract_health_data()
 
         assert result["station_id"] == "TEST"
@@ -692,17 +733,30 @@ class TestNetR5Extraction:
         # Should NOT have called voltages, temperature, tracking, position,
         # firmware, antenna, or refstation endpoints
         called_endpoints = [call.args[0] for call in mock_ep.call_args_list]
-        for ep in ["voltages", "temperature", "tracking", "position", "firmware", "antenna", "refstation"]:
+        for ep in [
+            "voltages",
+            "temperature",
+            "tracking",
+            "position",
+            "firmware",
+            "antenna",
+            "refstation",
+        ]:
             assert ep not in called_endpoints, f"NetR5 should not call {ep}"
 
     def test_netr5_receiver_type_in_output(self, netr5_extractor):
         """Verify receiver_type field says NetR5 in output."""
+
         def mock_connection():
             return {"status": "ok", "port": 8060, "accessible": True}
 
         with patch.object(netr5_extractor, "_fetch_endpoint", return_value=None):
-            with patch.object(netr5_extractor, "_test_connection", return_value=mock_connection()):
-                with patch.object(netr5_extractor, "_fetch_merge_xml", return_value=None):
+            with patch.object(
+                netr5_extractor, "_test_connection", return_value=mock_connection()
+            ):
+                with patch.object(
+                    netr5_extractor, "_fetch_merge_xml", return_value=None
+                ):
                     result = netr5_extractor.extract_health_data()
 
         assert result["receiver_type"] == "NetR5"

@@ -7,17 +7,17 @@ Provides defaults if config file doesn't exist.
 import logging
 import os
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 
 try:
     import yaml
+
     HAS_YAML = True
 except ImportError:
     yaml = None  # type: ignore[assignment]
     HAS_YAML = False
 
 from .bulk_scheduler import ScheduleConfig
-
 
 logger = logging.getLogger(__name__)
 
@@ -34,11 +34,12 @@ def load_scheduler_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
     if config_path is None:
         # Check for GPS_CONFIG_PATH environment variable first
         import os
-        gps_config_dir = os.getenv('GPS_CONFIG_PATH')
+
+        gps_config_dir = os.getenv("GPS_CONFIG_PATH")
         if gps_config_dir:
-            config_path = Path(gps_config_dir) / 'scheduler.yaml'
+            config_path = Path(gps_config_dir) / "scheduler.yaml"
         else:
-            config_path = Path.home() / '.config' / 'gpsconfig' / 'scheduler.yaml'
+            config_path = Path.home() / ".config" / "gpsconfig" / "scheduler.yaml"
 
     # If YAML not available or file doesn't exist, return defaults
     if not HAS_YAML:
@@ -79,171 +80,171 @@ def get_default_config() -> Dict[str, Any]:
         Dictionary with default configuration
     """
     return {
-        'scheduler': {
-            'max_workers': 100,
-            'log_level': 'INFO',
-            'job_defaults': {
-                'coalesce': False,
-                'max_instances': 1,
-                'misfire_grace_time': 300
-            }
-        },
-        'sessions': {
-            '15s_24hr': {
-                'enabled': True,
-                'schedule_minute': 10,
-                'distribution_window': 10,
-                'batches': 2,
-                'frequency': 'daily',
-                'lookback_periods': 1,
-                'max_concurrent': 3,
-                'timeout_minutes': 45,
-                'retry_on_failure': True,
-                'retry_delay_minutes': 30,
-                'max_retries': 3,
-                'clean_tmp': False  # Keep partial files for resume
+        "scheduler": {
+            "max_workers": 100,
+            "log_level": "INFO",
+            "job_defaults": {
+                "coalesce": False,
+                "max_instances": 1,
+                "misfire_grace_time": 300,
             },
-            '1Hz_1hr': {
-                'enabled': True,
-                'schedule_minute': 15,
-                'distribution_window': 10,
-                'batches': 2,
-                'frequency': 'hourly',
-                'lookback_periods': 1,
-                'max_concurrent': 4,
-                'timeout_minutes': 30,
-                'retry_on_failure': True,
-                'retry_delay_minutes': 15,
-                'max_retries': 3,
-                'clean_tmp': False  # Keep partial files for resume
-            },
-            'status_1hr': {
-                'enabled': True,
-                'schedule_minute': 25,
-                'distribution_window': 5,
-                'batches': 2,
-                'frequency': 'hourly',
-                'lookback_periods': 1,
-                'max_concurrent': 5,
-                'timeout_minutes': 15,
-                'retry_on_failure': True,
-                'retry_delay_minutes': 10,
-                'max_retries': 2,
-                'clean_tmp': False  # Keep partial files for resume
-            }
         },
-        'stations': {},
-        'recovery': {
-            'auto_recovery_enabled': True,
-            'max_recovery_days': 30,
-            'backfill_enabled': False
+        "sessions": {
+            "15s_24hr": {
+                "enabled": True,
+                "schedule_minute": 10,
+                "distribution_window": 10,
+                "batches": 2,
+                "frequency": "daily",
+                "lookback_periods": 1,
+                "max_concurrent": 3,
+                "timeout_minutes": 45,
+                "retry_on_failure": True,
+                "retry_delay_minutes": 30,
+                "max_retries": 3,
+                "clean_tmp": False,  # Keep partial files for resume
+            },
+            "1Hz_1hr": {
+                "enabled": True,
+                "schedule_minute": 15,
+                "distribution_window": 10,
+                "batches": 2,
+                "frequency": "hourly",
+                "lookback_periods": 1,
+                "max_concurrent": 4,
+                "timeout_minutes": 30,
+                "retry_on_failure": True,
+                "retry_delay_minutes": 15,
+                "max_retries": 3,
+                "clean_tmp": False,  # Keep partial files for resume
+            },
+            "status_1hr": {
+                "enabled": True,
+                "schedule_minute": 25,
+                "distribution_window": 5,
+                "batches": 2,
+                "frequency": "hourly",
+                "lookback_periods": 1,
+                "max_concurrent": 5,
+                "timeout_minutes": 15,
+                "retry_on_failure": True,
+                "retry_delay_minutes": 10,
+                "max_retries": 2,
+                "clean_tmp": False,  # Keep partial files for resume
+            },
+        },
+        "stations": {},
+        "recovery": {
+            "auto_recovery_enabled": True,
+            "max_recovery_days": 30,
+            "backfill_enabled": False,
         },
         # Pipeline and resource pool configuration (new in scheduler enhancement)
-        'resource_pools': {
-            'network_workers': 10,    # I/O-bound: many concurrent OK
-            'cpu_workers': 4,         # CPU-bound: limit for memory
+        "resource_pools": {
+            "network_workers": 10,  # I/O-bound: many concurrent OK
+            "cpu_workers": 4,  # CPU-bound: limit for memory
         },
-        'pipelines': {
-            '15s_24hr': {
-                'stages': ['download', 'rinex', 'sync'],
-                'priority': 'standard',
-                'rinex_timing': 'immediate',
-                'sync_types': ['raw', 'rinex'],
+        "pipelines": {
+            "15s_24hr": {
+                "stages": ["download", "rinex", "sync"],
+                "priority": "standard",
+                "rinex_timing": "immediate",
+                "sync_types": ["raw", "rinex"],
             },
-            '1Hz_1hr': {
-                'stages': ['download', 'sync'],
-                'priority': 'realtime',
-                'sync_types': ['raw'],
+            "1Hz_1hr": {
+                "stages": ["download", "sync"],
+                "priority": "realtime",
+                "sync_types": ["raw"],
             },
-            'status_1hr': {
-                'stages': ['download', 'health'],
-                'priority': 'standard',
-                'health_targets': ['database'],
-                'health_priority': 'backfill',
-            },
-        },
-        'status_monitoring': {
-            'enabled': True,
-            'schedule': '5m',  # Every 5 minutes
-            'distribution_window': 3,  # Spread across 3 minutes
-            'priority': 'realtime',
-            'targets': ['database', 'icinga'],
-        },
-        'backfill': {
-            'enabled': True,
-            'window_start': 25,
-            'window_end': 55,
-            'schedule': '5m',
-            'archiving_mode': 'bulk',
-            'strategy': 'round_robin',
-            'sessions': ['status_1hr', '1Hz_1hr', '15s_24hr'],
-        },
-        'gap_detection': {
-            'enabled': True,
-            'schedule': '2h',
-            'days_back': 7,
-            'sessions': ['15s_24hr', '1Hz_1hr', 'status_1hr'],
-        },
-        'archive_reconciler': {
-            'enabled': True,
-            'schedule': '6h',
-            'days_back': 30,
-            'sessions': ['15s_24hr', '1Hz_1hr'],
-        },
-        'integrity_checker': {
-            'enabled': True,
-            'schedule': '6h',
-            'days_back': 7,
-            'sessions': ['15s_24hr', '1Hz_1hr', 'status_1hr'],
-            'check_receiver': True,
-            'size_tolerance_pct': 50.0,
-        },
-        'load_monitoring': {
-            'enabled': False,
-            'max_cpu_load': 8.0,
-            'max_network_mbps': 80,
-            'max_active_jobs': 80,
-            'check_interval': 10,
-            'priority_thresholds': {
-                'realtime': 1.0,
-                'standard': 0.8,
-                'backfill': 0.6,
-                'maintenance': 0.4,
+            "status_1hr": {
+                "stages": ["download", "health"],
+                "priority": "standard",
+                "health_targets": ["database"],
+                "health_priority": "backfill",
             },
         },
-        'bootstrap': {
-            'enabled': True,
-            'distribution_window': 10,
-            'initial_lookback_days': 3,
-            'full_lookback_days': 30,
+        "status_monitoring": {
+            "enabled": True,
+            "schedule": "5m",  # Every 5 minutes
+            "distribution_window": 3,  # Spread across 3 minutes
+            "priority": "realtime",
+            "targets": ["database", "icinga"],
         },
-        'priorities': {
-            'realtime': {
-                'level': 1,
-                'sessions': ['1Hz_1hr'],
-            },
-            'standard': {
-                'level': 5,
-                'sessions': ['15s_24hr', 'status_1hr'],
-            },
-            'backfill': {
-                'level': 8,
-                'max_concurrent': 2,
+        "backfill": {
+            "enabled": True,
+            "window_start": 25,
+            "window_end": 55,
+            "schedule": "5m",
+            "archiving_mode": "bulk",
+            "strategy": "round_robin",
+            "sessions": ["status_1hr", "1Hz_1hr", "15s_24hr"],
+        },
+        "gap_detection": {
+            "enabled": True,
+            "schedule": "2h",
+            "days_back": 7,
+            "sessions": ["15s_24hr", "1Hz_1hr", "status_1hr"],
+        },
+        "archive_reconciler": {
+            "enabled": True,
+            "schedule": "6h",
+            "days_back": 30,
+            "sessions": ["15s_24hr", "1Hz_1hr"],
+        },
+        "integrity_checker": {
+            "enabled": True,
+            "schedule": "6h",
+            "days_back": 7,
+            "sessions": ["15s_24hr", "1Hz_1hr", "status_1hr"],
+            "check_receiver": True,
+            "size_tolerance_pct": 50.0,
+        },
+        "load_monitoring": {
+            "enabled": False,
+            "max_cpu_load": 8.0,
+            "max_network_mbps": 80,
+            "max_active_jobs": 80,
+            "check_interval": 10,
+            "priority_thresholds": {
+                "realtime": 1.0,
+                "standard": 0.8,
+                "backfill": 0.6,
+                "maintenance": 0.4,
             },
         },
-        'sync': {
-            'remote_host': os.getenv('SYNC_REMOTE_HOST', 'gpsops@rawdata.vedur.is'),
-            'remote_path': os.getenv('SYNC_REMOTE_PATH', '/data/gps/archive'),
-            'raw_options': '--ignore-existing',
-            'rinex_options': '--update',
-            'retry_count': 3,
+        "bootstrap": {
+            "enabled": True,
+            "distribution_window": 10,
+            "initial_lookback_days": 3,
+            "full_lookback_days": 30,
         },
-        'monitoring': {
-            'database': {
-                'enabled': True,
+        "priorities": {
+            "realtime": {
+                "level": 1,
+                "sessions": ["1Hz_1hr"],
             },
-            'icinga': {
-                'enabled': True,
+            "standard": {
+                "level": 5,
+                "sessions": ["15s_24hr", "status_1hr"],
+            },
+            "backfill": {
+                "level": 8,
+                "max_concurrent": 2,
+            },
+        },
+        "sync": {
+            "remote_host": os.getenv("SYNC_REMOTE_HOST", "gpsops@rawdata.vedur.is"),
+            "remote_path": os.getenv("SYNC_REMOTE_PATH", "/data/gps/archive"),
+            "raw_options": "--ignore-existing",
+            "rinex_options": "--update",
+            "retry_count": 3,
+        },
+        "monitoring": {
+            "database": {
+                "enabled": True,
+            },
+            "icinga": {
+                "enabled": True,
             },
         },
     }
@@ -261,38 +262,48 @@ def merge_with_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
     defaults = get_default_config()
 
     # Deep merge scheduler section
-    if 'scheduler' not in config:
-        config['scheduler'] = defaults['scheduler']
+    if "scheduler" not in config:
+        config["scheduler"] = defaults["scheduler"]
     else:
-        for key, value in defaults['scheduler'].items():
-            if key not in config['scheduler']:
-                config['scheduler'][key] = value
+        for key, value in defaults["scheduler"].items():
+            if key not in config["scheduler"]:
+                config["scheduler"][key] = value
 
     # Deep merge sessions section
-    if 'sessions' not in config:
-        config['sessions'] = defaults['sessions']
+    if "sessions" not in config:
+        config["sessions"] = defaults["sessions"]
     else:
-        for session_type, session_defaults in defaults['sessions'].items():
-            if session_type not in config['sessions']:
-                config['sessions'][session_type] = session_defaults
+        for session_type, session_defaults in defaults["sessions"].items():
+            if session_type not in config["sessions"]:
+                config["sessions"][session_type] = session_defaults
             else:
                 for key, value in session_defaults.items():
-                    if key not in config['sessions'][session_type]:
-                        config['sessions'][session_type][key] = value
+                    if key not in config["sessions"][session_type]:
+                        config["sessions"][session_type][key] = value
 
     # Ensure stations section exists
-    if 'stations' not in config:
-        config['stations'] = {}
+    if "stations" not in config:
+        config["stations"] = {}
 
     # Ensure recovery section exists
-    if 'recovery' not in config:
-        config['recovery'] = defaults['recovery']
+    if "recovery" not in config:
+        config["recovery"] = defaults["recovery"]
 
     # Ensure new pipeline sections exist
-    for section in ['resource_pools', 'pipelines', 'status_monitoring',
-                    'priorities', 'sync', 'monitoring',
-                    'backfill', 'gap_detection', 'archive_reconciler',
-                    'integrity_checker', 'load_monitoring', 'bootstrap']:
+    for section in [
+        "resource_pools",
+        "pipelines",
+        "status_monitoring",
+        "priorities",
+        "sync",
+        "monitoring",
+        "backfill",
+        "gap_detection",
+        "archive_reconciler",
+        "integrity_checker",
+        "load_monitoring",
+        "bootstrap",
+    ]:
         if section not in config:
             config[section] = defaults.get(section, {})
         else:
@@ -304,9 +315,9 @@ def merge_with_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
     return config
 
 
-def get_session_config(config: Dict[str, Any],
-                       session_type: str,
-                       station_id: Optional[str] = None) -> "ScheduleConfig":
+def get_session_config(
+    config: Dict[str, Any], session_type: str, station_id: Optional[str] = None
+) -> "ScheduleConfig":
     """Get ScheduleConfig for a session, applying station overrides.
 
     .. deprecated::
@@ -322,6 +333,7 @@ def get_session_config(config: Dict[str, Any],
         ScheduleConfig object
     """
     import warnings
+
     warnings.warn(
         "get_session_config() is deprecated and does not support the new "
         "flexible schedule format. Use BulkDownloadScheduler's inline config "
@@ -331,42 +343,43 @@ def get_session_config(config: Dict[str, Any],
     )
 
     # Start with session defaults
-    session_cfg = config['sessions'].get(session_type, {})
+    session_cfg = config["sessions"].get(session_type, {})
 
     # Apply station-specific overrides
-    if station_id and station_id in config.get('stations', {}):
-        station_cfg = config['stations'][station_id]
-        if 'sessions' in station_cfg and session_type in station_cfg['sessions']:
-            override = station_cfg['sessions'][session_type]
+    if station_id and station_id in config.get("stations", {}):
+        station_cfg = config["stations"][station_id]
+        if "sessions" in station_cfg and session_type in station_cfg["sessions"]:
+            override = station_cfg["sessions"][session_type]
             # Merge override with session defaults
             session_cfg = {**session_cfg, **override}
 
     # Support both new schedule format and legacy format
-    schedule = session_cfg.get('schedule')
-    schedule_minute = session_cfg.get('schedule_minute')
-    frequency = session_cfg.get('frequency')
+    schedule = session_cfg.get("schedule")
+    schedule_minute = session_cfg.get("schedule_minute")
+    frequency = session_cfg.get("frequency")
 
     from .bulk_scheduler import ScheduleConfig
+
     if schedule is not None:
         return ScheduleConfig(
             session_type=session_type,
             schedule=schedule,
-            distribution_window=session_cfg.get('distribution_window', 10),
-            enabled=session_cfg.get('enabled', True),
-            max_concurrent=session_cfg.get('max_concurrent', 3),
-            timeout_minutes=session_cfg.get('timeout_minutes', 30),
-            midnight_offset=session_cfg.get('midnight_offset', 0),
+            distribution_window=session_cfg.get("distribution_window", 10),
+            enabled=session_cfg.get("enabled", True),
+            max_concurrent=session_cfg.get("max_concurrent", 3),
+            timeout_minutes=session_cfg.get("timeout_minutes", 30),
+            midnight_offset=session_cfg.get("midnight_offset", 0),
         )
     else:
         return ScheduleConfig(
             session_type=session_type,
             schedule_minute=schedule_minute or 10,
-            distribution_window=session_cfg.get('distribution_window', 10),
-            frequency=frequency or 'daily',
-            enabled=session_cfg.get('enabled', True),
-            max_concurrent=session_cfg.get('max_concurrent', 3),
-            timeout_minutes=session_cfg.get('timeout_minutes', 30),
-            midnight_offset=session_cfg.get('midnight_offset', 0),
+            distribution_window=session_cfg.get("distribution_window", 10),
+            frequency=frequency or "daily",
+            enabled=session_cfg.get("enabled", True),
+            max_concurrent=session_cfg.get("max_concurrent", 3),
+            timeout_minutes=session_cfg.get("timeout_minutes", 30),
+            midnight_offset=session_cfg.get("midnight_offset", 0),
         )
 
 
@@ -380,27 +393,30 @@ def create_default_config_file(output_path: Optional[Path] = None) -> Path:
         Path to created config file
     """
     if not HAS_YAML:
-        raise ImportError("PyYAML required to create config file. Install with: pip install pyyaml")
+        raise ImportError(
+            "PyYAML required to create config file. Install with: pip install pyyaml"
+        )
 
     if output_path is None:
         # Check for GPS_CONFIG_PATH environment variable first
         import os
-        gps_config_dir = os.getenv('GPS_CONFIG_PATH')
+
+        gps_config_dir = os.getenv("GPS_CONFIG_PATH")
         if gps_config_dir:
-            output_path = Path(gps_config_dir) / 'scheduler.yaml'
+            output_path = Path(gps_config_dir) / "scheduler.yaml"
         else:
-            output_path = Path.home() / '.config' / 'gpsconfig' / 'scheduler.yaml'
+            output_path = Path.home() / ".config" / "gpsconfig" / "scheduler.yaml"
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     if output_path.exists():
         logger.warning(f"Configuration file already exists: {output_path}")
-        backup_path = output_path.with_suffix('.yaml.backup')
+        backup_path = output_path.with_suffix(".yaml.backup")
         output_path.rename(backup_path)
         logger.info(f"Backed up existing config to {backup_path}")
 
     # Write YAML configuration with comments
-    yaml_content = '''# GPS Receiver Scheduler Configuration
+    yaml_content = """# GPS Receiver Scheduler Configuration
 # Location: ~/.config/gpsconfig/scheduler.yaml
 #
 # Hourly Timeline:
@@ -501,9 +517,9 @@ recovery:
   auto_recovery_enabled: true
   max_recovery_days: 30
   backfill_enabled: false
-'''
+"""
 
-    with open(output_path, 'w') as f:
+    with open(output_path, "w") as f:
         f.write(yaml_content)
 
     logger.info(f"Created scheduler configuration: {output_path}")

@@ -32,8 +32,8 @@ class Migrator:
 
     def __init__(
         self,
-        host_override: Optional[str] = None,
-        migrations_dir: Optional[Path] = None,
+        host_override: str | None = None,
+        migrations_dir: Path | None = None,
     ) -> None:
         self.host_override = host_override
         self.migrations_dir = migrations_dir or MIGRATIONS_DIR
@@ -170,7 +170,9 @@ class Migrator:
                         self._apply_sql(conn, consolidated)
                         conn.commit()
                         applied_list.append(name)
-                        logger.info("Consolidated schema applied — all 001-023 marked as applied")
+                        logger.info(
+                            "Consolidated schema applied — all 001-023 marked as applied"
+                        )
                     # Refresh applied set (000 marks 001-023 as applied)
                     # then fall through to apply any remaining migrations
                     applied = self._get_applied(conn)

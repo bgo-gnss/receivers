@@ -241,12 +241,14 @@ class NTRIPClient:
                     header_end = True
 
             # Check response status
-            header_part = response.split(b"\r\n\r\n")[0].decode("utf-8", errors="replace")
+            header_part = response.split(b"\r\n\r\n")[0].decode(
+                "utf-8", errors="replace"
+            )
             first_line = header_part.split("\r\n")[0]
 
             if "200 OK" not in first_line:
                 if "SOURCETABLE" in header_part:
-                    return False, 0, f"Mountpoint not found (got sourcetable)"
+                    return False, 0, "Mountpoint not found (got sourcetable)"
                 elif "401" in first_line:
                     return False, 0, "Authentication failed"
                 elif "404" in first_line:
@@ -302,11 +304,14 @@ class NTRIPClient:
             MountpointStatus with results
         """
         # If we have sourcetable, check if mountpoint exists
-        if available_mountpoints is not None and mountpoint not in available_mountpoints:
+        if (
+            available_mountpoints is not None
+            and mountpoint not in available_mountpoints
+        ):
             return MountpointStatus(
                 mountpoint=mountpoint,
                 is_active=False,
-                error_message=f"Mountpoint not found on caster",
+                error_message="Mountpoint not found on caster",
             )
 
         start_time = time.time()
@@ -372,7 +377,9 @@ class NTRIPClient:
             overall_status = "critical"
             if total_count == 1:
                 error = mountpoint_statuses[0].error_message or "no data"
-                message = f"RTK stream DOWN - {mountpoint_statuses[0].mountpoint}: {error}"
+                message = (
+                    f"RTK stream DOWN - {mountpoint_statuses[0].mountpoint}: {error}"
+                )
             else:
                 message = f"RTK streams DOWN - 0/{total_count} active"
         elif active_count < total_count:

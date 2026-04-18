@@ -11,10 +11,11 @@ from typing import Any, Dict, List, Optional
 import gtimes.timefunc as gt
 
 from ..base.download_manager import BaseDownloadManager
-from ..base.exceptions import ConnectionError, ConfigurationError
+from ..base.exceptions import ConfigurationError, ConnectionError
 
 try:
     from tqdm import tqdm
+
     HAS_TQDM = True
 except ImportError:
     HAS_TQDM = False
@@ -27,7 +28,12 @@ class SeptentrioDownloadManager(BaseDownloadManager):
     conventions, and directory structures.
     """
 
-    def __init__(self, station_id: str, station_config: Dict[str, Any], logger: Optional[logging.Logger] = None):
+    def __init__(
+        self,
+        station_id: str,
+        station_config: Dict[str, Any],
+        logger: Optional[logging.Logger] = None,
+    ):
         """Initialize Septentrio download manager."""
         super().__init__(station_id, station_config, logger)
         self._setup_septentrio_config()
@@ -36,13 +42,13 @@ class SeptentrioDownloadManager(BaseDownloadManager):
         """Set up Septentrio-specific configuration."""
         # FTP mode configuration
         ftp_mode = self.station_config.get("router", {}).get("ftp_mode", "passive")
-        self.use_passive_ftp = (ftp_mode == "passive")
+        self.use_passive_ftp = ftp_mode == "passive"
 
         # Session map for Septentrio receivers
         self.session_map = {
             "15s_24hr": ("a", "LOG1_15s_24hr"),
             "1Hz_1hr": ("b", "LOG2_1Hz_1hr"),
-            "status_1hr": ("c", "LOG5_status_1hr")
+            "status_1hr": ("c", "LOG5_status_1hr"),
         }
 
         self.logger.debug(f"Septentrio config - FTP passive: {self.use_passive_ftp}")
@@ -61,7 +67,7 @@ class SeptentrioDownloadManager(BaseDownloadManager):
                 "ip": self.ip_address,
                 "port": self.port,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-                "error": None
+                "error": None,
             }
 
         except Exception as e:
@@ -70,7 +76,7 @@ class SeptentrioDownloadManager(BaseDownloadManager):
                 "ip": self.ip_address,
                 "port": self.port,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-                "error": str(e)
+                "error": str(e),
             }
 
     def _is_ftp_mode_error(self, error: Exception) -> bool:
@@ -101,7 +107,9 @@ class SeptentrioDownloadManager(BaseDownloadManager):
         mode_name = "passive" if self.use_passive_ftp else "active"
 
         try:
-            self.logger.info(f"Connecting to {self.ip_address}:{self.port} (FTP {mode_name})...")
+            self.logger.info(
+                f"Connecting to {self.ip_address}:{self.port} (FTP {mode_name})..."
+            )
             ftp = FTP()
             ftp.connect(self.ip_address, self.port, timeout=self.connection_timeout)
             ftp.login("anonymous")
@@ -121,16 +129,22 @@ class SeptentrioDownloadManager(BaseDownloadManager):
                 self.use_passive_ftp = not self.use_passive_ftp
                 fallback_mode = "passive" if self.use_passive_ftp else "active"
 
-                self.logger.warning(f"⚠️  FTP {mode_name} mode failed, retrying with {fallback_mode} mode...")
+                self.logger.warning(
+                    f"⚠️  FTP {mode_name} mode failed, retrying with {fallback_mode} mode..."
+                )
 
                 try:
                     ftp = FTP()
-                    ftp.connect(self.ip_address, self.port, timeout=self.connection_timeout)
+                    ftp.connect(
+                        self.ip_address, self.port, timeout=self.connection_timeout
+                    )
                     ftp.login("anonymous")
                     ftp.set_pasv(self.use_passive_ftp)
 
                     fallback_time = time.time() - connection_start
-                    self.logger.info(f"✅ Connected with {fallback_mode} mode in {fallback_time:.2f}s")
+                    self.logger.info(
+                        f"✅ Connected with {fallback_mode} mode in {fallback_time:.2f}s"
+                    )
                     return ftp
 
                 except Exception as fallback_error:
@@ -138,11 +152,17 @@ class SeptentrioDownloadManager(BaseDownloadManager):
                     self.use_passive_ftp = original_mode
                     self.logger.error(f"❌ Both FTP modes failed. Original error: {e}")
                     self.logger.error(f"❌ Fallback error: {fallback_error}")
-                    raise ConnectionError(f"Could not connect to {self.ip_address}:{self.port} (tried both FTP modes): {e}")
+                    raise ConnectionError(
+                        f"Could not connect to {self.ip_address}:{self.port} (tried both FTP modes): {e}"
+                    )
             else:
                 # Not an FTP mode issue, raise original error
-                self.logger.error(f"❌ Connection failed after {connection_time:.2f}s: {e}")
-                raise ConnectionError(f"Could not connect to {self.ip_address}:{self.port}: {e}")
+                self.logger.error(
+                    f"❌ Connection failed after {connection_time:.2f}s: {e}"
+                )
+                raise ConnectionError(
+                    f"Could not connect to {self.ip_address}:{self.port}: {e}"
+                )
 
     def close_connection(self, connection: FTP) -> None:
         """Close FTP connection."""
@@ -165,7 +185,7 @@ class SeptentrioDownloadManager(BaseDownloadManager):
         connection: FTP,
         remote_file_path: str,
         local_file_path: str,
-        resume_offset: int = 0
+        resume_offset: int = 0,
     ) -> Dict[str, Any]:
         """Download file from Septentrio receiver via FTP."""
         try:
@@ -177,7 +197,7 @@ class SeptentrioDownloadManager(BaseDownloadManager):
                     return {
                         "success": False,
                         "error": f"Remote file not found: {remote_file_path}",
-                        "remote_size": None
+                        "remote_size": None,
                     }
                 else:
                     self.logger.warning(f"Could not get remote file size: {e}")
@@ -194,10 +214,12 @@ class SeptentrioDownloadManager(BaseDownloadManager):
                         "success": True,
                         "remote_size": remote_size,
                         "local_size": local_size,
-                        "bytes_downloaded": 0
+                        "bytes_downloaded": 0,
                     }
                 elif remote_size and local_size > remote_size:
-                    self.logger.warning(f"Local file larger than remote - removing: {local_file.name}")
+                    self.logger.warning(
+                        f"Local file larger than remote - removing: {local_file.name}"
+                    )
                     local_file.unlink()
                     resume_offset = 0
                 else:
@@ -206,7 +228,11 @@ class SeptentrioDownloadManager(BaseDownloadManager):
             # Download with progress bar if available
             if HAS_TQDM and remote_size:
                 return self._download_with_progress(
-                    connection, remote_file_path, local_file_path, remote_size, resume_offset
+                    connection,
+                    remote_file_path,
+                    local_file_path,
+                    remote_size,
+                    resume_offset,
                 )
             else:
                 return self._download_simple(
@@ -215,11 +241,7 @@ class SeptentrioDownloadManager(BaseDownloadManager):
 
         except Exception as e:
             self.logger.error(f"Download failed for {remote_file_path}: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-                "remote_size": None
-            }
+            return {"success": False, "error": str(e), "remote_size": None}
 
     def _download_with_progress(
         self,
@@ -227,7 +249,7 @@ class SeptentrioDownloadManager(BaseDownloadManager):
         remote_file_path: str,
         local_file_path: str,
         remote_size: int,
-        resume_offset: int
+        resume_offset: int,
     ) -> Dict[str, Any]:
         """Download with tqdm progress bar."""
         filename = Path(remote_file_path).name
@@ -239,14 +261,17 @@ class SeptentrioDownloadManager(BaseDownloadManager):
             unit="B",
             unit_scale=True,
             unit_divisor=1024,
-            desc=desc
+            desc=desc,
         ) as pbar:
             with open(local_file_path, "ab") as f:
+
                 def callback(chunk):
                     f.write(chunk)
                     pbar.update(len(chunk))
 
-                connection.retrbinary(f"RETR {remote_file_path}", callback, rest=resume_offset)
+                connection.retrbinary(
+                    f"RETR {remote_file_path}", callback, rest=resume_offset
+                )
 
         # Verify download
         local_size = os.path.getsize(local_file_path)
@@ -257,7 +282,7 @@ class SeptentrioDownloadManager(BaseDownloadManager):
             "remote_size": remote_size,
             "local_size": local_size,
             "bytes_downloaded": bytes_downloaded,
-            "complete": local_size == remote_size
+            "complete": local_size == remote_size,
         }
 
     def _download_simple(
@@ -265,13 +290,15 @@ class SeptentrioDownloadManager(BaseDownloadManager):
         connection: FTP,
         remote_file_path: str,
         local_file_path: str,
-        resume_offset: int
+        resume_offset: int,
     ) -> Dict[str, Any]:
         """Simple download without progress bar."""
         initial_size = resume_offset
 
         with open(local_file_path, "ab") as f:
-            connection.retrbinary(f"RETR {remote_file_path}", f.write, rest=resume_offset)
+            connection.retrbinary(
+                f"RETR {remote_file_path}", f.write, rest=resume_offset
+            )
 
         final_size = os.path.getsize(local_file_path)
         bytes_downloaded = final_size - initial_size
@@ -279,7 +306,7 @@ class SeptentrioDownloadManager(BaseDownloadManager):
         return {
             "success": bytes_downloaded > 0,
             "local_size": final_size,
-            "bytes_downloaded": bytes_downloaded
+            "bytes_downloaded": bytes_downloaded,
         }
 
     def _generate_archive_path(self, dt: datetime, session: str) -> str:

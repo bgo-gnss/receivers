@@ -47,7 +47,9 @@ class DownloadTracker:
             self._tracker = FileTracker()
             self._connected = self._tracker.connect()
             if self._connected:
-                logger.debug(f"Download tracker connected for {self.station_id}/{self.session}")
+                logger.debug(
+                    f"Download tracker connected for {self.station_id}/{self.session}"
+                )
             else:
                 logger.debug("Download tracking disabled (database unavailable)")
             return self._connected
@@ -79,7 +81,9 @@ class DownloadTracker:
             return False
 
         hour = file_hour if self.is_hourly else None
-        return self._tracker.is_file_missing(self.station_id, self.session, file_date, hour)
+        return self._tracker.is_file_missing(
+            self.station_id, self.session, file_date, hour
+        )
 
     def mark_downloaded(
         self,
@@ -106,7 +110,12 @@ class DownloadTracker:
 
         hour = file_hour if self.is_hourly else None
         return self._tracker.mark_file_downloaded(
-            self.station_id, self.session, file_date, hour, filename, file_size,
+            self.station_id,
+            self.session,
+            file_date,
+            hour,
+            filename,
+            file_size,
             remote_file_size=remote_file_size,
         )
 
@@ -135,7 +144,12 @@ class DownloadTracker:
 
         hour = file_hour if self.is_hourly else None
         return self._tracker.mark_file_archived(
-            self.station_id, self.session, file_date, hour, filename, file_size,
+            self.station_id,
+            self.session,
+            file_date,
+            hour,
+            filename,
+            file_size,
             remote_file_size=remote_file_size,
         )
 
@@ -232,11 +246,14 @@ class DownloadTracker:
             file_size = None
             if filename:
                 for downloaded_path in downloaded_files:
-                    if filename in downloaded_path or Path(downloaded_path).name == filename:
+                    if (
+                        filename in downloaded_path
+                        or Path(downloaded_path).name == filename
+                    ):
                         was_downloaded = True
                         try:
                             file_size = Path(downloaded_path).stat().st_size
-                        except (OSError, IOError):
+                        except OSError:
                             pass
                         break
 
@@ -259,7 +276,9 @@ class DownloadTracker:
         self.close()
 
 
-def parse_date_from_filename(filename: str, station_id: str) -> Optional[Tuple[date, Optional[int]]]:
+def parse_date_from_filename(
+    filename: str, station_id: str
+) -> Optional[Tuple[date, Optional[int]]]:
     """Parse date and hour from various filename formats.
 
     Supports formats:

@@ -3,16 +3,17 @@
 Tests the resource pool management for network and CPU operations.
 """
 
-import pytest
+import sys
 import time
 from concurrent.futures import Future
+from pathlib import Path
 from unittest.mock import Mock, patch
 
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
+import pytest
 
-from receivers.scheduling.resource_pools import ResourcePoolManager, PoolStatus
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
+from receivers.scheduling.resource_pools import PoolStatus, ResourcePoolManager
 from receivers.scheduling.task_interface import TaskPriority
 
 
@@ -31,8 +32,8 @@ class TestResourcePoolManager:
     def test_init_custom_config(self):
         """Test initialization with custom configuration."""
         config = {
-            'network_workers': 5,
-            'cpu_workers': 2,
+            "network_workers": 5,
+            "cpu_workers": 2,
         }
         manager = ResourcePoolManager(config)
 
@@ -52,14 +53,14 @@ class TestResourcePoolManager:
 
     def test_submit_network_task(self):
         """Test submitting a network (I/O-bound) task."""
-        manager = ResourcePoolManager({'network_workers': 2})
+        manager = ResourcePoolManager({"network_workers": 2})
         manager.start()
 
         try:
             result_container = []
 
             def task():
-                result_container.append('done')
+                result_container.append("done")
                 return 42
 
             future = manager.submit_network(task, priority=TaskPriority.STANDARD)
@@ -67,21 +68,19 @@ class TestResourcePoolManager:
 
             result = future.result(timeout=5)
             assert result == 42
-            assert 'done' in result_container
+            assert "done" in result_container
         finally:
             manager.shutdown()
 
     def test_submit_cpu_task(self):
         """Test submitting a CPU-bound task."""
-        manager = ResourcePoolManager({'cpu_workers': 1})
+        manager = ResourcePoolManager({"cpu_workers": 1})
         manager.start()
 
         try:
             # CPU tasks need picklable functions
             future = manager.submit_cpu(
-                sum,
-                [1, 2, 3, 4, 5],
-                priority=TaskPriority.STANDARD
+                sum, [1, 2, 3, 4, 5], priority=TaskPriority.STANDARD
             )
             assert isinstance(future, Future)
 
@@ -92,56 +91,56 @@ class TestResourcePoolManager:
 
     def test_get_status(self):
         """Test getting pool status."""
-        manager = ResourcePoolManager({'network_workers': 3, 'cpu_workers': 2})
+        manager = ResourcePoolManager({"network_workers": 3, "cpu_workers": 2})
         manager.start()
 
         try:
             status = manager.get_status()
 
-            assert 'network' in status
-            assert 'cpu' in status
+            assert "network" in status
+            assert "cpu" in status
 
-            network_status = status['network']
+            network_status = status["network"]
             assert isinstance(network_status, PoolStatus)
             assert network_status.max_workers == 3
-            assert network_status.pool_type == 'network'
+            assert network_status.pool_type == "network"
 
-            cpu_status = status['cpu']
+            cpu_status = status["cpu"]
             assert isinstance(cpu_status, PoolStatus)
             assert cpu_status.max_workers == 2
-            assert cpu_status.pool_type == 'cpu'
+            assert cpu_status.pool_type == "cpu"
         finally:
             manager.shutdown()
 
     def test_context_manager(self):
         """Test using manager as context manager."""
-        with ResourcePoolManager({'network_workers': 2}) as manager:
-            future = manager.submit_network(lambda: 'hello')
+        with ResourcePoolManager({"network_workers": 2}) as manager:
+            future = manager.submit_network(lambda: "hello")
             result = future.result(timeout=5)
-            assert result == 'hello'
+            assert result == "hello"
 
         # Pools should be shut down after exiting context
         assert manager._network_pool is None
 
     def test_shutdown_waits_for_tasks(self):
         """Test that shutdown waits for pending tasks."""
-        manager = ResourcePoolManager({'network_workers': 1})
+        manager = ResourcePoolManager({"network_workers": 1})
         manager.start()
 
         results = []
 
         def slow_task():
             time.sleep(0.5)
-            results.append('done')
+            results.append("done")
             return True
 
-        future = manager.submit_network(slow_task)
+        manager.submit_network(slow_task)
 
         # Shutdown should wait for the task
         manager.shutdown(wait=True)
 
         # Task should have completed
-        assert 'done' in results
+        assert "done" in results
 
     def test_priority_is_tracked(self):
         """Test that priority is tracked in task submission."""
@@ -151,14 +150,10 @@ class TestResourcePoolManager:
         try:
             # Submit tasks with different priorities
             future1 = manager.submit_network(
-                lambda: 1,
-                priority=TaskPriority.REALTIME,
-                task_id='realtime_task'
+                lambda: 1, priority=TaskPriority.REALTIME, task_id="realtime_task"
             )
             future2 = manager.submit_network(
-                lambda: 2,
-                priority=TaskPriority.BACKFILL,
-                task_id='backfill_task'
+                lambda: 2, priority=TaskPriority.BACKFILL, task_id="backfill_task"
             )
 
             # Both should complete
@@ -169,7 +164,7 @@ class TestResourcePoolManager:
 
     def test_stats_tracking(self):
         """Test that statistics are tracked correctly."""
-        manager = ResourcePoolManager({'network_workers': 2})
+        manager = ResourcePoolManager({"network_workers": 2})
         manager.start()
 
         try:
@@ -182,8 +177,8 @@ class TestResourcePoolManager:
             time.sleep(0.1)
 
             status = manager.get_status()
-            assert status['network'].completed_total == 3
-            assert status['network'].failed_total == 0
+            assert status["network"].completed_total == 3
+            assert status["network"].failed_total == 0
         finally:
             manager.shutdown()
 
@@ -194,7 +189,7 @@ class TestPoolStatus:
     def test_pool_status_creation(self):
         """Test PoolStatus dataclass creation."""
         status = PoolStatus(
-            pool_type='network',
+            pool_type="network",
             max_workers=5,
             active_tasks=2,
             pending_tasks=3,
@@ -203,7 +198,7 @@ class TestPoolStatus:
             avg_duration_seconds=1.5,
         )
 
-        assert status.pool_type == 'network'
+        assert status.pool_type == "network"
         assert status.max_workers == 5
         assert status.active_tasks == 2
         assert status.pending_tasks == 3
@@ -212,5 +207,5 @@ class TestPoolStatus:
         assert status.avg_duration_seconds == 1.5
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

@@ -11,13 +11,14 @@ Supports multiple schedule formats:
 """
 
 import re
-from typing import Dict, Any, Union, List, Tuple
 from dataclasses import dataclass
+from typing import Any, Dict, List, Tuple, Union
 
 
 @dataclass
 class ScheduleTrigger:
     """Parsed schedule configuration for APScheduler."""
+
     trigger_type: str  # 'cron' or 'interval'
     trigger_kwargs: Dict[str, Any]  # Arguments for add_job()
     description: str  # Human-readable description
@@ -68,7 +69,7 @@ def parse_schedule(schedule: Union[str, List[str], Dict[str, Any]]) -> ScheduleT
             return _parse_cron_expression(schedule[5:].strip())
 
         # Interval: "6h", "45m"
-        if re.match(r'^\d+[hm]$', schedule):
+        if re.match(r"^\d+[hm]$", schedule):
             return _parse_interval(schedule)
 
         # Every hour at minute: ":15"
@@ -76,7 +77,7 @@ def parse_schedule(schedule: Union[str, List[str], Dict[str, Any]]) -> ScheduleT
             return _parse_hourly_minute(schedule)
 
         # Single time: "00:10", "08:30"
-        if re.match(r'^\d{1,2}:\d{2}$', schedule):
+        if re.match(r"^\d{1,2}:\d{2}$", schedule):
             return _parse_single_time(schedule)
 
     raise ValueError(f"Invalid schedule format: {schedule}")
@@ -84,20 +85,20 @@ def parse_schedule(schedule: Union[str, List[str], Dict[str, Any]]) -> ScheduleT
 
 def _parse_legacy_format(config: Dict[str, Any]) -> ScheduleTrigger:
     """Parse legacy {schedule_minute, frequency} format."""
-    minute = config.get('schedule_minute', 0)
-    frequency = config.get('frequency', 'daily')
+    minute = config.get("schedule_minute", 0)
+    frequency = config.get("frequency", "daily")
 
-    if frequency == 'daily':
+    if frequency == "daily":
         return ScheduleTrigger(
-            trigger_type='cron',
-            trigger_kwargs={'hour': 0, 'minute': minute},
-            description=f"Daily at 00:{minute:02d}"
+            trigger_type="cron",
+            trigger_kwargs={"hour": 0, "minute": minute},
+            description=f"Daily at 00:{minute:02d}",
         )
-    elif frequency == 'hourly':
+    elif frequency == "hourly":
         return ScheduleTrigger(
-            trigger_type='cron',
-            trigger_kwargs={'minute': minute},
-            description=f"Hourly at :{minute:02d}"
+            trigger_type="cron",
+            trigger_kwargs={"minute": minute},
+            description=f"Hourly at :{minute:02d}",
         )
     else:
         raise ValueError(f"Invalid frequency: {frequency}")
@@ -117,7 +118,7 @@ def _parse_time_list(times: List[str]) -> ScheduleTrigger:
 
     for time_str in times:
         time_str = time_str.strip()
-        match = re.match(r'^(\d{1,2}):(\d{2})$', time_str)
+        match = re.match(r"^(\d{1,2}):(\d{2})$", time_str)
         if not match:
             raise ValueError(f"Invalid time format: {time_str} (expected HH:MM)")
 
@@ -136,18 +137,18 @@ def _parse_time_list(times: List[str]) -> ScheduleTrigger:
         raise ValueError(f"All times must have same minute: {times}")
 
     minute = minutes.pop()
-    hour_str = ','.join(str(h) for h in sorted(hours))
+    hour_str = ",".join(str(h) for h in sorted(hours))
 
     return ScheduleTrigger(
-        trigger_type='cron',
-        trigger_kwargs={'hour': hour_str, 'minute': minute},
-        description=f"{len(hours)} times daily at {hour_str}:{minute:02d}"
+        trigger_type="cron",
+        trigger_kwargs={"hour": hour_str, "minute": minute},
+        description=f"{len(hours)} times daily at {hour_str}:{minute:02d}",
     )
 
 
 def _parse_single_time(time_str: str) -> ScheduleTrigger:
     """Parse single time "HH:MM" into daily schedule."""
-    match = re.match(r'^(\d{1,2}):(\d{2})$', time_str)
+    match = re.match(r"^(\d{1,2}):(\d{2})$", time_str)
     if not match:
         raise ValueError(f"Invalid time format: {time_str}")
 
@@ -160,16 +161,16 @@ def _parse_single_time(time_str: str) -> ScheduleTrigger:
         raise ValueError(f"Invalid minute: {minute}")
 
     return ScheduleTrigger(
-        trigger_type='cron',
-        trigger_kwargs={'hour': hour, 'minute': minute},
-        description=f"Daily at {hour:02d}:{minute:02d}"
+        trigger_type="cron",
+        trigger_kwargs={"hour": hour, "minute": minute},
+        description=f"Daily at {hour:02d}:{minute:02d}",
     )
 
 
 def _parse_hourly_minute(minute_str: str) -> ScheduleTrigger:
     """Parse ":MM" into every-hour-at-minute schedule."""
     minute_str = minute_str.strip()
-    if not minute_str.startswith(':'):
+    if not minute_str.startswith(":"):
         raise ValueError(f"Invalid format: {minute_str}")
 
     minute = int(minute_str[1:])
@@ -177,32 +178,32 @@ def _parse_hourly_minute(minute_str: str) -> ScheduleTrigger:
         raise ValueError(f"Invalid minute: {minute}")
 
     return ScheduleTrigger(
-        trigger_type='cron',
-        trigger_kwargs={'minute': minute},
-        description=f"Hourly at :{minute:02d}"
+        trigger_type="cron",
+        trigger_kwargs={"minute": minute},
+        description=f"Hourly at :{minute:02d}",
     )
 
 
 def _parse_interval(interval_str: str) -> ScheduleTrigger:
     """Parse "Nh" or "Nm" into interval schedule."""
-    match = re.match(r'^(\d+)([hm])$', interval_str)
+    match = re.match(r"^(\d+)([hm])$", interval_str)
     if not match:
         raise ValueError(f"Invalid interval format: {interval_str}")
 
     value = int(match.group(1))
     unit = match.group(2)
 
-    if unit == 'h':
+    if unit == "h":
         return ScheduleTrigger(
-            trigger_type='interval',
-            trigger_kwargs={'hours': value},
-            description=f"Every {value} hour{'s' if value > 1 else ''}"
+            trigger_type="interval",
+            trigger_kwargs={"hours": value},
+            description=f"Every {value} hour{'s' if value > 1 else ''}",
         )
     else:  # 'm'
         return ScheduleTrigger(
-            trigger_type='interval',
-            trigger_kwargs={'minutes': value},
-            description=f"Every {value} minute{'s' if value > 1 else ''}"
+            trigger_type="interval",
+            trigger_kwargs={"minutes": value},
+            description=f"Every {value} minute{'s' if value > 1 else ''}",
         )
 
 
@@ -221,21 +222,19 @@ def _parse_cron_expression(cron_str: str) -> ScheduleTrigger:
     minute, hour, day, month, day_of_week = parts
     kwargs = {}
 
-    if minute != '*':
-        kwargs['minute'] = minute
-    if hour != '*':
-        kwargs['hour'] = hour
-    if day != '*':
-        kwargs['day'] = day
-    if month != '*':
-        kwargs['month'] = month
-    if day_of_week != '*':
-        kwargs['day_of_week'] = day_of_week
+    if minute != "*":
+        kwargs["minute"] = minute
+    if hour != "*":
+        kwargs["hour"] = hour
+    if day != "*":
+        kwargs["day"] = day
+    if month != "*":
+        kwargs["month"] = month
+    if day_of_week != "*":
+        kwargs["day_of_week"] = day_of_week
 
     return ScheduleTrigger(
-        trigger_type='cron',
-        trigger_kwargs=kwargs,
-        description=f"Cron: {cron_str}"
+        trigger_type="cron", trigger_kwargs=kwargs, description=f"Cron: {cron_str}"
     )
 
 
@@ -243,7 +242,7 @@ def apply_distribution_window(
     trigger: ScheduleTrigger,
     station_index: int,
     total_stations: int,
-    window_minutes: int
+    window_minutes: int,
 ) -> Tuple[str, Dict[str, Any]]:
     """Apply distribution window to spread stations across time.
 
@@ -260,7 +259,7 @@ def apply_distribution_window(
 
     kwargs = trigger.trigger_kwargs.copy()
 
-    if trigger.trigger_type == 'interval':
+    if trigger.trigger_type == "interval":
         # For interval triggers, stagger start times across the distribution window
         # This ensures stations don't all run at the same instant
         if total_stations <= 1 or window_minutes <= 0:
@@ -273,7 +272,7 @@ def apply_distribution_window(
 
         # Set start_date to now + offset so first run is staggered
         start_time = datetime.now(timezone.utc) + timedelta(seconds=seconds_offset)
-        kwargs['start_date'] = start_time
+        kwargs["start_date"] = start_time
 
         return trigger.trigger_type, kwargs
 
@@ -287,11 +286,11 @@ def apply_distribution_window(
         minute_offset = int(station_index / stations_per_minute)
 
     # Apply offset to minute field
-    base_minute = kwargs.get('minute', 0)
+    base_minute = kwargs.get("minute", 0)
 
     # Handle different minute formats
     if isinstance(base_minute, int):
-        kwargs['minute'] = (base_minute + minute_offset) % 60
+        kwargs["minute"] = (base_minute + minute_offset) % 60
     elif isinstance(base_minute, str):
         # For complex minute expressions (*/5, 0,30), don't apply offset
         # This is a limitation - user should avoid distribution with complex cron

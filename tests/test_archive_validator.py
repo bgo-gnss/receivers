@@ -5,22 +5,22 @@ to the existing receiver implementations' validation logic.
 """
 
 import gzip
-import pytest
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from receivers.utils.archive_validator import (
-    ArchiveValidator,
     ArchiveLocation,
-    GzipValidator
+    ArchiveValidator,
+    GzipValidator,
 )
 from receivers.utils.file_validator import FileValidator
-
 from tests.fixtures.test_data import (
-    ARCHIVE_VALIDATION_CASES,
     ARCHIVE_DISCOVERY_CASES,
+    ARCHIVE_VALIDATION_CASES,
     create_test_file,
-    get_test_case_by_name
+    get_test_case_by_name,
 )
 
 
@@ -38,7 +38,9 @@ class TestGzipValidator:
     def test_invalid_gzip_magic_bytes(self, tmp_path):
         """Test validation of file with incorrect gzip magic bytes."""
         test_file = tmp_path / "test.sbf.gz"
-        create_test_file(test_file, size=2048, is_compressed=True, gzip_magic=b'\x00\x00')
+        create_test_file(
+            test_file, size=2048, is_compressed=True, gzip_magic=b"\x00\x00"
+        )
 
         validator = GzipValidator()
         assert validator.validate_magic_bytes(test_file) is False
@@ -46,7 +48,7 @@ class TestGzipValidator:
     def test_get_extension(self):
         """Test extension getter."""
         validator = GzipValidator()
-        assert validator.get_extension() == '.gz'
+        assert validator.get_extension() == ".gz"
 
 
 class TestArchiveValidatorBasics:
@@ -54,68 +56,70 @@ class TestArchiveValidatorBasics:
 
     def test_validate_valid_uncompressed_file(self, tmp_path):
         """Test validation of valid uncompressed file."""
-        case = get_test_case_by_name(ARCHIVE_VALIDATION_CASES, 'valid_uncompressed_file')
-        test_file = tmp_path / case['file_path']
-        create_test_file(test_file, size=case['file_size'], is_compressed=False)
+        case = get_test_case_by_name(
+            ARCHIVE_VALIDATION_CASES, "valid_uncompressed_file"
+        )
+        test_file = tmp_path / case["file_path"]
+        create_test_file(test_file, size=case["file_size"], is_compressed=False)
 
         validator = ArchiveValidator()
         result = validator.validate_archived_file(test_file)
 
-        assert result == case['expected_valid']
+        assert result == case["expected_valid"]
 
     def test_validate_valid_compressed_file(self, tmp_path):
         """Test validation of valid gzip compressed file."""
-        case = get_test_case_by_name(ARCHIVE_VALIDATION_CASES, 'valid_compressed_file')
-        test_file = tmp_path / case['file_path']
+        case = get_test_case_by_name(ARCHIVE_VALIDATION_CASES, "valid_compressed_file")
+        test_file = tmp_path / case["file_path"]
         create_test_file(
             test_file,
-            size=case['file_size'],
+            size=case["file_size"],
             is_compressed=True,
-            gzip_magic=case['gzip_magic_bytes']
+            gzip_magic=case["gzip_magic_bytes"],
         )
 
         validator = ArchiveValidator()
         result = validator.validate_archived_file(test_file)
 
-        assert result == case['expected_valid']
+        assert result == case["expected_valid"]
 
     def test_validate_zero_size_file(self, tmp_path):
         """Test validation of zero-size file (should be invalid)."""
-        case = get_test_case_by_name(ARCHIVE_VALIDATION_CASES, 'zero_size_file')
-        test_file = tmp_path / case['file_path']
+        case = get_test_case_by_name(ARCHIVE_VALIDATION_CASES, "zero_size_file")
+        test_file = tmp_path / case["file_path"]
         create_test_file(test_file, size=0, is_compressed=False)
 
         validator = ArchiveValidator()
         result = validator.validate_archived_file(test_file)
 
-        assert result == case['expected_valid']
+        assert result == case["expected_valid"]
 
     def test_validate_too_small_file(self, tmp_path):
         """Test validation of file smaller than minimum threshold."""
-        case = get_test_case_by_name(ARCHIVE_VALIDATION_CASES, 'too_small_file')
-        test_file = tmp_path / case['file_path']
-        create_test_file(test_file, size=case['file_size'], is_compressed=False)
+        case = get_test_case_by_name(ARCHIVE_VALIDATION_CASES, "too_small_file")
+        test_file = tmp_path / case["file_path"]
+        create_test_file(test_file, size=case["file_size"], is_compressed=False)
 
         validator = ArchiveValidator()
         result = validator.validate_archived_file(test_file)
 
-        assert result == case['expected_valid']
+        assert result == case["expected_valid"]
 
     def test_validate_corrupted_gzip_header(self, tmp_path):
         """Test validation of gzip file with invalid magic bytes."""
-        case = get_test_case_by_name(ARCHIVE_VALIDATION_CASES, 'corrupted_gzip_header')
-        test_file = tmp_path / case['file_path']
+        case = get_test_case_by_name(ARCHIVE_VALIDATION_CASES, "corrupted_gzip_header")
+        test_file = tmp_path / case["file_path"]
         create_test_file(
             test_file,
-            size=case['file_size'],
+            size=case["file_size"],
             is_compressed=True,
-            gzip_magic=case['gzip_magic_bytes']  # Wrong magic bytes
+            gzip_magic=case["gzip_magic_bytes"],  # Wrong magic bytes
         )
 
         validator = ArchiveValidator()
         result = validator.validate_archived_file(test_file)
 
-        assert result == case['expected_valid']
+        assert result == case["expected_valid"]
 
     def test_validate_nonexistent_file(self, tmp_path):
         """Test validation of file that doesn't exist."""
@@ -179,9 +183,7 @@ class TestArchiveDiscovery:
 
         validator = ArchiveValidator()
         found, path, location = validator.find_existing_archive(
-            filename,
-            str(archive_path),
-            self.tmp_dir
+            filename, str(archive_path), self.tmp_dir
         )
 
         assert found is True
@@ -197,9 +199,7 @@ class TestArchiveDiscovery:
 
         validator = ArchiveValidator()
         found, path, location = validator.find_existing_archive(
-            filename,
-            str(archive_path_base),
-            self.tmp_dir
+            filename, str(archive_path_base), self.tmp_dir
         )
 
         assert found is True
@@ -217,9 +217,7 @@ class TestArchiveDiscovery:
 
         validator = ArchiveValidator()
         found, path, location = validator.find_existing_archive(
-            filename,
-            str(archive_path),
-            self.tmp_dir
+            filename, str(archive_path), self.tmp_dir
         )
 
         assert found is True
@@ -233,9 +231,7 @@ class TestArchiveDiscovery:
 
         validator = ArchiveValidator()
         found, path, location = validator.find_existing_archive(
-            filename,
-            str(archive_path),
-            self.tmp_dir
+            filename, str(archive_path), self.tmp_dir
         )
 
         assert found is False
@@ -255,9 +251,7 @@ class TestArchiveDiscovery:
 
         validator = ArchiveValidator()
         found, path, location = validator.find_existing_archive(
-            filename,
-            str(archive_path),
-            self.tmp_dir
+            filename, str(archive_path), self.tmp_dir
         )
 
         # Should find in archive, not tmp
@@ -282,9 +276,9 @@ class TestBatchValidation:
     def test_batch_with_all_files_existing(self):
         """Test batch validation when all files exist in archive."""
         files_dict = {
-            'ELDC202509240000a.sbf': '/remote/path/a',
-            'ELDC202509250000a.sbf': '/remote/path/b',
-            'ELDC202509260000a.sbf': '/remote/path/c',
+            "ELDC202509240000a.sbf": "/remote/path/a",
+            "ELDC202509250000a.sbf": "/remote/path/b",
+            "ELDC202509260000a.sbf": "/remote/path/c",
         }
 
         archive_files_dict = {}
@@ -296,9 +290,7 @@ class TestBatchValidation:
 
         validator = ArchiveValidator()
         missing, found, validated, in_tmp = validator.batch_validate_archives(
-            files_dict,
-            archive_files_dict,
-            self.tmp_dir
+            files_dict, archive_files_dict, self.tmp_dir
         )
 
         assert len(missing) == 0  # No files missing
@@ -309,14 +301,14 @@ class TestBatchValidation:
     def test_batch_with_some_files_missing(self):
         """Test batch validation with some files missing."""
         files_dict = {
-            'ELDC202509240000a.sbf': '/remote/path/a',
-            'ELDC202509250000a.sbf': '/remote/path/b',
-            'ELDC202509260000a.sbf': '/remote/path/c',
+            "ELDC202509240000a.sbf": "/remote/path/a",
+            "ELDC202509250000a.sbf": "/remote/path/b",
+            "ELDC202509260000a.sbf": "/remote/path/c",
         }
 
         archive_files_dict = {}
         # Create only first file
-        first_filename = 'ELDC202509240000a.sbf'
+        first_filename = "ELDC202509240000a.sbf"
         archive_path = self.archive_dir / first_filename
         create_test_file(archive_path, size=2048, is_compressed=False)
         archive_files_dict[first_filename] = str(archive_path)
@@ -328,17 +320,15 @@ class TestBatchValidation:
 
         validator = ArchiveValidator()
         missing, found, validated, in_tmp = validator.batch_validate_archives(
-            files_dict,
-            archive_files_dict,
-            self.tmp_dir
+            files_dict, archive_files_dict, self.tmp_dir
         )
 
         assert len(missing) == 2  # 2 files missing
         assert found == 1  # 1 file found
         assert validated == 3  # All 3 validated
         assert len(in_tmp) == 0  # No files in tmp
-        assert 'ELDC202509250000a.sbf' in missing
-        assert 'ELDC202509260000a.sbf' in missing
+        assert "ELDC202509250000a.sbf" in missing
+        assert "ELDC202509260000a.sbf" in missing
 
 
 class TestDetailedReport:
@@ -352,13 +342,13 @@ class TestDetailedReport:
         validator = ArchiveValidator()
         report = validator.validate_with_detailed_report(test_file)
 
-        assert report['valid'] is True
-        assert report['file_exists'] is True
-        assert report['file_size'] == 2048
-        assert report['meets_min_size'] is True
-        assert report['compression_format'] == '.gz'
-        assert report['compression_valid'] is True
-        assert len(report['errors']) == 0
+        assert report["valid"] is True
+        assert report["file_exists"] is True
+        assert report["file_size"] == 2048
+        assert report["meets_min_size"] is True
+        assert report["compression_format"] == ".gz"
+        assert report["compression_valid"] is True
+        assert len(report["errors"]) == 0
 
     def test_detailed_report_missing_file(self, tmp_path):
         """Test detailed report for missing file."""
@@ -367,20 +357,22 @@ class TestDetailedReport:
         validator = ArchiveValidator()
         report = validator.validate_with_detailed_report(test_file)
 
-        assert report['valid'] is False
-        assert report['file_exists'] is False
-        assert len(report['errors']) > 0
+        assert report["valid"] is False
+        assert report["file_exists"] is False
+        assert len(report["errors"]) > 0
 
     def test_detailed_report_corrupted_compression(self, tmp_path):
         """Test detailed report for file with invalid compression."""
         test_file = tmp_path / "test.sbf.gz"
-        create_test_file(test_file, size=2048, is_compressed=True, gzip_magic=b'\x00\x00')
+        create_test_file(
+            test_file, size=2048, is_compressed=True, gzip_magic=b"\x00\x00"
+        )
 
         validator = ArchiveValidator()
         report = validator.validate_with_detailed_report(test_file)
 
-        assert report['valid'] is False
-        assert report['file_exists'] is True
-        assert report['compression_format'] == '.gz'
-        assert report['compression_valid'] is False
-        assert len(report['errors']) > 0
+        assert report["valid"] is False
+        assert report["file_exists"] is True
+        assert report["compression_format"] == ".gz"
+        assert report["compression_valid"] is False
+        assert len(report["errors"]) > 0

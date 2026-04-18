@@ -16,13 +16,13 @@ Requirements:
 
 import logging
 import sys
-from pathlib import Path
 from datetime import datetime, timedelta
+from pathlib import Path
 
 # Add receivers package to path
-sys.path.insert(0, '/home/bgo/work/projects/gps/gpslibrary_new/receivers/src')
-sys.path.insert(0, '/home/bgo/work/projects/gps/gpslibrary_new/gps_parser/src')
-sys.path.insert(0, '/home/bgo/work/projects/gps/gpslibrary_new/gtimes/src')
+sys.path.insert(0, "/home/bgo/work/projects/gps/gpslibrary_new/receivers/src")
+sys.path.insert(0, "/home/bgo/work/projects/gps/gpslibrary_new/gps_parser/src")
+sys.path.insert(0, "/home/bgo/work/projects/gps/gpslibrary_new/gtimes/src")
 
 # ============================================================================
 # CONFIGURATION - EDIT THESE VALUES
@@ -48,8 +48,7 @@ DAYS_BACK = 0  # Download today's file (just started)
 # ============================================================================
 
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -65,16 +64,13 @@ def test_authentication():
 
         # Build station config with auth credentials
         station_config = {
-            "router": {
-                "ip": TEST_IP,
-                "ftp_mode": "active"
-            },
+            "router": {"ip": TEST_IP, "ftp_mode": "active"},
             "receiver": {
                 "httpport": TEST_PORT,  # NATT uses port 80
                 "user": TEST_USERNAME,  # Auth credentials
                 "pwd": TEST_PASSWORD,
-                "timeout_category": "mobile"
-            }
+                "timeout_category": "mobile",
+            },
         }
 
         logger.info(f"Testing connection to {TEST_STATION}")
@@ -90,18 +86,19 @@ def test_authentication():
         result = client.test_connection()
 
         if result["success"]:
-            logger.info(f"✅ Authentication SUCCESS!")
+            logger.info("✅ Authentication SUCCESS!")
             logger.info(f"   Connection time: {result['duration']:.2f}s")
             logger.info(f"   Response size: {result['response_size']} bytes")
             return True
         else:
-            logger.error(f"❌ Authentication FAILED!")
+            logger.error("❌ Authentication FAILED!")
             logger.error(f"   Error: {result['error']}")
             return False
 
     except Exception as e:
         logger.error(f"❌ Test failed with exception: {e}")
         import traceback
+
         traceback.print_exc()
         return False
 
@@ -116,16 +113,13 @@ def test_directory_listing():
         from receivers.trimble.http_download_client import NetR9HTTPDownloader
 
         station_config = {
-            "router": {
-                "ip": TEST_IP,
-                "ftp_mode": "active"
-            },
+            "router": {"ip": TEST_IP, "ftp_mode": "active"},
             "receiver": {
                 "httpport": TEST_PORT,
                 "user": TEST_USERNAME,
                 "pwd": TEST_PASSWORD,
-                "timeout_category": "mobile"
-            }
+                "timeout_category": "mobile",
+            },
         }
 
         downloader = NetR9HTTPDownloader(TEST_STATION, station_config)
@@ -146,28 +140,33 @@ def test_directory_listing():
         files = downloader.get_directory_listing(remote_path)
 
         if files:
-            logger.info(f"✅ Directory listing SUCCESS!")
+            logger.info("✅ Directory listing SUCCESS!")
             logger.info(f"   Found {len(files)} files")
 
             # Check for firmware bug with underscores (e.g., ISAF______... instead of ISAF...)
             underscore_files = [f for f in files if "______" in f[0]]
             if underscore_files:
-                logger.warning(f"⚠️  Detected firmware bug: {len(underscore_files)} files with underscore padding")
+                logger.warning(
+                    f"⚠️  Detected firmware bug: {len(underscore_files)} files with underscore padding"
+                )
                 logger.warning(f"   Example: {underscore_files[0][0]}")
-                logger.info(f"   This is expected for NATT receivers with downgraded firmware")
+                logger.info(
+                    "   This is expected for NATT receivers with downgraded firmware"
+                )
 
-            logger.info(f"   Sample files:")
+            logger.info("   Sample files:")
             for filename, size in files[:5]:
                 logger.info(f"     - {filename} ({size:,} bytes)")
             return True
         else:
             logger.warning(f"⚠️  No files found in {remote_path}")
-            logger.info(f"   This might be expected if no data exists for this session")
+            logger.info("   This might be expected if no data exists for this session")
             return True  # Not a failure, just empty directory
 
     except Exception as e:
         logger.error(f"❌ Test failed with exception: {e}")
         import traceback
+
         traceback.print_exc()
         return False
 
@@ -182,16 +181,13 @@ def test_file_download():
         from receivers.trimble.http_download_client import NetR9HTTPDownloader
 
         station_config = {
-            "router": {
-                "ip": TEST_IP,
-                "ftp_mode": "active"
-            },
+            "router": {"ip": TEST_IP, "ftp_mode": "active"},
             "receiver": {
                 "httpport": TEST_PORT,
                 "user": TEST_USERNAME,
                 "pwd": TEST_PASSWORD,
-                "timeout_category": "mobile"
-            }
+                "timeout_category": "mobile",
+            },
         }
 
         downloader = NetR9HTTPDownloader(TEST_STATION, station_config)
@@ -203,13 +199,10 @@ def test_file_download():
         # Build remote path and find available files
         if TEST_SESSION == "15s_24hr":
             remote_path = f"/Internal/{year_month}/15s_24hr"
-            session_letter = "a"
         elif TEST_SESSION == "1Hz_1hr":
             remote_path = f"/Internal/{year_month}/1Hz_1hr"
-            session_letter = "b"
         else:
             remote_path = f"/Internal/{year_month}/{TEST_SESSION}"
-            session_letter = "b"
 
         logger.info(f"Looking for files in: {remote_path}")
 
@@ -217,7 +210,7 @@ def test_file_download():
         files = downloader.get_directory_listing(remote_path)
 
         if not files:
-            logger.error(f"❌ No files found for download test")
+            logger.error("❌ No files found for download test")
             return False
 
         # Pick the first file
@@ -230,23 +223,28 @@ def test_file_download():
         local_path = tmp_dir / filename
 
         # Attempt download
-        success = downloader.download_file(remote_path, filename, local_path, expected_size)
+        success = downloader.download_file(
+            remote_path, filename, local_path, expected_size
+        )
 
         if success and local_path.exists():
             actual_size = local_path.stat().st_size
-            logger.info(f"✅ Download SUCCESS!")
+            logger.info("✅ Download SUCCESS!")
             logger.info(f"   File: {local_path}")
             logger.info(f"   Size: {actual_size:,} bytes")
             logger.info(f"   Expected: {expected_size:,} bytes")
-            logger.info(f"   Match: {'✅ YES' if actual_size == expected_size else '❌ NO'}")
+            logger.info(
+                f"   Match: {'✅ YES' if actual_size == expected_size else '❌ NO'}"
+            )
             return actual_size == expected_size
         else:
-            logger.error(f"❌ Download FAILED")
+            logger.error("❌ Download FAILED")
             return False
 
     except Exception as e:
         logger.error(f"❌ Test failed with exception: {e}")
         import traceback
+
         traceback.print_exc()
         return False
 
@@ -255,9 +253,10 @@ def get_station_ip(station_id: str) -> str:
     """Get station IP from gps_parser configuration."""
     try:
         import gps_parser
+
         parser = gps_parser.ConfigParser()
         station_info = parser.getStationInfo(station_id)
-        return station_info['station']['router_ip']
+        return station_info["station"]["router_ip"]
     except Exception as e:
         logger.error(f"Failed to get IP for {station_id}: {e}")
         logger.error("Make sure station is configured in stations.cfg")
@@ -273,7 +272,7 @@ def main():
     logger.info("")
 
     # Configuration is now set for ISAF - ready to test!
-    logger.info(f"📝 Configuration:")
+    logger.info("📝 Configuration:")
     logger.info(f"   IP: {TEST_IP}")
     logger.info(f"   Port: {TEST_PORT}")
     logger.info(f"   User: {TEST_USERNAME}")
@@ -282,11 +281,11 @@ def main():
     results = {}
 
     # Run tests
-    results['auth'] = test_authentication()
-    if results['auth']:
-        results['listing'] = test_directory_listing()
-        if results['listing']:
-            results['download'] = test_file_download()
+    results["auth"] = test_authentication()
+    if results["auth"]:
+        results["listing"] = test_directory_listing()
+        if results["listing"]:
+            results["download"] = test_file_download()
 
     # Summary
     logger.info("\n" + "=" * 70)

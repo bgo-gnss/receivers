@@ -60,14 +60,17 @@ def _backfill_next_station_for_session(
             with DatabaseConnectionFactory.connection() as conn:
                 with conn.cursor() as cur:
                     # Pick station processed least recently for this session type
-                    cur.execute("""
+                    cur.execute(
+                        """
                         SELECT sid, next_date, backfill_start, backfill_end
                         FROM backfill_progress
                         WHERE session_type = %s
                           AND status IN ('pending', 'in_progress')
                         ORDER BY last_run ASC NULLS FIRST, sid
                         LIMIT 1
-                    """, (session_type,))
+                    """,
+                        (session_type,),
+                    )
                     row = cur.fetchone()
 
         if not row:
@@ -81,7 +84,10 @@ def _backfill_next_station_for_session(
         logger.info(f"Backfill {session_type}: {station_id} processing {current_dt}")
         use_immediate = archiving_mode != "bulk"
         has_more = _backfill_station_day_generic(
-            station_id, current_dt, backfill_end, session_type,
+            station_id,
+            current_dt,
+            backfill_end,
+            session_type,
             immediate_archive=use_immediate,
             run_rinex=run_rinex,
         )
@@ -117,7 +123,8 @@ def _pick_station_by_gap_count(
 
         with DatabaseConnectionFactory.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(
+                    """
                     WITH pending AS (
                         SELECT sid, next_date, backfill_start, backfill_end
                         FROM backfill_progress
@@ -142,7 +149,9 @@ def _pick_station_by_gap_count(
                     FROM gap_counts
                     ORDER BY archived_count ASC, sid
                     LIMIT 1
-                """, (session_type, session_type, days_back))
+                """,
+                    (session_type, session_type, days_back),
+                )
 
                 return cur.fetchone()
 
@@ -201,15 +210,20 @@ def _backfill_station_day_generic(
         # Mark as in_progress
         with DatabaseConnectionFactory.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(
+                    """
                     UPDATE backfill_progress
                     SET status = 'in_progress', updated_at = NOW()
                     WHERE sid = %s AND session_type = %s
-                """, (station_id, session_type))
+                """,
+                    (station_id, session_type),
+                )
 
         # Download files for this single day
         result = _download_day_generic(
-            station_id, process_date, session_type,
+            station_id,
+            process_date,
+            session_type,
             immediate_archive=immediate_archive,
         )
 
@@ -246,7 +260,8 @@ def _backfill_station_day_generic(
 
         with DatabaseConnectionFactory.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(
+                    """
                     UPDATE backfill_progress
                     SET next_date = %s,
                         status = %s,
@@ -258,12 +273,19 @@ def _backfill_station_day_generic(
                         last_duration_seconds = %s,
                         updated_at = NOW()
                     WHERE sid = %s AND session_type = %s
-                """, (
-                    next_date, new_status,
-                    files_found, files_imported, files_missing, files_error,
-                    duration,
-                    station_id, session_type,
-                ))
+                """,
+                    (
+                        next_date,
+                        new_status,
+                        files_found,
+                        files_imported,
+                        files_missing,
+                        files_error,
+                        duration,
+                        station_id,
+                        session_type,
+                    ),
+                )
 
         logger.info(
             f"Backfill {session_type} {station_id}/{process_date}: "
@@ -279,14 +301,17 @@ def _backfill_station_day_generic(
         try:
             with DatabaseConnectionFactory.connection() as conn:
                 with conn.cursor() as cur:
-                    cur.execute("""
+                    cur.execute(
+                        """
                         UPDATE backfill_progress
                         SET files_error = files_error + 1,
                             last_run = NOW(),
                             last_duration_seconds = %s,
                             updated_at = NOW()
                         WHERE sid = %s AND session_type = %s
-                    """, (time.time() - start_time, station_id, session_type))
+                    """,
+                        (time.time() - start_time, station_id, session_type),
+                    )
         except Exception:
             pass
         return True
@@ -310,7 +335,7 @@ def _download_day_generic(
         Download result dictionary, or None on setup error
     """
     try:
-        from ..cli.main import get_station_config, create_receiver
+        from ..cli.main import create_receiver, get_station_config
 
         station_config = get_station_config(station_id)
         if not station_config:
@@ -367,8 +392,8 @@ def _run_backfill_rinex(
         downloaded_files: List of downloaded raw file paths
     """
     try:
-        from .bulk_scheduler import _run_rinex_conversion
         from ..cli.main import get_station_config
+        from .bulk_scheduler import _run_rinex_conversion
 
         station_config = get_station_config(station_id)
         if not station_config:
@@ -376,7 +401,11 @@ def _run_backfill_rinex(
             return
 
         _run_rinex_conversion(
-            station_id, session_type, downloaded_files, station_config, logger,
+            station_id,
+            session_type,
+            downloaded_files,
+            station_config,
+            logger,
         )
 
     except ImportError as e:
@@ -406,8 +435,8 @@ def _extract_and_store_health(
     imported_count = 0
 
     try:
-        from ..health.timeseries_extractor import TimeSeriesHealthExtractor
         from ..health.json_importer import HealthJsonImporter
+        from ..health.timeseries_extractor import TimeSeriesHealthExtractor
     except ImportError as e:
         log.warning(f"Health extraction dependencies not available: {e}")
         return 0
@@ -424,7 +453,11 @@ def _extract_and_store_health(
 
         # Extract timeseries from all files at once (groups by day internally)
         file_date = _extract_date_from_path(sbf_files[0])
-        extract_date = datetime.combine(file_date, datetime.min.time()) if file_date else datetime.now(timezone.utc)
+        extract_date = (
+            datetime.combine(file_date, datetime.min.time())
+            if file_date
+            else datetime.now(timezone.utc)
+        )
 
         health_data = extractor.extract_daily_health(sbf_files, extract_date)
         sample_count = health_data.get("sample_count", 0)
@@ -439,9 +472,11 @@ def _extract_and_store_health(
                 rows = importer.import_health_data(health_data, station_id, "PolaRX5")
                 if rows > 0:
                     imported_count = len(sbf_files)
-                    log.debug(f"Imported {rows} rows from {len(sbf_files)} files for {station_id}")
+                    log.debug(
+                        f"Imported {rows} rows from {len(sbf_files)} files for {station_id}"
+                    )
             else:
-                log.warning(f"Failed to connect to database for health import")
+                log.warning("Failed to connect to database for health import")
 
     except Exception as e:
         log.error(f"Health extraction error for {station_id}: {e}")
@@ -484,5 +519,3 @@ def _extract_date_from_path(file_path: Path) -> Optional[date]:
             pass
 
     return None
-
-

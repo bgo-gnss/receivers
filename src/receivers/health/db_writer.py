@@ -66,7 +66,9 @@ class HealthDatabaseWriter:
             return True
 
         except ImportError:
-            self.logger.error("psycopg2 not installed - run: pip install psycopg2-binary")
+            self.logger.error(
+                "psycopg2 not installed - run: pip install psycopg2-binary"
+            )
             return False
         except Exception as e:
             self.logger.error(f"Database connection failed: {e}")
@@ -111,6 +113,7 @@ class HealthDatabaseWriter:
         station_owner = None
         try:
             from ..config_utils import get_station_config
+
             cfg = get_station_config(station_id)
             if cfg:
                 station_name = cfg.get("station_name") or None
@@ -129,6 +132,7 @@ class HealthDatabaseWriter:
                 if ip_raw:
                     # Resolve hostname to IP if needed (inet type requires IP)
                     import socket
+
                     try:
                         ip_address = socket.gethostbyname(ip_raw)
                     except socket.gaierror:
@@ -151,7 +155,8 @@ class HealthDatabaseWriter:
 
         try:
             with self._conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(
+                    """
                     INSERT INTO stations (sid, receiver_type, power_type,
                         antenna_type, marker_name, marker_number,
                         observer, agency, ip_address, http_port,
@@ -172,10 +177,22 @@ class HealthDatabaseWriter:
                         station_owner = COALESCE(EXCLUDED.station_owner, stations.station_owner),
                         updated_at = NOW()
                     RETURNING sid
-                """, (station_id, receiver_type, power_type,
-                      antenna_type, marker_name, marker_number,
-                      observer, agency, ip_address, http_port,
-                      station_name, station_owner))
+                """,
+                    (
+                        station_id,
+                        receiver_type,
+                        power_type,
+                        antenna_type,
+                        marker_name,
+                        marker_number,
+                        observer,
+                        agency,
+                        ip_address,
+                        http_port,
+                        station_name,
+                        station_owner,
+                    ),
+                )
                 self._conn.commit()
                 self._station_cache.add(station_id)
                 return True
@@ -220,24 +237,30 @@ class HealthDatabaseWriter:
                 cur.execute("SAVEPOINT identity_update")
                 try:
                     # Update stations table with latest identity
-                    cur.execute("""
+                    cur.execute(
+                        """
                         UPDATE stations SET
                             firmware_version = COALESCE(%s, firmware_version),
                             detected_model = COALESCE(%s, detected_model),
                             serial_number = COALESCE(%s, serial_number),
                             identity_last_checked = NOW()
                         WHERE sid = %s
-                    """, (firmware, model, serial, station_id))
+                    """,
+                        (firmware, model, serial, station_id),
+                    )
 
                     # Write historical record to block_receiver_setup
-                    cur.execute("""
+                    cur.execute(
+                        """
                         INSERT INTO block_receiver_setup (sid, ts, rx_name, rx_version, rx_serial_number)
                         VALUES (%s, %s, %s, %s, %s)
                         ON CONFLICT (sid, ts) DO UPDATE SET
                             rx_name = COALESCE(EXCLUDED.rx_name, block_receiver_setup.rx_name),
                             rx_version = COALESCE(EXCLUDED.rx_version, block_receiver_setup.rx_version),
                             rx_serial_number = COALESCE(EXCLUDED.rx_serial_number, block_receiver_setup.rx_serial_number)
-                    """, (station_id, ts, model, firmware, serial))
+                    """,
+                        (station_id, ts, model, firmware, serial),
+                    )
 
                     cur.execute("RELEASE SAVEPOINT identity_update")
                 except Exception:
@@ -246,6 +269,7 @@ class HealthDatabaseWriter:
 
             # Check for mismatch
             from .receiver_fingerprint import check_identity_mismatch
+
             configured_type = None
             # Look up configured type from cache or query
             with self._conn.cursor() as cur:
@@ -282,9 +306,9 @@ class HealthDatabaseWriter:
             return timestamp
         if isinstance(timestamp, str):
             # Remove 'Z' suffix if present
-            ts = timestamp.rstrip('Z')
-            if '+' not in ts and 'T' in ts:
-                ts += '+00:00'
+            ts = timestamp.rstrip("Z")
+            if "+" not in ts and "T" in ts:
+                ts += "+00:00"
             return datetime.fromisoformat(ts)
         return datetime.now(timezone.utc)
 
@@ -356,11 +380,15 @@ class HealthDatabaseWriter:
 
             # Write to block_satellite_tracking (constellation breakdown)
             if "satellites" in metrics:
-                self._write_satellite_tracking(station_id, timestamp, metrics["satellites"])
+                self._write_satellite_tracking(
+                    station_id, timestamp, metrics["satellites"]
+                )
 
             # Write to block_logging_status
             if "logging_sessions" in metrics:
-                self._write_logging_status(station_id, timestamp, metrics["logging_sessions"])
+                self._write_logging_status(
+                    station_id, timestamp, metrics["logging_sessions"]
+                )
 
             # Write to block_health_summary (composite status + port checks)
             overall_status = health_data.get("overall_status")
@@ -384,21 +412,28 @@ class HealthDatabaseWriter:
                 self._conn.rollback()
             return False
 
-    def _write_power_status(self, sid: str, ts: datetime, power: Dict[str, Any]) -> None:
+    def _write_power_status(
+        self, sid: str, ts: datetime, power: Dict[str, Any]
+    ) -> None:
         """Write to block_power_status table."""
         voltage = power.get("voltage")
         power_source = power.get("source", "Vin")
 
         with self._conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 INSERT INTO block_power_status (sid, ts, voltage, power_source)
                 VALUES (%s, %s, %s, %s)
                 ON CONFLICT (sid, ts) DO UPDATE SET
                     voltage = EXCLUDED.voltage,
                     power_source = EXCLUDED.power_source
-            """, (sid, ts, voltage, power_source))
+            """,
+                (sid, ts, voltage, power_source),
+            )
 
-    def _write_receiver_status(self, sid: str, ts: datetime, metrics: Dict[str, Any]) -> None:
+    def _write_receiver_status(
+        self, sid: str, ts: datetime, metrics: Dict[str, Any]
+    ) -> None:
         """Write to block_receiver_status table."""
         cpu_load = None
         temperature = None
@@ -418,7 +453,8 @@ class HealthDatabaseWriter:
         rx_status = metrics.get("rx_status")
 
         with self._conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 INSERT INTO block_receiver_status (sid, ts, cpu_load, temperature, uptime_seconds, rx_status)
                 VALUES (%s, %s, %s, %s, %s, %s)
                 ON CONFLICT (sid, ts) DO UPDATE SET
@@ -426,7 +462,9 @@ class HealthDatabaseWriter:
                     temperature = EXCLUDED.temperature,
                     uptime_seconds = EXCLUDED.uptime_seconds,
                     rx_status = EXCLUDED.rx_status
-            """, (sid, ts, cpu_load, temperature, uptime, rx_status))
+            """,
+                (sid, ts, cpu_load, temperature, uptime, rx_status),
+            )
 
     def _write_disk_status(self, sid: str, ts: datetime, disk: Dict[str, Any]) -> None:
         """Write to block_disk_status table."""
@@ -435,17 +473,24 @@ class HealthDatabaseWriter:
         usage_percent = disk.get("usage_percent")
 
         with self._conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 INSERT INTO block_disk_status (sid, ts, used_mb, total_mb, usage_percent)
                 VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (sid, ts) DO UPDATE SET
                     used_mb = EXCLUDED.used_mb,
                     total_mb = EXCLUDED.total_mb,
                     usage_percent = EXCLUDED.usage_percent
-            """, (sid, ts, used_mb, total_mb, usage_percent))
+            """,
+                (sid, ts, used_mb, total_mb, usage_percent),
+            )
 
     def _write_pvt_geodetic(
-        self, sid: str, ts: datetime, data_quality: Dict[str, Any], metrics: Dict[str, Any]
+        self,
+        sid: str,
+        ts: datetime,
+        data_quality: Dict[str, Any],
+        metrics: Dict[str, Any],
     ) -> None:
         """Write to block_pvt_geodetic table."""
         # Extract from metrics.position (live TCP extraction) or data_quality (historical)
@@ -453,11 +498,19 @@ class HealthDatabaseWriter:
 
         # Prefer position metrics, fall back to data_quality
         # Handle both PolaRX5 (fix_mode) and Trimble (fix_type) field names
-        fix_type = position.get("fix_mode") or position.get("fix_type") or data_quality.get("fix_type")
+        fix_type = (
+            position.get("fix_mode")
+            or position.get("fix_type")
+            or data_quality.get("fix_type")
+        )
         # Truncate to fit VARCHAR column (apply migration 005 to widen to 50)
         if fix_type and len(fix_type) > 50:
             fix_type = fix_type[:50]
-        nr_sv = position.get("satellites_used") or data_quality.get("satellites_used") or data_quality.get("nr_sv")
+        nr_sv = (
+            position.get("satellites_used")
+            or data_quality.get("satellites_used")
+            or data_quality.get("nr_sv")
+        )
         h_accuracy = position.get("h_accuracy_m") or data_quality.get("h_accuracy")
         v_accuracy = position.get("v_accuracy_m") or data_quality.get("v_accuracy")
         latitude = position.get("latitude")
@@ -469,7 +522,8 @@ class HealthDatabaseWriter:
             return
 
         with self._conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 INSERT INTO block_pvt_geodetic (sid, ts, fix_type, nr_sv, h_accuracy, v_accuracy, latitude, longitude, height)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (sid, ts) DO UPDATE SET
@@ -480,37 +534,59 @@ class HealthDatabaseWriter:
                     latitude = COALESCE(EXCLUDED.latitude, block_pvt_geodetic.latitude),
                     longitude = COALESCE(EXCLUDED.longitude, block_pvt_geodetic.longitude),
                     height = COALESCE(EXCLUDED.height, block_pvt_geodetic.height)
-            """, (sid, ts, fix_type, nr_sv, h_accuracy, v_accuracy, latitude, longitude, height))
+            """,
+                (
+                    sid,
+                    ts,
+                    fix_type,
+                    nr_sv,
+                    h_accuracy,
+                    v_accuracy,
+                    latitude,
+                    longitude,
+                    height,
+                ),
+            )
 
-    def _write_ntrip_status(self, sid: str, ts: datetime, ntrip: Dict[str, Any]) -> None:
+    def _write_ntrip_status(
+        self, sid: str, ts: datetime, ntrip: Dict[str, Any]
+    ) -> None:
         """Write to block_ntrip_server table."""
         cd_index = ntrip.get("cd_index", "NTR1")
         status = ntrip.get("status")
         error_code = ntrip.get("error_code")
 
         with self._conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 INSERT INTO block_ntrip_server (sid, ts, cd_index, status, error_code)
                 VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (sid, ts, cd_index) DO UPDATE SET
                     status = EXCLUDED.status,
                     error_code = EXCLUDED.error_code
-            """, (sid, ts, cd_index, status, error_code))
+            """,
+                (sid, ts, cd_index, status, error_code),
+            )
 
-    def _write_ntrip_client(self, sid: str, ts: datetime, ntrip: Dict[str, Any]) -> None:
+    def _write_ntrip_client(
+        self, sid: str, ts: datetime, ntrip: Dict[str, Any]
+    ) -> None:
         """Write to block_ntrip_client table."""
         cd_index = ntrip.get("cd_index", "NTR1")
         status = ntrip.get("status")
         error_code = ntrip.get("error_code")
 
         with self._conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 INSERT INTO block_ntrip_client (sid, ts, cd_index, status, error_code)
                 VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (sid, ts, cd_index) DO UPDATE SET
                     status = EXCLUDED.status,
                     error_code = EXCLUDED.error_code
-            """, (sid, ts, cd_index, status, error_code))
+            """,
+                (sid, ts, cd_index, status, error_code),
+            )
 
     def _write_satellite_tracking(
         self, sid: str, ts: datetime, satellites: Dict[str, Any]
@@ -526,7 +602,8 @@ class HealthDatabaseWriter:
             with self._conn.cursor() as cur:
                 cur.execute("SAVEPOINT satellite_tracking")
                 try:
-                    cur.execute("""
+                    cur.execute(
+                        """
                         INSERT INTO block_satellite_tracking
                             (sid, ts, total, gps, glonass, galileo, beidou, sbas, qzss, irnss)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -539,16 +616,20 @@ class HealthDatabaseWriter:
                             sbas = EXCLUDED.sbas,
                             qzss = EXCLUDED.qzss,
                             irnss = EXCLUDED.irnss
-                    """, (
-                        sid, ts, total,
-                        by_const.get("GPS"),
-                        by_const.get("GLONASS"),
-                        by_const.get("Galileo"),
-                        by_const.get("BeiDou"),
-                        by_const.get("SBAS"),
-                        by_const.get("QZSS"),
-                        by_const.get("IRNSS")
-                    ))
+                    """,
+                        (
+                            sid,
+                            ts,
+                            total,
+                            by_const.get("GPS"),
+                            by_const.get("GLONASS"),
+                            by_const.get("Galileo"),
+                            by_const.get("BeiDou"),
+                            by_const.get("SBAS"),
+                            by_const.get("QZSS"),
+                            by_const.get("IRNSS"),
+                        ),
+                    )
                     cur.execute("RELEASE SAVEPOINT satellite_tracking")
                 except Exception:
                     cur.execute("ROLLBACK TO SAVEPOINT satellite_tracking")
@@ -578,7 +659,8 @@ class HealthDatabaseWriter:
             with self._conn.cursor() as cur:
                 cur.execute("SAVEPOINT logging_status")
                 try:
-                    cur.execute("""
+                    cur.execute(
+                        """
                         INSERT INTO block_logging_status
                             (sid, ts, active_sessions, session_15s_24hr,
                              session_1hz_1hr, session_status_1hr, status)
@@ -589,8 +671,17 @@ class HealthDatabaseWriter:
                             session_1hz_1hr = EXCLUDED.session_1hz_1hr,
                             session_status_1hr = EXCLUDED.session_status_1hr,
                             status = EXCLUDED.status
-                    """, (sid, ts, active_sessions,
-                          session_15s, session_1hz, session_status, status))
+                    """,
+                        (
+                            sid,
+                            ts,
+                            active_sessions,
+                            session_15s,
+                            session_1hz,
+                            session_status,
+                            status,
+                        ),
+                    )
                     cur.execute("RELEASE SAVEPOINT logging_status")
                 except Exception:
                     cur.execute("ROLLBACK TO SAVEPOINT logging_status")
@@ -619,7 +710,8 @@ class HealthDatabaseWriter:
             with self._conn.cursor() as cur:
                 cur.execute("SAVEPOINT health_summary")
                 try:
-                    cur.execute("""
+                    cur.execute(
+                        """
                         INSERT INTO block_health_summary
                             (sid, ts, overall_status, ftp_open, http_open, control_open,
                              ftp_port, http_port, control_port, status_details)
@@ -633,12 +725,20 @@ class HealthDatabaseWriter:
                             http_port = EXCLUDED.http_port,
                             control_port = EXCLUDED.control_port,
                             status_details = EXCLUDED.status_details
-                    """, (
-                        sid, ts, overall_status,
-                        ftp.get("open"), http.get("open"), control.get("open"),
-                        ftp.get("port"), http.get("port"), control.get("port"),
-                        status_details,
-                    ))
+                    """,
+                        (
+                            sid,
+                            ts,
+                            overall_status,
+                            ftp.get("open"),
+                            http.get("open"),
+                            control.get("open"),
+                            ftp.get("port"),
+                            http.get("port"),
+                            control.get("port"),
+                            status_details,
+                        ),
+                    )
                     cur.execute("RELEASE SAVEPOINT health_summary")
                 except Exception:
                     cur.execute("ROLLBACK TO SAVEPOINT health_summary")
@@ -674,7 +774,11 @@ class HealthDatabaseWriter:
                     problems.append("Ping failed")
                 elif ping_status == "warning":
                     latency = ping.get("latency_ms") or ping.get("response_time_ms")
-                    loss = ping.get("details", {}).get("packet_loss", 0) if isinstance(ping.get("details"), dict) else ping.get("packet_loss", 0)
+                    loss = (
+                        ping.get("details", {}).get("packet_loss", 0)
+                        if isinstance(ping.get("details"), dict)
+                        else ping.get("packet_loss", 0)
+                    )
                     if loss and loss > 0:
                         problems.append(f"Ping packet loss ({loss:.0f}%)")
                     elif latency:
@@ -690,8 +794,12 @@ class HealthDatabaseWriter:
                 conn_level = connection.get(conn_key, {})
                 if isinstance(conn_level, dict):
                     conn_status = conn_level.get("status", "").lower()
-                    if conn_status in ("critical", "warning") and not conn_level.get("accessible", True):
-                        err = conn_level.get("error_message", "") or conn_level.get("error", "")
+                    if conn_status in ("critical", "warning") and not conn_level.get(
+                        "accessible", True
+                    ):
+                        err = conn_level.get("error_message", "") or conn_level.get(
+                            "error", ""
+                        )
                         if "timeout" in err.lower():
                             problems.append(f"{conn_label} timeout")
                         elif "refused" in err.lower():
@@ -729,7 +837,9 @@ class HealthDatabaseWriter:
                 if isinstance(port_info, dict) and not port_info.get("open", True):
                     detail = port_info.get("detail", "")
                     if detail == "refused":
-                        problems.append(f"{name.upper()} refused (port forward missing?)")
+                        problems.append(
+                            f"{name.upper()} refused (port forward missing?)"
+                        )
                     else:
                         problems.append(f"{name.upper()} down")
 
@@ -740,7 +850,7 @@ class HealthDatabaseWriter:
         station_id: str,
         timestamp: datetime,
         sample: Dict[str, Any],
-        receiver_type: str = "PolaRX5"
+        receiver_type: str = "PolaRX5",
     ) -> bool:
         """Write a single timeseries sample to block tables.
 
@@ -771,11 +881,14 @@ class HealthDatabaseWriter:
                 if isinstance(voltage, dict):
                     voltage = voltage.get("value")
                 with self._conn.cursor() as cur:
-                    cur.execute("""
+                    cur.execute(
+                        """
                         INSERT INTO block_power_status (sid, ts, voltage)
                         VALUES (%s, %s, %s)
                         ON CONFLICT (sid, ts) DO UPDATE SET voltage = EXCLUDED.voltage
-                    """, (station_id, ts, voltage))
+                    """,
+                        (station_id, ts, voltage),
+                    )
 
             # Receiver status
             cpu = sample.get("cpu_load")
@@ -787,13 +900,16 @@ class HealthDatabaseWriter:
 
             if cpu is not None or temp is not None:
                 with self._conn.cursor() as cur:
-                    cur.execute("""
+                    cur.execute(
+                        """
                         INSERT INTO block_receiver_status (sid, ts, cpu_load, temperature)
                         VALUES (%s, %s, %s, %s)
                         ON CONFLICT (sid, ts) DO UPDATE SET
                             cpu_load = COALESCE(EXCLUDED.cpu_load, block_receiver_status.cpu_load),
                             temperature = COALESCE(EXCLUDED.temperature, block_receiver_status.temperature)
-                    """, (station_id, ts, cpu, temp))
+                    """,
+                        (station_id, ts, cpu, temp),
+                    )
 
             # Disk status
             disk = sample.get("disk_usage")
@@ -801,11 +917,14 @@ class HealthDatabaseWriter:
                 disk = disk.get("value")
             if disk is not None:
                 with self._conn.cursor() as cur:
-                    cur.execute("""
+                    cur.execute(
+                        """
                         INSERT INTO block_disk_status (sid, ts, usage_percent)
                         VALUES (%s, %s, %s)
                         ON CONFLICT (sid, ts) DO UPDATE SET usage_percent = EXCLUDED.usage_percent
-                    """, (station_id, ts, disk))
+                    """,
+                        (station_id, ts, disk),
+                    )
 
             # Position data (from metrics.position)
             position = sample.get("position")
@@ -822,7 +941,8 @@ class HealthDatabaseWriter:
 
                 if lat is not None or lon is not None or nr_sv is not None:
                     with self._conn.cursor() as cur:
-                        cur.execute("""
+                        cur.execute(
+                            """
                             INSERT INTO block_pvt_geodetic (sid, ts, fix_type, nr_sv, latitude, longitude, height, h_accuracy, v_accuracy)
                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                             ON CONFLICT (sid, ts) DO UPDATE SET
@@ -833,30 +953,48 @@ class HealthDatabaseWriter:
                                 height = COALESCE(EXCLUDED.height, block_pvt_geodetic.height),
                                 h_accuracy = COALESCE(EXCLUDED.h_accuracy, block_pvt_geodetic.h_accuracy),
                                 v_accuracy = COALESCE(EXCLUDED.v_accuracy, block_pvt_geodetic.v_accuracy)
-                        """, (station_id, ts, fix_mode, nr_sv, lat, lon, height, h_accuracy, v_accuracy))
+                        """,
+                            (
+                                station_id,
+                                ts,
+                                fix_mode,
+                                nr_sv,
+                                lat,
+                                lon,
+                                height,
+                                h_accuracy,
+                                v_accuracy,
+                            ),
+                        )
 
             # Satellite visibility (aggregated count and constellation breakdown)
             satellites = sample.get("satellites")
             if isinstance(satellites, dict):
                 nr_sv = satellites.get("total")
                 # Handle both live format (by_constellation) and historical format (by_system)
-                by_const = satellites.get("by_constellation", {}) or satellites.get("by_system", {})
+                by_const = satellites.get("by_constellation", {}) or satellites.get(
+                    "by_system", {}
+                )
 
                 # Store total in block_pvt_geodetic if not already stored via position
                 if nr_sv is not None and not sample.get("position"):
                     with self._conn.cursor() as cur:
-                        cur.execute("""
+                        cur.execute(
+                            """
                             INSERT INTO block_pvt_geodetic (sid, ts, nr_sv)
                             VALUES (%s, %s, %s)
                             ON CONFLICT (sid, ts) DO UPDATE SET
                                 nr_sv = COALESCE(EXCLUDED.nr_sv, block_pvt_geodetic.nr_sv)
-                        """, (station_id, ts, nr_sv))
+                        """,
+                            (station_id, ts, nr_sv),
+                        )
 
                 # Store constellation breakdown in block_satellite_tracking if table exists
                 if by_const:
                     try:
                         with self._conn.cursor() as cur:
-                            cur.execute("""
+                            cur.execute(
+                                """
                                 INSERT INTO block_satellite_tracking
                                     (sid, ts, total, gps, glonass, galileo, beidou, sbas, qzss, irnss)
                                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -869,19 +1007,25 @@ class HealthDatabaseWriter:
                                     sbas = EXCLUDED.sbas,
                                     qzss = EXCLUDED.qzss,
                                     irnss = EXCLUDED.irnss
-                            """, (
-                                station_id, ts, nr_sv,
-                                by_const.get("GPS"),
-                                by_const.get("GLONASS"),
-                                by_const.get("Galileo"),
-                                by_const.get("BeiDou"),
-                                by_const.get("SBAS"),
-                                by_const.get("QZSS"),
-                                by_const.get("IRNSS")
-                            ))
+                            """,
+                                (
+                                    station_id,
+                                    ts,
+                                    nr_sv,
+                                    by_const.get("GPS"),
+                                    by_const.get("GLONASS"),
+                                    by_const.get("Galileo"),
+                                    by_const.get("BeiDou"),
+                                    by_const.get("SBAS"),
+                                    by_const.get("QZSS"),
+                                    by_const.get("IRNSS"),
+                                ),
+                            )
                     except Exception as e:
                         # Table may not exist yet, log and continue
-                        self.logger.debug(f"block_satellite_tracking not available: {e}")
+                        self.logger.debug(
+                            f"block_satellite_tracking not available: {e}"
+                        )
 
             return True
 
@@ -894,7 +1038,7 @@ class HealthDatabaseWriter:
         station_id: str,
         samples: List[Dict[str, Any]],
         receiver_type: str = "PolaRX5",
-        commit_interval: int = 100
+        commit_interval: int = 100,
     ) -> int:
         """Write multiple timeseries samples efficiently.
 
@@ -917,7 +1061,9 @@ class HealthDatabaseWriter:
         written = 0
         for i, sample in enumerate(samples):
             ts = sample.get("time")
-            if ts and self.write_timeseries_sample(station_id, ts, sample, receiver_type):
+            if ts and self.write_timeseries_sample(
+                station_id, ts, sample, receiver_type
+            ):
                 written += 1
 
             if (i + 1) % commit_interval == 0:
@@ -943,7 +1089,9 @@ class HealthDatabaseWriter:
 
         try:
             with self._conn.cursor() as cur:
-                cur.execute("SELECT compute_hourly_aggregate(%s, %s)", (station_id, hour))
+                cur.execute(
+                    "SELECT compute_hourly_aggregate(%s, %s)", (station_id, hour)
+                )
             self._conn.commit()
             return True
         except Exception as e:

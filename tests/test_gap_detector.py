@@ -3,19 +3,20 @@
 Tests gap detection logic without requiring actual database or archive.
 """
 
-import pytest
-from datetime import date, datetime, timedelta
-from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
 import os
 import tempfile
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from unittest.mock import MagicMock, Mock, patch
+
+import pytest
 
 from receivers.health.file_tracker import (
+    ArchiveFileChecker,
+    FileTracker,
     GapDetector,
     GapInfo,
     SyncResult,
-    FileTracker,
-    ArchiveFileChecker,
 )
 
 
@@ -343,10 +344,10 @@ class TestSyncArchiveToDb:
 
         with patch.object(
             detector.file_tracker, "connect", return_value=True
-        ), patch.object(
-            detector.file_tracker, "_conn", mock_conn
-        ), patch.object(
-            detector, "_check_archive_for_file", return_value=(True, "/path/test.gz", 100)
+        ), patch.object(detector.file_tracker, "_conn", mock_conn), patch.object(
+            detector,
+            "_check_archive_for_file",
+            return_value=(True, "/path/test.gz", 100),
         ):
             # Mock cursor.fetchone to return None (new file)
             mock_cursor.fetchone.return_value = None
@@ -370,10 +371,10 @@ class TestGapSummary:
         detector = GapDetector()
 
         with patch.object(
-            detector, "_generate_expected_files", return_value=[(date(2026, 2, 1), None)]
-        ), patch.object(
-            detector, "find_gaps", return_value=[]
-        ):
+            detector,
+            "_generate_expected_files",
+            return_value=[(date(2026, 2, 1), None)],
+        ), patch.object(detector, "find_gaps", return_value=[]):
             summary = detector.get_gap_summary(
                 ["TEST"],
                 "15s_24hr",
@@ -389,11 +390,15 @@ class TestGapSummary:
         detector = GapDetector()
 
         with patch.object(
-            detector, "_generate_expected_files", return_value=[(date(2026, 2, 1), None)]
+            detector,
+            "_generate_expected_files",
+            return_value=[(date(2026, 2, 1), None)],
         ), patch.object(
-            detector, "find_gaps", return_value=[
+            detector,
+            "find_gaps",
+            return_value=[
                 GapInfo("TEST1", "15s_24hr", date(2026, 2, 1), None, "not_in_archive")
-            ]
+            ],
         ):
             summary = detector.get_gap_summary(
                 ["TEST1", "TEST2"],

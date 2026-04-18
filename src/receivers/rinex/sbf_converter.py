@@ -147,7 +147,9 @@ class SBFConverter(RawToRinexConverter):
             cmd = self._build_sbf2rin_command(sbf2rin, working_file, temp_rinex)
 
             # Run conversion
-            self.logger.info(f"Running sbf2rin for {raw_file.name} -> {temp_rinex.name}")
+            self.logger.info(
+                f"Running sbf2rin for {raw_file.name} -> {temp_rinex.name}"
+            )
             self._run_subprocess(cmd, timeout=300, cwd=output_dir)
 
             if not temp_rinex.exists():
@@ -272,19 +274,25 @@ class SBFConverter(RawToRinexConverter):
         if self.rinex_version == RinexVersion.RINEX_2:
             # Short name pattern: SSSS0DDF.YYo
             patterns.append(f"{self.station_id}{day_of_year:03d}*.{year_2digit:02d}o")
-            patterns.append(f"{self.station_id.lower()}{day_of_year:03d}*.{year_2digit:02d}o")
+            patterns.append(
+                f"{self.station_id.lower()}{day_of_year:03d}*.{year_2digit:02d}o"
+            )
         else:
             # Long name pattern: SSSS00CCC_R_YYYYDDD...
             patterns.append(f"{self.station_id}*{year:04d}{day_of_year:03d}*.rnx")
-            patterns.append(f"{self.station_id.lower()}*{year:04d}{day_of_year:03d}*.rnx")
+            patterns.append(
+                f"{self.station_id.lower()}*{year:04d}{day_of_year:03d}*.rnx"
+            )
 
         # Also try generic patterns
-        patterns.extend([
-            f"{self.station_id}*.o",
-            f"{self.station_id}*.rnx",
-            f"{self.station_id.lower()}*.o",
-            f"{self.station_id.lower()}*.rnx",
-        ])
+        patterns.extend(
+            [
+                f"{self.station_id}*.o",
+                f"{self.station_id}*.rnx",
+                f"{self.station_id.lower()}*.o",
+                f"{self.station_id.lower()}*.rnx",
+            ]
+        )
 
         # Search for matching files
         for pattern in patterns:
@@ -307,4 +315,5 @@ class SBFConverter(RawToRinexConverter):
 
 class SBFToRinexConverter(SBFConverter):
     """Alias for backward compatibility."""
+
     pass

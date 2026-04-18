@@ -17,12 +17,12 @@ from typing import BinaryIO, Optional, Tuple
 class CompressionFormat:
     """Compression format definitions with magic bytes."""
 
-    GZIP = ('gzip', b'\x1f\x8b', '.gz')
-    BZIP2 = ('bzip2', b'\x42\x5a\x68', '.bz2')
-    XZ = ('xz', b'\xfd\x37\x7a\x58\x5a\x00', '.xz')
-    ZIP = ('zip', b'\x50\x4b\x03\x04', '.zip')
-    COMPRESS = ('compress', b'\x1f\x9d', '.Z')
-    ZSTD = ('zstd', b'\x28\xb5\x2f\xfd', '.zst')
+    GZIP = ("gzip", b"\x1f\x8b", ".gz")
+    BZIP2 = ("bzip2", b"\x42\x5a\x68", ".bz2")
+    XZ = ("xz", b"\xfd\x37\x7a\x58\x5a\x00", ".xz")
+    ZIP = ("zip", b"\x50\x4b\x03\x04", ".zip")
+    COMPRESS = ("compress", b"\x1f\x9d", ".Z")
+    ZSTD = ("zstd", b"\x28\xb5\x2f\xfd", ".zst")
 
     # All formats for detection
     ALL_FORMATS = [GZIP, BZIP2, XZ, ZIP, COMPRESS, ZSTD]
@@ -54,7 +54,7 @@ class CompressionDetector:
             return None
 
         try:
-            with open(file_path, 'rb') as f:
+            with open(file_path, "rb") as f:
                 # Read enough bytes to check longest magic signature (6 bytes for xz)
                 magic_bytes = f.read(6)
 
@@ -101,7 +101,7 @@ class CompressionDetector:
             True if file is gzip compressed, False otherwise
         """
         result = self.detect_compression(file_path)
-        return result is not None and result[0] == 'gzip'
+        return result is not None and result[0] == "gzip"
 
     def needs_compression(self, file_path: Path) -> bool:
         """Determine if file needs compression before archiving.
@@ -176,14 +176,14 @@ class CompressionConverter:
 
         # Compression handlers
         self._compressors = {
-            'gzip': self._compress_gzip,
-            'bzip2': self._compress_bz2,
-            'none': self._compress_none,  # No compression (copy)
+            "gzip": self._compress_gzip,
+            "bzip2": self._compress_bz2,
+            "none": self._compress_none,  # No compression (copy)
         }
 
         self._decompressors = {
-            'gzip': self._decompress_gzip,
-            'bzip2': self._decompress_bz2,
+            "gzip": self._decompress_gzip,
+            "bzip2": self._decompress_bz2,
         }
 
     def decompress_file(self, source: Path, destination: Path) -> bool:
@@ -225,16 +225,18 @@ class CompressionConverter:
             inner_compression = self.detector.detect_compression(destination)
             if inner_compression:
                 inner_format, _ = inner_compression
-                self.logger.debug(f"Detected double-compression, inner format: {inner_format}")
+                self.logger.debug(
+                    f"Detected double-compression, inner format: {inner_format}"
+                )
                 # Decompress again to a temp file then replace
                 import tempfile
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.sbf') as tmp:
+
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".sbf") as tmp:
                     tmp_path = Path(tmp.name)
                 inner_decompressor = self._decompressors.get(inner_format)
                 if inner_decompressor:
                     inner_decompressor(destination, tmp_path)
                     # Replace destination with fully decompressed file
-                    import shutil
                     shutil.move(str(tmp_path), str(destination))
                     self.logger.debug(f"✅ Double-decompressed to: {destination}")
 
@@ -245,10 +247,7 @@ class CompressionConverter:
             return False
 
     def compress_file(
-        self,
-        source: Path,
-        destination: Path,
-        format: str = 'gzip'
+        self, source: Path, destination: Path, format: str = "gzip"
     ) -> bool:
         """Compress a file in specified format.
 
@@ -277,10 +276,7 @@ class CompressionConverter:
             return False
 
     def convert_compression(
-        self,
-        source: Path,
-        destination: Path,
-        target_format: str = 'gzip'
+        self, source: Path, destination: Path, target_format: str = "gzip"
     ) -> bool:
         """Convert file to specified compression format.
 
@@ -299,7 +295,7 @@ class CompressionConverter:
         current_compression = self.detector.detect_compression(source)
 
         # Check if already in target format
-        if target_format == 'none' and current_compression is None:
+        if target_format == "none" and current_compression is None:
             # Already uncompressed, just copy
             self.logger.debug(f"File already uncompressed, copying: {source.name}")
             try:
@@ -331,7 +327,8 @@ class CompressionConverter:
         try:
             # Use temporary file for intermediate step
             import tempfile
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.tmp') as tmp:
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".tmp") as tmp:
                 tmp_path = Path(tmp.name)
 
             try:
@@ -344,16 +341,14 @@ class CompressionConverter:
                     shutil.copy2(source, tmp_path)
 
                 # Step 2: Compress from temp to destination
-                if target_format == 'none':
+                if target_format == "none":
                     # Just move/copy the decompressed file
                     shutil.move(str(tmp_path), str(destination))
                 else:
                     if not self.compress_file(tmp_path, destination, target_format):
                         return False
 
-                self.logger.info(
-                    f"✅ Converted to {target_format}: {destination}"
-                )
+                self.logger.info(f"✅ Converted to {target_format}: {destination}")
                 return True
 
             finally:
@@ -367,26 +362,26 @@ class CompressionConverter:
 
     def _decompress_gzip(self, source: Path, destination: Path):
         """Decompress gzip file."""
-        with gzip.open(source, 'rb') as f_in:
-            with open(destination, 'wb') as f_out:
+        with gzip.open(source, "rb") as f_in:
+            with open(destination, "wb") as f_out:
                 shutil.copyfileobj(f_in, f_out)
 
     def _decompress_bz2(self, source: Path, destination: Path):
         """Decompress bzip2 file."""
-        with bz2.open(source, 'rb') as f_in:
-            with open(destination, 'wb') as f_out:
+        with bz2.open(source, "rb") as f_in:
+            with open(destination, "wb") as f_out:
                 shutil.copyfileobj(f_in, f_out)
 
     def _compress_gzip(self, source: Path, destination: Path):
         """Compress with gzip."""
-        with open(source, 'rb') as f_in:
-            with gzip.open(destination, 'wb') as f_out:
+        with open(source, "rb") as f_in:
+            with gzip.open(destination, "wb") as f_out:
                 shutil.copyfileobj(f_in, f_out)
 
     def _compress_bz2(self, source: Path, destination: Path):
         """Compress with bzip2."""
-        with open(source, 'rb') as f_in:
-            with bz2.open(destination, 'wb') as f_out:
+        with open(source, "rb") as f_in:
+            with bz2.open(destination, "wb") as f_out:
                 shutil.copyfileobj(f_in, f_out)
 
     def _compress_none(self, source: Path, destination: Path):

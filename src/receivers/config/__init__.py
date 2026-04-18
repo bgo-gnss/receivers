@@ -5,13 +5,13 @@ This module provides configuration loaders for:
 - icinga.cfg: Icinga monitoring thresholds and connection settings
 """
 
-from .receivers_config import ReceiversConfig, get_receivers_config
 from .icinga_config import (
     IcingaConfig,
-    IcingaThresholds,
     IcingaConnection,
+    IcingaThresholds,
     get_icinga_config,
 )
+from .receivers_config import ReceiversConfig, get_receivers_config
 
 __all__ = [
     # Receivers configuration

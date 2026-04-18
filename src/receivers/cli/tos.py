@@ -15,13 +15,14 @@ import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 # Check for tostools availability
 try:
     from tostools.api.tos_client import TOSClient
+
     HAS_TOSTOOLS = True
 except ImportError:
     HAS_TOSTOOLS = False
@@ -30,6 +31,7 @@ except ImportError:
 # Check for gps_parser availability
 try:
     import gps_parser
+
     HAS_GPS_PARSER = True
 except ImportError:
     HAS_GPS_PARSER = False
@@ -44,9 +46,10 @@ def get_stations_from_config() -> List[str]:
     try:
         config = gps_parser.ConfigParser()
         # Filter: only uppercase 4-letter station IDs, excluding config sections
-        excluded_sections = {'DEFAULT', 'DEFAULTS', 'Configs', 'PATHS', 'FILES'}
+        excluded_sections = {"DEFAULT", "DEFAULTS", "Configs", "PATHS", "FILES"}
         return [
-            s for s in config.config.sections()
+            s
+            for s in config.config.sections()
             if s not in excluded_sections and s.isupper() and len(s) == 4
         ]
     except Exception as e:
@@ -61,7 +64,7 @@ def cmd_tos_coordinates(args) -> int:
         print("❌ tostools not available. Install with: pip install tostools")
         return 1
 
-    logger = logging.getLogger("receivers.cli.tos")
+    logging.getLogger("receivers.cli.tos")
 
     # Get station list
     if args.station:
@@ -99,10 +102,12 @@ def cmd_tos_coordinates(args) -> int:
                     results[sid] = {
                         "latitude": float(lat),
                         "longitude": float(lon),
-                        "height": float(altitude) if altitude else 0.0
+                        "height": float(altitude) if altitude else 0.0,
                     }
                     if args.verbose:
-                        print(f"  ✅ {sid}: lat={lat:.6f}, lon={lon:.6f}, height={altitude:.2f}m")
+                        print(
+                            f"  ✅ {sid}: lat={lat:.6f}, lon={lon:.6f}, height={altitude:.2f}m"
+                        )
                 else:
                     errors.append(f"{sid}: No coordinates in TOS")
                     if args.verbose:
@@ -117,7 +122,9 @@ def cmd_tos_coordinates(args) -> int:
             if args.verbose:
                 print(f"  ❌ {sid}: Error - {e}")
 
-    print(f"\n📊 Results: {len(results)} stations with coordinates, {len(errors)} errors")
+    print(
+        f"\n📊 Results: {len(results)} stations with coordinates, {len(errors)} errors"
+    )
 
     # Output results
     if args.output == "-" or args.output is None:
@@ -125,14 +132,18 @@ def cmd_tos_coordinates(args) -> int:
         print("\n# Station Coordinates from TOS")
         print("# Format: SID latitude longitude height")
         for sid, coords in sorted(results.items()):
-            print(f"{sid} {coords['latitude']:.8f} {coords['longitude']:.8f} {coords['height']:.2f}")
+            print(
+                f"{sid} {coords['latitude']:.8f} {coords['longitude']:.8f} {coords['height']:.2f}"
+            )
 
     elif args.output.endswith(".cfg"):
         # Update stations.cfg
         if args.dry_run:
             print(f"\n🔍 Dry run - would update {args.output}")
             for sid, coords in sorted(results.items()):
-                print(f"  {sid}: latitude={coords['latitude']:.8f}, longitude={coords['longitude']:.8f}, height={coords['height']:.2f}")
+                print(
+                    f"  {sid}: latitude={coords['latitude']:.8f}, longitude={coords['longitude']:.8f}, height={coords['height']:.2f}"
+                )
         else:
             updated = _update_stations_cfg(args.output, results)
             if updated:
@@ -147,11 +158,13 @@ def cmd_tos_coordinates(args) -> int:
         if args.dry_run:
             print(f"\n🔍 Dry run - would write to {output_path}")
         else:
-            with open(output_path, 'w') as f:
+            with open(output_path, "w") as f:
                 f.write("# Station Coordinates from TOS\n")
                 f.write("# Format: SID latitude longitude height\n")
                 for sid, coords in sorted(results.items()):
-                    f.write(f"{sid} {coords['latitude']:.8f} {coords['longitude']:.8f} {coords['height']:.2f}\n")
+                    f.write(
+                        f"{sid} {coords['latitude']:.8f} {coords['longitude']:.8f} {coords['height']:.2f}\n"
+                    )
             print(f"✅ Wrote coordinates to {output_path}")
 
     # Print errors if any
@@ -224,40 +237,38 @@ def create_tos_parser(subparsers) -> None:
     tos_parser = subparsers.add_parser(
         "tos",
         help="Extract metadata from TOS (GPS metadata system)",
-        description="Commands to extract station metadata from TOS and update local configuration"
+        description="Commands to extract station metadata from TOS and update local configuration",
     )
 
-    tos_subparsers = tos_parser.add_subparsers(
-        dest="tos_command",
-        help="TOS commands"
-    )
+    tos_subparsers = tos_parser.add_subparsers(dest="tos_command", help="TOS commands")
 
     # Coordinates command
     coords_parser = tos_subparsers.add_parser(
         "coordinates",
         help="Extract station coordinates from TOS",
-        description="Extract latitude, longitude, and height for stations from TOS"
+        description="Extract latitude, longitude, and height for stations from TOS",
     )
     coords_parser.add_argument(
-        "--station", "-s",
+        "--station",
+        "-s",
         nargs="+",
         metavar="SID",
-        help="Station ID(s) to extract (default: all from stations.cfg)"
+        help="Station ID(s) to extract (default: all from stations.cfg)",
     )
     coords_parser.add_argument(
-        "--output", "-o",
+        "--output",
+        "-o",
         metavar="FILE",
-        help="Output file (use '-' for stdout, '.cfg' to update stations.cfg)"
+        help="Output file (use '-' for stdout, '.cfg' to update stations.cfg)",
     )
     coords_parser.add_argument(
-        "--dry-run", "-n",
+        "--dry-run",
+        "-n",
         action="store_true",
-        help="Show what would be done without making changes"
+        help="Show what would be done without making changes",
     )
     coords_parser.add_argument(
-        "-v", "--verbose",
-        action="store_true",
-        help="Verbose output"
+        "-v", "--verbose", action="store_true", help="Verbose output"
     )
     coords_parser.set_defaults(func=cmd_tos_coordinates)
 
@@ -265,28 +276,24 @@ def create_tos_parser(subparsers) -> None:
     antennas_parser = tos_subparsers.add_parser(
         "antennas",
         help="Extract antenna information from TOS",
-        description="Extract antenna type and serial number from TOS"
+        description="Extract antenna type and serial number from TOS",
     )
     antennas_parser.add_argument(
-        "--station", "-s",
+        "--station",
+        "-s",
         nargs="+",
         metavar="SID",
-        help="Station ID(s) to extract (default: all from stations.cfg)"
+        help="Station ID(s) to extract (default: all from stations.cfg)",
     )
+    antennas_parser.add_argument("--output", "-o", metavar="FILE", help="Output file")
     antennas_parser.add_argument(
-        "--output", "-o",
-        metavar="FILE",
-        help="Output file"
-    )
-    antennas_parser.add_argument(
-        "--dry-run", "-n",
+        "--dry-run",
+        "-n",
         action="store_true",
-        help="Show what would be done without making changes"
+        help="Show what would be done without making changes",
     )
     antennas_parser.add_argument(
-        "-v", "--verbose",
-        action="store_true",
-        help="Verbose output"
+        "-v", "--verbose", action="store_true", help="Verbose output"
     )
     antennas_parser.set_defaults(func=cmd_tos_antennas)
 
@@ -294,28 +301,26 @@ def create_tos_parser(subparsers) -> None:
     sync_parser = tos_subparsers.add_parser(
         "sync",
         help="Sync all metadata from TOS",
-        description="Sync coordinates, antennas, and other metadata from TOS"
+        description="Sync coordinates, antennas, and other metadata from TOS",
     )
     sync_parser.add_argument(
-        "--station", "-s",
+        "--station",
+        "-s",
         nargs="+",
         metavar="SID",
-        help="Station ID(s) to sync (default: all from stations.cfg)"
+        help="Station ID(s) to sync (default: all from stations.cfg)",
     )
     sync_parser.add_argument(
-        "--output", "-o",
-        metavar="FILE",
-        help="Output file or stations.cfg path"
+        "--output", "-o", metavar="FILE", help="Output file or stations.cfg path"
     )
     sync_parser.add_argument(
-        "--dry-run", "-n",
+        "--dry-run",
+        "-n",
         action="store_true",
-        help="Show what would be done without making changes"
+        help="Show what would be done without making changes",
     )
     sync_parser.add_argument(
-        "-v", "--verbose",
-        action="store_true",
-        help="Verbose output"
+        "-v", "--verbose", action="store_true", help="Verbose output"
     )
     sync_parser.set_defaults(func=cmd_tos_sync)
 
@@ -323,7 +328,7 @@ def create_tos_parser(subparsers) -> None:
 def handle_tos_command(args) -> int:
     """Handle TOS subcommands."""
 
-    if not hasattr(args, 'tos_command') or not args.tos_command:
+    if not hasattr(args, "tos_command") or not args.tos_command:
         print("❌ No TOS command specified")
         print("Available commands: coordinates, antennas, sync")
         print("\nUse 'receivers tos <command> --help' for more information")

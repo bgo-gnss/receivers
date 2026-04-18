@@ -94,7 +94,15 @@ def _load_config_file() -> Dict[str, str]:
 
     result: Dict[str, str] = {}
     if parser.has_section("postgresql"):
-        for key in ("host", "port", "database", "user", "password", "mirror_host", "mirror_user"):
+        for key in (
+            "host",
+            "port",
+            "database",
+            "user",
+            "password",
+            "mirror_host",
+            "mirror_user",
+        ):
             if parser.has_option("postgresql", key):
                 result[key] = parser.get("postgresql", key)
 

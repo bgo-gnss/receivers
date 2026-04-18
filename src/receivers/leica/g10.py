@@ -20,20 +20,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from ..base.receiver import BaseReceiver
 from ..base.exceptions import ConfigurationError, ConnectionError, DownloadError
-from ..utils.performance_recorder import (
-    create_performance_metrics,
-    record_performance_metrics
-)
-from ..utils.session_parser import parse_session_parameters
-from .leica_ftp_download_client import LeicaFTPDownloader
+from ..base.receiver import BaseReceiver
 
 # Phase 1 utilities (feature-flagged)
 from ..utils.archive_validator import ArchiveValidator
-from ..utils.time_processor import TimeParameterProcessor
-from ..utils.file_archiver import FileArchiver, ArchiveMode
 from ..utils.download_tracker import DownloadTracker
+from ..utils.file_archiver import ArchiveMode, FileArchiver
+from ..utils.performance_recorder import (
+    create_performance_metrics,
+    record_performance_metrics,
+)
+from ..utils.session_parser import parse_session_parameters
+from ..utils.time_processor import TimeParameterProcessor
+from .leica_ftp_download_client import LeicaFTPDownloader
 
 
 class LeicaG10(BaseReceiver):
@@ -46,7 +46,12 @@ class LeicaG10(BaseReceiver):
     - Archive management with compression
     """
 
-    def __init__(self, station_id: str, station_info: Dict[str, Any], loglevel: int = logging.INFO):
+    def __init__(
+        self,
+        station_id: str,
+        station_info: Dict[str, Any],
+        loglevel: int = logging.INFO,
+    ):
         """Initialize Leica G10 receiver.
 
         Args:
@@ -100,18 +105,20 @@ class LeicaG10(BaseReceiver):
                 station_config = self.station_info["station"]
                 router_ip = station_config.get("router_ip")
                 if not router_ip:
-                    raise ConfigurationError(f"Missing router_ip for station {self.station_id}")
+                    raise ConfigurationError(
+                        f"Missing router_ip for station {self.station_id}"
+                    )
 
                 # Leica uses FTP port from config
                 ftp_port = self.leica_config.get("ftp_port", 2160)
 
                 # Create expected structure
                 self.station_info["router"] = {"ip": router_ip}
-                self.station_info["receiver"] = {
-                    "ftpport": int(ftp_port)
-                }
+                self.station_info["receiver"] = {"ftpport": int(ftp_port)}
             else:
-                raise ConfigurationError(f"Invalid station configuration structure for {self.station_id}")
+                raise ConfigurationError(
+                    f"Invalid station configuration structure for {self.station_id}"
+                )
 
         except (KeyError, ValueError) as e:
             raise ConfigurationError(
@@ -215,19 +222,21 @@ class LeicaG10(BaseReceiver):
             }
 
         # Check if loglevel was passed and create new FTP downloader with correct level
-        loglevel = kwargs.get('loglevel', self.loglevel)
+        loglevel = kwargs.get("loglevel", self.loglevel)
         if loglevel != self.loglevel:
             self.logger.debug(f"Updating log level from {self.loglevel} to {loglevel}")
-            self.ftp_downloader = LeicaFTPDownloader(self.station_id, self.station_info, loglevel)
+            self.ftp_downloader = LeicaFTPDownloader(
+                self.station_id, self.station_info, loglevel
+            )
 
         try:
             self.logger.info(f"Starting download for Leica G10 {self.station_id}")
 
             # Parse start/end times
             if isinstance(start, str):
-                start = datetime.fromisoformat(start.replace('Z', '+00:00'))
+                start = datetime.fromisoformat(start.replace("Z", "+00:00"))
             if isinstance(end, str):
-                end = datetime.fromisoformat(end.replace('Z', '+00:00'))
+                end = datetime.fromisoformat(end.replace("Z", "+00:00"))
 
             # Use the same time range processing as other receivers
             self.logger.info(f"Checking {session} sessions from {start} to {end}")
@@ -257,22 +266,29 @@ class LeicaG10(BaseReceiver):
                 }
 
             # Use Phase 1 batch validation - checks archive AND tmp directory
-            missing_files_dict, files_found_in_archive, validated_files, files_in_tmp_dict = \
-                self.archive_validator.batch_validate_archives(
-                    files_dict,
-                    archive_files_dict,
-                    tmp_dir_path
-                )
+            (
+                missing_files_dict,
+                files_found_in_archive,
+                validated_files,
+                files_in_tmp_dict,
+            ) = self.archive_validator.batch_validate_archives(
+                files_dict, archive_files_dict, tmp_dir_path
+            )
 
             # Archive files from tmp if found and archive flag is set
-            files_archived_from_tmp = 0
             if files_in_tmp_dict and archive:
-                self.logger.info(f"Found {len(files_in_tmp_dict)} files in tmp directory that need archiving")
-                self.logger.info(f"Archiving {len(files_in_tmp_dict)} files from tmp directory...")
+                self.logger.info(
+                    f"Found {len(files_in_tmp_dict)} files in tmp directory that need archiving"
+                )
+                self.logger.info(
+                    f"Archiving {len(files_in_tmp_dict)} files from tmp directory..."
+                )
 
-                from ..utils.file_archiver import FileArchiver, ArchiveMode
+                from ..utils.file_archiver import ArchiveMode, FileArchiver
 
-                with FileArchiver(mode=ArchiveMode.BULK, logger=self.logger) as archiver:
+                with FileArchiver(
+                    mode=ArchiveMode.BULK, logger=self.logger
+                ) as archiver:
                     for filename, tmp_path in files_in_tmp_dict.items():
                         archive_dest = archive_files_dict.get(filename)
                         if archive_dest:
@@ -280,12 +296,14 @@ class LeicaG10(BaseReceiver):
                                 tmp_path,
                                 Path(archive_dest),
                                 compress=False,  # Files already compressed (.m00.zip format)
-                                remove_tmp=True
+                                remove_tmp=True,
                             )
 
                 stats = archiver.get_statistics()
-                files_archived_from_tmp = stats['successful']
-                self.logger.info(f"Archived {stats['successful']}/{len(files_in_tmp_dict)} files from tmp to archive")
+                stats["successful"]
+                self.logger.info(
+                    f"Archived {stats['successful']}/{len(files_in_tmp_dict)} files from tmp to archive"
+                )
 
             # Log validation results
             self.logger.info(f"Validated {validated_files} files total")
@@ -307,13 +325,16 @@ class LeicaG10(BaseReceiver):
                     "duration": time.time() - start_time,
                 }
 
-            self.logger.info(f"Missing files: {len(missing_files_dict)} (out of {len(files_dict)} total)")
+            self.logger.info(
+                f"Missing files: {len(missing_files_dict)} (out of {len(files_dict)} total)"
+            )
 
             # Filter out known missing files using download tracker
             # Skip this filter when retry_missing=True (scheduler always retries)
             import re
             from datetime import date, timedelta
-            retry_missing = kwargs.get('retry_missing', False)
+
+            retry_missing = kwargs.get("retry_missing", False)
             if retry_missing:
                 self.logger.debug("Retry mode: skipping known-missing filter")
             else:
@@ -324,20 +345,38 @@ class LeicaG10(BaseReceiver):
                             skipped_count = 0
                             for filename, remote_dir in missing_files_dict.items():
                                 # Parse date from filename
-                                match = re.match(rf"^{self.station_id}(\d{{3}})([a-x])", filename, re.IGNORECASE)
+                                match = re.match(
+                                    rf"^{self.station_id}(\d{{3}})([a-x])",
+                                    filename,
+                                    re.IGNORECASE,
+                                )
                                 if match:
                                     day_of_year = int(match.group(1))
                                     session_letter = match.group(2).lower()
-                                    file_year = start.year if hasattr(start, 'year') else datetime.now().year
-                                    file_date = date(file_year, 1, 1) + timedelta(days=day_of_year - 1)
-                                    file_hour = None if session_letter == 'a' else ord(session_letter) - ord('a')
+                                    file_year = (
+                                        start.year
+                                        if hasattr(start, "year")
+                                        else datetime.now().year
+                                    )
+                                    file_date = date(file_year, 1, 1) + timedelta(
+                                        days=day_of_year - 1
+                                    )
+                                    file_hour = (
+                                        None
+                                        if session_letter == "a"
+                                        else ord(session_letter) - ord("a")
+                                    )
                                     if tracker.is_file_missing(file_date, file_hour):
-                                        self.logger.info(f"⏭️  Skipping {filename} (known missing, not retrying)")
+                                        self.logger.info(
+                                            f"⏭️  Skipping {filename} (known missing, not retrying)"
+                                        )
                                         skipped_count += 1
                                         continue
                                 filtered_missing[filename] = remote_dir
                             if skipped_count > 0:
-                                self.logger.info(f"Skipped {skipped_count} known missing files")
+                                self.logger.info(
+                                    f"Skipped {skipped_count} known missing files"
+                                )
                             missing_files_dict = filtered_missing
                 except Exception as e:
                     self.logger.debug(f"File tracking check failed: {e}")
@@ -349,6 +388,7 @@ class LeicaG10(BaseReceiver):
                     # Create callback for immediate unzip+archive when archiving enabled
                     process_callback = None
                     if archive:
+
                         def immediate_process_callback(zip_path: str) -> Optional[str]:
                             """Unzip and archive immediately after download."""
                             # Unzip the file
@@ -361,13 +401,19 @@ class LeicaG10(BaseReceiver):
                             if m00_filename in archive_files_dict:
                                 archive_path = Path(archive_files_dict[m00_filename])
 
-                                from ..utils.file_archiver import FileArchiver, ArchiveMode
-                                with FileArchiver(mode=ArchiveMode.IMMEDIATE, logger=self.logger) as archiver:
+                                from ..utils.file_archiver import (
+                                    ArchiveMode,
+                                    FileArchiver,
+                                )
+
+                                with FileArchiver(
+                                    mode=ArchiveMode.IMMEDIATE, logger=self.logger
+                                ) as archiver:
                                     success = archiver.archive_file(
                                         Path(unzipped),
                                         archive_path,
                                         compress=True,
-                                        remove_tmp=True
+                                        remove_tmp=True,
                                     )
 
                                 if success:
@@ -408,7 +454,7 @@ class LeicaG10(BaseReceiver):
                 try:
                     if Path(f).exists():
                         final_bytes += Path(f).stat().st_size
-                except (OSError, IOError):
+                except OSError:
                     pass
 
             # Record performance metrics
@@ -429,7 +475,7 @@ class LeicaG10(BaseReceiver):
             if sync:
                 try:
                     # Collect remote file sizes from FTP downloader (if available)
-                    ftp_remote_sizes = getattr(self.ftp_downloader, 'remote_sizes', {})
+                    ftp_remote_sizes = getattr(self.ftp_downloader, "remote_sizes", {})
 
                     with DownloadTracker(self.station_id, session) as tracker:
                         if tracker._connected:
@@ -456,36 +502,90 @@ class LeicaG10(BaseReceiver):
                                     hhmm = match.group(4)  # e.g., "2000" for hour 20
                                     file_date = date(year, month, day)
                                     file_hour_from_name = int(hhmm[:2])
-                                    file_hour = None if file_hour_from_name == 0 else file_hour_from_name
-                                    file_size = Path(file_path).stat().st_size if Path(file_path).exists() else None
-                                    tracker.mark_downloaded(file_date, file_hour, filename, file_size, remote_file_size=remote_size)
+                                    file_hour = (
+                                        None
+                                        if file_hour_from_name == 0
+                                        else file_hour_from_name
+                                    )
+                                    file_size = (
+                                        Path(file_path).stat().st_size
+                                        if Path(file_path).exists()
+                                        else None
+                                    )
+                                    tracker.mark_downloaded(
+                                        file_date,
+                                        file_hour,
+                                        filename,
+                                        file_size,
+                                        remote_file_size=remote_size,
+                                    )
                                     downloaded_dates.add((file_date, file_hour))
                                 else:
                                     # Try original Leica format: SKFC018a.m00 (DOY + session)
-                                    match = re.match(rf"^{self.station_id}(\d{{3}})([a-x])", filename, re.IGNORECASE)
+                                    match = re.match(
+                                        rf"^{self.station_id}(\d{{3}})([a-x])",
+                                        filename,
+                                        re.IGNORECASE,
+                                    )
                                     if match:
                                         day_of_year = int(match.group(1))
                                         session_letter = match.group(2).lower()
-                                        file_year = start.year if hasattr(start, 'year') else datetime.now().year
-                                        file_date = date(file_year, 1, 1) + timedelta(days=day_of_year - 1)
-                                        file_hour = None if session_letter == 'a' else ord(session_letter) - ord('a')
-                                        file_size = Path(file_path).stat().st_size if Path(file_path).exists() else None
-                                        tracker.mark_downloaded(file_date, file_hour, filename, file_size, remote_file_size=remote_size)
+                                        file_year = (
+                                            start.year
+                                            if hasattr(start, "year")
+                                            else datetime.now().year
+                                        )
+                                        file_date = date(file_year, 1, 1) + timedelta(
+                                            days=day_of_year - 1
+                                        )
+                                        file_hour = (
+                                            None
+                                            if session_letter == "a"
+                                            else ord(session_letter) - ord("a")
+                                        )
+                                        file_size = (
+                                            Path(file_path).stat().st_size
+                                            if Path(file_path).exists()
+                                            else None
+                                        )
+                                        tracker.mark_downloaded(
+                                            file_date,
+                                            file_hour,
+                                            filename,
+                                            file_size,
+                                            remote_file_size=remote_size,
+                                        )
                                         downloaded_dates.add((file_date, file_hour))
 
                             # Track missing files (requested but not downloaded) - compare by date/hour
                             for req_filename in missing_files_dict.keys():
                                 # Parse date from original Leica format: SKFC016a.m00
-                                match = re.match(rf"^{self.station_id}(\d{{3}})([a-x])", req_filename, re.IGNORECASE)
+                                match = re.match(
+                                    rf"^{self.station_id}(\d{{3}})([a-x])",
+                                    req_filename,
+                                    re.IGNORECASE,
+                                )
                                 if match:
                                     day_of_year = int(match.group(1))
                                     session_letter = match.group(2).lower()
-                                    file_year = start.year if hasattr(start, 'year') else datetime.now().year
-                                    file_date = date(file_year, 1, 1) + timedelta(days=day_of_year - 1)
-                                    file_hour = None if session_letter == 'a' else ord(session_letter) - ord('a')
+                                    file_year = (
+                                        start.year
+                                        if hasattr(start, "year")
+                                        else datetime.now().year
+                                    )
+                                    file_date = date(file_year, 1, 1) + timedelta(
+                                        days=day_of_year - 1
+                                    )
+                                    file_hour = (
+                                        None
+                                        if session_letter == "a"
+                                        else ord(session_letter) - ord("a")
+                                    )
                                     # Only mark as missing if this date/hour wasn't downloaded
                                     if (file_date, file_hour) not in downloaded_dates:
-                                        tracker.mark_missing(file_date, file_hour, req_filename)
+                                        tracker.mark_missing(
+                                            file_date, file_hour, req_filename
+                                        )
                 except Exception as e:
                     self.logger.debug(f"File tracking failed: {e}")
 
@@ -532,7 +632,6 @@ class LeicaG10(BaseReceiver):
                 "duration": duration,
             }
 
-
     def _validate_archived_file(self, file_path: Path) -> bool:
         """Basic sanity checks for archived files.
 
@@ -562,7 +661,7 @@ class LeicaG10(BaseReceiver):
 
             # Basic checks passed
             return True
-        except (OSError, IOError) as e:
+        except OSError as e:
             self.logger.debug(f"Error validating archived file {file_path}: {e}")
             return False
 
@@ -590,23 +689,29 @@ class LeicaG10(BaseReceiver):
         session_key = session.lower()
         session_mapping = self.leica_config.get(f"session_map_{session_key}")
         if not session_mapping:
-            raise ValueError(f"Unsupported session type for Leica G10: {session} (looked for session_map_{session_key})")
+            raise ValueError(
+                f"Unsupported session type for Leica G10: {session} (looked for session_map_{session_key})"
+            )
 
         session_letter, remote_directory = session_mapping.split(",", 1)
         remote_directory = remote_directory.strip()
         session_letter = session_letter.strip()
 
-        self.logger.info(f"Using session mapping: {session} -> letter={session_letter}, directory={remote_directory}")
+        self.logger.info(
+            f"Using session mapping: {session} -> letter={session_letter}, directory={remote_directory}"
+        )
 
         # Generate datetime list using unified build_path method (same as other receivers)
-        file_datetime_list = self.build_path(None, "#datelist", session, gt_frequency, start, end)
+        file_datetime_list = self.build_path(
+            None, "#datelist", session, gt_frequency, start, end
+        )
 
         # Create remote template using unified approach for Leica filename convention
         # Different templates based on session type:
         # - Daily files (15s_24hr): Use session letter (a)
         # - Hourly files (1Hz_1hr): Use #hourl for hour letters (a,b,c...x)
         file_extension = self.get_file_extension()  # .m00
-        base_path = self.leica_config.get('base_path', '/SD Card/Data/')
+        base_path = self.leica_config.get("base_path", "/SD Card/Data/")
 
         if session == "15s_24hr":
             # Daily files: directly under /SD Card/Data/15s_24hr/ (no year/month/day subdirectories)
@@ -616,7 +721,9 @@ class LeicaG10(BaseReceiver):
             remote_template = f"{base_path}{remote_directory}/{self.station_id}/%Y/%m/%d/{self.station_id}%j#hourl{file_extension}.zip"
 
         # Generate remote full paths using unified method with gtimes frequency for #Rin2 expansion
-        remote_full_paths = self.build_path(file_datetime_list, remote_template, session, gt_frequency)
+        remote_full_paths = self.build_path(
+            file_datetime_list, remote_template, session, gt_frequency
+        )
 
         # Extract remote directories and filenames for files_dict
         files_dict = {}
@@ -666,7 +773,7 @@ class LeicaG10(BaseReceiver):
                 # Map the zip filename: SKFC268b.m00.zip -> archive path
                 archive_files_dict[filename] = archive_file_list[i]
                 # Also map the unzipped filename: SKFC268b.m00 -> archive path
-                unzipped_filename = filename.replace('.zip', '')
+                unzipped_filename = filename.replace(".zip", "")
                 archive_files_dict[unzipped_filename] = archive_file_list[i]
 
         return files_dict, archive_files_dict
@@ -685,7 +792,7 @@ class LeicaG10(BaseReceiver):
             self.logger.warning(f"File not found: {zip_file_path}")
             return None
 
-        if not str(zip_path).endswith('.zip'):
+        if not str(zip_path).endswith(".zip"):
             self.logger.warning(f"File is not a zip file: {zip_file_path}")
             return zip_file_path  # Return as-is
 
@@ -695,11 +802,11 @@ class LeicaG10(BaseReceiver):
 
             # Run unzip command in the same directory
             result = subprocess.run(
-                ['unzip', '-o', str(zip_path)],
+                ["unzip", "-o", str(zip_path)],
                 cwd=zip_path.parent,
                 capture_output=True,
                 text=True,
-                timeout=60
+                timeout=60,
             )
 
             if result.returncode == 0:
@@ -719,7 +826,9 @@ class LeicaG10(BaseReceiver):
                     self.logger.error(f"❌ Unzipped file not found: {base_name}")
                     return None
             else:
-                self.logger.error(f"❌ Unzip failed for {zip_path.name}: {result.stderr}")
+                self.logger.error(
+                    f"❌ Unzip failed for {zip_path.name}: {result.stderr}"
+                )
                 return None
 
         except subprocess.TimeoutExpired:
@@ -746,7 +855,7 @@ class LeicaG10(BaseReceiver):
                 self.logger.warning(f"Downloaded file not found: {zip_file_path}")
                 continue
 
-            if not str(zip_path).endswith('.zip'):
+            if not str(zip_path).endswith(".zip"):
                 self.logger.warning(f"File is not a zip file: {zip_file_path}")
                 processed_files.append(zip_file_path)  # Add as-is
                 continue
@@ -757,11 +866,11 @@ class LeicaG10(BaseReceiver):
 
                 # Run unzip command in the same directory
                 result = subprocess.run(
-                    ['unzip', '-o', str(zip_path)],
+                    ["unzip", "-o", str(zip_path)],
                     cwd=zip_path.parent,
                     capture_output=True,
                     text=True,
-                    timeout=60
+                    timeout=60,
                 )
 
                 if result.returncode == 0:
@@ -779,7 +888,9 @@ class LeicaG10(BaseReceiver):
                     else:
                         self.logger.error(f"❌ Unzipped file not found: {base_name}")
                 else:
-                    self.logger.error(f"❌ Unzip failed for {zip_path.name}: {result.stderr}")
+                    self.logger.error(
+                        f"❌ Unzip failed for {zip_path.name}: {result.stderr}"
+                    )
 
             except subprocess.TimeoutExpired:
                 self.logger.error(f"❌ Unzip timeout for {zip_path.name}")
@@ -806,16 +917,16 @@ class LeicaG10(BaseReceiver):
                 filename = file_path_obj.name
 
                 if not file_path_obj.exists():
-                    self.logger.warning(
-                        f"Cannot archive - file not found: {file_path}"
-                    )
+                    self.logger.warning(f"Cannot archive - file not found: {file_path}")
                     continue
 
                 if filename in archive_files_dict:
                     archive_path = Path(archive_files_dict[filename])
 
                     # Archive file immediately (one at a time for fault tolerance)
-                    with FileArchiver(mode=ArchiveMode.IMMEDIATE, logger=self.logger) as archiver:
+                    with FileArchiver(
+                        mode=ArchiveMode.IMMEDIATE, logger=self.logger
+                    ) as archiver:
                         success = archiver.archive_file(
                             file_path_obj,
                             archive_path,
@@ -829,9 +940,7 @@ class LeicaG10(BaseReceiver):
                         self.logger.error(f"❌ Failed to archive {filename}")
 
             except Exception as e:
-                self.logger.error(
-                    f"❌ Failed to archive {filename}: {e}"
-                )
+                self.logger.error(f"❌ Failed to archive {filename}: {e}")
 
         self.logger.info(
             f"Archiving complete: {archived_count}/{len(downloaded_files)} files archived"
@@ -861,10 +970,13 @@ class LeicaG10(BaseReceiver):
         session_letter, _ = session_map.split(",", 1)
         return session_letter
 
-    def _track_validated_files(self, files_dict: Dict, session: str, start: Any) -> None:
+    def _track_validated_files(
+        self, files_dict: Dict, session: str, start: Any
+    ) -> None:
         """Register already-archived files in file_tracking database."""
         import re
         from datetime import date, datetime, timedelta
+
         try:
             with DownloadTracker(self.station_id, session) as tracker:
                 if tracker._connected:
@@ -873,29 +985,54 @@ class LeicaG10(BaseReceiver):
                         # Try archive format: SKFC202601180000a.m00.gz
                         match = re.match(
                             rf"^{self.station_id}(\d{{4}})(\d{{2}})(\d{{2}})(\d{{4}})([a-x])",
-                            filename, re.IGNORECASE
+                            filename,
+                            re.IGNORECASE,
                         )
                         if match:
-                            file_date = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+                            file_date = date(
+                                int(match.group(1)),
+                                int(match.group(2)),
+                                int(match.group(3)),
+                            )
                             hhmm = match.group(4)  # e.g., "2000" for hour 20
                             file_hour_from_name = int(hhmm[:2])
                             # Daily files have HHMM=0000; hourly files have actual hour
-                            file_hour = None if file_hour_from_name == 0 else file_hour_from_name
+                            file_hour = (
+                                None
+                                if file_hour_from_name == 0
+                                else file_hour_from_name
+                            )
                         else:
                             # Try Leica format: SKFC018a.m00
-                            match = re.match(rf"^{self.station_id}(\d{{3}})([a-x])", filename, re.IGNORECASE)
+                            match = re.match(
+                                rf"^{self.station_id}(\d{{3}})([a-x])",
+                                filename,
+                                re.IGNORECASE,
+                            )
                             if match:
                                 day_of_year = int(match.group(1))
                                 session_letter = match.group(2).lower()
-                                file_year = start.year if hasattr(start, 'year') else datetime.now().year
-                                file_date = date(file_year, 1, 1) + timedelta(days=day_of_year - 1)
-                                file_hour = None if session_letter == 'a' else ord(session_letter) - ord('a')
+                                file_year = (
+                                    start.year
+                                    if hasattr(start, "year")
+                                    else datetime.now().year
+                                )
+                                file_date = date(file_year, 1, 1) + timedelta(
+                                    days=day_of_year - 1
+                                )
+                                file_hour = (
+                                    None
+                                    if session_letter == "a"
+                                    else ord(session_letter) - ord("a")
+                                )
                             else:
                                 continue
                         tracker.mark_archived(file_date, file_hour, filename)
                         tracked += 1
                     if tracked:
-                        self.logger.debug(f"Registered {tracked} archived files in file_tracking")
+                        self.logger.debug(
+                            f"Registered {tracked} archived files in file_tracking"
+                        )
         except Exception as e:
             self.logger.debug(f"File tracking for validated files failed: {e}")
 
@@ -934,9 +1071,7 @@ class LeicaG10(BaseReceiver):
         ping_ok = connection_data.get("router_ping", {}).get("accessible", False)
 
         if not ping_ok:
-            self.logger.debug(
-                f"Ping failed for {host} — skipping HTTP/FTP extraction"
-            )
+            self.logger.debug(f"Ping failed for {host} — skipping HTTP/FTP extraction")
             return self.build_health_status(connection_data=connection_data)
 
         # Step 2: Try HTTP extraction first (rich data from web interface)
@@ -964,9 +1099,7 @@ class LeicaG10(BaseReceiver):
                     )
                     return health_data
             except Exception as e:
-                self.logger.warning(
-                    f"HTTP extraction failed, falling back to FTP: {e}"
-                )
+                self.logger.warning(f"HTTP extraction failed, falling back to FTP: {e}")
 
         # Step 3: Fall back to FTP-based health inference
         from ..health import G10FTPHealthInferrer
@@ -1011,7 +1144,7 @@ class LeicaG10(BaseReceiver):
 
     def close(self):
         """Close connections to receiver."""
-        if hasattr(self, 'ftp_downloader'):
+        if hasattr(self, "ftp_downloader"):
             self.ftp_downloader.close()
 
     def __del__(self):

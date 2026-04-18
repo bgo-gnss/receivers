@@ -4,19 +4,19 @@ These tests validate that the TimeParameterProcessor produces identical results
 to the existing receiver implementations' time handling logic.
 """
 
-import pytest
 from datetime import datetime, timedelta
 
+import pytest
+
 from receivers.utils.time_processor import (
+    DatetimeParser,
     TimeParameterProcessor,
     TimestampNormalization,
-    DatetimeParser
 )
-
 from tests.fixtures.test_data import (
     TIME_PARAMETER_CASES,
     TIMESTAMP_NORMALIZATION_CASES,
-    get_test_case_by_name
+    get_test_case_by_name,
 )
 
 
@@ -84,30 +84,33 @@ class TestTimestampNormalization:
 
     def test_daily_file_midnight_normalization(self):
         """Test that daily files normalize to midnight."""
-        case = get_test_case_by_name(TIMESTAMP_NORMALIZATION_CASES, 'daily_file_midnight_normalization')
-        result = self.processor.normalize_timestamp(
-            case['input_datetime'],
-            case['ffrequency']
+        case = get_test_case_by_name(
+            TIMESTAMP_NORMALIZATION_CASES, "daily_file_midnight_normalization"
         )
-        assert result == case['expected_normalized']
+        result = self.processor.normalize_timestamp(
+            case["input_datetime"], case["ffrequency"]
+        )
+        assert result == case["expected_normalized"]
 
     def test_hourly_file_hour_boundary(self):
         """Test that hourly files normalize to hour boundary."""
-        case = get_test_case_by_name(TIMESTAMP_NORMALIZATION_CASES, 'hourly_file_hour_boundary')
-        result = self.processor.normalize_timestamp(
-            case['input_datetime'],
-            case['ffrequency']
+        case = get_test_case_by_name(
+            TIMESTAMP_NORMALIZATION_CASES, "hourly_file_hour_boundary"
         )
-        assert result == case['expected_normalized']
+        result = self.processor.normalize_timestamp(
+            case["input_datetime"], case["ffrequency"]
+        )
+        assert result == case["expected_normalized"]
 
     def test_status_hourly_normalization(self):
         """Test status hourly file normalization."""
-        case = get_test_case_by_name(TIMESTAMP_NORMALIZATION_CASES, 'status_hourly_normalization')
-        result = self.processor.normalize_timestamp(
-            case['input_datetime'],
-            case['ffrequency']
+        case = get_test_case_by_name(
+            TIMESTAMP_NORMALIZATION_CASES, "status_hourly_normalization"
         )
-        assert result == case['expected_normalized']
+        result = self.processor.normalize_timestamp(
+            case["input_datetime"], case["ffrequency"]
+        )
+        assert result == case["expected_normalized"]
 
     def test_normalize_timestamps_list(self):
         """Test normalizing list of timestamps."""
@@ -117,7 +120,7 @@ class TestTimestampNormalization:
             datetime(2025, 9, 24, 17, 15, 10),
         ]
 
-        result = self.processor.normalize_timestamps(dt_list, '1hr')
+        result = self.processor.normalize_timestamps(dt_list, "1hr")
 
         expected = [
             datetime(2025, 9, 24, 15, 0, 0),
@@ -130,7 +133,7 @@ class TestTimestampNormalization:
     def test_unknown_frequency_no_normalization(self):
         """Test that unknown frequency doesn't normalize."""
         dt = datetime(2025, 9, 24, 15, 30, 45)
-        result = self.processor.normalize_timestamp(dt, 'unknown_freq')
+        result = self.processor.normalize_timestamp(dt, "unknown_freq")
         assert result == dt  # No normalization applied
 
 
@@ -222,9 +225,7 @@ class TestDefaultTimeRangeCalculation:
     def test_daily_session_days_back(self):
         """Test daily session calculates days back correctly."""
         start, end = self.processor.calculate_default_time_range(
-            days_back=3,
-            session="15s_24hr",
-            reference_time=self.reference_time
+            days_back=3, session="15s_24hr", reference_time=self.reference_time
         )
 
         # Should be 3 days back from reference
@@ -239,7 +240,7 @@ class TestDefaultTimeRangeCalculation:
         start, end = self.processor.calculate_default_time_range(
             days_back=4,  # Actually means 4 hours for hourly sessions
             session="1Hz_1hr",
-            reference_time=self.reference_time
+            reference_time=self.reference_time,
         )
 
         # Last complete hour: 14:00
@@ -253,9 +254,7 @@ class TestDefaultTimeRangeCalculation:
     def test_single_hour_back(self):
         """Test -D 1 for hourly session."""
         start, end = self.processor.calculate_default_time_range(
-            days_back=1,
-            session="1Hz_1hr",
-            reference_time=self.reference_time
+            days_back=1, session="1Hz_1hr", reference_time=self.reference_time
         )
 
         # Should be just the last complete hour
@@ -276,9 +275,9 @@ class TestCustomParsers:
         # Create custom parser for GPS week:DOY format
         class GPSWeekDOYParser:
             def parse(self, dt_string):
-                if ':' not in dt_string:
+                if ":" not in dt_string:
                     raise ValueError("Invalid format")
-                week_str, doy_str = dt_string.split(':')
+                week_str, doy_str = dt_string.split(":")
                 # Simplified - just for testing
                 return datetime(2025, 9, 24, 0, 0, 0)
 
@@ -302,13 +301,12 @@ class TestNormalizationStrategies:
 
         # Register 15-minute normalization
         processor.register_normalization_strategy(
-            '15min',
-            TimestampNormalization.MINUTE_BOUNDARY
+            "15min", TimestampNormalization.MINUTE_BOUNDARY
         )
 
         # Should normalize to minute boundary
         dt = datetime(2025, 9, 24, 15, 30, 45)
-        result = processor.normalize_timestamp(dt, '15min')
+        result = processor.normalize_timestamp(dt, "15min")
         assert result == datetime(2025, 9, 24, 15, 30, 0)
 
 
@@ -324,9 +322,7 @@ class TestTimeRangeDescriptions:
         start = datetime(2025, 9, 24, 0, 0, 0)
         end = datetime(2025, 9, 26, 0, 0, 0)
 
-        description = self.processor.get_time_range_description(
-            start, end, "15s_24hr"
-        )
+        description = self.processor.get_time_range_description(start, end, "15s_24hr")
 
         assert "2 day(s)" in description
         assert "2025-09-24" in description
@@ -337,9 +333,7 @@ class TestTimeRangeDescriptions:
         start = datetime(2025, 9, 24, 10, 0, 0)
         end = datetime(2025, 9, 24, 14, 0, 0)
 
-        description = self.processor.get_time_range_description(
-            start, end, "1Hz_1hr"
-        )
+        description = self.processor.get_time_range_description(start, end, "1Hz_1hr")
 
         assert "4 hour(s)" in description
         assert "10:00" in description
@@ -357,7 +351,7 @@ class TestTimeAdjustment:
         """Test adjusting to start boundary for daily."""
         dt = datetime(2025, 9, 24, 15, 30, 45)
         result = self.processor.adjust_time_for_session(
-            dt, "15s_24hr", adjustment='start'
+            dt, "15s_24hr", adjustment="start"
         )
         assert result == datetime(2025, 9, 24, 0, 0, 0)
 
@@ -365,7 +359,7 @@ class TestTimeAdjustment:
         """Test adjusting to end boundary for daily."""
         dt = datetime(2025, 9, 24, 15, 30, 45)
         result = self.processor.adjust_time_for_session(
-            dt, "15s_24hr", adjustment='end'
+            dt, "15s_24hr", adjustment="end"
         )
         # Should add one day to normalized start
         assert result == datetime(2025, 9, 25, 0, 0, 0)
@@ -374,15 +368,13 @@ class TestTimeAdjustment:
         """Test adjusting to start boundary for hourly."""
         dt = datetime(2025, 9, 24, 15, 30, 45)
         result = self.processor.adjust_time_for_session(
-            dt, "1Hz_1hr", adjustment='start'
+            dt, "1Hz_1hr", adjustment="start"
         )
         assert result == datetime(2025, 9, 24, 15, 0, 0)
 
     def test_adjust_to_end_boundary_hourly(self):
         """Test adjusting to end boundary for hourly."""
         dt = datetime(2025, 9, 24, 15, 30, 45)
-        result = self.processor.adjust_time_for_session(
-            dt, "1Hz_1hr", adjustment='end'
-        )
+        result = self.processor.adjust_time_for_session(dt, "1Hz_1hr", adjustment="end")
         # Should add one hour to normalized start
         assert result == datetime(2025, 9, 24, 16, 0, 0)

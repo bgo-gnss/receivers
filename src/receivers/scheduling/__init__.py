@@ -16,15 +16,6 @@ Task Implementations (in tasks/):
 - SyncTask: Rsync to permanent storage
 """
 
-from .task_interface import (
-    ScheduledTask,
-    TaskConfig,
-    TaskFactory,
-    TaskFrequency,
-    TaskPriority,
-    TaskResult,
-    TaskType,
-)
 from .pipeline import (
     PipelineJob,
     PipelineStage,
@@ -36,30 +27,40 @@ from .resource_pools import (
     PoolStatus,
     ResourcePoolManager,
 )
+from .task_interface import (
+    ScheduledTask,
+    TaskConfig,
+    TaskFactory,
+    TaskFrequency,
+    TaskPriority,
+    TaskResult,
+    TaskType,
+)
 
 # Lazy imports for components with external dependencies
 __all__ = [
     # Task interface
-    'ScheduledTask',
-    'TaskConfig',
-    'TaskFactory',
-    'TaskFrequency',
-    'TaskPriority',
-    'TaskResult',
-    'TaskType',
+    "ScheduledTask",
+    "TaskConfig",
+    "TaskFactory",
+    "TaskFrequency",
+    "TaskPriority",
+    "TaskResult",
+    "TaskType",
     # Pipeline
-    'PipelineJob',
-    'PipelineStage',
-    'PipelineStateStore',
-    'StageResult',
-    'StageStatus',
+    "PipelineJob",
+    "PipelineStage",
+    "PipelineStateStore",
+    "StageResult",
+    "StageStatus",
     # Resource pools
-    'PoolStatus',
-    'ResourcePoolManager',
+    "PoolStatus",
+    "ResourcePoolManager",
 ]
 
 
 def get_bulk_scheduler():
     """Lazy import BulkDownloadScheduler (requires APScheduler)."""
     from .bulk_scheduler import BulkDownloadScheduler
+
     return BulkDownloadScheduler

@@ -20,9 +20,10 @@ Trimble API Endpoints:
 import logging
 import re
 import socket
-import requests
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+
+import requests
 from requests.auth import HTTPBasicAuth
 
 from .metrics import MetricChecker
@@ -95,9 +96,11 @@ class TrimbleHTTPExtractor:
 
         # Initialize centralized metric checker for consistent threshold evaluation
         from .metrics import load_thresholds
+
         power_type = None
         try:
             from ..config_utils import get_station_config
+
             cfg = get_station_config(station_id)
             if cfg:
                 power_type = cfg.get("power_type") or None
@@ -148,7 +151,9 @@ class TrimbleHTTPExtractor:
 
         # Check port status and populate metrics["ports"] for CLI display
         # Use HTTP connection test result for HTTP port (more reliable than raw socket)
-        port_status = self._check_port_status(http_accessible=conn_status.get("accessible", False))
+        port_status = self._check_port_status(
+            http_accessible=conn_status.get("accessible", False)
+        )
         if port_status:
             health_data["metrics"]["ports"] = port_status
             # Add port statuses to overall status calculation
@@ -271,10 +276,16 @@ class TrimbleHTTPExtractor:
 
         # Correct port status if any HTTP endpoint succeeded after initial test
         # (receiver may be slow to respond initially but data extraction works)
-        http_data_fetched = any([
-            voltage_data, temp_data, tracking_data, position_data,
-            system_data, merge_xml,
-        ])
+        http_data_fetched = any(
+            [
+                voltage_data,
+                temp_data,
+                tracking_data,
+                position_data,
+                system_data,
+                merge_xml,
+            ]
+        )
         if http_data_fetched and "ports" in health_data["metrics"]:
             http_port = health_data["metrics"]["ports"].get("http", {})
             if not http_port.get("open"):
@@ -355,7 +366,9 @@ class TrimbleHTTPExtractor:
                 "error": str(e),
             }
 
-    def _check_port_status(self, http_accessible: bool = False) -> Dict[str, Dict[str, Any]]:
+    def _check_port_status(
+        self, http_accessible: bool = False
+    ) -> Dict[str, Dict[str, Any]]:
         """Check HTTP and FTP port status.
 
         Args:
@@ -562,20 +575,24 @@ class TrimbleHTTPExtractor:
 
                     if match:
                         voltage = float(match.group(1))
-                        ports.append({
-                            "port": i,
-                            "name": port_names[i] if i < len(port_names) else f"Input{i+1}",
-                            "voltage": voltage,
-                        })
+                        ports.append(
+                            {
+                                "port": i,
+                                "name": port_names[i]
+                                if i < len(port_names)
+                                else f"Input{i + 1}",
+                                "voltage": voltage,
+                            }
+                        )
                         if voltage > max_voltage:
                             max_voltage = voltage
 
-                        self.logger.debug(f"NetRS voltage input {i+1}: {voltage}V")
+                        self.logger.debug(f"NetRS voltage input {i + 1}: {voltage}V")
 
                 except requests.Timeout:
-                    self.logger.debug(f"Timeout fetching voltage input {i+1}")
+                    self.logger.debug(f"Timeout fetching voltage input {i + 1}")
                 except Exception as e:
-                    self.logger.debug(f"Error fetching voltage input {i+1}: {e}")
+                    self.logger.debug(f"Error fetching voltage input {i + 1}: {e}")
 
             if not ports:
                 self.logger.debug("No voltage readings from NetRS API")
@@ -610,9 +627,7 @@ class TrimbleHTTPExtractor:
             Raw XML text or None
         """
         try:
-            response = requests.get(
-                self.base_url, auth=self.auth, timeout=self.timeout
-            )
+            response = requests.get(self.base_url, auth=self.auth, timeout=self.timeout)
             if response.status_code != 200:
                 return None
 
@@ -659,7 +674,7 @@ class TrimbleHTTPExtractor:
         Returns:
             Raw XML text or None
         """
-        cache_dir = getattr(self, '_cache_dir', None)
+        cache_dir = getattr(self, "_cache_dir", None)
         if not cache_dir:
             return None
 
@@ -673,7 +688,9 @@ class TrimbleHTTPExtractor:
 
         return None
 
-    def _parse_uptime_from_merge_xml(self, xml_text: Optional[str]) -> Optional[Dict[str, Any]]:
+    def _parse_uptime_from_merge_xml(
+        self, xml_text: Optional[str]
+    ) -> Optional[Dict[str, Any]]:
         """Parse uptime from merge.xml response.
 
         XML format: <uptime><day>N</day><hour>N</hour><min>N</min><sec>N</sec></uptime>
@@ -705,7 +722,9 @@ class TrimbleHTTPExtractor:
             "source": "merge_xml",
         }
 
-    def _parse_disk_from_merge_xml(self, xml_text: Optional[str]) -> Optional[Dict[str, Any]]:
+    def _parse_disk_from_merge_xml(
+        self, xml_text: Optional[str]
+    ) -> Optional[Dict[str, Any]]:
         """Parse disk usage from merge.xml dataLogger fileSystem.
 
         XML format:
@@ -773,7 +792,8 @@ class TrimbleHTTPExtractor:
         # First, try to find the active power port (P1 or P2 with <active>TRUE</active>)
         active_match = re.search(
             r"<(P[12])><voltage>([\d.]+)</voltage>.*?<active>TRUE</active>.*?</\1>",
-            xml_text, re.DOTALL
+            xml_text,
+            re.DOTALL,
         )
         if active_match:
             voltage = float(active_match.group(2))
@@ -781,9 +801,7 @@ class TrimbleHTTPExtractor:
         else:
             # Fall back to P1 then P2 (whichever exists with non-zero voltage)
             for port in ["P1", "P2"]:
-                match = re.search(
-                    rf"<{port}>\s*<voltage>([\d.]+)</voltage>", xml_text
-                )
+                match = re.search(rf"<{port}>\s*<voltage>([\d.]+)</voltage>", xml_text)
                 if match and float(match.group(1)) > 1.0:
                     voltage = float(match.group(1))
                     port_name = port
@@ -1036,22 +1054,31 @@ class TrimbleHTTPExtractor:
                 netrs_matches = re.findall(netrs_pattern, response)
                 if netrs_matches:
                     # Convert to same tuple format with "GPS" as system
-                    matches = [(prn, "GPS", elv, azm) for prn, elv, azm in netrs_matches]
+                    matches = [
+                        (prn, "GPS", elv, azm) for prn, elv, azm in netrs_matches
+                    ]
 
             if not matches:
                 # Valid response with 0 satellites (e.g. antenna disconnected)
                 # vs unrecognized format — check for actual section delimiters,
                 # not just substring (error responses like "Unknown Command :
                 # show?TrackingStatus" also contain the word "TrackingStatus")
-                if "<Show TrackingStatus>" in response or "<ShowTrackingStatus>" in response or "<end of Show TrackingStatus>" in response:
+                if (
+                    "<Show TrackingStatus>" in response
+                    or "<ShowTrackingStatus>" in response
+                    or "<end of Show TrackingStatus>" in response
+                ):
                     self.logger.info("TrackingStatus: 0 satellites tracking")
                     return {
                         "total": 0,
                         "visible": 0,
                         "status": self._satellite_status(0),
                         "by_constellation": {
-                            "GPS": 0, "GLONASS": 0, "Galileo": 0,
-                            "BeiDou": 0, "SBAS": 0,
+                            "GPS": 0,
+                            "GLONASS": 0,
+                            "Galileo": 0,
+                            "BeiDou": 0,
+                            "SBAS": 0,
                         },
                         "satellites": [],
                         "threshold_warning": self.metric_checker.config.sat_warning,
@@ -1271,14 +1298,19 @@ class TrimbleHTTPExtractor:
                 num_fix_match = re.search(r"<numFixSvs>(\d+)</numFixSvs>", xml_text)
                 if num_fix_match or "<SvsUsed" in xml_text:
                     total = int(num_fix_match.group(1)) if num_fix_match else 0
-                    self.logger.info(f"posData.xml: {total} satellites (no sv elements)")
+                    self.logger.info(
+                        f"posData.xml: {total} satellites (no sv elements)"
+                    )
                     return {
                         "total": total,
                         "visible": total,
                         "status": self._satellite_status(total),
                         "by_constellation": {
-                            "GPS": 0, "GLONASS": 0, "Galileo": 0,
-                            "BeiDou": 0, "SBAS": 0,
+                            "GPS": 0,
+                            "GLONASS": 0,
+                            "Galileo": 0,
+                            "BeiDou": 0,
+                            "SBAS": 0,
                         },
                         "source": "posData.xml",
                         "threshold_warning": self.metric_checker.config.sat_warning,
@@ -1457,7 +1489,11 @@ class TrimbleHTTPExtractor:
                 if not match:
                     # Try bare value (some receivers return just the version string)
                     stripped = firmware_response.strip()
-                    if stripped and len(stripped) < 60 and not stripped.startswith("ERROR:"):
+                    if (
+                        stripped
+                        and len(stripped) < 60
+                        and not stripped.startswith("ERROR:")
+                    ):
                         system_info["firmware_version"] = stripped
                 else:
                     system_info["firmware_version"] = match.group(1)

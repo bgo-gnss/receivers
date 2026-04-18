@@ -19,6 +19,7 @@ from ..config.receivers_config import get_receivers_config
 
 class RinexVersion(Enum):
     """RINEX format versions."""
+
     RINEX_2 = 2
     RINEX_3 = 3
     RINEX_4 = 4
@@ -26,26 +27,34 @@ class RinexVersion(Enum):
 
 class OutputFormat(Enum):
     """Output file format options (legacy compatibility)."""
-    MODERN = "modern"   # .rnx.gz (no Hatanaka)
-    LEGACY = "legacy"   # .D.Z (Hatanaka compressed)
+
+    MODERN = "modern"  # .rnx.gz (no Hatanaka)
+    LEGACY = "legacy"  # .D.Z (Hatanaka compressed)
 
 
 class CompressionFormat(Enum):
     """File compression format options."""
-    GZ = "gz"     # gzip (.gz)
-    Z = "Z"       # Unix compress (.Z) - requires ncompress
+
+    GZ = "gz"  # gzip (.gz)
+    Z = "Z"  # Unix compress (.Z) - requires ncompress
 
 
 class NamingConvention(Enum):
     """RINEX filename naming conventions."""
-    SHORT = "short"   # RINEX 2 style: SSSS0DDF.YYt
-    LONG = "long"     # IGS/RINEX 3+ style: SSSS00CCC_R_YYYYDDDHHMM_...
+
+    SHORT = "short"  # RINEX 2 style: SSSS0DDF.YYt
+    LONG = "long"  # IGS/RINEX 3+ style: SSSS00CCC_R_YYYYDDDHHMM_...
 
 
 class ConversionError(Exception):
     """Exception raised during RINEX conversion."""
 
-    def __init__(self, message: str, raw_file: Optional[Path] = None, details: Optional[str] = None):
+    def __init__(
+        self,
+        message: str,
+        raw_file: Optional[Path] = None,
+        details: Optional[str] = None,
+    ):
         self.message = message
         self.raw_file = raw_file
         self.details = details
@@ -63,6 +72,7 @@ class ConversionError(Exception):
 @dataclass
 class ConversionResult:
     """Result of a single file conversion."""
+
     raw_file: Path
     rinex_file: Optional[Path] = None
     success: bool = False
@@ -87,6 +97,7 @@ class ConversionResult:
 @dataclass
 class BatchConversionResult:
     """Result of batch conversion."""
+
     station_id: str
     total_files: int = 0
     successful: int = 0
@@ -183,7 +194,11 @@ class RawToRinexConverter(ABC):
             else:
                 config_hatanaka = rinex_config.get("default_hatanaka", True)
                 if isinstance(config_hatanaka, str):
-                    self.apply_hatanaka = config_hatanaka.lower() in ("true", "yes", "1")
+                    self.apply_hatanaka = config_hatanaka.lower() in (
+                        "true",
+                        "yes",
+                        "1",
+                    )
                 else:
                     self.apply_hatanaka = bool(config_hatanaka)
 
@@ -270,6 +285,7 @@ class RawToRinexConverter(ABC):
             ConversionResult with conversion details
         """
         import time
+
         start_time = time.time()
         raw_path = Path(raw_file)
         result = ConversionResult(raw_file=raw_path)
@@ -277,7 +293,7 @@ class RawToRinexConverter(ABC):
         try:
             # Validate input file
             if not raw_path.exists():
-                raise ConversionError(f"Raw file not found", raw_path)
+                raise ConversionError("Raw file not found", raw_path)
 
             if not self._has_supported_extension(raw_path):
                 raise ConversionError(
@@ -295,7 +311,9 @@ class RawToRinexConverter(ABC):
             if observation_date is None:
                 observation_date = self._extract_date_from_filename(raw_path)
 
-            self.logger.info(f"Converting {raw_path.name} for {observation_date.date()}")
+            self.logger.info(
+                f"Converting {raw_path.name} for {observation_date.date()}"
+            )
 
             # Run conversion
             rinex_file = self._run_conversion(raw_path, output_path, observation_date)
@@ -370,7 +388,9 @@ class RawToRinexConverter(ABC):
     def _has_supported_extension(self, file_path: Path) -> bool:
         """Check if file has a supported extension."""
         name_lower = file_path.name.lower()
-        return any(name_lower.endswith(ext.lower()) for ext in self.supported_extensions)
+        return any(
+            name_lower.endswith(ext.lower()) for ext in self.supported_extensions
+        )
 
     def _extract_date_from_filename(self, file_path: Path) -> datetime:
         """Extract observation date from raw filename.
@@ -392,13 +412,13 @@ class RawToRinexConverter(ABC):
 
         name = file_path.stem
         # Remove .sbf, .T02, etc. extensions that might be left after .stem
-        for ext in ['.sbf', '.t02', '.t00']:
+        for ext in [".sbf", ".t02", ".t00"]:
             if name.lower().endswith(ext):
-                name = name[:-len(ext)]
+                name = name[: -len(ext)]
 
         # Try pattern: STATION + YYYYMMDD + HHMM + session_letter
         # Station is 4 alphanumeric chars, date is 8 chars, time is 4 chars
-        pattern = r'([A-Za-z0-9]{4})(\d{8})(\d{4})'
+        pattern = r"([A-Za-z0-9]{4})(\d{8})(\d{4})"
         match = re.match(pattern, name, re.IGNORECASE)
 
         if match:
@@ -410,7 +430,7 @@ class RawToRinexConverter(ABC):
                 pass
 
         # Try simpler pattern: just YYYYMMDD somewhere in filename
-        pattern = r'(\d{8})'
+        pattern = r"(\d{8})"
         match = re.search(pattern, name)
         if match:
             date_str = match.group(1)
@@ -453,6 +473,7 @@ class RawToRinexConverter(ABC):
             station_config = None
             try:
                 from ..config_utils import get_station_config
+
                 station_config = get_station_config(self.station_id)
             except Exception as e:
                 self.logger.debug(f"Could not load station config: {e}")
@@ -549,19 +570,19 @@ class RawToRinexConverter(ABC):
             rinex_file = self._apply_hatanaka_compression(rinex_file)
 
         # Step 2: Apply file compression
-        if rinex_file.suffix == '.gz':
+        if rinex_file.suffix == ".gz":
             # Already compressed
             return rinex_file
 
         # Determine compression extension
         if self.compression_format == CompressionFormat.Z:
-            ext = '.Z'
+            ext = ".Z"
         else:
-            ext = '.gz'
+            ext = ".gz"
 
         compressed_path = rinex_file.parent / (rinex_file.name + ext)
-        with open(rinex_file, 'rb') as f_in:
-            with gzip.open(compressed_path, 'wb') as f_out:
+        with open(rinex_file, "rb") as f_in:
+            with gzip.open(compressed_path, "wb") as f_out:
                 shutil.copyfileobj(f_in, f_out)
         rinex_file.unlink()
         return compressed_path
@@ -580,7 +601,7 @@ class RawToRinexConverter(ABC):
         """
         # Check if this is an observation file (.YYo format)
         suffix = rinex_file.suffix.lower()
-        if not (len(suffix) == 4 and suffix[1:3].isdigit() and suffix[3] == 'o'):
+        if not (len(suffix) == 4 and suffix[1:3].isdigit() and suffix[3] == "o"):
             self.logger.debug(f"Skipping Hatanaka: not an observation file ({suffix})")
             return rinex_file
 
@@ -591,7 +612,7 @@ class RawToRinexConverter(ABC):
             return rinex_file
 
         # Generate output filename (.YYo -> .YYd)
-        hatanaka_suffix = suffix[:-1] + 'd'  # e.g., .26o -> .26d
+        hatanaka_suffix = suffix[:-1] + "d"  # e.g., .26o -> .26d
         hatanaka_file = rinex_file.with_suffix(hatanaka_suffix)
 
         try:
@@ -603,10 +624,14 @@ class RawToRinexConverter(ABC):
             # rnx2crx creates output file alongside input with changed extension
             if hatanaka_file.exists() and hatanaka_file.stat().st_size > 0:
                 rinex_file.unlink()  # Remove original .26o file
-                self.logger.debug(f"Hatanaka compressed: {rinex_file.name} -> {hatanaka_file.name}")
+                self.logger.debug(
+                    f"Hatanaka compressed: {rinex_file.name} -> {hatanaka_file.name}"
+                )
                 return hatanaka_file
             else:
-                self.logger.warning(f"rnx2crx did not create expected output: {hatanaka_file}")
+                self.logger.warning(
+                    f"rnx2crx did not create expected output: {hatanaka_file}"
+                )
                 return rinex_file
 
         except Exception as e:
@@ -679,7 +704,7 @@ class RawToRinexConverter(ABC):
         try:
             config_key = f"{tool_name}_path"
             # Try [rinex_tools] section, then [rinex] section
-            for section in ['rinex_tools', 'rinex']:
+            for section in ["rinex_tools", "rinex"]:
                 try:
                     tool_path = self.config.config.get(section, config_key)
                     if tool_path and Path(tool_path).exists():
@@ -692,6 +717,7 @@ class RawToRinexConverter(ABC):
 
         # Try system PATH
         import shutil
+
         system_path = shutil.which(tool_name)
         if system_path:
             self._tool_paths[tool_name] = Path(system_path)

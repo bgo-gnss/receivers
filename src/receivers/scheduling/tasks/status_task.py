@@ -95,7 +95,7 @@ class StatusTask(ScheduledTask):
                 return False, f"No configuration found for station {self.station_id}"
 
             # Check required connection fields
-            if not self._station_config.get('ip_number'):
+            if not self._station_config.get("ip_number"):
                 return False, f"No IP address configured for {self.station_id}"
 
             return True, None
@@ -124,9 +124,9 @@ class StatusTask(ScheduledTask):
             if not valid:
                 return self._create_failure_result(
                     start_time,
-                    'validation_failed',
+                    "validation_failed",
                     f"Validation failed: {error}",
-                    f"ValidationError: {error}"
+                    f"ValidationError: {error}",
                 )
 
             # Create receiver and gather health data
@@ -138,9 +138,9 @@ class StatusTask(ScheduledTask):
             if station_config is None:
                 return self._create_failure_result(
                     start_time,
-                    'error',
+                    "error",
                     "Station config not loaded",
-                    "InternalError: station config is None"
+                    "InternalError: station config is None",
                 )
 
             self._receiver = create_receiver(self.station_id, station_config)
@@ -151,7 +151,7 @@ class StatusTask(ScheduledTask):
                 station_config=station_config,
                 receiver=self._receiver,
                 include_files=False,  # File checks are separate
-                include_ntrip=True,   # Include NTRIP/RTK status
+                include_ntrip=True,  # Include NTRIP/RTK status
             )
 
             # Write to database
@@ -170,14 +170,14 @@ class StatusTask(ScheduledTask):
             duration = time.time() - start_time
 
             # Build result
-            overall_status = health_data.get('overall_status', 'unknown')
-            success = overall_status in ('healthy', 'ok', 'warning')
+            overall_status = health_data.get("overall_status", "unknown")
+            success = overall_status in ("healthy", "ok", "warning")
 
             message = f"Status: {overall_status}"
             if db_success:
                 message += ", saved to DB"
             if icinga_results:
-                icinga_ok = sum(1 for r in icinga_results.values() if r.get('success'))
+                icinga_ok = sum(1 for r in icinga_results.values() if r.get("success"))
                 message += f", {icinga_ok}/{len(icinga_results)} Icinga checks sent"
 
             self.logger.info(
@@ -190,17 +190,17 @@ class StatusTask(ScheduledTask):
                 duration=duration,
                 message=message,
                 data={
-                    'station_id': self.station_id,
-                    'overall_status': overall_status,
-                    'db_write_success': db_success,
-                    'icinga_checks_sent': len(icinga_results),
-                    'metrics': health_data.get('metrics', {}),
+                    "station_id": self.station_id,
+                    "overall_status": overall_status,
+                    "db_write_success": db_success,
+                    "icinga_checks_sent": len(icinga_results),
+                    "metrics": health_data.get("metrics", {}),
                 },
                 metrics={
-                    'check_duration': duration,
-                    'db_enabled': self.send_to_database,
-                    'icinga_enabled': self.send_to_icinga,
-                }
+                    "check_duration": duration,
+                    "db_enabled": self.send_to_database,
+                    "icinga_enabled": self.send_to_icinga,
+                },
             )
 
         except Exception as e:
@@ -210,18 +210,12 @@ class StatusTask(ScheduledTask):
 
             # Record station as offline when health check fails
             if self.send_to_database:
-                self._write_ping_status({
-                    'connection': {
-                        'tcp': {'status': 'failed'},
-                        'error': error_msg
-                    }
-                })
+                self._write_ping_status(
+                    {"connection": {"tcp": {"status": "failed"}, "error": error_msg}}
+                )
 
             return self._create_failure_result(
-                start_time,
-                'error',
-                f"Status check failed: {str(e)}",
-                error_msg
+                start_time, "error", f"Status check failed: {str(e)}", error_msg
             )
 
     def _write_connectivity_status(self, health_data: Dict[str, Any]) -> bool:
@@ -274,7 +268,9 @@ class StatusTask(ScheduledTask):
                 return db.write_health_data(health_data)
 
         except ImportError:
-            self.logger.warning("PostgreSQL writer not available (psycopg2 not installed)")
+            self.logger.warning(
+                "PostgreSQL writer not available (psycopg2 not installed)"
+            )
             return False
         except Exception as e:
             self.logger.error(f"Database write failed: {e}")
@@ -315,6 +311,6 @@ class StatusTask(ScheduledTask):
             status=status,
             duration=time.time() - start_time,
             message=message,
-            data={'station_id': self.station_id},
+            data={"station_id": self.station_id},
             error=error,
         )

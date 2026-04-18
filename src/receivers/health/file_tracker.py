@@ -148,7 +148,7 @@ class FileTracker:
                 if actual_samples < min_samples:
                     logger.info(
                         f"Health data incomplete for {station_id}/{file_date}: "
-                        f"{actual_samples}/{expected_samples} samples ({100*actual_samples/expected_samples:.1f}%)"
+                        f"{actual_samples}/{expected_samples} samples ({100 * actual_samples / expected_samples:.1f}%)"
                     )
                     return False
 
@@ -188,7 +188,9 @@ class FileTracker:
                     (station_id, session_type, file_date, file_hour, filename),
                 )
             self._conn.commit()
-            logger.debug(f"Marked file as missing: {station_id}/{session_type}/{file_date}")
+            logger.debug(
+                f"Marked file as missing: {station_id}/{session_type}/{file_date}"
+            )
             return True
         except Exception as e:
             logger.debug(f"Error marking file as missing: {e}")
@@ -228,10 +230,20 @@ class FileTracker:
             with self._conn.cursor() as cur:
                 cur.execute(
                     """SELECT upsert_file_tracking(%s, %s, %s, %s::smallint, %s, 'downloaded', %s, NULL, NULL, NULL, NULL, %s)""",
-                    (station_id, session_type, file_date, file_hour, filename, file_size, remote_file_size),
+                    (
+                        station_id,
+                        session_type,
+                        file_date,
+                        file_hour,
+                        filename,
+                        file_size,
+                        remote_file_size,
+                    ),
                 )
             self._conn.commit()
-            logger.debug(f"Marked file as downloaded: {station_id}/{session_type}/{file_date}")
+            logger.debug(
+                f"Marked file as downloaded: {station_id}/{session_type}/{file_date}"
+            )
             return True
         except Exception as e:
             logger.debug(f"Error marking file as downloaded: {e}")
@@ -271,10 +283,20 @@ class FileTracker:
             with self._conn.cursor() as cur:
                 cur.execute(
                     """SELECT upsert_file_tracking(%s, %s, %s, %s::smallint, %s, 'archived', %s, NULL, NULL, NULL, NULL, %s)""",
-                    (station_id, session_type, file_date, file_hour, filename, file_size, remote_file_size),
+                    (
+                        station_id,
+                        session_type,
+                        file_date,
+                        file_hour,
+                        filename,
+                        file_size,
+                        remote_file_size,
+                    ),
                 )
             self._conn.commit()
-            logger.debug(f"Marked file as archived: {station_id}/{session_type}/{file_date}")
+            logger.debug(
+                f"Marked file as archived: {station_id}/{session_type}/{file_date}"
+            )
             return True
         except Exception as e:
             logger.debug(f"Error marking file as archived: {e}")
@@ -318,10 +340,20 @@ class FileTracker:
             with self._conn.cursor() as cur:
                 cur.execute(
                     """SELECT upsert_file_tracking(%s, %s, %s, %s::smallint, %s, 'suspect', %s, NULL, NULL, NULL, %s)""",
-                    (station_id, session_type, file_date, file_hour, filename, file_size, reason),
+                    (
+                        station_id,
+                        session_type,
+                        file_date,
+                        file_hour,
+                        filename,
+                        file_size,
+                        reason,
+                    ),
                 )
             self._conn.commit()
-            logger.debug(f"Marked file as suspect: {station_id}/{session_type}/{file_date} — {reason}")
+            logger.debug(
+                f"Marked file as suspect: {station_id}/{session_type}/{file_date} — {reason}"
+            )
             return True
         except Exception as e:
             logger.debug(f"Error marking file as suspect: {e}")
@@ -409,7 +441,9 @@ class FileTracker:
                     (station_id, file_date, samples_imported, checksum, json_path),
                 )
             self._conn.commit()
-            logger.debug(f"Marked health as imported: {station_id}/{file_date} ({samples_imported} samples)")
+            logger.debug(
+                f"Marked health as imported: {station_id}/{file_date} ({samples_imported} samples)"
+            )
             return True
         except Exception as e:
             logger.debug(f"Error marking health as imported: {e}")
@@ -568,8 +602,12 @@ class FileTracker:
                 }
 
                 if latest:
-                    result["latest_download"] = latest[0].isoformat() if latest[0] else None
-                    result["hours_since_download"] = float(latest[1]) if latest[1] else None
+                    result["latest_download"] = (
+                        latest[0].isoformat() if latest[0] else None
+                    )
+                    result["hours_since_download"] = (
+                        float(latest[1]) if latest[1] else None
+                    )
 
                 if counts:
                     result["downloads_successful"] = counts[0] or 0
@@ -624,6 +662,7 @@ class ArchiveFileChecker:
 
         try:
             from ..config.receivers_config import ReceiversConfig
+
             self._config = ReceiversConfig()
 
             if self.data_prepath is None:
@@ -705,6 +744,7 @@ class ArchiveFileChecker:
         # Use gtimes for date formatting
         try:
             import gtimes.timefunc as gt
+
             paths = gt.datepathlist(path, "1D", datelist=[dt])
             return paths[0] if paths else path
         except Exception:
@@ -952,7 +992,9 @@ class FormatResolver:
             logger.warning("psycopg2 not installed - format resolver disabled")
             return False
         except Exception as e:
-            logger.warning(f"Database connection failed: {e} - format resolver disabled")
+            logger.warning(
+                f"Database connection failed: {e} - format resolver disabled"
+            )
             return False
 
     def _ensure_loaded(self) -> bool:
@@ -1386,6 +1428,7 @@ class ProcessingStatusChecker:
 
         try:
             from ..config.receivers_config import ReceiversConfig
+
             self._config = ReceiversConfig()
 
             if self.timeseries_prepath is None:
@@ -1459,7 +1502,7 @@ class ProcessingStatusChecker:
 
         try:
             # Read the last line of the file
-            with open(filepath, "r") as f:
+            with open(filepath) as f:
                 lines = f.readlines()
 
             if not lines:
@@ -1507,6 +1550,7 @@ class ProcessingStatusChecker:
             # Convert year fraction to datetime using gtimes
             try:
                 import gtimes.timefunc as gt
+
                 latest_dt: datetime = gt.TimefromYearf(latest_yearf)  # type: ignore[assignment]
             except Exception as e:
                 logger.debug(f"Could not convert year fraction: {e}")
@@ -1527,6 +1571,7 @@ class ProcessingStatusChecker:
             days_with_data = set()
             try:
                 import gtimes.timefunc as gt
+
                 for line in lines:
                     line = line.strip()
                     if line and not line.startswith("#"):
@@ -1536,7 +1581,7 @@ class ProcessingStatusChecker:
                                 yearf = float(line_parts[0])
                                 dt: datetime = gt.TimefromYearf(yearf)  # type: ignore[assignment]
                                 if dt >= week_ago:
-                                    days_with_data.add(dt.strftime('%Y-%m-%d'))
+                                    days_with_data.add(dt.strftime("%Y-%m-%d"))
                             except (ValueError, TypeError):
                                 continue
             except Exception:
@@ -1557,7 +1602,7 @@ class ProcessingStatusChecker:
             days_late = (yesterday - latest_day).days
 
             # Determine status based on latest data point
-            latest_date_str = latest_dt.strftime('%Y-%m-%d')
+            latest_date_str = latest_dt.strftime("%Y-%m-%d")
 
             # Build gap info for message
             gap_info = ""
@@ -1682,10 +1727,14 @@ class ProcessingStatusChecker:
                 message = f"latest: {raw_str} (1 day behind), rinex: {rinex_str}"
             elif days_behind <= 3:
                 status = "warning"
-                message = f"latest: {raw_str} ({days_behind} days behind), rinex: {rinex_str}"
+                message = (
+                    f"latest: {raw_str} ({days_behind} days behind), rinex: {rinex_str}"
+                )
             else:
                 status = "critical"
-                message = f"latest: {raw_str} ({days_behind} days behind), rinex: {rinex_str}"
+                message = (
+                    f"latest: {raw_str} ({days_behind} days behind), rinex: {rinex_str}"
+                )
 
             return {
                 "has_data": True,
@@ -1842,7 +1891,9 @@ class GapDetector:
         """
         # Build the datetime for the file
         if file_hour is not None:
-            dt = datetime.combine(file_date, datetime.min.time()).replace(hour=file_hour)
+            dt = datetime.combine(file_date, datetime.min.time()).replace(
+                hour=file_hour
+            )
         else:
             dt = datetime.combine(file_date, datetime.min.time())
 
@@ -1911,7 +1962,11 @@ class GapDetector:
                     try:
                         # Check archive
                         exists, filepath, file_size = self._check_archive_for_file(
-                            station_id, session_type, file_date, file_hour, receiver_type
+                            station_id,
+                            session_type,
+                            file_date,
+                            file_hour,
+                            receiver_type,
                         )
 
                         if exists:
@@ -1940,14 +1995,28 @@ class GapDetector:
                                 # New file - add to DB as archived
                                 cur.execute(
                                     """SELECT upsert_file_tracking(%s, %s, %s, %s::smallint, %s, 'archived', %s)""",
-                                    (station_id, session_type, file_date, file_hour, filename, file_size),
+                                    (
+                                        station_id,
+                                        session_type,
+                                        file_date,
+                                        file_hour,
+                                        filename,
+                                        file_size,
+                                    ),
                                 )
                                 files_added += 1
                             elif row[1] != "archived":
                                 # Existing file - update to archived
                                 cur.execute(
                                     """SELECT upsert_file_tracking(%s, %s, %s, %s::smallint, %s, 'archived', %s)""",
-                                    (station_id, session_type, file_date, file_hour, filename, file_size),
+                                    (
+                                        station_id,
+                                        session_type,
+                                        file_date,
+                                        file_hour,
+                                        filename,
+                                        file_size,
+                                    ),
                                 )
                                 files_updated += 1
                         else:
@@ -1983,7 +2052,12 @@ class GapDetector:
                                 files_removed += 1
                                 logger.warning(
                                     f"File removed from archive: {station_id}/{session_type}/"
-                                    f"{file_date}" + (f"/{file_hour:02d}" if file_hour is not None else "")
+                                    f"{file_date}"
+                                    + (
+                                        f"/{file_hour:02d}"
+                                        if file_hour is not None
+                                        else ""
+                                    )
                                 )
 
                     except Exception as e:
@@ -1998,7 +2072,9 @@ class GapDetector:
                 self.file_tracker._conn.rollback()
             errors += 1
 
-        return SyncResult(files_found, files_added, files_updated, files_removed, errors)
+        return SyncResult(
+            files_found, files_added, files_updated, files_removed, errors
+        )
 
     def find_gaps(
         self,
@@ -2167,6 +2243,7 @@ class GapDetector:
         API (self._parse_rinex_filename(...)).
         """
         from receivers.rinex.rinex_namer import RinexNamer
+
         return RinexNamer.parse_date_hour(filename, station_id=station_id)
 
     def scan_rinex_files(
@@ -2209,7 +2286,14 @@ class GapDetector:
         unique_months: set[tuple[int, str]] = set()
         current = start_date
         while current <= end_date:
-            unique_months.add((current.year, datetime.combine(current, datetime.min.time()).strftime("%b").lower()))
+            unique_months.add(
+                (
+                    current.year,
+                    datetime.combine(current, datetime.min.time())
+                    .strftime("%b")
+                    .lower(),
+                )
+            )
             current += timedelta(days=1)
 
         try:
@@ -2217,7 +2301,10 @@ class GapDetector:
             with conn.cursor() as cur:
                 for year, month in unique_months:
                     archive_dir = self.archive_checker.get_archive_directory(
-                        station_id, session_type, year=year, month=month,
+                        station_id,
+                        session_type,
+                        year=year,
+                        month=month,
                     )
 
                     if not os.path.isdir(archive_dir):
@@ -2251,7 +2338,14 @@ class GapDetector:
                             # Upsert to file_tracking
                             tracking_id = cur.execute(
                                 """SELECT upsert_file_tracking(%s, %s, %s, %s::smallint, %s, 'archived', %s)""",
-                                (station_id, session_type, file_date, file_hour, filename, fsize),
+                                (
+                                    station_id,
+                                    session_type,
+                                    file_date,
+                                    file_hour,
+                                    filename,
+                                    fsize,
+                                ),
                             )
                             result = cur.fetchone()
                             tracking_id = result[0] if result else None
@@ -2271,7 +2365,9 @@ class GapDetector:
                 conn.commit()
 
         except Exception as e:
-            logger.error(f"Error scanning RINEX files for {station_id}/{session_type}: {e}")
+            logger.error(
+                f"Error scanning RINEX files for {station_id}/{session_type}: {e}"
+            )
             if self.file_tracker._conn:
                 self.file_tracker._conn.rollback()
 

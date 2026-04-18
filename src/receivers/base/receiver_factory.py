@@ -1,10 +1,10 @@
 """Receiver factory for creating receiver instances based on type."""
 
 import logging
-from typing import Dict, Any, Optional, Type
+from typing import Any, Dict, Optional, Type
 
-from .receiver import BaseReceiver
 from ..base.exceptions import ConfigurationError
+from .receiver import BaseReceiver
 
 
 class ReceiverFactory:
@@ -26,34 +26,41 @@ class ReceiverFactory:
         try:
             # Import known receiver types
             from ..septentrio.polarx5 import PolaRX5
+
             self._receiver_types["PolaRX5"] = PolaRX5
 
             # Try to import additional receiver types
             try:
                 from ..trimble.netrs import NetRS
+
                 self._receiver_types["NetRS"] = NetRS
             except ImportError:
                 self.logger.debug("NetRS receiver type not available")
 
             try:
                 from ..trimble.netr9 import NetR9
+
                 self._receiver_types["NetR9"] = NetR9
             except ImportError:
                 self.logger.debug("NetR9 receiver type not available")
 
             try:
                 from ..trimble.netr5 import NetR5
+
                 self._receiver_types["NetR5"] = NetR5
             except ImportError:
                 self.logger.debug("NetR5 receiver type not available")
 
             try:
                 from ..leica.g10 import LeicaG10
+
                 self._receiver_types["G10"] = LeicaG10
             except ImportError:
                 self.logger.debug("G10 receiver type not available")
 
-            self.logger.debug(f"Discovered receiver types: {list(self._receiver_types.keys())}")
+            self.logger.debug(
+                f"Discovered receiver types: {list(self._receiver_types.keys())}"
+            )
 
         except Exception as e:
             self.logger.warning(f"Failed to discover receiver types: {e}")
@@ -77,7 +84,9 @@ class ReceiverFactory:
         """
         return receiver_type in self._receiver_types
 
-    def _adapt_configuration(self, station_config: Dict[str, Any], receiver_type: str) -> Dict[str, Any]:
+    def _adapt_configuration(
+        self, station_config: Dict[str, Any], receiver_type: str
+    ) -> Dict[str, Any]:
         """Adapt station configuration to expected format for receiver type.
 
         Args:
@@ -96,15 +105,13 @@ class ReceiverFactory:
             station_data = station_config["station"]
             adapted_config = {
                 "station": station_data,  # Keep original station data
-                "router": {
-                    "ip": station_data.get("router_ip", "")
-                },
+                "router": {"ip": station_data.get("router_ip", "")},
                 "receiver": {
                     "type": station_data.get("receiver_type", receiver_type),
                     "httpport": int(station_data.get("receiver_httpport", 8060)),
                     "ftpport": int(station_data.get("receiver_ftpport", 21)),
-                    "controlport": int(station_data.get("receiver_controlport", 28784))
-                }
+                    "controlport": int(station_data.get("receiver_controlport", 28784)),
+                },
             }
 
             # Copy authentication credentials if present
@@ -119,9 +126,7 @@ class ReceiverFactory:
         return station_config
 
     def create_receiver(
-        self,
-        station_id: str,
-        station_config: Dict[str, Any]
+        self, station_id: str, station_config: Dict[str, Any]
     ) -> BaseReceiver:
         """Create receiver instance based on configuration.
 
@@ -143,7 +148,9 @@ class ReceiverFactory:
             receiver_type = station_config["receiver"]["type"]
 
         # Format 2: station.receiver_type (legacy format)
-        elif "station" in station_config and "receiver_type" in station_config["station"]:
+        elif (
+            "station" in station_config and "receiver_type" in station_config["station"]
+        ):
             receiver_type = station_config["station"]["receiver_type"]
 
         if not receiver_type:
@@ -151,7 +158,7 @@ class ReceiverFactory:
                 f"Missing receiver type in configuration for station {station_id}. "
                 f"Expected 'receiver.type' or 'station.receiver_type'",
                 station_id=station_id,
-                config_field="receiver.type"
+                config_field="receiver.type",
             )
 
         if not self.is_supported(receiver_type):
@@ -162,7 +169,7 @@ class ReceiverFactory:
                 station_id=station_id,
                 config_field="receiver.type",
                 actual_value=receiver_type,
-                suggested_fix=f"Use one of: {available_types}"
+                suggested_fix=f"Use one of: {available_types}",
             )
 
         ReceiverClass = self._receiver_types[receiver_type]
@@ -171,7 +178,9 @@ class ReceiverFactory:
             # Adapt configuration format for receivers that expect separate router/receiver sections
             adapted_config = self._adapt_configuration(station_config, receiver_type)
             receiver = ReceiverClass(station_id, adapted_config)
-            self.logger.debug(f"Created {receiver_type} receiver for station {station_id}")
+            self.logger.debug(
+                f"Created {receiver_type} receiver for station {station_id}"
+            )
             return receiver
 
         except Exception as e:
@@ -179,14 +188,11 @@ class ReceiverFactory:
                 f"Failed to create {receiver_type} receiver for station {station_id}: {e}",
                 station_id=station_id,
                 config_field="receiver",
-                suggested_fix="Check station configuration completeness"
+                suggested_fix="Check station configuration completeness",
             ) from e
 
     def create_receiver_from_type(
-        self,
-        receiver_type: str,
-        station_id: str,
-        station_config: Dict[str, Any]
+        self, receiver_type: str, station_id: str, station_config: Dict[str, Any]
     ) -> BaseReceiver:
         """Create receiver instance from explicit type.
 
