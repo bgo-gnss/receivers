@@ -128,23 +128,23 @@ class TimeParameterProcessor:
     ) -> datetime:
         """Parse datetime from various formats.
 
-        Supports multiple datetime string formats with graceful fallback.
-        If already a datetime object, returns it unchanged.
+        Delegates to ``gtimes.timefunc.parse_datetime_flexible`` for the
+        common cases (ISO, YYYYMMDD, YYYYMMDD-HHMM, etc.). If the caller has
+        registered domain-specific parsers via :meth:`register_parser`, they
+        are tried first.
 
         Args:
-            dt_input: Datetime object or string representation
+            dt_input: Datetime object or string representation.
 
         Returns:
-            Parsed datetime object
+            Parsed datetime object.
 
         Raises:
-            ValueError: If string cannot be parsed by any registered format
+            ValueError: If no parser succeeds.
         """
-        # If already datetime, return as-is
         if isinstance(dt_input, datetime):
             return dt_input
 
-        # Try custom parsers first
         for parser in self._custom_parsers:
             try:
                 result = parser.parse(dt_input)
@@ -156,30 +156,8 @@ class TimeParameterProcessor:
             except ValueError:
                 continue
 
-        # Try ISO format (built-in Python parsing)
-        try:
-            result = datetime.fromisoformat(dt_input)
-            self.logger.debug(f"Parsed '{dt_input}' as ISO format")
-            return result
-        except ValueError:
-            pass
-
-        # Try standard formats
-        for fmt, description in self._STANDARD_FORMATS:
-            try:
-                result = datetime.strptime(dt_input, fmt)
-                self.logger.debug(
-                    f"Parsed '{dt_input}' using format '{fmt}' ({description})"
-                )
-                return result
-            except ValueError:
-                continue
-
-        # All parsing attempts failed
-        raise ValueError(
-            f"Could not parse datetime string: '{dt_input}'. "
-            f"Supported formats: ISO, {', '.join(fmt for fmt, _ in self._STANDARD_FORMATS)}"
-        )
+        from gtimes.timefunc import parse_datetime_flexible as _gt_parse
+        return _gt_parse(dt_input)
 
     def normalize_timestamp(
         self,

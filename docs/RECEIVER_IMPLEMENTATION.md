@@ -42,7 +42,6 @@ Complete implementation of GPS receiver support for all 173 stations in the Veð
   - Adaptive timeout system integration
   - Authentication support
 - **TrimbleHealthParser**: Standardized health data parsing from HTTP API responses
-- **TrimbleFTPClient**: FTP download with progress tracking and resume capability
 
 ### Dynamic Discovery System
 - Automatic receiver type detection via reflection
@@ -56,10 +55,11 @@ Complete implementation of GPS receiver support for all 173 stations in the Veð
 ```
 receivers/src/receivers/trimble/
 ├── __init__.py           # Package exports
-├── http_client.py        # HTTP communication layer  
+├── http_client.py        # HTTP communication layer
+├── http_download_client.py  # HTTP file download with progress
 ├── health_parser.py      # Health data standardization
-├── ftp_client.py         # FTP download with progress
 ├── netr9.py              # NetR9 receiver implementation
+├── netr5.py              # NetR5 receiver (inherits NetR9)
 └── netrs.py              # NetRS receiver implementation
 ```
 
@@ -67,7 +67,9 @@ receivers/src/receivers/trimble/
 ```
 receivers/src/receivers/leica/
 ├── __init__.py           # Package exports
-└── leica_gnss.py         # Leica receiver implementation
+├── g10.py                # LeicaG10 receiver implementation
+├── download_manager.py   # Leica download orchestration
+└── leica_ftp_download_client.py  # FTP download for .m00.zip files
 ```
 
 ### Modified Core Files

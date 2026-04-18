@@ -33,8 +33,8 @@ Long format (IGS/RINEX 3+):
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Optional
+from datetime import date, datetime, timedelta
+from typing import Optional, Tuple
 
 from .converter_base import NamingConvention, RinexVersion
 
@@ -255,26 +255,30 @@ class RinexNamer:
 
         return filename
 
-    def parse_filename(self, filename: str) -> Optional[FileNameComponents]:
+    @staticmethod
+    def parse_filename(filename: str) -> Optional[FileNameComponents]:
         """Parse a RINEX filename into components.
 
+        Delegates to gtimes.timefunc.parse_rinex3_filename /
+        parse_rinex2_filename for the canonical parser. Returns a
+        FileNameComponents dataclass (receivers-side shape).
+
         Args:
-            filename: RINEX filename to parse
+            filename: RINEX filename to parse (directory part ignored).
 
         Returns:
-            FileNameComponents if successfully parsed, None otherwise
-
-        Uses gtimes.timefunc parsing functions internally.
+            FileNameComponents if successfully parsed, None otherwise.
         """
-        from gtimes import timefunc
+        from gtimes.timefunc import parse_rinex2_filename, parse_rinex3_filename
 
-        # Try RINEX 3 long format first
-        parsed = timefunc.parse_rinex3_filename(filename)
-        if parsed:
+        name = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+
+        parsed = parse_rinex3_filename(name)
+        if parsed is not None:
             return FileNameComponents(
-                station=parsed["station"],
+                station=parsed["station"].upper(),
                 monument_number=parsed["monument_number"],
-                country_code=parsed["country_code"],
+                country_code=parsed["country_code"].upper(),
                 data_source=parsed["data_source"],
                 year=parsed["year"],
                 day_of_year=parsed["doy"],
@@ -285,27 +289,16 @@ class RinexNamer:
                 file_type=parsed["file_type"],
             )
 
-        # Try RINEX 2 short format
-        parsed = timefunc.parse_rinex2_filename(filename)
-        if parsed:
-            # Convert session to sequence number
+        parsed = parse_rinex2_filename(name)
+        if parsed is not None:
             session = parsed["session"]
             if session.isdigit():
                 file_sequence = int(session)
             else:
                 file_sequence = ord(session.lower()) - ord("a") + 10
-
-            # Map file type char to full type
-            type_mapping = {
-                "o": "MO",
-                "n": "MN",
-                "g": "GN",
-                "l": "EN",
-                "m": "MM",
-            }
-
+            type_mapping = {"o": "MO", "n": "MN", "g": "GN", "l": "EN", "m": "MM"}
             return FileNameComponents(
-                station=parsed["station"],
+                station=parsed["station"].upper(),
                 year=parsed["year"],
                 day_of_year=parsed["doy"],
                 file_sequence=file_sequence,
@@ -313,6 +306,52 @@ class RinexNamer:
             )
 
         return None
+
+    @staticmethod
+    def parse_date_hour(filename: str, station_id: Optional[str] = None) -> Tuple[Optional[date], Optional[int]]:
+        """Parse a RINEX filename into (file_date, file_hour).
+
+        Convenience for callers that only need the datetime anchor. Daily
+        files (RINEX 2 session '0' or RINEX 3 period '01D' at hour 0) yield
+        hour=None; hourly files (RINEX 2 session a-x or RINEX 3 with a
+        non-zero hour) yield hour=0..23.
+
+        Delegates to gtimes.timefunc parsers for the actual regex matching.
+
+        Args:
+            filename: RINEX filename to parse (directory part ignored).
+            station_id: If given, require parsed station to match
+                (case-insensitive). Mismatch returns (None, None).
+
+        Returns:
+            (file_date, file_hour) — either may be None if unparseable.
+        """
+        from gtimes.timefunc import parse_rinex2_filename, parse_rinex3_filename
+
+        name = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+
+        parsed = parse_rinex3_filename(name)
+        if parsed is not None:
+            if station_id is not None and parsed["station"].upper() != station_id.upper():
+                return None, None
+            file_date = date(parsed["year"], 1, 1) + timedelta(days=parsed["doy"] - 1)
+            if parsed["file_period"] == "01D" and parsed["hour"] == 0 and parsed["minute"] == 0:
+                return file_date, None
+            return file_date, parsed["hour"]
+
+        parsed = parse_rinex2_filename(name)
+        if parsed is not None:
+            if station_id is not None and parsed["station"].upper() != station_id.upper():
+                return None, None
+            file_date = date(parsed["year"], 1, 1) + timedelta(days=parsed["doy"] - 1)
+            session = parsed["session"]
+            if session == "0":
+                return file_date, None
+            if "a" <= session <= "x":
+                return file_date, ord(session) - ord("a")
+            return file_date, None
+
+        return None, None
 
     @staticmethod
     def get_session_file_period(session_type: str) -> str:
