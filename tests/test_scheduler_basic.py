@@ -586,13 +586,13 @@ class TestRinexAfterDownload:
         mock_receiver.download_data.return_value = mock_result
         station_config = {"receiver_type": "polarx5"}
 
-        with patch(
-            "receivers.cli.main.get_station_config", return_value=station_config
-        ), patch(
-            "receivers.cli.main.create_receiver", return_value=mock_receiver
-        ), patch(
-            "receivers.utils.time_utils.calculate_download_time_range",
-            return_value=(datetime(2026, 2, 10), datetime(2026, 2, 10, 1)),
+        with (
+            patch("receivers.cli.main.get_station_config", return_value=station_config),
+            patch("receivers.cli.main.create_receiver", return_value=mock_receiver),
+            patch(
+                "receivers.utils.time_utils.calculate_download_time_range",
+                return_value=(datetime(2026, 2, 10), datetime(2026, 2, 10, 1)),
+            ),
         ):
             _download_station_data_job(
                 station_id,
@@ -1073,14 +1073,16 @@ class TestPipelineTracking:
             mock_receiver = MagicMock()
             mock_receiver.download_data.return_value = mock_result
 
-            with patch(
-                "receivers.cli.main.get_station_config",
-                return_value={"receiver_type": "polarx5"},
-            ), patch(
-                "receivers.cli.main.create_receiver", return_value=mock_receiver
-            ), patch(
-                "receivers.utils.time_utils.calculate_download_time_range",
-                return_value=(datetime(2026, 2, 10), datetime(2026, 2, 10, 1)),
+            with (
+                patch(
+                    "receivers.cli.main.get_station_config",
+                    return_value={"receiver_type": "polarx5"},
+                ),
+                patch("receivers.cli.main.create_receiver", return_value=mock_receiver),
+                patch(
+                    "receivers.utils.time_utils.calculate_download_time_range",
+                    return_value=(datetime(2026, 2, 10), datetime(2026, 2, 10, 1)),
+                ),
             ):
                 _download_station_data_job(
                     "ELDC",
@@ -1238,14 +1240,16 @@ class TestLoadMonitor:
         try:
             # Mock the imports that would happen inside the function
             mock_receiver = MagicMock()
-            with patch(
-                "receivers.cli.main.get_station_config",
-                return_value={"receiver_type": "polarx5"},
-            ), patch(
-                "receivers.cli.main.create_receiver", return_value=mock_receiver
-            ), patch(
-                "receivers.utils.time_utils.calculate_download_time_range",
-                return_value=(datetime(2026, 2, 10), datetime(2026, 2, 10, 1)),
+            with (
+                patch(
+                    "receivers.cli.main.get_station_config",
+                    return_value={"receiver_type": "polarx5"},
+                ),
+                patch("receivers.cli.main.create_receiver", return_value=mock_receiver),
+                patch(
+                    "receivers.utils.time_utils.calculate_download_time_range",
+                    return_value=(datetime(2026, 2, 10), datetime(2026, 2, 10, 1)),
+                ),
             ):
                 bs_module._download_station_data_job(
                     "ELDC",
@@ -1570,19 +1574,23 @@ class TestGapBackfill:
             )
             mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-            with patch(
-                "receivers.health.database_factory.DatabaseConnectionFactory"
-            ) as mock_db, patch(
-                "receivers.scheduling.backfill._pick_station_by_gap_count",
-                return_value=(
-                    "ELDC",
-                    date(2026, 2, 5),
-                    date(2026, 1, 1),
-                    date(2026, 2, 10),
+            with (
+                patch(
+                    "receivers.health.database_factory.DatabaseConnectionFactory"
+                ) as mock_db,
+                patch(
+                    "receivers.scheduling.backfill._pick_station_by_gap_count",
+                    return_value=(
+                        "ELDC",
+                        date(2026, 2, 5),
+                        date(2026, 1, 1),
+                        date(2026, 2, 10),
+                    ),
+                ) as mock_gap,
+                patch(
+                    "receivers.scheduling.backfill._backfill_station_day_generic",
+                    return_value=True,
                 ),
-            ) as mock_gap, patch(
-                "receivers.scheduling.backfill._backfill_station_day_generic",
-                return_value=True,
             ):
                 mock_db.connection.return_value = mock_conn
 
@@ -1619,15 +1627,19 @@ class TestGapBackfill:
             )
             mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-            with patch(
-                "receivers.health.database_factory.DatabaseConnectionFactory"
-            ) as mock_db, patch(
-                "receivers.scheduling.backfill._pick_station_by_gap_count",
-                return_value=None,
-            ) as mock_gap, patch(
-                "receivers.scheduling.backfill._backfill_station_day_generic",
-                return_value=True,
-            ) as mock_backfill:
+            with (
+                patch(
+                    "receivers.health.database_factory.DatabaseConnectionFactory"
+                ) as mock_db,
+                patch(
+                    "receivers.scheduling.backfill._pick_station_by_gap_count",
+                    return_value=None,
+                ) as mock_gap,
+                patch(
+                    "receivers.scheduling.backfill._backfill_station_day_generic",
+                    return_value=True,
+                ) as mock_backfill,
+            ):
                 mock_db.connection.return_value = mock_conn
 
                 _backfill_next_station_for_session(

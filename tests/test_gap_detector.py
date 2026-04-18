@@ -195,12 +195,14 @@ class TestFindGaps:
         detector = GapDetector()
 
         # Mock archive check to always return True
-        with patch.object(
-            detector, "_check_archive_for_file", return_value=(True, "/path", 100)
-        ), patch.object(
-            detector.file_tracker, "connect", return_value=True
-        ), patch.object(
-            detector, "sync_archive_to_db", return_value=SyncResult(3, 0, 0, 0, 0)
+        with (
+            patch.object(
+                detector, "_check_archive_for_file", return_value=(True, "/path", 100)
+            ),
+            patch.object(detector.file_tracker, "connect", return_value=True),
+            patch.object(
+                detector, "sync_archive_to_db", return_value=SyncResult(3, 0, 0, 0, 0)
+            ),
         ):
             gaps = detector.find_gaps(
                 "TEST",
@@ -217,12 +219,14 @@ class TestFindGaps:
         detector = GapDetector()
 
         # Mock archive check to always return False
-        with patch.object(
-            detector, "_check_archive_for_file", return_value=(False, "/path", None)
-        ), patch.object(
-            detector.file_tracker, "connect", return_value=False
-        ), patch.object(
-            detector, "sync_archive_to_db", return_value=SyncResult(0, 0, 0, 0, 0)
+        with (
+            patch.object(
+                detector, "_check_archive_for_file", return_value=(False, "/path", None)
+            ),
+            patch.object(detector.file_tracker, "connect", return_value=False),
+            patch.object(
+                detector, "sync_archive_to_db", return_value=SyncResult(0, 0, 0, 0, 0)
+            ),
         ):
             gaps = detector.find_gaps(
                 "TEST",
@@ -248,12 +252,12 @@ class TestFindGaps:
                 return (True, "/path", 100)
             return (False, "/path", None)
 
-        with patch.object(
-            detector, "_check_archive_for_file", side_effect=mock_check
-        ), patch.object(
-            detector.file_tracker, "connect", return_value=False
-        ), patch.object(
-            detector, "sync_archive_to_db", return_value=SyncResult(1, 0, 0, 0, 0)
+        with (
+            patch.object(detector, "_check_archive_for_file", side_effect=mock_check),
+            patch.object(detector.file_tracker, "connect", return_value=False),
+            patch.object(
+                detector, "sync_archive_to_db", return_value=SyncResult(1, 0, 0, 0, 0)
+            ),
         ):
             gaps = detector.find_gaps(
                 "TEST",
@@ -270,14 +274,15 @@ class TestFindGaps:
         """Test skipping files known to be missing on receiver."""
         detector = GapDetector()
 
-        with patch.object(
-            detector, "_check_archive_for_file", return_value=(False, "/path", None)
-        ), patch.object(
-            detector.file_tracker, "connect", return_value=True
-        ), patch.object(
-            detector.file_tracker, "is_file_missing", return_value=True
-        ), patch.object(
-            detector, "sync_archive_to_db", return_value=SyncResult(0, 0, 0, 0, 0)
+        with (
+            patch.object(
+                detector, "_check_archive_for_file", return_value=(False, "/path", None)
+            ),
+            patch.object(detector.file_tracker, "connect", return_value=True),
+            patch.object(detector.file_tracker, "is_file_missing", return_value=True),
+            patch.object(
+                detector, "sync_archive_to_db", return_value=SyncResult(0, 0, 0, 0, 0)
+            ),
         ):
             gaps = detector.find_gaps(
                 "TEST",
@@ -294,14 +299,15 @@ class TestFindGaps:
         """Test including files known to be missing on receiver."""
         detector = GapDetector()
 
-        with patch.object(
-            detector, "_check_archive_for_file", return_value=(False, "/path", None)
-        ), patch.object(
-            detector.file_tracker, "connect", return_value=True
-        ), patch.object(
-            detector.file_tracker, "is_file_missing", return_value=True
-        ), patch.object(
-            detector, "sync_archive_to_db", return_value=SyncResult(0, 0, 0, 0, 0)
+        with (
+            patch.object(
+                detector, "_check_archive_for_file", return_value=(False, "/path", None)
+            ),
+            patch.object(detector.file_tracker, "connect", return_value=True),
+            patch.object(detector.file_tracker, "is_file_missing", return_value=True),
+            patch.object(
+                detector, "sync_archive_to_db", return_value=SyncResult(0, 0, 0, 0, 0)
+            ),
         ):
             gaps = detector.find_gaps(
                 "TEST",
@@ -342,12 +348,14 @@ class TestSyncArchiveToDb:
         mock_conn.cursor.return_value.__enter__ = Mock(return_value=mock_cursor)
         mock_conn.cursor.return_value.__exit__ = Mock(return_value=False)
 
-        with patch.object(
-            detector.file_tracker, "connect", return_value=True
-        ), patch.object(detector.file_tracker, "_conn", mock_conn), patch.object(
-            detector,
-            "_check_archive_for_file",
-            return_value=(True, "/path/test.gz", 100),
+        with (
+            patch.object(detector.file_tracker, "connect", return_value=True),
+            patch.object(detector.file_tracker, "_conn", mock_conn),
+            patch.object(
+                detector,
+                "_check_archive_for_file",
+                return_value=(True, "/path/test.gz", 100),
+            ),
         ):
             # Mock cursor.fetchone to return None (new file)
             mock_cursor.fetchone.return_value = None
@@ -370,11 +378,14 @@ class TestGapSummary:
         """Test gap summary for single station."""
         detector = GapDetector()
 
-        with patch.object(
-            detector,
-            "_generate_expected_files",
-            return_value=[(date(2026, 2, 1), None)],
-        ), patch.object(detector, "find_gaps", return_value=[]):
+        with (
+            patch.object(
+                detector,
+                "_generate_expected_files",
+                return_value=[(date(2026, 2, 1), None)],
+            ),
+            patch.object(detector, "find_gaps", return_value=[]),
+        ):
             summary = detector.get_gap_summary(
                 ["TEST"],
                 "15s_24hr",
@@ -389,16 +400,21 @@ class TestGapSummary:
         """Test gap summary for multiple stations."""
         detector = GapDetector()
 
-        with patch.object(
-            detector,
-            "_generate_expected_files",
-            return_value=[(date(2026, 2, 1), None)],
-        ), patch.object(
-            detector,
-            "find_gaps",
-            return_value=[
-                GapInfo("TEST1", "15s_24hr", date(2026, 2, 1), None, "not_in_archive")
-            ],
+        with (
+            patch.object(
+                detector,
+                "_generate_expected_files",
+                return_value=[(date(2026, 2, 1), None)],
+            ),
+            patch.object(
+                detector,
+                "find_gaps",
+                return_value=[
+                    GapInfo(
+                        "TEST1", "15s_24hr", date(2026, 2, 1), None, "not_in_archive"
+                    )
+                ],
+            ),
         ):
             summary = detector.get_gap_summary(
                 ["TEST1", "TEST2"],
