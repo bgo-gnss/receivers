@@ -2429,72 +2429,6 @@ class PolaRX5(BaseReceiver):
 
         return sbf_files[0] if sbf_files else None
 
-    def analyze_health_data(self, ascii_dir: Optional[str] = None) -> Dict[str, Any]:
-        """Analyze health data from converted ASCII status files.
-
-        Uses the HealthDataAnalyzer to process ReceiverStatus blocks from
-        ASCII files converted from SBF status sessions.
-
-        Args:
-            ascii_dir: Directory containing ASCII status files.
-                      If None, uses default status_1hr/ascii directory.
-
-        Returns:
-            Dictionary with comprehensive health analysis results
-        """
-        from .health_analyzer import HealthDataAnalyzer
-
-        if ascii_dir is None:
-            ascii_dir = f"data/2025/sep/{self.station_id}/status_1hr/ascii"
-
-        if not os.path.exists(ascii_dir):
-            return {
-                "error": f"ASCII directory not found: {ascii_dir}",
-                "suggestion": "Run SBF to ASCII conversion first",
-            }
-
-        # Initialize and run health analyzer
-        analyzer = HealthDataAnalyzer(ascii_dir)
-        analyzer.load_all_files()
-
-        if not analyzer.health_data:
-            return {
-                "error": "No health data found in ASCII files",
-                "ascii_dir": ascii_dir,
-            }
-
-        # Get comprehensive analysis
-        cpu_analysis = analyzer.analyze_cpu_load()
-        uptime_analysis = analyzer.analyze_uptime()
-        status_analysis = analyzer.analyze_rx_status()
-
-        # Generate DataFrame for time series analysis
-        df = analyzer.get_dataframe()
-        time_span = (
-            df["datetime"].max() - df["datetime"].min() if not df.empty else None
-        )
-
-        return {
-            "station_id": self.station_id,
-            "analysis_timestamp": datetime.now(timezone.utc).isoformat(),
-            "ascii_directory": ascii_dir,
-            "data_summary": {
-                "total_records": len(analyzer.health_data),
-                "time_span": str(time_span) if time_span else None,
-                "first_record": df["datetime"].min().isoformat()
-                if not df.empty
-                else None,
-                "last_record": df["datetime"].max().isoformat()
-                if not df.empty
-                else None,
-            },
-            "cpu_analysis": cpu_analysis,
-            "uptime_analysis": uptime_analysis,
-            "receiver_status": status_analysis,
-            "health_report": analyzer.generate_health_report(),
-            "dataframe_available": not df.empty,
-        }
-
     def download_health_data(
         self,
         start: Optional[Union[datetime, str]] = None,
@@ -2534,10 +2468,6 @@ class PolaRX5(BaseReceiver):
             )
             # Future: Add conversion logic here
             # Future: Update result with ASCII file paths
-
-        # TODO: Future enhancement - trigger health analysis if requested
-        # if kwargs.get('analyze_after_download'):
-        #     result['health_analysis'] = self.analyze_health_data()
 
         return result
 

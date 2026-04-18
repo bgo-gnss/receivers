@@ -529,54 +529,12 @@ def _track_rinex_output_files(station_id: str, session_type: str, output_files: 
 def _parse_rinex_filename(filename: str, station_id: str):
     """Parse RINEX filename to extract file_date and file_hour.
 
-    Supports RINEX 2 short names (SSSSdddS.YYt) and RINEX 3 long names.
-    Returns (file_date, file_hour) or (None, None) if unparseable.
+    Thin wrapper around RinexNamer.parse_date_hour(). Kept as a module-level
+    function so APScheduler-serialized jobs can call it without importing
+    the full rinex package at job-dispatch time.
     """
-    from datetime import date as date_type, timedelta
-    import re
-
-    # Try RINEX 3 long name: SSSS00CCC_R_YYYYDDDHHMM_...
-    long_match = re.match(
-        rf'^{re.escape(station_id)}\d{{2}}\w{{3}}_R_(\d{{4}})(\d{{3}})(\d{{2}})(\d{{2}})_',
-        filename,
-    )
-    if long_match:
-        file_year = int(long_match.group(1))
-        doy = int(long_match.group(2))
-        hour = int(long_match.group(3))
-        file_date = date_type(file_year, 1, 1) + timedelta(days=doy - 1)
-        file_hour = None if '_01D_' in filename and hour == 0 else hour
-        return file_date, file_hour
-
-    # Try RINEX 2 short name: SSSSdddS.YYt.Z
-    if len(filename) < 12:
-        return None, None
-
-    try:
-        doy_str = filename[4:7]
-        session_char = filename[7]
-        year_str = filename[9:11]
-
-        doy = int(doy_str)
-        file_year = int(year_str)
-        if file_year < 50:
-            file_year += 2000
-        else:
-            file_year += 1900
-
-        file_date = date_type(file_year, 1, 1) + timedelta(days=doy - 1)
-
-        if session_char == '0':
-            file_hour = None
-        elif 'a' <= session_char <= 'x':
-            file_hour = ord(session_char) - ord('a')
-        else:
-            return None, None
-
-        return file_date, file_hour
-
-    except (ValueError, IndexError):
-        return None, None
+    from receivers.rinex.rinex_namer import RinexNamer
+    return RinexNamer.parse_date_hour(filename, station_id=station_id)
 
 
 def _extract_and_store_health_data(station_id: str, file_paths: List[str], logger: logging.Logger) -> None:
