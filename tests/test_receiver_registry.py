@@ -5,8 +5,8 @@ import pytest
 from receivers.config.receiver_registry import (
     REGISTRY,
     get_capability,
-    get_convertible_receiver_types,
     get_converter_class,
+    get_convertible_receiver_types,
     get_raw_extension,
     has_rinex_converter,
 )
@@ -143,7 +143,9 @@ class TestGetConverterClass:
         for key in REGISTRY:
             cls = get_converter_class(key)
             assert cls is not None, f"No converter for {key}"
-            assert hasattr(cls, "convert_file"), f"{cls.__name__} missing convert_file()"
+            assert hasattr(cls, "convert_file"), (
+                f"{cls.__name__} missing convert_file()"
+            )
 
 
 @pytest.mark.unit
@@ -176,7 +178,9 @@ class TestRegistryCompleteness:
 
     def test_all_have_raw_extensions_tuple(self):
         for key, cap in REGISTRY.items():
-            assert isinstance(cap.raw_extensions, tuple), f"{key} raw_extensions not tuple"
+            assert isinstance(cap.raw_extensions, tuple), (
+                f"{key} raw_extensions not tuple"
+            )
             assert len(cap.raw_extensions) >= 2, f"{key} needs at least 2 extensions"
 
     def test_all_have_sessions(self):

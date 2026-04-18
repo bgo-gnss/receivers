@@ -93,7 +93,16 @@ class TrimbleConverter(RawToRinexConverter):
     @property
     def supported_extensions(self) -> List[str]:
         """Return supported file extensions."""
-        return [".t02", ".T02", ".t00", ".T00", ".t02.gz", ".T02.gz", ".t00.gz", ".T00.gz"]
+        return [
+            ".t02",
+            ".T02",
+            ".t00",
+            ".T00",
+            ".t02.gz",
+            ".T02.gz",
+            ".t00.gz",
+            ".T00.gz",
+        ]
 
     @property
     def converter_name(self) -> str:
@@ -117,15 +126,15 @@ class TrimbleConverter(RawToRinexConverter):
         Returns:
             Path to uncompressed file
         """
-        if raw_file.suffix.lower() == '.gz':
+        if raw_file.suffix.lower() == ".gz":
             # Create temp file for decompressed data
             temp_dir = Path(tempfile.mkdtemp(prefix="trimble_"))
             decompressed = temp_dir / raw_file.stem
 
             self.logger.debug(f"Decompressing {raw_file} to {decompressed}")
 
-            with gzip.open(raw_file, 'rb') as f_in:
-                with open(decompressed, 'wb') as f_out:
+            with gzip.open(raw_file, "rb") as f_in:
+                with open(decompressed, "wb") as f_out:
                     shutil.copyfileobj(f_in, f_out)
 
             self._temp_files.append(decompressed)
@@ -215,8 +224,8 @@ class TrimbleConverter(RawToRinexConverter):
         # -s: Silent mode
         cmd = [
             str(runpkr00),
-            "-g",     # GPS obs file
-            "-d",     # RINEX 2 format
+            "-g",  # GPS obs file
+            "-d",  # RINEX 2 format
             str(raw_file),
             "-o",
             str(output_dir),
@@ -229,7 +238,9 @@ class TrimbleConverter(RawToRinexConverter):
             # runpkr00 sometimes segfaults on exit (code -11/139) but still
             # produces valid output. Check for output before raising.
             if "exit code -11" in str(e) or "exit code 139" in str(e):
-                self.logger.debug(f"runpkr00 crashed on exit but may have produced output")
+                self.logger.debug(
+                    "runpkr00 crashed on exit but may have produced output"
+                )
             else:
                 raise
 
@@ -298,7 +309,8 @@ class TrimbleConverter(RawToRinexConverter):
         # teqc reads the .dat file and produces RINEX observation file
         cmd = [
             str(teqc),
-            "+obs", str(rinex_file),
+            "+obs",
+            str(rinex_file),
             str(dat_file),
         ]
 
@@ -361,12 +373,15 @@ class TrimbleConverter(RawToRinexConverter):
         # gfzrnx -finp <input> -fout <output> -vo 3
         cmd = [
             str(gfzrnx),
-            "-finp", str(tgd_file),
-            "-fout", str(rinex_file),
-            "-vo", "3",        # Output RINEX version 3
+            "-finp",
+            str(tgd_file),
+            "-fout",
+            str(rinex_file),
+            "-vo",
+            "3",  # Output RINEX version 3
         ]
 
-        self.logger.info(f"Running GFZRNX for RINEX 3 conversion")
+        self.logger.info("Running GFZRNX for RINEX 3 conversion")
         self._run_subprocess(cmd, timeout=300)
 
         if rinex_file.exists():

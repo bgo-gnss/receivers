@@ -22,7 +22,7 @@ def send_commands_to_receiver(
     port: int,
     commands: List[str],
     timeout: float = DEFAULT_TIMEOUT,
-    verbose: bool = False
+    verbose: bool = False,
 ) -> Tuple[bool, List[str]]:
     """Send commands to a receiver via TCP.
 
@@ -44,47 +44,47 @@ def send_commands_to_receiver(
         sock.connect((ip, port))
 
         # Read initial prompt
-        initial = sock.recv(1024).decode('utf-8', errors='ignore')
+        initial = sock.recv(1024).decode("utf-8", errors="ignore")
         if verbose:
             logger.debug(f"Connected: {initial.strip()}")
 
         # Send each command
         for cmd in commands:
             cmd = cmd.strip()
-            if not cmd or cmd.startswith('#'):
+            if not cmd or cmd.startswith("#"):
                 continue  # Skip empty lines and comments
 
             if verbose:
                 logger.debug(f"Sending: {cmd}")
 
             # Send command with newline
-            sock.send((cmd + '\n').encode('utf-8'))
+            sock.send((cmd + "\n").encode("utf-8"))
 
             # Wait a bit for response
             time.sleep(0.1)
 
             # Read response
             try:
-                response = sock.recv(4096).decode('utf-8', errors='ignore')
+                response = sock.recv(4096).decode("utf-8", errors="ignore")
                 responses.append(response)
 
                 if verbose:
                     # Print response (clean up prompts)
-                    clean_response = response.replace('IP10>', '').strip()
+                    clean_response = response.replace("IP10>", "").strip()
                     if clean_response:
                         logger.debug(f"Response: {clean_response[:200]}")
 
                 # Check for errors
-                if '$E:' in response:
+                if "$E:" in response:
                     logger.warning(f"Error in response: {response}")
 
-            except socket.timeout:
+            except TimeoutError:
                 responses.append("(no response - timeout)")
 
         sock.close()
         return True, responses
 
-    except socket.timeout:
+    except TimeoutError:
         return False, [f"Connection timeout to {ip}:{port}"]
     except ConnectionRefusedError:
         return False, [f"Connection refused to {ip}:{port}"]
@@ -98,7 +98,7 @@ def push_config_to_station(
     port: int,
     commands: List[str],
     save_to_boot: bool = True,
-    verbose: bool = False
+    verbose: bool = False,
 ) -> Tuple[bool, str]:
     """Push configuration to a single station.
 
@@ -115,19 +115,16 @@ def push_config_to_station(
     """
     # Add save-to-boot command if requested
     if save_to_boot:
-        commands = commands + ['eccf, Current, Boot']
+        commands = commands + ["eccf, Current, Boot"]
 
     logger.info(f"Pushing config to {station_id} ({ip}:{port})")
 
-    success, responses = send_commands_to_receiver(
-        ip, port, commands,
-        verbose=verbose
-    )
+    success, responses = send_commands_to_receiver(ip, port, commands, verbose=verbose)
 
     if success:
-        return True, f"Configuration sent successfully"
+        return True, "Configuration sent successfully"
     else:
-        error_msg = responses[0] if responses else 'Unknown error'
+        error_msg = responses[0] if responses else "Unknown error"
         return False, f"Failed - {error_msg}"
 
 
@@ -146,4 +143,4 @@ def load_config_file(config_path: Path) -> List[str]:
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
-    return config_path.read_text().strip().split('\n')
+    return config_path.read_text().strip().split("\n")

@@ -18,9 +18,9 @@ from .status_task import StatusTask
 from .sync_task import SyncTask
 
 __all__ = [
-    'DownloadTask',
-    'HealthTask',
-    'RINEXTask',
-    'StatusTask',
-    'SyncTask',
+    "DownloadTask",
+    "HealthTask",
+    "RINEXTask",
+    "StatusTask",
+    "SyncTask",
 ]

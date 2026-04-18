@@ -19,6 +19,6 @@ Usage:
     receivers tools check         # Verify tool installations
 """
 
-from .tool_manager import ToolManager, ToolInfo, InstallResult
+from .tool_manager import InstallResult, ToolInfo, ToolManager
 
 __all__ = ["ToolManager", "ToolInfo", "InstallResult"]

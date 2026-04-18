@@ -62,7 +62,7 @@ class HealthJsonImporter:
     def _parse_timestamp(self, ts_str: str) -> datetime:
         """Parse ISO8601 timestamp string."""
         # Handle Z suffix
-        ts_str = ts_str.rstrip('Z')
+        ts_str = ts_str.rstrip("Z")
         return datetime.fromisoformat(ts_str)
 
     def _determine_status(self, voltage: Optional[float]) -> str:
@@ -77,9 +77,7 @@ class HealthJsonImporter:
         return result.status.value
 
     def import_json_file(
-        self,
-        json_path: Path,
-        resolution: str = "minute"
+        self, json_path: Path, resolution: str = "minute"
     ) -> Tuple[int, int]:
         """Import a single JSON health file to block tables.
 
@@ -97,7 +95,7 @@ class HealthJsonImporter:
         from .db_writer import HealthDatabaseWriter
 
         try:
-            with open(json_path, 'r') as f:
+            with open(json_path) as f:
                 data = json.load(f)
 
             station_id = data.get("station_id", "UNKN")
@@ -120,7 +118,7 @@ class HealthJsonImporter:
                     station_id=station_id,
                     samples=timeseries,
                     receiver_type=receiver_type,
-                    commit_interval=100
+                    commit_interval=100,
                 )
 
             rows_skipped = len(timeseries) - rows_imported
@@ -171,7 +169,7 @@ class HealthJsonImporter:
             for f in json_files:
                 # Extract date from filename: STATION_YYYYMMDD_health.json
                 try:
-                    parts = f.stem.split('_')
+                    parts = f.stem.split("_")
                     if len(parts) >= 2:
                         file_date = datetime.strptime(parts[1], "%Y%m%d")
                         if start_date and file_date < start_date:
@@ -206,7 +204,7 @@ class HealthJsonImporter:
         self,
         health_data: Dict[str, Any],
         station_id: str,
-        receiver_type: str = "Unknown"
+        receiver_type: str = "Unknown",
     ) -> int:
         """Import health data dictionary directly to database.
 
@@ -233,7 +231,7 @@ class HealthJsonImporter:
                 station_id=station_id,
                 samples=timeseries,
                 receiver_type=receiver_type,
-                commit_interval=100
+                commit_interval=100,
             )
 
         return rows_imported
@@ -293,6 +291,7 @@ class HealthJsonImporter:
 
             # Group by date
             from collections import defaultdict
+
             daily_data: Dict[str, List[Dict]] = defaultdict(list)
 
             for row in rows:
@@ -305,8 +304,12 @@ class HealthJsonImporter:
 
                 sample = {
                     "time": timestamp.isoformat() + "Z",
-                    "voltage": {"value": voltage, "unit": "V", "status": "ok"} if voltage else {},
-                    "temperature": {"value": temperature, "unit": "C"} if temperature else {},
+                    "voltage": {"value": voltage, "unit": "V", "status": "ok"}
+                    if voltage
+                    else {},
+                    "temperature": {"value": temperature, "unit": "C"}
+                    if temperature
+                    else {},
                     "cpu_load": metrics.get("cpu_load", {}),
                     "disk_usage": metrics.get("disk", {}),
                     "satellites": metrics.get("satellites", {}),
@@ -330,7 +333,7 @@ class HealthJsonImporter:
                 }
 
                 output_file = output_dir / f"{station_id}_{date_str}_health.json"
-                with open(output_file, 'w') as f:
+                with open(output_file, "w") as f:
                     json.dump(output, f, indent=2, default=str)
 
                 logger.info(f"Wrote {output_file.name} ({len(samples)} samples)")
@@ -375,6 +378,7 @@ def import_station_json(
     # Auto-detect json_dir from data path if not provided
     if json_dir is None:
         from ..config.receivers_config import get_receivers_config
+
         config = get_receivers_config()
         data_prepath = config.get_data_prepath()
 
@@ -383,7 +387,9 @@ def import_station_json(
         month_abbr = now.strftime("%b").lower()
         year = now.strftime("%Y")
 
-        json_dir = Path(data_prepath) / year / month_abbr / station_id / "status_1hr" / "json"
+        json_dir = (
+            Path(data_prepath) / year / month_abbr / station_id / "status_1hr" / "json"
+        )
 
         if not json_dir.exists():
             logger.error(f"JSON directory not found: {json_dir}")

@@ -15,7 +15,10 @@ import logging
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from ..health.file_tracker import ArchiveFileChecker, ArchiveFormat, FormatResolver
 
 logger = logging.getLogger("receivers.scheduler.reconciler")
 
@@ -69,12 +72,12 @@ def _run_archive_reconciler_job(
         # Get active stations with RINEX converters (all receiver types)
         all_stations = get_all_station_configs()
         convertible_stations: Dict[str, str] = {
-            sid: cfg.get('receiver_type', '').lower()
+            sid: cfg.get("receiver_type", "").lower()
             for sid, cfg in all_stations.items()
-            if cfg.get('enabled', True)
-            and has_rinex_converter(cfg.get('receiver_type', ''))
-            and cfg.get('station_status') not in ('discontinued', 'inactive')
-            and cfg.get('health_check') != 'passive'
+            if cfg.get("enabled", True)
+            and has_rinex_converter(cfg.get("receiver_type", ""))
+            and cfg.get("station_status") not in ("discontinued", "inactive")
+            and cfg.get("health_check") != "passive"
         }
 
         if not convertible_stations:
@@ -102,8 +105,13 @@ def _run_archive_reconciler_job(
             receiver_type = convertible_stations[station_id]
             for session_type in session_types:
                 missing, converted, errors = _reconcile_station_session(
-                    station_id, session_type, start_date, end_date,
-                    checker, resolver, receiver_type=receiver_type,
+                    station_id,
+                    session_type,
+                    start_date,
+                    end_date,
+                    checker,
+                    resolver,
+                    receiver_type=receiver_type,
                 )
                 total_missing += missing
                 total_converted += converted
@@ -177,7 +185,10 @@ def _reconcile_station_session(
             for hour in hours:
                 file_dt = dt.replace(hour=hour)
                 raw_path = _find_raw_file(
-                    station_id, session_type, file_dt, checker,
+                    station_id,
+                    session_type,
+                    file_dt,
+                    checker,
                     receiver_type=receiver_type,
                 )
                 if raw_path is None:
@@ -188,7 +199,11 @@ def _reconcile_station_session(
                 if rinex_format and resolver:
                     # FormatResolver available: use template-based path check
                     rinex_path = _find_rinex_file_by_format(
-                        station_id, file_dt, rinex_format, resolver, checker,
+                        station_id,
+                        file_dt,
+                        rinex_format,
+                        resolver,
+                        checker,
                     )
                 else:
                     # No FormatResolver: fall back to filesystem glob
@@ -197,14 +212,19 @@ def _reconcile_station_session(
                 if rinex_path is not None:
                     # Ensure existing RINEX is tracked in file_tracking
                     _ensure_rinex_tracked(
-                        station_id, session_type, rinex_path,
+                        station_id,
+                        session_type,
+                        rinex_path,
                     )
                     continue
 
                 # Validate raw file before attempting conversion
                 if _is_corrupt_gz(raw_path):
                     _handle_corrupt_file(
-                        station_id, session_type, raw_path, file_dt,
+                        station_id,
+                        session_type,
+                        raw_path,
+                        file_dt,
                     )
                     errors += 1
                     continue
@@ -212,7 +232,8 @@ def _reconcile_station_session(
                 # Raw file exists but RINEX missing
                 missing += 1
                 success = _convert_raw_to_rinex(
-                    station_id, raw_path,
+                    station_id,
+                    raw_path,
                     receiver_type=receiver_type,
                     session_type=session_type,
                 )
@@ -291,7 +312,8 @@ def _find_raw_file(
 
     try:
         archive_dir = checker.get_archive_directory(
-            station_id, session_type,
+            station_id,
+            session_type,
             year=dt.year,
             month=dt.strftime("%b").lower(),
         )
@@ -312,7 +334,7 @@ def _find_raw_file(
 
         # Fallback: DOY-based naming pattern (some older archives)
         doy = dt.strftime("%j")
-        hour_letter = chr(ord('a') + dt.hour) if session_type != "15s_24hr" else "0"
+        hour_letter = chr(ord("a") + dt.hour) if session_type != "15s_24hr" else "0"
         year2 = dt.strftime("%y")
         fallback_pattern = f"{station_id.lower()}{doy}{hour_letter}.{year2}_*"
         fallback_matches = list(archive_path.glob(fallback_pattern))
@@ -349,10 +371,21 @@ def _find_rinex_file(raw_path: Path) -> Optional[Path]:
     """
     # Strip all known raw extensions to get the stem
     stem = raw_path.name
-    for ext in ('.sbf.gz', '.sbf', '.T02.gz', '.T02', '.t02',
-                '.T00.gz', '.T00', '.t00', '.m00.gz', '.m00', '.M00'):
+    for ext in (
+        ".sbf.gz",
+        ".sbf",
+        ".T02.gz",
+        ".T02",
+        ".t02",
+        ".T00.gz",
+        ".T00",
+        ".t00",
+        ".m00.gz",
+        ".m00",
+        ".M00",
+    ):
         if stem.endswith(ext):
-            stem = stem[:-len(ext)]
+            stem = stem[: -len(ext)]
             break
 
     station = stem[:4]
@@ -381,7 +414,7 @@ def _find_rinex_file(raw_path: Path) -> Optional[Path]:
     if rinex_dir.exists():
         search_dirs.append(rinex_dir)
 
-    rinex_extensions = ['.obs', '.rnx', '.crx', '.obs.gz', '.rnx.gz', '.crx.gz']
+    rinex_extensions = [".obs", ".rnx", ".crx", ".obs.gz", ".rnx.gz", ".crx.gz"]
 
     for search_dir in search_dirs:
         if doy_patterns:
@@ -453,9 +486,12 @@ def _convert_raw_to_rinex(
             if result.rinex_file:
                 try:
                     from .bulk_scheduler import _track_rinex_output_files
+
                     _track_rinex_output_files(
-                        station_id, session_type,
-                        [str(result.rinex_file)], logger,
+                        station_id,
+                        session_type,
+                        [str(result.rinex_file)],
+                        logger,
                     )
                 except Exception as e:
                     logger.debug(f"Could not track RINEX file: {e}")
@@ -506,8 +542,10 @@ def _ensure_rinex_tracked(
 
         # Not tracked — register it
         _track_rinex_output_files(
-            station_id, session_type,
-            [str(rinex_path)], logger,
+            station_id,
+            session_type,
+            [str(rinex_path)],
+            logger,
         )
         logger.debug(f"Tracked existing RINEX: {station_id}/{rinex_path.name}")
 
@@ -576,8 +614,13 @@ def _handle_corrupt_file(
                          AND session_type = %s
                          AND file_date = %s
                          AND filename IN (%s, %s)""",
-                    (station_id, session_type,
-                     file_dt.date(), raw_name, name_without_gz),
+                    (
+                        station_id,
+                        session_type,
+                        file_dt.date(),
+                        raw_name,
+                        name_without_gz,
+                    ),
                 )
                 deleted = cur.rowcount
             conn.commit()

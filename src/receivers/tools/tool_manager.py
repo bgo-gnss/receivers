@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 class InstallStatus(Enum):
     """Tool installation status."""
+
     NOT_INSTALLED = "not_installed"
     INSTALLED = "installed"
     OUTDATED = "outdated"
@@ -34,6 +35,7 @@ class InstallStatus(Enum):
 @dataclass
 class InstallResult:
     """Result of a tool installation attempt."""
+
     success: bool
     tool_name: str
     message: str
@@ -44,6 +46,7 @@ class InstallResult:
 @dataclass
 class ToolInfo:
     """Information about a RINEX conversion tool."""
+
     name: str
     description: str
     required_for: List[str]  # Receiver types that need this tool
@@ -97,7 +100,9 @@ class ToolManager:
         elif system == "darwin":
             teqc_url = "https://www.unavco.org/software/data-processing/teqc/development/teqc_OSX_x86_64_Intel.zip"
             gfzrnx_url = None
-            rnx2crx_url = "https://terras.gsi.go.jp/ja/crx2rnx/RNXCMP_4.1.0_MacOS_Intel.tar.gz"
+            rnx2crx_url = (
+                "https://terras.gsi.go.jp/ja/crx2rnx/RNXCMP_4.1.0_MacOS_Intel.tar.gz"
+            )
         else:
             teqc_url = None
             gfzrnx_url = None
@@ -178,7 +183,7 @@ class ToolManager:
                     "\n"
                     "Download the Linux RPM and extract with:\n"
                     "  pip install rpmfile\n"
-                    "  python -c \"import rpmfile; ...\"\n"
+                    '  python -c "import rpmfile; ..."\n'
                     "\n"
                     "Or install via Trimble Business Center."
                 ),
@@ -209,7 +214,11 @@ class ToolManager:
         result = {}
         for name, info in self.TOOLS.items():
             installed_path = self._find_tool(name)
-            status = InstallStatus.INSTALLED if installed_path else InstallStatus.NOT_INSTALLED
+            status = (
+                InstallStatus.INSTALLED
+                if installed_path
+                else InstallStatus.NOT_INSTALLED
+            )
 
             if not info.auto_install and not installed_path:
                 status = InstallStatus.MANUAL_REQUIRED
@@ -288,12 +297,13 @@ class ToolManager:
 
             if info.version_pattern:
                 import re
+
                 match = re.search(info.version_pattern, output)
                 if match:
                     return match.group(1)
 
             # Return first line as fallback
-            lines = output.strip().split('\n')
+            lines = output.strip().split("\n")
             if lines:
                 return lines[0][:50]
 
@@ -386,11 +396,11 @@ class ToolManager:
                 zip_path = tmpdir / "teqc.zip"
 
                 logger.info(f"Downloading teqc from {info.download_url}")
-                print(f"Downloading teqc...")
+                print("Downloading teqc...")
                 urlretrieve(info.download_url, zip_path)
 
                 # Extract
-                with zipfile.ZipFile(zip_path, 'r') as zf:
+                with zipfile.ZipFile(zip_path, "r") as zf:
                     zf.extractall(tmpdir)
 
                 # Find the teqc binary
@@ -410,7 +420,9 @@ class ToolManager:
                 # Copy to bin directory
                 dest = self.bin_dir / "teqc"
                 shutil.copy2(teqc_bin, dest)
-                dest.chmod(dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+                dest.chmod(
+                    dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+                )
 
                 logger.info(f"Installed teqc to {dest}")
                 print(f"✅ Installed teqc to {dest}")
@@ -445,7 +457,7 @@ class ToolManager:
             dest = self.bin_dir / "gfzrnx"
 
             logger.info(f"Downloading gfzrnx from {info.download_url}")
-            print(f"Downloading gfzrnx...")
+            print("Downloading gfzrnx...")
             urlretrieve(info.download_url, dest)
 
             # Make executable
@@ -486,12 +498,13 @@ class ToolManager:
                 archive_path = tmpdir / "rnxcmp.tar.gz"
 
                 logger.info(f"Downloading Hatanaka tools from {info.download_url}")
-                print(f"Downloading Hatanaka compression tools...")
+                print("Downloading Hatanaka compression tools...")
                 urlretrieve(info.download_url, archive_path)
 
                 # Extract tar.gz
                 import tarfile
-                with tarfile.open(archive_path, 'r:gz') as tf:
+
+                with tarfile.open(archive_path, "r:gz") as tf:
                     tf.extractall(tmpdir)
 
                 # Find the binaries (they're in a subdirectory)
@@ -502,7 +515,12 @@ class ToolManager:
                             src = Path(root) / fname
                             dest = self.bin_dir / fname
                             shutil.copy2(src, dest)
-                            dest.chmod(dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+                            dest.chmod(
+                                dest.stat().st_mode
+                                | stat.S_IXUSR
+                                | stat.S_IXGRP
+                                | stat.S_IXOTH
+                            )
                             installed.append(fname)
                             print(f"✅ Installed {fname} to {dest}")
 
@@ -581,6 +599,7 @@ class ToolManager:
             return False
 
         import configparser
+
         config = configparser.ConfigParser()
         config.read(config_path)
 
@@ -599,7 +618,7 @@ class ToolManager:
                     logger.info(f"Updated {key} = {path}")
 
         if updated:
-            with open(config_path, 'w') as f:
+            with open(config_path, "w") as f:
                 config.write(f)
             print(f"Updated {config_path}")
 
@@ -630,15 +649,15 @@ class ToolManager:
             lines.append(f"  {info.description}")
 
             if info.auto_install:
-                lines.append(f"\n  Quick install:")
+                lines.append("\n  Quick install:")
                 lines.append(f"    receivers tools install {name}")
             elif info.manual_instructions:
-                lines.append(f"\n  Manual installation required:")
-                for line in info.manual_instructions.split('\n'):
+                lines.append("\n  Manual installation required:")
+                for line in info.manual_instructions.split("\n"):
                     lines.append(f"    {line}")
 
-            lines.append(f"\n  Or configure custom path in receivers.cfg:")
-            lines.append(f"    [rinex_tools]")
+            lines.append("\n  Or configure custom path in receivers.cfg:")
+            lines.append("    [rinex_tools]")
             lines.append(f"    {name}_path = /path/to/{name}")
 
         lines.append("\n" + "=" * 60)
@@ -648,7 +667,7 @@ class ToolManager:
         lines.append("  receivers tools check       # Verify installation")
         lines.append("=" * 60 + "\n")
 
-        return '\n'.join(lines)
+        return "\n".join(lines)
 
     def get_tools_for_receiver(self, receiver_type: str) -> List[str]:
         """Get list of tools required for a specific receiver type.
@@ -663,16 +682,24 @@ class ToolManager:
         required = []
 
         # Map receiver types to tool requirements
-        if 'polarx' in receiver_lower or 'septentrio' in receiver_lower:
-            required = ['sbf2rin', 'gfzrnx']
-        elif 'netr9' in receiver_lower or 'netrs' in receiver_lower or 'trimble' in receiver_lower:
-            required = ['runpkr00', 'teqc', 'gfzrnx']
-        elif 'g10' in receiver_lower or 'leica' in receiver_lower or 'gr' in receiver_lower:
-            required = ['mdb2rinex', 'gfzrnx']  # mdb2rinex preferred, teqc fallback
+        if "polarx" in receiver_lower or "septentrio" in receiver_lower:
+            required = ["sbf2rin", "gfzrnx"]
+        elif (
+            "netr9" in receiver_lower
+            or "netrs" in receiver_lower
+            or "trimble" in receiver_lower
+        ):
+            required = ["runpkr00", "teqc", "gfzrnx"]
+        elif (
+            "g10" in receiver_lower
+            or "leica" in receiver_lower
+            or "gr" in receiver_lower
+        ):
+            required = ["mdb2rinex", "gfzrnx"]  # mdb2rinex preferred, teqc fallback
 
         # Always need rnx2crx for Hatanaka compression
-        if 'rnx2crx' not in required:
-            required.append('rnx2crx')
+        if "rnx2crx" not in required:
+            required.append("rnx2crx")
 
         return required
 

@@ -4,22 +4,24 @@ Tests scheduler initialization, configuration, job scheduling logic,
 and time distribution without executing actual downloads.
 """
 
-import pytest
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from datetime import datetime, date, timedelta
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import MagicMock, Mock, patch
+
+import pytest
 
 # Check if APScheduler is available
 try:
     from receivers.scheduling.bulk_scheduler import (
+        HAS_APSCHEDULER,
         BulkDownloadScheduler,
         ScheduleConfig,
-        HAS_APSCHEDULER
     )
     from receivers.scheduling.config_loader import (
         create_default_config_file,
         get_default_config,
     )
+
     SCHEDULER_AVAILABLE = True
 except ImportError:
     SCHEDULER_AVAILABLE = False
@@ -33,7 +35,7 @@ def mock_scheduler_config():
     This prevents tests from loading the user's actual scheduler.yaml file,
     which may have different settings (like 'schedule: 5m' for testing).
     """
-    with patch('receivers.scheduling.config_loader.load_scheduler_config') as mock:
+    with patch("receivers.scheduling.config_loader.load_scheduler_config") as mock:
         mock.return_value = get_default_config()
         yield mock
 
@@ -46,19 +48,19 @@ class TestScheduleConfig:
     def test_schedule_config_creation(self):
         """Test creating schedule configuration."""
         config = ScheduleConfig(
-            session_type='1Hz_1hr',
+            session_type="1Hz_1hr",
             schedule_minute=15,
             distribution_window=10,
-            frequency='hourly',
+            frequency="hourly",
             enabled=True,
             max_concurrent=4,
-            timeout_minutes=30
+            timeout_minutes=30,
         )
 
-        assert config.session_type == '1Hz_1hr'
+        assert config.session_type == "1Hz_1hr"
         assert config.schedule_minute == 15
         assert config.distribution_window == 10
-        assert config.frequency == 'hourly'
+        assert config.frequency == "hourly"
         assert config.enabled is True
         assert config.max_concurrent == 4
         assert config.timeout_minutes == 30
@@ -66,10 +68,10 @@ class TestScheduleConfig:
     def test_schedule_config_defaults(self):
         """Test schedule configuration with defaults."""
         config = ScheduleConfig(
-            session_type='15s_24hr',
+            session_type="15s_24hr",
             schedule_minute=10,
             distribution_window=10,
-            frequency='daily'
+            frequency="daily",
         )
 
         # Defaults
@@ -83,84 +85,79 @@ class TestScheduleConfig:
 class TestBulkDownloadSchedulerInit:
     """Test BulkDownloadScheduler initialization."""
 
-    @patch('receivers.cli.main.get_all_station_configs')
+    @patch("receivers.cli.main.get_all_station_configs")
     def test_scheduler_initialization(self, mock_get_stations):
         """Test basic scheduler initialization."""
         # Mock station configs
         mock_get_stations.return_value = {
-            'TEST1': {'receiver_type': 'polarx5', 'enabled': True},
-            'TEST2': {'receiver_type': 'netr9', 'enabled': True},
+            "TEST1": {"receiver_type": "polarx5", "enabled": True},
+            "TEST2": {"receiver_type": "netr9", "enabled": True},
         }
 
-        scheduler = BulkDownloadScheduler(
-            production_mode=False,
-            max_workers=2
-        )
+        scheduler = BulkDownloadScheduler(production_mode=False, max_workers=2)
 
         assert scheduler.max_workers == 2
         assert scheduler.production_mode is False
         assert len(scheduler.stations) == 2
-        assert 'TEST1' in scheduler.stations
-        assert 'TEST2' in scheduler.stations
+        assert "TEST1" in scheduler.stations
+        assert "TEST2" in scheduler.stations
 
-    @patch('receivers.cli.main.get_all_station_configs')
+    @patch("receivers.cli.main.get_all_station_configs")
     def test_scheduler_with_station_filter(self, mock_get_stations):
         """Test scheduler with station filter."""
         mock_get_stations.return_value = {
-            'ELDC': {'receiver_type': 'polarx5', 'enabled': True},
-            'ORFC': {'receiver_type': 'polarx5', 'enabled': True},
-            'THOB': {'receiver_type': 'netr9', 'enabled': True},
+            "ELDC": {"receiver_type": "polarx5", "enabled": True},
+            "ORFC": {"receiver_type": "polarx5", "enabled": True},
+            "THOB": {"receiver_type": "netr9", "enabled": True},
         }
 
         scheduler = BulkDownloadScheduler(
             production_mode=False,
-            station_filter=['ELDC', 'orfc']  # Test case insensitivity
+            station_filter=["ELDC", "orfc"],  # Test case insensitivity
         )
 
         # Should filter to only specified stations
-        assert scheduler.station_filter == ['ELDC', 'ORFC']  # Uppercased
+        assert scheduler.station_filter == ["ELDC", "ORFC"]  # Uppercased
 
-    @patch('receivers.cli.main.get_all_station_configs')
+    @patch("receivers.cli.main.get_all_station_configs")
     def test_scheduler_with_max_stations(self, mock_get_stations):
         """Test scheduler with max stations limit."""
         mock_get_stations.return_value = {
-            f'TEST{i}': {'receiver_type': 'polarx5', 'enabled': True}
-            for i in range(10)
+            f"TEST{i}": {"receiver_type": "polarx5", "enabled": True} for i in range(10)
         }
 
         scheduler = BulkDownloadScheduler(
-            production_mode=False,
-            max_stations_per_session=3
+            production_mode=False, max_stations_per_session=3
         )
 
         assert scheduler.max_stations_per_session == 3
 
     def test_scheduler_default_configs(self):
         """Test scheduler has correct default session configs."""
-        with patch('receivers.cli.main.get_all_station_configs', return_value={}):
+        with patch("receivers.cli.main.get_all_station_configs", return_value={}):
             scheduler = BulkDownloadScheduler(production_mode=False)
 
             # Should have 3 default session types
             assert len(scheduler.schedule_configs) == 3
-            assert '15s_24hr' in scheduler.schedule_configs
-            assert '1Hz_1hr' in scheduler.schedule_configs
-            assert 'status_1hr' in scheduler.schedule_configs
+            assert "15s_24hr" in scheduler.schedule_configs
+            assert "1Hz_1hr" in scheduler.schedule_configs
+            assert "status_1hr" in scheduler.schedule_configs
 
             # Check 15s_24hr config
-            daily_config = scheduler.schedule_configs['15s_24hr']
-            assert daily_config.frequency == 'daily'
+            daily_config = scheduler.schedule_configs["15s_24hr"]
+            assert daily_config.frequency == "daily"
             assert daily_config.schedule_minute == 10
             assert daily_config.distribution_window == 10
 
             # Check 1Hz_1hr config
-            hourly_config = scheduler.schedule_configs['1Hz_1hr']
-            assert hourly_config.frequency == 'hourly'
+            hourly_config = scheduler.schedule_configs["1Hz_1hr"]
+            assert hourly_config.frequency == "hourly"
             assert hourly_config.schedule_minute == 15
             assert hourly_config.distribution_window == 10
 
             # Check status_1hr config
-            status_config = scheduler.schedule_configs['status_1hr']
-            assert status_config.frequency == 'hourly'
+            status_config = scheduler.schedule_configs["status_1hr"]
+            assert status_config.frequency == "hourly"
             assert status_config.schedule_minute == 25
             assert status_config.distribution_window == 5
 
@@ -170,58 +167,55 @@ class TestBulkDownloadSchedulerInit:
 class TestSchedulerStationFiltering:
     """Test station filtering logic."""
 
-    @patch('receivers.cli.main.get_all_station_configs')
+    @patch("receivers.cli.main.get_all_station_configs")
     def test_get_stations_for_session_no_filter(self, mock_get_stations):
         """Test getting stations without filter."""
         mock_get_stations.return_value = {
-            'ELDC': {'receiver_type': 'polarx5', 'enabled': True},
-            'ORFC': {'receiver_type': 'polarx5', 'enabled': True},
-            'THOB': {'receiver_type': 'netr9', 'enabled': False},  # Disabled
+            "ELDC": {"receiver_type": "polarx5", "enabled": True},
+            "ORFC": {"receiver_type": "polarx5", "enabled": True},
+            "THOB": {"receiver_type": "netr9", "enabled": False},  # Disabled
         }
 
         scheduler = BulkDownloadScheduler(production_mode=False)
-        stations = scheduler._get_stations_for_session('1Hz_1hr')
+        stations = scheduler._get_stations_for_session("1Hz_1hr")
 
         # Should return enabled stations
         assert len(stations) == 2
-        assert 'ELDC' in stations
-        assert 'ORFC' in stations
-        assert 'THOB' not in stations  # Disabled
+        assert "ELDC" in stations
+        assert "ORFC" in stations
+        assert "THOB" not in stations  # Disabled
 
-    @patch('receivers.cli.main.get_all_station_configs')
+    @patch("receivers.cli.main.get_all_station_configs")
     def test_get_stations_with_filter(self, mock_get_stations):
         """Test getting stations with filter applied."""
         mock_get_stations.return_value = {
-            'ELDC': {'receiver_type': 'polarx5', 'enabled': True},
-            'ORFC': {'receiver_type': 'polarx5', 'enabled': True},
-            'THOB': {'receiver_type': 'netr9', 'enabled': True},
+            "ELDC": {"receiver_type": "polarx5", "enabled": True},
+            "ORFC": {"receiver_type": "polarx5", "enabled": True},
+            "THOB": {"receiver_type": "netr9", "enabled": True},
         }
 
         scheduler = BulkDownloadScheduler(
-            production_mode=False,
-            station_filter=['ELDC', 'THOB']
+            production_mode=False, station_filter=["ELDC", "THOB"]
         )
-        stations = scheduler._get_stations_for_session('1Hz_1hr')
+        stations = scheduler._get_stations_for_session("1Hz_1hr")
 
         # Should return only filtered stations
         assert len(stations) == 2
-        assert 'ELDC' in stations
-        assert 'THOB' in stations
-        assert 'ORFC' not in stations
+        assert "ELDC" in stations
+        assert "THOB" in stations
+        assert "ORFC" not in stations
 
-    @patch('receivers.cli.main.get_all_station_configs')
+    @patch("receivers.cli.main.get_all_station_configs")
     def test_get_stations_with_max_limit(self, mock_get_stations):
         """Test getting stations with max limit."""
         mock_get_stations.return_value = {
-            f'TEST{i}': {'receiver_type': 'polarx5', 'enabled': True}
-            for i in range(10)
+            f"TEST{i}": {"receiver_type": "polarx5", "enabled": True} for i in range(10)
         }
 
         scheduler = BulkDownloadScheduler(
-            production_mode=False,
-            max_stations_per_session=3
+            production_mode=False, max_stations_per_session=3
         )
-        stations = scheduler._get_stations_for_session('1Hz_1hr')
+        stations = scheduler._get_stations_for_session("1Hz_1hr")
 
         # Should limit to max_stations
         assert len(stations) == 3
@@ -232,20 +226,20 @@ class TestSchedulerStationFiltering:
 class TestSchedulerTimeDistribution:
     """Test time distribution logic for scheduled downloads."""
 
-    @patch('receivers.cli.main.get_all_station_configs')
+    @patch("receivers.cli.main.get_all_station_configs")
     def test_time_distribution_calculation(self, mock_get_stations):
         """Test that stations are distributed across time window."""
         # Create 10 stations
         mock_get_stations.return_value = {
-            f'TEST{i:02d}': {'receiver_type': 'polarx5', 'enabled': True}
+            f"TEST{i:02d}": {"receiver_type": "polarx5", "enabled": True}
             for i in range(10)
         }
 
         scheduler = BulkDownloadScheduler(production_mode=False)
 
         # Get config for 1Hz_1hr (minute 15, window 10)
-        config = scheduler.schedule_configs['1Hz_1hr']
-        stations = scheduler._get_stations_for_session('1Hz_1hr')
+        config = scheduler.schedule_configs["1Hz_1hr"]
+        stations = scheduler._get_stations_for_session("1Hz_1hr")
 
         # Calculate how stations should be distributed
         stations_per_minute = len(stations) / config.distribution_window  # 10 / 10 = 1
@@ -258,7 +252,7 @@ class TestSchedulerTimeDistribution:
         # Fifth station should be at minute 20 (halfway through)
         minute_offset_5 = int(5 / stations_per_minute)  # 5
         assert minute_offset_5 == 5
-        schedule_minute_5 = config.schedule_minute + minute_offset_5  # 15 + 5 = 20
+        config.schedule_minute + minute_offset_5  # 15 + 5 = 20
 
         # Last station should be at minute 24 (within window)
         minute_offset_9 = int(9 / stations_per_minute)  # 9
@@ -269,18 +263,18 @@ class TestSchedulerTimeDistribution:
         assert schedule_minute_0 >= config.schedule_minute
         assert schedule_minute_9 < (config.schedule_minute + config.distribution_window)
 
-    @patch('receivers.cli.main.get_all_station_configs')
+    @patch("receivers.cli.main.get_all_station_configs")
     def test_many_stations_distribution(self, mock_get_stations):
         """Test distribution with many stations (more than window minutes)."""
         # Create 50 stations with 10-minute window
         mock_get_stations.return_value = {
-            f'TEST{i:03d}': {'receiver_type': 'polarx5', 'enabled': True}
+            f"TEST{i:03d}": {"receiver_type": "polarx5", "enabled": True}
             for i in range(50)
         }
 
         scheduler = BulkDownloadScheduler(production_mode=False)
-        config = scheduler.schedule_configs['1Hz_1hr']
-        stations = scheduler._get_stations_for_session('1Hz_1hr')
+        config = scheduler.schedule_configs["1Hz_1hr"]
+        stations = scheduler._get_stations_for_session("1Hz_1hr")
 
         stations_per_minute = len(stations) / config.distribution_window  # 50 / 10 = 5
 
@@ -298,12 +292,12 @@ class TestSchedulerTimeDistribution:
 class TestSchedulerJobScheduling:
     """Test job scheduling without execution."""
 
-    @patch('receivers.cli.main.get_all_station_configs')
+    @patch("receivers.cli.main.get_all_station_configs")
     def test_schedule_all_sessions(self, mock_get_stations):
         """Test scheduling all session types."""
         mock_get_stations.return_value = {
-            'TEST1': {'receiver_type': 'polarx5', 'enabled': True},
-            'TEST2': {'receiver_type': 'polarx5', 'enabled': True},
+            "TEST1": {"receiver_type": "polarx5", "enabled": True},
+            "TEST2": {"receiver_type": "polarx5", "enabled": True},
         }
 
         scheduler = BulkDownloadScheduler(production_mode=False, max_workers=2)
@@ -321,22 +315,22 @@ class TestSchedulerJobScheduling:
         assert len(jobs) >= 16
 
         # Check job IDs follow pattern: session_station
-        job_ids = [job['id'] for job in jobs]
-        assert '15s_24hr_TEST1' in job_ids
-        assert '15s_24hr_TEST2' in job_ids
-        assert '1Hz_1hr_TEST1' in job_ids
-        assert '1Hz_1hr_TEST2' in job_ids
-        assert 'status_1hr_TEST1' in job_ids
-        assert 'status_1hr_TEST2' in job_ids
+        job_ids = [job["id"] for job in jobs]
+        assert "15s_24hr_TEST1" in job_ids
+        assert "15s_24hr_TEST2" in job_ids
+        assert "1Hz_1hr_TEST1" in job_ids
+        assert "1Hz_1hr_TEST2" in job_ids
+        assert "status_1hr_TEST1" in job_ids
+        assert "status_1hr_TEST2" in job_ids
         # Health monitoring jobs are also scheduled
-        assert 'health_TEST1' in job_ids
-        assert 'health_TEST2' in job_ids
+        assert "health_TEST1" in job_ids
+        assert "health_TEST2" in job_ids
 
-    @patch('receivers.cli.main.get_all_station_configs')
+    @patch("receivers.cli.main.get_all_station_configs")
     def test_get_job_status(self, mock_get_stations):
         """Test getting scheduler status."""
         mock_get_stations.return_value = {
-            'TEST1': {'receiver_type': 'polarx5', 'enabled': True},
+            "TEST1": {"receiver_type": "polarx5", "enabled": True},
         }
 
         scheduler = BulkDownloadScheduler(production_mode=False)
@@ -344,15 +338,15 @@ class TestSchedulerJobScheduling:
 
         status = scheduler.get_job_status()
 
-        assert 'scheduler_running' in status
-        assert 'total_jobs' in status
-        assert 'running_jobs' in status
-        assert 'current_jobs' in status
+        assert "scheduler_running" in status
+        assert "total_jobs" in status
+        assert "running_jobs" in status
+        assert "current_jobs" in status
         # 1 station × 3 sessions + 1 health + 1 config_watcher
         # + 3 backfill + 1 gap_detection + 1 gap_detection_startup
         # + 1 archive_reconciler + 1 archive_reconciler_startup = 12 total
         # (plus possible daily catch-up jobs depending on time of day)
-        assert status['total_jobs'] >= 12
+        assert status["total_jobs"] >= 12
 
 
 @pytest.mark.unit
@@ -361,29 +355,29 @@ def test_create_scheduler_config(tmp_path):
     """Test creating scheduler configuration file (YAML format)."""
     import yaml
 
-    config_file = tmp_path / 'scheduler.yaml'
+    config_file = tmp_path / "scheduler.yaml"
     created_file = create_default_config_file(config_file)
 
     assert created_file.exists()
-    assert created_file.name == 'scheduler.yaml'
+    assert created_file.name == "scheduler.yaml"
 
     # Read and verify YAML config
     with open(config_file) as f:
         config = yaml.safe_load(f)
 
-    assert 'scheduler' in config
-    assert 'sessions' in config
-    assert config['scheduler']['max_workers'] == 100
+    assert "scheduler" in config
+    assert "sessions" in config
+    assert config["scheduler"]["max_workers"] == 100
 
     # Check session configs
-    assert '15s_24hr' in config['sessions']
-    assert '1Hz_1hr' in config['sessions']
-    assert 'status_1hr' in config['sessions']
+    assert "15s_24hr" in config["sessions"]
+    assert "1Hz_1hr" in config["sessions"]
+    assert "status_1hr" in config["sessions"]
 
     # Verify session structure (uses flexible schedule format in default template)
-    daily_session = config['sessions']['15s_24hr']
-    assert daily_session['enabled'] is True
-    assert 'schedule' in daily_session  # New format uses 'schedule' field
+    daily_session = config["sessions"]["15s_24hr"]
+    assert daily_session["enabled"] is True
+    assert "schedule" in daily_session  # New format uses 'schedule' field
 
 
 @pytest.mark.unit
@@ -391,39 +385,39 @@ def test_create_scheduler_config(tmp_path):
 class TestOutageRecovery:
     """Test outage detection and dynamic lookback for daily catch-up."""
 
-    @patch('receivers.cli.main.get_all_station_configs')
+    @patch("receivers.cli.main.get_all_station_configs")
     def test_detect_outage_gap_no_db(self, mock_get_stations):
         """No psycopg2/database available — returns default lookback of 1."""
         mock_get_stations.return_value = {
-            'TEST1': {'receiver_type': 'polarx5', 'enabled': True},
+            "TEST1": {"receiver_type": "polarx5", "enabled": True},
         }
 
         scheduler = BulkDownloadScheduler(production_mode=False)
 
         # Mock the import to raise ImportError (no psycopg2)
-        with patch.dict('sys.modules', {'receivers.health.database_factory': None}):
+        with patch.dict("sys.modules", {"receivers.health.database_factory": None}):
             with patch(
-                'receivers.scheduling.bulk_scheduler.BulkDownloadScheduler._detect_outage_gap',
+                "receivers.scheduling.bulk_scheduler.BulkDownloadScheduler._detect_outage_gap",
                 wraps=scheduler._detect_outage_gap,
             ):
                 # Force ImportError by patching the import inside the method
-                original = scheduler._detect_outage_gap
 
-                def mock_detect(session_type='15s_24hr'):
+                def mock_detect(session_type="15s_24hr"):
                     # Simulate ImportError path
                     try:
                         raise ImportError("No module named 'psycopg2'")
                     except ImportError:
                         return 1
+
                 scheduler._detect_outage_gap = mock_detect
                 result = scheduler._detect_outage_gap()
                 assert result == 1
 
-    @patch('receivers.cli.main.get_all_station_configs')
+    @patch("receivers.cli.main.get_all_station_configs")
     def test_detect_outage_gap_no_data(self, mock_get_stations):
         """Empty file_tracking table — returns default lookback of 1."""
         mock_get_stations.return_value = {
-            'TEST1': {'receiver_type': 'polarx5', 'enabled': True},
+            "TEST1": {"receiver_type": "polarx5", "enabled": True},
         }
 
         scheduler = BulkDownloadScheduler(production_mode=False)
@@ -439,15 +433,18 @@ class TestOutageRecovery:
         mock_cm.__enter__ = Mock(return_value=mock_conn)
         mock_cm.__exit__ = Mock(return_value=False)
 
-        with patch('receivers.health.database_factory.DatabaseConnectionFactory.connection', return_value=mock_cm):
-            result = scheduler._detect_outage_gap('15s_24hr')
+        with patch(
+            "receivers.health.database_factory.DatabaseConnectionFactory.connection",
+            return_value=mock_cm,
+        ):
+            result = scheduler._detect_outage_gap("15s_24hr")
             assert result == 1
 
-    @patch('receivers.cli.main.get_all_station_configs')
+    @patch("receivers.cli.main.get_all_station_configs")
     def test_detect_outage_gap_recent(self, mock_get_stations):
         """All stations downloaded yesterday — returns 1 (no multi-day gap)."""
         mock_get_stations.return_value = {
-            'TEST1': {'receiver_type': 'polarx5', 'enabled': True},
+            "TEST1": {"receiver_type": "polarx5", "enabled": True},
         }
 
         scheduler = BulkDownloadScheduler(production_mode=False)
@@ -463,15 +460,18 @@ class TestOutageRecovery:
         mock_cm.__enter__ = Mock(return_value=mock_conn)
         mock_cm.__exit__ = Mock(return_value=False)
 
-        with patch('receivers.health.database_factory.DatabaseConnectionFactory.connection', return_value=mock_cm):
-            result = scheduler._detect_outage_gap('15s_24hr')
+        with patch(
+            "receivers.health.database_factory.DatabaseConnectionFactory.connection",
+            return_value=mock_cm,
+        ):
+            result = scheduler._detect_outage_gap("15s_24hr")
             assert result == 1
 
-    @patch('receivers.cli.main.get_all_station_configs')
+    @patch("receivers.cli.main.get_all_station_configs")
     def test_detect_outage_gap_multi_day(self, mock_get_stations):
         """5th-percentile station is 5 days behind — returns 5."""
         mock_get_stations.return_value = {
-            'TEST1': {'receiver_type': 'polarx5', 'enabled': True},
+            "TEST1": {"receiver_type": "polarx5", "enabled": True},
         }
 
         scheduler = BulkDownloadScheduler(production_mode=False)
@@ -487,15 +487,18 @@ class TestOutageRecovery:
         mock_cm.__enter__ = Mock(return_value=mock_conn)
         mock_cm.__exit__ = Mock(return_value=False)
 
-        with patch('receivers.health.database_factory.DatabaseConnectionFactory.connection', return_value=mock_cm):
-            result = scheduler._detect_outage_gap('15s_24hr')
+        with patch(
+            "receivers.health.database_factory.DatabaseConnectionFactory.connection",
+            return_value=mock_cm,
+        ):
+            result = scheduler._detect_outage_gap("15s_24hr")
             assert result == 5
 
-    @patch('receivers.cli.main.get_all_station_configs')
+    @patch("receivers.cli.main.get_all_station_configs")
     def test_detect_outage_gap_capped(self, mock_get_stations):
         """60-day p5 gap is capped to max_recovery_days (30)."""
         mock_get_stations.return_value = {
-            'TEST1': {'receiver_type': 'polarx5', 'enabled': True},
+            "TEST1": {"receiver_type": "polarx5", "enabled": True},
         }
 
         scheduler = BulkDownloadScheduler(production_mode=False)
@@ -511,15 +514,18 @@ class TestOutageRecovery:
         mock_cm.__enter__ = Mock(return_value=mock_conn)
         mock_cm.__exit__ = Mock(return_value=False)
 
-        with patch('receivers.health.database_factory.DatabaseConnectionFactory.connection', return_value=mock_cm):
-            result = scheduler._detect_outage_gap('15s_24hr')
+        with patch(
+            "receivers.health.database_factory.DatabaseConnectionFactory.connection",
+            return_value=mock_cm,
+        ):
+            result = scheduler._detect_outage_gap("15s_24hr")
             assert result == 30  # Capped by max_recovery_days default
 
-    @patch('receivers.cli.main.get_all_station_configs')
+    @patch("receivers.cli.main.get_all_station_configs")
     def test_catchup_uses_dynamic_lookback(self, mock_get_stations):
         """Verify _schedule_daily_catchup passes dynamic lookback to job args."""
         mock_get_stations.return_value = {
-            'TEST1': {'receiver_type': 'polarx5', 'enabled': True},
+            "TEST1": {"receiver_type": "polarx5", "enabled": True},
         }
 
         scheduler = BulkDownloadScheduler(production_mode=False)
@@ -530,31 +536,33 @@ class TestOutageRecovery:
         # Build session_stations for a daily session that has already passed
         # We need to trigger the catch-up path by making the scheduled time in the past
         from receivers.scheduling.schedule_parser import parse_schedule
-        config = scheduler.schedule_configs['15s_24hr']
+
+        config = scheduler.schedule_configs["15s_24hr"]
 
         # Force a daily schedule that has already passed
         config.schedule = "00:01"  # Daily at 00:01
         config.schedule_minute = None
         config.frequency = None
 
-        session_stations = {'15s_24hr': ['TEST1']}
+        session_stations = {"15s_24hr": ["TEST1"]}
 
         # Only run catch-up if current time is past the scheduled time
         # Since 00:01 will have passed for any reasonable test run time, this should trigger
         from datetime import datetime as dt
+
         local_now = dt.now()
         if local_now.hour > 0 or (local_now.hour == 0 and local_now.minute > 1):
             scheduler._schedule_daily_catchup(session_stations)
 
             # Verify _detect_outage_gap was called
-            scheduler._detect_outage_gap.assert_called_once_with('15s_24hr')
+            scheduler._detect_outage_gap.assert_called_once_with("15s_24hr")
 
             # Verify the job was scheduled with lookback=5
             jobs = scheduler.get_scheduled_jobs()
-            catchup_jobs = [j for j in jobs if j['id'].startswith('catchup_')]
+            catchup_jobs = [j for j in jobs if j["id"].startswith("catchup_")]
             assert len(catchup_jobs) == 1
             # args[3] is lookback_periods
-            assert catchup_jobs[0]['args'][3] == 5
+            assert catchup_jobs[0]["args"][3] == 5
 
 
 @pytest.mark.unit
@@ -562,116 +570,141 @@ class TestOutageRecovery:
 class TestRinexAfterDownload:
     """Phase 1: Test that RINEX conversion uses correct download result key."""
 
-    def _patch_download_job(self, mock_result, station_id='ELDC', session_type='1Hz_1hr',
-                            run_rinex=True, mock_rinex=None, mock_health=None):
+    def _patch_download_job(
+        self,
+        mock_result,
+        station_id="ELDC",
+        session_type="1Hz_1hr",
+        run_rinex=True,
+        mock_rinex=None,
+        mock_health=None,
+    ):
         """Helper: run _download_station_data_job with mocked internals."""
         from receivers.scheduling.bulk_scheduler import _download_station_data_job
 
         mock_receiver = MagicMock()
         mock_receiver.download_data.return_value = mock_result
-        station_config = {'receiver_type': 'polarx5'}
+        station_config = {"receiver_type": "polarx5"}
 
-        with patch('receivers.cli.main.get_station_config', return_value=station_config), \
-             patch('receivers.cli.main.create_receiver', return_value=mock_receiver), \
-             patch('receivers.utils.time_utils.calculate_download_time_range',
-                   return_value=(datetime(2026, 2, 10), datetime(2026, 2, 10, 1))):
+        with (
+            patch("receivers.cli.main.get_station_config", return_value=station_config),
+            patch("receivers.cli.main.create_receiver", return_value=mock_receiver),
+            patch(
+                "receivers.utils.time_utils.calculate_download_time_range",
+                return_value=(datetime(2026, 2, 10), datetime(2026, 2, 10, 1)),
+            ),
+        ):
             _download_station_data_job(
-                station_id, session_type, production_mode=False,
-                lookback_periods=1, timeout_minutes=30, run_rinex=run_rinex,
+                station_id,
+                session_type,
+                production_mode=False,
+                lookback_periods=1,
+                timeout_minutes=30,
+                run_rinex=run_rinex,
             )
 
         return station_config
 
-    @patch('receivers.scheduling.bulk_scheduler._run_rinex_conversion')
-    @patch('receivers.scheduling.bulk_scheduler._extract_and_store_health_data')
+    @patch("receivers.scheduling.bulk_scheduler._run_rinex_conversion")
+    @patch("receivers.scheduling.bulk_scheduler._extract_and_store_health_data")
     def test_rinex_called_with_downloaded_files(self, mock_health, mock_rinex):
         """Verify _run_rinex_conversion receives files from 'downloaded_files' key."""
-        fake_files = ['/data/2026/feb/ELDC/1Hz_1hr/raw/ELDC202602101400b.sbf.gz']
+        fake_files = ["/data/2026/feb/ELDC/1Hz_1hr/raw/ELDC202602101400b.sbf.gz"]
         mock_result = {
-            'status': 'completed',
-            'files_downloaded': 1,
-            'duration': 5.0,
-            'downloaded_files': fake_files,
+            "status": "completed",
+            "files_downloaded": 1,
+            "duration": 5.0,
+            "downloaded_files": fake_files,
             # Note: 'archived_files' key does NOT exist — that was the bug
         }
 
         station_config = self._patch_download_job(
-            mock_result, session_type='1Hz_1hr', run_rinex=True,
+            mock_result,
+            session_type="1Hz_1hr",
+            run_rinex=True,
         )
 
         # RINEX should be called with the downloaded_files list
         mock_rinex.assert_called_once()
         call_args = mock_rinex.call_args[0]
-        assert call_args[0] == 'ELDC'             # station_id
-        assert call_args[1] == '1Hz_1hr'           # session_type
-        assert call_args[2] == fake_files           # raw_files
-        assert call_args[3] == station_config       # station_config
+        assert call_args[0] == "ELDC"  # station_id
+        assert call_args[1] == "1Hz_1hr"  # session_type
+        assert call_args[2] == fake_files  # raw_files
+        assert call_args[3] == station_config  # station_config
 
-    @patch('receivers.scheduling.bulk_scheduler._run_rinex_conversion')
-    @patch('receivers.scheduling.bulk_scheduler._extract_and_store_health_data')
+    @patch("receivers.scheduling.bulk_scheduler._run_rinex_conversion")
+    @patch("receivers.scheduling.bulk_scheduler._extract_and_store_health_data")
     def test_rinex_not_called_when_disabled(self, _mock_health, mock_rinex):
         """Verify RINEX is NOT called when run_rinex=False."""
         mock_result = {
-            'status': 'completed',
-            'files_downloaded': 1,
-            'duration': 5.0,
-            'downloaded_files': ['/data/some/file.sbf.gz'],
+            "status": "completed",
+            "files_downloaded": 1,
+            "duration": 5.0,
+            "downloaded_files": ["/data/some/file.sbf.gz"],
         }
 
         self._patch_download_job(mock_result, run_rinex=False)
         mock_rinex.assert_not_called()
 
-    @patch('receivers.scheduling.bulk_scheduler._run_rinex_conversion')
-    @patch('receivers.scheduling.bulk_scheduler._extract_and_store_health_data')
+    @patch("receivers.scheduling.bulk_scheduler._run_rinex_conversion")
+    @patch("receivers.scheduling.bulk_scheduler._extract_and_store_health_data")
     def test_rinex_not_called_on_failed_download(self, _mock_health, mock_rinex):
         """Verify RINEX is NOT called when download fails."""
         mock_result = {
-            'status': 'failed',
-            'files_downloaded': 0,
-            'duration': 2.0,
-            'downloaded_files': [],
-            'error_message': 'Connection refused',
+            "status": "failed",
+            "files_downloaded": 0,
+            "duration": 2.0,
+            "downloaded_files": [],
+            "error_message": "Connection refused",
         }
 
         self._patch_download_job(
-            mock_result, session_type='15s_24hr', run_rinex=True,
+            mock_result,
+            session_type="15s_24hr",
+            run_rinex=True,
         )
         mock_rinex.assert_not_called()
 
-    @patch('receivers.scheduling.bulk_scheduler._run_rinex_conversion')
-    @patch('receivers.scheduling.bulk_scheduler._extract_and_store_health_data')
+    @patch("receivers.scheduling.bulk_scheduler._run_rinex_conversion")
+    @patch("receivers.scheduling.bulk_scheduler._extract_and_store_health_data")
     def test_rinex_not_called_with_empty_files(self, _mock_health, mock_rinex):
         """Verify RINEX is NOT called when downloaded_files is empty."""
         mock_result = {
-            'status': 'up_to_date',
-            'files_downloaded': 0,
-            'duration': 1.0,
-            'downloaded_files': [],
+            "status": "up_to_date",
+            "files_downloaded": 0,
+            "duration": 1.0,
+            "downloaded_files": [],
         }
 
         self._patch_download_job(mock_result, run_rinex=True)
         mock_rinex.assert_not_called()
 
-    @patch('receivers.scheduling.bulk_scheduler._run_rinex_conversion')
-    @patch('receivers.scheduling.bulk_scheduler._extract_and_store_health_data')
-    def test_health_extraction_still_uses_downloaded_files(self, mock_health, _mock_rinex):
+    @patch("receivers.scheduling.bulk_scheduler._run_rinex_conversion")
+    @patch("receivers.scheduling.bulk_scheduler._extract_and_store_health_data")
+    def test_health_extraction_still_uses_downloaded_files(
+        self, mock_health, _mock_rinex
+    ):
         """Verify health extraction (status_1hr) still works correctly."""
-        status_files = ['/data/2026/feb/ELDC/status_1hr/raw/ELDC202602101400_status.sbf.gz']
+        status_files = [
+            "/data/2026/feb/ELDC/status_1hr/raw/ELDC202602101400_status.sbf.gz"
+        ]
         mock_result = {
-            'status': 'completed',
-            'files_downloaded': 1,
-            'duration': 3.0,
-            'downloaded_files': status_files,
+            "status": "completed",
+            "files_downloaded": 1,
+            "duration": 3.0,
+            "downloaded_files": status_files,
         }
 
         self._patch_download_job(
-            mock_result, session_type='status_1hr', run_rinex=False,
+            mock_result,
+            session_type="status_1hr",
+            run_rinex=False,
         )
 
         # Health extraction should be called with downloaded_files for status_1hr
         mock_health.assert_called_once()
         call_args = mock_health.call_args[0]
-        assert call_args[0] == 'ELDC'
+        assert call_args[0] == "ELDC"
         assert call_args[1] == status_files
 
 
@@ -680,19 +713,21 @@ class TestRinexAfterDownload:
 class TestBackfillRinex:
     """Phase 2: Test that backfill triggers RINEX conversion when configured."""
 
-    @patch('receivers.scheduling.backfill._run_backfill_rinex')
-    @patch('receivers.scheduling.backfill._extract_and_store_health')
-    @patch('receivers.scheduling.backfill._download_day_generic')
-    @patch('receivers.health.database_factory.DatabaseConnectionFactory.connection')
-    def test_backfill_triggers_rinex(self, mock_conn, mock_download, mock_health, mock_rinex):
+    @patch("receivers.scheduling.backfill._run_backfill_rinex")
+    @patch("receivers.scheduling.backfill._extract_and_store_health")
+    @patch("receivers.scheduling.backfill._download_day_generic")
+    @patch("receivers.health.database_factory.DatabaseConnectionFactory.connection")
+    def test_backfill_triggers_rinex(
+        self, mock_conn, mock_download, mock_health, mock_rinex
+    ):
         """Verify backfill calls _run_backfill_rinex when run_rinex=True."""
         from receivers.scheduling.backfill import _backfill_station_day_generic
 
-        fake_files = ['/data/2026/feb/ELDC/15s_24hr/raw/ELDC20260210.sbf.gz']
+        fake_files = ["/data/2026/feb/ELDC/15s_24hr/raw/ELDC20260210.sbf.gz"]
         mock_download.return_value = {
-            'status': 'completed',
-            'files_downloaded': 1,
-            'downloaded_files': fake_files,
+            "status": "completed",
+            "files_downloaded": 1,
+            "downloaded_files": fake_files,
         }
 
         # Mock the DB connection context manager
@@ -703,26 +738,32 @@ class TestBackfillRinex:
         mock_conn.return_value.__enter__ = Mock(return_value=mock_conn_obj)
         mock_conn.return_value.__exit__ = Mock(return_value=False)
 
-        has_more = _backfill_station_day_generic(
-            'ELDC', date(2026, 2, 10), date(2026, 2, 12),
-            '15s_24hr', immediate_archive=False, run_rinex=True,
+        _backfill_station_day_generic(
+            "ELDC",
+            date(2026, 2, 10),
+            date(2026, 2, 12),
+            "15s_24hr",
+            immediate_archive=False,
+            run_rinex=True,
         )
 
         # RINEX should be called
-        mock_rinex.assert_called_once_with('ELDC', '15s_24hr', fake_files)
+        mock_rinex.assert_called_once_with("ELDC", "15s_24hr", fake_files)
 
-    @patch('receivers.scheduling.backfill._run_backfill_rinex')
-    @patch('receivers.scheduling.backfill._extract_and_store_health')
-    @patch('receivers.scheduling.backfill._download_day_generic')
-    @patch('receivers.health.database_factory.DatabaseConnectionFactory.connection')
-    def test_backfill_no_rinex_when_disabled(self, mock_conn, mock_download, mock_health, mock_rinex):
+    @patch("receivers.scheduling.backfill._run_backfill_rinex")
+    @patch("receivers.scheduling.backfill._extract_and_store_health")
+    @patch("receivers.scheduling.backfill._download_day_generic")
+    @patch("receivers.health.database_factory.DatabaseConnectionFactory.connection")
+    def test_backfill_no_rinex_when_disabled(
+        self, mock_conn, mock_download, mock_health, mock_rinex
+    ):
         """Verify backfill does NOT call RINEX when run_rinex=False."""
         from receivers.scheduling.backfill import _backfill_station_day_generic
 
         mock_download.return_value = {
-            'status': 'completed',
-            'files_downloaded': 1,
-            'downloaded_files': ['/data/some/file.sbf.gz'],
+            "status": "completed",
+            "files_downloaded": 1,
+            "downloaded_files": ["/data/some/file.sbf.gz"],
         }
 
         mock_cursor = MagicMock()
@@ -733,24 +774,29 @@ class TestBackfillRinex:
         mock_conn.return_value.__exit__ = Mock(return_value=False)
 
         _backfill_station_day_generic(
-            'ELDC', date(2026, 2, 10), date(2026, 2, 12),
-            '15s_24hr', run_rinex=False,
+            "ELDC",
+            date(2026, 2, 10),
+            date(2026, 2, 12),
+            "15s_24hr",
+            run_rinex=False,
         )
 
         mock_rinex.assert_not_called()
 
-    @patch('receivers.scheduling.backfill._run_backfill_rinex')
-    @patch('receivers.scheduling.backfill._extract_and_store_health')
-    @patch('receivers.scheduling.backfill._download_day_generic')
-    @patch('receivers.health.database_factory.DatabaseConnectionFactory.connection')
-    def test_backfill_no_rinex_for_status_1hr(self, mock_conn, mock_download, mock_health, mock_rinex):
+    @patch("receivers.scheduling.backfill._run_backfill_rinex")
+    @patch("receivers.scheduling.backfill._extract_and_store_health")
+    @patch("receivers.scheduling.backfill._download_day_generic")
+    @patch("receivers.health.database_factory.DatabaseConnectionFactory.connection")
+    def test_backfill_no_rinex_for_status_1hr(
+        self, mock_conn, mock_download, mock_health, mock_rinex
+    ):
         """Verify backfill does NOT call RINEX for status_1hr (health only)."""
         from receivers.scheduling.backfill import _backfill_station_day_generic
 
         mock_download.return_value = {
-            'status': 'completed',
-            'files_downloaded': 1,
-            'downloaded_files': ['/data/some/status.sbf.gz'],
+            "status": "completed",
+            "files_downloaded": 1,
+            "downloaded_files": ["/data/some/status.sbf.gz"],
         }
 
         mock_cursor = MagicMock()
@@ -761,8 +807,11 @@ class TestBackfillRinex:
         mock_conn.return_value.__exit__ = Mock(return_value=False)
 
         _backfill_station_day_generic(
-            'ELDC', date(2026, 2, 10), date(2026, 2, 12),
-            'status_1hr', run_rinex=True,  # rinex=True but session is status_1hr
+            "ELDC",
+            date(2026, 2, 10),
+            date(2026, 2, 12),
+            "status_1hr",
+            run_rinex=True,  # rinex=True but session is status_1hr
         )
 
         # RINEX should NOT be called for status_1hr
@@ -770,18 +819,20 @@ class TestBackfillRinex:
         # But health extraction SHOULD be called
         mock_health.assert_called_once()
 
-    @patch('receivers.scheduling.backfill._run_backfill_rinex')
-    @patch('receivers.scheduling.backfill._extract_and_store_health')
-    @patch('receivers.scheduling.backfill._download_day_generic')
-    @patch('receivers.health.database_factory.DatabaseConnectionFactory.connection')
-    def test_backfill_no_rinex_on_failed_download(self, mock_conn, mock_download, _mock_health, mock_rinex):
+    @patch("receivers.scheduling.backfill._run_backfill_rinex")
+    @patch("receivers.scheduling.backfill._extract_and_store_health")
+    @patch("receivers.scheduling.backfill._download_day_generic")
+    @patch("receivers.health.database_factory.DatabaseConnectionFactory.connection")
+    def test_backfill_no_rinex_on_failed_download(
+        self, mock_conn, mock_download, _mock_health, mock_rinex
+    ):
         """Verify backfill does NOT call RINEX when download fails."""
         from receivers.scheduling.backfill import _backfill_station_day_generic
 
         mock_download.return_value = {
-            'status': 'failed',
-            'files_downloaded': 0,
-            'downloaded_files': [],
+            "status": "failed",
+            "files_downloaded": 0,
+            "downloaded_files": [],
         }
 
         mock_cursor = MagicMock()
@@ -792,39 +843,42 @@ class TestBackfillRinex:
         mock_conn.return_value.__exit__ = Mock(return_value=False)
 
         _backfill_station_day_generic(
-            'ELDC', date(2026, 2, 10), date(2026, 2, 12),
-            '15s_24hr', run_rinex=True,
+            "ELDC",
+            date(2026, 2, 10),
+            date(2026, 2, 12),
+            "15s_24hr",
+            run_rinex=True,
         )
 
         mock_rinex.assert_not_called()
 
-    @patch('receivers.cli.main.get_all_station_configs')
+    @patch("receivers.cli.main.get_all_station_configs")
     def test_backfill_schedule_passes_rinex_flag(self, mock_get_stations):
         """Verify _schedule_multi_session_backfill passes rinex config to jobs."""
         mock_get_stations.return_value = {
-            'TEST1': {'receiver_type': 'polarx5', 'enabled': True},
+            "TEST1": {"receiver_type": "polarx5", "enabled": True},
         }
 
         scheduler = BulkDownloadScheduler(production_mode=False, max_workers=2)
 
         # Set rinex=True on 15s_24hr session config
-        scheduler.schedule_configs['15s_24hr'].rinex = True
-        scheduler.schedule_configs['1Hz_1hr'].rinex = True
-        scheduler.schedule_configs['status_1hr'].rinex = False
+        scheduler.schedule_configs["15s_24hr"].rinex = True
+        scheduler.schedule_configs["1Hz_1hr"].rinex = True
+        scheduler.schedule_configs["status_1hr"].rinex = False
 
         scheduler._schedule_multi_session_backfill()
 
         # Check jobs were scheduled with correct rinex flag in args
         jobs = scheduler.get_scheduled_jobs()
-        backfill_jobs = {j['id']: j for j in jobs if j['id'].startswith('backfill_')}
+        backfill_jobs = {j["id"]: j for j in jobs if j["id"].startswith("backfill_")}
 
         # args = [session_type, window_start, window_end, archiving_mode, run_rinex]
-        if 'backfill_15s_24hr' in backfill_jobs:
-            assert backfill_jobs['backfill_15s_24hr']['args'][4] is True
-        if 'backfill_1Hz_1hr' in backfill_jobs:
-            assert backfill_jobs['backfill_1Hz_1hr']['args'][4] is True
-        if 'backfill_status_1hr' in backfill_jobs:
-            assert backfill_jobs['backfill_status_1hr']['args'][4] is False
+        if "backfill_15s_24hr" in backfill_jobs:
+            assert backfill_jobs["backfill_15s_24hr"]["args"][4] is True
+        if "backfill_1Hz_1hr" in backfill_jobs:
+            assert backfill_jobs["backfill_1Hz_1hr"]["args"][4] is True
+        if "backfill_status_1hr" in backfill_jobs:
+            assert backfill_jobs["backfill_status_1hr"]["args"][4] is False
 
 
 @pytest.mark.unit
@@ -835,17 +889,20 @@ class TestPipelineTracking:
     def test_pipeline_state_store_basic(self, tmp_path):
         """Test PipelineStateStore create/load/save cycle."""
         from receivers.scheduling.pipeline import (
-            PipelineJob, PipelineStage, PipelineStateStore, StageStatus,
+            PipelineJob,
+            PipelineStage,
+            PipelineStateStore,
+            StageStatus,
         )
         from receivers.scheduling.task_interface import TaskPriority
 
-        db_path = tmp_path / 'pipeline_test.db'
+        db_path = tmp_path / "pipeline_test.db"
         store = PipelineStateStore(db_path)
 
         # Create a pipeline job
         job = PipelineJob.create(
-            station_id='ELDC',
-            session_type='15s_24hr',
+            station_id="ELDC",
+            session_type="15s_24hr",
             target_time=datetime(2026, 2, 10, tzinfo=None),
             enabled_stages=[PipelineStage.DOWNLOAD, PipelineStage.RINEX],
             priority=TaskPriority.STANDARD,
@@ -855,8 +912,8 @@ class TestPipelineTracking:
         store.save_job(job)
         loaded = store.load_job(job.job_id)
         assert loaded is not None
-        assert loaded.station_id == 'ELDC'
-        assert loaded.session_type == '15s_24hr'
+        assert loaded.station_id == "ELDC"
+        assert loaded.session_type == "15s_24hr"
         assert PipelineStage.DOWNLOAD in loaded.stages
         assert PipelineStage.RINEX in loaded.stages
         assert loaded.stages[PipelineStage.DOWNLOAD].status == StageStatus.PENDING
@@ -864,16 +921,19 @@ class TestPipelineTracking:
     def test_pipeline_stage_progression(self, tmp_path):
         """Test marking stages complete/failed."""
         from receivers.scheduling.pipeline import (
-            PipelineJob, PipelineStage, PipelineStateStore, StageStatus,
+            PipelineJob,
+            PipelineStage,
+            PipelineStateStore,
+            StageStatus,
         )
         from receivers.scheduling.task_interface import TaskPriority
 
-        db_path = tmp_path / 'pipeline_test.db'
+        db_path = tmp_path / "pipeline_test.db"
         store = PipelineStateStore(db_path)
 
         job = PipelineJob.create(
-            station_id='THOB',
-            session_type='1Hz_1hr',
+            station_id="THOB",
+            session_type="1Hz_1hr",
             target_time=datetime(2026, 2, 10),
             enabled_stages=[PipelineStage.DOWNLOAD, PipelineStage.RINEX],
         )
@@ -885,11 +945,11 @@ class TestPipelineTracking:
         # Mark download complete
         job.mark_stage_complete(
             PipelineStage.DOWNLOAD,
-            output_files=['/data/file.sbf.gz'],
-            metrics={'files_downloaded': 1},
+            output_files=["/data/file.sbf.gz"],
+            metrics={"files_downloaded": 1},
         )
         assert job.stages[PipelineStage.DOWNLOAD].status == StageStatus.COMPLETED
-        assert job.stages[PipelineStage.DOWNLOAD].output_files == ['/data/file.sbf.gz']
+        assert job.stages[PipelineStage.DOWNLOAD].output_files == ["/data/file.sbf.gz"]
 
         # RINEX should now be runnable
         assert job.can_run_stage(PipelineStage.RINEX) is True
@@ -912,16 +972,20 @@ class TestPipelineTracking:
     def test_pipeline_incomplete_jobs(self, tmp_path):
         """Test loading incomplete jobs for crash recovery."""
         from receivers.scheduling.pipeline import (
-            PipelineJob, PipelineStage, PipelineStateStore, StageStatus,
+            PipelineJob,
+            PipelineStage,
+            PipelineStateStore,
+            StageStatus,
         )
         from receivers.scheduling.task_interface import TaskPriority
 
-        db_path = tmp_path / 'pipeline_test.db'
+        db_path = tmp_path / "pipeline_test.db"
         store = PipelineStateStore(db_path)
 
         # Create two jobs: one complete, one incomplete
         complete_job = PipelineJob.create(
-            station_id='ELDC', session_type='15s_24hr',
+            station_id="ELDC",
+            session_type="15s_24hr",
             target_time=datetime(2026, 2, 10),
             enabled_stages=[PipelineStage.DOWNLOAD],
         )
@@ -930,7 +994,8 @@ class TestPipelineTracking:
         store.save_job(complete_job)
 
         incomplete_job = PipelineJob.create(
-            station_id='THOB', session_type='1Hz_1hr',
+            station_id="THOB",
+            session_type="1Hz_1hr",
             target_time=datetime(2026, 2, 10),
             enabled_stages=[PipelineStage.DOWNLOAD, PipelineStage.RINEX],
         )
@@ -940,21 +1005,24 @@ class TestPipelineTracking:
         # Should only return the incomplete job
         incomplete = store.load_incomplete_jobs()
         assert len(incomplete) == 1
-        assert incomplete[0].station_id == 'THOB'
+        assert incomplete[0].station_id == "THOB"
 
     def test_pipeline_stats(self, tmp_path):
         """Test pipeline statistics."""
         from receivers.scheduling.pipeline import (
-            PipelineJob, PipelineStage, PipelineStateStore,
+            PipelineJob,
+            PipelineStage,
+            PipelineStateStore,
         )
 
-        db_path = tmp_path / 'pipeline_test.db'
+        db_path = tmp_path / "pipeline_test.db"
         store = PipelineStateStore(db_path)
 
         # Create jobs
-        for i, session in enumerate(['15s_24hr', '15s_24hr', '1Hz_1hr']):
+        for i, session in enumerate(["15s_24hr", "15s_24hr", "1Hz_1hr"]):
             job = PipelineJob.create(
-                station_id=f'TEST{i}', session_type=session,
+                station_id=f"TEST{i}",
+                session_type=session,
                 target_time=datetime(2026, 2, 10),
                 enabled_stages=[PipelineStage.DOWNLOAD],
             )
@@ -964,58 +1032,78 @@ class TestPipelineTracking:
             store.save_job(job)
 
         stats = store.get_stats()
-        assert stats['total_jobs'] == 3
-        assert stats['complete_jobs'] == 2
-        assert stats['incomplete_jobs'] == 1
-        assert stats['by_session_type']['15s_24hr'] == 2
-        assert stats['by_session_type']['1Hz_1hr'] == 1
+        assert stats["total_jobs"] == 3
+        assert stats["complete_jobs"] == 2
+        assert stats["incomplete_jobs"] == 1
+        assert stats["by_session_type"]["15s_24hr"] == 2
+        assert stats["by_session_type"]["1Hz_1hr"] == 1
 
-    @patch('receivers.scheduling.bulk_scheduler._run_rinex_conversion')
-    @patch('receivers.scheduling.bulk_scheduler._extract_and_store_health_data')
-    def test_pipeline_created_during_download(self, _mock_health, _mock_rinex, tmp_path):
+    @patch("receivers.scheduling.bulk_scheduler._run_rinex_conversion")
+    @patch("receivers.scheduling.bulk_scheduler._extract_and_store_health_data")
+    def test_pipeline_created_during_download(
+        self, _mock_health, _mock_rinex, tmp_path
+    ):
         """Verify pipeline job is created and tracked during download."""
-        from receivers.scheduling.bulk_scheduler import _download_station_data_job, _get_pipeline_store
-        from receivers.scheduling.pipeline import PipelineStateStore, PipelineStage, StageStatus
         import receivers.scheduling.bulk_scheduler as bs_module
+        from receivers.scheduling.bulk_scheduler import (
+            _download_station_data_job,
+            _get_pipeline_store,
+        )
+        from receivers.scheduling.pipeline import (
+            PipelineStage,
+            PipelineStateStore,
+            StageStatus,
+        )
 
         # Set up a temporary pipeline store
-        db_path = tmp_path / 'pipeline_test.db'
+        db_path = tmp_path / "pipeline_test.db"
         test_store = PipelineStateStore(db_path)
         original_store = bs_module._pipeline_store
         bs_module._pipeline_store = test_store
 
         try:
-            fake_files = ['/data/file.sbf.gz']
+            fake_files = ["/data/file.sbf.gz"]
             mock_result = {
-                'status': 'completed',
-                'files_downloaded': 1,
-                'duration': 5.0,
-                'downloaded_files': fake_files,
+                "status": "completed",
+                "files_downloaded": 1,
+                "duration": 5.0,
+                "downloaded_files": fake_files,
             }
 
             mock_receiver = MagicMock()
             mock_receiver.download_data.return_value = mock_result
 
-            with patch('receivers.cli.main.get_station_config', return_value={'receiver_type': 'polarx5'}), \
-                 patch('receivers.cli.main.create_receiver', return_value=mock_receiver), \
-                 patch('receivers.utils.time_utils.calculate_download_time_range',
-                       return_value=(datetime(2026, 2, 10), datetime(2026, 2, 10, 1))):
+            with (
+                patch(
+                    "receivers.cli.main.get_station_config",
+                    return_value={"receiver_type": "polarx5"},
+                ),
+                patch("receivers.cli.main.create_receiver", return_value=mock_receiver),
+                patch(
+                    "receivers.utils.time_utils.calculate_download_time_range",
+                    return_value=(datetime(2026, 2, 10), datetime(2026, 2, 10, 1)),
+                ),
+            ):
                 _download_station_data_job(
-                    'ELDC', '15s_24hr', production_mode=False,
-                    lookback_periods=1, timeout_minutes=30, run_rinex=True,
+                    "ELDC",
+                    "15s_24hr",
+                    production_mode=False,
+                    lookback_periods=1,
+                    timeout_minutes=30,
+                    run_rinex=True,
                 )
 
             # Check pipeline store has the job
             stats = test_store.get_stats()
-            assert stats['total_jobs'] == 1
-            assert stats['complete_jobs'] == 1
+            assert stats["total_jobs"] == 1
+            assert stats["complete_jobs"] == 1
 
             # Load the job and check stages
-            jobs = test_store.load_jobs_by_station('ELDC', limit=1)
+            jobs = test_store.load_jobs_by_station("ELDC", limit=1)
             assert len(jobs) == 1
             job = jobs[0]
-            assert job.station_id == 'ELDC'
-            assert job.session_type == '15s_24hr'
+            assert job.station_id == "ELDC"
+            assert job.session_type == "15s_24hr"
             assert PipelineStage.DOWNLOAD in job.stages
             assert job.stages[PipelineStage.DOWNLOAD].status == StageStatus.COMPLETED
             assert PipelineStage.RINEX in job.stages
@@ -1034,7 +1122,7 @@ class TestLoadMonitor:
         from receivers.scheduling.load_monitor import LoadMonitor
         from receivers.scheduling.task_interface import TaskPriority
 
-        monitor = LoadMonitor({'enabled': False})
+        monitor = LoadMonitor({"enabled": False})
         assert monitor.can_start_job(TaskPriority.MAINTENANCE) is True
         assert monitor.can_start_job(TaskPriority.BACKFILL) is True
         assert monitor.can_start_job(TaskPriority.STANDARD) is True
@@ -1046,53 +1134,60 @@ class TestLoadMonitor:
         from receivers.scheduling.task_interface import TaskPriority
 
         # Set thresholds very low so system is "overloaded"
-        monitor = LoadMonitor({
-            'enabled': True,
-            'max_cpu_load': 0.001,
-            'max_active_jobs': 1,
-            'max_network_mbps': 0,
-        })
+        monitor = LoadMonitor(
+            {
+                "enabled": True,
+                "max_cpu_load": 0.001,
+                "max_active_jobs": 1,
+                "max_network_mbps": 0,
+            }
+        )
         assert monitor.can_start_job(TaskPriority.REALTIME) is True
 
-    @patch('os.getloadavg', return_value=(2.0, 1.5, 1.0))
+    @patch("os.getloadavg", return_value=(2.0, 1.5, 1.0))
     def test_cpu_throttling(self, _mock_loadavg):
         """Jobs blocked when CPU load exceeds threshold * priority factor."""
         from receivers.scheduling.load_monitor import LoadMonitor
         from receivers.scheduling.task_interface import TaskPriority
 
-        monitor = LoadMonitor({
-            'enabled': True,
-            'max_cpu_load': 3.0,  # max 3.0
-            'max_active_jobs': 0,  # disabled
-            'max_network_mbps': 0,  # disabled
-            'check_interval': 0,  # no caching
-            'priority_thresholds': {
-                'standard': 0.8,   # 3.0 * 0.8 = 2.4 — load 2.0 < 2.4 → allowed
-                'backfill': 0.6,   # 3.0 * 0.6 = 1.8 — load 2.0 > 1.8 → blocked
-            },
-        })
+        monitor = LoadMonitor(
+            {
+                "enabled": True,
+                "max_cpu_load": 3.0,  # max 3.0
+                "max_active_jobs": 0,  # disabled
+                "max_network_mbps": 0,  # disabled
+                "check_interval": 0,  # no caching
+                "priority_thresholds": {
+                    "standard": 0.8,  # 3.0 * 0.8 = 2.4 — load 2.0 < 2.4 → allowed
+                    "backfill": 0.6,  # 3.0 * 0.6 = 1.8 — load 2.0 > 1.8 → blocked
+                },
+            }
+        )
 
         assert monitor.can_start_job(TaskPriority.STANDARD) is True
         assert monitor.can_start_job(TaskPriority.BACKFILL) is False
 
-    @patch('os.getloadavg', return_value=(0.5, 0.5, 0.5))
+    @patch("os.getloadavg", return_value=(0.5, 0.5, 0.5))
     def test_thread_throttling(self, _mock_loadavg):
         """Jobs blocked when active threads exceed threshold."""
-        from receivers.scheduling.load_monitor import LoadMonitor
-        from receivers.scheduling.task_interface import TaskPriority
         import threading
 
-        monitor = LoadMonitor({
-            'enabled': True,
-            'max_cpu_load': 0,  # disabled
-            'max_active_jobs': 3,  # Very low — current thread count will exceed
-            'max_network_mbps': 0,  # disabled
-            'check_interval': 0,
-            'priority_thresholds': {
-                'standard': 0.8,
-                'backfill': 0.6,
-            },
-        })
+        from receivers.scheduling.load_monitor import LoadMonitor
+        from receivers.scheduling.task_interface import TaskPriority
+
+        monitor = LoadMonitor(
+            {
+                "enabled": True,
+                "max_cpu_load": 0,  # disabled
+                "max_active_jobs": 3,  # Very low — current thread count will exceed
+                "max_network_mbps": 0,  # disabled
+                "check_interval": 0,
+                "priority_thresholds": {
+                    "standard": 0.8,
+                    "backfill": 0.6,
+                },
+            }
+        )
 
         # threading.active_count() is typically > 1 (main + test threads)
         # With max_active_jobs=3 and standard threshold 0.8 → threshold = 2.4
@@ -1107,35 +1202,37 @@ class TestLoadMonitor:
         """get_status() returns a well-formed summary dict."""
         from receivers.scheduling.load_monitor import LoadMonitor
 
-        monitor = LoadMonitor({'enabled': True, 'check_interval': 0})
+        monitor = LoadMonitor({"enabled": True, "check_interval": 0})
         status = monitor.get_status()
 
-        assert 'enabled' in status
-        assert 'cpu_load_1m' in status
-        assert 'active_threads' in status
-        assert 'network_mbps' in status
-        assert 'thresholds' in status
-        assert 'can_start' in status
-        assert 'REALTIME' in status['can_start']
-        assert 'STANDARD' in status['can_start']
-        assert status['enabled'] is True
+        assert "enabled" in status
+        assert "cpu_load_1m" in status
+        assert "active_threads" in status
+        assert "network_mbps" in status
+        assert "thresholds" in status
+        assert "can_start" in status
+        assert "REALTIME" in status["can_start"]
+        assert "STANDARD" in status["can_start"]
+        assert status["enabled"] is True
 
-    @patch('receivers.scheduling.bulk_scheduler._run_rinex_conversion')
-    @patch('receivers.scheduling.bulk_scheduler._extract_and_store_health_data')
+    @patch("receivers.scheduling.bulk_scheduler._run_rinex_conversion")
+    @patch("receivers.scheduling.bulk_scheduler._extract_and_store_health_data")
     def test_load_gate_skips_download(self, _mock_health, _mock_rinex):
         """Download job returns early when load monitor says no."""
-        from receivers.scheduling.load_monitor import LoadMonitor
         import receivers.scheduling.bulk_scheduler as bs_module
+        from receivers.scheduling.load_monitor import LoadMonitor
 
         # Create a monitor that always blocks STANDARD jobs
-        blocking_monitor = LoadMonitor({
-            'enabled': True,
-            'max_cpu_load': 0.001,
-            'max_active_jobs': 0,
-            'max_network_mbps': 0,
-            'check_interval': 0,
-            'priority_thresholds': {'standard': 0.8},
-        })
+        blocking_monitor = LoadMonitor(
+            {
+                "enabled": True,
+                "max_cpu_load": 0.001,
+                "max_active_jobs": 0,
+                "max_network_mbps": 0,
+                "check_interval": 0,
+                "priority_thresholds": {"standard": 0.8},
+            }
+        )
 
         original_monitor = bs_module._load_monitor
         bs_module._load_monitor = blocking_monitor
@@ -1143,12 +1240,21 @@ class TestLoadMonitor:
         try:
             # Mock the imports that would happen inside the function
             mock_receiver = MagicMock()
-            with patch('receivers.cli.main.get_station_config', return_value={'receiver_type': 'polarx5'}), \
-                 patch('receivers.cli.main.create_receiver', return_value=mock_receiver), \
-                 patch('receivers.utils.time_utils.calculate_download_time_range',
-                       return_value=(datetime(2026, 2, 10), datetime(2026, 2, 10, 1))):
+            with (
+                patch(
+                    "receivers.cli.main.get_station_config",
+                    return_value={"receiver_type": "polarx5"},
+                ),
+                patch("receivers.cli.main.create_receiver", return_value=mock_receiver),
+                patch(
+                    "receivers.utils.time_utils.calculate_download_time_range",
+                    return_value=(datetime(2026, 2, 10), datetime(2026, 2, 10, 1)),
+                ),
+            ):
                 bs_module._download_station_data_job(
-                    'ELDC', '15s_24hr', production_mode=False,
+                    "ELDC",
+                    "15s_24hr",
+                    production_mode=False,
                 )
 
             # download_data should NOT have been called (load gate returned early)
@@ -1165,7 +1271,9 @@ class TestBootstrap:
         """Cold start detection returns True when DB is unavailable."""
         from receivers.scheduling.bootstrap import detect_cold_start
 
-        with patch('receivers.health.database_factory.DatabaseConnectionFactory') as mock_db:
+        with patch(
+            "receivers.health.database_factory.DatabaseConnectionFactory"
+        ) as mock_db:
             mock_db.connection.side_effect = Exception("no database")
             assert detect_cold_start() is True
 
@@ -1181,7 +1289,9 @@ class TestBootstrap:
         mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        with patch('receivers.health.database_factory.DatabaseConnectionFactory') as mock_db:
+        with patch(
+            "receivers.health.database_factory.DatabaseConnectionFactory"
+        ) as mock_db:
             mock_db.connection.return_value = mock_conn
             assert detect_cold_start() is True
 
@@ -1197,7 +1307,9 @@ class TestBootstrap:
         mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        with patch('receivers.health.database_factory.DatabaseConnectionFactory') as mock_db:
+        with patch(
+            "receivers.health.database_factory.DatabaseConnectionFactory"
+        ) as mock_db:
             mock_db.connection.return_value = mock_conn
             assert detect_cold_start() is False
 
@@ -1209,29 +1321,37 @@ class TestBootstrap:
         mock_scheduler = MagicMock()
 
         stations = {
-            'ELDC': {'station_id': 'ELDC', 'receiver_type': 'polarx5'},
-            'THOB': {'station_id': 'THOB', 'receiver_type': 'polarx5'},
-            'DEAD': {'station_id': 'DEAD', 'station_status': 'discontinued'},
+            "ELDC": {"station_id": "ELDC", "receiver_type": "polarx5"},
+            "THOB": {"station_id": "THOB", "receiver_type": "polarx5"},
+            "DEAD": {"station_id": "DEAD", "station_status": "discontinued"},
         }
 
         configs = {
-            '15s_24hr': ScheduleConfig(
-                session_type='15s_24hr', schedule=':10',
-                distribution_window=10, rinex=True, timeout_minutes=45,
+            "15s_24hr": ScheduleConfig(
+                session_type="15s_24hr",
+                schedule=":10",
+                distribution_window=10,
+                rinex=True,
+                timeout_minutes=45,
             ),
-            '1Hz_1hr': ScheduleConfig(
-                session_type='1Hz_1hr', schedule=':01',
-                distribution_window=10, rinex=True, timeout_minutes=30,
+            "1Hz_1hr": ScheduleConfig(
+                session_type="1Hz_1hr",
+                schedule=":01",
+                distribution_window=10,
+                rinex=True,
+                timeout_minutes=30,
             ),
-            'status_1hr': ScheduleConfig(
-                session_type='status_1hr', schedule=':15',
-                distribution_window=5, timeout_minutes=15,
+            "status_1hr": ScheduleConfig(
+                session_type="status_1hr",
+                schedule=":15",
+                distribution_window=5,
+                timeout_minutes=15,
             ),
         }
 
         bootstrap_cfg = {
-            'distribution_window': 5,
-            'initial_lookback_days': 3,
+            "distribution_window": 5,
+            "initial_lookback_days": 3,
         }
 
         total = schedule_bootstrap(
@@ -1248,7 +1368,7 @@ class TestBootstrap:
 
         # Verify the first job is for 15s_24hr (wave 1)
         first_call = mock_scheduler.add_job.call_args_list[0]
-        assert first_call.kwargs['id'].startswith('bootstrap_15s_24hr_')
+        assert first_call.kwargs["id"].startswith("bootstrap_15s_24hr_")
 
     def test_detect_cold_start_session_specific(self):
         """Session-filtered cold start: detect when specific session has no data."""
@@ -1263,17 +1383,19 @@ class TestBootstrap:
         mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        with patch('receivers.health.database_factory.DatabaseConnectionFactory') as mock_db:
+        with patch(
+            "receivers.health.database_factory.DatabaseConnectionFactory"
+        ) as mock_db:
             mock_db.connection.return_value = mock_conn
-            assert detect_cold_start(sessions=['15s_24hr']) is True
+            assert detect_cold_start(sessions=["15s_24hr"]) is True
 
         # Verify the query filtered by session type
         executed_sql = mock_cursor.execute.call_args[0][0]
-        assert 'session_type IN' in executed_sql
+        assert "session_type IN" in executed_sql
         # Should pass both 15s_24hr and 15s_24hr_rinex
         params = mock_cursor.execute.call_args[0][1]
-        assert '15s_24hr' in params
-        assert '15s_24hr_rinex' in params
+        assert "15s_24hr" in params
+        assert "15s_24hr_rinex" in params
 
     def test_bootstrap_sessions_config(self):
         """Bootstrap respects sessions list in config — only schedules listed sessions."""
@@ -1283,30 +1405,38 @@ class TestBootstrap:
         mock_scheduler = MagicMock()
 
         stations = {
-            'ELDC': {'station_id': 'ELDC', 'receiver_type': 'polarx5'},
-            'THOB': {'station_id': 'THOB', 'receiver_type': 'polarx5'},
+            "ELDC": {"station_id": "ELDC", "receiver_type": "polarx5"},
+            "THOB": {"station_id": "THOB", "receiver_type": "polarx5"},
         }
 
         configs = {
-            '15s_24hr': ScheduleConfig(
-                session_type='15s_24hr', schedule=':10',
-                distribution_window=10, rinex=True, timeout_minutes=45,
+            "15s_24hr": ScheduleConfig(
+                session_type="15s_24hr",
+                schedule=":10",
+                distribution_window=10,
+                rinex=True,
+                timeout_minutes=45,
             ),
-            '1Hz_1hr': ScheduleConfig(
-                session_type='1Hz_1hr', schedule=':01',
-                distribution_window=10, rinex=True, timeout_minutes=30,
+            "1Hz_1hr": ScheduleConfig(
+                session_type="1Hz_1hr",
+                schedule=":01",
+                distribution_window=10,
+                rinex=True,
+                timeout_minutes=30,
             ),
-            'status_1hr': ScheduleConfig(
-                session_type='status_1hr', schedule=':15',
-                distribution_window=5, timeout_minutes=15,
+            "status_1hr": ScheduleConfig(
+                session_type="status_1hr",
+                schedule=":15",
+                distribution_window=5,
+                timeout_minutes=15,
             ),
         }
 
         # Only bootstrap 15s_24hr
         bootstrap_cfg = {
-            'distribution_window': 5,
-            'initial_lookback_days': 3,
-            'sessions': ['15s_24hr'],
+            "distribution_window": 5,
+            "initial_lookback_days": 3,
+            "sessions": ["15s_24hr"],
         }
 
         total = schedule_bootstrap(
@@ -1320,7 +1450,7 @@ class TestBootstrap:
         assert total == 2
         # All jobs should be 15s_24hr
         for call in mock_scheduler.add_job.call_args_list:
-            assert '15s_24hr' in call.kwargs['id']
+            assert "15s_24hr" in call.kwargs["id"]
 
     def test_bootstrap_respects_station_filter(self):
         """Bootstrap only schedules filtered stations."""
@@ -1330,15 +1460,17 @@ class TestBootstrap:
         mock_scheduler = MagicMock()
 
         stations = {
-            'ELDC': {'station_id': 'ELDC', 'receiver_type': 'polarx5'},
-            'THOB': {'station_id': 'THOB', 'receiver_type': 'polarx5'},
-            'MANA': {'station_id': 'MANA', 'receiver_type': 'netr9'},
+            "ELDC": {"station_id": "ELDC", "receiver_type": "polarx5"},
+            "THOB": {"station_id": "THOB", "receiver_type": "polarx5"},
+            "MANA": {"station_id": "MANA", "receiver_type": "netr9"},
         }
 
         configs = {
-            '15s_24hr': ScheduleConfig(
-                session_type='15s_24hr', schedule=':10',
-                distribution_window=10, timeout_minutes=45,
+            "15s_24hr": ScheduleConfig(
+                session_type="15s_24hr",
+                schedule=":10",
+                distribution_window=10,
+                timeout_minutes=45,
             ),
         }
 
@@ -1346,8 +1478,8 @@ class TestBootstrap:
             scheduler=mock_scheduler,
             stations=stations,
             session_configs=configs,
-            bootstrap_cfg={'distribution_window': 5, 'initial_lookback_days': 2},
-            station_filter=['ELDC', 'THOB'],
+            bootstrap_cfg={"distribution_window": 5, "initial_lookback_days": 2},
+            station_filter=["ELDC", "THOB"],
         )
 
         # Only 2 filtered stations × 1 session = 2 jobs
@@ -1364,26 +1496,35 @@ class TestGapBackfill:
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
         # Return station THOB (has fewest archived files → most gaps)
-        mock_cursor.fetchone.return_value = ('THOB', date(2026, 2, 1), date(2026, 1, 1), date(2026, 2, 10))
+        mock_cursor.fetchone.return_value = (
+            "THOB",
+            date(2026, 2, 1),
+            date(2026, 1, 1),
+            date(2026, 2, 10),
+        )
         mock_conn.__enter__ = MagicMock(return_value=mock_conn)
         mock_conn.__exit__ = MagicMock(return_value=False)
         mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        with patch('receivers.health.database_factory.DatabaseConnectionFactory') as mock_db:
+        with patch(
+            "receivers.health.database_factory.DatabaseConnectionFactory"
+        ) as mock_db:
             mock_db.connection.return_value = mock_conn
-            result = _pick_station_by_gap_count('15s_24hr')
+            result = _pick_station_by_gap_count("15s_24hr")
 
         assert result is not None
-        assert result[0] == 'THOB'
+        assert result[0] == "THOB"
 
     def test_gap_priority_returns_none_on_error(self):
         """Gap priority gracefully returns None on DB error."""
         from receivers.scheduling.backfill import _pick_station_by_gap_count
 
-        with patch('receivers.health.database_factory.DatabaseConnectionFactory') as mock_db:
+        with patch(
+            "receivers.health.database_factory.DatabaseConnectionFactory"
+        ) as mock_db:
             mock_db.connection.side_effect = Exception("db error")
-            result = _pick_station_by_gap_count('status_1hr')
+            result = _pick_station_by_gap_count("status_1hr")
 
         assert result is None
 
@@ -1399,9 +1540,11 @@ class TestGapBackfill:
         mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        with patch('receivers.health.database_factory.DatabaseConnectionFactory') as mock_db:
+        with patch(
+            "receivers.health.database_factory.DatabaseConnectionFactory"
+        ) as mock_db:
             mock_db.connection.return_value = mock_conn
-            result = _pick_station_by_gap_count('15s_24hr')
+            result = _pick_station_by_gap_count("15s_24hr")
 
         assert result is None
 
@@ -1410,7 +1553,7 @@ class TestGapBackfill:
         from receivers.scheduling.backfill import _backfill_next_station_for_session
 
         # Set minute inside backfill window
-        with patch('receivers.scheduling.backfill.datetime') as mock_dt:
+        with patch("receivers.scheduling.backfill.datetime") as mock_dt:
             mock_dt.now.return_value = MagicMock(minute=30)
             mock_dt.combine = datetime.combine
             mock_dt.min = datetime.min
@@ -1418,29 +1561,52 @@ class TestGapBackfill:
             mock_conn = MagicMock()
             mock_cursor = MagicMock()
             # gap_priority query returns a station
-            mock_cursor.fetchone.return_value = ('ELDC', date(2026, 2, 5), date(2026, 1, 1), date(2026, 2, 10))
+            mock_cursor.fetchone.return_value = (
+                "ELDC",
+                date(2026, 2, 5),
+                date(2026, 1, 1),
+                date(2026, 2, 10),
+            )
             mock_conn.__enter__ = MagicMock(return_value=mock_conn)
             mock_conn.__exit__ = MagicMock(return_value=False)
-            mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+            mock_conn.cursor.return_value.__enter__ = MagicMock(
+                return_value=mock_cursor
+            )
             mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-            with patch('receivers.health.database_factory.DatabaseConnectionFactory') as mock_db, \
-                 patch('receivers.scheduling.backfill._pick_station_by_gap_count', return_value=('ELDC', date(2026, 2, 5), date(2026, 1, 1), date(2026, 2, 10))) as mock_gap, \
-                 patch('receivers.scheduling.backfill._backfill_station_day_generic', return_value=True):
+            with (
+                patch(
+                    "receivers.health.database_factory.DatabaseConnectionFactory"
+                ) as mock_db,
+                patch(
+                    "receivers.scheduling.backfill._pick_station_by_gap_count",
+                    return_value=(
+                        "ELDC",
+                        date(2026, 2, 5),
+                        date(2026, 1, 1),
+                        date(2026, 2, 10),
+                    ),
+                ) as mock_gap,
+                patch(
+                    "receivers.scheduling.backfill._backfill_station_day_generic",
+                    return_value=True,
+                ),
+            ):
                 mock_db.connection.return_value = mock_conn
 
                 _backfill_next_station_for_session(
-                    'status_1hr', strategy='gap_priority',
+                    "status_1hr",
+                    strategy="gap_priority",
                 )
 
                 # Verify gap_priority was called
-                mock_gap.assert_called_once_with('status_1hr')
+                mock_gap.assert_called_once_with("status_1hr")
 
     def test_fallback_to_round_robin(self):
         """When gap_priority returns None, falls back to round-robin."""
         from receivers.scheduling.backfill import _backfill_next_station_for_session
 
-        with patch('receivers.scheduling.backfill.datetime') as mock_dt:
+        with patch("receivers.scheduling.backfill.datetime") as mock_dt:
             mock_dt.now.return_value = MagicMock(minute=30)
             mock_dt.combine = datetime.combine
             mock_dt.min = datetime.min
@@ -1448,22 +1614,40 @@ class TestGapBackfill:
             mock_conn = MagicMock()
             mock_cursor = MagicMock()
             # Round-robin query returns a station
-            mock_cursor.fetchone.return_value = ('MANA', date(2026, 2, 3), date(2026, 1, 1), date(2026, 2, 10))
+            mock_cursor.fetchone.return_value = (
+                "MANA",
+                date(2026, 2, 3),
+                date(2026, 1, 1),
+                date(2026, 2, 10),
+            )
             mock_conn.__enter__ = MagicMock(return_value=mock_conn)
             mock_conn.__exit__ = MagicMock(return_value=False)
-            mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+            mock_conn.cursor.return_value.__enter__ = MagicMock(
+                return_value=mock_cursor
+            )
             mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-            with patch('receivers.health.database_factory.DatabaseConnectionFactory') as mock_db, \
-                 patch('receivers.scheduling.backfill._pick_station_by_gap_count', return_value=None) as mock_gap, \
-                 patch('receivers.scheduling.backfill._backfill_station_day_generic', return_value=True) as mock_backfill:
+            with (
+                patch(
+                    "receivers.health.database_factory.DatabaseConnectionFactory"
+                ) as mock_db,
+                patch(
+                    "receivers.scheduling.backfill._pick_station_by_gap_count",
+                    return_value=None,
+                ) as mock_gap,
+                patch(
+                    "receivers.scheduling.backfill._backfill_station_day_generic",
+                    return_value=True,
+                ) as mock_backfill,
+            ):
                 mock_db.connection.return_value = mock_conn
 
                 _backfill_next_station_for_session(
-                    '15s_24hr', strategy='gap_priority',
+                    "15s_24hr",
+                    strategy="gap_priority",
                 )
 
                 # Gap priority tried but returned None
-                mock_gap.assert_called_once_with('15s_24hr')
+                mock_gap.assert_called_once_with("15s_24hr")
                 # Should fall back to round-robin and still process a station
                 mock_backfill.assert_called_once()

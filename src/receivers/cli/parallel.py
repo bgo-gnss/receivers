@@ -409,18 +409,29 @@ def _download_one_station(
         msg = f"Station download timed out after {_STATION_WALL_TIMEOUT}s (zombie connection)"
         worker_logger.error(f"⏰ {station_id}: {msg}")
         return _bail(
-            station_id, args, t0, attempt, "failed", msg,
+            station_id,
+            args,
+            t0,
+            attempt,
+            "failed",
+            msg,
             outcome_override="stall_timeout",
         )
 
     # Thread completed — check result
     if not result_container:
-        return _bail(station_id, args, t0, attempt, "failed", "Download returned no result")
+        return _bail(
+            station_id, args, t0, attempt, "failed", "Download returned no result"
+        )
 
     result = result_container[0]
     if isinstance(result, Exception):
         return _bail(
-            station_id, args, t0, attempt, "failed",
+            station_id,
+            args,
+            t0,
+            attempt,
+            "failed",
             f"{type(result).__name__}: {result}",
         )
 
@@ -428,7 +439,11 @@ def _download_one_station(
 
     if errors > 0:
         return _bail(
-            station_id, args, t0, attempt, "failed",
+            station_id,
+            args,
+            t0,
+            attempt,
+            "failed",
             f"{errors} error(s) during download",
             files_downloaded=files_downloaded,
         )
@@ -437,15 +452,24 @@ def _download_one_station(
 
     # Per-station RINEX fallback: for receivers that don't support the per-file
     # callback (Trimble, Leica), submit a batch conversion after download.
-    if status == "completed" and getattr(args, "rinex", False) and not _rinex_file_count:
+    if (
+        status == "completed"
+        and getattr(args, "rinex", False)
+        and not _rinex_file_count
+    ):
         try:
             from ..rinex.async_converter import submit_rinex_conversion
+
             submit_rinex_conversion(station_id, args.session, start_time, end_time)
         except Exception:
             pass  # RINEX submission must never fail a download
 
     return _bail(
-        station_id, args, t0, attempt, status,
+        station_id,
+        args,
+        t0,
+        attempt,
+        status,
         f"{files_downloaded} file(s), {files_checked} checked",
         files_downloaded=files_downloaded,
     )
@@ -577,12 +601,18 @@ def download_parallel(
     # Transient failures (FTP timeout, busy receiver, packet loss) often
     # succeed on subsequent attempts once batch pressure subsides.
     # Wall-timeout and hardware-issue stations are excluded.
-    NON_RETRYABLE_PATTERNS = ("timed out after", "zombie connection", "disk_full", "no_satellites")
+    NON_RETRYABLE_PATTERNS = (
+        "timed out after",
+        "zombie connection",
+        "disk_full",
+        "no_satellites",
+    )
     max_retries = getattr(args, "max_retries", 3)
 
     for retry_pass in range(2, max_retries + 2):  # attempt 2, 3, ..., max_retries+1
         retryable = [
-            sid for sid, r in summary.results.items()
+            sid
+            for sid, r in summary.results.items()
             if r.status in ("unreachable", "failed")
             and not any(p in (r.error_message or "") for p in NON_RETRYABLE_PATTERNS)
         ]
@@ -608,7 +638,8 @@ def download_parallel(
             backoff_exempt: set[str] = set()
             if total_attempted > 10:
                 success_count = sum(
-                    1 for r in summary.results.values()
+                    1
+                    for r in summary.results.values()
                     if r.status in ("completed", "up_to_date")
                 )
                 success_rate = success_count / total_attempted
@@ -688,6 +719,7 @@ def download_parallel(
     if getattr(args, "rinex", False):
         try:
             from ..rinex.async_converter import shutdown_rinex_pool
+
             shutdown_rinex_pool(wait=True)
         except Exception:
             pass
@@ -797,7 +829,7 @@ def _print_summary(summary: ParallelSummary, logger: logging.Logger) -> None:
     logger.info("=" * 60)
     logger.info("Parallel download summary:")
     logger.info(f"  Total stations: {summary.total_stations}")
-    logger.info(f"  Successful: {summary.successful} " f"({summary.total_files} files)")
+    logger.info(f"  Successful: {summary.successful} ({summary.total_files} files)")
     if summary.unreachable > 0:
         logger.info(f"  Unreachable: {summary.unreachable}")
     if summary.failed > 0:
@@ -806,7 +838,7 @@ def _print_summary(summary: ParallelSummary, logger: logging.Logger) -> None:
         logger.info(f"  Skipped: {summary.skipped}")
     if summary.retried > 0:
         logger.info(
-            f"  Retried: {summary.retried}, " f"recovered: {summary.retry_recovered}"
+            f"  Retried: {summary.retried}, recovered: {summary.retry_recovered}"
         )
     logger.info(f"  Duration: {summary.total_duration:.1f}s")
     logger.info("=" * 60)

@@ -20,7 +20,7 @@ Usage:
 
 from typing import Any, Dict, List, Optional
 
-from .metrics import MetricChecker, MetricResult, HealthStatus, load_thresholds
+from .metrics import HealthStatus, MetricChecker, MetricResult, load_thresholds
 
 
 class StatusFormatter:
@@ -137,7 +137,11 @@ class StatusFormatter:
             emoji = result.emoji
             const_str = ""
             if by_constellation:
-                const_str = " (" + ", ".join(f"{k}:{v}" for k, v in by_constellation.items()) + ")"
+                const_str = (
+                    " ("
+                    + ", ".join(f"{k}:{v}" for k, v in by_constellation.items())
+                    + ")"
+                )
             return f"Satellites: {emoji} {total}{const_str}"
         else:
             return result.message
@@ -308,7 +312,9 @@ class StatusFormatter:
         overall_icon = status_emoji.get(overall, "?")
 
         # Header line
-        lines.append(f"{station_id} ({receiver_type}) @ {ip}  [{overall_icon}] {overall.upper()}")
+        lines.append(
+            f"{station_id} ({receiver_type}) @ {ip}  [{overall_icon}] {overall.upper()}"
+        )
 
         # Receiver identity (firmware, serial) if available
         identity = health_data.get("receiver_identity", {})
@@ -358,7 +364,9 @@ class StatusFormatter:
         total_sats = sats.get("total")
         if total_sats is not None:
             by_const = sats.get("by_constellation", {})
-            lines.append("  " + self.format_satellites(total_sats, by_constellation=by_const))
+            lines.append(
+                "  " + self.format_satellites(total_sats, by_constellation=by_const)
+            )
 
         # Position
         pos = metrics.get("position", {})

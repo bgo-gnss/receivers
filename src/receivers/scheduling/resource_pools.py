@@ -21,7 +21,6 @@ from typing import Any, Callable, Dict, List, Optional
 
 from .task_interface import TaskPriority
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -32,6 +31,7 @@ class PrioritizedTask:
     Lower priority value = higher priority (processed first).
     Ties are broken by submission order (timestamp).
     """
+
     priority: int
     submit_time: float = field(compare=True)
     task_id: str = field(compare=False)
@@ -44,6 +44,7 @@ class PrioritizedTask:
 @dataclass
 class PoolStatus:
     """Status of a resource pool."""
+
     pool_type: str
     max_workers: int
     active_tasks: int
@@ -74,13 +75,13 @@ class ResourcePoolManager:
         config = config or {}
 
         # Network pool: ThreadPoolExecutor for I/O-bound operations
-        self._network_workers = config.get('network_workers', 10)
+        self._network_workers = config.get("network_workers", 10)
         self._network_pool: Optional[ThreadPoolExecutor] = None
 
         # CPU pool: ProcessPoolExecutor for CPU-bound operations
         # Limit workers to prevent memory exhaustion
         default_cpu = max(1, min(4, (os.cpu_count() or 4) - 2))
-        self._cpu_workers = config.get('cpu_workers', default_cpu)
+        self._cpu_workers = config.get("cpu_workers", default_cpu)
         self._cpu_pool: Optional[ProcessPoolExecutor] = None
 
         # Priority tracking
@@ -90,8 +91,8 @@ class ResourcePoolManager:
         # Statistics
         self._lock = Lock()
         self._stats = {
-            'network': {'completed': 0, 'failed': 0, 'total_duration': 0.0},
-            'cpu': {'completed': 0, 'failed': 0, 'total_duration': 0.0}
+            "network": {"completed": 0, "failed": 0, "total_duration": 0.0},
+            "cpu": {"completed": 0, "failed": 0, "total_duration": 0.0},
         }
 
         # Track active futures
@@ -106,15 +107,12 @@ class ResourcePoolManager:
         """Start the resource pools."""
         if self._network_pool is None:
             self._network_pool = ThreadPoolExecutor(
-                max_workers=self._network_workers,
-                thread_name_prefix="gps_network"
+                max_workers=self._network_workers, thread_name_prefix="gps_network"
             )
             logger.debug(f"Started network pool with {self._network_workers} workers")
 
         if self._cpu_pool is None:
-            self._cpu_pool = ProcessPoolExecutor(
-                max_workers=self._cpu_workers
-            )
+            self._cpu_pool = ProcessPoolExecutor(max_workers=self._cpu_workers)
             logger.debug(f"Started CPU pool with {self._cpu_workers} workers")
 
     def submit_network(
@@ -123,7 +121,7 @@ class ResourcePoolManager:
         *args,
         priority: TaskPriority = TaskPriority.STANDARD,
         task_id: Optional[str] = None,
-        **kwargs
+        **kwargs,
     ) -> Future:
         """Submit a task to the network pool.
 
@@ -145,7 +143,7 @@ class ResourcePoolManager:
         # Submit directly to the pool (APScheduler handles priority)
         assert self._network_pool is not None
         future = self._network_pool.submit(
-            self._wrap_task, 'network', task_id, fn, args, kwargs
+            self._wrap_task, "network", task_id, fn, args, kwargs
         )
 
         with self._lock:
@@ -153,7 +151,7 @@ class ResourcePoolManager:
 
         # Add callback to track completion
         future.add_done_callback(
-            lambda f: self._on_task_complete('network', task_id, f)
+            lambda f: self._on_task_complete("network", task_id, f)
         )
 
         logger.debug(f"Submitted network task {task_id} with priority {priority.name}")
@@ -165,7 +163,7 @@ class ResourcePoolManager:
         *args,
         priority: TaskPriority = TaskPriority.STANDARD,
         task_id: Optional[str] = None,
-        **kwargs
+        **kwargs,
     ) -> Future:
         """Submit a task to the CPU pool.
 
@@ -192,23 +190,17 @@ class ResourcePoolManager:
             self._active_futures[task_id] = future
 
         # Add callback to track completion
-        future.add_done_callback(
-            lambda f: self._on_task_complete('cpu', task_id, f)
-        )
+        future.add_done_callback(lambda f: self._on_task_complete("cpu", task_id, f))
 
         logger.debug(f"Submitted CPU task {task_id} with priority {priority.name}")
         return future
 
     def _wrap_task(
-        self,
-        pool_type: str,
-        _task_id: str,
-        fn: Callable,
-        args: tuple,
-        kwargs: dict
+        self, pool_type: str, _task_id: str, fn: Callable, args: tuple, kwargs: dict
     ) -> Any:
         """Wrap a task execution with timing and error handling."""
         import time
+
         start = time.time()
 
         try:
@@ -217,7 +209,7 @@ class ResourcePoolManager:
         finally:
             duration = time.time() - start
             with self._lock:
-                self._stats[pool_type]['total_duration'] += duration
+                self._stats[pool_type]["total_duration"] += duration
 
     def _on_task_complete(self, pool_type: str, task_id: str, future: Future) -> None:
         """Handle task completion."""
@@ -226,12 +218,10 @@ class ResourcePoolManager:
                 del self._active_futures[task_id]
 
             if future.exception() is not None:
-                self._stats[pool_type]['failed'] += 1
-                logger.warning(
-                    f"Task {task_id} failed: {future.exception()}"
-                )
+                self._stats[pool_type]["failed"] += 1
+                logger.warning(f"Task {task_id} failed: {future.exception()}")
             else:
-                self._stats[pool_type]['completed'] += 1
+                self._stats[pool_type]["completed"] += 1
 
     def get_status(self) -> Dict[str, PoolStatus]:
         """Get status of all resource pools.
@@ -240,46 +230,48 @@ class ResourcePoolManager:
             Dictionary mapping pool name to PoolStatus
         """
         with self._lock:
-            network_stats = self._stats['network']
-            cpu_stats = self._stats['cpu']
+            network_stats = self._stats["network"]
+            cpu_stats = self._stats["cpu"]
 
             # Count active network tasks
             network_active = sum(
-                1 for tid in self._active_futures if tid.startswith('net_')
+                1 for tid in self._active_futures if tid.startswith("net_")
             )
             cpu_active = sum(
-                1 for tid in self._active_futures if tid.startswith('cpu_')
+                1 for tid in self._active_futures if tid.startswith("cpu_")
             )
 
             # Calculate average durations
-            network_completed = network_stats['completed'] + network_stats['failed']
-            cpu_completed = cpu_stats['completed'] + cpu_stats['failed']
+            network_completed = network_stats["completed"] + network_stats["failed"]
+            cpu_completed = cpu_stats["completed"] + cpu_stats["failed"]
 
             return {
-                'network': PoolStatus(
-                    pool_type='network',
+                "network": PoolStatus(
+                    pool_type="network",
                     max_workers=self._network_workers,
                     active_tasks=network_active,
                     pending_tasks=self._network_pending.qsize(),
-                    completed_total=network_stats['completed'],
-                    failed_total=network_stats['failed'],
+                    completed_total=network_stats["completed"],
+                    failed_total=network_stats["failed"],
                     avg_duration_seconds=(
-                        network_stats['total_duration'] / network_completed
-                        if network_completed > 0 else 0.0
-                    )
+                        network_stats["total_duration"] / network_completed
+                        if network_completed > 0
+                        else 0.0
+                    ),
                 ),
-                'cpu': PoolStatus(
-                    pool_type='cpu',
+                "cpu": PoolStatus(
+                    pool_type="cpu",
                     max_workers=self._cpu_workers,
                     active_tasks=cpu_active,
                     pending_tasks=self._cpu_pending.qsize(),
-                    completed_total=cpu_stats['completed'],
-                    failed_total=cpu_stats['failed'],
+                    completed_total=cpu_stats["completed"],
+                    failed_total=cpu_stats["failed"],
                     avg_duration_seconds=(
-                        cpu_stats['total_duration'] / cpu_completed
-                        if cpu_completed > 0 else 0.0
-                    )
-                )
+                        cpu_stats["total_duration"] / cpu_completed
+                        if cpu_completed > 0
+                        else 0.0
+                    ),
+                ),
             }
 
     def get_active_tasks(self) -> List[str]:

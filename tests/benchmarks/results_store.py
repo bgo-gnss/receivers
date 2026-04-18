@@ -227,9 +227,7 @@ class ResultsStore:
     def list_trials(self) -> list[dict[str, Any]]:
         """Return all trials ordered by started_at."""
         with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT * FROM trials ORDER BY started_at"
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM trials ORDER BY started_at").fetchall()
             return [dict(r) for r in rows]
 
     def get_trial(self, trial_id: int) -> dict[str, Any] | None:

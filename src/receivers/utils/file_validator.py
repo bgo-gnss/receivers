@@ -356,4 +356,3 @@ class FileValidator:
             self.logger.error(f"Error cleaning directory {directory}: {e}")
 
         return removed_count
-

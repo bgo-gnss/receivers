@@ -9,8 +9,8 @@ import gzip
 import logging
 import os
 import shutil
-import sys
 import subprocess
+import sys
 import time
 from ftplib import FTP
 from pathlib import Path
@@ -57,7 +57,9 @@ class ProgressBar:
             speed_kbps = self.current_size / elapsed_time / 1024
             if progress > 0:
                 eta_seconds = (elapsed_time / progress) - elapsed_time
-                eta_str = f" ETA: {int(eta_seconds)}s" if eta_seconds > 0 else " ETA: --"
+                eta_str = (
+                    f" ETA: {int(eta_seconds)}s" if eta_seconds > 0 else " ETA: --"
+                )
             else:
                 eta_str = " ETA: --"
         else:
@@ -65,18 +67,20 @@ class ProgressBar:
             eta_str = " ETA: --"
 
         # Build progress bar
-        bar = '█' * filled_width + '░' * (self.width - filled_width)
+        bar = "█" * filled_width + "░" * (self.width - filled_width)
 
         # Format sizes
         current_mb = self.current_size / (1024 * 1024)
         total_mb = self.total_size / (1024 * 1024)
 
         # Truncate filename if too long to prevent line wrapping
-        display_filename = self.filename[:12] if len(self.filename) > 12 else self.filename
+        display_filename = (
+            self.filename[:12] if len(self.filename) > 12 else self.filename
+        )
 
         progress_line = (
             f"\r{display_filename}: {bar} "
-            f"{progress*100:.0f}% "
+            f"{progress * 100:.0f}% "
             f"({current_mb:.1f}/{total_mb:.1f}MB) "
             f"{speed_kbps:.0f}KB/s{eta_str}"
         )
@@ -99,7 +103,12 @@ class LeicaFTPDownloader:
     SD Card storage, implementing the pattern: /SD Card/Data/15s_24hr/{STATION}{DOY}a.m00.zip
     """
 
-    def __init__(self, station_id: str, station_config: Dict[str, Any], loglevel: int = logging.INFO):
+    def __init__(
+        self,
+        station_id: str,
+        station_config: Dict[str, Any],
+        loglevel: int = logging.INFO,
+    ):
         """Initialize FTP downloader with station configuration.
 
         Args:
@@ -129,17 +138,20 @@ class LeicaFTPDownloader:
         # Get timeout settings from configuration
         from ..config.receivers_config import get_receivers_config
         from ..utils.stall_timeout import get_stall_timeout
+
         receivers_config = get_receivers_config()
         leica_config = receivers_config.get_receiver_config("g10")
         self.ftp_port = int(leica_config.get("ftp_port", 2160))
         self.connect_timeout = leica_config.get("ftp_timeout_connect", 30)
         cfg_data_timeout = leica_config.get("ftp_timeout_data", 120)
-        self.data_timeout = get_stall_timeout(station_id, "g10", default=cfg_data_timeout)
+        self.data_timeout = get_stall_timeout(
+            station_id, "g10", default=cfg_data_timeout
+        )
 
         # Get FTP mode from station config (active/passive)
         # Station config has format: station_config['router']['ftp_mode'] = 'active'|'passive'|'auto'
         ftp_mode = station_config.get("router", {}).get("ftp_mode", "active")
-        self.use_passive = (ftp_mode == "passive")
+        self.use_passive = ftp_mode == "passive"
         self.logger.debug(f"Leica FTP mode: {ftp_mode} (passive={self.use_passive})")
 
         # Track connection time for metrics
@@ -157,7 +169,9 @@ class LeicaFTPDownloader:
 
         if not logger.handlers:
             handler = logging.StreamHandler()
-            formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+            formatter = logging.Formatter(
+                "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+            )
             handler.setFormatter(formatter)
             logger.addHandler(handler)
             logger.setLevel(level)
@@ -182,9 +196,13 @@ class LeicaFTPDownloader:
         ]
         return any(indicator in error_str for indicator in ftp_mode_indicators)
 
-    def _download_file_single_attempt(self, remote_filename: str, local_path: Path,
-                                    remote_dir: str = "/SD Card/Data/15s_24hr/",
-                                    expected_size: Optional[int] = None) -> bool:
+    def _download_file_single_attempt(
+        self,
+        remote_filename: str,
+        local_path: Path,
+        remote_dir: str = "/SD Card/Data/15s_24hr/",
+        expected_size: Optional[int] = None,
+    ) -> bool:
         """Single attempt to download a file from Leica receiver via FTP.
 
         Automatically retries with opposite FTP mode if connection fails
@@ -196,27 +214,31 @@ class LeicaFTPDownloader:
         mode_name = "passive" if self.use_passive else "active"
 
         # Log connection details for debugging - BEFORE attempting connection
-        self.logger.info(f"🔗 Attempting FTP connection to: {self.ip}:{self.ftp_port} (FTP {mode_name})")
+        self.logger.info(
+            f"🔗 Attempting FTP connection to: {self.ip}:{self.ftp_port} (FTP {mode_name})"
+        )
         self.logger.info(f"📁 Target directory: {remote_dir}")
         self.logger.info(f"📄 Target filename: {remote_filename}")
-        self.logger.info(f"⚙️  Connection settings: timeout={self.connect_timeout}s, passive={self.use_passive}")
+        self.logger.info(
+            f"⚙️  Connection settings: timeout={self.connect_timeout}s, passive={self.use_passive}"
+        )
 
         try:
             # Connect to FTP server
             ftp = FTP()
-            self.logger.info(f"🔄 Establishing TCP connection...")
+            self.logger.info("🔄 Establishing TCP connection...")
             ftp.connect(self.ip, self.ftp_port, timeout=self.connect_timeout)
-            self.logger.info(f"✅ FTP TCP connection established")
+            self.logger.info("✅ FTP TCP connection established")
 
             ftp.login()  # Anonymous login
-            self.logger.info(f"✅ Anonymous login successful")
+            self.logger.info("✅ Anonymous login successful")
 
             ftp.set_pasv(self.use_passive)
             self.logger.info(f"✅ Passive mode set to: {self.use_passive}")
 
             # Set binary mode explicitly for zip files
-            ftp.voidcmd('TYPE I')
-            self.logger.info(f"✅ Binary mode set for file transfer")
+            ftp.voidcmd("TYPE I")
+            self.logger.info("✅ Binary mode set for file transfer")
 
             # Change to remote directory
             self.logger.info(f"🔄 Changing to directory: {remote_dir}")
@@ -264,9 +286,11 @@ class LeicaFTPDownloader:
 
                 return chunk
 
-            with open(local_path, 'wb') as f:
-                ftp.retrbinary(f'RETR {remote_filename}',
-                             lambda chunk: f.write(progress_callback(chunk)))
+            with open(local_path, "wb") as f:
+                ftp.retrbinary(
+                    f"RETR {remote_filename}",
+                    lambda chunk: f.write(progress_callback(chunk)),
+                )
 
             ftp.quit()
 
@@ -280,32 +304,44 @@ class LeicaFTPDownloader:
 
             if expected_size is not None and expected_size > 0:
                 # Log file size comparison
-                self.logger.info(f"Remote file size: {expected_size} bytes, Local file size: {local_file_size} bytes")
+                self.logger.info(
+                    f"Remote file size: {expected_size} bytes, Local file size: {local_file_size} bytes"
+                )
                 size_diff = local_file_size - expected_size
 
                 if size_diff == 0:
-                    self.logger.info(f"✅ Successfully downloaded {remote_filename} ({local_file_size:,} bytes)")
+                    self.logger.info(
+                        f"✅ Successfully downloaded {remote_filename} ({local_file_size:,} bytes)"
+                    )
                     return True
                 else:
-                    self.logger.error(f"❌ Download incomplete for {remote_filename}: size mismatch of {size_diff} bytes")
-                    self.logger.error(f"   Expected: {expected_size:,} bytes, Got: {local_file_size:,} bytes")
+                    self.logger.error(
+                        f"❌ Download incomplete for {remote_filename}: size mismatch of {size_diff} bytes"
+                    )
+                    self.logger.error(
+                        f"   Expected: {expected_size:,} bytes, Got: {local_file_size:,} bytes"
+                    )
                     return False
             else:
                 # No expected size - basic validation
                 if local_file_size > 0:
-                    self.logger.info(f"✅ Downloaded {remote_filename} ({local_file_size:,} bytes)")
+                    self.logger.info(
+                        f"✅ Downloaded {remote_filename} ({local_file_size:,} bytes)"
+                    )
                     return True
                 else:
-                    self.logger.error(f"❌ Download failed for {remote_filename}: empty file")
+                    self.logger.error(
+                        f"❌ Download failed for {remote_filename}: empty file"
+                    )
                     return False
 
         except TimeoutError as e:
-            if 'progress_bar' in locals() and progress_bar:
+            if "progress_bar" in locals() and progress_bar:
                 progress_bar.finish()
             self.logger.error(f"FTP download stalled for {remote_filename}: {e}")
             return False
         except Exception as e:
-            if 'progress_bar' in locals() and progress_bar:
+            if "progress_bar" in locals() and progress_bar:
                 progress_bar.finish()
 
             # Check if this is an FTP mode error and we should try fallback
@@ -314,7 +350,9 @@ class LeicaFTPDownloader:
                 self.use_passive = not original_mode
                 fallback_mode = "passive" if self.use_passive else "active"
 
-                self.logger.warning(f"⚠️  FTP {mode_name} mode failed, retrying with {fallback_mode} mode...")
+                self.logger.warning(
+                    f"⚠️  FTP {mode_name} mode failed, retrying with {fallback_mode} mode..."
+                )
 
                 try:
                     # Retry with opposite mode
@@ -325,7 +363,7 @@ class LeicaFTPDownloader:
                     self.logger.info(f"✅ Connected with {fallback_mode} mode")
 
                     # Set binary mode
-                    ftp.voidcmd('TYPE I')
+                    ftp.voidcmd("TYPE I")
 
                     # Change to remote directory
                     ftp.cwd(remote_dir)
@@ -343,23 +381,30 @@ class LeicaFTPDownloader:
 
                     # Download file
                     bytes_written = 0
-                    with open(local_path, 'wb') as f:
+                    with open(local_path, "wb") as f:
+
                         def simple_callback(chunk):
                             nonlocal bytes_written
                             bytes_written += len(chunk)
                             return chunk
 
-                        ftp.retrbinary(f'RETR {remote_filename}',
-                                     lambda chunk: f.write(simple_callback(chunk)))
+                        ftp.retrbinary(
+                            f"RETR {remote_filename}",
+                            lambda chunk: f.write(simple_callback(chunk)),
+                        )
 
                     ftp.quit()
 
                     # Validate download
                     if bytes_written > 0:
-                        self.logger.info(f"✅ Downloaded {remote_filename} with {fallback_mode} mode ({bytes_written:,} bytes)")
+                        self.logger.info(
+                            f"✅ Downloaded {remote_filename} with {fallback_mode} mode ({bytes_written:,} bytes)"
+                        )
                         return True
                     else:
-                        self.logger.error(f"❌ Download failed with {fallback_mode} mode: empty file")
+                        self.logger.error(
+                            f"❌ Download failed with {fallback_mode} mode: empty file"
+                        )
                         self.use_passive = original_mode
                         return False
 
@@ -374,10 +419,15 @@ class LeicaFTPDownloader:
                 self.logger.error(f"FTP error downloading {remote_filename}: {e}")
                 return False
 
-    def download_file(self, remote_filename: str, local_path: Path,
-                     remote_dir: str = "/SD Card/Data/15s_24hr/",
-                     expected_size: Optional[int] = None, retry_count: int = 3,
-                     session_type: str = "unknown") -> bool:
+    def download_file(
+        self,
+        remote_filename: str,
+        local_path: Path,
+        remote_dir: str = "/SD Card/Data/15s_24hr/",
+        expected_size: Optional[int] = None,
+        retry_count: int = 3,
+        session_type: str = "unknown",
+    ) -> bool:
         """Download a single file from Leica receiver via FTP with retry and reconnection logic.
 
         Args:
@@ -395,8 +445,12 @@ class LeicaFTPDownloader:
 
         # Timeout/connection error patterns that require reconnection
         timeout_patterns = [
-            "timed out", "timeout", "cannot read from timed out",
-            "connection reset", "broken pipe", "connection refused"
+            "timed out",
+            "timeout",
+            "cannot read from timed out",
+            "connection reset",
+            "broken pipe",
+            "connection refused",
         ]
 
         initial_delay = 0.5
@@ -417,44 +471,64 @@ class LeicaFTPDownloader:
                 delay = initial_delay * attempt
                 self.logger.info(f"🔄 Retrying in {delay:.1f}s...")
                 time.sleep(delay)
-                self.logger.info(f"Downloading {remote_filename} (attempt {attempt + 1}/{retry_count + 1})")
+                self.logger.info(
+                    f"Downloading {remote_filename} (attempt {attempt + 1}/{retry_count + 1})"
+                )
 
             try:
                 # Attempt single download (this creates fresh FTP connection)
-                success = self._download_file_single_attempt(remote_filename, local_path, remote_dir, expected_size)
+                success = self._download_file_single_attempt(
+                    remote_filename, local_path, remote_dir, expected_size
+                )
                 duration = time.time() - start_time
                 dl_size = local_path.stat().st_size if local_path.exists() else 0
 
                 if success:
                     record_download(
-                        self.station_id, session_type, "completed",
-                        filename=remote_filename, duration_seconds=duration,
+                        self.station_id,
+                        session_type,
+                        "completed",
+                        filename=remote_filename,
+                        duration_seconds=duration,
                         bytes_downloaded=dl_size,
                         file_size=self.remote_sizes.get(remote_filename),
-                        stall_timeout_used=self.data_timeout, attempt=attempt + 1,
+                        stall_timeout_used=self.data_timeout,
+                        attempt=attempt + 1,
                     )
                     return True
                 elif attempt < retry_count:
                     record_download(
-                        self.station_id, session_type, "failed",
-                        filename=remote_filename, duration_seconds=duration,
+                        self.station_id,
+                        session_type,
+                        "failed",
+                        filename=remote_filename,
+                        duration_seconds=duration,
                         bytes_downloaded=dl_size,
                         file_size=self.remote_sizes.get(remote_filename),
-                        stall_timeout_used=self.data_timeout, attempt=attempt + 1,
+                        stall_timeout_used=self.data_timeout,
+                        attempt=attempt + 1,
                         message="Download returned failure",
                     )
-                    self.logger.warning(f"⚠️ Download attempt {attempt + 1} failed, retrying {remote_filename}...")
+                    self.logger.warning(
+                        f"⚠️ Download attempt {attempt + 1} failed, retrying {remote_filename}..."
+                    )
                     continue
                 else:
                     record_download(
-                        self.station_id, session_type, "failed",
-                        filename=remote_filename, duration_seconds=duration,
+                        self.station_id,
+                        session_type,
+                        "failed",
+                        filename=remote_filename,
+                        duration_seconds=duration,
                         bytes_downloaded=dl_size,
                         file_size=self.remote_sizes.get(remote_filename),
-                        stall_timeout_used=self.data_timeout, attempt=attempt + 1,
+                        stall_timeout_used=self.data_timeout,
+                        attempt=attempt + 1,
                         message=f"Failed after {retry_count + 1} attempts",
                     )
-                    self.logger.error(f"❌ Download failed after {retry_count + 1} attempts: {remote_filename}")
+                    self.logger.error(
+                        f"❌ Download failed after {retry_count + 1} attempts: {remote_filename}"
+                    )
                     return False
 
             except (TimeoutError, ConnectionError) as e:
@@ -462,17 +536,22 @@ class LeicaFTPDownloader:
                 duration = time.time() - start_time
                 is_stall = isinstance(e, TimeoutError) or "stall" in error_msg
                 record_download(
-                    self.station_id, session_type,
+                    self.station_id,
+                    session_type,
                     "stall_timeout" if is_stall else "failed",
-                    filename=remote_filename, duration_seconds=duration,
+                    filename=remote_filename,
+                    duration_seconds=duration,
                     file_size=self.remote_sizes.get(remote_filename),
-                    stall_timeout_used=self.data_timeout, attempt=attempt + 1,
+                    stall_timeout_used=self.data_timeout,
+                    attempt=attempt + 1,
                     message=str(e)[:500],
                 )
 
                 # If this was the last attempt, give up
                 if attempt >= retry_count:
-                    self.logger.error(f"❌ Download failed after {retry_count + 1} attempts: {e}")
+                    self.logger.error(
+                        f"❌ Download failed after {retry_count + 1} attempts: {e}"
+                    )
                     return False
 
                 # Log the failure
@@ -480,22 +559,30 @@ class LeicaFTPDownloader:
 
                 # Check if timeout pattern - always reconnect for FTP
                 if any(pattern in error_msg for pattern in timeout_patterns):
-                    self.logger.info("🔄 Connection timeout detected - fresh connection will be established on retry")
+                    self.logger.info(
+                        "🔄 Connection timeout detected - fresh connection will be established on retry"
+                    )
 
             except Exception as e:
                 error_msg = str(e).lower()
                 duration = time.time() - start_time
                 record_download(
-                    self.station_id, session_type, "failed",
-                    filename=remote_filename, duration_seconds=duration,
+                    self.station_id,
+                    session_type,
+                    "failed",
+                    filename=remote_filename,
+                    duration_seconds=duration,
                     file_size=self.remote_sizes.get(remote_filename),
-                    stall_timeout_used=self.data_timeout, attempt=attempt + 1,
+                    stall_timeout_used=self.data_timeout,
+                    attempt=attempt + 1,
                     message=str(e)[:500],
                 )
 
                 # If this was the last attempt, give up
                 if attempt >= retry_count:
-                    self.logger.error(f"❌ Download failed after {retry_count + 1} attempts: {e}")
+                    self.logger.error(
+                        f"❌ Download failed after {retry_count + 1} attempts: {e}"
+                    )
                     return False
 
                 # Log the failure
@@ -503,13 +590,19 @@ class LeicaFTPDownloader:
 
                 # Check if timeout/connection error
                 if any(pattern in error_msg for pattern in timeout_patterns):
-                    self.logger.info("🔄 Connection error detected - fresh connection will be established on retry")
+                    self.logger.info(
+                        "🔄 Connection error detected - fresh connection will be established on retry"
+                    )
 
         return False
 
-    def download_files(self, files_dict: Dict[str, str], tmp_dir: Path,
-                      clean_tmp: bool = True,
-                      process_callback: Optional[callable] = None) -> List[str]:
+    def download_files(
+        self,
+        files_dict: Dict[str, str],
+        tmp_dir: Path,
+        clean_tmp: bool = True,
+        process_callback: Optional[callable] = None,
+    ) -> List[str]:
         """Download multiple files from Leica receiver.
 
         Args:
@@ -550,14 +643,21 @@ class LeicaFTPDownloader:
             # Check if file already exists and is complete
             if local_file_path.exists():
                 validation = self.file_validator.validate_file(str(local_file_path))
-                if validation['valid']:
+                if validation["valid"]:
                     file_size = local_file_path.stat().st_size
-                    self.logger.info(f"📁 Local file already exists and is valid ({file_size:,} bytes): {filename}")
+                    self.logger.info(
+                        f"📁 Local file already exists and is valid ({file_size:,} bytes): {filename}"
+                    )
                     downloaded_files.append(str(local_file_path))
                     continue
 
             # Download the file with correct remote directory
-            success = self.download_file(filename, local_file_path, remote_dir=remote_directory, expected_size=None)
+            success = self.download_file(
+                filename,
+                local_file_path,
+                remote_dir=remote_directory,
+                expected_size=None,
+            )
 
             if success:
                 # If callback provided, process file immediately (unzip+archive)
@@ -577,7 +677,9 @@ class LeicaFTPDownloader:
             # Add longer delay between downloads to avoid overwhelming the receiver
             time.sleep(5)
 
-        self.logger.info(f"Download complete: {len(downloaded_files)}/{total_files} files successful")
+        self.logger.info(
+            f"Download complete: {len(downloaded_files)}/{total_files} files successful"
+        )
         return downloaded_files
 
     def test_connection(self) -> Dict[str, Any]:
@@ -607,7 +709,9 @@ class LeicaFTPDownloader:
                     dir_files = ftp.nlst()
                     file_list.extend(dir_files)
                     accessible_dirs.append(test_dir)
-                    self.logger.info(f"Directory accessible: {test_dir} ({len(dir_files)} files)")
+                    self.logger.info(
+                        f"Directory accessible: {test_dir} ({len(dir_files)} files)"
+                    )
                 except Exception as e:
                     self.logger.debug(f"Directory not accessible: {test_dir} - {e}")
 
@@ -622,18 +726,14 @@ class LeicaFTPDownloader:
                 "directory_accessible": len(accessible_dirs) > 0,
                 "accessible_directories": accessible_dirs,
                 "files_found": len(file_list),
-                "sample_files": file_list[:5] if file_list else []
+                "sample_files": file_list[:5] if file_list else [],
             }
 
         except Exception as e:
             connection_time = time.time() - start_time
             self._last_connection_time = connection_time
 
-            return {
-                "success": False,
-                "duration": connection_time,
-                "error": str(e)
-            }
+            return {"success": False, "duration": connection_time, "error": str(e)}
 
     def close(self):
         """Close FTP connections."""

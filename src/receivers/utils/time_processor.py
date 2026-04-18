@@ -13,11 +13,12 @@ Design for extensibility:
 import logging
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Callable, List, Optional, Protocol, Tuple, Union
+from typing import Callable, Dict, List, Optional, Protocol, Tuple, Union
 
 
 class TimestampNormalization(Enum):
     """Timestamp normalization strategies for different file frequencies."""
+
     MIDNIGHT = "midnight"  # Normalize to midnight (00:00:00)
     HOUR_BOUNDARY = "hour_boundary"  # Normalize to hour boundary (XX:00:00)
     MINUTE_BOUNDARY = "minute_boundary"  # Normalize to minute boundary (XX:XX:00)
@@ -87,8 +88,8 @@ class TimeParameterProcessor:
 
         # Normalization strategy mapping
         self._normalization_strategies: Dict[str, TimestampNormalization] = {
-            '24hr': TimestampNormalization.MIDNIGHT,
-            '1hr': TimestampNormalization.HOUR_BOUNDARY,
+            "24hr": TimestampNormalization.MIDNIGHT,
+            "1hr": TimestampNormalization.HOUR_BOUNDARY,
             # Future: '15min': TimestampNormalization.MINUTE_BOUNDARY,
         }
 
@@ -107,9 +108,7 @@ class TimeParameterProcessor:
         )
 
     def register_normalization_strategy(
-        self,
-        ffrequency: str,
-        strategy: TimestampNormalization
+        self, ffrequency: str, strategy: TimestampNormalization
     ) -> None:
         """Register custom normalization strategy for a file frequency.
 
@@ -122,10 +121,7 @@ class TimeParameterProcessor:
             f"Registered normalization strategy for {ffrequency}: {strategy.value}"
         )
 
-    def parse_datetime_flexible(
-        self,
-        dt_input: Union[datetime, str]
-    ) -> datetime:
+    def parse_datetime_flexible(self, dt_input: Union[datetime, str]) -> datetime:
         """Parse datetime from various formats.
 
         Delegates to ``gtimes.timefunc.parse_datetime_flexible`` for the
@@ -157,13 +153,10 @@ class TimeParameterProcessor:
                 continue
 
         from gtimes.timefunc import parse_datetime_flexible as _gt_parse
+
         return _gt_parse(dt_input)
 
-    def normalize_timestamp(
-        self,
-        dt: datetime,
-        ffrequency: str
-    ) -> datetime:
+    def normalize_timestamp(self, dt: datetime, ffrequency: str) -> datetime:
         """Normalize timestamp based on file frequency.
 
         Different file frequencies require different timestamp normalization:
@@ -179,8 +172,7 @@ class TimeParameterProcessor:
             Normalized datetime
         """
         strategy = self._normalization_strategies.get(
-            ffrequency,
-            TimestampNormalization.NO_NORMALIZATION
+            ffrequency, TimestampNormalization.NO_NORMALIZATION
         )
 
         if strategy == TimestampNormalization.MIDNIGHT:
@@ -200,9 +192,7 @@ class TimeParameterProcessor:
             return dt
 
     def normalize_timestamps(
-        self,
-        dt_list: List[datetime],
-        ffrequency: str
+        self, dt_list: List[datetime], ffrequency: str
     ) -> List[datetime]:
         """Normalize list of timestamps based on file frequency.
 
@@ -219,7 +209,7 @@ class TimeParameterProcessor:
         self,
         start: Union[datetime, str, None],
         end: Union[datetime, str, None],
-        session: str
+        session: str,
     ) -> Tuple[datetime, datetime]:
         """Process and validate time parameters.
 
@@ -260,8 +250,8 @@ class TimeParameterProcessor:
         else:
             # Default end time based on start time and session
             # This preserves existing behavior from CLI
-            ffrequency = session.split('_')[1] if '_' in session else '24hr'
-            if ffrequency == '1hr':
+            ffrequency = session.split("_")[1] if "_" in session else "24hr"
+            if ffrequency == "1hr":
                 # For hourly sessions, default to single hour
                 end_dt = start_dt + timedelta(minutes=1)
             else:
@@ -270,9 +260,7 @@ class TimeParameterProcessor:
 
         # Validate time range
         if end_dt < start_dt:
-            raise ValueError(
-                f"End time {end_dt} is before start time {start_dt}"
-            )
+            raise ValueError(f"End time {end_dt} is before start time {start_dt}")
 
         self.logger.debug(
             f"Processed time parameters: {start_dt} to {end_dt} for session {session}"
@@ -281,10 +269,7 @@ class TimeParameterProcessor:
         return start_dt, end_dt
 
     def calculate_default_time_range(
-        self,
-        days_back: int,
-        session: str,
-        reference_time: Optional[datetime] = None
+        self, days_back: int, session: str, reference_time: Optional[datetime] = None
     ) -> Tuple[datetime, datetime]:
         """Calculate default time range based on days-back parameter.
 
@@ -301,9 +286,9 @@ class TimeParameterProcessor:
         if reference_time is None:
             reference_time = datetime.now()
 
-        ffrequency = session.split('_')[1] if '_' in session else '24hr'
+        ffrequency = session.split("_")[1] if "_" in session else "24hr"
 
-        if ffrequency == '1hr':
+        if ffrequency == "1hr":
             # For hourly sessions, -D N means N complete hours back
             # Example: -D 1 at 15:24 means download 14:00 file
             last_complete_hour = reference_time.replace(
@@ -319,10 +304,7 @@ class TimeParameterProcessor:
         return start, end
 
     def adjust_time_for_session(
-        self,
-        dt: datetime,
-        session: str,
-        adjustment: str = 'start'
+        self, dt: datetime, session: str, adjustment: str = "start"
     ) -> datetime:
         """Adjust datetime to appropriate boundary for session type.
 
@@ -336,23 +318,20 @@ class TimeParameterProcessor:
         Returns:
             Adjusted datetime
         """
-        ffrequency = session.split('_')[1] if '_' in session else '24hr'
+        ffrequency = session.split("_")[1] if "_" in session else "24hr"
 
-        if adjustment == 'start':
+        if adjustment == "start":
             return self.normalize_timestamp(dt, ffrequency)
         else:
             # End adjustment: typically add one period
             normalized = self.normalize_timestamp(dt, ffrequency)
-            if ffrequency == '1hr':
+            if ffrequency == "1hr":
                 return normalized + timedelta(hours=1)
             else:
                 return normalized + timedelta(days=1)
 
     def get_time_range_description(
-        self,
-        start: datetime,
-        end: datetime,
-        session: str
+        self, start: datetime, end: datetime, session: str
     ) -> str:
         """Get human-readable description of time range.
 
@@ -367,11 +346,13 @@ class TimeParameterProcessor:
             Human-readable description
         """
         duration = end - start
-        ffrequency = session.split('_')[1] if '_' in session else '24hr'
+        ffrequency = session.split("_")[1] if "_" in session else "24hr"
 
-        if ffrequency == '1hr':
+        if ffrequency == "1hr":
             hours = int(duration.total_seconds() / 3600)
-            return f"{hours} hour(s) from {start:%Y-%m-%d %H:00} to {end:%Y-%m-%d %H:00}"
+            return (
+                f"{hours} hour(s) from {start:%Y-%m-%d %H:00} to {end:%Y-%m-%d %H:00}"
+            )
         else:
             days = duration.days
             return f"{days} day(s) from {start:%Y-%m-%d} to {end:%Y-%m-%d}"

@@ -43,9 +43,7 @@ def _format_float(value: float | None, decimals: int = 1) -> str:
     return f"{value:.{decimals}f}"
 
 
-def _compute_system_stats(
-    store: ResultsStore, trial_id: int
-) -> dict[str, Any]:
+def _compute_system_stats(store: ResultsStore, trial_id: int) -> dict[str, Any]:
     """Compute aggregate system metrics for a trial."""
     samples = store.get_system_samples(trial_id)
     if not samples:
@@ -61,7 +59,9 @@ def _compute_system_stats(
 
     net_vals = [s["network_mbps"] for s in samples if s["network_mbps"] is not None]
     cpu_vals = [s["cpu_load_1m"] for s in samples if s["cpu_load_1m"] is not None]
-    conn_vals = [s["open_connections"] for s in samples if s["open_connections"] is not None]
+    conn_vals = [
+        s["open_connections"] for s in samples if s["open_connections"] is not None
+    ]
     mem_vals = [s["memory_rss_mb"] for s in samples if s["memory_rss_mb"] is not None]
 
     return {
@@ -75,9 +75,7 @@ def _compute_system_stats(
     }
 
 
-def _compute_station_stats(
-    store: ResultsStore, trial_id: int
-) -> dict[str, Any]:
+def _compute_station_stats(store: ResultsStore, trial_id: int) -> dict[str, Any]:
     """Compute per-station duration statistics for a trial."""
     results = store.get_station_results(trial_id)
     if not results:
@@ -89,7 +87,8 @@ def _compute_station_stats(
         }
 
     durations = sorted(
-        r["duration_seconds"] for r in results
+        r["duration_seconds"]
+        for r in results
         if r["status"] in ("completed", "up_to_date") and r["duration_seconds"]
     )
 
@@ -109,9 +108,15 @@ def _compute_station_stats(
         p50 = p90 = p99 = durations[0]
 
     # Find slowest stations
-    sorted_by_duration = sorted(results, key=lambda r: r["duration_seconds"] or 0.0, reverse=True)
+    sorted_by_duration = sorted(
+        results, key=lambda r: r["duration_seconds"] or 0.0, reverse=True
+    )
     slowest = [
-        {"station": r["station_id"], "duration": r["duration_seconds"], "status": r["status"]}
+        {
+            "station": r["station_id"],
+            "duration": r["duration_seconds"],
+            "status": r["status"],
+        }
         for r in sorted_by_duration[:5]
     ]
 
@@ -127,12 +132,18 @@ def _print_text_report(trials: list[dict[str, Any]], store: ResultsStore) -> Non
     """Print plain-text comparison table."""
     if not trials:
         print("No experiment results found.")
-        print("Run experiments first with: python tests/benchmarks/download_experiment.py --concurrency 10,30,50")
+        print(
+            "Run experiments first with: python tests/benchmarks/download_experiment.py --concurrency 10,30,50"
+        )
         return
 
     # Pre-compute stats to avoid redundant DB queries
-    sys_cache = {t["trial_id"]: _compute_system_stats(store, t["trial_id"]) for t in trials}
-    sta_cache = {t["trial_id"]: _compute_station_stats(store, t["trial_id"]) for t in trials}
+    sys_cache = {
+        t["trial_id"]: _compute_system_stats(store, t["trial_id"]) for t in trials
+    }
+    sta_cache = {
+        t["trial_id"]: _compute_station_stats(store, t["trial_id"]) for t in trials
+    }
 
     # Header
     header = (
@@ -213,13 +224,21 @@ def _print_markdown_report(trials: list[dict[str, Any]], store: ResultsStore) ->
         return
 
     # Pre-compute stats to avoid redundant DB queries
-    sys_cache = {t["trial_id"]: _compute_system_stats(store, t["trial_id"]) for t in trials}
-    sta_cache = {t["trial_id"]: _compute_station_stats(store, t["trial_id"]) for t in trials}
+    sys_cache = {
+        t["trial_id"]: _compute_system_stats(store, t["trial_id"]) for t in trials
+    }
+    sta_cache = {
+        t["trial_id"]: _compute_station_stats(store, t["trial_id"]) for t in trials
+    }
 
     print("## Download Performance Experiment Results")
     print()
-    print("| Concurrency | Batches | Window | Wall Time | Files | OK | Unreachable | Retried | Recovered | Avg Net (Mbps) | Peak CPU |")
-    print("|-----------:|--------:|-------:|----------:|------:|---:|------------:|--------:|----------:|---------------:|---------:|")
+    print(
+        "| Concurrency | Batches | Window | Wall Time | Files | OK | Unreachable | Retried | Recovered | Avg Net (Mbps) | Peak CPU |"
+    )
+    print(
+        "|-----------:|--------:|-------:|----------:|------:|---:|------------:|--------:|----------:|---------------:|---------:|"
+    )
 
     for trial in trials:
         sys_stats = sys_cache[trial["trial_id"]]
@@ -260,8 +279,12 @@ def _print_markdown_report(trials: list[dict[str, Any]], store: ResultsStore) ->
     print()
     print("### System Metrics Peaks")
     print()
-    print("| Concurrency | Peak Net (Mbps) | Peak CPU | Peak Connections | Peak Memory (MB) | Samples |")
-    print("|-----------:|----------------:|---------:|-----------------:|-----------------:|--------:|")
+    print(
+        "| Concurrency | Peak Net (Mbps) | Peak CPU | Peak Connections | Peak Memory (MB) | Samples |"
+    )
+    print(
+        "|-----------:|----------------:|---------:|-----------------:|-----------------:|--------:|"
+    )
 
     for trial in trials:
         sys_stats = sys_cache[trial["trial_id"]]

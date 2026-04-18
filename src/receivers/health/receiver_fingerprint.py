@@ -106,9 +106,7 @@ def identify_receiver_type(
 
     for rx_type, fingerprint in RECEIVER_FINGERPRINTS.items():
         model_patterns = fingerprint.get("model_patterns", [])
-        if any(
-            pattern.lower() in detected_model.lower() for pattern in model_patterns
-        ):
+        if any(pattern.lower() in detected_model.lower() for pattern in model_patterns):
             return rx_type
 
     # Try banner matching as fallback
@@ -116,8 +114,7 @@ def identify_receiver_type(
         for rx_type, fingerprint in RECEIVER_FINGERPRINTS.items():
             banner_patterns = fingerprint.get("banner_patterns", [])
             if any(
-                pattern.lower() in ftp_banner.lower()
-                for pattern in banner_patterns
+                pattern.lower() in ftp_banner.lower() for pattern in banner_patterns
             ):
                 return rx_type
 

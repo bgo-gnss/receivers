@@ -81,7 +81,7 @@ def cmd_db_setup(args: argparse.Namespace) -> int:
 
         seeder = Seeder(host_override=host)
         results = seeder.seed_all()
-        print(f"\n=== Setup complete ===")
+        print("\n=== Setup complete ===")
         _print_seed_summary(results)
     except Exception as e:
         print(f"Error seeding data: {e}")
@@ -107,7 +107,9 @@ def cmd_db_migrate(args: argparse.Namespace) -> int:
     try:
         applied = migrator.migrate(dry_run=dry_run)
         if applied:
-            print(f"\n{'Would apply' if dry_run else 'Applied'} {len(applied)} migration(s)")
+            print(
+                f"\n{'Would apply' if dry_run else 'Applied'} {len(applied)} migration(s)"
+            )
         else:
             print("All migrations already applied.")
         return 0
@@ -175,7 +177,9 @@ def cmd_db_status(args: argparse.Namespace) -> int:
             print(f"Database size: {size}")
 
             # Connection info
-            cur.execute("SELECT current_database(), inet_server_addr(), inet_server_port()")
+            cur.execute(
+                "SELECT current_database(), inet_server_addr(), inet_server_port()"
+            )
             db, addr, port = cur.fetchone()
             print(f"Connected to: {db} @ {addr or 'localhost'}:{port or 5432}\n")
 
@@ -209,7 +213,9 @@ def cmd_db_status(args: argparse.Namespace) -> int:
         # Migration status
         migrator = Migrator(host_override=host)
         status = migrator.status()
-        print(f"\nMigrations: {len(status['applied'])} applied, {len(status['pending'])} pending")
+        print(
+            f"\nMigrations: {len(status['applied'])} applied, {len(status['pending'])} pending"
+        )
         if status["pending"]:
             print("Pending:")
             for name in status["pending"]:
@@ -240,14 +246,22 @@ def cmd_db_dump(args: argparse.Namespace) -> int:
         subprocess.run(
             [
                 "pg_dump",
-                "-h", "localhost",
-                "-U", db_user,
-                "-d", db_name,
-                "--no-owner", "--no-privileges",
-                "--clean", "--if-exists",
-                "-f", str(dump_file),
+                "-h",
+                "localhost",
+                "-U",
+                db_user,
+                "-d",
+                db_name,
+                "--no-owner",
+                "--no-privileges",
+                "--clean",
+                "--if-exists",
+                "-f",
+                str(dump_file),
             ],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         )
         size = dump_file.stat().st_size
         print(f"Dump complete: {dump_file} ({size / 1024:.0f} KB)")
@@ -287,15 +301,22 @@ def cmd_db_restore(args: argparse.Namespace) -> int:
         subprocess.run(
             [
                 "psql",
-                "-h", host,
-                "-U", db_user,
-                "-d", db_name,
-                "-f", str(dump_file),
+                "-h",
+                host,
+                "-U",
+                db_user,
+                "-d",
+                db_name,
+                "-f",
+                str(dump_file),
                 "--single-transaction",
-                "-v", "ON_ERROR_STOP=1",
+                "-v",
+                "ON_ERROR_STOP=1",
                 "--quiet",
             ],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         )
         print("Restore complete.")
         return 0
@@ -430,7 +451,9 @@ def create_db_parser(subparsers) -> None:
         help="Apply pending migrations",
     )
     migrate_parser.add_argument("--host", help="PostgreSQL host (default: from config)")
-    migrate_parser.add_argument("--dry-run", action="store_true", help="Show what would be applied")
+    migrate_parser.add_argument(
+        "--dry-run", action="store_true", help="Show what would be applied"
+    )
     migrate_parser.set_defaults(func=cmd_db_migrate)
 
     # seed
@@ -444,7 +467,9 @@ def create_db_parser(subparsers) -> None:
         choices=["stations", "coordinates", "areas", "storage"],
         help="Only run a specific seed operation",
     )
-    seed_parser.add_argument("--dry-run", action="store_true", help="Show what would be done")
+    seed_parser.add_argument(
+        "--dry-run", action="store_true", help="Show what would be done"
+    )
     seed_parser.set_defaults(func=cmd_db_seed)
 
     # status
@@ -477,8 +502,12 @@ def create_db_parser(subparsers) -> None:
         help="Remove a station and all its data",
     )
     drop_parser.add_argument("station_id", help="Station ID to remove (e.g. SFEH)")
-    drop_parser.add_argument("--dry-run", action="store_true", help="Show what would be deleted")
-    drop_parser.add_argument("--force", action="store_true", help="Skip confirmation prompt")
+    drop_parser.add_argument(
+        "--dry-run", action="store_true", help="Show what would be deleted"
+    )
+    drop_parser.add_argument(
+        "--force", action="store_true", help="Skip confirmation prompt"
+    )
     drop_parser.add_argument("--host", help="PostgreSQL host (default: from config)")
     drop_parser.set_defaults(func=cmd_db_drop_station)
 
@@ -487,7 +516,9 @@ def handle_db_command(args: argparse.Namespace) -> int:
     """Handle db subcommands."""
     if not hasattr(args, "db_command") or not args.db_command:
         print("No db command specified.")
-        print("Available commands: setup, migrate, seed, status, dump, restore, drop-station")
+        print(
+            "Available commands: setup, migrate, seed, status, dump, restore, drop-station"
+        )
         print("Run 'receivers db <command> --help' for details.")
         return 1
 
@@ -502,12 +533,16 @@ def _print_seed_summary(results: dict) -> None:
     print("\nSeed summary:")
     if "stations" in results:
         s = results["stations"]
-        print(f"  Stations:    {s.get('inserted', 0)} inserted, {s.get('updated', 0)} updated")
+        print(
+            f"  Stations:    {s.get('inserted', 0)} inserted, {s.get('updated', 0)} updated"
+        )
     if "coordinates" in results:
         c = results["coordinates"]
         print(f"  Coordinates: {c.get('updated', 0)} updated")
     if "areas" in results:
         a = results["areas"]
-        print(f"  Areas:       {a.get('areas', 0)} areas, {a.get('members', 0)} members")
+        print(
+            f"  Areas:       {a.get('areas', 0)} areas, {a.get('members', 0)} members"
+        )
     if "storage_locations" in results:
         print(f"  Storage:     {results['storage_locations']} inserted")

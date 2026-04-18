@@ -3,13 +3,14 @@
 import os
 import threading
 import time
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 
 from receivers.health.database_factory import (
+    _MAX_POOL_CONN,
     DatabaseConnectionFactory,
     _conn_semaphore,
-    _MAX_POOL_CONN,
 )
 
 
@@ -61,7 +62,9 @@ class TestGetConnectionParams:
 class TestGetConnection:
     """Test get_connection method."""
 
-    @patch("receivers.health.database_factory.DatabaseConnectionFactory.get_connection_params")
+    @patch(
+        "receivers.health.database_factory.DatabaseConnectionFactory.get_connection_params"
+    )
     def test_get_connection_with_params(self, mock_params):
         """Test connection creation with environment parameters."""
         mock_params.return_value = {
@@ -125,7 +128,7 @@ class TestConnectionContextManager:
             DatabaseConnectionFactory, "get_connection", return_value=mock_conn
         ):
             with pytest.raises(ValueError):
-                with DatabaseConnectionFactory.connection() as conn:
+                with DatabaseConnectionFactory.connection():
                     raise ValueError("test error")
 
             mock_conn.rollback.assert_called_once()

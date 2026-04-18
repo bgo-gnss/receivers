@@ -23,8 +23,6 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9", 
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -36,7 +34,7 @@ classifiers = [
     "Environment :: Console",
     "Natural Language :: English",
 ]
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 dependencies = [
     "python-dateutil>=2.9.0",
     "pathlib2>=2.3.7; python_version<'3.4'",
@@ -49,6 +47,7 @@ dependencies = [
     "psycopg2-binary>=2.9.0",
     "gtimes @ git+https://github.com/bennigo/gtimes@v0.5.0",
     "tostools @ git+https://github.com/bennigo/tostools@v0.3.0",
+    "gps-parser @ git+https://github.com/bennigo/gps_parser@93c8ab6",
 ]
 
 [project.optional-dependencies]
@@ -105,7 +104,7 @@ allow-direct-references = true
 packages = ["src/receivers"]
 
 [tool.ruff]
-target-version = "py38"
+target-version = "py310"
 line-length = 88
 
 [tool.ruff.lint]
@@ -124,18 +123,48 @@ ignore = [
     "N806",  # variable in function should be lowercase (legacy GPS code)
     "B904",  # Within except clause, raise exceptions with raise ... from err
     "F401",  # imported but unused (needed for conditional imports)
+    "E402",  # module-level import not at top of file (intentional lazy imports for optional deps)
+    "E722",  # bare except (pragmatic in legacy receiver code)
+    "E741",  # ambiguous variable name (single-letter math/physics variables are idiomatic)
+    "N814",  # CamelCase imported as constant (backward-compat re-exports)
+    "B007",  # unused loop control variable (often intentional)
+    "B017",  # assert-raises exception (tests assert broad exception intentionally)
+    "B023",  # function uses loop variable (legacy pattern)
+    "UP006", # non-pep585 annotation (List/Dict/Tuple — mixed with py585 `list[...]` in codebase)
+    "UP007", # non-pep604 union annotation (Optional/Union — style preference)
+    "UP035", # deprecated import (typing.List/Dict/Tuple not deprecated on py3.9)
+    "UP045", # non-pep604 Optional annotation (Optional[X] vs X | None — style preference)
+    "B905",  # zip without explicit strict= (legacy pattern, safe when lengths are pre-validated)
 ]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*.py" = ["N802", "N803"]  # Allow uppercase in test names
 
+[tool.bandit]
+# False positives / out-of-scope for this codebase:
+# - FTP is the required protocol for GPS receivers
+# - URLs are always internal (receiver IPs, internal config endpoints)
+# - tarfile archives come from receivers we control
+# - SQL is parameterised through SQLAlchemy wrappers
+# - XML is parsed from receiver responses we control
+# - tmp paths are sanitized by callers
+skips = [
+    "B108",  # hardcoded_tmp_directory
+    "B202",  # tarfile_unsafe_members (archives come from controlled sources)
+    "B310",  # urllib.request.urlopen (URLs are internal only)
+    "B314",  # xml.etree.ElementTree (untrusted-XML not in threat model)
+    "B321",  # FTP-related function calls
+    "B402",  # FTP-related module imports
+    "B608",  # hardcoded_sql_expressions (all SQL is parameterised)
+]
+
 [tool.black]
 line-length = 88
-target-version = ['py38', 'py39', 'py310', 'py311', 'py312', 'py313']
+target-version = ['py310', 'py311', 'py312', 'py313']
 include = '\.pyi?$'
 
 [tool.mypy]
-python_version = "3.8"
+python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 check_untyped_defs = true

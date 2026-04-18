@@ -82,10 +82,9 @@ class RINEXTask(ScheduledTask):
         """
         from ...utils.time_utils import calculate_download_time_range
 
-        lookback_periods = getattr(self.config, 'lookback_periods', 1)
+        lookback_periods = getattr(self.config, "lookback_periods", 1)
         return calculate_download_time_range(
-            session_type=self.config.session_type,
-            lookback_periods=lookback_periods
+            session_type=self.config.session_type, lookback_periods=lookback_periods
         )
 
     def validate_prerequisites(self) -> Tuple[bool, Optional[str]]:
@@ -135,9 +134,9 @@ class RINEXTask(ScheduledTask):
             if not valid:
                 return self._create_failure_result(
                     start_time,
-                    'validation_failed',
+                    "validation_failed",
                     f"Validation failed: {error}",
-                    f"ValidationError: {error}"
+                    f"ValidationError: {error}",
                 )
 
             # Station config validated
@@ -145,9 +144,9 @@ class RINEXTask(ScheduledTask):
             if station_config is None:
                 return self._create_failure_result(
                     start_time,
-                    'error',
+                    "error",
                     "Station config not loaded",
-                    "InternalError: station config is None"
+                    "InternalError: station config is None",
                 )
 
             # Find input files if not provided
@@ -157,10 +156,10 @@ class RINEXTask(ScheduledTask):
             if not self.input_files:
                 return TaskResult(
                     success=True,
-                    status='no_files',
+                    status="no_files",
                     duration=time.time() - start_time,
                     message="No raw files found to convert",
-                    data={'station_id': self.station_id, 'files_converted': 0},
+                    data={"station_id": self.station_id, "files_converted": 0},
                 )
 
             # Get converter for receiver type
@@ -168,9 +167,9 @@ class RINEXTask(ScheduledTask):
             if converter is None:
                 return self._create_failure_result(
                     start_time,
-                    'error',
+                    "error",
                     "No converter available for receiver type",
-                    f"NoConverterError: {station_config.get('receiver_type', 'unknown')}"
+                    f"NoConverterError: {station_config.get('receiver_type', 'unknown')}",
                 )
 
             # Convert files
@@ -189,10 +188,14 @@ class RINEXTask(ScheduledTask):
                     if result.success and result.rinex_file:
                         output_files.append(str(result.rinex_file))
                         successful += 1
-                        self.logger.debug(f"Converted: {file_path} -> {result.rinex_file}")
+                        self.logger.debug(
+                            f"Converted: {file_path} -> {result.rinex_file}"
+                        )
                     else:
                         failed += 1
-                        self.logger.warning(f"Conversion failed: {file_path} - {result.message}")
+                        self.logger.warning(
+                            f"Conversion failed: {file_path} - {result.message}"
+                        )
 
                 except Exception as e:
                     failed += 1
@@ -202,13 +205,13 @@ class RINEXTask(ScheduledTask):
 
             # Build result
             if failed == 0 and successful > 0:
-                status = 'completed'
+                status = "completed"
                 success = True
             elif successful > 0:
-                status = 'partial'
+                status = "partial"
                 success = True
             else:
-                status = 'failed'
+                status = "failed"
                 success = False
 
             message = f"Converted {successful}/{len(self.input_files)} files"
@@ -225,29 +228,28 @@ class RINEXTask(ScheduledTask):
                 duration=duration,
                 message=message,
                 data={
-                    'station_id': self.station_id,
-                    'files_converted': successful,
-                    'files_failed': failed,
-                    'input_files': self.input_files,
+                    "station_id": self.station_id,
+                    "files_converted": successful,
+                    "files_failed": failed,
+                    "input_files": self.input_files,
                 },
                 output_files=output_files,
                 metrics={
-                    'conversion_rate': successful / duration if duration > 0 else 0,
-                    'rinex_version': self.rinex_version,
-                    'hatanaka': self.apply_hatanaka,
-                }
+                    "conversion_rate": successful / duration if duration > 0 else 0,
+                    "rinex_version": self.rinex_version,
+                    "hatanaka": self.apply_hatanaka,
+                },
             )
 
         except Exception as e:
             duration = time.time() - start_time
             error_msg = f"{type(e).__name__}: {str(e)}"
-            self.logger.error(f"RINEX conversion failed: {self.station_id} - {error_msg}")
+            self.logger.error(
+                f"RINEX conversion failed: {self.station_id} - {error_msg}"
+            )
 
             return self._create_failure_result(
-                start_time,
-                'error',
-                f"RINEX conversion failed: {str(e)}",
-                error_msg
+                start_time, "error", f"RINEX conversion failed: {str(e)}", error_msg
             )
 
     def _find_raw_files(self) -> List[str]:
@@ -260,15 +262,17 @@ class RINEXTask(ScheduledTask):
             start_time, _ = self.get_time_parameters()
 
             # Look in archive directory
-            archive_base = Path.home() / '.cache' / 'gps_receivers' / 'archive'
+            archive_base = Path.home() / ".cache" / "gps_receivers" / "archive"
             session = self.config.session_type
             station_dir = archive_base / self.station_id / session
 
             # Try date-based subdirectory
-            date_dir = station_dir / start_time.strftime('%Y') / start_time.strftime('%j')
+            date_dir = (
+                station_dir / start_time.strftime("%Y") / start_time.strftime("%j")
+            )
 
             search_dirs = [date_dir, station_dir]
-            raw_patterns = ['*.sbf', '*.sbf.gz', '*.T02', '*.T02.gz', '*.T00', '*.m00']
+            raw_patterns = ["*.sbf", "*.sbf.gz", "*.T02", "*.T02.gz", "*.T00", "*.m00"]
 
             for search_dir in search_dirs:
                 if not search_dir.exists():
@@ -298,30 +302,35 @@ class RINEXTask(ScheduledTask):
         """
         from ...rinex.converter_base import OutputFormat, RinexVersion
 
-        receiver_type = station_config.get('receiver_type', '').lower()
+        receiver_type = station_config.get("receiver_type", "").lower()
 
         # Determine output format based on hatanaka preference
-        output_format = OutputFormat.LEGACY if self.apply_hatanaka else OutputFormat.MODERN
+        output_format = (
+            OutputFormat.LEGACY if self.apply_hatanaka else OutputFormat.MODERN
+        )
 
         try:
-            if receiver_type == 'polarx5':
+            if receiver_type == "polarx5":
                 from ...rinex.sbf_converter import SBFConverter
+
                 return SBFConverter(
                     station_id=self.station_id,
                     rinex_version=RinexVersion(self.rinex_version),
                     output_format=output_format,
                     apply_header_corrections=self.apply_header_corrections,
                 )
-            elif receiver_type in ('netr9', 'netrs', 'netr5'):
+            elif receiver_type in ("netr9", "netrs", "netr5"):
                 from ...rinex.trimble_converter import TrimbleConverter
+
                 return TrimbleConverter(
                     station_id=self.station_id,
                     rinex_version=RinexVersion(self.rinex_version),
                     output_format=output_format,
                     apply_header_corrections=self.apply_header_corrections,
                 )
-            elif receiver_type in ('g10', 'leica'):
+            elif receiver_type in ("g10", "leica"):
                 from ...rinex.leica_converter import LeicaConverter
+
                 return LeicaConverter(
                     station_id=self.station_id,
                     rinex_version=RinexVersion(self.rinex_version),
@@ -349,6 +358,6 @@ class RINEXTask(ScheduledTask):
             status=status,
             duration=time.time() - start_time,
             message=message,
-            data={'station_id': self.station_id},
+            data={"station_id": self.station_id},
             error=error,
         )

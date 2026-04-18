@@ -28,13 +28,14 @@ API Documentation:
 import json
 import logging
 import os
-import requests
-from typing import Optional, Dict, Any
 from dataclasses import dataclass, field
+from typing import Any, Dict, Optional
 from urllib.parse import quote
 
-from ..health.metrics import MetricChecker, MetricResult, HealthStatus, ThresholdConfig
-from ..config.icinga_config import get_icinga_config, IcingaThresholds
+import requests
+
+from ..config.icinga_config import IcingaThresholds, get_icinga_config
+from ..health.metrics import HealthStatus, MetricChecker, MetricResult, ThresholdConfig
 
 logger = logging.getLogger(__name__)
 
@@ -62,12 +63,15 @@ class CheckResult:
         ttl: Optional time-to-live in seconds. If set, Icinga will mark the
              check as stale after this many seconds without a new result.
     """
+
     station: str
     check_name: str
     exit_status: int
     plugin_output: str
     performance_data: str = ""
-    check_source: str = field(default_factory=lambda: os.getenv("ICINGA_CHECK_SOURCE", "eldey"))
+    check_source: str = field(
+        default_factory=lambda: os.getenv("ICINGA_CHECK_SOURCE", "eldey")
+    )
     ttl: Optional[int] = None
 
     def to_service_name(self) -> str:
@@ -89,7 +93,7 @@ class CheckResult:
             "exit_status": self.exit_status,
             "plugin_output": self.plugin_output,
             "performance_data": self.performance_data,
-            "check_source": self.check_source
+            "check_source": self.check_source,
         }
         if self.ttl is not None:
             payload["ttl"] = self.ttl
@@ -111,7 +115,7 @@ class IcingaClient:
         verify_ssl: Optional[bool] = None,
         timeout: Optional[int] = None,
         check_source: Optional[str] = None,
-        thresholds: Optional["IcingaThresholds"] = None
+        thresholds: Optional["IcingaThresholds"] = None,
     ):
         """Initialize Icinga client.
 
@@ -128,7 +132,7 @@ class IcingaClient:
             check_source: Source hostname for check results (from icinga.cfg if not provided)
             thresholds: Optional IcingaThresholds (from icinga.cfg if not provided)
         """
-        self.logger = logging.getLogger('receivers.monitoring.icinga')
+        self.logger = logging.getLogger("receivers.monitoring.icinga")
 
         # Load configuration from icinga.cfg
         icinga_config = get_icinga_config()
@@ -173,6 +177,7 @@ class IcingaClient:
         # Suppress SSL warnings if not verifying
         if not verify_ssl:
             import urllib3
+
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
     def _get_ttl_for_check(self, check_name: str) -> int:
@@ -224,7 +229,7 @@ class IcingaClient:
         station: str,
         check_name: str,
         result: MetricResult,
-        ttl: Optional[int] = None
+        ttl: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Send a metric check result to Icinga using MetricResult.
 
@@ -250,14 +255,12 @@ class IcingaClient:
             plugin_output=result.message,
             performance_data=result.performance_data,
             check_source=self.check_source,
-            ttl=ttl
+            ttl=ttl,
         )
         return self.send_check_result(check_result)
 
     def send_check_result(
-        self,
-        result: CheckResult,
-        raise_on_error: bool = False
+        self, result: CheckResult, raise_on_error: bool = False
     ) -> Dict[str, Any]:
         """Send a passive check result to Icinga.
 
@@ -272,15 +275,12 @@ class IcingaClient:
             requests.RequestException: If raise_on_error=True and request fails
         """
         service_name = result.to_service_name()
-        url_safe_service = quote(service_name, safe='')
+        url_safe_service = quote(service_name, safe="")
 
         url = f"{self.base_url}/actions/process-check-result?service={url_safe_service}"
         payload = result.to_api_payload()
 
-        headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/json"
-        }
+        headers = {"Accept": "application/json", "Content-Type": "application/json"}
 
         try:
             self.logger.debug(f"Sending check result to {service_name}")
@@ -292,7 +292,7 @@ class IcingaClient:
                 headers=headers,
                 json=payload,
                 verify=self.verify_ssl,
-                timeout=self.timeout
+                timeout=self.timeout,
             )
 
             # Parse response
@@ -303,12 +303,16 @@ class IcingaClient:
 
             # Check for success
             if response.status_code == 200:
-                self.logger.info(f"✅ Check result sent: {service_name} (exit={result.exit_status})")
+                self.logger.info(
+                    f"✅ Check result sent: {service_name} (exit={result.exit_status})"
+                )
                 return {
                     "success": True,
                     "code": 200,
-                    "message": response_data.get("results", [{}])[0].get("status", "Success"),
-                    "response": response_data
+                    "message": response_data.get("results", [{}])[0].get(
+                        "status", "Success"
+                    ),
+                    "response": response_data,
                 }
 
             # Handle 404 - service not found
@@ -318,7 +322,7 @@ class IcingaClient:
                     "success": False,
                     "code": 404,
                     "message": "Service not found in Icinga configuration",
-                    "response": response_data
+                    "response": response_data,
                 }
 
             # Handle other errors
@@ -333,7 +337,7 @@ class IcingaClient:
                     "success": False,
                     "code": response.status_code,
                     "message": error_msg,
-                    "response": response_data
+                    "response": response_data,
                 }
 
         except requests.RequestException as e:
@@ -342,12 +346,7 @@ class IcingaClient:
             if raise_on_error:
                 raise
 
-            return {
-                "success": False,
-                "code": None,
-                "message": str(e),
-                "response": None
-            }
+            return {"success": False, "code": None, "message": str(e), "response": None}
 
     def send_ping_check(
         self,
@@ -356,7 +355,7 @@ class IcingaClient:
         router_ok: bool = True,
         receiver_ok: bool = True,
         latency_ms: Optional[float] = None,
-        packet_loss: Optional[float] = None
+        packet_loss: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Send a GPS Ping check result.
 
@@ -377,7 +376,7 @@ class IcingaClient:
             receiver_ok=receiver_ok,
             latency_ms=latency_ms,
             packet_loss=packet_loss,
-            station=station
+            station=station,
         )
         return self._send_metric_check(station, "GPS Ping", result)
 
@@ -387,7 +386,7 @@ class IcingaClient:
         temperature: Optional[float],
         unit: str = "C",
         warn_threshold: float = 50.0,
-        crit_threshold: float = 60.0
+        crit_threshold: float = 60.0,
     ) -> Dict[str, Any]:
         """Send a Station temp check result.
 
@@ -405,7 +404,9 @@ class IcingaClient:
             The warn_threshold and crit_threshold parameters are deprecated.
             Thresholds are now managed by the centralized MetricChecker.
         """
-        result = self.metric_checker.check_temperature(temperature, station=station, unit=unit)
+        result = self.metric_checker.check_temperature(
+            temperature, station=station, unit=unit
+        )
         return self._send_metric_check(station, "Station temp", result)
 
     def send_voltage_check(
@@ -415,7 +416,7 @@ class IcingaClient:
         warn_low: float = 12.0,
         crit_low: float = 11.0,
         warn_high: float = 15.0,
-        crit_high: float = 16.0
+        crit_high: float = 16.0,
     ) -> Dict[str, Any]:
         """Send a Station volt check result.
 
@@ -443,7 +444,7 @@ class IcingaClient:
         total_satellites: Optional[int],
         by_constellation: Optional[Dict[str, int]] = None,
         warn_threshold: int = 8,
-        crit_threshold: int = 4
+        crit_threshold: int = 4,
     ) -> Dict[str, Any]:
         """Send a Satellite status check result.
 
@@ -462,9 +463,7 @@ class IcingaClient:
             Thresholds are now managed by the centralized MetricChecker.
         """
         result = self.metric_checker.check_satellites(
-            total_satellites,
-            by_constellation=by_constellation,
-            station=station
+            total_satellites, by_constellation=by_constellation, station=station
         )
         return self._send_metric_check(station, "Satellite status", result)
 
@@ -477,7 +476,7 @@ class IcingaClient:
         v_accuracy_m: Optional[float] = None,
         latitude: Optional[float] = None,
         longitude: Optional[float] = None,
-        height: Optional[float] = None
+        height: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Send a Station position check result.
 
@@ -502,7 +501,7 @@ class IcingaClient:
             latitude=latitude,
             longitude=longitude,
             height=height,
-            station=station
+            station=station,
         )
         return self._send_metric_check(station, "Station position", result)
 
@@ -513,7 +512,7 @@ class IcingaClient:
         logging_active: bool = True,
         disk_usage_percent: Optional[float] = None,
         warn_disk: float = 80.0,
-        crit_disk: float = 90.0
+        crit_disk: float = 90.0,
     ) -> Dict[str, Any]:
         """Send a Logging status check result.
 
@@ -536,7 +535,7 @@ class IcingaClient:
             disk_usage_percent,
             logging_active=logging_active,
             disk_status=disk_status,
-            station=station
+            station=station,
         )
         return self._send_metric_check(station, "Logging status", result)
 
@@ -544,7 +543,7 @@ class IcingaClient:
         self,
         station: str,
         ports_status: Optional[Dict[str, Dict[str, Any]]],
-        receiver_type: Optional[str] = None
+        receiver_type: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Send a Receiver status check result.
 
@@ -563,17 +562,11 @@ class IcingaClient:
             API response dict
         """
         result = self.metric_checker.check_ports(
-            ports_status,
-            receiver_type=receiver_type,
-            station=station
+            ports_status, receiver_type=receiver_type, station=station
         )
         return self._send_metric_check(station, "Receiver status", result)
 
-    def send_cpu_check(
-        self,
-        station: str,
-        cpu_load: Optional[int]
-    ) -> Dict[str, Any]:
+    def send_cpu_check(self, station: str, cpu_load: Optional[int]) -> Dict[str, Any]:
         """Send a CPU load check result.
 
         Args:
@@ -587,9 +580,7 @@ class IcingaClient:
         return self._send_metric_check(station, "CPU load", result)
 
     def send_uptime_check(
-        self,
-        station: str,
-        uptime_seconds: Optional[int]
+        self, station: str, uptime_seconds: Optional[int]
     ) -> Dict[str, Any]:
         """Send an uptime check result.
 
@@ -604,15 +595,17 @@ class IcingaClient:
             API response dict
         """
         if uptime_seconds is None:
-            return self.send_check_result(CheckResult(
-                station=station,
-                check_name="Receiver uptime",
-                exit_status=EXIT_UNKNOWN,
-                plugin_output=f"❓ Receiver uptime UNKNOWN - {station} uptime unavailable",
-                performance_data="",
-                check_source=self.check_source,
-                ttl=self._get_ttl_for_check("Receiver uptime")
-            ))
+            return self.send_check_result(
+                CheckResult(
+                    station=station,
+                    check_name="Receiver uptime",
+                    exit_status=EXIT_UNKNOWN,
+                    plugin_output=f"❓ Receiver uptime UNKNOWN - {station} uptime unavailable",
+                    performance_data="",
+                    check_source=self.check_source,
+                    ttl=self._get_ttl_for_check("Receiver uptime"),
+                )
+            )
 
         # Convert to human-readable
         days = uptime_seconds // 86400
@@ -636,20 +629,20 @@ class IcingaClient:
 
         performance_data = f"uptime={uptime_seconds}s;3600:;0:;0"
 
-        return self.send_check_result(CheckResult(
-            station=station,
-            check_name="Receiver uptime",
-            exit_status=exit_status,
-            plugin_output=message,
-            performance_data=performance_data,
-            check_source=self.check_source,
-            ttl=self._get_ttl_for_check("Receiver uptime")
-        ))
+        return self.send_check_result(
+            CheckResult(
+                station=station,
+                check_name="Receiver uptime",
+                exit_status=exit_status,
+                plugin_output=message,
+                performance_data=performance_data,
+                check_source=self.check_source,
+                ttl=self._get_ttl_for_check("Receiver uptime"),
+            )
+        )
 
     def send_ntrip_check(
-        self,
-        station: str,
-        ntrip_status: Optional[Dict[str, Any]]
+        self, station: str, ntrip_status: Optional[Dict[str, Any]]
     ) -> Dict[str, Any]:
         """Send an NTRIP server/client status check result.
 
@@ -665,20 +658,22 @@ class IcingaClient:
             API response dict
         """
         if ntrip_status is None:
-            return self.send_check_result(CheckResult(
-                station=station,
-                check_name="NTRIP status",
-                exit_status=EXIT_UNKNOWN,
-                plugin_output=f"❓ NTRIP status UNKNOWN - {station} NTRIP data unavailable",
-                performance_data="",
-                check_source=self.check_source,
-                ttl=self._get_ttl_for_check("NTRIP status")
-            ))
+            return self.send_check_result(
+                CheckResult(
+                    station=station,
+                    check_name="NTRIP status",
+                    exit_status=EXIT_UNKNOWN,
+                    plugin_output=f"❓ NTRIP status UNKNOWN - {station} NTRIP data unavailable",
+                    performance_data="",
+                    check_source=self.check_source,
+                    ttl=self._get_ttl_for_check("NTRIP status"),
+                )
+            )
 
         # Check server status (for stations that act as NTRIP casters)
-        server = ntrip_status.get('server', {})
+        server = ntrip_status.get("server", {})
         # Check client status (for stations receiving corrections)
-        client = ntrip_status.get('client', {})
+        client = ntrip_status.get("client", {})
 
         perf_parts = []
         problems = []
@@ -686,20 +681,20 @@ class IcingaClient:
 
         # Server status
         if server:
-            server_status = server.get('status', 'unknown').lower()
-            clients = server.get('connected_clients', 0)
+            server_status = server.get("status", "unknown").lower()
+            clients = server.get("connected_clients", 0)
             perf_parts.append(f"ntrip_clients={clients};;;0")
 
-            if server_status == 'error':
+            if server_status == "error":
                 problems.append("server error")
-            elif server_status == 'warning':
+            elif server_status == "warning":
                 warnings.append("server warning")
 
         # Client status
         if client:
-            client_connected = client.get('connected', False)
-            age = client.get('age_seconds')
-            client_status = client.get('status', 'unknown').lower()
+            client_connected = client.get("connected", False)
+            age = client.get("age_seconds")
+            client_status = client.get("status", "unknown").lower()
 
             perf_parts.append(f"ntrip_connected={1 if client_connected else 0};;;0;1")
             if age is not None:
@@ -707,10 +702,12 @@ class IcingaClient:
 
             if not client_connected:
                 problems.append("client disconnected")
-            elif client_status == 'error':
+            elif client_status == "error":
                 problems.append("client error")
-            elif client_status == 'warning' or (age is not None and age > 30):
-                warnings.append("corrections stale" if age and age > 30 else "client warning")
+            elif client_status == "warning" or (age is not None and age > 30):
+                warnings.append(
+                    "corrections stale" if age and age > 30 else "client warning"
+                )
 
         performance_data = " ".join(perf_parts)
 
@@ -726,18 +723,20 @@ class IcingaClient:
             message = f"✅ NTRIP status OK - {station}"
             if server:
                 message += f" server: {server.get('connected_clients', 0)} clients"
-            if client and client.get('connected'):
-                message += f" client: connected"
+            if client and client.get("connected"):
+                message += " client: connected"
 
-        return self.send_check_result(CheckResult(
-            station=station,
-            check_name="NTRIP status",
-            exit_status=exit_status,
-            plugin_output=message,
-            performance_data=performance_data,
-            check_source=self.check_source,
-            ttl=self._get_ttl_for_check("NTRIP status")
-        ))
+        return self.send_check_result(
+            CheckResult(
+                station=station,
+                check_name="NTRIP status",
+                exit_status=exit_status,
+                plugin_output=message,
+                performance_data=performance_data,
+                check_source=self.check_source,
+                ttl=self._get_ttl_for_check("NTRIP status"),
+            )
+        )
 
     def send_download_check(
         self,
@@ -781,12 +780,14 @@ class IcingaClient:
         is_hourly = "1hr" in session_type.lower() or "hz" in session_type.lower()
         if warn_hours is None:
             warn_hours = (
-                self.thresholds.file_hourly_warning_hours if is_hourly
+                self.thresholds.file_hourly_warning_hours
+                if is_hourly
                 else self.thresholds.file_daily_warning_hours
             )
         if crit_hours is None:
             crit_hours = (
-                self.thresholds.file_hourly_critical_hours if is_hourly
+                self.thresholds.file_hourly_critical_hours
+                if is_hourly
                 else self.thresholds.file_daily_critical_hours
             )
 
@@ -798,7 +799,9 @@ class IcingaClient:
 
         # Add performance data (informational, not used for status)
         if hours_since_download is not None:
-            perf_parts.append(f"hours_since_download={hours_since_download:.1f};{warn_hours};{crit_hours};0")
+            perf_parts.append(
+                f"hours_since_download={hours_since_download:.1f};{warn_hours};{crit_hours};0"
+            )
 
         perf_parts.append(f"successful={downloads_successful};;;0")
         if downloads_missing > 0:
@@ -824,22 +827,26 @@ class IcingaClient:
             message = f"⚠️  {check_name} WARNING - {station}: last file {hours_since_download:.0f}h ago"
         else:
             exit_status = EXIT_OK
-            message = f"✅ {check_name} OK - {station}: last {hours_since_download:.0f}h ago"
+            message = (
+                f"✅ {check_name} OK - {station}: last {hours_since_download:.0f}h ago"
+            )
             if latest_download:
                 # Add timestamp for clarity
                 message += f" ({latest_download[:16]})"
             if downloads_successful > 0:
                 message += f", {downloads_successful} files"
 
-        return self.send_check_result(CheckResult(
-            station=station,
-            check_name=check_name,
-            exit_status=exit_status,
-            plugin_output=message,
-            performance_data=performance_data,
-            check_source=self.check_source,
-            ttl=ttl
-        ))
+        return self.send_check_result(
+            CheckResult(
+                station=station,
+                check_name=check_name,
+                exit_status=exit_status,
+                plugin_output=message,
+                performance_data=performance_data,
+                check_source=self.check_source,
+                ttl=ttl,
+            )
+        )
 
     def send_processing_check(
         self,
@@ -895,15 +902,17 @@ class IcingaClient:
 
         performance_data = " ".join(perf_parts)
 
-        return self.send_check_result(CheckResult(
-            station=station,
-            check_name=check_name,
-            exit_status=exit_status,
-            plugin_output=message,
-            performance_data=performance_data,
-            check_source=self.check_source,
-            ttl=ttl
-        ))
+        return self.send_check_result(
+            CheckResult(
+                station=station,
+                check_name=check_name,
+                exit_status=exit_status,
+                plugin_output=message,
+                performance_data=performance_data,
+                check_source=self.check_source,
+                ttl=ttl,
+            )
+        )
 
     def send_rtk_check(
         self,
@@ -989,10 +998,14 @@ class IcingaClient:
             message = f"⚠️  rtk status WARNING - {station}: {mountpoints_active}/{mountpoints_total} streams"
         elif latency_seconds is not None and latency_seconds > latency_critical:
             exit_status = EXIT_CRITICAL
-            message = f"❌ rtk status CRITICAL - {station}: latency {latency_seconds:.1f}s"
+            message = (
+                f"❌ rtk status CRITICAL - {station}: latency {latency_seconds:.1f}s"
+            )
         elif latency_seconds is not None and latency_seconds > latency_warning:
             exit_status = EXIT_WARNING
-            message = f"⚠️  rtk status WARNING - {station}: latency {latency_seconds:.1f}s"
+            message = (
+                f"⚠️  rtk status WARNING - {station}: latency {latency_seconds:.1f}s"
+            )
         else:
             exit_status = EXIT_OK
             rate_str = f", {data_rate_bps:.0f} B/s" if data_rate_bps else ""
@@ -1001,21 +1014,23 @@ class IcingaClient:
             else:
                 message = f"✅ rtk status OK - {station}: {mountpoints_active}/{mountpoints_total} streams{rate_str}"
 
-        return self.send_check_result(CheckResult(
-            station=station,
-            check_name=check_name,
-            exit_status=exit_status,
-            plugin_output=message,
-            performance_data=performance_data,
-            check_source=self.check_source,
-            ttl=ttl
-        ))
+        return self.send_check_result(
+            CheckResult(
+                station=station,
+                check_name=check_name,
+                exit_status=exit_status,
+                plugin_output=message,
+                performance_data=performance_data,
+                check_source=self.check_source,
+                ttl=ttl,
+            )
+        )
 
     def send_gps_ping_from_json(
         self,
         station: str,
         health_data: Optional[Dict[str, Any]],
-        connection_error: Optional[str] = None
+        connection_error: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Send a GPS Ping check result - simple connectivity check.
 
@@ -1040,19 +1055,18 @@ class IcingaClient:
             performance_data = "reachable=0;;;0;1"
         else:
             # Check if we have any connection to the host
-            connection = health_data.get('connection', {})
-            tcp_status = connection.get('tcp', {}).get('status', 'unknown')
-            host = connection.get('tcp', {}).get('host')
+            connection = health_data.get("connection", {})
+            tcp_status = connection.get("tcp", {}).get("status", "unknown")
+            host = connection.get("tcp", {}).get("host")
 
             # Also check if any port responded (from metrics.ports)
-            metrics = health_data.get('metrics', {})
-            ports = metrics.get('ports', {})
+            metrics = health_data.get("metrics", {})
+            ports = metrics.get("ports", {})
             any_port_open = any(
-                p.get('open', False) for p in ports.values()
-                if isinstance(p, dict)
+                p.get("open", False) for p in ports.values() if isinstance(p, dict)
             )
 
-            if tcp_status == 'ok' or any_port_open:
+            if tcp_status == "ok" or any_port_open:
                 # Host is reachable - GPS Ping is OK
                 exit_status = EXIT_OK
                 message = f"✅ GPS Ping OK - {station} responding"
@@ -1072,15 +1086,13 @@ class IcingaClient:
             plugin_output=message,
             performance_data=performance_data,
             check_source=self.check_source,
-            ttl=self._get_ttl_for_check("GPS Ping")
+            ttl=self._get_ttl_for_check("GPS Ping"),
         )
 
         return self.send_check_result(result)
 
     def send_health_from_json(
-        self,
-        health_data: Dict[str, Any],
-        checks: Optional[list] = None
+        self, health_data: Dict[str, Any], checks: Optional[list] = None
     ) -> Dict[str, Dict[str, Any]]:
         """Send multiple check results from health JSON data.
 
@@ -1095,101 +1107,106 @@ class IcingaClient:
         Returns:
             Dict mapping check name to API response
         """
-        station = health_data.get('station_id', 'UNKNOWN')
-        metrics = health_data.get('metrics', {})
-        data_quality = health_data.get('data_quality', {})
+        station = health_data.get("station_id", "UNKNOWN")
+        metrics = health_data.get("metrics", {})
+        data_quality = health_data.get("data_quality", {})
 
         available_checks = checks or [
-            'ping', 'temp', 'volt', 'cpu', 'uptime', 'ntrip', 'satellites',
-            'position', 'logging', 'receiver_status'
+            "ping",
+            "temp",
+            "volt",
+            "cpu",
+            "uptime",
+            "ntrip",
+            "satellites",
+            "position",
+            "logging",
+            "receiver_status",
         ]
 
         results = {}
 
-        if 'ping' in available_checks:
-            results['GPS Ping'] = self.send_gps_ping_from_json(
-                station=station,
-                health_data=health_data
+        if "ping" in available_checks:
+            results["GPS Ping"] = self.send_gps_ping_from_json(
+                station=station, health_data=health_data
             )
 
-        if 'temp' in available_checks:
-            temp_data = metrics.get('temperature', {})
-            results['Station temp'] = self.send_temperature_check(
+        if "temp" in available_checks:
+            temp_data = metrics.get("temperature", {})
+            results["Station temp"] = self.send_temperature_check(
                 station=station,
-                temperature=temp_data.get('value'),
-                unit=temp_data.get('unit', 'C')
+                temperature=temp_data.get("value"),
+                unit=temp_data.get("unit", "C"),
             )
 
-        if 'volt' in available_checks:
+        if "volt" in available_checks:
             # Voltage is in metrics.power.voltage (from PowerStatus SBF block)
-            power_data = metrics.get('power', {})
-            voltage = power_data.get('voltage')
+            power_data = metrics.get("power", {})
+            voltage = power_data.get("voltage")
             if voltage is not None:
-                results['Station volt'] = self.send_voltage_check(
-                    station=station,
-                    voltage=voltage
+                results["Station volt"] = self.send_voltage_check(
+                    station=station, voltage=voltage
                 )
 
-        if 'cpu' in available_checks:
-            cpu_data = metrics.get('cpu_load', {})
-            cpu_percent = cpu_data.get('percent') if isinstance(cpu_data, dict) else None
-            results['CPU load'] = self.send_cpu_check(
-                station=station,
-                cpu_load=cpu_percent
+        if "cpu" in available_checks:
+            cpu_data = metrics.get("cpu_load", {})
+            cpu_percent = (
+                cpu_data.get("percent") if isinstance(cpu_data, dict) else None
+            )
+            results["CPU load"] = self.send_cpu_check(
+                station=station, cpu_load=cpu_percent
             )
 
-        if 'uptime' in available_checks:
-            uptime_seconds = metrics.get('uptime_seconds')
-            results['Receiver uptime'] = self.send_uptime_check(
-                station=station,
-                uptime_seconds=uptime_seconds
+        if "uptime" in available_checks:
+            uptime_seconds = metrics.get("uptime_seconds")
+            results["Receiver uptime"] = self.send_uptime_check(
+                station=station, uptime_seconds=uptime_seconds
             )
 
-        if 'ntrip' in available_checks:
-            ntrip_data = metrics.get('ntrip', {})
+        if "ntrip" in available_checks:
+            ntrip_data = metrics.get("ntrip", {})
             # Only send NTRIP check if we have NTRIP data
             if ntrip_data:
-                results['NTRIP status'] = self.send_ntrip_check(
-                    station=station,
-                    ntrip_status=ntrip_data
+                results["NTRIP status"] = self.send_ntrip_check(
+                    station=station, ntrip_status=ntrip_data
                 )
 
-        if 'satellites' in available_checks:
-            sat_data = metrics.get('satellites', {})
-            results['Satellite status'] = self.send_satellite_check(
+        if "satellites" in available_checks:
+            sat_data = metrics.get("satellites", {})
+            results["Satellite status"] = self.send_satellite_check(
                 station=station,
-                total_satellites=sat_data.get('total'),
-                by_constellation=sat_data.get('by_constellation')
+                total_satellites=sat_data.get("total"),
+                by_constellation=sat_data.get("by_constellation"),
             )
 
-        if 'position' in available_checks:
-            pos_data = metrics.get('position', {})
-            results['Station position'] = self.send_position_check(
+        if "position" in available_checks:
+            pos_data = metrics.get("position", {})
+            results["Station position"] = self.send_position_check(
                 station=station,
-                fix_mode=pos_data.get('fix_mode'),
-                satellites_used=pos_data.get('satellites_used'),
-                h_accuracy_m=pos_data.get('h_accuracy_m'),
-                v_accuracy_m=pos_data.get('v_accuracy_m'),
-                latitude=pos_data.get('latitude'),
-                longitude=pos_data.get('longitude'),
-                height=pos_data.get('height')
+                fix_mode=pos_data.get("fix_mode"),
+                satellites_used=pos_data.get("satellites_used"),
+                h_accuracy_m=pos_data.get("h_accuracy_m"),
+                v_accuracy_m=pos_data.get("v_accuracy_m"),
+                latitude=pos_data.get("latitude"),
+                longitude=pos_data.get("longitude"),
+                height=pos_data.get("height"),
             )
 
-        if 'logging' in available_checks:
-            disk_data = data_quality.get('disk', {})
-            results['Logging status'] = self.send_logging_check(
+        if "logging" in available_checks:
+            disk_data = data_quality.get("disk", {})
+            results["Logging status"] = self.send_logging_check(
                 station=station,
-                disk_status=disk_data.get('status'),
-                logging_active=True  # Assume active if we got health data
+                disk_status=disk_data.get("status"),
+                logging_active=True,  # Assume active if we got health data
             )
 
-        if 'receiver_status' in available_checks:
-            ports_data = metrics.get('ports', {})
-            receiver_type = health_data.get('receiver_type')
-            results['Receiver status'] = self.send_receiver_status_check(
+        if "receiver_status" in available_checks:
+            ports_data = metrics.get("ports", {})
+            receiver_type = health_data.get("receiver_type")
+            results["Receiver status"] = self.send_receiver_status_check(
                 station=station,
                 ports_status=ports_data if ports_data else None,
-                receiver_type=receiver_type
+                receiver_type=receiver_type,
             )
 
         return results
@@ -1198,7 +1215,7 @@ class IcingaClient:
         self,
         station: str,
         overall_status: str,
-        metrics: Optional[Dict[str, Any]] = None
+        metrics: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Send a GPS Health check result.
 
@@ -1212,12 +1229,12 @@ class IcingaClient:
         """
         # Map status to exit code
         status_map = {
-            'healthy': EXIT_OK,
-            'ok': EXIT_OK,
-            'warning': EXIT_WARNING,
-            'critical': EXIT_CRITICAL,
-            'error': EXIT_CRITICAL,
-            'unknown': EXIT_UNKNOWN
+            "healthy": EXIT_OK,
+            "ok": EXIT_OK,
+            "warning": EXIT_WARNING,
+            "critical": EXIT_CRITICAL,
+            "error": EXIT_CRITICAL,
+            "unknown": EXIT_UNKNOWN,
         }
         exit_status = status_map.get(overall_status.lower(), EXIT_UNKNOWN)
 
@@ -1234,24 +1251,24 @@ class IcingaClient:
         # Build performance data
         perf_data_parts = []
         if metrics:
-            if 'voltage' in metrics:
-                volt = metrics['voltage']
+            if "voltage" in metrics:
+                volt = metrics["voltage"]
                 perf_data_parts.append(f"voltage={volt}V;12.0;11.0")
 
-            if 'cpu_load' in metrics:
-                cpu = metrics['cpu_load']
+            if "cpu_load" in metrics:
+                cpu = metrics["cpu_load"]
                 perf_data_parts.append(f"cpu={cpu}%;80;90")
 
-            if 'temperature' in metrics:
-                temp = metrics['temperature']
+            if "temperature" in metrics:
+                temp = metrics["temperature"]
                 perf_data_parts.append(f"temp={temp}C;60;70")
 
-            if 'satellites' in metrics:
-                sats = metrics['satellites']
+            if "satellites" in metrics:
+                sats = metrics["satellites"]
                 perf_data_parts.append(f"sats={sats};4;2")
 
-            if 'disk_usage' in metrics:
-                disk = metrics['disk_usage']
+            if "disk_usage" in metrics:
+                disk = metrics["disk_usage"]
                 perf_data_parts.append(f"disk={disk}%;90;97")
 
         performance_data = " ".join(perf_data_parts)
@@ -1263,7 +1280,7 @@ class IcingaClient:
             plugin_output=message,
             performance_data=performance_data,
             check_source=self.check_source,
-            ttl=self._get_ttl_for_check("GPS Health")
+            ttl=self._get_ttl_for_check("GPS Health"),
         )
 
         return self.send_check_result(result)
@@ -1295,22 +1312,33 @@ Examples:
   %(prog)s THOB --check-type temp        # Send only temperature check
   %(prog)s THOB --check-type satellites  # Send satellite status
   %(prog)s THOB --check-type ping --status critical  # Test critical ping
-"""
+""",
     )
     parser.add_argument("station", help="Station ID (e.g., THOB, ORFC)")
     parser.add_argument(
-        "--check-type", "-c",
-        choices=["ping", "temp", "volt", "satellites", "position",
-                 "logging", "receiver_status", "all", "live", "health"],
+        "--check-type",
+        "-c",
+        choices=[
+            "ping",
+            "temp",
+            "volt",
+            "satellites",
+            "position",
+            "logging",
+            "receiver_status",
+            "all",
+            "live",
+            "health",
+        ],
         default="all",
-        help="Check type to send (default: all)"
+        help="Check type to send (default: all)",
     )
     parser.add_argument(
-        "--status",
-        default="ok",
-        help="Status for test checks (ok, warning, critical)"
+        "--status", default="ok", help="Status for test checks (ok, warning, critical)"
     )
-    parser.add_argument("--dry-run", action="store_true", help="Show what would be sent without sending")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Show what would be sent without sending"
+    )
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
 
     args = parser.parse_args()
@@ -1318,42 +1346,69 @@ Examples:
     # Setup logging
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
-        format='%(levelname)s: %(message)s'
+        format="%(levelname)s: %(message)s",
     )
 
     # Create client
     client = IcingaClient()
 
     # For live/all checks, fetch health data from receiver
-    if args.check_type in ('all', 'live', 'ping', 'temp', 'volt', 'satellites', 'position', 'logging', 'receiver_status'):
+    if args.check_type in (
+        "all",
+        "live",
+        "ping",
+        "temp",
+        "volt",
+        "satellites",
+        "position",
+        "logging",
+        "receiver_status",
+    ):
         logger.info(f"Fetching health data from {args.station}...")
         try:
             result = subprocess.run(
-                ['receivers', 'health', args.station, '--json'],
+                ["receivers", "health", args.station, "--json"],
                 capture_output=True,
                 text=True,
-                timeout=60
+                timeout=60,
             )
             if result.returncode != 0:
                 logger.error(f"Failed to get health data: {result.stderr}")
                 return 1
 
             health_data = json.loads(result.stdout)
-            logger.info(f"Got health data: overall_status={health_data.get('overall_status', 'unknown')}")
+            logger.info(
+                f"Got health data: overall_status={health_data.get('overall_status', 'unknown')}"
+            )
 
             if args.dry_run:
                 logger.info("=== DRY RUN - Would send the following checks ===")
                 logger.info(f"Station: {health_data.get('station_id')}")
-                logger.info(f"Temperature: {health_data.get('metrics', {}).get('temperature', {})}")
-                logger.info(f"Satellites: {health_data.get('metrics', {}).get('satellites', {})}")
-                logger.info(f"Position: {health_data.get('metrics', {}).get('position', {})}")
+                logger.info(
+                    f"Temperature: {health_data.get('metrics', {}).get('temperature', {})}"
+                )
+                logger.info(
+                    f"Satellites: {health_data.get('metrics', {}).get('satellites', {})}"
+                )
+                logger.info(
+                    f"Position: {health_data.get('metrics', {}).get('position', {})}"
+                )
                 logger.info(f"Ports: {health_data.get('metrics', {}).get('ports', {})}")
-                logger.info(f"Disk: {health_data.get('data_quality', {}).get('disk', {})}")
+                logger.info(
+                    f"Disk: {health_data.get('data_quality', {}).get('disk', {})}"
+                )
                 return 0
 
             # Determine which checks to send
-            if args.check_type in ('all', 'live'):
-                checks = ['ping', 'temp', 'satellites', 'position', 'logging', 'receiver_status']
+            if args.check_type in ("all", "live"):
+                checks = [
+                    "ping",
+                    "temp",
+                    "satellites",
+                    "position",
+                    "logging",
+                    "receiver_status",
+                ]
             else:
                 checks = [args.check_type]
 
@@ -1391,13 +1446,13 @@ Examples:
             is_reachable=is_ok,
             router_ok=is_ok,
             receiver_ok=is_ok,
-            latency_ms=80.5 if is_ok else None
+            latency_ms=80.5 if is_ok else None,
         )
     else:  # health
         response = client.send_health_check(
             station=args.station,
             overall_status=args.status,
-            metrics={"voltage": 13.2, "cpu_load": 45, "temperature": 42}
+            metrics={"voltage": 13.2, "cpu_load": 45, "temperature": 42},
         )
 
     # Log response

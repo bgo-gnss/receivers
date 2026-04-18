@@ -16,14 +16,14 @@ import logging
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional
 
 import gtimes.timefunc as gt
 from gtimes.timefunc import currDatetime
 
 from ..base.exceptions import ConfigurationError, ConnectionError
+from ..base.receiver_factory import create_receiver, get_receiver_factory
 from ..base.type_validator import ReceiverTypeValidator
-from ..base.receiver_factory import get_receiver_factory, create_receiver
 from ..utils.time_utils import calculate_download_time_range, generate_period_ranges
 
 # Import gps_parser for centralized config
@@ -81,18 +81,15 @@ def _validate_station_for_download(
     """
     station_config = get_station_config(station_id)
     if station_config is None:
-        logger.warning(
-            f"⚠️  Station {station_id} not found in configuration - SKIPPING"
-        )
+        logger.warning(f"⚠️  Station {station_id} not found in configuration - SKIPPING")
         return None
 
     try:
         ip = station_config["router"]["ip"]
         # Accept either FTP or HTTP port — Trimble NetR9/NetR5 use HTTP downloads
-        port = (
-            station_config["receiver"].get("ftpport")
-            or station_config["receiver"].get("httpport")
-        )
+        port = station_config["receiver"].get("ftpport") or station_config[
+            "receiver"
+        ].get("httpport")
         if not ip or not port:
             logger.warning(
                 f"⚠️  Station {station_id} missing IP ({ip}) or port ({port}) - SKIPPING"
@@ -107,9 +104,12 @@ def _validate_station_for_download(
     # Check if session is supported by this receiver type
     if session:
         from ..config.receivers_config import get_receivers_config
+
         receivers_config = get_receivers_config()
         receiver_type = station_config.get("receiver_type", "").lower()
-        if not receivers_config.is_session_supported_by_receiver(receiver_type, session):
+        if not receivers_config.is_session_supported_by_receiver(
+            receiver_type, session
+        ):
             supported = receivers_config.get_supported_sessions(receiver_type)
             logger.info(
                 f"⏭️  Skipping {station_id}: {session} not supported for {receiver_type} "
@@ -178,7 +178,10 @@ def _download_station_period(
         # Without this check, _download_one_station sees (0, 0) and
         # misclassifies the failure as "up_to_date".
         result_status = result.get("status", "unknown")
-        if result_status in ("failed", "configuration_error", "unreachable") and files_downloaded == 0:
+        if (
+            result_status in ("failed", "configuration_error", "unreachable")
+            and files_downloaded == 0
+        ):
             errors += 1
         # Guard: "up_to_date" with 0 files checked means no timestamps were
         # generated (empty file_date_dict) — treat as error so the parallel
@@ -199,9 +202,7 @@ def _download_station_period(
                     "errors": result.get("errors", 0),
                     "start_time": start.isoformat() if start else None,
                     "end_time": end.isoformat() if end else None,
-                    "connection_time": getattr(
-                        receiver, "_last_connection_time", None
-                    ),
+                    "connection_time": getattr(receiver, "_last_connection_time", None),
                 },
             )
 
@@ -238,6 +239,7 @@ def _setup_rinex_callbacks(receivers_map: Dict[str, Any], session: str) -> None:
         from ..rinex.async_converter import submit_file_rinex
 
         for sid, receiver in receivers_map.items():
+
             def _on_archived(archive_path: str, _sid=sid, _session=session) -> None:
                 submit_file_rinex(_sid, _session, archive_path)
 
@@ -264,7 +266,7 @@ def cmd_download(args) -> int:
         audit_logger = None
 
     # Expand --all to all configured stations
-    if getattr(args, 'all_stations', False):
+    if getattr(args, "all_stations", False):
         all_configs = get_all_station_configs()
         args.stations = sorted(all_configs.keys())
         logger.info(f"--all: resolved {len(args.stations)} stations")
@@ -332,7 +334,7 @@ def cmd_download(args) -> int:
     total_errors = 0
 
     # Parallel mode: grouped batching with stagger and retry
-    if getattr(args, 'parallel', False) and len(args.stations) > 1:
+    if getattr(args, "parallel", False) and len(args.stations) > 1:
         from .parallel import download_parallel
 
         summary = download_parallel(
@@ -350,8 +352,9 @@ def cmd_download(args) -> int:
         total_errors = summary.failed + summary.unreachable
 
         # Wait for any pending RINEX conversions before exiting
-        if getattr(args, 'rinex', False):
+        if getattr(args, "rinex", False):
             from ..rinex.async_converter import shutdown_rinex_pool
+
             shutdown_rinex_pool(wait=True)
 
         logger.info(
@@ -379,7 +382,7 @@ def cmd_download(args) -> int:
             return 1
 
         # Set up per-file RINEX callbacks
-        if getattr(args, 'rinex', False):
+        if getattr(args, "rinex", False):
             _setup_rinex_callbacks(receivers_map, args.session)
 
         # Outer: periods (newest first), Inner: stations
@@ -387,16 +390,22 @@ def cmd_download(args) -> int:
             start_time, end_time, args.session, reverse=True
         )
         for period_start, period_end in periods:
-            if args.session == '15s_24hr':
+            if args.session == "15s_24hr":
                 logger.info(f"--- {period_start.strftime('%Y-%m-%d')} ---")
             else:
                 logger.info(f"--- {period_start.strftime('%Y-%m-%d %H:%M')} ---")
             for sid, receiver in receivers_map.items():
                 logger.info(f"Processing station: {sid}")
                 dl, err, _checked = _download_station_period(
-                    receiver, sid, period_start, period_end,
-                    args, logger, audit_logger,
-                    ffrequency=ffrequency, afrequency=afrequency,
+                    receiver,
+                    sid,
+                    period_start,
+                    period_end,
+                    args,
+                    logger,
+                    audit_logger,
+                    ffrequency=ffrequency,
+                    afrequency=afrequency,
                     reverse_chronological=False,  # single period, no need to reverse
                 )
                 total_downloaded += dl
@@ -407,27 +416,36 @@ def cmd_download(args) -> int:
             station_id = station_id.upper()
             logger.info(f"Processing station: {station_id}")
 
-            receiver = _validate_station_for_download(station_id, logger, session=args.session)
+            receiver = _validate_station_for_download(
+                station_id, logger, session=args.session
+            )
             if receiver is None:
                 total_errors += 1
                 continue
 
             # Set up per-file RINEX callback
-            if getattr(args, 'rinex', False):
+            if getattr(args, "rinex", False):
                 _setup_rinex_callbacks({station_id: receiver}, args.session)
 
             dl, err, _checked = _download_station_period(
-                receiver, station_id, start_time, end_time,
-                args, logger, audit_logger,
-                ffrequency=ffrequency, afrequency=afrequency,
+                receiver,
+                station_id,
+                start_time,
+                end_time,
+                args,
+                logger,
+                audit_logger,
+                ffrequency=ffrequency,
+                afrequency=afrequency,
                 reverse_chronological=reverse_chronological,
             )
             total_downloaded += dl
             total_errors += err
 
     # Wait for pending RINEX conversions before exit (non-parallel paths)
-    if getattr(args, 'rinex', False):
+    if getattr(args, "rinex", False):
         from ..rinex.async_converter import shutdown_rinex_pool
+
         shutdown_rinex_pool(wait=True)
 
     # Final summary
@@ -461,9 +479,7 @@ def cmd_status(args) -> int:
 
 
 def _send_status_to_icinga(
-    results: list,
-    logger: logging.Logger,
-    save_to_db: bool = True
+    results: list, logger: logging.Logger, save_to_db: bool = True
 ) -> int:
     """Send status check results to Icinga monitoring system.
 
@@ -481,7 +497,9 @@ def _send_status_to_icinga(
     try:
         from ..monitoring.icinga_client import IcingaClient
     except ImportError:
-        logger.error("❌ Icinga client not available. Install requests: pip install requests")
+        logger.error(
+            "❌ Icinga client not available. Install requests: pip install requests"
+        )
         return 1
 
     # Initialize database writer if saving to DB
@@ -489,6 +507,7 @@ def _send_status_to_icinga(
     if save_to_db:
         try:
             from ..health.db_writer import HealthDatabaseWriter
+
             db_writer = HealthDatabaseWriter()
             if not db_writer.connect():
                 logger.warning("Could not connect to database, skipping DB storage")
@@ -528,7 +547,9 @@ def _send_status_to_icinga(
                 if response.get("success"):
                     print(f"{status} {check_name}: sent (HTTP {code})")
                 else:
-                    print(f"{status} {check_name}: FAILED - {response.get('message', 'Unknown error')}")
+                    print(
+                        f"{status} {check_name}: FAILED - {response.get('message', 'Unknown error')}"
+                    )
                     all_success = False
 
         except Exception as e:
@@ -538,6 +559,7 @@ def _send_status_to_icinga(
         # Send file status checks (check archive file system)
         try:
             from ..health.file_tracker import ArchiveFileChecker
+
             checker = ArchiveFileChecker()
 
             # Check daily files (15s_24hr)
@@ -550,7 +572,9 @@ def _send_status_to_icinga(
                     hours_since_download=stats.get("hours_since_file"),
                     downloads_expected=stats.get("files_expected", 7),
                     downloads_successful=stats.get("files_found", 0),
-                    downloads_missing=max(0, stats.get("files_expected", 0) - stats.get("files_found", 0)),
+                    downloads_missing=max(
+                        0, stats.get("files_expected", 0) - stats.get("files_found", 0)
+                    ),
                     error_count=0,
                     warn_hours=26.0,  # Warning after 26 hours for daily files
                     crit_hours=50.0,  # Critical after 50 hours
@@ -560,7 +584,9 @@ def _send_status_to_icinga(
                 if response.get("success"):
                     print(f"{status} 15s_24hr file status: sent (HTTP {code})")
                 else:
-                    print(f"{status} 15s_24hr file status: FAILED - {response.get('message', 'Unknown error')}")
+                    print(
+                        f"{status} 15s_24hr file status: FAILED - {response.get('message', 'Unknown error')}"
+                    )
 
             # Check hourly files (1Hz_1hr)
             stats = checker.check_file_status(station_id, "1Hz_1hr", days_back=1)
@@ -572,17 +598,21 @@ def _send_status_to_icinga(
                     hours_since_download=stats.get("hours_since_file"),
                     downloads_expected=stats.get("files_expected", 24),
                     downloads_successful=stats.get("files_found", 0),
-                    downloads_missing=max(0, stats.get("files_expected", 0) - stats.get("files_found", 0)),
+                    downloads_missing=max(
+                        0, stats.get("files_expected", 0) - stats.get("files_found", 0)
+                    ),
                     error_count=0,
-                    warn_hours=2.0,   # Warning after 2 hours for hourly files
-                    crit_hours=4.0,   # Critical after 4 hours
+                    warn_hours=2.0,  # Warning after 2 hours for hourly files
+                    crit_hours=4.0,  # Critical after 4 hours
                 )
                 status = "✅" if response.get("success") else "❌"
                 code = response.get("code", "N/A")
                 if response.get("success"):
                     print(f"{status} 1Hz_1hr file status: sent (HTTP {code})")
                 else:
-                    print(f"{status} 1Hz_1hr file status: FAILED - {response.get('message', 'Unknown error')}")
+                    print(
+                        f"{status} 1Hz_1hr file status: FAILED - {response.get('message', 'Unknown error')}"
+                    )
 
             # Check daily RINEX files (15s_24hr_rinex) - only if directory exists
             stats = checker.check_file_status(station_id, "15s_24hr_rinex", days_back=7)
@@ -594,7 +624,9 @@ def _send_status_to_icinga(
                     hours_since_download=stats.get("hours_since_file"),
                     downloads_expected=stats.get("files_expected", 7),
                     downloads_successful=stats.get("files_found", 0),
-                    downloads_missing=max(0, stats.get("files_expected", 0) - stats.get("files_found", 0)),
+                    downloads_missing=max(
+                        0, stats.get("files_expected", 0) - stats.get("files_found", 0)
+                    ),
                     error_count=0,
                     warn_hours=26.0,
                     crit_hours=50.0,
@@ -604,11 +636,17 @@ def _send_status_to_icinga(
                 if response.get("success"):
                     print(f"{status} 15s_24hr rinex file status: sent (HTTP {code})")
                 else:
-                    print(f"{status} 15s_24hr rinex file status: FAILED - {response.get('message', 'Unknown error')}")
+                    print(
+                        f"{status} 15s_24hr rinex file status: FAILED - {response.get('message', 'Unknown error')}"
+                    )
 
             # Check hourly RINEX files (1Hz_1hr_rinex) - only if directory exists
             stats = checker.check_file_status(station_id, "1Hz_1hr_rinex", days_back=1)
-            if stats and stats.get("dir_exists", False) and stats.get("files_found", 0) > 0:
+            if (
+                stats
+                and stats.get("dir_exists", False)
+                and stats.get("files_found", 0) > 0
+            ):
                 response = client.send_download_check(
                     station=station_id,
                     session_type="1Hz_1hr rinex",  # Icinga service name with space
@@ -616,7 +654,9 @@ def _send_status_to_icinga(
                     hours_since_download=stats.get("hours_since_file"),
                     downloads_expected=stats.get("files_expected", 24),
                     downloads_successful=stats.get("files_found", 0),
-                    downloads_missing=max(0, stats.get("files_expected", 0) - stats.get("files_found", 0)),
+                    downloads_missing=max(
+                        0, stats.get("files_expected", 0) - stats.get("files_found", 0)
+                    ),
                     error_count=0,
                     warn_hours=2.0,
                     crit_hours=4.0,
@@ -626,11 +666,17 @@ def _send_status_to_icinga(
                 if response.get("success"):
                     print(f"{status} 1Hz_1hr rinex file status: sent (HTTP {code})")
                 else:
-                    print(f"{status} 1Hz_1hr rinex file status: FAILED - {response.get('message', 'Unknown error')}")
+                    print(
+                        f"{status} 1Hz_1hr rinex file status: FAILED - {response.get('message', 'Unknown error')}"
+                    )
 
             # Check 20Hz hourly files - only if directory exists
             stats = checker.check_file_status(station_id, "20Hz_1hr", days_back=1)
-            if stats and stats.get("dir_exists", False) and stats.get("files_found", 0) > 0:
+            if (
+                stats
+                and stats.get("dir_exists", False)
+                and stats.get("files_found", 0) > 0
+            ):
                 response = client.send_download_check(
                     station=station_id,
                     session_type="20Hz_1hr",
@@ -638,7 +684,9 @@ def _send_status_to_icinga(
                     hours_since_download=stats.get("hours_since_file"),
                     downloads_expected=stats.get("files_expected", 24),
                     downloads_successful=stats.get("files_found", 0),
-                    downloads_missing=max(0, stats.get("files_expected", 0) - stats.get("files_found", 0)),
+                    downloads_missing=max(
+                        0, stats.get("files_expected", 0) - stats.get("files_found", 0)
+                    ),
                     error_count=0,
                     warn_hours=2.0,
                     crit_hours=4.0,
@@ -648,11 +696,17 @@ def _send_status_to_icinga(
                 if response.get("success"):
                     print(f"{status} 20Hz_1hr file status: sent (HTTP {code})")
                 else:
-                    print(f"{status} 20Hz_1hr file status: FAILED - {response.get('message', 'Unknown error')}")
+                    print(
+                        f"{status} 20Hz_1hr file status: FAILED - {response.get('message', 'Unknown error')}"
+                    )
 
             # Check 50Hz hourly files - only if directory exists
             stats = checker.check_file_status(station_id, "50Hz_1hr", days_back=1)
-            if stats and stats.get("dir_exists", False) and stats.get("files_found", 0) > 0:
+            if (
+                stats
+                and stats.get("dir_exists", False)
+                and stats.get("files_found", 0) > 0
+            ):
                 response = client.send_download_check(
                     station=station_id,
                     session_type="50Hz_1hr",
@@ -660,7 +714,9 @@ def _send_status_to_icinga(
                     hours_since_download=stats.get("hours_since_file"),
                     downloads_expected=stats.get("files_expected", 24),
                     downloads_successful=stats.get("files_found", 0),
-                    downloads_missing=max(0, stats.get("files_expected", 0) - stats.get("files_found", 0)),
+                    downloads_missing=max(
+                        0, stats.get("files_expected", 0) - stats.get("files_found", 0)
+                    ),
                     error_count=0,
                     warn_hours=2.0,
                     crit_hours=4.0,
@@ -670,7 +726,9 @@ def _send_status_to_icinga(
                 if response.get("success"):
                     print(f"{status} 50Hz_1hr file status: sent (HTTP {code})")
                 else:
-                    print(f"{status} 50Hz_1hr file status: FAILED - {response.get('message', 'Unknown error')}")
+                    print(
+                        f"{status} 50Hz_1hr file status: FAILED - {response.get('message', 'Unknown error')}"
+                    )
 
         except Exception as e:
             logger.debug(f"Could not send file status checks for {station_id}: {e}")
@@ -678,6 +736,7 @@ def _send_status_to_icinga(
         # Send 24hr processing status check
         try:
             from ..health.file_tracker import ProcessingStatusChecker
+
             proc_checker = ProcessingStatusChecker()
             result = proc_checker.check_24hr_processing(station_id)
 
@@ -695,14 +754,16 @@ def _send_status_to_icinga(
                 if response.get("success"):
                     print(f"{status} 24hr processing status: sent (HTTP {code})")
                 else:
-                    print(f"{status} 24hr processing status: FAILED - {response.get('message', 'Unknown error')}")
+                    print(
+                        f"{status} 24hr processing status: FAILED - {response.get('message', 'Unknown error')}"
+                    )
         except Exception as e:
             logger.debug(f"Could not send processing status for {station_id}: {e}")
 
         # Send RTK status check (NTRIP stream health)
         try:
-            from ..monitoring.ntrip_client import check_ntrip_status, NTRIPConfig
             from ..config.receivers_config import ReceiversConfig
+            from ..monitoring.ntrip_client import NTRIPConfig, check_ntrip_status
 
             receivers_cfg = ReceiversConfig()
             ntrip_status = check_ntrip_status(
@@ -721,7 +782,9 @@ def _send_status_to_icinga(
                 if response.get("success"):
                     print(f"{status} rtk status: sent (HTTP {code})")
                 else:
-                    print(f"{status} rtk status: FAILED - {response.get('message', 'Unknown error')}")
+                    print(
+                        f"{status} rtk status: FAILED - {response.get('message', 'Unknown error')}"
+                    )
         except Exception as e:
             logger.debug(f"Could not send RTK status for {station_id}: {e}")
 
@@ -760,7 +823,9 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
     }
 
     # Header line: station, type, IP, overall status
-    print(f"{station_id} ({receiver_type}) @ {ip}  {status_emoji.get(overall, '❓')} {overall.upper()}")
+    print(
+        f"{station_id} ({receiver_type}) @ {ip}  {status_emoji.get(overall, '❓')} {overall.upper()}"
+    )
 
     # Port status from metrics.ports (aligns with Icinga Receiver status check)
     metrics = health.get("metrics", {})
@@ -843,7 +908,11 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
                 status = sats.get("status", "ok")
                 emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
                 by_const = sats.get("by_constellation", {})
-                const_str = ", ".join(f"{k}:{v}" for k, v in by_const.items()) if by_const else ""
+                const_str = (
+                    ", ".join(f"{k}:{v}" for k, v in by_const.items())
+                    if by_const
+                    else ""
+                )
                 if const_str:
                     print(f"  Satellites: {emoji} {total} ({const_str})")
                 else:
@@ -911,7 +980,14 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
     if file_status:
         file_parts = []
         # Order: raw files first, then RINEX, then high-rate
-        session_order = ["15s_24hr", "1Hz_1hr", "15s_24hr_rinex", "1Hz_1hr_rinex", "20Hz_1hr", "50Hz_1hr"]
+        session_order = [
+            "15s_24hr",
+            "1Hz_1hr",
+            "15s_24hr_rinex",
+            "1Hz_1hr_rinex",
+            "20Hz_1hr",
+            "50Hz_1hr",
+        ]
         session_labels = {
             "15s_24hr": "15s",
             "1Hz_1hr": "1Hz",
@@ -923,6 +999,7 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
         # Get thresholds from icinga config
         try:
             from ..config.icinga_config import get_icinga_config
+
             icinga_thresholds = get_icinga_config().get_thresholds()
             daily_warn = icinga_thresholds.file_daily_warning_hours
             daily_crit = icinga_thresholds.file_daily_critical_hours
@@ -975,11 +1052,17 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
         message = proc_status.get("message", "")
         if status != "unknown":
             emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
-            short_msg = message.replace("24hr processing ", "").replace("OK - ", "").replace("CRITICAL - ", "")
+            short_msg = (
+                message.replace("24hr processing ", "")
+                .replace("OK - ", "")
+                .replace("CRITICAL - ", "")
+            )
             print(f"  Timeseries: {emoji} {short_msg}")
 
 
-def _write_connectivity_status(station_id: str, health_data: Dict[str, Any], logger: logging.Logger) -> None:
+def _write_connectivity_status(
+    station_id: str, health_data: Dict[str, Any], logger: logging.Logger
+) -> None:
     """Write ping and port status to database for Grafana dashboard.
 
     Delegates to shared ConnectivityWriter module. Uses health data timestamp
@@ -1010,8 +1093,8 @@ def cmd_health_timeseries_extract(
     Returns:
         0 on success, 1 on failure
     """
-    from ..health.timeseries_extractor import TimeSeriesHealthExtractor
     from ..health.json_writer import HealthJSONWriter
+    from ..health.timeseries_extractor import TimeSeriesHealthExtractor
 
     try:
         # Parse dates to extract using unified flags: -s/--start, -e/--end, -d/--days
@@ -1028,18 +1111,23 @@ def cmd_health_timeseries_extract(
         if getattr(args, "days", None):
             # Use same time range calculation as download command for consistency
             start_time, end_time = calculate_download_time_range(
-                session_type=session_type,
-                lookback_periods=args.days
+                session_type=session_type, lookback_periods=args.days
             )
             # Convert to dates for directory-based extraction
             # For hourly data, we need unique dates that span the hour range
-            start_date = start_time.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
-            end_date = end_time.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+            start_date = start_time.replace(
+                hour=0, minute=0, second=0, microsecond=0, tzinfo=None
+            )
+            end_date = end_time.replace(
+                hour=0, minute=0, second=0, microsecond=0, tzinfo=None
+            )
             # Make sure we include end_date's day if end_time has hours
             if end_time.hour > 0 or end_time == start_time:
                 pass  # end_date is correct
-            logger.info(f"Period range: {args.days} {'hours' if is_hourly else 'days'} "
-                       f"({start_time.strftime('%Y-%m-%d %H:%M')} to {end_time.strftime('%Y-%m-%d %H:%M')})")
+            logger.info(
+                f"Period range: {args.days} {'hours' if is_hourly else 'days'} "
+                f"({start_time.strftime('%Y-%m-%d %H:%M')} to {end_time.strftime('%Y-%m-%d %H:%M')})"
+            )
 
         # Handle -s/--start
         if getattr(args, "start", None):
@@ -1118,6 +1206,7 @@ def cmd_health_timeseries_extract(
 
         # Initialize file tracker for import tracking
         from ..health import FileTracker, compute_checksum
+
         file_tracker = FileTracker()
         tracker_connected = file_tracker.connect()
 
@@ -1127,17 +1216,27 @@ def cmd_health_timeseries_extract(
             try:
                 # Check if already imported (skip if --save-db and already in DB, unless --force)
                 # For hourly data, never skip today since new hours keep arriving
-                if getattr(args, "save_db", False) and tracker_connected and not getattr(args, "force", False):
+                if (
+                    getattr(args, "save_db", False)
+                    and tracker_connected
+                    and not getattr(args, "force", False)
+                ):
                     # Convert datetime to date for tracking check
-                    check_date = date.date() if hasattr(date, 'date') else date
+                    check_date = date.date() if hasattr(date, "date") else date
                     # Don't skip today for hourly sessions - new data may have arrived
                     is_today = check_date == today
-                    if not is_today and file_tracker.is_health_imported(station_id, check_date):
-                        logger.info(f"⏭️  Skipping {date.strftime('%Y-%m-%d')} (already imported to database)")
+                    if not is_today and file_tracker.is_health_imported(
+                        station_id, check_date
+                    ):
+                        logger.info(
+                            f"⏭️  Skipping {date.strftime('%Y-%m-%d')} (already imported to database)"
+                        )
                         skip_count += 1
                         continue
                     elif is_today:
-                        logger.debug(f"Re-processing today ({date.strftime('%Y-%m-%d')}) for latest hourly data")
+                        logger.debug(
+                            f"Re-processing today ({date.strftime('%Y-%m-%d')}) for latest hourly data"
+                        )
 
                 # Build path to status_1hr directory for this date
                 year = date.strftime("%Y")
@@ -1205,7 +1304,7 @@ def cmd_health_timeseries_extract(
 
                     # Extract per-block JSONs for exploration (unless disabled)
                     if not getattr(args, "skip_blocks", False):
-                        logger.info(f"Extracting per-block JSONs for exploration...")
+                        logger.info("Extracting per-block JSONs for exploration...")
                         from ..health.block_json_writer import BlockJsonWriter
 
                         block_writer = BlockJsonWriter(station_id, status_dir / "json")
@@ -1232,21 +1331,28 @@ def cmd_health_timeseries_extract(
                 else:
                     # JSON was skipped (no source changes)
                     # But if --save-db is requested, we need to check if data is in DB
-                    check_date = date.date() if hasattr(date, 'date') else date
-                    db_has_data = tracker_connected and file_tracker.is_health_imported(station_id, check_date)
+                    check_date = date.date() if hasattr(date, "date") else date
+                    db_has_data = tracker_connected and file_tracker.is_health_imported(
+                        station_id, check_date
+                    )
 
                     if getattr(args, "save_db", False) and not db_has_data:
                         # JSON exists but DB is missing data - import from existing JSON
-                        logger.info(f"📥 JSON exists but DB missing - importing from existing JSON for {date.strftime('%Y-%m-%d')}")
+                        logger.info(
+                            f"📥 JSON exists but DB missing - importing from existing JSON for {date.strftime('%Y-%m-%d')}"
+                        )
 
                         # Find and load the existing JSON file
                         date_str = date.strftime("%Y%m%d")
                         json_dir = base_path / station_id / "status_1hr" / "json"
-                        existing_json = json_dir / f"{station_id}_{date_str}_health.json"
+                        existing_json = (
+                            json_dir / f"{station_id}_{date_str}_health.json"
+                        )
 
                         if existing_json.exists():
                             try:
                                 import json
+
                                 with open(existing_json) as f:
                                     health_data = json.load(f)
                                 logger.debug(f"Loaded existing JSON: {existing_json}")
@@ -1276,15 +1382,23 @@ def cmd_health_timeseries_extract(
                                 rows_imported = importer.import_health_data(
                                     health_data, station_id, receiver_type
                                 )
-                                logger.info(f"💾 Saved {rows_imported} rows to database for {date.strftime('%Y-%m-%d')}")
+                                logger.info(
+                                    f"💾 Saved {rows_imported} rows to database for {date.strftime('%Y-%m-%d')}"
+                                )
 
                                 # Mark as imported in file tracker
                                 if tracker_connected and rows_imported > 0:
                                     checksum = compute_checksum(health_data)
                                     # Convert datetime to date for tracking
-                                    track_date = date.date() if hasattr(date, 'date') else date
+                                    track_date = (
+                                        date.date() if hasattr(date, "date") else date
+                                    )
                                     file_tracker.mark_health_imported(
-                                        station_id, track_date, rows_imported, checksum, str(json_path) if json_path else None
+                                        station_id,
+                                        track_date,
+                                        rows_imported,
+                                        checksum,
+                                        str(json_path) if json_path else None,
                                     )
                             else:
                                 logger.warning("Failed to connect to database")
@@ -1304,7 +1418,7 @@ def cmd_health_timeseries_extract(
 
         # Summary
         logger.info(f"\n{'=' * 60}")
-        logger.info(f"Extraction complete:")
+        logger.info("Extraction complete:")
         logger.info(f"  ✅ Extracted: {success_count}")
         logger.info(f"  ⏭️  Skipped: {skip_count}")
         logger.info(f"  ❌ Errors: {error_count}")
@@ -1333,6 +1447,7 @@ def cmd_health_json_import(args, station_id: str, logger: logging.Logger) -> int
         0 on success, 1 on failure
     """
     from pathlib import Path
+
     from ..health.json_importer import HealthJsonImporter
 
     # Determine JSON directory
@@ -1340,8 +1455,9 @@ def cmd_health_json_import(args, station_id: str, logger: logging.Logger) -> int
         json_dir = Path(args.json_dir)
     else:
         # Auto-detect from data path
-        from ..config.receivers_config import get_receivers_config
         from datetime import datetime
+
+        from ..config.receivers_config import get_receivers_config
 
         config = get_receivers_config()
         data_prepath = config.get_data_prepath()
@@ -1350,7 +1466,9 @@ def cmd_health_json_import(args, station_id: str, logger: logging.Logger) -> int
         month_abbr = now.strftime("%b").lower()
         year = now.strftime("%Y")
 
-        json_dir = Path(data_prepath) / year / month_abbr / station_id / "status_1hr" / "json"
+        json_dir = (
+            Path(data_prepath) / year / month_abbr / station_id / "status_1hr" / "json"
+        )
 
     if not json_dir.exists():
         logger.error(f"JSON directory not found: {json_dir}")
@@ -1390,7 +1508,9 @@ def cmd_health_json_import(args, station_id: str, logger: logging.Logger) -> int
                 end_date=end_date,
             )
 
-            logger.info(f"Import complete: {files} files, {rows} rows imported, {skipped} skipped")
+            logger.info(
+                f"Import complete: {files} files, {rows} rows imported, {skipped} skipped"
+            )
             return 0
 
     except Exception as e:
@@ -1409,8 +1529,9 @@ def cmd_health_json_export(args, station_id: str, logger: logging.Logger) -> int
     Returns:
         0 on success, 1 on failure
     """
-    from pathlib import Path
     from datetime import datetime
+    from pathlib import Path
+
     from ..health.json_importer import HealthJsonImporter
 
     # Determine output directory
@@ -1427,7 +1548,9 @@ def cmd_health_json_export(args, station_id: str, logger: logging.Logger) -> int
         month_abbr = now.strftime("%b").lower()
         year = now.strftime("%Y")
 
-        output_dir = Path(data_prepath) / year / month_abbr / station_id / "status_1hr" / "json"
+        output_dir = (
+            Path(data_prepath) / year / month_abbr / station_id / "status_1hr" / "json"
+        )
 
     # Parse date filters
     start_date = None
@@ -1520,7 +1643,9 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
         include_ntrip = not getattr(args, "no_ntrip", False)
 
         health = gather_comprehensive_health(
-            station_id, station_config, receiver,
+            station_id,
+            station_config,
+            receiver,
             include_files=include_files,
             include_ntrip=include_ntrip,
         )
@@ -1575,7 +1700,7 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
             metrics = health.get("metrics", {})
             ports = metrics.get("ports", {})
 
-            print(f"\nConnection Health:")
+            print("\nConnection Health:")
             # Show TCP status
             if "tcp" in connection:
                 tcp = connection["tcp"]
@@ -1599,7 +1724,7 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
 
             # Metrics summary
             if metrics:
-                print(f"\nMetrics:")
+                print("\nMetrics:")
                 # Power
                 if "power" in metrics:
                     power = metrics["power"]
@@ -1629,7 +1754,9 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
                         total = disk.get("total_mb", 0)
                         free = disk.get("free_mb", 0)
                         status = disk.get("status", "unknown")
-                        print(f"  disk: {usage:.1f}% used ({free:.0f} MB free / {total:.0f} MB total) [{status}]")
+                        print(
+                            f"  disk: {usage:.1f}% used ({free:.0f} MB free / {total:.0f} MB total) [{status}]"
+                        )
 
                 # Position
                 if "position" in metrics:
@@ -1642,9 +1769,13 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
                     status = pos.get("status", "unknown")
                     if lat is not None and lon is not None:
                         if height is not None:
-                            print(f"  position: {lat:.6f}, {lon:.6f}, {height:.1f}m ({fix}) [{status}]")
+                            print(
+                                f"  position: {lat:.6f}, {lon:.6f}, {height:.1f}m ({fix}) [{status}]"
+                            )
                         else:
-                            print(f"  position: {lat:.6f}, {lon:.6f} ({fix}) [{status}]")
+                            print(
+                                f"  position: {lat:.6f}, {lon:.6f} ({fix}) [{status}]"
+                            )
                     else:
                         print(f"  position: N/A [{status}]")
 
@@ -1702,7 +1833,7 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
             # Status summary
             summary = health.get("status_summary", {})
             if summary:
-                print(f"\nStatus Summary:")
+                print("\nStatus Summary:")
                 print(f"  Healthy: {summary.get('healthy', 0)}")
                 print(f"  Warning: {summary.get('warning', 0)}")
                 print(f"  Critical: {summary.get('critical', 0)}")
@@ -1732,12 +1863,14 @@ def cmd_health(args) -> int:
         logger.info(f"Processing {len(stations)} stations: {', '.join(stations)}")
 
     # Determine if this is a timeseries extraction with -d flag (network-first candidate)
-    has_date_flags = any([
-        getattr(args, "start", None),
-        getattr(args, "end", None),
-        getattr(args, "days", None),
-        getattr(args, "extract_all", False),
-    ])
+    has_date_flags = any(
+        [
+            getattr(args, "start", None),
+            getattr(args, "end", None),
+            getattr(args, "days", None),
+            getattr(args, "extract_all", False),
+        ]
+    )
     # Network-first: -d with multiple stations → iterate day→station
     use_days = getattr(args, "days", None)
     network_first = (
@@ -1755,13 +1888,18 @@ def cmd_health(args) -> int:
         # Network-first health extraction: day→station ordering
         # Calculate the date range, then iterate per-day across all stations
         from ..utils.time_utils import calculate_download_time_range as _calc_range
+
         session_type = "status_1hr"
         start_time, end_time = _calc_range(
             session_type=session_type, lookback_periods=use_days
         )
         # Convert to dates
-        start_date = start_time.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
-        end_date = end_time.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+        start_date = start_time.replace(
+            hour=0, minute=0, second=0, microsecond=0, tzinfo=None
+        )
+        end_date = end_time.replace(
+            hour=0, minute=0, second=0, microsecond=0, tzinfo=None
+        )
 
         # Generate day list (newest first)
         dates = []
@@ -1781,6 +1919,7 @@ def cmd_health(args) -> int:
                 logger.info(f"Processing station: {station_id}")
                 # Create a copy of args scoped to this single day
                 import copy
+
                 day_args = copy.copy(args)
                 day_args.start = day_str
                 day_args.end = day_str
@@ -1796,9 +1935,9 @@ def cmd_health(args) -> int:
         # Station-first: current behavior
         for station_id in stations:
             if len(stations) > 1:
-                logger.info(f"\n{'='*60}")
+                logger.info(f"\n{'=' * 60}")
                 logger.info(f"Processing station: {station_id}")
-                logger.info(f"{'='*60}")
+                logger.info(f"{'=' * 60}")
 
             result = cmd_health_single(args, station_id, logger)
 
@@ -1818,6 +1957,7 @@ def cmd_health(args) -> int:
         # JSON output if requested alongside compact
         if getattr(args, "json", False):
             import json
+
             if len(results) == 1:
                 print(json.dumps(results[0][0], indent=2, default=str))
             else:
@@ -1831,9 +1971,9 @@ def cmd_health(args) -> int:
 
     # Summary for multiple stations
     if len(stations) > 1:
-        logger.info(f"\n{'='*60}")
+        logger.info(f"\n{'=' * 60}")
         logger.info(f"Summary: {success_count} succeeded, {error_count} failed")
-        logger.info(f"{'='*60}")
+        logger.info(f"{'=' * 60}")
 
     return 0 if error_count == 0 else 1
 
@@ -1869,7 +2009,7 @@ def cmd_validate_web_accuracy(args) -> int:
 
         if args.summary:
             # Show summary only
-            print(f"\n📊 CONFIGURATION ACCURACY SUMMARY")
+            print("\n📊 CONFIGURATION ACCURACY SUMMARY")
             print(f"{'=' * 50}")
             print(f"Total stations: {summary['total_stations']}")
             print(f"✅ Correct configs: {summary['correct_configs']}")
@@ -1886,7 +2026,7 @@ def cmd_validate_web_accuracy(args) -> int:
             print(f"\n📈 Configuration accuracy: {accuracy_rate:.1f}%")
         else:
             # Show detailed results
-            print(f"\n📋 DETAILED CONFIGURATION VALIDATION")
+            print("\n📋 DETAILED CONFIGURATION VALIDATION")
             print(f"{'=' * 60}")
 
             for station_id, result in results.items():
@@ -1982,7 +2122,7 @@ def cmd_validate(args) -> int:
         )
 
         # Print summary
-        print(f"\n=== RECEIVER TYPE VALIDATION RESULTS ===")
+        print("\n=== RECEIVER TYPE VALIDATION RESULTS ===")
         print(f"Total stations validated: {len(results)}")
         print(f"✅ Correct receiver types: {matches}")
         print(f"❌ Mismatched receiver types: {mismatches}")
@@ -1991,7 +2131,7 @@ def cmd_validate(args) -> int:
 
         # Show mismatches in detail
         if mismatches > 0:
-            print(f"\n=== RECEIVER TYPE MISMATCHES ===")
+            print("\n=== RECEIVER TYPE MISMATCHES ===")
             for station_id, result in results.items():
                 if result.get("validation_status") == "mismatch":
                     configured = result.get("configured_type", "Unknown")
@@ -2051,21 +2191,22 @@ def cmd_rec_config(args) -> int:
     logger = setup_logging(args.loglevel)
 
     from pathlib import Path
-    from ..septentrio.tcp_client import (
-        PolaRX5TCPClient,
-        save_config_to_file,
-        load_config_from_file,
-        DEFAULT_CONTROL_PORT,
-    )
+
     from ..config.receivers_config import get_receivers_config
+    from ..septentrio.tcp_client import (
+        DEFAULT_CONTROL_PORT,
+        PolaRX5TCPClient,
+        load_config_from_file,
+        save_config_to_file,
+    )
 
     # Parse station list
-    station_list = [s.strip().upper() for s in args.stations.split(',')]
+    station_list = [s.strip().upper() for s in args.stations.split(",")]
 
     # Get receiver config for default port
     receivers_config = get_receivers_config()
-    polarx5_config = receivers_config.get_receiver_config('polarx5')
-    default_port = args.port or polarx5_config.get('control_port', DEFAULT_CONTROL_PORT)
+    polarx5_config = receivers_config.get_receiver_config("polarx5")
+    default_port = args.port or polarx5_config.get("control_port", DEFAULT_CONTROL_PORT)
     if isinstance(default_port, str):
         default_port = int(default_port)
 
@@ -2074,21 +2215,23 @@ def cmd_rec_config(args) -> int:
     for station_id in station_list:
         station_config = get_station_config(station_id)
         if station_config is None:
-            logger.warning(f"Station {station_id} not found in configuration - SKIPPING")
+            logger.warning(
+                f"Station {station_id} not found in configuration - SKIPPING"
+            )
             continue
 
         # Get IP - try multiple sources
         ip = (
-            station_config.get('ip') or
-            station_config.get('router', {}).get('ip') or
-            station_config.get('host')
+            station_config.get("ip")
+            or station_config.get("router", {}).get("ip")
+            or station_config.get("host")
         )
         if not ip:
             logger.warning(f"Station {station_id} has no IP configured - SKIPPING")
             continue
 
         # Get port (station override > cli arg > config default)
-        port = station_config.get('receiver', {}).get('controlport')
+        port = station_config.get("receiver", {}).get("controlport")
         if port:
             port = int(port)
         else:
@@ -2115,15 +2258,16 @@ def cmd_rec_config(args) -> int:
 
 def _extract_configs(args, targets, logger) -> int:
     """Extract configurations from receivers."""
-    from pathlib import Path
-    from ..septentrio.tcp_client import PolaRX5TCPClient, save_config_to_file
-    from ..config.receivers_config import get_receivers_config
     import difflib
     import os
+    from pathlib import Path
+
+    from ..config.receivers_config import get_receivers_config
+    from ..septentrio.tcp_client import PolaRX5TCPClient, save_config_to_file
 
     config_type = args.config_type
     diff_file = Path(args.diff_with) if args.diff_with else None
-    save_to_file = getattr(args, 'save', False)
+    save_to_file = getattr(args, "save", False)
 
     # Determine output directory if saving
     output_dir = None
@@ -2134,14 +2278,14 @@ def _extract_configs(args, targets, logger) -> int:
             # Get from config or use default
             try:
                 receivers_config = get_receivers_config()
-                polarx5_config = receivers_config.get_receiver_config('polarx5')
-                config_dir = polarx5_config.get('rec_config_dir')
+                polarx5_config = receivers_config.get_receiver_config("polarx5")
+                config_dir = polarx5_config.get("rec_config_dir")
                 if config_dir:
                     output_dir = Path(os.path.expanduser(config_dir))
                 else:
-                    output_dir = Path('/tmp/polarconfig')
+                    output_dir = Path("/tmp/polarconfig")
             except Exception:
-                output_dir = Path('/tmp/polarconfig')
+                output_dir = Path("/tmp/polarconfig")
 
         # Create directory if it doesn't exist
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -2150,16 +2294,23 @@ def _extract_configs(args, targets, logger) -> int:
     success_count = 0
     for station_id, ip, port in targets:
         if save_to_file:
-            print(f"\n{'='*50}", file=sys.stderr)
+            print(f"\n{'=' * 50}", file=sys.stderr)
             print(f"Extracting config from {station_id} ({ip}:{port})", file=sys.stderr)
-            print(f"{'='*50}", file=sys.stderr)
+            print(f"{'=' * 50}", file=sys.stderr)
 
         if args.dry_run:
             if save_to_file:
-                print(f"  [DRY RUN] Would extract {config_type} config", file=sys.stderr)
-                print(f"  [DRY RUN] Would save to: {output_dir}/PolaRx5_{station_id}_{config_type}_*.txt", file=sys.stderr)
+                print(
+                    f"  [DRY RUN] Would extract {config_type} config", file=sys.stderr
+                )
+                print(
+                    f"  [DRY RUN] Would save to: {output_dir}/PolaRx5_{station_id}_{config_type}_*.txt",
+                    file=sys.stderr,
+                )
             else:
-                print(f"# [DRY RUN] Would extract {config_type} config from {station_id}")
+                print(
+                    f"# [DRY RUN] Would extract {config_type} config from {station_id}"
+                )
             success_count += 1
             continue
 
@@ -2179,28 +2330,38 @@ def _extract_configs(args, targets, logger) -> int:
                     station_id,
                     config_type,
                     receiver_type="PolaRx5",
-                    output_dir=output_dir
+                    output_dir=output_dir,
                 )
                 print(f"  ✓ Saved to: {filepath}", file=sys.stderr)
 
                 # Show diff if requested
                 if diff_file and diff_file.exists():
-                    old_config = diff_file.read_text().strip().split('\n')
-                    new_config = config.strip().split('\n')
-                    diff = list(difflib.unified_diff(
-                        old_config, new_config,
-                        fromfile=str(diff_file),
-                        tofile=str(filepath),
-                        lineterm=''
-                    ))
+                    old_config = diff_file.read_text().strip().split("\n")
+                    new_config = config.strip().split("\n")
+                    diff = list(
+                        difflib.unified_diff(
+                            old_config,
+                            new_config,
+                            fromfile=str(diff_file),
+                            tofile=str(filepath),
+                            lineterm="",
+                        )
+                    )
                     if diff:
-                        print(f"\n  Differences from {diff_file.name}:", file=sys.stderr)
+                        print(
+                            f"\n  Differences from {diff_file.name}:", file=sys.stderr
+                        )
                         for line in diff[:50]:  # Limit output
                             print(f"    {line}", file=sys.stderr)
                         if len(diff) > 50:
-                            print(f"    ... ({len(diff) - 50} more lines)", file=sys.stderr)
+                            print(
+                                f"    ... ({len(diff) - 50} more lines)",
+                                file=sys.stderr,
+                            )
                     else:
-                        print(f"  ✓ No differences from {diff_file.name}", file=sys.stderr)
+                        print(
+                            f"  ✓ No differences from {diff_file.name}", file=sys.stderr
+                        )
             else:
                 # Print to stdout (Unix convention)
                 if len(targets) > 1:
@@ -2215,14 +2376,17 @@ def _extract_configs(args, targets, logger) -> int:
             logger.error(f"Error extracting from {station_id}: {e}")
 
     if save_to_file:
-        print(f"\n{'='*50}", file=sys.stderr)
-        print(f"Extracted {success_count}/{len(targets)} configurations", file=sys.stderr)
+        print(f"\n{'=' * 50}", file=sys.stderr)
+        print(
+            f"Extracted {success_count}/{len(targets)} configurations", file=sys.stderr
+        )
     return 0 if success_count == len(targets) else 1
 
 
 def _push_configs(args, targets, logger) -> int:
     """Push configuration to receivers."""
     from pathlib import Path
+
     from ..septentrio.tcp_client import PolaRX5TCPClient, load_config_from_file
 
     config_path = Path(args.push)
@@ -2240,7 +2404,7 @@ def _push_configs(args, targets, logger) -> int:
     if args.dry_run:
         print("\n--- DRY RUN - Commands to send ---")
         for cmd in commands:
-            if cmd.strip() and not cmd.strip().startswith('#'):
+            if cmd.strip() and not cmd.strip().startswith("#"):
                 print(f"  {cmd}")
         print("--- End of commands ---\n")
         print("Dry run complete. Use without --dry-run to execute.")
@@ -2248,29 +2412,31 @@ def _push_configs(args, targets, logger) -> int:
 
     success_count = 0
     for station_id, ip, port in targets:
-        print(f"\n{'='*50}")
+        print(f"\n{'=' * 50}")
         print(f"Pushing config to {station_id} ({ip}:{port})")
-        print(f"{'='*50}")
+        print(f"{'=' * 50}")
 
         try:
             client = PolaRX5TCPClient(ip, station_id, port, timeout=args.timeout)
-            success, errors = client.push_config(commands, save_to_boot=not args.no_save)
+            success, errors = client.push_config(
+                commands, save_to_boot=not args.no_save
+            )
             client.disconnect()
 
             if success:
-                print(f"  ✓ Configuration applied successfully")
+                print("  ✓ Configuration applied successfully")
                 if not args.no_save:
-                    print(f"  ✓ Saved to Boot config")
+                    print("  ✓ Saved to Boot config")
                 success_count += 1
             else:
-                print(f"  ✗ Errors occurred:")
+                print("  ✗ Errors occurred:")
                 for err in errors:
                     print(f"    - {err}")
 
         except Exception as e:
             logger.error(f"  Error pushing to {station_id}: {e}")
 
-    print(f"\n{'='*50}")
+    print(f"\n{'=' * 50}")
     print(f"Successfully configured {success_count}/{len(targets)} receivers")
     return 0 if success_count == len(targets) else 1
 
@@ -2332,8 +2498,14 @@ def apply_receiver_type_corrections(
 
 
 def _create_rinex_converter(
-    station_id: str, args, rinex_version, apply_hatanaka, compression_format,
-    naming_convention, observation_types, logger: logging.Logger,
+    station_id: str,
+    args,
+    rinex_version,
+    apply_hatanaka,
+    compression_format,
+    naming_convention,
+    observation_types,
+    logger: logging.Logger,
     rinex_config: dict = None,
 ):
     """Create appropriate RINEX converter for a station.
@@ -2341,7 +2513,12 @@ def _create_rinex_converter(
     Returns:
         Tuple of (converter, raw_extension) or (None, None) on failure.
     """
-    from ..rinex import SBFConverter, TrimbleConverter, LeicaConverter, TrimbleNativeConverter
+    from ..rinex import (
+        LeicaConverter,
+        SBFConverter,
+        TrimbleConverter,
+        TrimbleNativeConverter,
+    )
 
     station_config = get_station_config(station_id)
     if station_config is None:
@@ -2384,8 +2561,12 @@ def _create_rinex_converter(
                 print("  cd tools/trimble-native && ./setup.sh")
                 print("\nManual setup:")
                 print("  docker pull geodesyewsp/trm2rinex:cli-light")
-                print("  docker tag geodesyewsp/trm2rinex:cli-light trm2rinex:cli-light")
-                print("\nAlternative: Use standard conversion (without --native-trimble)")
+                print(
+                    "  docker tag geodesyewsp/trm2rinex:cli-light trm2rinex:cli-light"
+                )
+                print(
+                    "\nAlternative: Use standard conversion (without --native-trimble)"
+                )
                 print("  receivers rinex STATION -d 1")
                 print("=" * 60 + "\n")
                 return None, None, None
@@ -2395,7 +2576,9 @@ def _create_rinex_converter(
                 apply_hatanaka=apply_hatanaka,
                 compression_format=compression_format,
                 naming_convention=naming_convention,
-                apply_header_corrections=not getattr(args, "no_header_correction", False),
+                apply_header_corrections=not getattr(
+                    args, "no_header_correction", False
+                ),
                 loglevel=args.loglevel,
             )
         else:
@@ -2405,7 +2588,9 @@ def _create_rinex_converter(
                 apply_hatanaka=apply_hatanaka,
                 compression_format=compression_format,
                 naming_convention=naming_convention,
-                apply_header_corrections=not getattr(args, "no_header_correction", False),
+                apply_header_corrections=not getattr(
+                    args, "no_header_correction", False
+                ),
                 keep_intermediate=getattr(args, "keep_intermediate", False),
                 loglevel=args.loglevel,
             )
@@ -2423,8 +2608,12 @@ def _create_rinex_converter(
                 print("  cd tools/trimble-native && ./setup.sh")
                 print("\nManual setup:")
                 print("  docker pull geodesyewsp/trm2rinex:cli-light")
-                print("  docker tag geodesyewsp/trm2rinex:cli-light trm2rinex:cli-light")
-                print("\nAlternative: Use standard conversion (without --native-trimble)")
+                print(
+                    "  docker tag geodesyewsp/trm2rinex:cli-light trm2rinex:cli-light"
+                )
+                print(
+                    "\nAlternative: Use standard conversion (without --native-trimble)"
+                )
                 print("  receivers rinex STATION -d 1")
                 print("=" * 60 + "\n")
                 return None, None, None
@@ -2434,7 +2623,9 @@ def _create_rinex_converter(
                 apply_hatanaka=apply_hatanaka,
                 compression_format=compression_format,
                 naming_convention=naming_convention,
-                apply_header_corrections=not getattr(args, "no_header_correction", False),
+                apply_header_corrections=not getattr(
+                    args, "no_header_correction", False
+                ),
                 loglevel=args.loglevel,
             )
         else:
@@ -2444,7 +2635,9 @@ def _create_rinex_converter(
                 apply_hatanaka=apply_hatanaka,
                 compression_format=compression_format,
                 naming_convention=naming_convention,
-                apply_header_corrections=not getattr(args, "no_header_correction", False),
+                apply_header_corrections=not getattr(
+                    args, "no_header_correction", False
+                ),
                 keep_intermediate=getattr(args, "keep_intermediate", False),
                 loglevel=args.loglevel,
             )
@@ -2473,8 +2666,11 @@ def _create_rinex_converter(
         missing = [t for t, avail in tools.items() if not avail]
         if missing:
             from ..tools import ToolManager
+
             manager = ToolManager()
-            logger.error(f"Missing required tools for {station_id}: {', '.join(missing)}")
+            logger.error(
+                f"Missing required tools for {station_id}: {', '.join(missing)}"
+            )
             # Print detailed installation guide
             print(manager.get_installation_guide(missing))
             return None, None, None
@@ -2483,9 +2679,13 @@ def _create_rinex_converter(
 
 
 def _rinex_convert_station_period(
-    station_id: str, converter, raw_extension: str,
-    start_time: datetime, end_time: datetime,
-    args, logger: logging.Logger,
+    station_id: str,
+    converter,
+    raw_extension: str,
+    start_time: datetime,
+    end_time: datetime,
+    args,
+    logger: logging.Logger,
 ) -> tuple:
     """Convert raw files to RINEX for a single station and time period.
 
@@ -2511,11 +2711,27 @@ def _rinex_convert_station_period(
 
             if "1hr" in args.session.lower():
                 filename = f"{station_id}{current_date.strftime('%Y%m%d%H%M')}*.{raw_extension.lstrip('.')}"
-                raw_dir = Path(data_prepath) / year / month / station_id / args.session / "raw"
+                raw_dir = (
+                    Path(data_prepath)
+                    / year
+                    / month
+                    / station_id
+                    / args.session
+                    / "raw"
+                )
                 current_date += timedelta(hours=1)
             else:
-                filename = f"{station_id}{current_date.strftime('%Y%m%d')}*{raw_extension}"
-                raw_dir = Path(data_prepath) / year / month / station_id / args.session / "raw"
+                filename = (
+                    f"{station_id}{current_date.strftime('%Y%m%d')}*{raw_extension}"
+                )
+                raw_dir = (
+                    Path(data_prepath)
+                    / year
+                    / month
+                    / station_id
+                    / args.session
+                    / "raw"
+                )
                 current_date += timedelta(days=1)
 
             if raw_dir.exists():
@@ -2565,8 +2781,11 @@ def _rinex_convert_station_period(
                 # Track RINEX output in file_tracking DB
                 try:
                     from ..scheduling.bulk_scheduler import _track_rinex_output_files
+
                     output_files = [str(result.rinex_file)]
-                    _track_rinex_output_files(station_id, args.session, output_files, logger)
+                    _track_rinex_output_files(
+                        station_id, args.session, output_files, logger
+                    )
                 except Exception as e:
                     logger.debug(f"RINEX file tracking failed: {e}")
             else:
@@ -2578,6 +2797,7 @@ def _rinex_convert_station_period(
         logger.error(f"Error processing {station_id}: {e}")
         if args.loglevel == logging.DEBUG:
             import traceback
+
             traceback.print_exc()
         failed += 1
 
@@ -2592,10 +2812,10 @@ def cmd_rinex(args) -> int:
     # Import rinex module
     try:
         from ..rinex import (
+            NamingConvention,
+            RinexVersion,
             SBFConverter,
             TrimbleConverter,
-            RinexVersion,
-            NamingConvention,
         )
         from ..rinex.converter_base import CompressionFormat
     except ImportError as e:
@@ -2604,6 +2824,7 @@ def cmd_rinex(args) -> int:
 
     # Load RINEX defaults from config
     from ..config.receivers_config import get_receivers_config
+
     try:
         rinex_config = get_receivers_config().get_rinex_config()
     except FileNotFoundError:
@@ -2622,7 +2843,7 @@ def cmd_rinex(args) -> int:
         4: RinexVersion.RINEX_4,
     }
     # Use CLI arg if explicitly set, otherwise use config default
-    cli_version = getattr(args, 'rinex_version', None)
+    cli_version = getattr(args, "rinex_version", None)
     if cli_version is not None:
         rinex_version = version_map.get(cli_version, RinexVersion.RINEX_3)
     else:
@@ -2647,9 +2868,7 @@ def cmd_rinex(args) -> int:
     else:
         naming_str = rinex_config.get("default_naming", "short")
     naming_convention = (
-        NamingConvention.SHORT
-        if naming_str == "short"
-        else NamingConvention.LONG
+        NamingConvention.SHORT if naming_str == "short" else NamingConvention.LONG
     )
 
     # Parse observation types
@@ -2659,6 +2878,7 @@ def cmd_rinex(args) -> int:
 
     # Parse date range
     from datetime import timedelta
+
     from ..utils.time_utils import calculate_download_time_range
 
     start_time = None
@@ -2696,7 +2916,9 @@ def cmd_rinex(args) -> int:
 
     # Print progress info (always visible, not dependent on log level)
     print(f"RINEX conversion for {len(stations)} station(s)")
-    print(f"Date range: {start_time.strftime('%Y-%m-%d')} to {end_time.strftime('%Y-%m-%d')}")
+    print(
+        f"Date range: {start_time.strftime('%Y-%m-%d')} to {end_time.strftime('%Y-%m-%d')}"
+    )
     print(f"RINEX version: {rinex_version.value}, Naming: {naming_str}")
     logger.info(f"RINEX conversion for {len(stations)} stations")
     logger.info(f"Date range: {start_time} to {end_time}")
@@ -2715,9 +2937,15 @@ def cmd_rinex(args) -> int:
         converters: Dict[str, tuple] = {}
         for station_id in stations:
             conv, ext, _ = _create_rinex_converter(
-                station_id, args, rinex_version, apply_hatanaka,
-                compression_format, naming_convention, observation_types,
-                logger, rinex_config,
+                station_id,
+                args,
+                rinex_version,
+                apply_hatanaka,
+                compression_format,
+                naming_convention,
+                observation_types,
+                logger,
+                rinex_config,
             )
             if conv is not None:
                 converters[station_id] = (conv, ext)
@@ -2733,15 +2961,20 @@ def cmd_rinex(args) -> int:
             start_time, end_time, args.session, reverse=True
         )
         for period_start, period_end in periods:
-            if args.session == '15s_24hr':
+            if args.session == "15s_24hr":
                 logger.info(f"\n--- {period_start.strftime('%Y-%m-%d')} ---")
             else:
                 logger.info(f"\n--- {period_start.strftime('%Y-%m-%d %H:%M')} ---")
             for station_id, (conv, ext) in converters.items():
                 logger.info(f"Processing station: {station_id}")
                 c, f, s = _rinex_convert_station_period(
-                    station_id, conv, ext, period_start, period_end,
-                    args, logger,
+                    station_id,
+                    conv,
+                    ext,
+                    period_start,
+                    period_end,
+                    args,
+                    logger,
                 )
                 total_converted += c
                 total_failed += f
@@ -2750,35 +2983,48 @@ def cmd_rinex(args) -> int:
         # Station-first: current behavior
         for station_id in stations:
             print(f"\nProcessing: {station_id}")
-            logger.info(f"\n{'='*60}")
+            logger.info(f"\n{'=' * 60}")
             logger.info(f"Processing station: {station_id}")
-            logger.info(f"{'='*60}")
+            logger.info(f"{'=' * 60}")
 
             conv, ext, _ = _create_rinex_converter(
-                station_id, args, rinex_version, apply_hatanaka,
-                compression_format, naming_convention, observation_types,
-                logger, rinex_config,
+                station_id,
+                args,
+                rinex_version,
+                apply_hatanaka,
+                compression_format,
+                naming_convention,
+                observation_types,
+                logger,
+                rinex_config,
             )
             if conv is None:
                 total_skipped += 1
                 continue
 
             c, f, s = _rinex_convert_station_period(
-                station_id, conv, ext, start_time, end_time,
-                args, logger,
+                station_id,
+                conv,
+                ext,
+                start_time,
+                end_time,
+                args,
+                logger,
             )
             total_converted += c
             total_failed += f
             total_skipped += s
 
     # Summary
-    print(f"\nSummary: ✅ {total_converted} converted, ❌ {total_failed} failed, ⏭️  {total_skipped} skipped")
-    logger.info(f"\n{'='*60}")
-    logger.info(f"RINEX Conversion Summary:")
+    print(
+        f"\nSummary: ✅ {total_converted} converted, ❌ {total_failed} failed, ⏭️  {total_skipped} skipped"
+    )
+    logger.info(f"\n{'=' * 60}")
+    logger.info("RINEX Conversion Summary:")
     logger.info(f"  ✅ Converted: {total_converted}")
     logger.info(f"  ❌ Failed: {total_failed}")
     logger.info(f"  ⏭️  Skipped: {total_skipped}")
-    logger.info(f"{'='*60}")
+    logger.info(f"{'=' * 60}")
 
     return 0 if total_failed == 0 else 1
 
@@ -2789,7 +3035,7 @@ def cmd_tools(args) -> int:
 
     manager = ToolManager()
 
-    if not hasattr(args, 'tools_command') or args.tools_command is None:
+    if not hasattr(args, "tools_command") or args.tools_command is None:
         # No subcommand - show help
         print("Usage: receivers tools <command>")
         print("\nCommands:")
@@ -2828,7 +3074,7 @@ def cmd_tools(args) -> int:
 
     elif args.tools_command == "install":
         tool_name = args.tool_name
-        force = getattr(args, 'force', False)
+        force = getattr(args, "force", False)
 
         print(f"\nInstalling {tool_name}...")
         result = manager.install(tool_name, force=force)
@@ -2843,7 +3089,7 @@ def cmd_tools(args) -> int:
             return 1
 
     elif args.tools_command == "install-all":
-        force = getattr(args, 'force', False)
+        force = getattr(args, "force", False)
 
         print("\nInstalling all auto-installable tools...")
         results = manager.install_all(force=force)
@@ -2860,7 +3106,7 @@ def cmd_tools(args) -> int:
         return 0 if fail_count == 0 else 1
 
     elif args.tools_command == "check":
-        receiver_type = getattr(args, 'receiver_type', None)
+        receiver_type = getattr(args, "receiver_type", None)
 
         tools = manager.check_tools(receiver_type=receiver_type)
 
@@ -2885,7 +3131,7 @@ def cmd_tools(args) -> int:
         from pathlib import Path
 
         config_path = None
-        if hasattr(args, 'config') and args.config:
+        if hasattr(args, "config") and args.config:
             config_path = Path(args.config)
 
         updated = manager.configure_receivers_cfg(config_path)
@@ -2958,7 +3204,9 @@ def main() -> int:
 
             return handle_tos_command(args)
         except ImportError as e:
-            print(f"❌ TOS command requires tostools. Install with: pip install tostools")
+            print(
+                "❌ TOS command requires tostools. Install with: pip install tostools"
+            )
             print(f"   Error: {e}")
             return 1
 
@@ -2980,4 +3228,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

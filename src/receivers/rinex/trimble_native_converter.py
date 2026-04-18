@@ -96,7 +96,16 @@ class TrimbleNativeConverter(RawToRinexConverter):
     @property
     def supported_extensions(self) -> List[str]:
         """Return supported file extensions."""
-        return [".t02", ".T02", ".t00", ".T00", ".t02.gz", ".T02.gz", ".t00.gz", ".T00.gz"]
+        return [
+            ".t02",
+            ".T02",
+            ".t00",
+            ".T00",
+            ".t02.gz",
+            ".T02.gz",
+            ".t00.gz",
+            ".T00.gz",
+        ]
 
     @property
     def converter_name(self) -> str:
@@ -162,10 +171,10 @@ class TrimbleNativeConverter(RawToRinexConverter):
             self._temp_dirs.append(temp_dir)
 
             # Decompress if needed and copy to temp dir
-            if raw_file.suffix.lower() == '.gz':
+            if raw_file.suffix.lower() == ".gz":
                 working_file = temp_dir / raw_file.stem
-                with gzip.open(raw_file, 'rb') as f_in:
-                    with open(working_file, 'wb') as f_out:
+                with gzip.open(raw_file, "rb") as f_in:
+                    with open(working_file, "wb") as f_out:
                         shutil.copyfileobj(f_in, f_out)
             else:
                 working_file = temp_dir / raw_file.name
@@ -191,22 +200,30 @@ class TrimbleNativeConverter(RawToRinexConverter):
             # 3. Use Z: drive mapping for Linux paths (Z:\data maps to /data)
 
             # Path to convertToRinex inside the container
-            convert_exe = "C:\\Program Files\\Trimble\\convertToRINEX\\convertToRinex.exe"
+            convert_exe = (
+                "C:\\Program Files\\Trimble\\convertToRINEX\\convertToRinex.exe"
+            )
             wine_path = "/opt/wine/bin/wine"
 
             cmd = [
-                "docker", "run", "--rm",
-                "-v", f"{temp_dir}:/data",
-                "--entrypoint", "",
+                "docker",
+                "run",
+                "--rm",
+                "-v",
+                f"{temp_dir}:/data",
+                "--entrypoint",
+                "",
                 self.docker_image,
                 wine_path,
                 convert_exe,
                 f"Z:\\data\\{working_file.name}",
-                "-p", "Z:\\data\\out",
-                "-v", rinex_ver,
-                "-d",   # Include Doppler
+                "-p",
+                "Z:\\data\\out",
+                "-v",
+                rinex_ver,
+                "-d",  # Include Doppler
                 "-co",  # Include clock offsets
-                "-s",   # Include SNR
+                "-s",  # Include SNR
             ]
 
             self.logger.info(f"Running Trimble native conversion for {raw_file.name}")
@@ -272,31 +289,33 @@ class TrimbleNativeConverter(RawToRinexConverter):
         # > YYYY MM DD HH MM SS.SSSSSSS  F NNN      clock_offset
         # Columns: 1-35 = time fields, 36-40 = flag+nsats, 41-55 = 6X+F15.12
         _EPOCH_RE = re.compile(
-            r'^(> \d{4} \d{2} \d{2} \d{2} \d{2} [ \d]\d\.\d{7}  \d[ \d]{3})'
-            r'\s+'
-            r'([-\d][\d.]+)\s*$',
+            r"^(> \d{4} \d{2} \d{2} \d{2} \d{2} [ \d]\d\.\d{7}  \d[ \d]{3})"
+            r"\s+"
+            r"([-\d][\d.]+)\s*$",
             re.MULTILINE,
         )
 
         try:
-            content = rinex_file.read_text(encoding='ascii', errors='replace')
+            content = rinex_file.read_text(encoding="ascii", errors="replace")
         except Exception as e:
-            self.logger.warning(f"Could not read {rinex_file.name} for epoch normalization: {e}")
+            self.logger.warning(
+                f"Could not read {rinex_file.name} for epoch normalization: {e}"
+            )
             return
 
         fixed_count = 0
 
         def _fix_epoch(match: re.Match) -> str:
             nonlocal fixed_count
-            prefix = match.group(1)       # first 35 chars (time + flag + nsats)
+            prefix = match.group(1)  # first 35 chars (time + flag + nsats)
             offset_val = float(match.group(2))
             fixed_count += 1
-            return prefix + '%21.12f' % offset_val  # 6 spaces + 15-char number
+            return prefix + f"{offset_val:21.12f}"  # 6 spaces + 15-char number
 
         normalized = _EPOCH_RE.sub(_fix_epoch, content)
 
         if fixed_count > 0:
-            rinex_file.write_text(normalized, encoding='ascii')
+            rinex_file.write_text(normalized, encoding="ascii")
             self.logger.debug(
                 f"Normalized {fixed_count} epoch lines in {rinex_file.name}"
             )
@@ -317,9 +336,9 @@ class TrimbleNativeConverter(RawToRinexConverter):
         """
         # Trimble converter creates files with various naming patterns
         patterns = [
-            "*.??o",   # RINEX 2/3 obs
+            "*.??o",  # RINEX 2/3 obs
             "*.??O",
-            "*.rnx",   # RINEX 3
+            "*.rnx",  # RINEX 3
             "*.RNX",
         ]
 
@@ -327,9 +346,10 @@ class TrimbleNativeConverter(RawToRinexConverter):
             matches = list(output_dir.glob(pattern))
             # Filter to observation files only (not nav)
             obs_files = [
-                f for f in matches
-                if f.suffix.lower() in ('.o', '.rnx') or
-                   (len(f.suffix) == 4 and f.suffix[3].lower() == 'o')
+                f
+                for f in matches
+                if f.suffix.lower() in (".o", ".rnx")
+                or (len(f.suffix) == 4 and f.suffix[3].lower() == "o")
             ]
             if obs_files:
                 return max(obs_files, key=lambda p: p.stat().st_mtime)

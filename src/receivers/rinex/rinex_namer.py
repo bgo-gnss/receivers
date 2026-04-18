@@ -308,7 +308,9 @@ class RinexNamer:
         return None
 
     @staticmethod
-    def parse_date_hour(filename: str, station_id: Optional[str] = None) -> Tuple[Optional[date], Optional[int]]:
+    def parse_date_hour(
+        filename: str, station_id: Optional[str] = None
+    ) -> Tuple[Optional[date], Optional[int]]:
         """Parse a RINEX filename into (file_date, file_hour).
 
         Convenience for callers that only need the datetime anchor. Daily
@@ -332,16 +334,26 @@ class RinexNamer:
 
         parsed = parse_rinex3_filename(name)
         if parsed is not None:
-            if station_id is not None and parsed["station"].upper() != station_id.upper():
+            if (
+                station_id is not None
+                and parsed["station"].upper() != station_id.upper()
+            ):
                 return None, None
             file_date = date(parsed["year"], 1, 1) + timedelta(days=parsed["doy"] - 1)
-            if parsed["file_period"] == "01D" and parsed["hour"] == 0 and parsed["minute"] == 0:
+            if (
+                parsed["file_period"] == "01D"
+                and parsed["hour"] == 0
+                and parsed["minute"] == 0
+            ):
                 return file_date, None
             return file_date, parsed["hour"]
 
         parsed = parse_rinex2_filename(name)
         if parsed is not None:
-            if station_id is not None and parsed["station"].upper() != station_id.upper():
+            if (
+                station_id is not None
+                and parsed["station"].upper() != station_id.upper()
+            ):
                 return None, None
             file_date = date(parsed["year"], 1, 1) + timedelta(days=parsed["doy"] - 1)
             session = parsed["session"]
