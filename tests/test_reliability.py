@@ -275,18 +275,17 @@ class TestDiskDataRouting:
 
         disk_result = {"status": "mounted", "used_mb": 100, "total_mb": 1000}
 
-        with patch.object(ext, "_check_port_status", return_value=None), patch.object(
-            ext, "_query_power_status", return_value=None
-        ), patch.object(ext, "_query_receiver_status", return_value=None), patch.object(
-            ext, "_query_disk_status", return_value=disk_result
-        ), patch.object(ext, "_query_pvt_geodetic", return_value=None), patch.object(
-            ext, "_query_satellite_tracking", return_value=None
-        ), patch.object(
-            ext, "_query_ntrip_client_status", return_value=None
-        ), patch.object(
-            ext, "_query_ntrip_server_status", return_value=None
-        ), patch.object(ext, "_query_receiver_setup", return_value=None), patch.object(
-            ext, "_query_logging_sessions", return_value=None
+        with (
+            patch.object(ext, "_check_port_status", return_value=None),
+            patch.object(ext, "_query_power_status", return_value=None),
+            patch.object(ext, "_query_receiver_status", return_value=None),
+            patch.object(ext, "_query_disk_status", return_value=disk_result),
+            patch.object(ext, "_query_pvt_geodetic", return_value=None),
+            patch.object(ext, "_query_satellite_tracking", return_value=None),
+            patch.object(ext, "_query_ntrip_client_status", return_value=None),
+            patch.object(ext, "_query_ntrip_server_status", return_value=None),
+            patch.object(ext, "_query_receiver_setup", return_value=None),
+            patch.object(ext, "_query_logging_sessions", return_value=None),
         ):
             health = ext.extract_health_data()
 
@@ -908,10 +907,10 @@ class TestModeSwitchFtpReturn:
                 raise ConnectionError("500 I won't open a connection to X (only to Y)")
             return 0
 
-        with patch.object(
-            rx, "_download_with_progressbar", side_effect=side_effect
-        ), patch.object(rx, "_ftp_open_connection", return_value=ftp_new), patch.object(
-            rx, "_get_ftp_mode_description", return_value="passive"
+        with (
+            patch.object(rx, "_download_with_progressbar", side_effect=side_effect),
+            patch.object(rx, "_ftp_open_connection", return_value=ftp_new),
+            patch.object(rx, "_get_ftp_mode_description", return_value="passive"),
         ):
             result, ftp_out = rx._download_with_progressbar_and_retry(
                 ftp_orig,
@@ -1240,10 +1239,12 @@ class TestSessionBootstrapTimeout:
         """15s_24hr sessions get 900s bootstrap when adaptive returns None."""
         from receivers.utils.stall_timeout import get_stall_timeout
 
-        with patch(
-            "receivers.utils.stall_timeout._get_overrides", return_value={}
-        ), patch(
-            "receivers.utils.stall_timeout.compute_adaptive_timeout", return_value=None
+        with (
+            patch("receivers.utils.stall_timeout._get_overrides", return_value={}),
+            patch(
+                "receivers.utils.stall_timeout.compute_adaptive_timeout",
+                return_value=None,
+            ),
         ):
             timeout = get_stall_timeout(
                 "BRTT",
@@ -1257,10 +1258,12 @@ class TestSessionBootstrapTimeout:
         """Adaptive timeout (tier 2) overrides bootstrap (tier 2b)."""
         from receivers.utils.stall_timeout import get_stall_timeout
 
-        with patch(
-            "receivers.utils.stall_timeout._get_overrides", return_value={}
-        ), patch(
-            "receivers.utils.stall_timeout.compute_adaptive_timeout", return_value=1200
+        with (
+            patch("receivers.utils.stall_timeout._get_overrides", return_value={}),
+            patch(
+                "receivers.utils.stall_timeout.compute_adaptive_timeout",
+                return_value=1200,
+            ),
         ):
             timeout = get_stall_timeout(
                 "BRTT",
@@ -1274,11 +1277,15 @@ class TestSessionBootstrapTimeout:
         """DB override (tier 1) overrides bootstrap (tier 2b)."""
         from receivers.utils.stall_timeout import get_stall_timeout
 
-        with patch(
-            "receivers.utils.stall_timeout._get_overrides", return_value={"BRTT": 500}
-        ), patch(
-            "receivers.utils.stall_timeout.compute_adaptive_timeout"
-        ) as mock_adaptive:
+        with (
+            patch(
+                "receivers.utils.stall_timeout._get_overrides",
+                return_value={"BRTT": 500},
+            ),
+            patch(
+                "receivers.utils.stall_timeout.compute_adaptive_timeout"
+            ) as mock_adaptive,
+        ):
             timeout = get_stall_timeout(
                 "BRTT",
                 "polarx5",
@@ -1292,11 +1299,14 @@ class TestSessionBootstrapTimeout:
         """1Hz_1hr sessions fall through to receivers.cfg (no bootstrap defined)."""
         from receivers.utils.stall_timeout import get_stall_timeout
 
-        with patch(
-            "receivers.utils.stall_timeout._get_overrides", return_value={}
-        ), patch(
-            "receivers.utils.stall_timeout.compute_adaptive_timeout", return_value=None
-        ), patch("receivers.config.receivers_config.get_receivers_config") as mock_cfg:
+        with (
+            patch("receivers.utils.stall_timeout._get_overrides", return_value={}),
+            patch(
+                "receivers.utils.stall_timeout.compute_adaptive_timeout",
+                return_value=None,
+            ),
+            patch("receivers.config.receivers_config.get_receivers_config") as mock_cfg,
+        ):
             mock_cfg.return_value.get_receiver_config.return_value = {
                 "stall_timeout": 600
             }
@@ -1312,9 +1322,10 @@ class TestSessionBootstrapTimeout:
         """Without session_type, falls through to receivers.cfg."""
         from receivers.utils.stall_timeout import get_stall_timeout
 
-        with patch(
-            "receivers.utils.stall_timeout._get_overrides", return_value={}
-        ), patch("receivers.config.receivers_config.get_receivers_config") as mock_cfg:
+        with (
+            patch("receivers.utils.stall_timeout._get_overrides", return_value={}),
+            patch("receivers.config.receivers_config.get_receivers_config") as mock_cfg,
+        ):
             mock_cfg.return_value.get_receiver_config.return_value = {
                 "stall_timeout": 600
             }

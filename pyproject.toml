@@ -131,6 +131,10 @@ ignore = [
     "B007",  # unused loop control variable (often intentional)
     "B017",  # assert-raises exception (tests assert broad exception intentionally)
     "B023",  # function uses loop variable (legacy pattern)
+    "UP006", # non-pep585 annotation (List/Dict/Tuple — mixed with py585 `list[...]` in codebase)
+    "UP007", # non-pep604 union annotation (Optional/Union — style preference)
+    "UP035", # deprecated import (typing.List/Dict/Tuple not deprecated on py3.9)
+    "UP045", # non-pep604 Optional annotation (Optional[X] vs X | None — style preference)
 ]
 
 [tool.ruff.lint.per-file-ignores]
