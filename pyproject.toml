@@ -23,7 +23,6 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -35,7 +34,7 @@ classifiers = [
     "Environment :: Console",
     "Natural Language :: English",
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "python-dateutil>=2.9.0",
     "pathlib2>=2.3.7; python_version<'3.4'",
@@ -105,7 +104,7 @@ allow-direct-references = true
 packages = ["src/receivers"]
 
 [tool.ruff]
-target-version = "py39"
+target-version = "py310"
 line-length = 88
 
 [tool.ruff.lint]
@@ -135,6 +134,7 @@ ignore = [
     "UP007", # non-pep604 union annotation (Optional/Union — style preference)
     "UP035", # deprecated import (typing.List/Dict/Tuple not deprecated on py3.9)
     "UP045", # non-pep604 Optional annotation (Optional[X] vs X | None — style preference)
+    "B905",  # zip without explicit strict= (legacy pattern, safe when lengths are pre-validated)
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -160,11 +160,11 @@ skips = [
 
 [tool.black]
 line-length = 88
-target-version = ['py39', 'py310', 'py311', 'py312', 'py313']
+target-version = ['py310', 'py311', 'py312', 'py313']
 include = '\.pyi?$'
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 check_untyped_defs = true

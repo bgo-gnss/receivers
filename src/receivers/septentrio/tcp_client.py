@@ -93,7 +93,7 @@ class PolaRX5TCPClient:
             self.logger.debug(f"Connected as {self._conn_id}")
             return True
 
-        except socket.timeout:
+        except TimeoutError:
             self.logger.error(f"Connection timeout to {self.host}:{self.port}")
             return False
         except ConnectionRefusedError:
@@ -150,7 +150,7 @@ class PolaRX5TCPClient:
         try:
             response = self._sock.recv(8192).decode("utf-8", errors="ignore")
             return response
-        except socket.timeout:
+        except TimeoutError:
             return ""
 
     def send_commands(
@@ -218,7 +218,7 @@ class PolaRX5TCPClient:
                         # Double-check it's not a block separator
                         if not decoded.rstrip().endswith("---->"):
                             break
-            except socket.timeout:
+            except TimeoutError:
                 consecutive_timeouts += 1
                 # After 2 consecutive timeouts with data, assume we're done
                 if response and consecutive_timeouts >= 2:
@@ -353,7 +353,7 @@ class PolaRX5TCPClient:
                         sync_pos = response.find(b"$@")
                         if sync_pos >= 0:
                             return response[sync_pos:]
-            except socket.timeout:
+            except TimeoutError:
                 if len(response) == 0:
                     continue
                 if expected_id is None:

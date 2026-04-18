@@ -1012,7 +1012,7 @@ class PolaRX5(BaseReceiver):
                                 f"retrying in {port_delay}s..."
                             )
                             time.sleep(port_delay)
-                except socket.timeout:
+                except TimeoutError:
                     if port_attempt < port_retries - 1:
                         self.logger.warning(
                             f"⚠️  Port check attempt {port_attempt + 1}/{port_retries} timed out, "

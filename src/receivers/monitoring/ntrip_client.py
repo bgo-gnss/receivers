@@ -271,12 +271,12 @@ class NTRIPClient:
                         bytes_received += len(chunk)
                     else:
                         break
-                except socket.timeout:
+                except TimeoutError:
                     continue
 
             return True, bytes_received, None
 
-        except socket.timeout:
+        except TimeoutError:
             return False, 0, "Connection timeout"
         except ConnectionRefusedError:
             return False, 0, "Connection refused"

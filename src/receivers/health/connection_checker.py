@@ -277,7 +277,7 @@ class ConnectionChecker:
                 details={"port": port},
             )
 
-        except socket.timeout:
+        except TimeoutError:
             return ConnectionStatus(
                 status=HealthStatus.CRITICAL,
                 accessible=False,
@@ -368,7 +368,7 @@ class ConnectionChecker:
                 },
             )
 
-        except socket.timeout:
+        except TimeoutError:
             return ConnectionStatus(
                 status=HealthStatus.CRITICAL,
                 accessible=False,
@@ -451,7 +451,7 @@ class ConnectionChecker:
                 },
             )
 
-        except socket.timeout:
+        except TimeoutError:
             return ConnectionStatus(
                 status=HealthStatus.CRITICAL,
                 accessible=False,
@@ -525,7 +525,7 @@ class ConnectionChecker:
                 },
             )
 
-        except socket.timeout:
+        except TimeoutError:
             return ConnectionStatus(
                 status=HealthStatus.CRITICAL,
                 accessible=False,

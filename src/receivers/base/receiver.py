@@ -103,7 +103,7 @@ class BaseReceiver(ABC):
             sock.close()
             return True if not return_details else {"success": True}
 
-        except socket.timeout:
+        except TimeoutError:
             # No response - host may be down or port filtered
             result = {
                 "success": False,
