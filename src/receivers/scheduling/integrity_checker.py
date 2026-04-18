@@ -14,7 +14,10 @@ import statistics
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
+
+if TYPE_CHECKING:
+    from ..health.file_tracker import ArchiveFileChecker, FileTracker
 
 logger = logging.getLogger("receivers.scheduler.integrity")
 
@@ -65,8 +68,7 @@ def _run_integrity_check_job(
     # Apply station filter if provided (CLI mode)
     if station_filter:
         active_stations = {
-            sid: cfg for sid, cfg in active_stations.items()
-            if sid in station_filter
+            sid: cfg for sid, cfg in active_stations.items() if sid in station_filter
         }
 
     if not active_stations:
@@ -144,13 +146,19 @@ def _check_station_session(
 
     # Phase 1: Scan archive for untracked files
     untracked = _find_untracked_files(
-        station_id, session_type, start_date, end_date, checker, tracker,
+        station_id,
+        session_type,
+        start_date,
+        end_date,
+        checker,
+        tracker,
         receiver_type=receiver_type,
     )
     result["untracked"] = len(untracked)
 
     # Register untracked files that pass validation
     from ..utils.archive_validator import ArchiveValidator
+
     validator = ArchiveValidator()
 
     for file_path, file_date, file_hour in untracked:
@@ -159,11 +167,18 @@ def _check_station_session(
                 file_size = os.path.getsize(file_path)
                 filename = os.path.basename(file_path)
                 tracker.mark_file_archived(
-                    station_id, session_type, file_date, file_hour,
-                    filename, file_size,
+                    station_id,
+                    session_type,
+                    file_date,
+                    file_hour,
+                    filename,
+                    file_size,
                 )
                 tracker.mark_integrity_checked(
-                    station_id, session_type, file_date, file_hour,
+                    station_id,
+                    session_type,
+                    file_date,
+                    file_hour,
                 )
                 result["registered"] += 1
                 logger.debug(f"Registered untracked file: {file_path}")
@@ -171,18 +186,28 @@ def _check_station_session(
                 file_size = os.path.getsize(file_path)
                 filename = os.path.basename(file_path)
                 tracker.mark_file_suspect(
-                    station_id, session_type, file_date, file_hour,
-                    filename, file_size,
+                    station_id,
+                    session_type,
+                    file_date,
+                    file_hour,
+                    filename,
+                    file_size,
                     reason="untracked file failed archive validation",
                 )
                 result["suspect"] += 1
-                logger.warning(f"Suspect untracked file (validation failed): {file_path}")
+                logger.warning(
+                    f"Suspect untracked file (validation failed): {file_path}"
+                )
         except Exception as e:
             logger.debug(f"Error processing untracked file {file_path}: {e}")
 
     # Phase 2: Size consistency check for tracked files
     flagged = _size_consistency_check(
-        station_id, session_type, start_date, end_date, tracker,
+        station_id,
+        session_type,
+        start_date,
+        end_date,
+        tracker,
         tolerance_pct=size_tolerance_pct,
     )
     result["checked"] = flagged["total_checked"]
@@ -192,12 +217,19 @@ def _check_station_session(
         for file_date, file_hour, file_size, median_size in flagged["outliers"]:
             try:
                 remote_size = _get_remote_file_size(
-                    station_id, session_type, file_date, file_hour, station_config,
+                    station_id,
+                    session_type,
+                    file_date,
+                    file_hour,
+                    station_config,
                 )
                 if remote_size is None:
                     # File no longer on receiver — mark suspect but don't delete
                     tracker.mark_file_suspect(
-                        station_id, session_type, file_date, file_hour,
+                        station_id,
+                        session_type,
+                        file_date,
+                        file_hour,
                         reason=f"size outlier ({file_size} vs median {median_size}), "
                         f"no longer on receiver",
                     )
@@ -205,12 +237,18 @@ def _check_station_session(
                 elif abs(remote_size - file_size) < 100:
                     # Sizes match (within rounding) — file is OK
                     tracker.mark_integrity_checked(
-                        station_id, session_type, file_date, file_hour,
+                        station_id,
+                        session_type,
+                        file_date,
+                        file_hour,
                     )
                 else:
                     # Sizes differ — mark suspect
                     tracker.mark_file_suspect(
-                        station_id, session_type, file_date, file_hour,
+                        station_id,
+                        session_type,
+                        file_date,
+                        file_hour,
                         reason=f"size mismatch: local={file_size}, "
                         f"remote={remote_size}, median={median_size}",
                     )
@@ -223,7 +261,11 @@ def _check_station_session(
     elif not flagged["outliers"]:
         # No outliers — mark all checked files as integrity verified
         _mark_all_integrity_checked(
-            station_id, session_type, start_date, end_date, tracker,
+            station_id,
+            session_type,
+            start_date,
+            end_date,
+            tracker,
         )
 
     return result
@@ -257,7 +299,10 @@ def _find_untracked_files(
 
     for year, month in unique_months:
         archive_dir = checker.get_archive_directory(
-            station_id, session_type, year=year, month=month,
+            station_id,
+            session_type,
+            year=year,
+            month=month,
         )
         if not os.path.isdir(archive_dir):
             continue
@@ -287,7 +332,9 @@ def _find_untracked_files(
                 continue
 
             # Check if already tracked
-            if _is_file_tracked(tracker, station_id, session_type, file_date, file_hour):
+            if _is_file_tracked(
+                tracker, station_id, session_type, file_date, file_hour
+            ):
                 continue
 
             untracked.append((filepath, file_date, file_hour))
@@ -393,7 +440,9 @@ def _size_consistency_check(
             )
 
     except Exception as e:
-        logger.debug(f"Size consistency check failed for {station_id}/{session_type}: {e}")
+        logger.debug(
+            f"Size consistency check failed for {station_id}/{session_type}: {e}"
+        )
 
     return result
 
@@ -415,11 +464,17 @@ def _get_remote_file_size(
     receiver_type = station_config.get("receiver_type", "").lower()
 
     if receiver_type in ("polarx5", ""):
-        return _get_remote_size_ftp(station_id, session_type, file_date, file_hour, station_config)
+        return _get_remote_size_ftp(
+            station_id, session_type, file_date, file_hour, station_config
+        )
     elif receiver_type in ("netr9", "netr5", "netrs"):
-        return _get_remote_size_http(station_id, session_type, file_date, file_hour, station_config)
+        return _get_remote_size_http(
+            station_id, session_type, file_date, file_hour, station_config
+        )
     elif receiver_type == "g10":
-        return _get_remote_size_ftp(station_id, session_type, file_date, file_hour, station_config)
+        return _get_remote_size_ftp(
+            station_id, session_type, file_date, file_hour, station_config
+        )
     else:
         logger.debug(f"Unknown receiver type for remote size check: {receiver_type}")
         return None
@@ -472,12 +527,18 @@ def _get_remote_size_ftp(
                     "1Hz_1hr": ("b", "1Hz_1hr"),
                     "status_1hr": ("c", "status_1hr"),
                 }
-                letter, session_path = session_map.get(session_type, ("a", session_type))
+                letter, session_path = session_map.get(
+                    session_type, ("a", session_type)
+                )
 
                 if "24hr" in session_type:
-                    file_name = f"{station_id}{dt.strftime('%Y%m%d')}0000{letter}.sbf.gz"
+                    file_name = (
+                        f"{station_id}{dt.strftime('%Y%m%d')}0000{letter}.sbf.gz"
+                    )
                 else:
-                    file_name = f"{station_id}{dt.strftime('%Y%m%d%H')}00{letter}.sbf.gz"
+                    file_name = (
+                        f"{station_id}{dt.strftime('%Y%m%d%H')}00{letter}.sbf.gz"
+                    )
 
                 remote_file = f"/DSK1/SSN/{session_path}/{gps_week:05d}/{file_name}"
             except ImportError:

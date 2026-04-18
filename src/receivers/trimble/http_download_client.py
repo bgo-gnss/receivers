@@ -15,10 +15,10 @@ import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urljoin, quote
+from urllib.parse import quote, urljoin
 
-from .http_client import TrimbleHTTPClient
 from ..utils.file_validator import FileValidator
+from .http_client import TrimbleHTTPClient
 
 
 class ProgressBar:
@@ -59,7 +59,9 @@ class ProgressBar:
             speed_kbps = self.current_size / elapsed_time / 1024
             if progress > 0:
                 eta_seconds = (elapsed_time / progress) - elapsed_time
-                eta_str = f" ETA: {int(eta_seconds)}s" if eta_seconds > 0 else " ETA: --"
+                eta_str = (
+                    f" ETA: {int(eta_seconds)}s" if eta_seconds > 0 else " ETA: --"
+                )
             else:
                 eta_str = " ETA: --"
         else:
@@ -67,7 +69,7 @@ class ProgressBar:
             eta_str = " ETA: --"
 
         # Build progress bar
-        bar = '█' * filled_width + '░' * (self.width - filled_width)
+        bar = "█" * filled_width + "░" * (self.width - filled_width)
 
         # Format sizes
         current_mb = self.current_size / (1024 * 1024)
@@ -76,7 +78,7 @@ class ProgressBar:
         # Build complete progress line
         progress_line = (
             f"\r{self.filename}: {bar} "
-            f"{progress*100:.1f}% "
+            f"{progress * 100:.1f}% "
             f"({current_mb:.1f}/{total_mb:.1f}MB) "
             f"@ {speed_kbps:.1f} KB/s{eta_str}"
         )
@@ -120,6 +122,7 @@ class NetR9HTTPDownloader:
         # Get timeout settings from configuration
         from ..config.receivers_config import get_receivers_config
         from ..utils.stall_timeout import get_stall_timeout
+
         receivers_config = get_receivers_config()
         netr9_config = receivers_config.get_receiver_config("netr9")
         # Increased defaults for slow/remote connections
@@ -158,7 +161,9 @@ class NetR9HTTPDownloader:
 
         if not logger.handlers:
             handler = logging.StreamHandler()
-            formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+            formatter = logging.Formatter(
+                "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+            )
             handler.setFormatter(formatter)
             logger.addHandler(handler)
             logger.setLevel(level)
@@ -201,7 +206,9 @@ class NetR9HTTPDownloader:
             return ""
 
         # Test 2: NetR9 path failed - likely NetR5 with CACHEDIR prefix
-        self.logger.debug("Standard /Internal/ path failed - checking for NetR5 CACHEDIR prefix...")
+        self.logger.debug(
+            "Standard /Internal/ path failed - checking for NetR5 CACHEDIR prefix..."
+        )
 
         # Fetch root page to find CACHEDIR links
         success, response, error = self.http_client.get_url("/")
@@ -216,7 +223,7 @@ class NetR9HTTPDownloader:
         # Parse HTML for CACHEDIR links
         # Look for patterns like: href="CACHEDIR656804383/..." (relative paths without leading slash)
         # NetR5 download URLs use: /CACHEDIR{number}/download/Internal/...
-        cachedir_pattern = r'CACHEDIR\d+'
+        cachedir_pattern = r"CACHEDIR\d+"
         match = re.search(cachedir_pattern, response)
 
         if match:
@@ -225,11 +232,15 @@ class NetR9HTTPDownloader:
             discovered_path = f"/{cachedir_name}/download"
             self.base_path = discovered_path
             self._base_path_discovered = True
-            self.logger.info(f"✅ Detected NetR5 receiver with CACHEDIR prefix: {discovered_path}")
+            self.logger.info(
+                f"✅ Detected NetR5 receiver with CACHEDIR prefix: {discovered_path}"
+            )
             return discovered_path
         else:
             # No CACHEDIR found - fall back to standard path
-            self.logger.warning("Could not detect CACHEDIR prefix - using standard paths")
+            self.logger.warning(
+                "Could not detect CACHEDIR prefix - using standard paths"
+            )
             self.base_path = ""
             self._base_path_discovered = True
             return ""
@@ -244,7 +255,7 @@ class NetR9HTTPDownloader:
             List of (filename, filesize) tuples
         """
         # Discover base path if not yet done (for file downloads)
-        base_path = self._discover_base_path()
+        self._discover_base_path()
 
         # IMPORTANT: Directory listings do NOT use CACHEDIR prefix (NetR5 firmware limitation)
         # The /prog/show?directory endpoint only works with standard /Internal/ paths
@@ -261,22 +272,22 @@ class NetR9HTTPDownloader:
         # Parse the directory response (based on actual NetR9 response format)
         files = []
         try:
-            for line in response.split('\n'):
+            for line in response.split("\n"):
                 line = line.strip()
-                if 'name=' in line and 'size=' in line and self.station_id in line:
+                if "name=" in line and "size=" in line and self.station_id in line:
                     # NetR9 format: name=SJUK202509010000a.T02 size=2982914  ctime=1440720000 attr=0000818
                     # Extract filename (after 'name=')
-                    name_start = line.find('name=') + 5
-                    name_end = line.find(' ', name_start)
+                    name_start = line.find("name=") + 5
+                    name_end = line.find(" ", name_start)
                     filename = line[name_start:name_end]
 
                     # Extract size (after 'size=')
-                    size_start = line.find('size=') + 5
-                    size_end = line.find(' ', size_start)
+                    size_start = line.find("size=") + 5
+                    size_end = line.find(" ", size_start)
                     filesize = int(line[size_start:size_end])
 
                     # Filter out .T0B files (as in rek_scripts)
-                    if not filename.endswith('.T0B'):
+                    if not filename.endswith(".T0B"):
                         files.append((filename, filesize))
 
         except (ValueError, IndexError) as e:
@@ -285,9 +296,15 @@ class NetR9HTTPDownloader:
         self.logger.debug(f"Found {len(files)} files in {remote_path}")
         return files
 
-    def download_file(self, remote_path: str, filename: str, local_path: Path,
-                     expected_size: Optional[int] = None, max_retries: int = 3,
-                     session_type: str = "unknown") -> bool:
+    def download_file(
+        self,
+        remote_path: str,
+        filename: str,
+        local_path: Path,
+        expected_size: Optional[int] = None,
+        max_retries: int = 3,
+        session_type: str = "unknown",
+    ) -> bool:
         """Download a single file from NetR9/NetR5 receiver with retry and reconnection.
 
         Args:
@@ -305,8 +322,12 @@ class NetR9HTTPDownloader:
 
         # Timeout/connection error patterns that require reconnection
         timeout_patterns = [
-            "timed out", "timeout", "cannot read from timed out",
-            "connection reset", "broken pipe", "connection refused"
+            "timed out",
+            "timeout",
+            "cannot read from timed out",
+            "connection reset",
+            "broken pipe",
+            "connection refused",
         ]
 
         initial_delay = 0.5
@@ -350,11 +371,14 @@ class NetR9HTTPDownloader:
             if attempt == 0:
                 self.logger.info(f"Downloading {filename} from {remote_path}")
             else:
-                self.logger.info(f"Downloading {filename} (attempt {attempt + 1}/{max_retries + 1})")
+                self.logger.info(
+                    f"Downloading {filename} (attempt {attempt + 1}/{max_retries + 1})"
+                )
 
             try:
                 # Use authenticated session from http_client
                 import requests
+
                 full_url = f"http://{self.http_client.ip}:{self.http_client.http_port}{endpoint}"
                 self.logger.debug(f"Downloading from: {full_url}")
 
@@ -364,7 +388,7 @@ class NetR9HTTPDownloader:
                     full_url,
                     auth=self.http_client.auth,  # Include authentication credentials
                     stream=True,
-                    timeout=(self.connect_timeout, None)  # No read timeout
+                    timeout=(self.connect_timeout, None),  # No read timeout
                 )
                 response.raise_for_status()
 
@@ -377,7 +401,7 @@ class NetR9HTTPDownloader:
                 if expected_size and expected_size > 0:
                     progress_bar = ProgressBar(expected_size, filename)
 
-                with open(local_path, 'wb') as f:
+                with open(local_path, "wb") as f:
                     for chunk in response.iter_content(chunk_size=65536):
                         if chunk:
                             f.write(chunk)
@@ -417,72 +441,121 @@ class NetR9HTTPDownloader:
 
                 if expected_size is not None:
                     # Log file size comparison (matching PolaRX5 pattern)
-                    self.logger.info(f"Remote file size: {expected_size} bytes, Local file size: {local_file_size} bytes")
+                    self.logger.info(
+                        f"Remote file size: {expected_size} bytes, Local file size: {local_file_size} bytes"
+                    )
                     size_diff = local_file_size - expected_size
-                    self.logger.info(f"Difference between remote and downloaded file: {size_diff} bytes")
+                    self.logger.info(
+                        f"Difference between remote and downloaded file: {size_diff} bytes"
+                    )
 
                     if size_diff == 0:
-                        self.logger.info(f"✅ Successfully downloaded {filename} ({local_file_size:,} bytes)")
+                        self.logger.info(
+                            f"✅ Successfully downloaded {filename} ({local_file_size:,} bytes)"
+                        )
 
                         # Validate file integrity (matching PolaRX5 pattern)
-                        validation = self.file_validator.validate_file(str(local_path), expected_size)
-                        if not validation['valid']:
-                            self.logger.warning(f"Downloaded file failed validation: {validation['error']}")
-                            self.logger.info(f"Removing invalid downloaded file: {local_path}")
+                        validation = self.file_validator.validate_file(
+                            str(local_path), expected_size
+                        )
+                        if not validation["valid"]:
+                            self.logger.warning(
+                                f"Downloaded file failed validation: {validation['error']}"
+                            )
+                            self.logger.info(
+                                f"Removing invalid downloaded file: {local_path}"
+                            )
                             record_download(
-                                self.station_id, session_type, "failed",
-                                filename=filename, duration_seconds=download_time,
-                                bytes_downloaded=local_file_size, file_size=expected_size,
-                                stall_timeout_used=self.stall_timeout, attempt=attempt + 1,
+                                self.station_id,
+                                session_type,
+                                "failed",
+                                filename=filename,
+                                duration_seconds=download_time,
+                                bytes_downloaded=local_file_size,
+                                file_size=expected_size,
+                                stall_timeout_used=self.stall_timeout,
+                                attempt=attempt + 1,
                                 message=f"Validation failed: {validation.get('error', 'unknown')}",
                             )
                             try:
                                 local_path.unlink()
                                 return False
                             except OSError as e:
-                                self.logger.error(f"Could not remove invalid file {local_path}: {e}")
+                                self.logger.error(
+                                    f"Could not remove invalid file {local_path}: {e}"
+                                )
                                 return False
                         else:
-                            self.logger.debug(f"Downloaded file validated: {validation['compression']} compression, {validation['size']} bytes")
+                            self.logger.debug(
+                                f"Downloaded file validated: {validation['compression']} compression, {validation['size']} bytes"
+                            )
 
                         record_download(
-                            self.station_id, session_type, "completed",
-                            filename=filename, duration_seconds=download_time,
-                            bytes_downloaded=local_file_size, file_size=expected_size,
-                            stall_timeout_used=self.stall_timeout, attempt=attempt + 1,
+                            self.station_id,
+                            session_type,
+                            "completed",
+                            filename=filename,
+                            duration_seconds=download_time,
+                            bytes_downloaded=local_file_size,
+                            file_size=expected_size,
+                            stall_timeout_used=self.stall_timeout,
+                            attempt=attempt + 1,
                         )
                         return True
                     else:
-                        self.logger.error(f"❌ Download incomplete for {filename}: size mismatch of {size_diff} bytes")
-                        self.logger.error(f"   Expected: {expected_size:,} bytes, Got: {local_file_size:,} bytes")
-                        self.logger.info(f"   Partial file kept for resume: {local_path}")
+                        self.logger.error(
+                            f"❌ Download incomplete for {filename}: size mismatch of {size_diff} bytes"
+                        )
+                        self.logger.error(
+                            f"   Expected: {expected_size:,} bytes, Got: {local_file_size:,} bytes"
+                        )
+                        self.logger.info(
+                            f"   Partial file kept for resume: {local_path}"
+                        )
                         record_download(
-                            self.station_id, session_type, "failed",
-                            filename=filename, duration_seconds=download_time,
-                            bytes_downloaded=local_file_size, file_size=expected_size,
-                            stall_timeout_used=self.stall_timeout, attempt=attempt + 1,
+                            self.station_id,
+                            session_type,
+                            "failed",
+                            filename=filename,
+                            duration_seconds=download_time,
+                            bytes_downloaded=local_file_size,
+                            file_size=expected_size,
+                            stall_timeout_used=self.stall_timeout,
+                            attempt=attempt + 1,
                             message=f"Size mismatch: got {local_file_size}, expected {expected_size}",
                         )
                         return False
                 else:
                     # No expected size - just validate what we can
                     validation = self.file_validator.validate_file(str(local_path))
-                    if validation['valid']:
-                        self.logger.info(f"✅ Downloaded {filename} ({local_file_size:,} bytes) - integrity validated")
+                    if validation["valid"]:
+                        self.logger.info(
+                            f"✅ Downloaded {filename} ({local_file_size:,} bytes) - integrity validated"
+                        )
                         record_download(
-                            self.station_id, session_type, "completed",
-                            filename=filename, duration_seconds=download_time,
+                            self.station_id,
+                            session_type,
+                            "completed",
+                            filename=filename,
+                            duration_seconds=download_time,
                             bytes_downloaded=local_file_size,
-                            stall_timeout_used=self.stall_timeout, attempt=attempt + 1,
+                            stall_timeout_used=self.stall_timeout,
+                            attempt=attempt + 1,
                         )
                         return True
                     else:
-                        self.logger.error(f"❌ Download validation failed for {filename}: {validation['error']}")
+                        self.logger.error(
+                            f"❌ Download validation failed for {filename}: {validation['error']}"
+                        )
                         record_download(
-                            self.station_id, session_type, "failed",
-                            filename=filename, duration_seconds=download_time,
+                            self.station_id,
+                            session_type,
+                            "failed",
+                            filename=filename,
+                            duration_seconds=download_time,
                             bytes_downloaded=local_file_size,
-                            stall_timeout_used=self.stall_timeout, attempt=attempt + 1,
+                            stall_timeout_used=self.stall_timeout,
+                            attempt=attempt + 1,
                             message=f"Validation failed: {validation.get('error', 'unknown')}",
                         )
                         try:
@@ -498,16 +571,23 @@ class NetR9HTTPDownloader:
                 outcome = "stall_timeout" if is_stall else "failed"
 
                 record_download(
-                    self.station_id, session_type, outcome,
-                    filename=filename, duration_seconds=duration,
-                    bytes_downloaded=bytes_written, file_size=expected_size,
-                    stall_timeout_used=self.stall_timeout, attempt=attempt + 1,
+                    self.station_id,
+                    session_type,
+                    outcome,
+                    filename=filename,
+                    duration_seconds=duration,
+                    bytes_downloaded=bytes_written,
+                    file_size=expected_size,
+                    stall_timeout_used=self.stall_timeout,
+                    attempt=attempt + 1,
                     message=str(e)[:500],
                 )
 
                 # If this was the last attempt, give up
                 if attempt >= max_retries:
-                    self.logger.error(f"❌ Download failed after {max_retries + 1} attempts: {e}")
+                    self.logger.error(
+                        f"❌ Download failed after {max_retries + 1} attempts: {e}"
+                    )
                     return False
 
                 # Log the failure
@@ -519,13 +599,14 @@ class NetR9HTTPDownloader:
                     try:
                         # Reinitialize the HTTP client to get fresh session
                         from .http_client import TrimbleHTTPClient
+
                         self.http_client = TrimbleHTTPClient(
                             self.station_id,
                             self.ip,
                             self.http_port,
                             self.username,
                             self.password,
-                            self.logger
+                            self.logger,
                         )
                         self.logger.info("✅ HTTP client reconnected")
                     except Exception as reconnect_error:
@@ -538,14 +619,20 @@ class NetR9HTTPDownloader:
                 time.sleep(delay)
 
         # All retries exhausted
-        self.logger.error(f"❌ Download failed for {filename} after {max_retries + 1} attempts")
+        self.logger.error(
+            f"❌ Download failed for {filename} after {max_retries + 1} attempts"
+        )
         return False
 
-    def download_files(self, files_dict: Dict[str, str], tmp_dir: Path,
-                      clean_tmp: bool = True,
-                      archive_files_dict: Optional[Dict[str, str]] = None,
-                      use_phase1_utilities: bool = False,
-                      session_type: str = "unknown") -> List[str]:
+    def download_files(
+        self,
+        files_dict: Dict[str, str],
+        tmp_dir: Path,
+        clean_tmp: bool = True,
+        archive_files_dict: Optional[Dict[str, str]] = None,
+        use_phase1_utilities: bool = False,
+        session_type: str = "unknown",
+    ) -> List[str]:
         """Download multiple files from NetR9 receiver.
 
         Args:
@@ -571,7 +658,9 @@ class NetR9HTTPDownloader:
         total_files = len(files_dict)
 
         # Log station connection details (matching PolaRX5 pattern)
-        self.logger.info(f"Station connection: {self.http_client.ip}:{self.http_client.http_port}")
+        self.logger.info(
+            f"Station connection: {self.http_client.ip}:{self.http_client.http_port}"
+        )
 
         # Track unique paths to log each only once (matching PolaRX5 pattern)
         logged_paths = set()
@@ -600,38 +689,57 @@ class NetR9HTTPDownloader:
 
             # Check if file already exists and is complete
             if local_file_path.exists() and expected_size:
-                validation = self.file_validator.validate_file(str(local_file_path), expected_size)
-                if validation['valid']:
-                    self.logger.info(f"📁 Local file already exists and is valid ({expected_size:,} bytes): {filename}")
+                validation = self.file_validator.validate_file(
+                    str(local_file_path), expected_size
+                )
+                if validation["valid"]:
+                    self.logger.info(
+                        f"📁 Local file already exists and is valid ({expected_size:,} bytes): {filename}"
+                    )
                     downloaded_files.append(str(local_file_path))
                     continue
 
             # Download the file
-            success = self.download_file(remote_dir, filename, local_file_path, expected_size,
-                                        session_type=session_type)
+            success = self.download_file(
+                remote_dir,
+                filename,
+                local_file_path,
+                expected_size,
+                session_type=session_type,
+            )
 
             if success:
                 # Archive immediately after download if enabled
-                if archive_files_dict and filename in archive_files_dict and use_phase1_utilities:
+                if (
+                    archive_files_dict
+                    and filename in archive_files_dict
+                    and use_phase1_utilities
+                ):
                     archive_path = Path(archive_files_dict[filename])
-                    self.logger.info(f"📦 Archiving immediately after download: {filename}")
+                    self.logger.info(
+                        f"📦 Archiving immediately after download: {filename}"
+                    )
 
                     # Import FileArchiver only when needed
-                    from ..utils.file_archiver import FileArchiver, ArchiveMode
+                    from ..utils.file_archiver import ArchiveMode, FileArchiver
 
-                    with FileArchiver(mode=ArchiveMode.IMMEDIATE, logger=self.logger) as archiver:
+                    with FileArchiver(
+                        mode=ArchiveMode.IMMEDIATE, logger=self.logger
+                    ) as archiver:
                         archive_success = archiver.archive_file(
                             local_file_path,
                             archive_path,
                             compress=True,
-                            remove_tmp=True
+                            remove_tmp=True,
                         )
 
                     if archive_success:
                         # Add archive path to downloaded files list
                         downloaded_files.append(str(archive_path))
                     else:
-                        self.logger.error(f"❌ Failed to archive {filename} after download")
+                        self.logger.error(
+                            f"❌ Failed to archive {filename} after download"
+                        )
                         # Add tmp file path as fallback
                         downloaded_files.append(str(local_file_path))
                 else:
@@ -640,7 +748,9 @@ class NetR9HTTPDownloader:
             else:
                 self.logger.error(f"❌ Failed to download {filename}")
 
-        self.logger.info(f"Download complete: {len(downloaded_files)}/{total_files} files successful")
+        self.logger.info(
+            f"Download complete: {len(downloaded_files)}/{total_files} files successful"
+        )
         return downloaded_files
 
     def test_connection(self) -> Dict[str, Any]:
@@ -666,7 +776,7 @@ class NetR9HTTPDownloader:
             endpoints_to_test = [
                 "/prog/show?temperature",
                 "/prog/show?voltages",
-                f"/prog/show?directory&path={quote(internal_path)}"
+                f"/prog/show?directory&path={quote(internal_path)}",
             ]
 
             endpoint_results = {}
@@ -675,7 +785,7 @@ class NetR9HTTPDownloader:
                 endpoint_results[endpoint] = {
                     "success": success,
                     "error": error,
-                    "response_size": len(response) if response else 0
+                    "response_size": len(response) if response else 0,
                 }
 
         connection_time = time.time() - start_time
@@ -685,7 +795,7 @@ class NetR9HTTPDownloader:
             "success": basic_test["success"],
             "duration": connection_time,
             "basic_test": basic_test,
-            "error": basic_test.get("error")
+            "error": basic_test.get("error"),
         }
 
         if basic_test["success"]:
@@ -697,7 +807,7 @@ class NetR9HTTPDownloader:
 
     def close(self):
         """Close HTTP connections."""
-        if hasattr(self, 'http_client'):
+        if hasattr(self, "http_client"):
             self.http_client.close()
 
     def __del__(self):

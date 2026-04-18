@@ -13,26 +13,27 @@ from typing import Dict, Optional, Tuple
 
 class ConfigManager:
     """Shared configuration manager for all GPS receivers.
-    
+
     Handles configuration retrieval from gps_parser with fallback strategies
     for data paths, system tool paths, and session configurations.
     """
-    
+
     def __init__(self, logger: Optional[logging.Logger] = None):
         """Initialize configuration manager.
-        
+
         Args:
             logger: Optional logger instance, creates default if None
         """
         self.logger = logger or logging.getLogger("receivers.config")
         self._gps_parser = None
-    
+
     def _get_parser(self):
         """Lazy load gps_parser with proper error handling."""
         if self._gps_parser is None:
             try:
                 # Try different import strategies for gps_parser
                 import gps_parser
+
                 self._gps_parser = gps_parser.ConfigParser()
                 self.logger.debug("Successfully loaded gps_parser")
             except ImportError:
@@ -40,17 +41,22 @@ class ConfigManager:
                     # Try with path adjustment for development
                     sys.path.append("../gps_parser/src")
                     import gps_parser
+
                     self._gps_parser = gps_parser.ConfigParser()
-                    self.logger.debug("Successfully loaded gps_parser with path adjustment")
+                    self.logger.debug(
+                        "Successfully loaded gps_parser with path adjustment"
+                    )
                 except ImportError:
-                    self.logger.error("Could not import gps_parser - configuration unavailable")
+                    self.logger.error(
+                        "Could not import gps_parser - configuration unavailable"
+                    )
                     raise ImportError(
                         "gps_parser package not found. Please install gps_parser:\\n"
                         "cd ../gps_parser && pip install -e ."
                     )
 
         return self._gps_parser
-    
+
     def get_data_prepath(self) -> str:
         """DEPRECATED: Use ReceiversConfig.get_prepath() instead.
 
@@ -70,6 +76,7 @@ class ConfigManager:
         )
         # For backward compatibility during migration, use ReceiversConfig
         from ..config.receivers_config import get_receivers_config
+
         return get_receivers_config().get_prepath()
 
     def get_system_path(self, path_name: str) -> str:
@@ -87,7 +94,9 @@ class ConfigManager:
         parser = self._get_parser()
         return parser.getSystemPath(path_name)
 
-    def get_session_map(self, receiver_type: str = "polarx5") -> Dict[str, Tuple[str, str]]:
+    def get_session_map(
+        self, receiver_type: str = "polarx5"
+    ) -> Dict[str, Tuple[str, str]]:
         """Get session mapping from receivers configuration.
 
         Args:
@@ -129,9 +138,13 @@ class ConfigManager:
                     session_config["session_letter"],
                     session_config["session_path"],
                 )
-                self.logger.warning(f"Session mapping for {session_type} not found in receivers.cfg, using gps_parser fallback")
+                self.logger.warning(
+                    f"Session mapping for {session_type} not found in receivers.cfg, using gps_parser fallback"
+                )
 
-        self.logger.debug(f"Loaded {len(session_map)} session configurations from receivers config")
+        self.logger.debug(
+            f"Loaded {len(session_map)} session configurations from receivers config"
+        )
         return session_map
 
     def get_timeout_config(self, station_id: str) -> Dict[str, int]:
@@ -151,11 +164,11 @@ class ConfigManager:
 
     def get_ftp_mode(self, station_id: str, ip: str) -> str:
         """Get FTP mode for a station.
-        
+
         Args:
-            station_id: Station identifier  
+            station_id: Station identifier
             ip: Station IP address
-            
+
         Returns:
             FTP mode: 'passive' or 'active'
         """
@@ -165,7 +178,7 @@ class ConfigManager:
                 return parser.getStationFtpMode(station_id, ip)
         except Exception as e:
             self.logger.debug(f"Could not get FTP mode for {station_id}: {e}")
-        
+
         # Default to passive mode (safer for firewalls)
         return "passive"
 
@@ -173,12 +186,13 @@ class ConfigManager:
 # Singleton instance for shared use
 _config_manager = None
 
+
 def get_config_manager(logger: Optional[logging.Logger] = None) -> ConfigManager:
     """Get shared configuration manager instance.
-    
+
     Args:
         logger: Optional logger instance
-        
+
     Returns:
         ConfigManager instance
     """

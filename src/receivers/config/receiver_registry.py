@@ -149,6 +149,7 @@ def _should_use_native_trimble() -> bool:
     """Check if receivers.cfg has use_native_trimble = true."""
     try:
         from .receivers_config import get_receivers_config
+
         config = get_receivers_config()
         rinex_cfg = config.get_rinex_config()
         return rinex_cfg.get("use_native_trimble", False)
@@ -160,6 +161,7 @@ def _try_import_native_trimble() -> type | None:
     """Import TrimbleNativeConverter and check Docker availability."""
     try:
         from ..rinex.trimble_native_converter import TrimbleNativeConverter
+
         if TrimbleNativeConverter.is_available():
             return TrimbleNativeConverter
         logger.debug("Native Trimble converter configured but Docker not available")

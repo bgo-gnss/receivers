@@ -86,10 +86,9 @@ class SyncTask(ScheduledTask):
         """
         from ...utils.time_utils import calculate_download_time_range
 
-        lookback_periods = getattr(self.config, 'lookback_periods', 1)
+        lookback_periods = getattr(self.config, "lookback_periods", 1)
         return calculate_download_time_range(
-            session_type=self.config.session_type,
-            lookback_periods=lookback_periods
+            session_type=self.config.session_type, lookback_periods=lookback_periods
         )
 
     def validate_prerequisites(self) -> Tuple[bool, Optional[str]]:
@@ -106,7 +105,8 @@ class SyncTask(ScheduledTask):
         try:
             # Check rsync is available
             import shutil
-            if not shutil.which('rsync'):
+
+            if not shutil.which("rsync"):
                 return False, "rsync command not found"
 
             # Validate input files if provided
@@ -116,9 +116,12 @@ class SyncTask(ScheduledTask):
 
             # Load station config
             from ...cli.main import get_station_config
+
             self._station_config = get_station_config(self.station_id)
             if not self._station_config:
-                self.logger.warning(f"No station config for {self.station_id}, using defaults")
+                self.logger.warning(
+                    f"No station config for {self.station_id}, using defaults"
+                )
 
             return True, None
 
@@ -143,9 +146,9 @@ class SyncTask(ScheduledTask):
             if not valid:
                 return self._create_failure_result(
                     start_time,
-                    'validation_failed',
+                    "validation_failed",
                     f"Validation failed: {error}",
-                    f"ValidationError: {error}"
+                    f"ValidationError: {error}",
                 )
 
             # Find files if not provided
@@ -155,10 +158,10 @@ class SyncTask(ScheduledTask):
             if not self.input_files:
                 return TaskResult(
                     success=True,
-                    status='no_files',
+                    status="no_files",
                     duration=time.time() - start_time,
                     message="No files found to sync",
-                    data={'station_id': self.station_id, 'files_synced': 0},
+                    data={"station_id": self.station_id, "files_synced": 0},
                 )
 
             # Build rsync command
@@ -184,20 +187,22 @@ class SyncTask(ScheduledTask):
 
                 return TaskResult(
                     success=True,
-                    status='completed',
+                    status="completed",
                     duration=duration,
                     message=f"Synced {files_transferred} files",
                     data={
-                        'station_id': self.station_id,
-                        'sync_type': self.sync_type,
-                        'files_synced': files_transferred,
-                        'input_files': self.input_files,
-                        'remote_host': self.remote_host,
-                        'dry_run': self.dry_run,
+                        "station_id": self.station_id,
+                        "sync_type": self.sync_type,
+                        "files_synced": files_transferred,
+                        "input_files": self.input_files,
+                        "remote_host": self.remote_host,
+                        "dry_run": self.dry_run,
                     },
                     metrics={
-                        'transfer_rate': files_transferred / duration if duration > 0 else 0,
-                    }
+                        "transfer_rate": files_transferred / duration
+                        if duration > 0
+                        else 0,
+                    },
                 )
             else:
                 error_msg = result.stderr.strip() or result.stdout.strip()
@@ -205,17 +210,17 @@ class SyncTask(ScheduledTask):
 
                 return self._create_failure_result(
                     start_time,
-                    'failed',
+                    "failed",
                     f"Rsync failed with exit code {result.returncode}",
-                    error_msg
+                    error_msg,
                 )
 
         except subprocess.TimeoutExpired:
             return self._create_failure_result(
                 start_time,
-                'timeout',
+                "timeout",
                 "Rsync timed out after 10 minutes",
-                "TimeoutError"
+                "TimeoutError",
             )
         except Exception as e:
             duration = time.time() - start_time
@@ -223,10 +228,7 @@ class SyncTask(ScheduledTask):
             self.logger.error(f"Sync failed: {self.station_id} - {error_msg}")
 
             return self._create_failure_result(
-                start_time,
-                'error',
-                f"Sync failed: {str(e)}",
-                error_msg
+                start_time, "error", f"Sync failed: {str(e)}", error_msg
             )
 
     def _build_rsync_command(self) -> List[str]:
@@ -235,26 +237,28 @@ class SyncTask(ScheduledTask):
         Returns:
             List of command arguments
         """
-        cmd = ['rsync', '-avz', '--compress']
+        cmd = ["rsync", "-avz", "--compress"]
 
         # Add immutability options based on sync type
-        if self.sync_type == 'raw':
+        if self.sync_type == "raw":
             # Raw files: NEVER overwrite existing
-            cmd.append('--ignore-existing')
-        elif self.sync_type == 'rinex':
+            cmd.append("--ignore-existing")
+        elif self.sync_type == "rinex":
             # RINEX files: only update if source is newer
-            cmd.append('--update')
+            cmd.append("--update")
 
         # Add dry run if requested
         if self.dry_run:
-            cmd.append('--dry-run')
+            cmd.append("--dry-run")
 
         # Add verbose for progress tracking
-        cmd.append('--stats')
+        cmd.append("--stats")
 
         # Build remote destination
         session = self.config.session_type
-        remote_dest = f"{self.remote_host}:{self.remote_path}/{self.station_id}/{session}/"
+        remote_dest = (
+            f"{self.remote_host}:{self.remote_path}/{self.station_id}/{session}/"
+        )
 
         # Add source files
         for file_path in self.input_files:
@@ -276,20 +280,22 @@ class SyncTask(ScheduledTask):
             start_time, _ = self.get_time_parameters()
 
             # Look in archive directory
-            archive_base = Path.home() / '.cache' / 'gps_receivers' / 'archive'
+            archive_base = Path.home() / ".cache" / "gps_receivers" / "archive"
             session = self.config.session_type
             station_dir = archive_base / self.station_id / session
 
             # Try date-based subdirectory
-            date_dir = station_dir / start_time.strftime('%Y') / start_time.strftime('%j')
+            date_dir = (
+                station_dir / start_time.strftime("%Y") / start_time.strftime("%j")
+            )
 
             search_dirs = [date_dir, station_dir]
 
             # Patterns based on sync type
-            if self.sync_type == 'raw':
-                patterns = ['*.sbf.gz', '*.sbf', '*.T02.gz', '*.T02', '*.T00', '*.m00']
+            if self.sync_type == "raw":
+                patterns = ["*.sbf.gz", "*.sbf", "*.T02.gz", "*.T02", "*.T00", "*.m00"]
             else:  # rinex
-                patterns = ['*.rnx.gz', '*.rnx', '*.[0-9][0-9]o.gz', '*.[0-9][0-9]d.gz']
+                patterns = ["*.rnx.gz", "*.rnx", "*.[0-9][0-9]o.gz", "*.[0-9][0-9]d.gz"]
 
             for search_dir in search_dirs:
                 if not search_dir.exists():
@@ -320,14 +326,15 @@ class SyncTask(ScheduledTask):
         import re
 
         # Look for "Number of files transferred: X"
-        match = re.search(r'Number of.*files transferred:\s*(\d+)', output)
+        match = re.search(r"Number of.*files transferred:\s*(\d+)", output)
         if match:
             return int(match.group(1))
 
         # Alternative: count lines that look like transfers
         transfer_lines = [
-            line for line in output.split('\n')
-            if line and not line.startswith(('building', 'sending', 'total', 'sent'))
+            line
+            for line in output.split("\n")
+            if line and not line.startswith(("building", "sending", "total", "sent"))
         ]
         return len(transfer_lines)
 
@@ -344,6 +351,6 @@ class SyncTask(ScheduledTask):
             status=status,
             duration=time.time() - start_time,
             message=message,
-            data={'station_id': self.station_id, 'sync_type': self.sync_type},
+            data={"station_id": self.station_id, "sync_type": self.sync_type},
             error=error,
         )

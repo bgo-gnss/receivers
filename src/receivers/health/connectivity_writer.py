@@ -72,7 +72,9 @@ class ConnectivityWriter:
             self.logger.debug("psycopg2 not available for connectivity status")
             return False
         except Exception as e:
-            self.logger.warning(f"Failed to write connectivity status for {station_id}: {e}")
+            self.logger.warning(
+                f"Failed to write connectivity status for {station_id}: {e}"
+            )
             return False
 
     def write_ping_only(
@@ -191,7 +193,14 @@ class ConnectivityWriter:
                     packet_loss = EXCLUDED.packet_loss,
                     error_message = EXCLUDED.error_message
                 """,
-                (station_id, ts, is_online, response_time_ms, packet_loss, error_message),
+                (
+                    station_id,
+                    ts,
+                    is_online,
+                    response_time_ms,
+                    packet_loss,
+                    error_message,
+                ),
             )
 
     def _write_port_status(

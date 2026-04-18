@@ -15,18 +15,16 @@ Usage:
   check_gps_receiver.py --station ELDC --save-db
 """
 
-import sys
 import argparse
 import json
+import sys
 from pathlib import Path
-
 
 # Add receivers to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from base.receiver_factory import create_receiver
 from config_utils import get_station_config
-
 
 # Nagios plugin exit codes
 NAGIOS_OK = 0
@@ -154,20 +152,13 @@ def main():
     )
     parser.add_argument("--station", required=True, help="Station ID to check")
     parser.add_argument(
-        "--save-db",
-        action="store_true",
-        help="Save health data to database"
+        "--save-db", action="store_true", help="Save health data to database"
     )
     parser.add_argument(
-        "--save-json",
-        action="store_true",
-        help="Save health data to JSON file"
+        "--save-json", action="store_true", help="Save health data to JSON file"
     )
     parser.add_argument(
-        "--timeout",
-        type=int,
-        default=30,
-        help="Timeout in seconds (default: 30)"
+        "--timeout", type=int, default=30, help="Timeout in seconds (default: 30)"
     )
 
     args = parser.parse_args()

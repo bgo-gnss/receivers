@@ -180,7 +180,9 @@ class ThresholdConfig:
 
 def _get_config_dir() -> Path:
     """Get the GPS config directory path."""
-    return Path(os.environ.get("GPS_CONFIG_PATH", os.path.expanduser("~/.config/gpsconfig")))
+    return Path(
+        os.environ.get("GPS_CONFIG_PATH", os.path.expanduser("~/.config/gpsconfig"))
+    )
 
 
 def _load_database_cfg() -> configparser.ConfigParser:
@@ -275,7 +277,10 @@ def load_thresholds(
             setattr(config, attr, v)
 
     # Packet loss
-    for key, attr in [("warning", "packet_loss_warning"), ("critical", "packet_loss_critical")]:
+    for key, attr in [
+        ("warning", "packet_loss_warning"),
+        ("critical", "packet_loss_critical"),
+    ]:
         v = _getfloat("packet_loss", key)
         if v is not None:
             setattr(config, attr, v)
@@ -621,7 +626,9 @@ class MetricChecker:
         # Build constellation info string
         const_str = ""
         if by_constellation:
-            const_str = " (" + ", ".join(f"{k}:{v}" for k, v in by_constellation.items()) + ")"
+            const_str = (
+                " (" + ", ".join(f"{k}:{v}" for k, v in by_constellation.items()) + ")"
+            )
 
         if total_satellites < cfg.sat_critical:
             return MetricResult(
@@ -829,14 +836,20 @@ class MetricChecker:
         elif status == HealthStatus.CRITICAL:
             message = f"❌ Station position CRITICAL - {station_prefix}no fix"
         else:
-            message = f"⚠️  Station position WARNING - {station_prefix}{fix_mode} (not fixed)"
+            message = (
+                f"⚠️  Station position WARNING - {station_prefix}{fix_mode} (not fixed)"
+            )
 
         # Add satellites to message
         if satellites_used is not None and status != HealthStatus.UNKNOWN:
             message += f", {satellites_used} sats"
 
         # Add position to message
-        if latitude is not None and longitude is not None and status != HealthStatus.UNKNOWN:
+        if (
+            latitude is not None
+            and longitude is not None
+            and status != HealthStatus.UNKNOWN
+        ):
             message += f" @ {latitude:.5f}, {longitude:.5f}"
             if height is not None:
                 message += f", {height:.1f}m"
@@ -890,7 +903,9 @@ class MetricChecker:
         elif not receiver_ok:
             message = f"{status.emoji} Receiver not responding{station_suffix}"
         else:
-            message = f"{status.emoji} GPS Ping CRITICAL - not reachable{station_suffix}"
+            message = (
+                f"{status.emoji} GPS Ping CRITICAL - not reachable{station_suffix}"
+            )
 
         # Add latency to message
         if latency_ms is not None:
@@ -901,9 +916,13 @@ class MetricChecker:
         # Build performance data
         perf_parts = []
         if latency_ms is not None:
-            perf_parts.append(f"ping={latency_ms:.3f}ms;{cfg.ping_warning};{cfg.ping_critical}")
+            perf_parts.append(
+                f"ping={latency_ms:.3f}ms;{cfg.ping_warning};{cfg.ping_critical}"
+            )
         if packet_loss is not None:
-            perf_parts.append(f"packet_loss={packet_loss:.1f}%;{cfg.packet_loss_warning};{cfg.packet_loss_critical}")
+            perf_parts.append(
+                f"packet_loss={packet_loss:.1f}%;{cfg.packet_loss_warning};{cfg.packet_loss_critical}"
+            )
         if not perf_parts:
             perf_parts.append(f"reachable={1 if is_reachable else 0};;;0;1")
 

@@ -50,6 +50,7 @@ def _get_executor() -> ProcessPoolExecutor:
         max_workers = _DEFAULT_MAX_WORKERS
         try:
             from ..config.receivers_config import get_receivers_config
+
             config = get_receivers_config()
             rinex_cfg = config.get_rinex_config()
             max_workers = int(rinex_cfg.get("max_workers", _DEFAULT_MAX_WORKERS))
@@ -140,8 +141,7 @@ def submit_file_rinex(
         )
 
         logger.info(
-            f"🔄 RINEX queued: {station_id} ({session_type}) "
-            f"{Path(archive_path).name}"
+            f"🔄 RINEX queued: {station_id} ({session_type}) {Path(archive_path).name}"
         )
         return future
 
@@ -159,9 +159,7 @@ def shutdown_rinex_pool(wait: bool = True) -> None:
     global _executor
     with _executor_lock:
         if _executor is not None:
-            logger.info(
-                f"Shutting down RINEX pool (wait={wait})..."
-            )
+            logger.info(f"Shutting down RINEX pool (wait={wait})...")
             _executor.shutdown(wait=wait)
             _executor = None
 
@@ -201,6 +199,7 @@ def _on_conversion_done(future: Future, station_id: str, session_type: str) -> N
 # ---------------------------------------------------------------------------
 # Worker function — runs in a separate process
 # ---------------------------------------------------------------------------
+
 
 def _rinex_worker(
     station_id: str,
@@ -242,10 +241,19 @@ def _rinex_worker(
 
         # Determine receiver type for this station
         from ..config_utils import get_station_config
+
         station_config = get_station_config(station_id)
         if station_config is None:
-            worker_logger.warning(f"Station {station_id} not in config — skipping RINEX")
-            return {"converted": 0, "failed": 0, "skipped": 1, "duration": 0, "output_files": []}
+            worker_logger.warning(
+                f"Station {station_id} not in config — skipping RINEX"
+            )
+            return {
+                "converted": 0,
+                "failed": 0,
+                "skipped": 1,
+                "duration": 0,
+                "output_files": [],
+            }
 
         receiver_type = station_config.get("receiver", {}).get("type", "").lower()
 
@@ -254,18 +262,29 @@ def _rinex_worker(
             station_id, receiver_type, rinex_config, worker_logger
         )
         if converter is None or raw_extension is None:
-            return {"converted": 0, "failed": 0, "skipped": 1, "duration": 0, "output_files": []}
+            return {
+                "converted": 0,
+                "failed": 0,
+                "skipped": 1,
+                "duration": 0,
+                "output_files": [],
+            }
 
         # Find raw files in archive
         raw_files = _find_raw_files(
-            station_id, session_type, raw_extension,
-            start_time, end_time, data_prepath
+            station_id, session_type, raw_extension, start_time, end_time, data_prepath
         )
 
         if not raw_files:
             worker_logger.debug(f"No raw files for {station_id} ({session_type})")
             duration = _time.monotonic() - t0
-            return {"converted": 0, "failed": 0, "skipped": 0, "duration": duration, "output_files": []}
+            return {
+                "converted": 0,
+                "failed": 0,
+                "skipped": 0,
+                "duration": duration,
+                "output_files": [],
+            }
 
         worker_logger.info(
             f"Converting {len(raw_files)} raw file(s) for {station_id} ({session_type})"
@@ -297,12 +316,17 @@ def _rinex_worker(
         if output_files:
             try:
                 from ..scheduling.bulk_scheduler import _track_rinex_output_files
-                _track_rinex_output_files(station_id, session_type, output_files, worker_logger)
+
+                _track_rinex_output_files(
+                    station_id, session_type, output_files, worker_logger
+                )
             except Exception as e:
                 worker_logger.debug(f"RINEX file tracking failed: {e}")
 
     except Exception as e:
-        worker_logger.error(f"RINEX worker error for {station_id}: {type(e).__name__}: {e}")
+        worker_logger.error(
+            f"RINEX worker error for {station_id}: {type(e).__name__}: {e}"
+        )
         failed += 1
 
     duration = _time.monotonic() - t0
@@ -350,10 +374,17 @@ def _single_file_worker(
         rinex_config = config.get_rinex_config()
 
         from ..config_utils import get_station_config
+
         station_config = get_station_config(station_id)
         if station_config is None:
             duration = _time.monotonic() - t0
-            return {"converted": 0, "failed": 0, "skipped": 1, "duration": duration, "output_files": []}
+            return {
+                "converted": 0,
+                "failed": 0,
+                "skipped": 1,
+                "duration": duration,
+                "output_files": [],
+            }
 
         receiver_type = station_config.get("receiver", {}).get("type", "").lower()
 
@@ -362,13 +393,25 @@ def _single_file_worker(
         )
         if converter is None:
             duration = _time.monotonic() - t0
-            return {"converted": 0, "failed": 0, "skipped": 1, "duration": duration, "output_files": []}
+            return {
+                "converted": 0,
+                "failed": 0,
+                "skipped": 1,
+                "duration": duration,
+                "output_files": [],
+            }
 
         raw_file = Path(archive_path)
         if not raw_file.exists():
             worker_logger.warning(f"Archive file not found: {archive_path}")
             duration = _time.monotonic() - t0
-            return {"converted": 0, "failed": 1, "skipped": 0, "duration": duration, "output_files": []}
+            return {
+                "converted": 0,
+                "failed": 1,
+                "skipped": 0,
+                "duration": duration,
+                "output_files": [],
+            }
 
         # Output dir: sibling "rinex/" next to "raw/"
         if raw_file.parent.name == "raw":
@@ -389,12 +432,17 @@ def _single_file_worker(
         if output_files:
             try:
                 from ..scheduling.bulk_scheduler import _track_rinex_output_files
-                _track_rinex_output_files(station_id, session_type, output_files, worker_logger)
+
+                _track_rinex_output_files(
+                    station_id, session_type, output_files, worker_logger
+                )
             except Exception as e:
                 worker_logger.debug(f"RINEX file tracking failed: {e}")
 
     except Exception as e:
-        worker_logger.error(f"RINEX single-file error for {station_id}: {type(e).__name__}: {e}")
+        worker_logger.error(
+            f"RINEX single-file error for {station_id}: {type(e).__name__}: {e}"
+        )
         failed = 1
 
     duration = _time.monotonic() - t0
@@ -426,7 +474,11 @@ def _create_converter(
         TrimbleConverter,
     )
 
-    version_map = {2: RinexVersion.RINEX_2, 3: RinexVersion.RINEX_3, 4: RinexVersion.RINEX_4}
+    version_map = {
+        2: RinexVersion.RINEX_2,
+        3: RinexVersion.RINEX_3,
+        4: RinexVersion.RINEX_4,
+    }
     rinex_version = version_map.get(
         int(rinex_config.get("default_version", 3)), RinexVersion.RINEX_3
     )
@@ -440,10 +492,13 @@ def _create_converter(
     if use_native and ("netr9" in receiver_type or "netrs" in receiver_type):
         try:
             from ..rinex.trimble_native_converter import TrimbleNativeConverter
+
             if TrimbleNativeConverter.is_available():
                 trimble_cls = TrimbleNativeConverter
             else:
-                worker_logger.debug("Native Trimble configured but Docker not available")
+                worker_logger.debug(
+                    "Native Trimble configured but Docker not available"
+                )
         except ImportError:
             pass
 

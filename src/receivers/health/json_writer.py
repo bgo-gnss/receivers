@@ -8,9 +8,9 @@ Saves health data to JSON files in status_1hr/json/:
 
 import json
 import logging
-from pathlib import Path
-from typing import Dict, Any, Optional
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 
 class HealthJSONWriter:
@@ -53,7 +53,7 @@ class HealthJSONWriter:
 
         # Write JSON file
         try:
-            with open(filepath, 'w') as f:
+            with open(filepath, "w") as f:
                 json.dump(health_data, f, indent=2, default=str)
 
             self.logger.info(f"Wrote health data to {filepath}")
@@ -98,7 +98,7 @@ class HealthJSONWriter:
             return {}
 
         try:
-            with open(latest_link, 'r') as f:
+            with open(latest_link) as f:
                 return json.load(f)
 
         except Exception as e:
@@ -110,10 +110,7 @@ class HealthJSONWriter:
     # ========================================================================
 
     def write_daily_health_data(
-        self,
-        health_data: Dict[str, Any],
-        date: datetime,
-        force: bool = False
+        self, health_data: Dict[str, Any], date: datetime, force: bool = False
     ) -> Optional[Path]:
         """Write daily time-series health data to JSON file (v2.0 format).
 
@@ -151,12 +148,14 @@ class HealthJSONWriter:
 
         # Write JSON file
         try:
-            with open(filepath, 'w') as f:
+            with open(filepath, "w") as f:
                 json.dump(health_data, f, indent=2, default=str)
 
             self.logger.info(f"Wrote daily health data to {filepath}")
             self.logger.info(f"  Samples: {health_data.get('sample_count', 0)}")
-            self.logger.info(f"  Completeness: {health_data.get('extraction_metadata', {}).get('data_quality', {}).get('completeness', 0)}%")
+            self.logger.info(
+                f"  Completeness: {health_data.get('extraction_metadata', {}).get('data_quality', {}).get('completeness', 0)}%"
+            )
 
             return filepath
 
@@ -186,9 +185,7 @@ class HealthJSONWriter:
             self.logger.warning(f"Failed to create latest.json symlink: {e}")
 
     def _check_needs_update(
-        self,
-        existing_file: Path,
-        new_data: Dict[str, Any]
+        self, existing_file: Path, new_data: Dict[str, Any]
     ) -> bool:
         """Check if existing daily health file needs updating.
 
@@ -202,20 +199,26 @@ class HealthJSONWriter:
             True if file needs updating, False if unchanged
         """
         try:
-            with open(existing_file, 'r') as f:
+            with open(existing_file) as f:
                 existing_data = json.load(f)
 
             # Compare file tracking data
-            existing_files = existing_data.get('data_files', {}).get('status_1hr', {}).get('files', [])
-            new_files = new_data.get('data_files', {}).get('status_1hr', {}).get('files', [])
+            existing_files = (
+                existing_data.get("data_files", {})
+                .get("status_1hr", {})
+                .get("files", [])
+            )
+            new_files = (
+                new_data.get("data_files", {}).get("status_1hr", {}).get("files", [])
+            )
 
             # Check if number of files changed
             if len(existing_files) != len(new_files):
                 return True
 
             # Check if any file status changed from 'not_downloaded' to 'included'
-            existing_filenames = {f['filename']: f['status'] for f in existing_files}
-            new_filenames = {f['filename']: f['status'] for f in new_files}
+            existing_filenames = {f["filename"]: f["status"] for f in existing_files}
+            new_filenames = {f["filename"]: f["status"] for f in new_files}
 
             for filename, new_status in new_filenames.items():
                 existing_status = existing_filenames.get(filename)
@@ -248,7 +251,7 @@ class HealthJSONWriter:
             return None
 
         try:
-            with open(filepath, 'r') as f:
+            with open(filepath) as f:
                 return json.load(f)
 
         except Exception as e:

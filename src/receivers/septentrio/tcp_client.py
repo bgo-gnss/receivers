@@ -195,7 +195,7 @@ class PolaRX5TCPClient:
         assert self._sock is not None  # For type checker
 
         # Request config with longer wait for multi-block response
-        self._sock.send(f"lstConfigFile, {config_type}\n".encode("utf-8"))
+        self._sock.send(f"lstConfigFile, {config_type}\n".encode())
 
         # Collect all response blocks - config can be large and comes in chunks
         response = b""
@@ -227,8 +227,10 @@ class PolaRX5TCPClient:
         config = self._parse_config_response(response.decode("utf-8", errors="ignore"))
 
         # Validate we got a complete config
-        if not config or len(config.split('\n')) < 5:
-            self.logger.warning(f"Config appears incomplete: only {len(config.split(chr(10)))} lines")
+        if not config or len(config.split("\n")) < 5:
+            self.logger.warning(
+                f"Config appears incomplete: only {len(config.split(chr(10)))} lines"
+            )
 
         return config
 

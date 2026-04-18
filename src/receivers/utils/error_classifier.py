@@ -10,22 +10,37 @@ from typing import Tuple
 # Ordered list of (compiled_pattern, category).  First match wins.
 _PATTERNS: list[Tuple[re.Pattern[str], str]] = [
     # Dead FTP connection (sendall on None socket)
-    (re.compile(r"NoneType.*sendall|has no attribute.*sendall", re.I), "dead_connection"),
-    (re.compile(r"broken pipe|connection reset|connection aborted", re.I), "dead_connection"),
+    (
+        re.compile(r"NoneType.*sendall|has no attribute.*sendall", re.I),
+        "dead_connection",
+    ),
+    (
+        re.compile(r"broken pipe|connection reset|connection aborted", re.I),
+        "dead_connection",
+    ),
     # Stall / watchdog timeout
     (re.compile(r"stall|watchdog|no data received|0%.*kill", re.I), "stall_timeout"),
     (re.compile(r"timed?\s*out|timeout", re.I), "stall_timeout"),
     # File not found on receiver
     (re.compile(r"550|not found|no such file", re.I), "file_not_found"),
     # Host unreachable / ping failed
-    (re.compile(r"unreachable|ping.*fail|no route|network is down", re.I), "unreachable"),
+    (
+        re.compile(r"unreachable|ping.*fail|no route|network is down", re.I),
+        "unreachable",
+    ),
     (re.compile(r"connection refused|connect fail", re.I), "unreachable"),
     # Auth failure
-    (re.compile(r"530|login.*fail|auth|permission denied|access denied", re.I), "auth_failed"),
+    (
+        re.compile(r"530|login.*fail|auth|permission denied|access denied", re.I),
+        "auth_failed",
+    ),
     # Disk problems
     (re.compile(r"disk.*full|no space|unmounted|disk.*error", re.I), "disk_error"),
     # Validation failures
-    (re.compile(r"validation fail|corrupt|invalid.*file|size mismatch", re.I), "validation_failed"),
+    (
+        re.compile(r"validation fail|corrupt|invalid.*file|size mismatch", re.I),
+        "validation_failed",
+    ),
 ]
 
 

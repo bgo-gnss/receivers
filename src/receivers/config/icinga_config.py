@@ -102,13 +102,17 @@ class IcingaConnection:
     Config file values (icinga.cfg) take priority when loaded via IcingaConfig.
     """
 
-    host: str = field(default_factory=lambda: os.getenv("ICINGA_HOST", "ut-icinga-m-vip.vedur.is"))
+    host: str = field(
+        default_factory=lambda: os.getenv("ICINGA_HOST", "ut-icinga-m-vip.vedur.is")
+    )
     port: int = field(default_factory=lambda: int(os.getenv("ICINGA_PORT", "5665")))
     username: str = field(default_factory=lambda: os.getenv("ICINGA_USERNAME", ""))
     password: str = field(default_factory=lambda: os.getenv("ICINGA_PASSWORD", ""))
     verify_ssl: bool = False
     timeout: int = 30
-    check_source: str = field(default_factory=lambda: os.getenv("ICINGA_CHECK_SOURCE", "eldey"))
+    check_source: str = field(
+        default_factory=lambda: os.getenv("ICINGA_CHECK_SOURCE", "eldey")
+    )
 
 
 class IcingaConfig:
@@ -150,6 +154,7 @@ class IcingaConfig:
         # Try gps_parser config directory
         try:
             import gps_parser
+
             parser_config = gps_parser.ConfigParser()
             gps_config_dir = parser_config.config_path
             if gps_config_dir:
@@ -195,11 +200,21 @@ class IcingaConfig:
             if self.config.has_section(section):
                 conn.host = self.config.get(section, "host", fallback=conn.host)
                 conn.port = self.config.getint(section, "port", fallback=conn.port)
-                conn.username = self.config.get(section, "username", fallback=conn.username)
-                conn.password = self.config.get(section, "password", fallback=conn.password)
-                conn.verify_ssl = self.config.getboolean(section, "verify_ssl", fallback=conn.verify_ssl)
-                conn.timeout = self.config.getint(section, "timeout", fallback=conn.timeout)
-                conn.check_source = self.config.get(section, "check_source", fallback=conn.check_source)
+                conn.username = self.config.get(
+                    section, "username", fallback=conn.username
+                )
+                conn.password = self.config.get(
+                    section, "password", fallback=conn.password
+                )
+                conn.verify_ssl = self.config.getboolean(
+                    section, "verify_ssl", fallback=conn.verify_ssl
+                )
+                conn.timeout = self.config.getint(
+                    section, "timeout", fallback=conn.timeout
+                )
+                conn.check_source = self.config.get(
+                    section, "check_source", fallback=conn.check_source
+                )
         except Exception as e:
             logger.debug(f"Error reading connection settings: {e}")
 
@@ -229,26 +244,38 @@ class IcingaConfig:
             # Temperature
             if self.config.has_section("thresholds.temperature"):
                 thresholds.temp_warning = self.config.getfloat(
-                    "thresholds.temperature", "warning", fallback=thresholds.temp_warning
+                    "thresholds.temperature",
+                    "warning",
+                    fallback=thresholds.temp_warning,
                 )
                 thresholds.temp_critical = self.config.getfloat(
-                    "thresholds.temperature", "critical", fallback=thresholds.temp_critical
+                    "thresholds.temperature",
+                    "critical",
+                    fallback=thresholds.temp_critical,
                 )
                 get_section_ttl("thresholds.temperature", "temperature")
 
             # Voltage
             if self.config.has_section("thresholds.voltage"):
                 thresholds.voltage_warning_low = self.config.getfloat(
-                    "thresholds.voltage", "warning_low", fallback=thresholds.voltage_warning_low
+                    "thresholds.voltage",
+                    "warning_low",
+                    fallback=thresholds.voltage_warning_low,
                 )
                 thresholds.voltage_critical_low = self.config.getfloat(
-                    "thresholds.voltage", "critical_low", fallback=thresholds.voltage_critical_low
+                    "thresholds.voltage",
+                    "critical_low",
+                    fallback=thresholds.voltage_critical_low,
                 )
                 thresholds.voltage_warning_high = self.config.getfloat(
-                    "thresholds.voltage", "warning_high", fallback=thresholds.voltage_warning_high
+                    "thresholds.voltage",
+                    "warning_high",
+                    fallback=thresholds.voltage_warning_high,
                 )
                 thresholds.voltage_critical_high = self.config.getfloat(
-                    "thresholds.voltage", "critical_high", fallback=thresholds.voltage_critical_high
+                    "thresholds.voltage",
+                    "critical_high",
+                    fallback=thresholds.voltage_critical_high,
                 )
                 get_section_ttl("thresholds.voltage", "voltage")
 
@@ -265,10 +292,14 @@ class IcingaConfig:
             # Satellites
             if self.config.has_section("thresholds.satellites"):
                 thresholds.satellites_warning = self.config.getint(
-                    "thresholds.satellites", "warning", fallback=thresholds.satellites_warning
+                    "thresholds.satellites",
+                    "warning",
+                    fallback=thresholds.satellites_warning,
                 )
                 thresholds.satellites_critical = self.config.getint(
-                    "thresholds.satellites", "critical", fallback=thresholds.satellites_critical
+                    "thresholds.satellites",
+                    "critical",
+                    fallback=thresholds.satellites_critical,
                 )
                 get_section_ttl("thresholds.satellites", "satellites")
 
@@ -285,40 +316,56 @@ class IcingaConfig:
             # File status - daily
             if self.config.has_section("thresholds.file_daily"):
                 thresholds.file_daily_warning_hours = self.config.getfloat(
-                    "thresholds.file_daily", "warning_hours", fallback=thresholds.file_daily_warning_hours
+                    "thresholds.file_daily",
+                    "warning_hours",
+                    fallback=thresholds.file_daily_warning_hours,
                 )
                 thresholds.file_daily_critical_hours = self.config.getfloat(
-                    "thresholds.file_daily", "critical_hours", fallback=thresholds.file_daily_critical_hours
+                    "thresholds.file_daily",
+                    "critical_hours",
+                    fallback=thresholds.file_daily_critical_hours,
                 )
                 get_section_ttl("thresholds.file_daily", "file_daily")
 
             # File status - hourly
             if self.config.has_section("thresholds.file_hourly"):
                 thresholds.file_hourly_warning_hours = self.config.getfloat(
-                    "thresholds.file_hourly", "warning_hours", fallback=thresholds.file_hourly_warning_hours
+                    "thresholds.file_hourly",
+                    "warning_hours",
+                    fallback=thresholds.file_hourly_warning_hours,
                 )
                 thresholds.file_hourly_critical_hours = self.config.getfloat(
-                    "thresholds.file_hourly", "critical_hours", fallback=thresholds.file_hourly_critical_hours
+                    "thresholds.file_hourly",
+                    "critical_hours",
+                    fallback=thresholds.file_hourly_critical_hours,
                 )
                 get_section_ttl("thresholds.file_hourly", "file_hourly")
 
             # RTK latency
             if self.config.has_section("thresholds.rtk"):
                 thresholds.rtk_latency_warning = self.config.getfloat(
-                    "thresholds.rtk", "latency_warning", fallback=thresholds.rtk_latency_warning
+                    "thresholds.rtk",
+                    "latency_warning",
+                    fallback=thresholds.rtk_latency_warning,
                 )
                 thresholds.rtk_latency_critical = self.config.getfloat(
-                    "thresholds.rtk", "latency_critical", fallback=thresholds.rtk_latency_critical
+                    "thresholds.rtk",
+                    "latency_critical",
+                    fallback=thresholds.rtk_latency_critical,
                 )
                 get_section_ttl("thresholds.rtk", "rtk")
 
             # Processing
             if self.config.has_section("thresholds.processing"):
                 thresholds.processing_warning_days = self.config.getint(
-                    "thresholds.processing", "warning_days", fallback=thresholds.processing_warning_days
+                    "thresholds.processing",
+                    "warning_days",
+                    fallback=thresholds.processing_warning_days,
                 )
                 thresholds.processing_critical_days = self.config.getint(
-                    "thresholds.processing", "critical_days", fallback=thresholds.processing_critical_days
+                    "thresholds.processing",
+                    "critical_days",
+                    fallback=thresholds.processing_critical_days,
                 )
                 get_section_ttl("thresholds.processing", "processing")
 

@@ -1,8 +1,9 @@
 """Tests for ConnectivityWriter."""
 
-import pytest
 from datetime import datetime, timezone
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import MagicMock, call, patch
+
+import pytest
 
 from receivers.health.connectivity_writer import ConnectivityWriter
 
@@ -257,7 +258,9 @@ class TestWriteConnectivityStatus:
         mock_cursor = MagicMock()
         mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
-        mock_factory.connection.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_factory.connection.return_value.__enter__ = MagicMock(
+            return_value=mock_conn
+        )
         mock_factory.connection.return_value.__exit__ = MagicMock(return_value=False)
 
         writer = ConnectivityWriter()
@@ -286,7 +289,9 @@ class TestWriteConnectivityStatus:
         mock_cursor = MagicMock()
         mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
-        mock_factory.connection.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_factory.connection.return_value.__enter__ = MagicMock(
+            return_value=mock_conn
+        )
         mock_factory.connection.return_value.__exit__ = MagicMock(return_value=False)
 
         writer = ConnectivityWriter()

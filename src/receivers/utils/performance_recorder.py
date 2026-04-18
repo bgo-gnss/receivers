@@ -8,7 +8,9 @@ import logging
 from typing import Any, Dict
 
 
-def record_performance_metrics(station_id: str, metrics: Dict[str, Any], logger: logging.Logger = None):
+def record_performance_metrics(
+    station_id: str, metrics: Dict[str, Any], logger: logging.Logger = None
+):
     """Record performance metrics for adaptive timeout system.
 
     This function abstracts the common logic for recording performance metrics
@@ -26,7 +28,8 @@ def record_performance_metrics(station_id: str, metrics: Dict[str, Any], logger:
     try:
         # Import here to avoid circular imports
         import sys
-        sys.path.append('../gps_parser/src')
+
+        sys.path.append("../gps_parser/src")
         import gps_parser
 
         # NOTE: record_performance_data() method not yet implemented in gps_parser.ConfigParser
@@ -48,7 +51,7 @@ def create_performance_metrics(
     duration: float,
     bytes_downloaded: int = 0,
     connection_time: float = 0.0,
-    **additional_metrics
+    **additional_metrics,
 ) -> Dict[str, Any]:
     """Create standardized performance metrics dictionary.
 
@@ -63,10 +66,10 @@ def create_performance_metrics(
         Standardized performance metrics dictionary
     """
     metrics = {
-        'success': success,
-        'duration': duration,
-        'bytes_downloaded': bytes_downloaded,
-        'connection_time': connection_time
+        "success": success,
+        "duration": duration,
+        "bytes_downloaded": bytes_downloaded,
+        "connection_time": connection_time,
     }
 
     # Add any additional metrics

@@ -30,7 +30,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from .base.production_logging import ProductionFormatter, JSONFormatter
+from .base.production_logging import JSONFormatter, ProductionFormatter
 
 # Sentinel to make setup_logging() idempotent
 _configured = False
@@ -40,7 +40,10 @@ _DEFAULT_LOG_DIR = Path.home() / ".cache" / "gps_receivers" / "logs"
 
 # Third-party loggers to suppress at WARNING level
 _NOISY_LOGGERS = (
-    "urllib3", "ftplib", "gps_parser", "apscheduler",
+    "urllib3",
+    "ftplib",
+    "gps_parser",
+    "apscheduler",
     # Internal receivers plumbing — suppress to WARNING so errors still surface
     "receivers.monitoring.icinga",
     "receivers.health.database_factory",
@@ -114,7 +117,9 @@ def setup_logging(
         _configure(level, json_output, log_dir or _DEFAULT_LOG_DIR)
         _configured = True
 
-    return logging.getLogger(f"receivers.{component}" if component != "receivers" else "receivers")
+    return logging.getLogger(
+        f"receivers.{component}" if component != "receivers" else "receivers"
+    )
 
 
 def _configure(level: int, json_output: bool, log_dir: Path) -> None:

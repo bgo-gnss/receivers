@@ -11,8 +11,8 @@ This provides basic health monitoring for receivers with limited capabilities.
 import logging
 from datetime import datetime, timedelta, timezone
 from ftplib import FTP, error_perm
-from typing import Dict, Any, Optional, List
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 
 class G10FTPHealthInferrer:

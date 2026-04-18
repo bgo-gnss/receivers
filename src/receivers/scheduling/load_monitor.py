@@ -19,7 +19,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 
 from .task_interface import TaskPriority
 
@@ -52,18 +52,18 @@ class LoadMonitor:
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         cfg = config or {}
-        self.enabled = cfg.get('enabled', True)
-        self.max_cpu_load = cfg.get('max_cpu_load', 8.0)
-        self.max_network_mbps = cfg.get('max_network_mbps', 80)
-        self.max_active_jobs = cfg.get('max_active_jobs', 80)
+        self.enabled = cfg.get("enabled", True)
+        self.max_cpu_load = cfg.get("max_cpu_load", 8.0)
+        self.max_network_mbps = cfg.get("max_network_mbps", 80)
+        self.max_active_jobs = cfg.get("max_active_jobs", 80)
 
         # Priority thresholds: fraction of max allowed for each priority level
-        thresholds = cfg.get('priority_thresholds', {})
+        thresholds = cfg.get("priority_thresholds", {})
         self._priority_thresholds = {
-            TaskPriority.REALTIME: thresholds.get('realtime', 1.0),
-            TaskPriority.STANDARD: thresholds.get('standard', 0.8),
-            TaskPriority.BACKFILL: thresholds.get('backfill', 0.6),
-            TaskPriority.MAINTENANCE: thresholds.get('maintenance', 0.4),
+            TaskPriority.REALTIME: thresholds.get("realtime", 1.0),
+            TaskPriority.STANDARD: thresholds.get("standard", 0.8),
+            TaskPriority.BACKFILL: thresholds.get("backfill", 0.6),
+            TaskPriority.MAINTENANCE: thresholds.get("maintenance", 0.4),
         }
 
         # Network sampling state
@@ -72,7 +72,7 @@ class LoadMonitor:
 
         # Cached load (avoid sampling on every call)
         self._cached_load: Optional[SystemLoad] = None
-        self._cache_ttl = cfg.get('check_interval', 10)
+        self._cache_ttl = cfg.get("check_interval", 10)
 
     def get_load(self) -> SystemLoad:
         """Sample current system load.
@@ -126,8 +126,7 @@ class LoadMonitor:
         # Check CPU
         if self.max_cpu_load > 0 and load.cpu_load_1m > self.max_cpu_load * threshold:
             logger.debug(
-                "Load gate: CPU %.1f > %.1f (%.0f%% of max %.1f) — "
-                "blocking %s jobs",
+                "Load gate: CPU %.1f > %.1f (%.0f%% of max %.1f) — blocking %s jobs",
                 load.cpu_load_1m,
                 self.max_cpu_load * threshold,
                 threshold * 100,
@@ -137,10 +136,12 @@ class LoadMonitor:
             return False
 
         # Check active threads/jobs
-        if self.max_active_jobs > 0 and load.active_threads > self.max_active_jobs * threshold:
+        if (
+            self.max_active_jobs > 0
+            and load.active_threads > self.max_active_jobs * threshold
+        ):
             logger.debug(
-                "Load gate: %d threads > %d (%.0f%% of max %d) — "
-                "blocking %s jobs",
+                "Load gate: %d threads > %d (%.0f%% of max %d) — blocking %s jobs",
                 load.active_threads,
                 int(self.max_active_jobs * threshold),
                 threshold * 100,
@@ -169,22 +170,24 @@ class LoadMonitor:
     def get_status(self) -> Dict[str, Any]:
         """Return a summary dict for CLI / logging."""
         load = self.get_load()
-        network_mbps = (load.network_bytes_sec * 8) / (1024 * 1024) if load.network_bytes_sec > 0 else 0.0
+        network_mbps = (
+            (load.network_bytes_sec * 8) / (1024 * 1024)
+            if load.network_bytes_sec > 0
+            else 0.0
+        )
 
         return {
-            'enabled': self.enabled,
-            'cpu_load_1m': round(load.cpu_load_1m, 2),
-            'cpu_load_5m': round(load.cpu_load_5m, 2),
-            'active_threads': load.active_threads,
-            'network_mbps': round(network_mbps, 2),
-            'thresholds': {
-                'max_cpu_load': self.max_cpu_load,
-                'max_network_mbps': self.max_network_mbps,
-                'max_active_jobs': self.max_active_jobs,
+            "enabled": self.enabled,
+            "cpu_load_1m": round(load.cpu_load_1m, 2),
+            "cpu_load_5m": round(load.cpu_load_5m, 2),
+            "active_threads": load.active_threads,
+            "network_mbps": round(network_mbps, 2),
+            "thresholds": {
+                "max_cpu_load": self.max_cpu_load,
+                "max_network_mbps": self.max_network_mbps,
+                "max_active_jobs": self.max_active_jobs,
             },
-            'can_start': {
-                p.name: self.can_start_job(p) for p in TaskPriority
-            },
+            "can_start": {p.name: self.can_start_job(p) for p in TaskPriority},
         }
 
     # ------------------------------------------------------------------
@@ -196,7 +199,7 @@ class LoadMonitor:
 
         Returns 0.0 if not on Linux or if this is the first sample.
         """
-        proc_path = Path('/proc/net/dev')
+        proc_path = Path("/proc/net/dev")
         if not proc_path.exists():
             return 0.0
 
@@ -207,8 +210,8 @@ class LoadMonitor:
                 parts = line.split()
                 if len(parts) < 10:
                     continue
-                iface = parts[0].rstrip(':')
-                if iface == 'lo':
+                iface = parts[0].rstrip(":")
+                if iface == "lo":
                     continue  # Skip loopback
                 rx_bytes = int(parts[1])
                 tx_bytes = int(parts[9])

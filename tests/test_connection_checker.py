@@ -1,7 +1,9 @@
 """Tests for connection health checker."""
 
+from unittest.mock import MagicMock, Mock, patch
+
 import pytest
-from unittest.mock import Mock, patch, MagicMock
+
 from receivers.health.connection_checker import (
     ConnectionChecker,
     ConnectionStatus,
@@ -24,7 +26,7 @@ class TestConnectionChecker:
             status=HealthStatus.OK,
             response_time_ms=123.45,
             accessible=True,
-            details={"port": 80}
+            details={"port": 80},
         )
 
         result = status.to_dict()
@@ -92,6 +94,7 @@ rtt min/avg/max/mdev = 2.345/2.456/2.567/0.089 ms
     def test_check_http_port_timeout(self, mock_get):
         """Test HTTP port timeout."""
         import requests
+
         mock_get.side_effect = requests.Timeout("Connection timeout")
 
         checker = ConnectionChecker(host="192.168.1.100", station_id="TEST")
@@ -154,7 +157,9 @@ rtt min/avg/max/mdev = 2.345/2.456/2.567/0.089 ms
         """Test overall status when a check fails critically."""
         results = {
             "router_ping": ConnectionStatus(status=HealthStatus.OK, accessible=True),
-            "http_port": ConnectionStatus(status=HealthStatus.CRITICAL, accessible=False),
+            "http_port": ConnectionStatus(
+                status=HealthStatus.CRITICAL, accessible=False
+            ),
             "protocol": ConnectionStatus(status=HealthStatus.OK, accessible=True),
         }
 
@@ -167,7 +172,9 @@ rtt min/avg/max/mdev = 2.345/2.456/2.567/0.089 ms
     def test_get_overall_status_warning(self):
         """Test overall status with warning condition."""
         results = {
-            "router_ping": ConnectionStatus(status=HealthStatus.WARNING, accessible=True),
+            "router_ping": ConnectionStatus(
+                status=HealthStatus.WARNING, accessible=True
+            ),
             "http_port": ConnectionStatus(status=HealthStatus.OK, accessible=True),
             "protocol": ConnectionStatus(status=HealthStatus.OK, accessible=True),
         }

@@ -990,10 +990,13 @@ class PolaRX5TCPExtractor:
         """
         import errno
 
-        def _port_result(
-            is_open: bool, status: str, detail: str
-        ) -> Dict[str, Any]:
-            return {"port": port_num, "open": is_open, "status": status, "detail": detail}
+        def _port_result(is_open: bool, status: str, detail: str) -> Dict[str, Any]:
+            return {
+                "port": port_num,
+                "open": is_open,
+                "status": status,
+                "detail": detail,
+            }
 
         sock = None
         try:

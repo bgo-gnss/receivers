@@ -23,10 +23,10 @@ def parse_session_parameters(session: str) -> Tuple[str, str, str]:
         - gtimes_frequency: gtimes-compatible frequency (e.g., "1D", "1H")
     """
     # Extract session parameters
-    parts = session.split('_')
+    parts = session.split("_")
     if len(parts) >= 2:
         acquisition_freq = parts[0]  # e.g., "15s", "1Hz"
-        file_freq = parts[1]        # e.g., "24hr", "1hr"
+        file_freq = parts[1]  # e.g., "24hr", "1hr"
     else:
         acquisition_freq = "15s"
         file_freq = "24hr"
@@ -34,7 +34,7 @@ def parse_session_parameters(session: str) -> Tuple[str, str, str]:
     # Map frequency to gtimes format
     frequency_mapping = {
         "24hr": "1D",  # Daily files
-        "1hr": "1H",   # Hourly files
+        "1hr": "1H",  # Hourly files
     }
     gtimes_freq = frequency_mapping.get(file_freq, "1D")
 
@@ -49,5 +49,5 @@ def get_frequency_mapping() -> Dict[str, str]:
     """
     return {
         "24hr": "1D",  # Daily files
-        "1hr": "1H",   # Hourly files
+        "1hr": "1H",  # Hourly files
     }

@@ -13,22 +13,22 @@ from typing import Any, Dict, List, Tuple, Union
 
 import gtimes.timefunc as gt
 
+from ..base.exceptions import ConfigurationError, ConnectionError
 from ..base.receiver import BaseReceiver
-from ..base.exceptions import ConnectionError, ConfigurationError
-from ..utils.session_parser import parse_session_parameters
-from ..utils.performance_recorder import (
-    record_performance_metrics,
-    create_performance_metrics,
-)
-from .http_client import TrimbleHTTPClient
-from .health_parser import TrimbleHealthParser
-from .http_download_client import NetR9HTTPDownloader
 
 # Phase 1 utilities (feature-flagged)
 from ..utils.archive_validator import ArchiveValidator
-from ..utils.time_processor import TimeParameterProcessor
-from ..utils.file_archiver import FileArchiver, ArchiveMode
 from ..utils.download_tracker import DownloadTracker
+from ..utils.file_archiver import ArchiveMode, FileArchiver
+from ..utils.performance_recorder import (
+    create_performance_metrics,
+    record_performance_metrics,
+)
+from ..utils.session_parser import parse_session_parameters
+from ..utils.time_processor import TimeParameterProcessor
+from .health_parser import TrimbleHealthParser
+from .http_client import TrimbleHTTPClient
+from .http_download_client import NetR9HTTPDownloader
 
 
 class NetR9(BaseReceiver):
@@ -208,9 +208,7 @@ class NetR9(BaseReceiver):
         ping_ok = connection_data.get("router_ping", {}).get("accessible", False)
 
         if not ping_ok:
-            self.logger.debug(
-                f"Ping failed for {host} — skipping HTTP extraction"
-            )
+            self.logger.debug(f"Ping failed for {host} — skipping HTTP extraction")
         elif not host:
             self.logger.warning(
                 f"No router IP configured for {self.station_id} - "
@@ -353,19 +351,25 @@ class NetR9(BaseReceiver):
                 }
 
             # Use Phase 1 batch validation - checks archive AND tmp (Fix #1)
-            missing_files_dict, files_found_in_archive, validated_files, files_in_tmp_dict = \
-                self.archive_validator.batch_validate_archives(
-                    files_dict,
-                    archive_files_dict,
-                    tmp_dir_path
-                )
+            (
+                missing_files_dict,
+                files_found_in_archive,
+                validated_files,
+                files_in_tmp_dict,
+            ) = self.archive_validator.batch_validate_archives(
+                files_dict, archive_files_dict, tmp_dir_path
+            )
 
             # Archive files from tmp if found and archive flag is set (Fix #1)
             files_archived_from_tmp = 0
             if files_in_tmp_dict and archive:
-                self.logger.info(f"Archiving {len(files_in_tmp_dict)} files from tmp directory...")
+                self.logger.info(
+                    f"Archiving {len(files_in_tmp_dict)} files from tmp directory..."
+                )
 
-                with FileArchiver(mode=ArchiveMode.BULK, logger=self.logger) as archiver:
+                with FileArchiver(
+                    mode=ArchiveMode.BULK, logger=self.logger
+                ) as archiver:
                     for filename, tmp_path in files_in_tmp_dict.items():
                         archive_dest = archive_files_dict.get(filename)
                         if archive_dest:
@@ -373,17 +377,21 @@ class NetR9(BaseReceiver):
                                 tmp_path,
                                 Path(archive_dest),
                                 compress=False,  # Files already compressed
-                                remove_tmp=True
+                                remove_tmp=True,
                             )
 
                 stats = archiver.get_statistics()
-                files_archived_from_tmp = stats['successful']
-                self.logger.info(f"Archived {stats['successful']}/{len(files_in_tmp_dict)} files from tmp to archive")
+                files_archived_from_tmp = stats["successful"]
+                self.logger.info(
+                    f"Archived {stats['successful']}/{len(files_in_tmp_dict)} files from tmp to archive"
+                )
 
             # Log validation results (matching PolaRX5 pattern)
             self.logger.info(f"Validated {validated_files} existing files")
             if files_archived_from_tmp > 0:
-                self.logger.info(f"Archived {files_archived_from_tmp} files from tmp directory")
+                self.logger.info(
+                    f"Archived {files_archived_from_tmp} files from tmp directory"
+                )
 
             if not missing_files_dict:
                 self.logger.info("Archive is up to date")
@@ -404,7 +412,8 @@ class NetR9(BaseReceiver):
             # Filter out known missing files using download tracker
             # Skip this filter when retry_missing=True (scheduler always retries)
             import re
-            retry_missing = kwargs.get('retry_missing', False)
+
+            retry_missing = kwargs.get("retry_missing", False)
             if retry_missing:
                 self.logger.debug("Retry mode: skipping known-missing filter")
             else:
@@ -415,20 +424,35 @@ class NetR9(BaseReceiver):
                             skipped_count = 0
                             for filename, remote_dir in missing_files_dict.items():
                                 # Parse date from NetR9 filename: MANA202601170000A.T02
-                                match = re.match(rf"^{re.escape(self.station_id)}_*(\d{{4}})(\d{{2}})(\d{{2}})(\d{{2}})(\d{{2}})", filename, re.IGNORECASE)
+                                match = re.match(
+                                    rf"^{re.escape(self.station_id)}_*(\d{{4}})(\d{{2}})(\d{{2}})(\d{{2}})(\d{{2}})",
+                                    filename,
+                                    re.IGNORECASE,
+                                )
                                 if match:
                                     from datetime import date
-                                    file_date = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+
+                                    file_date = date(
+                                        int(match.group(1)),
+                                        int(match.group(2)),
+                                        int(match.group(3)),
+                                    )
                                     file_hour = int(match.group(4))
                                     # Hourly session has file_hour, daily has None
-                                    track_hour = file_hour if "1hr" in session.lower() else None
+                                    track_hour = (
+                                        file_hour if "1hr" in session.lower() else None
+                                    )
                                     if tracker.is_file_missing(file_date, track_hour):
-                                        self.logger.info(f"⏭️  Skipping {filename} (known missing, not retrying)")
+                                        self.logger.info(
+                                            f"⏭️  Skipping {filename} (known missing, not retrying)"
+                                        )
                                         skipped_count += 1
                                         continue
                                 filtered_missing[filename] = remote_dir
                             if skipped_count > 0:
-                                self.logger.info(f"Skipped {skipped_count} known missing files")
+                                self.logger.info(
+                                    f"Skipped {skipped_count} known missing files"
+                                )
                             missing_files_dict = filtered_missing
                 except Exception as e:
                     self.logger.debug(f"File tracking check failed: {e}")
@@ -442,7 +466,9 @@ class NetR9(BaseReceiver):
 
                 # Log remote paths (unique paths only)
                 logged_paths = set()
-                for filename, remote_dir in sorted(missing_files_dict.items(), reverse=True):
+                for filename, remote_dir in sorted(
+                    missing_files_dict.items(), reverse=True
+                ):
                     if remote_dir not in logged_paths:
                         self.logger.info(f"Remote path: {remote_dir}")
                         logged_paths.add(remote_dir)
@@ -488,7 +514,9 @@ class NetR9(BaseReceiver):
             if sync:
                 try:
                     # Collect remote file sizes from HTTP downloader (if available)
-                    http_remote_sizes = getattr(self.http_downloader, 'remote_sizes', {})
+                    http_remote_sizes = getattr(
+                        self.http_downloader, "remote_sizes", {}
+                    )
 
                     with DownloadTracker(self.station_id, session) as tracker:
                         if tracker._connected:
@@ -501,28 +529,60 @@ class NetR9(BaseReceiver):
                                 # Look up remote size by filename (original name without .gz)
                                 remote_size = http_remote_sizes.get(filename)
                                 if not remote_size:
-                                    base_name = filename.removesuffix('.gz')
+                                    base_name = filename.removesuffix(".gz")
                                     remote_size = http_remote_sizes.get(base_name)
                                 # Parse date from NetR9 filename: MANA202601170000A.T02 or .T02.gz
-                                match = re.match(rf"^{re.escape(self.station_id)}_*(\d{{4}})(\d{{2}})(\d{{2}})(\d{{2}})(\d{{2}})", filename, re.IGNORECASE)
+                                match = re.match(
+                                    rf"^{re.escape(self.station_id)}_*(\d{{4}})(\d{{2}})(\d{{2}})(\d{{2}})(\d{{2}})",
+                                    filename,
+                                    re.IGNORECASE,
+                                )
                                 if match:
-                                    file_date = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+                                    file_date = date(
+                                        int(match.group(1)),
+                                        int(match.group(2)),
+                                        int(match.group(3)),
+                                    )
                                     file_hour = int(match.group(4))
-                                    track_hour = file_hour if "1hr" in session.lower() else None
-                                    file_size = Path(file_path).stat().st_size if Path(file_path).exists() else None
-                                    tracker.mark_downloaded(file_date, track_hour, filename, file_size, remote_file_size=remote_size)
+                                    track_hour = (
+                                        file_hour if "1hr" in session.lower() else None
+                                    )
+                                    file_size = (
+                                        Path(file_path).stat().st_size
+                                        if Path(file_path).exists()
+                                        else None
+                                    )
+                                    tracker.mark_downloaded(
+                                        file_date,
+                                        track_hour,
+                                        filename,
+                                        file_size,
+                                        remote_file_size=remote_size,
+                                    )
                                     downloaded_dates.add((file_date, track_hour))
 
                             # Track missing files (requested but not downloaded) - compare by date/hour
                             for req_filename in missing_files_dict.keys():
-                                match = re.match(rf"^{re.escape(self.station_id)}_*(\d{{4}})(\d{{2}})(\d{{2}})(\d{{2}})(\d{{2}})", req_filename, re.IGNORECASE)
+                                match = re.match(
+                                    rf"^{re.escape(self.station_id)}_*(\d{{4}})(\d{{2}})(\d{{2}})(\d{{2}})(\d{{2}})",
+                                    req_filename,
+                                    re.IGNORECASE,
+                                )
                                 if match:
-                                    file_date = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+                                    file_date = date(
+                                        int(match.group(1)),
+                                        int(match.group(2)),
+                                        int(match.group(3)),
+                                    )
                                     file_hour = int(match.group(4))
-                                    track_hour = file_hour if "1hr" in session.lower() else None
+                                    track_hour = (
+                                        file_hour if "1hr" in session.lower() else None
+                                    )
                                     # Only mark as missing if this date/hour wasn't downloaded
                                     if (file_date, track_hour) not in downloaded_dates:
-                                        tracker.mark_missing(file_date, track_hour, req_filename)
+                                        tracker.mark_missing(
+                                            file_date, track_hour, req_filename
+                                        )
                 except Exception as e:
                     self.logger.debug(f"File tracking failed: {e}")
 
@@ -576,24 +636,33 @@ class NetR9(BaseReceiver):
         archive even if they were downloaded before the tracker was active.
         """
         import re
+
         try:
             with DownloadTracker(self.station_id, session) as tracker:
                 if tracker._connected:
                     from datetime import date
+
                     tracked = 0
                     for filename in files_dict.keys():
                         match = re.match(
                             rf"^{re.escape(self.station_id)}_*(\d{{4}})(\d{{2}})(\d{{2}})(\d{{2}})(\d{{2}})",
-                            filename, re.IGNORECASE
+                            filename,
+                            re.IGNORECASE,
                         )
                         if match:
-                            file_date = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+                            file_date = date(
+                                int(match.group(1)),
+                                int(match.group(2)),
+                                int(match.group(3)),
+                            )
                             file_hour = int(match.group(4))
                             track_hour = file_hour if "1hr" in session.lower() else None
                             tracker.mark_archived(file_date, track_hour, filename)
                             tracked += 1
                     if tracked:
-                        self.logger.debug(f"Registered {tracked} archived files in file_tracking")
+                        self.logger.debug(
+                            f"Registered {tracked} archived files in file_tracking"
+                        )
         except Exception as e:
             self.logger.debug(f"File tracking for validated files failed: {e}")
 
@@ -707,7 +776,7 @@ class NetR9(BaseReceiver):
             # Basic checks passed
             return True
 
-        except (OSError, IOError) as e:
+        except OSError as e:
             self.logger.debug(f"Error validating archived file {file_path}: {e}")
             return False
 
@@ -774,8 +843,10 @@ class NetR9(BaseReceiver):
             station_id_for_filename = self.station_id
             if self.station_info.get("receiver", {}).get("firmware_underscore_pad"):
                 # Pad to 10 characters with underscores
-                station_id_for_filename = self.station_id.ljust(10, '_')
-                self.logger.debug(f"Applying underscore padding: {self.station_id} -> {station_id_for_filename}")
+                station_id_for_filename = self.station_id.ljust(10, "_")
+                self.logger.debug(
+                    f"Applying underscore padding: {self.station_id} -> {station_id_for_filename}"
+                )
 
             filename = file_dt.strftime(filename_format).format(
                 station=station_id_for_filename, session_letter=letter_code
@@ -783,10 +854,9 @@ class NetR9(BaseReceiver):
 
             # Remote directory format: /Internal/YYYYMM/session_directory/
             # Per-station override (e.g., VARG uses %Y%m/%d since Jan 2026)
-            date_format = (
-                self.station_info.get("receiver", {}).get("remote_date_format")
-                or self.netr9_config.get("remote_date_format", "%Y%m")
-            )
+            date_format = self.station_info.get("receiver", {}).get(
+                "remote_date_format"
+            ) or self.netr9_config.get("remote_date_format", "%Y%m")
             remote_dir = f"{base_path.rstrip('/')}/{file_dt.strftime(date_format)}/{remote_subdir}"
 
             files_dict[filename] = remote_dir
@@ -841,12 +911,11 @@ class NetR9(BaseReceiver):
                     archive_path = Path(archive_files_dict[filename])
 
                     # Archive file immediately (one at a time for fault tolerance)
-                    with FileArchiver(mode=ArchiveMode.IMMEDIATE, logger=self.logger) as archiver:
+                    with FileArchiver(
+                        mode=ArchiveMode.IMMEDIATE, logger=self.logger
+                    ) as archiver:
                         success = archiver.archive_file(
-                            file_path_obj,
-                            archive_path,
-                            compress=True,
-                            remove_tmp=True
+                            file_path_obj, archive_path, compress=True, remove_tmp=True
                         )
 
                     if success:
@@ -857,7 +926,9 @@ class NetR9(BaseReceiver):
             except Exception as e:
                 self.logger.error(f"❌ Failed to archive {filename}: {e}")
 
-        self.logger.info(f"Archiving complete: {archived_count}/{len(downloaded_files)} files archived")
+        self.logger.info(
+            f"Archiving complete: {archived_count}/{len(downloaded_files)} files archived"
+        )
         return archived_count
 
     def get_file_extension(self) -> str:

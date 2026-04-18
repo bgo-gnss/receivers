@@ -22,6 +22,7 @@ from .converter_base import (
     RawToRinexConverter,
     RinexVersion,
 )
+from .leica_converter import G10Converter, LeicaConverter
 from .metadata_provider import (
     RINEX_FIELD_SPECS,
     EquipmentMetadata,
@@ -30,7 +31,6 @@ from .metadata_provider import (
     format_rinex_field,
 )
 from .rinex_namer import NamingConvention, RinexNamer
-from .leica_converter import G10Converter, LeicaConverter
 from .sbf_converter import SBFConverter
 from .trimble_converter import NetR9Converter, NetRSConverter, TrimbleConverter
 from .trimble_native_converter import TrimbleNativeConverter

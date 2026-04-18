@@ -10,16 +10,17 @@ This allows the scheduler to handle any type of task while maintaining
 a consistent interface and behavior.
 """
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, Any, Optional, Tuple
 from enum import Enum
-import logging
+from typing import Any, Dict, Optional, Tuple
 
 
 class TaskType(Enum):
     """Types of scheduled tasks."""
+
     DOWNLOAD = "download"
     STATUS = "status"
     HEALTH = "health"
@@ -41,14 +42,16 @@ class TaskPriority(Enum):
     - BACKFILL (8): Recovery and historical processing
     - MAINTENANCE (10): Low priority background tasks
     """
-    REALTIME = 1      # Live hourly data, status monitoring
-    STANDARD = 5      # Daily scheduled operations
-    BACKFILL = 8      # Recovery operations
+
+    REALTIME = 1  # Live hourly data, status monitoring
+    STANDARD = 5  # Daily scheduled operations
+    BACKFILL = 8  # Recovery operations
     MAINTENANCE = 10  # Low priority tasks
 
 
 class TaskFrequency(Enum):
     """Task execution frequency."""
+
     HOURLY = "hourly"
     DAILY = "daily"
     WEEKLY = "weekly"
@@ -73,6 +76,7 @@ class TaskConfig:
         lookback_periods: Number of periods to check (for download tasks)
         resource_pool: Which resource pool to use ('network' or 'cpu')
     """
+
     task_type: TaskType
     session_type: str
     schedule_minute: int
@@ -102,6 +106,7 @@ class TaskResult:
         pipeline_job_id: Optional pipeline job ID for tracking multi-stage pipelines
         output_files: List of output files produced (for pipeline chaining)
     """
+
     success: bool
     status: str
     duration: float
@@ -137,7 +142,7 @@ class ScheduledTask(ABC):
         self,
         station_id: str,
         config: TaskConfig,
-        logger: Optional[logging.Logger] = None
+        logger: Optional[logging.Logger] = None,
     ):
         """Initialize task.
 
@@ -148,7 +153,7 @@ class ScheduledTask(ABC):
         """
         self.station_id = station_id
         self.config = config
-        self.logger = logger or logging.getLogger(f'receivers.task.{station_id}')
+        self.logger = logger or logging.getLogger(f"receivers.task.{station_id}")
 
     @abstractmethod
     def get_time_parameters(self) -> Tuple[datetime, datetime]:
@@ -216,10 +221,10 @@ class ScheduledTask(ABC):
         # Check if error is retryable
         if result.error:
             # Don't retry configuration errors
-            if 'ConfigurationError' in result.error:
+            if "ConfigurationError" in result.error:
                 return False
             # Don't retry validation errors
-            if 'ValidationError' in result.error:
+            if "ValidationError" in result.error:
                 return False
 
         # Retry network/connection errors
@@ -235,13 +240,13 @@ class ScheduledTask(ABC):
             Dictionary with audit information
         """
         return {
-            'task_type': self.config.task_type.value,
-            'session': self.config.session_type,
-            'status': result.status,
-            'duration': result.duration,
-            'scheduled': True,
-            'success': result.success,
-            'error_message': result.error if result.error else None
+            "task_type": self.config.task_type.value,
+            "session": self.config.session_type,
+            "status": result.status,
+            "duration": result.duration,
+            "scheduled": True,
+            "success": result.success,
+            "error_message": result.error if result.error else None,
         }
 
 
@@ -272,7 +277,7 @@ class TaskFactory:
         task_type: TaskType,
         station_id: str,
         config: TaskConfig,
-        logger: Optional[logging.Logger] = None
+        logger: Optional[logging.Logger] = None,
     ) -> ScheduledTask:
         """Create a task instance.
 
