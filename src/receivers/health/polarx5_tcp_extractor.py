@@ -566,13 +566,13 @@ class PolaRX5TCPExtractor:
                         decoded = response.decode("utf-8", errors="ignore")
                         if decoded.rstrip().endswith(">") and "IP" in decoded[-20:]:
                             break
-                except socket.timeout:
+                except TimeoutError:
                     if response:
                         break
 
             return response.decode("utf-8", errors="ignore")
 
-        except socket.timeout:
+        except TimeoutError:
             self.logger.debug(f"Timeout sending ASCII command: {command}")
             return None
         except ConnectionRefusedError:
@@ -811,7 +811,7 @@ class PolaRX5TCPExtractor:
                             sync_pos = response.find(b"$@")
                             if sync_pos >= 0:
                                 return response[sync_pos:]
-                except socket.timeout:
+                except TimeoutError:
                     # On receivers without continuous output, timeout means no more data
                     if len(response) == 0:
                         continue  # Keep waiting if we haven't received anything yet
@@ -835,7 +835,7 @@ class PolaRX5TCPExtractor:
 
             return None
 
-        except socket.timeout:
+        except TimeoutError:
             self.logger.error(f"Timeout querying {block_name}")
             return None
         except ConnectionRefusedError:
@@ -1010,7 +1010,7 @@ class PolaRX5TCPExtractor:
                 return _port_result(False, "warning", "refused")
             else:
                 return _port_result(False, "critical", "timeout")
-        except socket.timeout:
+        except TimeoutError:
             return _port_result(False, "critical", "timeout")
         except ConnectionRefusedError:
             return _port_result(False, "warning", "refused")

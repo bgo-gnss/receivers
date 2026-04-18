@@ -78,13 +78,13 @@ def send_commands_to_receiver(
                 if "$E:" in response:
                     logger.warning(f"Error in response: {response}")
 
-            except socket.timeout:
+            except TimeoutError:
                 responses.append("(no response - timeout)")
 
         sock.close()
         return True, responses
 
-    except socket.timeout:
+    except TimeoutError:
         return False, [f"Connection timeout to {ip}:{port}"]
     except ConnectionRefusedError:
         return False, [f"Connection refused to {ip}:{port}"]
