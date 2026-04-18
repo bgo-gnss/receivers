@@ -12,12 +12,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import gtimes.timefunc as gt
-from .exceptions import ConnectionError, ConfigurationError
 
 # Phase 1 utilities - unified validation and archiving
 from ..utils.archive_validator import ArchiveValidator
+from ..utils.file_archiver import ArchiveMode, FileArchiver
 from ..utils.time_processor import TimeParameterProcessor
-from ..utils.file_archiver import FileArchiver, ArchiveMode
+from .exceptions import ConfigurationError, ConnectionError
 
 
 class BaseDownloadManager(ABC):
@@ -28,7 +28,12 @@ class BaseDownloadManager(ABC):
     for connection and file handling.
     """
 
-    def __init__(self, station_id: str, station_config: Dict[str, Any], logger: Optional[logging.Logger] = None):
+    def __init__(
+        self,
+        station_id: str,
+        station_config: Dict[str, Any],
+        logger: Optional[logging.Logger] = None,
+    ):
         """Initialize download manager.
 
         Args:
@@ -38,7 +43,9 @@ class BaseDownloadManager(ABC):
         """
         self.station_id = station_id.upper()
         self.station_config = station_config
-        self.logger = logger or logging.getLogger(f"{__class__.__name__}.{self.station_id}")
+        self.logger = logger or logging.getLogger(
+            f"{__class__.__name__}.{self.station_id}"
+        )
 
         # Initialize common configuration
         self._setup_common_config()
@@ -57,7 +64,7 @@ class BaseDownloadManager(ABC):
             raise ConfigurationError(
                 f"Missing configuration key: {e}",
                 station_id=self.station_id,
-                config_field=str(e)
+                config_field=str(e),
             )
 
         # Timeout configuration
@@ -118,7 +125,7 @@ class BaseDownloadManager(ABC):
         connection: Any,
         remote_file_path: str,
         local_file_path: str,
-        resume_offset: int = 0
+        resume_offset: int = 0,
     ) -> Dict[str, Any]:
         """Download a single file from receiver.
 
@@ -141,7 +148,7 @@ class BaseDownloadManager(ABC):
         remote_file_size: Optional[int] = None,
         resume_offset: int = 0,
         max_retries: int = 3,
-        initial_delay: float = 0.5
+        initial_delay: float = 0.5,
     ) -> Tuple[Any, Dict[str, Any]]:
         """Download file with automatic retry and reconnection on timeout/connection errors.
 
@@ -172,7 +179,7 @@ class BaseDownloadManager(ABC):
             "cannot read from timed out",
             "connection reset",
             "broken pipe",
-            "connection refused"
+            "connection refused",
         ]
 
         # Non-retryable error patterns
@@ -182,7 +189,7 @@ class BaseDownloadManager(ABC):
             "not found",
             "no such file",
             "authentication",
-            "login"
+            "login",
         ]
 
         last_exception = None
@@ -210,11 +217,15 @@ class BaseDownloadManager(ABC):
                 if attempt < max_retries:
                     # Calculate delay with increasing backoff
                     delay = initial_delay * (attempt + 1)
-                    self.logger.warning(f"⚠️  Download attempt {attempt + 1} failed: {e}")
+                    self.logger.warning(
+                        f"⚠️  Download attempt {attempt + 1} failed: {e}"
+                    )
 
                     # Check if we need to reconnect (timeout/connection errors)
                     if any(pattern in error_msg for pattern in timeout_patterns):
-                        self.logger.info("🔄 Closing dead connection and reconnecting...")
+                        self.logger.info(
+                            "🔄 Closing dead connection and reconnecting..."
+                        )
                         try:
                             self.close_connection(connection)
                         except:
@@ -223,7 +234,9 @@ class BaseDownloadManager(ABC):
                         # Reconnect
                         connection = self.establish_connection()
                         if not connection:
-                            self.logger.error("❌ Failed to reconnect - aborting retries")
+                            self.logger.error(
+                                "❌ Failed to reconnect - aborting retries"
+                            )
                             raise ConnectionError("Could not reconnect to receiver")
 
                         self.logger.info("✅ Reconnected successfully")
@@ -244,7 +257,7 @@ class BaseDownloadManager(ABC):
         start: Optional[Union[datetime, str]],
         end: Optional[Union[datetime, str]],
         session: str,
-        frequency: str
+        frequency: str,
     ) -> tuple[datetime, datetime]:
         """Process and validate time parameters.
 
@@ -290,11 +303,7 @@ class BaseDownloadManager(ABC):
         return start, end
 
     def generate_file_list(
-        self,
-        start: datetime,
-        end: datetime,
-        session: str,
-        frequency: str
+        self, start: datetime, end: datetime, session: str, frequency: str
     ) -> Dict[datetime, tuple[str, str]]:
         """Generate list of files to download with archive paths.
 
@@ -360,9 +369,7 @@ class BaseDownloadManager(ABC):
         pass
 
     def identify_missing_files(
-        self,
-        file_dict: Dict[datetime, Tuple[str, str]],
-        tmp_dir: Optional[Path] = None
+        self, file_dict: Dict[datetime, Tuple[str, str]], tmp_dir: Optional[Path] = None
     ) -> Tuple[Dict[datetime, Tuple[str, str]], Dict[str, Path], int]:
         """Identify files that need to be downloaded using Phase 1 validation.
 
@@ -390,12 +397,11 @@ class BaseDownloadManager(ABC):
             archive_paths_dict[remote_filename] = archive_path
 
         # Use Phase 1 batch validation
-        missing_files_dict, found_count, validated_count, files_in_tmp_dict = \
+        missing_files_dict, found_count, validated_count, files_in_tmp_dict = (
             self.archive_validator.batch_validate_archives(
-                files_dict,
-                archive_paths_dict,
-                tmp_dir
+                files_dict, archive_paths_dict, tmp_dir
             )
+        )
 
         # Convert back to datetime-keyed format
         missing_files = {}
@@ -413,9 +419,7 @@ class BaseDownloadManager(ABC):
         return missing_files, files_in_tmp_dict, found_count
 
     def archive_tmp_files(
-        self,
-        files_in_tmp_dict: Dict[str, Path],
-        archive_paths_dict: Dict[str, str]
+        self, files_in_tmp_dict: Dict[str, Path], archive_paths_dict: Dict[str, str]
     ) -> int:
         """Archive files from tmp directory using Phase 1 FileArchiver.
 
@@ -429,7 +433,9 @@ class BaseDownloadManager(ABC):
         if not files_in_tmp_dict:
             return 0
 
-        self.logger.info(f"Archiving {len(files_in_tmp_dict)} files from tmp directory...")
+        self.logger.info(
+            f"Archiving {len(files_in_tmp_dict)} files from tmp directory..."
+        )
 
         with FileArchiver(mode=ArchiveMode.BULK, logger=self.logger) as archiver:
             for filename, tmp_path in files_in_tmp_dict.items():
@@ -439,12 +445,14 @@ class BaseDownloadManager(ABC):
                         tmp_path,
                         Path(archive_dest),
                         compress=False,  # Files are already compressed
-                        remove_tmp=True
+                        remove_tmp=True,
                     )
 
         stats = archiver.get_statistics()
-        self.logger.info(f"Archived {stats['successful']}/{len(files_in_tmp_dict)} files from tmp to archive")
-        return stats['successful']
+        self.logger.info(
+            f"Archived {stats['successful']}/{len(files_in_tmp_dict)} files from tmp to archive"
+        )
+        return stats["successful"]
 
     def archive_file(self, tmp_file_path: str, archive_path: str) -> bool:
         """Archive downloaded file to final location.
@@ -470,21 +478,28 @@ class BaseDownloadManager(ABC):
         if os.path.isfile(archive_path):
             archive_size = os.path.getsize(archive_path)
             if tmp_size == archive_size:
-                self.logger.info(f"Archive file already exists with same size: {archive_path}")
+                self.logger.info(
+                    f"Archive file already exists with same size: {archive_path}"
+                )
                 os.unlink(tmp_file_path)
                 return True
 
         # Atomic move to archive location
         try:
-            self.logger.info(f"📦 Archiving {os.path.basename(archive_path)} ({tmp_size:,} bytes)")
+            self.logger.info(
+                f"📦 Archiving {os.path.basename(archive_path)} ({tmp_size:,} bytes)"
+            )
             os.rename(tmp_file_path, archive_path)
 
             # Verify successful archive
-            if os.path.isfile(archive_path) and os.path.getsize(archive_path) == tmp_size:
+            if (
+                os.path.isfile(archive_path)
+                and os.path.getsize(archive_path) == tmp_size
+            ):
                 self.logger.info(f"✅ Archived to: {archive_path}")
                 return True
             else:
-                self.logger.error(f"❌ Archive verification failed")
+                self.logger.error("❌ Archive verification failed")
                 return False
 
         except Exception as e:
@@ -503,7 +518,7 @@ class BaseDownloadManager(ABC):
         clean_tmp: bool = True,
         archive: bool = True,
         immediate_archive: bool = True,
-        tmp_dir: Optional[str] = None
+        tmp_dir: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Download data session with common logic.
 
@@ -530,7 +545,7 @@ class BaseDownloadManager(ABC):
 
         # Set up temporary directory - use instance tmp_dir if not provided
         if tmp_dir is None:
-            tmp_dir = getattr(self, 'tmp_dir', '/tmp/download/')
+            tmp_dir = getattr(self, "tmp_dir", "/tmp/download/")
         tmp_dir_path = Path(tmp_dir) / self.station_id
         tmp_dir_path.mkdir(parents=True, exist_ok=True)
 
@@ -552,7 +567,9 @@ class BaseDownloadManager(ABC):
                 for dt, (arch_path, remote_file) in file_dict.items()
                 if remote_file == filename
             }
-            files_archived_from_tmp = self.archive_tmp_files(files_in_tmp_dict, archive_paths_dict)
+            files_archived_from_tmp = self.archive_tmp_files(
+                files_in_tmp_dict, archive_paths_dict
+            )
 
         if not missing_files:
             self.logger.info("All files up to date")
@@ -562,7 +579,7 @@ class BaseDownloadManager(ABC):
                 "files_missing": 0,
                 "files_downloaded": 0,
                 "files_archived_from_tmp": files_archived_from_tmp,
-                "duration": time.time() - start_time
+                "duration": time.time() - start_time,
             }
 
         self.logger.info(f"Missing files: {len(missing_files)}")
@@ -579,8 +596,14 @@ class BaseDownloadManager(ABC):
                     # Download each missing file
                     for dt, (archive_path, remote_filename) in missing_files.items():
                         result = self._download_single_file(
-                            connection, dt, archive_path, remote_filename,
-                            tmp_dir_path, clean_tmp, archive, immediate_archive
+                            connection,
+                            dt,
+                            archive_path,
+                            remote_filename,
+                            tmp_dir_path,
+                            clean_tmp,
+                            archive,
+                            immediate_archive,
                         )
 
                         if result["success"]:
@@ -598,7 +621,7 @@ class BaseDownloadManager(ABC):
                     "files_checked": len(file_dict),
                     "files_missing": len(missing_files),
                     "files_downloaded": len(downloaded_files),
-                    "duration": time.time() - start_time
+                    "duration": time.time() - start_time,
                 }
 
         return {
@@ -608,7 +631,7 @@ class BaseDownloadManager(ABC):
             "files_downloaded": len(downloaded_files),
             "downloaded_files": downloaded_files,
             "total_bytes": total_bytes,
-            "duration": time.time() - start_time
+            "duration": time.time() - start_time,
         }
 
     def _download_single_file(
@@ -620,7 +643,7 @@ class BaseDownloadManager(ABC):
         tmp_dir: Path,
         clean_tmp: bool,
         archive: bool,
-        immediate_archive: bool
+        immediate_archive: bool,
     ) -> Dict[str, Any]:
         """Download a single file with proper error handling.
 
@@ -646,7 +669,7 @@ class BaseDownloadManager(ABC):
                     "success": False,
                     "error": result.get("error", "Download failed"),
                     "bytes_downloaded": 0,
-                    "final_path": None
+                    "final_path": None,
                 }
 
             bytes_downloaded = os.path.getsize(local_file) if local_file.exists() else 0
@@ -660,7 +683,7 @@ class BaseDownloadManager(ABC):
             return {
                 "success": True,
                 "bytes_downloaded": bytes_downloaded,
-                "final_path": final_path
+                "final_path": final_path,
             }
 
         except Exception as e:
@@ -669,7 +692,7 @@ class BaseDownloadManager(ABC):
                 "success": False,
                 "error": str(e),
                 "bytes_downloaded": 0,
-                "final_path": None
+                "final_path": None,
             }
 
     @abstractmethod

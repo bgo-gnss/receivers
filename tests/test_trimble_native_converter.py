@@ -5,6 +5,7 @@ alignment in Trimble native RINEX output so rnx2crx (Hatanaka) succeeds.
 """
 
 import logging
+
 import pytest
 
 from receivers.rinex.trimble_native_converter import TrimbleNativeConverter
@@ -20,24 +21,12 @@ def converter():
 
 # --- Epoch lines as produced by trm2rinex Docker ---
 # Misaligned: 13 spaces + 14-char number (63 chars total)
-MISALIGNED_EPOCH = (
-    "> 2026 03 13 00 40  0.0000000  0 34"
-    "            -0.000000002000"
-)
-MISALIGNED_POSITIVE = (
-    "> 2026 03 13 01 00 30.0000000  0 34"
-    "             0.000000002000"
-)
+MISALIGNED_EPOCH = "> 2026 03 13 00 40  0.0000000  0 34            -0.000000002000"
+MISALIGNED_POSITIVE = "> 2026 03 13 01 00 30.0000000  0 34             0.000000002000"
 
 # Correct: 6 spaces + F15.12 (56 chars total)
-CORRECT_NEGATIVE = (
-    "> 2026 03 13 00 40  0.0000000  0 34"
-    "      -0.000000002000"
-)
-CORRECT_POSITIVE = (
-    "> 2026 03 13 01 00 30.0000000  0 34"
-    "       0.000000002000"
-)
+CORRECT_NEGATIVE = "> 2026 03 13 00 40  0.0000000  0 34      -0.000000002000"
+CORRECT_POSITIVE = "> 2026 03 13 01 00 30.0000000  0 34       0.000000002000"
 
 # Epoch line without clock offset (zero offset omitted by Trimble)
 NO_OFFSET_EPOCH = "> 2026 03 13 00 00  0.0000000  0 33      "
@@ -90,17 +79,19 @@ class TestNormalizeEpochLines:
     def test_fixes_mixed_file(self, converter, tmp_path):
         """File with both offset and no-offset epoch lines."""
         rinex = tmp_path / "TEST.26o"
-        content = "\n".join([
-            NO_OFFSET_EPOCH,
-            OBS_LINE,
-            MISALIGNED_EPOCH,
-            OBS_LINE,
-            MISALIGNED_POSITIVE,
-            OBS_LINE,
-            NO_OFFSET_EPOCH,
-            OBS_LINE,
-            "",
-        ])
+        content = "\n".join(
+            [
+                NO_OFFSET_EPOCH,
+                OBS_LINE,
+                MISALIGNED_EPOCH,
+                OBS_LINE,
+                MISALIGNED_POSITIVE,
+                OBS_LINE,
+                NO_OFFSET_EPOCH,
+                OBS_LINE,
+                "",
+            ]
+        )
         rinex.write_text(content)
 
         converter._normalize_epoch_lines(rinex)
@@ -133,7 +124,9 @@ class TestNormalizeEpochLines:
         # Prefix is 35 chars, clock offset field should be 21 chars
         prefix_len = 35
         offset_field = line[prefix_len:]
-        assert len(offset_field) == 21, f"Expected 21 chars, got {len(offset_field)}: [{offset_field}]"
+        assert len(offset_field) == 21, (
+            f"Expected 21 chars, got {len(offset_field)}: [{offset_field}]"
+        )
 
     def test_handles_missing_file_gracefully(self, converter, tmp_path):
         """Should log warning, not raise, on missing file."""

@@ -26,17 +26,17 @@ from ..base.exceptions import (
     ConnectionError,
 )
 from ..base.receiver import BaseReceiver
-from ..utils.file_validator import FileValidator
-from ..utils.session_parser import parse_session_parameters
-from ..utils.performance_recorder import (
-    create_performance_metrics,
-    record_performance_metrics,
-)
 
 # Phase 1 utilities (feature-flagged)
 from ..utils.archive_validator import ArchiveValidator
 from ..utils.compression_detector import needs_compression
 from ..utils.file_archiver import ArchiveMode, FileArchiver
+from ..utils.file_validator import FileValidator
+from ..utils.performance_recorder import (
+    create_performance_metrics,
+    record_performance_metrics,
+)
+from ..utils.session_parser import parse_session_parameters
 from ..utils.time_processor import TimeParameterProcessor
 
 
@@ -142,6 +142,7 @@ class PolaRX5(BaseReceiver):
         # PolaRX5 supports FTP resume so killing a slow download is cheap.
         # inactivity_timeout stays at gps_parser default (typically 60s).
         from ..utils.stall_timeout import get_stall_timeout
+
         self.progress_timeout = get_stall_timeout(
             self.station_id, "polarx5", default=self.progress_timeout
         )
@@ -165,8 +166,10 @@ class PolaRX5(BaseReceiver):
             Timeout in seconds.
         """
         from ..utils.stall_timeout import get_stall_timeout
+
         return get_stall_timeout(
-            self.station_id, "polarx5",
+            self.station_id,
+            "polarx5",
             default=self.progress_timeout,
             session_type=session_type,
             expected_file_size=expected_file_size,
@@ -209,8 +212,8 @@ class PolaRX5(BaseReceiver):
         Returns:
             Dictionary with router and receiver connection status
         """
-        import subprocess
         import socket
+        import subprocess
 
         router_ok = False
         receiver_ok = False
@@ -220,11 +223,11 @@ class PolaRX5(BaseReceiver):
         try:
             # Ping with 2 second timeout, 3 packets (tolerate lossy links)
             result = subprocess.run(
-                ['ping', '-c', '3', '-W', '2', self.ip_number],
+                ["ping", "-c", "3", "-W", "2", self.ip_number],
                 capture_output=True,
-                timeout=8
+                timeout=8,
             )
-            router_ok = (result.returncode == 0)
+            router_ok = result.returncode == 0
         except Exception as e:
             error_msg = f"Router ping failed: {e}"
 
@@ -235,9 +238,9 @@ class PolaRX5(BaseReceiver):
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(2)
             result = sock.connect_ex((self.ip_number, 8060))
-            receiver_ok = (result == 0)
+            receiver_ok = result == 0
             if not receiver_ok and not error_msg:
-                error_msg = f"HTTP port 8060 not responding"
+                error_msg = "HTTP port 8060 not responding"
         except Exception as e:
             if not error_msg:
                 error_msg = f"Receiver test failed: {e}"
@@ -313,7 +316,7 @@ class PolaRX5(BaseReceiver):
         # Extract legacy parameters from kwargs for backward compatibility
         loglevel = kwargs.get("loglevel", logging.WARNING)
         ffrequency = kwargs.get("ffrequency", "1D")
-        afrequency = kwargs.get("afrequency", "15s")
+        kwargs.get("afrequency", "15s")
         compression = kwargs.get("compression", ".gz")
         immediate_archive = kwargs.get("immediate_archive", True)
         predir = kwargs.get("predir", "/DSK2/SSN/")
@@ -370,7 +373,6 @@ class PolaRX5(BaseReceiver):
                 "duration": time.time() - start_time,
             }
 
-        connection_start_time = 0
         start, end = self._process_time_parameters(start, end, session, ffrequency)
 
         # Initialize performance metrics
@@ -390,7 +392,9 @@ class PolaRX5(BaseReceiver):
         session_info = self.session_map[session][1]
 
         # Generate datetime list using unified build_path method
-        file_datetime_list = self.build_path(None, "#datelist", session, ffrequency, start, end)
+        file_datetime_list = self.build_path(
+            None, "#datelist", session, ffrequency, start, end
+        )
         self.logger.info(f"Generated {len(file_datetime_list)} timestamps")
 
         # Create archive paths using unified method
@@ -401,16 +405,22 @@ class PolaRX5(BaseReceiver):
         # Build archive template
         full_archive_template = archive_template.format(
             data_prepath=data_prepath,
-            station='{station}',
-            session='{session}',
+            station="{station}",
+            session="{session}",
             extension=extension,
-            session_letter='{session_letter}'
+            session_letter="{session_letter}",
         )
-        archive_file_list = self.build_path(file_datetime_list, full_archive_template, session, ffrequency)
+        archive_file_list = self.build_path(
+            file_datetime_list, full_archive_template, session, ffrequency
+        )
 
         # Create remote paths with filenames using unified method
-        remote_template = f"{self.base_path}{session_info}/%y%j/{self.station_id}#Rin2_{compression}"
-        remote_full_paths = self.build_path(file_datetime_list, remote_template, session, ffrequency)
+        remote_template = (
+            f"{self.base_path}{session_info}/%y%j/{self.station_id}#Rin2_{compression}"
+        )
+        remote_full_paths = self.build_path(
+            file_datetime_list, remote_template, session, ffrequency
+        )
 
         # Extract remote directories and IGS filenames
         remote_path_list = []
@@ -430,9 +440,12 @@ class PolaRX5(BaseReceiver):
 
         # Find missing and invalid files using comprehensive validation
         self.logger.debug("Using Phase 1 ArchiveValidator")
-        all_missing_files, validated_files, corrupted_files_removed, files_archived_from_tmp = self._validate_files_phase1(
-            file_date_dict, tmp_dir_path
-        )
+        (
+            all_missing_files,
+            validated_files,
+            corrupted_files_removed,
+            files_archived_from_tmp,
+        ) = self._validate_files_phase1(file_date_dict, tmp_dir_path)
 
         # Common logging after validation
         if corrupted_files_removed > 0:
@@ -497,7 +510,10 @@ class PolaRX5(BaseReceiver):
                 # Connection failed - now run diagnostics to understand why
                 try:
                     from ..base.download_diagnostics import DownloadDiagnosticsAnalyzer
-                    diagnostics = DownloadDiagnosticsAnalyzer(self.station_id, self.logger)
+
+                    diagnostics = DownloadDiagnosticsAnalyzer(
+                        self.station_id, self.logger
+                    )
                     network_check = diagnostics.classify_network_failure(self.ip_number)
                 except ImportError:
                     # Diagnostics module not yet implemented - use basic error handling
@@ -508,7 +524,7 @@ class PolaRX5(BaseReceiver):
                         f"❌ INVALID IP: {self.ip_number} - likely configuration typo"
                     )
                     self.logger.critical(
-                        f"💡 SUGGESTED FIX: Check station configuration for correct IP address"
+                        "💡 SUGGESTED FIX: Check station configuration for correct IP address"
                     )
                 elif "connection refused" in str(e).lower():
                     self.logger.error(
@@ -656,7 +672,7 @@ class PolaRX5(BaseReceiver):
         if sync and all_missing_files and not downloaded_files_dict:
             return {
                 "status": "failed",
-                "error_message": "All file downloads failed (0 of {} succeeded)".format(len(all_missing_files)),
+                "error_message": f"All file downloads failed (0 of {len(all_missing_files)} succeeded)",
                 "files_checked": len(file_date_dict),
                 "files_missing": len(all_missing_files),
                 "files_downloaded": 0,
@@ -690,21 +706,25 @@ class PolaRX5(BaseReceiver):
         archive_paths_dict = {}  # filename -> archive_path mapping
 
         for dt, (archive_path, igs_filename) in file_date_dict.items():
-            files_dict[igs_filename] = archive_path  # Use archive path as "remote" for validation
+            files_dict[igs_filename] = (
+                archive_path  # Use archive path as "remote" for validation
+            )
             archive_paths_dict[igs_filename] = archive_path
 
         # Use batch validation (now returns files_in_tmp_dict as 4th element)
-        missing_files_dict, found_count, validated_count, files_in_tmp_dict = self.archive_validator.batch_validate_archives(
-            files_dict,
-            archive_paths_dict,
-            tmp_dir_path
+        missing_files_dict, found_count, validated_count, files_in_tmp_dict = (
+            self.archive_validator.batch_validate_archives(
+                files_dict, archive_paths_dict, tmp_dir_path
+            )
         )
 
         # Archive files from tmp if found
         files_archived_from_tmp = 0
         if files_in_tmp_dict:
-            self.logger.info(f"Archiving {len(files_in_tmp_dict)} files from tmp directory...")
-            from ..utils.file_archiver import FileArchiver, ArchiveMode
+            self.logger.info(
+                f"Archiving {len(files_in_tmp_dict)} files from tmp directory..."
+            )
+            from ..utils.file_archiver import ArchiveMode, FileArchiver
 
             with FileArchiver(mode=ArchiveMode.BULK, logger=self.logger) as archiver:
                 for igs_filename, tmp_path in files_in_tmp_dict.items():
@@ -715,13 +735,15 @@ class PolaRX5(BaseReceiver):
                             tmp_path,
                             Path(archive_dest),
                             compress=False,  # Already compressed
-                            remove_tmp=True
+                            remove_tmp=True,
                         )
                         if success:
                             files_archived_from_tmp += 1
 
             stats = archiver.get_statistics()
-            self.logger.info(f"Archived {stats['successful']}/{len(files_in_tmp_dict)} files from tmp to archive")
+            self.logger.info(
+                f"Archived {stats['successful']}/{len(files_in_tmp_dict)} files from tmp to archive"
+            )
 
         # Convert back to expected format: datetime -> (archive_path, igs_filename)
         all_missing_files = {}
@@ -732,9 +754,16 @@ class PolaRX5(BaseReceiver):
                     all_missing_files[dt] = (arch_path, igs_file)
                     break
 
-        self.logger.info(f"Phase 1 validation: {validated_count} files checked, {found_count} found, {len(missing_files_dict)} missing")
+        self.logger.info(
+            f"Phase 1 validation: {validated_count} files checked, {found_count} found, {len(missing_files_dict)} missing"
+        )
 
-        return all_missing_files, validated_count, 0, files_archived_from_tmp  # missing, validated, corrupted_removed, archived_from_tmp
+        return (
+            all_missing_files,
+            validated_count,
+            0,
+            files_archived_from_tmp,
+        )  # missing, validated, corrupted_removed, archived_from_tmp
 
     def _register_archived_files(self, file_date_dict: dict, session: str) -> None:
         """Register already-archived files in file_tracking.
@@ -754,23 +783,31 @@ class PolaRX5(BaseReceiver):
             registered = 0
 
             for dt, (archive_path, igs_filename) in file_date_dict.items():
-                file_date = dt.date() if hasattr(dt, 'date') else dt
+                file_date = dt.date() if hasattr(dt, "date") else dt
                 file_hour = dt.hour if is_hourly else None
 
                 # Get file size from the archive on disk
                 archive_file = Path(archive_path)
-                file_size = archive_file.stat().st_size if archive_file.exists() else None
+                file_size = (
+                    archive_file.stat().st_size if archive_file.exists() else None
+                )
 
                 if file_tracker.mark_file_archived(
-                    self.station_id, session, file_date, file_hour,
-                    igs_filename, file_size,
+                    self.station_id,
+                    session,
+                    file_date,
+                    file_hour,
+                    igs_filename,
+                    file_size,
                 ):
                     registered += 1
 
             file_tracker.close()
 
             if registered:
-                self.logger.info(f"Registered {registered} archived files in file_tracking")
+                self.logger.info(
+                    f"Registered {registered} archived files in file_tracking"
+                )
         except Exception as e:
             self.logger.debug(f"Could not register archived files: {e}")
 
@@ -790,7 +827,6 @@ class PolaRX5(BaseReceiver):
         Returns:
             str: formatted filename (e.g., ELDC202509040000a.sbf.gz)
         """
-        import re
 
         # Session type detection
         daysession = re.compile(r"24h", re.IGNORECASE)
@@ -849,11 +885,13 @@ class PolaRX5(BaseReceiver):
         # Sort missing_file_dict by datetime - order depends on use case
         # -D flag (routine): reverse=True downloads Oct 7 → Oct 1 (prioritize latest data)
         # --start/--end (backfilling): reverse=False downloads Oct 1 → Oct 7 (chronological fill)
-        sorted_missing_items = sorted(missing_file_dict.items(), reverse=reverse_chronological)
+        sorted_missing_items = sorted(
+            missing_file_dict.items(), reverse=reverse_chronological
+        )
 
         # Extract IGS filenames and get corresponding remote paths
         download_file_dict = {}
-        for dt, (archive_path, igs_filename) in sorted_missing_items:
+        for dt, (_archive_path, igs_filename) in sorted_missing_items:
             if remote_path_dict and dt in remote_path_dict:
                 remote_path = remote_path_dict[dt]
             else:
@@ -908,7 +946,9 @@ class PolaRX5(BaseReceiver):
         finally:
             ftp.close()
 
-    def _ftp_open_connection(self, timeout: Optional[int] = None, skip_ping_check: bool = False) -> Optional[FTP]:
+    def _ftp_open_connection(
+        self, timeout: Optional[int] = None, skip_ping_check: bool = False
+    ) -> Optional[FTP]:
         """Open FTP connection to receiver with fast-fail checks.
 
         Args:
@@ -921,16 +961,17 @@ class PolaRX5(BaseReceiver):
             # Fast-fail check 1: Ping (detect unreachable hosts)
             # Send 3 packets to tolerate lossy 3G/4G links
             import subprocess
+
             self.logger.info(f"Checking connectivity to {self.ip_number}...")
             ping_success = False
 
             try:
                 ping_result = subprocess.run(
-                    ['ping', '-c', '3', '-W', '2', self.ip_number],
+                    ["ping", "-c", "3", "-W", "2", self.ip_number],
                     capture_output=True,
-                    timeout=8
+                    timeout=8,
                 )
-                ping_success = (ping_result.returncode == 0)
+                ping_success = ping_result.returncode == 0
             except subprocess.TimeoutExpired:
                 pass
             except Exception as e:
@@ -938,13 +979,18 @@ class PolaRX5(BaseReceiver):
                 ping_success = True  # Skip ping on error, let FTP handle it
 
             if not ping_success:
-                self.logger.error(f"❌ Network unreachable: {self.ip_number} - ping failed")
-                self.logger.error("💡 Check network connectivity or wait for receiver to come online")
+                self.logger.error(
+                    f"❌ Network unreachable: {self.ip_number} - ping failed"
+                )
+                self.logger.error(
+                    "💡 Check network connectivity or wait for receiver to come online"
+                )
                 self._last_connection_time = time.time() - connection_start
                 return None
 
             # Fast-fail check 2: TCP port check with retries
             import socket
+
             self.logger.info(f"Checking FTP port {self.ip_port}...")
             port_retries = 3
             port_delay = 1.0
@@ -966,7 +1012,7 @@ class PolaRX5(BaseReceiver):
                                 f"retrying in {port_delay}s..."
                             )
                             time.sleep(port_delay)
-                except socket.timeout:
+                except TimeoutError:
                     if port_attempt < port_retries - 1:
                         self.logger.warning(
                             f"⚠️  Port check attempt {port_attempt + 1}/{port_retries} timed out, "
@@ -982,7 +1028,9 @@ class PolaRX5(BaseReceiver):
                         sock.close()
 
             if not port_success:
-                self.logger.error(f"❌ FTP port {self.ip_port} not responding after {port_retries} attempts")
+                self.logger.error(
+                    f"❌ FTP port {self.ip_port} not responding after {port_retries} attempts"
+                )
                 self.logger.error("💡 Receiver may be down or FTP port misconfigured")
                 self._last_connection_time = time.time() - connection_start
                 return None
@@ -990,9 +1038,7 @@ class PolaRX5(BaseReceiver):
         # Proceed with FTP connection (should be fast now since port is verified)
         if timeout is None:
             timeout = self.connection_timeout
-        self.logger.info(
-            f"Connecting to FTP {self.ip_number}:{self.ip_port}..."
-        )
+        self.logger.info(f"Connecting to FTP {self.ip_number}:{self.ip_port}...")
 
         ftp = None
         try:
@@ -1027,12 +1073,15 @@ class PolaRX5(BaseReceiver):
 
             try:
                 from ..base.download_diagnostics import DownloadDiagnosticsAnalyzer
+
                 diagnostics = DownloadDiagnosticsAnalyzer(self.station_id, self.logger)
                 # Quick network classification to understand the failure
                 network_check = diagnostics.classify_network_failure(self.ip_number)
             except ImportError:
                 # Diagnostics module not yet implemented - use basic error handling
-                self.logger.debug("Diagnostic module not available, using basic error handling")
+                self.logger.debug(
+                    "Diagnostic module not available, using basic error handling"
+                )
                 network_check = {"classification": "unknown"}
 
             # If it's an invalid IP range, provide critical error immediately
@@ -1041,7 +1090,7 @@ class PolaRX5(BaseReceiver):
                     f"❌ INVALID IP: {self.ip_number} - likely configuration typo"
                 )
                 self.logger.critical(
-                    f"💡 SUGGESTED FIX: Check station configuration for correct IP address"
+                    "💡 SUGGESTED FIX: Check station configuration for correct IP address"
                 )
 
                 from ..base.exceptions import ConfigurationError, FailureCategory
@@ -1074,13 +1123,15 @@ class PolaRX5(BaseReceiver):
             elif "timeout" in error_str or "timed out" in error_str:
                 if network_check["classification"] == "network_ok":
                     self.logger.error(
-                        f"⚠️ RECEIVER TIMEOUT: Router responds but receiver doesn't on FTP port"
+                        "⚠️ RECEIVER TIMEOUT: Router responds but receiver doesn't on FTP port"
                     )
                     self.logger.error(
-                        f"💡 LIKELY ISSUE: Receiver down, ethernet broken, or firewall blocking FTP"
+                        "💡 LIKELY ISSUE: Receiver down, ethernet broken, or firewall blocking FTP"
                     )
                 else:
-                    self.logger.error(f"⚠️ NETWORK TIMEOUT: {network_check.get('analysis', 'No analysis available')}")
+                    self.logger.error(
+                        f"⚠️ NETWORK TIMEOUT: {network_check.get('analysis', 'No analysis available')}"
+                    )
             else:
                 self.logger.error(f"Connection failed: {e}")
                 if network_check.get("analysis"):
@@ -1121,6 +1172,7 @@ class PolaRX5(BaseReceiver):
         file_tracker = None
         try:
             from ..health import FileTracker
+
             file_tracker = FileTracker()
             if not file_tracker.connect():
                 file_tracker = None
@@ -1142,7 +1194,7 @@ class PolaRX5(BaseReceiver):
             """Find datetime key for a file from missing_file_dict."""
             if not missing_file_dict:
                 return None
-            for dt_key, (arch_path, igs_filename) in missing_file_dict.items():
+            for dt_key, (_arch_path, igs_filename) in missing_file_dict.items():
                 if fname == igs_filename:
                     return dt_key
             return None
@@ -1154,7 +1206,7 @@ class PolaRX5(BaseReceiver):
         # DO NOT re-sort here - filename-based sorting breaks year boundary ordering
         for file_name, remote_dir in files_dict.items():
             # Guard: reconnect if FTP connection was killed by error handler or watchdog
-            if ftp is None or getattr(ftp, 'sock', None) is None:
+            if ftp is None or getattr(ftp, "sock", None) is None:
                 self.logger.warning("FTP connection dead, reconnecting...")
                 try:
                     if ftp is not None:
@@ -1163,7 +1215,9 @@ class PolaRX5(BaseReceiver):
                     pass
                 ftp = self._ftp_open_connection(skip_ping_check=True)
                 if not ftp:
-                    self.logger.error("Failed to reconnect FTP - aborting remaining files")
+                    self.logger.error(
+                        "Failed to reconnect FTP - aborting remaining files"
+                    )
                     break
                 self.logger.info("FTP reconnected after dead connection")
 
@@ -1172,10 +1226,14 @@ class PolaRX5(BaseReceiver):
             if file_tracker and session and not retry_missing:
                 file_dt = get_file_datetime(file_name)
                 if file_dt:
-                    file_date = file_dt.date() if hasattr(file_dt, 'date') else file_dt
+                    file_date = file_dt.date() if hasattr(file_dt, "date") else file_dt
                     file_hour = file_dt.hour if is_hourly_session else None
-                    if file_tracker.is_file_missing(self.station_id, session, file_date, file_hour):
-                        self.logger.info(f"⏭️  Skipping {file_name} (known missing, not retrying)")
+                    if file_tracker.is_file_missing(
+                        self.station_id, session, file_date, file_hour
+                    ):
+                        self.logger.info(
+                            f"⏭️  Skipping {file_name} (known missing, not retrying)"
+                        )
                         continue
 
             # Log remote directory path only once per unique path
@@ -1198,7 +1256,6 @@ class PolaRX5(BaseReceiver):
                 # Check if remote file exists and get size (like getSeptentrio3)
                 try:
                     remote_file_size = ftp.size(remote_file)
-                    remote_file_exists = True
                 except Exception as e:
                     # Check if it's a "file not found" vs "connection error"
                     error_msg = str(e).lower()
@@ -1208,7 +1265,6 @@ class PolaRX5(BaseReceiver):
                         or "no such file" in error_msg
                     ):
                         # Remote file is missing - check local file for archiving
-                        remote_file_exists = False
                         remote_file_size = None
                         if local_file.exists():
                             local_size = local_file.stat().st_size
@@ -1236,10 +1292,20 @@ class PolaRX5(BaseReceiver):
                             if file_tracker and session:
                                 file_dt = get_file_datetime(file_name)
                                 if file_dt:
-                                    track_date = file_dt.date() if hasattr(file_dt, 'date') else file_dt
-                                    track_hour = file_dt.hour if is_hourly_session else None
+                                    track_date = (
+                                        file_dt.date()
+                                        if hasattr(file_dt, "date")
+                                        else file_dt
+                                    )
+                                    track_hour = (
+                                        file_dt.hour if is_hourly_session else None
+                                    )
                                     file_tracker.mark_file_missing(
-                                        self.station_id, session, track_date, track_hour, file_name
+                                        self.station_id,
+                                        session,
+                                        track_date,
+                                        track_hour,
+                                        file_name,
                                     )
                             continue  # No local, no remote - nothing to do
                     else:
@@ -1247,11 +1313,16 @@ class PolaRX5(BaseReceiver):
                         error_str = str(e).lower()
 
                         # Check if this is a connection timeout error
-                        if "timed out" in error_str or "cannot read from timed out" in error_str:
+                        if (
+                            "timed out" in error_str
+                            or "cannot read from timed out" in error_str
+                        ):
                             self.logger.warning(
                                 f"⚠️  FTP connection timed out while checking {file_name}"
                             )
-                            self.logger.info("🔄 Attempting to reconnect FTP session...")
+                            self.logger.info(
+                                "🔄 Attempting to reconnect FTP session..."
+                            )
 
                             # Close dead connection
                             try:
@@ -1262,7 +1333,9 @@ class PolaRX5(BaseReceiver):
                             # Reconnect (skip ping check - we know network was up)
                             ftp = self._ftp_open_connection(skip_ping_check=True)
                             if not ftp:
-                                self.logger.error("❌ Failed to reconnect - skipping remaining files")
+                                self.logger.error(
+                                    "❌ Failed to reconnect - skipping remaining files"
+                                )
                                 break  # Exit the download loop
 
                             self.logger.info("✅ FTP reconnected successfully")
@@ -1270,12 +1343,13 @@ class PolaRX5(BaseReceiver):
                             # Try to get file size again with new connection
                             try:
                                 remote_file_size = ftp.size(remote_file)
-                                remote_file_exists = True
                             except Exception as retry_e:
                                 retry_error_str = str(retry_e).lower()
-                                if "550" in retry_error_str or "not found" in retry_error_str:
+                                if (
+                                    "550" in retry_error_str
+                                    or "not found" in retry_error_str
+                                ):
                                     # File really doesn't exist
-                                    remote_file_exists = False
                                     remote_file_size = None
                                     if local_file.exists():
                                         local_size = local_file.stat().st_size
@@ -1285,30 +1359,46 @@ class PolaRX5(BaseReceiver):
                                             )
                                             downloaded_files.append(str(local_file))
                                         else:
-                                            self.logger.warning(f"🗑️ Removing zero-size local file: {local_file}")
+                                            self.logger.warning(
+                                                f"🗑️ Removing zero-size local file: {local_file}"
+                                            )
                                             local_file.unlink()
                                     else:
-                                        self.logger.error(f"❌ Remote file {file_name} not found on server")
+                                        self.logger.error(
+                                            f"❌ Remote file {file_name} not found on server"
+                                        )
                                         # Mark file as missing in tracker
                                         if file_tracker and session:
                                             file_dt = get_file_datetime(file_name)
                                             if file_dt:
-                                                track_date = file_dt.date() if hasattr(file_dt, 'date') else file_dt
-                                                track_hour = file_dt.hour if is_hourly_session else None
+                                                track_date = (
+                                                    file_dt.date()
+                                                    if hasattr(file_dt, "date")
+                                                    else file_dt
+                                                )
+                                                track_hour = (
+                                                    file_dt.hour
+                                                    if is_hourly_session
+                                                    else None
+                                                )
                                                 file_tracker.mark_file_missing(
-                                                    self.station_id, session, track_date, track_hour, file_name
+                                                    self.station_id,
+                                                    session,
+                                                    track_date,
+                                                    track_hour,
+                                                    file_name,
                                                 )
                                     continue
                                 else:
-                                    self.logger.error(f"⚠️  Cannot check remote file after reconnect: {retry_e}")
-                                    remote_file_exists = False
+                                    self.logger.error(
+                                        f"⚠️  Cannot check remote file after reconnect: {retry_e}"
+                                    )
                                     remote_file_size = None
                         else:
                             # Other connection/server errors
                             self.logger.error(
                                 f"⚠️  Cannot check remote file {file_name}: {e}"
                             )
-                            remote_file_exists = False
                             remote_file_size = None
 
                 # Now that we have remote file size, check if we should resume existing local file
@@ -1323,16 +1413,22 @@ class PolaRX5(BaseReceiver):
                         self.logger.info(f"📄 Resuming download from {offset:,} bytes")
                     else:
                         self.logger.info(
-                            f"🔄 Starting fresh download (invalid tmp file removed)"
+                            "🔄 Starting fresh download (invalid tmp file removed)"
                         )
 
                 if remote_file_size is not None:
                     # Use progress bar download with immediate retry logic
                     from ..utils.stall_timeout import record_download
+
                     _dl_start = time.time()
                     diff, ftp = self._download_with_immediate_retry(
-                        ftp, remote_file, str(local_file), remote_file_size, offset,
-                        max_retries=max_retries, initial_delay=retry_initial_delay,
+                        ftp,
+                        remote_file,
+                        str(local_file),
+                        remote_file_size,
+                        offset,
+                        max_retries=max_retries,
+                        initial_delay=retry_initial_delay,
                         session_type=session,
                     )
                     _dl_duration = time.time() - _dl_start
@@ -1348,10 +1444,19 @@ class PolaRX5(BaseReceiver):
 
                     if diff == 0:
                         self._handle_successful_download(
-                            file_name, local_file, local_file_size, remote_file_size,
-                            session, _dl_duration, downloaded_files, file_tracker,
-                            is_hourly_session, immediate_archive, archive,
-                            missing_file_dict, record_download,
+                            file_name,
+                            local_file,
+                            local_file_size,
+                            remote_file_size,
+                            session,
+                            _dl_duration,
+                            downloaded_files,
+                            file_tracker,
+                            is_hourly_session,
+                            immediate_archive,
+                            archive,
+                            missing_file_dict,
+                            record_download,
                             get_file_datetime=get_file_datetime,
                         )
                     else:
@@ -1365,7 +1470,7 @@ class PolaRX5(BaseReceiver):
                         # Delete corrupt file and retry once clean (no resume)
                         if not size_mismatch_retried:
                             self.logger.info(
-                                f"🔄 Deleting corrupt file and retrying clean download..."
+                                "🔄 Deleting corrupt file and retrying clean download..."
                             )
                             try:
                                 os.unlink(local_file)
@@ -1376,8 +1481,13 @@ class PolaRX5(BaseReceiver):
                             _dl_start = time.time()
                             try:
                                 diff, ftp = self._download_with_immediate_retry(
-                                    ftp, remote_file, str(local_file), remote_file_size, 0,
-                                    max_retries=1, initial_delay=1.0,
+                                    ftp,
+                                    remote_file,
+                                    str(local_file),
+                                    remote_file_size,
+                                    0,
+                                    max_retries=1,
+                                    initial_delay=1.0,
                                     session_type=session,
                                 )
                             except Exception as retry_e:
@@ -1385,39 +1495,73 @@ class PolaRX5(BaseReceiver):
                                     f"❌ Clean retry failed for {file_name}: {retry_e}"
                                 )
                                 record_download(
-                                    self.station_id, session or "unknown", "failed",
-                                    filename=file_name, duration_seconds=time.time() - _dl_start,
+                                    self.station_id,
+                                    session or "unknown",
+                                    "failed",
+                                    filename=file_name,
+                                    duration_seconds=time.time() - _dl_start,
                                     file_size=remote_file_size,
-                                    stall_timeout_used=getattr(self, '_last_effective_timeout', self.progress_timeout),
+                                    stall_timeout_used=getattr(
+                                        self,
+                                        "_last_effective_timeout",
+                                        self.progress_timeout,
+                                    ),
                                     message=f"Size mismatch clean retry failed: {retry_e}",
                                 )
                                 continue
 
                             _dl_duration = time.time() - _dl_start
-                            local_file_size = local_file.stat().st_size if local_file.exists() else 0
+                            local_file_size = (
+                                local_file.stat().st_size if local_file.exists() else 0
+                            )
 
                             if diff == 0:
                                 self._handle_successful_download(
-                                    file_name, local_file, local_file_size, remote_file_size,
-                                    session, _dl_duration, downloaded_files, file_tracker,
-                                    is_hourly_session, immediate_archive, archive,
-                                    missing_file_dict, record_download,
+                                    file_name,
+                                    local_file,
+                                    local_file_size,
+                                    remote_file_size,
+                                    session,
+                                    _dl_duration,
+                                    downloaded_files,
+                                    file_tracker,
+                                    is_hourly_session,
+                                    immediate_archive,
+                                    archive,
+                                    missing_file_dict,
+                                    record_download,
                                     get_file_datetime=get_file_datetime,
                                 )
                             else:
                                 record_download(
-                                    self.station_id, session or "unknown", "failed",
-                                    filename=file_name, duration_seconds=_dl_duration,
-                                    bytes_downloaded=local_file_size, file_size=remote_file_size,
-                                    stall_timeout_used=getattr(self, '_last_effective_timeout', self.progress_timeout),
+                                    self.station_id,
+                                    session or "unknown",
+                                    "failed",
+                                    filename=file_name,
+                                    duration_seconds=_dl_duration,
+                                    bytes_downloaded=local_file_size,
+                                    file_size=remote_file_size,
+                                    stall_timeout_used=getattr(
+                                        self,
+                                        "_last_effective_timeout",
+                                        self.progress_timeout,
+                                    ),
                                     message=f"Size mismatch after clean retry: got {local_file_size}, expected {remote_file_size}",
                                 )
                         else:
                             record_download(
-                                self.station_id, session or "unknown", "failed",
-                                filename=file_name, duration_seconds=_dl_duration,
-                                bytes_downloaded=local_file_size, file_size=remote_file_size,
-                                stall_timeout_used=getattr(self, '_last_effective_timeout', self.progress_timeout),
+                                self.station_id,
+                                session or "unknown",
+                                "failed",
+                                filename=file_name,
+                                duration_seconds=_dl_duration,
+                                bytes_downloaded=local_file_size,
+                                file_size=remote_file_size,
+                                stall_timeout_used=getattr(
+                                    self,
+                                    "_last_effective_timeout",
+                                    self.progress_timeout,
+                                ),
                                 message=f"Size mismatch: got {local_file_size}, expected {remote_file_size}",
                             )
 
@@ -1454,12 +1598,24 @@ class PolaRX5(BaseReceiver):
                         if file_tracker and session:
                             file_dt = get_file_datetime(file_name)
                             if file_dt:
-                                track_date = file_dt.date() if hasattr(file_dt, 'date') else file_dt
+                                track_date = (
+                                    file_dt.date()
+                                    if hasattr(file_dt, "date")
+                                    else file_dt
+                                )
                                 track_hour = file_dt.hour if is_hourly_session else None
-                                fallback_size = local_file.stat().st_size if local_file.exists() else None
+                                fallback_size = (
+                                    local_file.stat().st_size
+                                    if local_file.exists()
+                                    else None
+                                )
                                 file_tracker.mark_file_downloaded(
-                                    self.station_id, session, track_date, track_hour,
-                                    file_name, fallback_size,
+                                    self.station_id,
+                                    session,
+                                    track_date,
+                                    track_hour,
+                                    file_name,
+                                    fallback_size,
                                     remote_file_size=remote_file_size,
                                 )
 
@@ -1468,7 +1624,7 @@ class PolaRX5(BaseReceiver):
                             # Find the datetime key for this file by matching the downloaded filename
                             file_datetime = None
                             for dt_key, (
-                                arch_path,
+                                _arch_path,
                                 igs_filename,
                             ) in missing_file_dict.items():
                                 if file_name == igs_filename:
@@ -1489,12 +1645,26 @@ class PolaRX5(BaseReceiver):
                                 if file_tracker and session:
                                     file_dt = get_file_datetime(file_name)
                                     if file_dt:
-                                        track_date = file_dt.date() if hasattr(file_dt, 'date') else file_dt
-                                        track_hour = file_dt.hour if is_hourly_session else None
-                                        archive_size_fb = Path(archive_path_fb).stat().st_size if Path(archive_path_fb).exists() else None
+                                        track_date = (
+                                            file_dt.date()
+                                            if hasattr(file_dt, "date")
+                                            else file_dt
+                                        )
+                                        track_hour = (
+                                            file_dt.hour if is_hourly_session else None
+                                        )
+                                        archive_size_fb = (
+                                            Path(archive_path_fb).stat().st_size
+                                            if Path(archive_path_fb).exists()
+                                            else None
+                                        )
                                         file_tracker.mark_file_archived(
-                                            self.station_id, session, track_date, track_hour,
-                                            file_name, archive_size_fb,
+                                            self.station_id,
+                                            session,
+                                            track_date,
+                                            track_hour,
+                                            file_name,
+                                            archive_size_fb,
                                             remote_file_size=remote_file_size,
                                         )
                                 self.logger.info(
@@ -1517,23 +1687,36 @@ class PolaRX5(BaseReceiver):
 
             except Exception as e:
                 self.logger.error(f"Failed to download {file_name}: {e}")
-                _exc_duration = (time.time() - _dl_start) if _dl_start is not None else 0.0
+                _exc_duration = (
+                    (time.time() - _dl_start) if _dl_start is not None else 0.0
+                )
                 error_msg = str(e).lower()
-                is_stall = isinstance(e, TimeoutError) or "stall" in error_msg or "watchdog" in error_msg
+                is_stall = (
+                    isinstance(e, TimeoutError)
+                    or "stall" in error_msg
+                    or "watchdog" in error_msg
+                )
                 from ..utils.stall_timeout import record_download as _rec_dl
+
                 _rec_dl(
-                    self.station_id, session or "unknown",
+                    self.station_id,
+                    session or "unknown",
                     "stall_timeout" if is_stall else "failed",
-                    filename=file_name, duration_seconds=_exc_duration,
+                    filename=file_name,
+                    duration_seconds=_exc_duration,
                     file_size=remote_file_size,
-                    stall_timeout_used=getattr(self, '_last_effective_timeout', self.progress_timeout),
+                    stall_timeout_used=getattr(
+                        self, "_last_effective_timeout", self.progress_timeout
+                    ),
                     message=str(e)[:500],
                 )
                 # Guard: reconnect if the exception killed the FTP connection.
                 # Without this, the next file's ftp.size() crashes with
                 # "'NoneType' object has no attribute 'sendall'".
-                if ftp is None or getattr(ftp, 'sock', None) is None:
-                    self.logger.warning("FTP connection dead after exception, reconnecting...")
+                if ftp is None or getattr(ftp, "sock", None) is None:
+                    self.logger.warning(
+                        "FTP connection dead after exception, reconnecting..."
+                    )
                     try:
                         if ftp is not None:
                             ftp.close()
@@ -1543,7 +1726,9 @@ class PolaRX5(BaseReceiver):
                     if ftp:
                         self.logger.info("✅ FTP reconnected after exception")
                     else:
-                        self.logger.error("Failed to reconnect FTP after exception - aborting remaining files")
+                        self.logger.error(
+                            "Failed to reconnect FTP after exception - aborting remaining files"
+                        )
                         break
                 continue
 
@@ -1554,9 +1739,20 @@ class PolaRX5(BaseReceiver):
         return downloaded_files
 
     def _handle_successful_download(
-        self, file_name, local_file, local_file_size, remote_file_size,
-        session, _dl_duration, downloaded_files, file_tracker, is_hourly_session,
-        immediate_archive, archive, missing_file_dict, record_download,
+        self,
+        file_name,
+        local_file,
+        local_file_size,
+        remote_file_size,
+        session,
+        _dl_duration,
+        downloaded_files,
+        file_tracker,
+        is_hourly_session,
+        immediate_archive,
+        archive,
+        missing_file_dict,
+        record_download,
         get_file_datetime=None,
     ) -> bool:
         """Validate, record, track, and archive a successfully downloaded file.
@@ -1574,43 +1770,55 @@ class PolaRX5(BaseReceiver):
             self.logger.warning(
                 f"Downloaded file failed validation: {validation_result['error']}"
             )
-            self.logger.info(
-                f"Removing invalid downloaded file: {local_file}"
-            )
+            self.logger.info(f"Removing invalid downloaded file: {local_file}")
             record_download(
-                self.station_id, session or "unknown", "failed",
-                filename=file_name, duration_seconds=_dl_duration,
-                bytes_downloaded=local_file_size, file_size=remote_file_size,
-                stall_timeout_used=getattr(self, '_last_effective_timeout', self.progress_timeout),
+                self.station_id,
+                session or "unknown",
+                "failed",
+                filename=file_name,
+                duration_seconds=_dl_duration,
+                bytes_downloaded=local_file_size,
+                file_size=remote_file_size,
+                stall_timeout_used=getattr(
+                    self, "_last_effective_timeout", self.progress_timeout
+                ),
                 message=f"Validation failed: {validation_result.get('error', 'unknown')}",
             )
             try:
                 os.unlink(local_file)
             except OSError as e:
-                self.logger.error(
-                    f"Could not remove invalid file {local_file}: {e}"
-                )
+                self.logger.error(f"Could not remove invalid file {local_file}: {e}")
             return True  # Handled (skip this file)
 
         self.logger.debug(
             f"Downloaded file validated: {validation_result['compression']} compression, {validation_result['size']} bytes"
         )
         record_download(
-            self.station_id, session or "unknown", "completed",
-            filename=file_name, duration_seconds=_dl_duration,
-            bytes_downloaded=local_file_size, file_size=remote_file_size,
-            stall_timeout_used=getattr(self, '_last_effective_timeout', self.progress_timeout),
+            self.station_id,
+            session or "unknown",
+            "completed",
+            filename=file_name,
+            duration_seconds=_dl_duration,
+            bytes_downloaded=local_file_size,
+            file_size=remote_file_size,
+            stall_timeout_used=getattr(
+                self, "_last_effective_timeout", self.progress_timeout
+            ),
         )
 
         # Mark file as downloaded in tracker
         if file_tracker and session and get_file_datetime:
             file_dt = get_file_datetime(file_name)
             if file_dt:
-                track_date = file_dt.date() if hasattr(file_dt, 'date') else file_dt
+                track_date = file_dt.date() if hasattr(file_dt, "date") else file_dt
                 track_hour = file_dt.hour if is_hourly_session else None
                 file_tracker.mark_file_downloaded(
-                    self.station_id, session, track_date, track_hour,
-                    file_name, local_file_size,
+                    self.station_id,
+                    session,
+                    track_date,
+                    track_hour,
+                    file_name,
+                    local_file_size,
                     remote_file_size=remote_file_size,
                 )
 
@@ -1624,14 +1832,15 @@ class PolaRX5(BaseReceiver):
                     break
 
             if file_datetime and self._archive_single_file(
-                str(local_file), file_datetime,
+                str(local_file),
+                file_datetime,
                 {file_datetime: missing_file_dict[file_datetime]},
             ):
                 archive_path = missing_file_dict[file_datetime][0]
                 downloaded_files.append(archive_path)
 
                 # Per-file RINEX callback (set by --rinex flag)
-                on_archived = getattr(self, '_on_file_archived', None)
+                on_archived = getattr(self, "_on_file_archived", None)
                 if on_archived:
                     try:
                         on_archived(archive_path)
@@ -1641,12 +1850,22 @@ class PolaRX5(BaseReceiver):
                 if file_tracker and session and get_file_datetime:
                     file_dt = get_file_datetime(file_name)
                     if file_dt:
-                        track_date = file_dt.date() if hasattr(file_dt, 'date') else file_dt
+                        track_date = (
+                            file_dt.date() if hasattr(file_dt, "date") else file_dt
+                        )
                         track_hour = file_dt.hour if is_hourly_session else None
-                        archive_size = Path(archive_path).stat().st_size if Path(archive_path).exists() else local_file_size
+                        archive_size = (
+                            Path(archive_path).stat().st_size
+                            if Path(archive_path).exists()
+                            else local_file_size
+                        )
                         file_tracker.mark_file_archived(
-                            self.station_id, session, track_date, track_hour,
-                            file_name, archive_size,
+                            self.station_id,
+                            session,
+                            track_date,
+                            track_hour,
+                            file_name,
+                            archive_size,
                             remote_file_size=remote_file_size,
                         )
             else:
@@ -1657,7 +1876,12 @@ class PolaRX5(BaseReceiver):
         return True
 
     def _download_with_progressbar(
-        self, ftp, remote_file, local_file, remote_file_size, offset=0,
+        self,
+        ftp,
+        remote_file,
+        local_file,
+        remote_file_size,
+        offset=0,
         session_type=None,
     ):
         """Download file with progress bar display and intelligent timeout handling.
@@ -1694,12 +1918,14 @@ class PolaRX5(BaseReceiver):
 
             # Progress monitoring variables
             last_progress_time = time.time()
-            last_bytes = offset
             start_time = time.time()
-            timeout_extended = False  # One-time extension flag for near-complete downloads
+            timeout_extended = (
+                False  # One-time extension flag for near-complete downloads
+            )
 
             # Shared state for watchdog thread
             import threading
+
             bytes_received = [0]  # Mutable container for thread communication
             download_done = threading.Event()
             watchdog_killed = [False]
@@ -1709,6 +1935,7 @@ class PolaRX5(BaseReceiver):
             # need longer watchdog timeouts to avoid premature kills
             try:
                 from ..utils.stall_timeout import get_packet_loss_factor
+
                 _loss_factor = get_packet_loss_factor(self.station_id)
             except Exception:
                 _loss_factor = 1.0
@@ -1728,7 +1955,11 @@ class PolaRX5(BaseReceiver):
                         """Kill connection if stuck at 0% for too long."""
                         # When resuming (offset > 0) the server needs time to seek
                         # to the REST position, especially under concurrent load.
-                        base_timeout = max(self.data_transfer_timeout, 30) if offset > 0 else self.data_transfer_timeout
+                        base_timeout = (
+                            max(self.data_transfer_timeout, 30)
+                            if offset > 0
+                            else self.data_transfer_timeout
+                        )
                         # Scale by packet loss factor (1.0x–2.0x)
                         timeout = base_timeout * _loss_factor
                         check_interval = 0.5  # Check every 500ms
@@ -1770,8 +2001,10 @@ class PolaRX5(BaseReceiver):
                         # Set short timeout on BOTH control and data sockets
                         ftp.timeout = self.data_transfer_timeout
                         if ftp.sock:
-                            ftp.sock.settimeout(self.data_transfer_timeout)  # Control socket too!
-                        ftp.voidcmd('TYPE I')  # Set binary mode
+                            ftp.sock.settimeout(
+                                self.data_transfer_timeout
+                            )  # Control socket too!
+                        ftp.voidcmd("TYPE I")  # Set binary mode
                         conn = ftp.transfercmd(f"RETR {remote_file}", rest=offset)
                         data_socket[0] = conn  # Store for watchdog access
                         conn.setblocking(False)  # Non-blocking for select()
@@ -1808,7 +2041,6 @@ class PolaRX5(BaseReceiver):
 
                                 # Reset progress timer when we receive data
                                 last_progress_time = time.time()
-                                last_bytes = pbar.n
 
                             # ALWAYS check timeout conditions (even when no data received)
                             # This ensures we detect stalls at any progress level
@@ -1829,8 +2061,15 @@ class PolaRX5(BaseReceiver):
                                 current_bytes = bytes_received[0]
 
                                 # One-time extension: if >70% done, let it finish
-                                if not timeout_extended and (remote_file_size - offset) > 0:
-                                    progress_pct = (current_bytes - offset) / (remote_file_size - offset) * 100
+                                if (
+                                    not timeout_extended
+                                    and (remote_file_size - offset) > 0
+                                ):
+                                    progress_pct = (
+                                        (current_bytes - offset)
+                                        / (remote_file_size - offset)
+                                        * 100
+                                    )
                                     if progress_pct > 70:
                                         extension = effective_timeout * 0.5
                                         effective_timeout += extension
@@ -1857,7 +2096,7 @@ class PolaRX5(BaseReceiver):
                         conn.close()
                         ftp.voidresp()  # Get transfer complete response
 
-                    except Exception as e:
+                    except Exception:
                         download_done.set()
                         watchdog_thread.join(timeout=1)
                         # Force-close data socket — watchdog only handles 0%-stall,
@@ -1885,8 +2124,15 @@ class PolaRX5(BaseReceiver):
         return local_file_size - remote_file_size
 
     def _download_with_immediate_retry(
-        self, ftp, remote_file, local_file, remote_file_size, offset=0,
-        max_retries=3, initial_delay=0.5, session_type=None,
+        self,
+        ftp,
+        remote_file,
+        local_file,
+        remote_file_size,
+        offset=0,
+        max_retries=3,
+        initial_delay=0.5,
+        session_type=None,
     ):
         """Download with immediate retries on transient failures.
 
@@ -1923,7 +2169,7 @@ class PolaRX5(BaseReceiver):
             "not found",
             "no such file",
             "authentication",
-            "login"
+            "login",
         ]
 
         # Timeout/connection error patterns that need reconnection
@@ -1944,10 +2190,17 @@ class PolaRX5(BaseReceiver):
             try:
                 # Delegate to existing FTP mode retry logic
                 result, ftp = self._download_with_progressbar_and_retry(
-                    ftp, remote_file, local_file, remote_file_size, offset,
+                    ftp,
+                    remote_file,
+                    local_file,
+                    remote_file_size,
+                    offset,
                     session_type=session_type,
                 )
-                return result, ftp  # Return both result and (potentially new) connection
+                return (
+                    result,
+                    ftp,
+                )  # Return both result and (potentially new) connection
 
             except AuthenticationError:
                 # Don't retry authentication failures
@@ -1986,9 +2239,13 @@ class PolaRX5(BaseReceiver):
                     # 2. FTP socket is dead (ftp.close() was called by a lower
                     #    layer, e.g. watchdog or _download_with_progressbar
                     #    exception handler, setting sock=None)
-                    ftp_dead = ftp is None or getattr(ftp, 'sock', None) is None
-                    if ftp_dead or any(pattern in error_msg for pattern in timeout_patterns):
-                        self.logger.info("🔄 Closing dead FTP connection and reconnecting...")
+                    ftp_dead = ftp is None or getattr(ftp, "sock", None) is None
+                    if ftp_dead or any(
+                        pattern in error_msg for pattern in timeout_patterns
+                    ):
+                        self.logger.info(
+                            "🔄 Closing dead FTP connection and reconnecting..."
+                        )
                         try:
                             if ftp is not None:
                                 ftp.close()
@@ -1998,7 +2255,9 @@ class PolaRX5(BaseReceiver):
                         # Reconnect (skip ping check - we know network was up)
                         ftp = self._ftp_open_connection(skip_ping_check=True)
                         if not ftp:
-                            self.logger.error("❌ Failed to reconnect - aborting retries")
+                            self.logger.error(
+                                "❌ Failed to reconnect - aborting retries"
+                            )
                             raise ConnectionError("Could not reconnect to FTP server")
 
                         self.logger.info("✅ FTP reconnected successfully")
@@ -2015,7 +2274,12 @@ class PolaRX5(BaseReceiver):
                     raise last_exception
 
     def _download_with_progressbar_and_retry(
-        self, ftp, remote_file, local_file, remote_file_size, offset=0,
+        self,
+        ftp,
+        remote_file,
+        local_file,
+        remote_file_size,
+        offset=0,
         session_type=None,
     ):
         """Download with progress bar and intelligent FTP mode retry on connection issues.
@@ -2027,7 +2291,11 @@ class PolaRX5(BaseReceiver):
         try:
             # Try with current FTP mode first
             result = self._download_with_progressbar(
-                ftp, remote_file, local_file, remote_file_size, offset,
+                ftp,
+                remote_file,
+                local_file,
+                remote_file_size,
+                offset,
                 session_type=session_type,
             )
             return result, ftp
@@ -2041,8 +2309,8 @@ class PolaRX5(BaseReceiver):
                 "data connection",
                 "port",
                 "won't open a connection",  # FTP passive mode NAT mismatch
-                "i won't open",             # Variation of NAT mismatch error
-                "500 i won't",              # FTP 500 error from passive mode
+                "i won't open",  # Variation of NAT mismatch error
+                "500 i won't",  # FTP 500 error from passive mode
             ]
             if any(err in error_msg for err in connection_errors):
                 self.logger.warning(
@@ -2078,7 +2346,11 @@ class PolaRX5(BaseReceiver):
 
                     # Retry download from scratch on fresh connection
                     result = self._download_with_progressbar(
-                        ftp_new, remote_file, local_file, remote_file_size, offset=0,
+                        ftp_new,
+                        remote_file,
+                        local_file,
+                        remote_file_size,
+                        offset=0,
                         session_type=session_type,
                     )
                     self.logger.info(
@@ -2132,7 +2404,7 @@ class PolaRX5(BaseReceiver):
                 Path(tmp_file_path),
                 Path(destination),
                 compress=should_compress,  # Only compress if not already compressed
-                remove_tmp=True
+                remove_tmp=True,
             )
 
         return success
@@ -2155,13 +2427,15 @@ class PolaRX5(BaseReceiver):
                     Path(tmp_file),
                     Path(destination),
                     compress=should_compress,  # Only compress if not already compressed
-                    remove_tmp=True
+                    remove_tmp=True,
                 )
             # Auto-flushes on context exit
 
         stats = archiver.get_statistics()
-        self.logger.info(f"Archiving complete: {stats['successful']}/{stats['total_files']} files archived")
-        return stats['successful']
+        self.logger.info(
+            f"Archiving complete: {stats['successful']}/{stats['total_files']} files archived"
+        )
+        return stats["successful"]
 
     def _cleanup_empty_tmp_directories(self):
         """Remove empty station directories from tmp download area."""
@@ -2186,15 +2460,17 @@ class PolaRX5(BaseReceiver):
         Returns:
             Dictionary with health status information following health-data-spec.md
         """
-        from ..health.polarx5_tcp_extractor import PolaRX5TCPExtractor
         from ..health.connection_checker import ConnectionChecker
+        from ..health.polarx5_tcp_extractor import PolaRX5TCPExtractor
 
         # Step 1: Try live health extraction via TCP
         metrics = None
         data_quality = None
         connection_data = {}
         extraction_source = None
-        port_status = None  # Track port status separately to ensure it's always captured
+        port_status = (
+            None  # Track port status separately to ensure it's always captured
+        )
         extractor = None
         ping_result = None  # Track ICMP ping result separately
         receiver_identity = None  # Receiver model/firmware/serial from SBF
@@ -2220,9 +2496,13 @@ class PolaRX5(BaseReceiver):
                         "host": host,
                         "accessible": True,
                         "response_time_ms": ping_result.response_time_ms,
-                        "packet_loss": ping_result.details.get("packet_loss", 0) if ping_result.details else 0,
+                        "packet_loss": ping_result.details.get("packet_loss", 0)
+                        if ping_result.details
+                        else 0,
                     }
-                    self.logger.debug(f"Router ping successful: {host} ({ping_result.response_time_ms:.1f}ms)")
+                    self.logger.debug(
+                        f"Router ping successful: {host} ({ping_result.response_time_ms:.1f}ms)"
+                    )
                 else:
                     connection_data["router_ping"] = {
                         "status": "failed",
@@ -2230,7 +2510,9 @@ class PolaRX5(BaseReceiver):
                         "accessible": False,
                         "error": ping_result.error_message or "ping failed",
                     }
-                    self.logger.debug(f"Router ping failed: {host} - {ping_result.error_message}")
+                    self.logger.debug(
+                        f"Router ping failed: {host} - {ping_result.error_message}"
+                    )
             except Exception as e:
                 self.logger.debug(f"Ping check failed: {e}")
                 connection_data["router_ping"] = {
@@ -2246,16 +2528,18 @@ class PolaRX5(BaseReceiver):
             if not ping_ok:
                 self.logger.debug(f"Ping failed for {host} — skipping port checks")
                 connection_data["tcp"] = {
-                    "status": "failed", "host": host,
+                    "status": "failed",
+                    "host": host,
                     "error": "ping failed - host unreachable",
                 }
 
             if ping_ok:
                 try:
                     extractor = PolaRX5TCPExtractor(
-                        host, self.station_id,
+                        host,
+                        self.station_id,
                         port=control_port,
-                        port_config=port_config
+                        port_config=port_config,
                     )
                     port_status = extractor._check_port_status()
 
@@ -2267,10 +2551,18 @@ class PolaRX5(BaseReceiver):
                     if ftp_open or http_open or control_open:
                         connection_data["tcp"] = {"status": "ok", "host": host}
                     else:
-                        connection_data["tcp"] = {"status": "failed", "host": host, "error": "all ports unreachable"}
+                        connection_data["tcp"] = {
+                            "status": "failed",
+                            "host": host,
+                            "error": "all ports unreachable",
+                        }
                 except Exception as e:
                     self.logger.debug(f"Port check failed: {e}")
-                    connection_data["tcp"] = {"status": "failed", "host": host, "error": str(e)}
+                    connection_data["tcp"] = {
+                        "status": "failed",
+                        "host": host,
+                        "error": str(e),
+                    }
 
                 # Step 1c: Try full data extraction via TCP control port.
                 # Always attempt extraction regardless of port check result —
@@ -2292,7 +2584,9 @@ class PolaRX5(BaseReceiver):
                                     f"{ctrl_entry.get('detail')} -> open (TCP extraction succeeded)"
                                 )
                                 port_status["control"] = {
-                                    "port": ctrl_entry.get("port", port_config.get("control")),
+                                    "port": ctrl_entry.get(
+                                        "port", port_config.get("control")
+                                    ),
                                     "open": True,
                                     "status": "ok",
                                     "detail": "open",
@@ -2302,7 +2596,9 @@ class PolaRX5(BaseReceiver):
                                 metrics["ports"] = port_status
                             data_quality = live_data.get("data_quality")
                             extraction_source = "tcp_live"
-                            self.logger.info(f"Extracted live health data via TCP from {host}")
+                            self.logger.info(
+                                f"Extracted live health data via TCP from {host}"
+                            )
 
                         # Capture receiver identity if available
                         if live_data.get("receiver_identity"):
@@ -2367,10 +2663,14 @@ class PolaRX5(BaseReceiver):
             if not ftp_open and not http_open and not control_open:
                 # All service ports closed - station is effectively offline
                 health_status["overall_status"] = "critical"
-                health_status["status_details"] = "all ports closed - receiver unreachable"
+                health_status["status_details"] = (
+                    "all ports closed - receiver unreachable"
+                )
                 # Update status summary
                 if "status_summary" in health_status:
-                    health_status["status_summary"]["critical"] = health_status["status_summary"].get("critical", 0) + 1
+                    health_status["status_summary"]["critical"] = (
+                        health_status["status_summary"].get("critical", 0) + 1
+                    )
 
         return health_status
 
@@ -2395,7 +2695,9 @@ class PolaRX5(BaseReceiver):
                 else:
                     self.logger.warning("RxTools not available for SBF extraction")
             else:
-                self.logger.warning(f"No status_1hr SBF file found for {self.station_id}")
+                self.logger.warning(
+                    f"No status_1hr SBF file found for {self.station_id}"
+                )
 
         except RxToolsNotFoundError as e:
             self.logger.warning(f"RxTools not available: {e}")
@@ -2410,14 +2712,21 @@ class PolaRX5(BaseReceiver):
         Returns:
             Path to latest SBF file or None if not found
         """
-        from pathlib import Path
         from datetime import datetime
+        from pathlib import Path
 
         # Build status_1hr path using configuration
         year = datetime.now(timezone.utc).year
         month = datetime.now(timezone.utc).strftime("%b").lower()
 
-        status_dir = Path(self.data_prepath) / str(year) / month / self.station_id / "status_1hr" / "raw"
+        status_dir = (
+            Path(self.data_prepath)
+            / str(year)
+            / month
+            / self.station_id
+            / "status_1hr"
+            / "raw"
+        )
 
         if not status_dir.exists():
             return None
@@ -2487,8 +2796,7 @@ class PolaRX5(BaseReceiver):
 
         # Substitute station-specific placeholders
         health_template = health_template.format(
-            station=self.station_id,
-            station_lower=self.station_id.lower()
+            station=self.station_id, station_lower=self.station_id.lower()
         )
 
         return self.build_path(timestamp, health_template, "status_1hr", "1H")[0]
@@ -2626,7 +2934,9 @@ class PolaRX5(BaseReceiver):
         Path(health_dir).mkdir(parents=True, exist_ok=True)
 
         # Create daily health file with timestamp
-        timestamp_str = health_data.get("timestamp", datetime.now(timezone.utc).isoformat())
+        timestamp_str = health_data.get(
+            "timestamp", datetime.now(timezone.utc).isoformat()
+        )
         date_str = datetime.fromisoformat(timestamp_str).strftime("%Y%m%d")
         json_file = (
             Path(health_dir) / f"{self.station_id.lower()}_health_{date_str}.json"
@@ -2635,7 +2945,7 @@ class PolaRX5(BaseReceiver):
         # Append to daily file (for multiple hourly measurements)
         existing_data = []
         if json_file.exists():
-            with open(json_file, "r") as f:
+            with open(json_file) as f:
                 existing_data = json.load(f)
 
         existing_data.append(health_data)
@@ -2665,7 +2975,9 @@ class PolaRX5(BaseReceiver):
             # parser = gps_parser.ConfigParser()
             # parser.record_performance_data(self.station_id, performance_metrics)
 
-            self.logger.debug(f"Performance metrics for {self.station_id}: {performance_metrics}")
+            self.logger.debug(
+                f"Performance metrics for {self.station_id}: {performance_metrics}"
+            )
 
         except Exception as e:
             self.logger.debug(f"Could not record performance metrics: {e}")

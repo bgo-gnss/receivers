@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 import gtimes.timefunc as gt
 
 from ..base.download_manager import BaseDownloadManager
-from ..base.exceptions import ConnectionError, ConfigurationError
+from ..base.exceptions import ConfigurationError, ConnectionError
 
 
 class TrimbleDownloadManager(BaseDownloadManager):
@@ -33,7 +33,7 @@ class TrimbleDownloadManager(BaseDownloadManager):
         station_id: str,
         station_config: Dict[str, Any],
         downloader: Any,  # NetR9HTTPDownloader or NetRSHTTPDownloader
-        logger: Optional[logging.Logger] = None
+        logger: Optional[logging.Logger] = None,
     ):
         """Initialize Trimble download manager.
 
@@ -47,7 +47,9 @@ class TrimbleDownloadManager(BaseDownloadManager):
         self.downloader = downloader
         self._connection = None  # HTTP connection state
 
-        self.logger.debug(f"Trimble download manager initialized with {type(downloader).__name__}")
+        self.logger.debug(
+            f"Trimble download manager initialized with {type(downloader).__name__}"
+        )
 
     def test_connection(self) -> Dict[str, Any]:
         """Test HTTP connection to Trimble receiver."""
@@ -59,7 +61,7 @@ class TrimbleDownloadManager(BaseDownloadManager):
                 "ip": self.ip_address,
                 "port": self.port,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-                "error": result.get("error")
+                "error": result.get("error"),
             }
         except Exception as e:
             return {
@@ -67,7 +69,7 @@ class TrimbleDownloadManager(BaseDownloadManager):
                 "ip": self.ip_address,
                 "port": self.port,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-                "error": str(e)
+                "error": str(e),
             }
 
     def establish_connection(self) -> Any:
@@ -99,7 +101,9 @@ class TrimbleDownloadManager(BaseDownloadManager):
         Args:
             connection: HTTP client instance (ignored)
         """
-        self.logger.debug("HTTP connection closed (connection pool managed by requests)")
+        self.logger.debug(
+            "HTTP connection closed (connection pool managed by requests)"
+        )
         self._connection = None
 
     def get_remote_file_list(self, connection: Any, remote_path: str) -> List[str]:
@@ -125,7 +129,7 @@ class TrimbleDownloadManager(BaseDownloadManager):
         connection: Any,
         remote_file_path: str,
         local_file_path: str,
-        resume_offset: int = 0
+        resume_offset: int = 0,
     ) -> Dict[str, Any]:
         """Download file from Trimble receiver via HTTP.
 
@@ -144,14 +148,12 @@ class TrimbleDownloadManager(BaseDownloadManager):
         try:
             # Use downloader's download method
             result = self.downloader.download_single_file(
-                remote_file_path,
-                local_file_path,
-                resume_offset=resume_offset
+                remote_file_path, local_file_path, resume_offset=resume_offset
             )
 
             # Ensure result has 'success' key for BaseDownloadManager compatibility
-            if 'success' not in result:
-                result['success'] = result.get('complete', False)
+            if "success" not in result:
+                result["success"] = result.get("complete", False)
 
             return result
 
@@ -181,8 +183,10 @@ class TrimbleDownloadManager(BaseDownloadManager):
         # Trimble uses .T02 extension
         filename_format = f"{self.station_id}%Y%m%d%H00a.T02"
         filenames = gt.datepathlist(
-            filename_format, "1H" if "1hr" in session.lower() else "1D",
-            datelist=[dt], closed="both"
+            filename_format,
+            "1H" if "1hr" in session.lower() else "1D",
+            datelist=[dt],
+            closed="both",
         )
 
         archive_path = f"{self.data_prepath}/{year}/{month}/{self.station_id}/{session_dir}/raw/{filenames[0]}"

@@ -24,6 +24,7 @@ from .file_validator import FileValidator
 
 class ArchiveMode(Enum):
     """Archiving strategy mode."""
+
     IMMEDIATE = "immediate"  # Archive each file right after download
     BULK = "bulk"  # Archive all files after all downloads complete
 
@@ -61,15 +62,15 @@ class GzipCompression:
     def compress(self, source: Path, destination: Path) -> bool:
         """Compress file using gzip."""
         try:
-            with open(source, 'rb') as f_in:
-                with gzip.open(destination, 'wb') as f_out:
+            with open(source, "rb") as f_in:
+                with gzip.open(destination, "wb") as f_out:
                     shutil.copyfileobj(f_in, f_out)
             return True
-        except (OSError, IOError) as e:
-            raise IOError(f"Gzip compression failed: {e}")
+        except OSError as e:
+            raise OSError(f"Gzip compression failed: {e}")
 
     def get_extension(self) -> str:
-        return '.gz'
+        return ".gz"
 
     def get_compression_ratio(self, source_size: int, compressed_size: int) -> float:
         """Calculate compression ratio as percentage reduction."""
@@ -86,11 +87,11 @@ class NoCompression:
         try:
             shutil.copy2(source, destination)
             return True
-        except (OSError, IOError) as e:
-            raise IOError(f"File copy failed: {e}")
+        except OSError as e:
+            raise OSError(f"File copy failed: {e}")
 
     def get_extension(self) -> str:
-        return ''
+        return ""
 
     def get_compression_ratio(self, source_size: int, compressed_size: int) -> float:
         return 0.0  # No compression
@@ -107,7 +108,7 @@ class ArchiveResult:
         error: Optional[str] = None,
         source_size: int = 0,
         archived_size: int = 0,
-        compression_ratio: float = 0.0
+        compression_ratio: float = 0.0,
     ):
         self.success = success
         self.tmp_file = tmp_file
@@ -149,7 +150,7 @@ class FileArchiver:
         self,
         file_validator: Optional[FileValidator] = None,
         logger: Optional[logging.Logger] = None,
-        mode: ArchiveMode = ArchiveMode.BULK
+        mode: ArchiveMode = ArchiveMode.BULK,
     ):
         """Initialize file archiver.
 
@@ -170,15 +171,13 @@ class FileArchiver:
 
         # Compression strategies registry
         self._compression_strategies: Dict[str, CompressionStrategy] = {
-            '.gz': GzipCompression(),
-            '': NoCompression(),
+            ".gz": GzipCompression(),
+            "": NoCompression(),
             # Future: '.bz2': Bzip2Compression(), '.xz': XzCompression(), etc.
         }
 
     def register_compression_strategy(
-        self,
-        extension: str,
-        strategy: CompressionStrategy
+        self, extension: str, strategy: CompressionStrategy
     ) -> None:
         """Register custom compression strategy.
 
@@ -208,7 +207,7 @@ class FileArchiver:
         tmp_file: Path,
         archive_path: Path,
         compress: bool = True,
-        remove_tmp: bool = True
+        remove_tmp: bool = True,
     ) -> bool:
         """Archive single file with optional compression.
 
@@ -233,7 +232,9 @@ class FileArchiver:
             return result.success
         else:
             # BULK mode: add to pending queue
-            self._pending_archives.append((tmp_file, archive_path, compress, remove_tmp))
+            self._pending_archives.append(
+                (tmp_file, archive_path, compress, remove_tmp)
+            )
             self.logger.debug(
                 f"Queued for bulk archiving: {tmp_file.name} "
                 f"(total queued: {len(self._pending_archives)})"
@@ -275,11 +276,7 @@ class FileArchiver:
         return archived_count
 
     def _archive_immediately(
-        self,
-        tmp_file: Path,
-        archive_path: Path,
-        compress: bool,
-        remove_tmp: bool
+        self, tmp_file: Path, archive_path: Path, compress: bool, remove_tmp: bool
     ) -> ArchiveResult:
         """Perform immediate archiving with compression.
 
@@ -302,14 +299,12 @@ class FileArchiver:
                 return ArchiveResult(
                     success=False,
                     tmp_file=tmp_file,
-                    error=f"Tmp file not found: {tmp_file}"
+                    error=f"Tmp file not found: {tmp_file}",
                 )
 
             # Get tmp file size
             tmp_file_size = tmp_file.stat().st_size
-            self.logger.info(
-                f"File to archive {filename} ({tmp_file_size:,} bytes)"
-            )
+            self.logger.info(f"File to archive {filename} ({tmp_file_size:,} bytes)")
 
             # Create archive directory
             archive_path.parent.mkdir(parents=True, exist_ok=True)
@@ -330,22 +325,22 @@ class FileArchiver:
                         tmp_file=tmp_file,
                         archive_file=archive_path,
                         source_size=tmp_file_size,
-                        archived_size=archive_file_size
+                        archived_size=archive_file_size,
                     )
 
             # Select compression strategy
             if compress:
                 # Determine compression format from archive path extension
-                archive_ext = ''.join(archive_path.suffixes[-1:])
+                archive_ext = "".join(archive_path.suffixes[-1:])
                 if archive_ext in self._compression_strategies:
                     strategy = self._compression_strategies[archive_ext]
                 else:
                     # Default to gzip
-                    strategy = self._compression_strategies['.gz']
-                    archive_ext = '.gz'
+                    strategy = self._compression_strategies[".gz"]
+                    archive_ext = ".gz"
                     # Adjust archive path to have .gz extension
-                    if not str(archive_path).endswith('.gz'):
-                        archive_path = Path(str(archive_path) + '.gz')
+                    if not str(archive_path).endswith(".gz"):
+                        archive_path = Path(str(archive_path) + ".gz")
 
                 # Check if source file is already compressed in target format
                 # This prevents double-compression (e.g., gzipping an already gzipped file)
@@ -360,7 +355,9 @@ class FileArchiver:
                             f"📦 Source already {source_format} compressed, copying: "
                             f"{filename} → {archive_path.name} ({tmp_file_size:,} bytes)"
                         )
-                        strategy = self._compression_strategies['']  # NoCompression (copy)
+                        strategy = self._compression_strategies[
+                            ""
+                        ]  # NoCompression (copy)
                     else:
                         self.logger.info(
                             f"📦 Archiving with compression: {filename} → {archive_path.name} "
@@ -372,7 +369,7 @@ class FileArchiver:
                         f"({tmp_file_size:,} bytes)"
                     )
             else:
-                strategy = self._compression_strategies['']
+                strategy = self._compression_strategies[""]
                 self.logger.info(
                     f"📦 Archiving without compression: {filename} → {archive_path.name}"
                 )
@@ -386,7 +383,7 @@ class FileArchiver:
                     success=False,
                     tmp_file=tmp_file,
                     archive_file=archive_path,
-                    error="Archived file not found after operation"
+                    error="Archived file not found after operation",
                 )
 
             # Get archived file size and calculate metrics
@@ -416,7 +413,7 @@ class FileArchiver:
                 archive_file=archive_path,
                 source_size=tmp_file_size,
                 archived_size=archived_size,
-                compression_ratio=compression_ratio
+                compression_ratio=compression_ratio,
             )
 
         except Exception as e:
@@ -437,7 +434,7 @@ class FileArchiver:
                 success=False,
                 tmp_file=tmp_file,
                 archive_file=archive_path,
-                error=error_msg
+                error=error_msg,
             )
 
     def batch_archive_files(
@@ -445,7 +442,7 @@ class FileArchiver:
         downloaded_files: List[str],
         archive_files_dict: Dict[str, str],
         compress: bool = True,
-        remove_tmp: bool = True
+        remove_tmp: bool = True,
     ) -> int:
         """Archive multiple files based on mapping dictionary.
 
@@ -476,10 +473,7 @@ class FileArchiver:
 
                 # Use appropriate mode
                 success = self.archive_file(
-                    file_path,
-                    archive_path,
-                    compress=compress,
-                    remove_tmp=remove_tmp
+                    file_path, archive_path, compress=compress, remove_tmp=remove_tmp
                 )
 
                 if self.mode == ArchiveMode.IMMEDIATE and success:
@@ -525,17 +519,19 @@ class FileArchiver:
         # Calculate average compression ratio (only for compressed files)
         compressed_results = [r for r in self._results if r.compression_ratio > 0]
         avg_compression = (
-            sum(r.compression_ratio for r in compressed_results) / len(compressed_results)
-            if compressed_results else 0.0
+            sum(r.compression_ratio for r in compressed_results)
+            / len(compressed_results)
+            if compressed_results
+            else 0.0
         )
 
         return {
-            'total_files': total_files,
-            'successful': successful,
-            'failed': failed,
-            'total_source_size': total_source_size,
-            'total_archived_size': total_archived_size,
-            'average_compression_ratio': avg_compression,
+            "total_files": total_files,
+            "successful": successful,
+            "failed": failed,
+            "total_source_size": total_source_size,
+            "total_archived_size": total_archived_size,
+            "average_compression_ratio": avg_compression,
         }
 
     def clear_results(self) -> None:

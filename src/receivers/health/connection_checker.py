@@ -12,11 +12,12 @@ import subprocess
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, Any, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 
 class HealthStatus(Enum):
     """Health status levels."""
+
     OK = "ok"
     WARNING = "warning"
     CRITICAL = "critical"
@@ -27,6 +28,7 @@ class HealthStatus(Enum):
 @dataclass
 class ConnectionStatus:
     """Connection status result."""
+
     status: HealthStatus
     response_time_ms: Optional[float] = None
     accessible: bool = False
@@ -92,9 +94,7 @@ class ConnectionChecker:
         results["router_ping"] = self.check_ping(count=5, timeout=2)
 
         if not results["router_ping"].accessible:
-            self.logger.debug(
-                f"Ping failed for {self.station_id}, retrying once..."
-            )
+            self.logger.debug(f"Ping failed for {self.station_id}, retrying once...")
             results["router_ping"] = self.check_ping(count=5, timeout=2)
 
         # If ping failed and fail_fast enabled, skip remaining slow checks
@@ -199,9 +199,10 @@ class ConnectionChecker:
                 # Thresholds loaded from database.cfg via ThresholdConfig
                 try:
                     from .metrics import load_thresholds
+
                     tc = load_thresholds()
-                    loss_warn = tc.packet_loss_warning    # default 20.0
-                    loss_crit = tc.packet_loss_critical   # default 70.0
+                    loss_warn = tc.packet_loss_warning  # default 20.0
+                    loss_crit = tc.packet_loss_critical  # default 70.0
                 except Exception:
                     loss_warn, loss_crit = 20.0, 70.0
 
@@ -276,7 +277,7 @@ class ConnectionChecker:
                 details={"port": port},
             )
 
-        except socket.timeout:
+        except TimeoutError:
             return ConnectionStatus(
                 status=HealthStatus.CRITICAL,
                 accessible=False,
@@ -292,6 +293,7 @@ class ConnectionChecker:
             )
         except OSError as e:
             import errno
+
             if e.errno == errno.EHOSTUNREACH:
                 error_type = "unreachable"
                 msg = "Host unreachable"
@@ -366,7 +368,7 @@ class ConnectionChecker:
                 },
             )
 
-        except socket.timeout:
+        except TimeoutError:
             return ConnectionStatus(
                 status=HealthStatus.CRITICAL,
                 accessible=False,
@@ -383,6 +385,7 @@ class ConnectionChecker:
             )
         except OSError as e:
             import errno
+
             if e.errno == errno.EHOSTUNREACH:
                 error_type = "unreachable"
                 msg = "Host unreachable"
@@ -448,7 +451,7 @@ class ConnectionChecker:
                 },
             )
 
-        except socket.timeout:
+        except TimeoutError:
             return ConnectionStatus(
                 status=HealthStatus.CRITICAL,
                 accessible=False,
@@ -464,6 +467,7 @@ class ConnectionChecker:
             )
         except OSError as e:
             import errno
+
             if e.errno == errno.EHOSTUNREACH:
                 msg = "Host unreachable"
             elif e.errno == errno.ENETUNREACH:
@@ -521,7 +525,7 @@ class ConnectionChecker:
                 },
             )
 
-        except socket.timeout:
+        except TimeoutError:
             return ConnectionStatus(
                 status=HealthStatus.CRITICAL,
                 accessible=False,
@@ -587,7 +591,9 @@ class ConnectionChecker:
         elif HealthStatus.WARNING in statuses:
             overall = HealthStatus.WARNING
             message = "Connection degraded: "
-        elif HealthStatus.OK in statuses and all(s == HealthStatus.OK for s in statuses):
+        elif HealthStatus.OK in statuses and all(
+            s == HealthStatus.OK for s in statuses
+        ):
             overall = HealthStatus.OK
             message = "All connection levels OK"
         else:

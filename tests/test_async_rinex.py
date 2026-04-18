@@ -5,17 +5,18 @@ and integration with the download pipeline hooks.
 """
 
 import logging
-import pytest
 from datetime import datetime
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
+
+import pytest
 
 from receivers.rinex.async_converter import (
-    submit_rinex_conversion,
-    shutdown_rinex_pool,
-    _rinex_worker,
     _create_converter,
     _find_raw_files,
     _on_conversion_done,
+    _rinex_worker,
+    shutdown_rinex_pool,
+    submit_rinex_conversion,
 )
 
 
@@ -39,8 +40,10 @@ class TestSubmitRinexConversion:
         mock_get_executor.return_value = mock_executor
 
         future = submit_rinex_conversion(
-            "ELDC", "15s_24hr",
-            datetime(2026, 3, 1), datetime(2026, 3, 2),
+            "ELDC",
+            "15s_24hr",
+            datetime(2026, 3, 1),
+            datetime(2026, 3, 2),
         )
 
         assert future is mock_future
@@ -73,8 +76,10 @@ class TestSubmitRinexConversion:
         mock_get_executor.return_value = mock_executor
 
         result = submit_rinex_conversion(
-            "ELDC", "15s_24hr",
-            datetime(2026, 3, 1), datetime(2026, 3, 2),
+            "ELDC",
+            "15s_24hr",
+            datetime(2026, 3, 1),
+            datetime(2026, 3, 2),
         )
 
         assert result is None
@@ -89,7 +94,9 @@ class TestOnConversionDone:
         mock_future = MagicMock()
         mock_future.exception.return_value = None
         mock_future.result.return_value = {
-            "converted": 3, "failed": 0, "duration": 12.5,
+            "converted": 3,
+            "failed": 0,
+            "duration": 12.5,
         }
 
         with caplog.at_level(logging.INFO, logger="receivers.rinex.async"):
@@ -114,7 +121,9 @@ class TestOnConversionDone:
         mock_future = MagicMock()
         mock_future.exception.return_value = None
         mock_future.result.return_value = {
-            "converted": 2, "failed": 1, "duration": 8.0,
+            "converted": 2,
+            "failed": 1,
+            "duration": 8.0,
         }
 
         with caplog.at_level(logging.WARNING, logger="receivers.rinex.async"):
@@ -127,7 +136,9 @@ class TestOnConversionDone:
         mock_future = MagicMock()
         mock_future.exception.return_value = None
         mock_future.result.return_value = {
-            "converted": 0, "failed": 0, "duration": 0.1,
+            "converted": 0,
+            "failed": 0,
+            "duration": 0.1,
         }
 
         with caplog.at_level(logging.DEBUG, logger="receivers.rinex.async"):
@@ -145,8 +156,13 @@ class TestCreateConverter:
         """PolaRX5 receivers get SBFConverter with .sbf.gz extension."""
         mock_sbf.return_value = MagicMock()
         converter, ext = _create_converter(
-            "ELDC", "polarx5", {"default_version": 3, "default_naming": "short",
-                                "apply_header_corrections": True},
+            "ELDC",
+            "polarx5",
+            {
+                "default_version": 3,
+                "default_naming": "short",
+                "apply_header_corrections": True,
+            },
             MagicMock(),
         )
         assert converter is not None
@@ -158,8 +174,13 @@ class TestCreateConverter:
         """NetR9 receivers get TrimbleConverter with .T02* extension."""
         mock_trimble.return_value = MagicMock()
         converter, ext = _create_converter(
-            "MANA", "netr9", {"default_version": 3, "default_naming": "short",
-                              "apply_header_corrections": True},
+            "MANA",
+            "netr9",
+            {
+                "default_version": 3,
+                "default_naming": "short",
+                "apply_header_corrections": True,
+            },
             MagicMock(),
         )
         assert converter is not None
@@ -170,8 +191,13 @@ class TestCreateConverter:
         """NetRS receivers get TrimbleConverter with .T00* extension."""
         mock_trimble.return_value = MagicMock()
         converter, ext = _create_converter(
-            "BLEI", "netrs", {"default_version": 3, "default_naming": "short",
-                              "apply_header_corrections": True},
+            "BLEI",
+            "netrs",
+            {
+                "default_version": 3,
+                "default_naming": "short",
+                "apply_header_corrections": True,
+            },
             MagicMock(),
         )
         assert converter is not None
@@ -182,8 +208,13 @@ class TestCreateConverter:
         """G10 receivers get LeicaConverter with .m00.gz extension."""
         mock_leica.return_value = MagicMock()
         converter, ext = _create_converter(
-            "SKFC", "g10", {"default_version": 3, "default_naming": "short",
-                            "apply_header_corrections": True},
+            "SKFC",
+            "g10",
+            {
+                "default_version": 3,
+                "default_naming": "short",
+                "apply_header_corrections": True,
+            },
             MagicMock(),
         )
         assert converter is not None
@@ -192,8 +223,13 @@ class TestCreateConverter:
     def test_unknown_receiver_returns_none(self):
         """Unknown receiver type returns (None, None)."""
         converter, ext = _create_converter(
-            "TEST", "unknown_rx", {"default_version": 3, "default_naming": "short",
-                                   "apply_header_corrections": True},
+            "TEST",
+            "unknown_rx",
+            {
+                "default_version": 3,
+                "default_naming": "short",
+                "apply_header_corrections": True,
+            },
             MagicMock(),
         )
         assert converter is None
@@ -213,8 +249,11 @@ class TestFindRawFiles:
         (raw_dir / "ELDC20260302a.sbf.gz").touch()
 
         files = _find_raw_files(
-            "ELDC", "15s_24hr", ".sbf.gz",
-            datetime(2026, 3, 1), datetime(2026, 3, 3),
+            "ELDC",
+            "15s_24hr",
+            ".sbf.gz",
+            datetime(2026, 3, 1),
+            datetime(2026, 3, 3),
             str(tmp_path),
         )
 
@@ -228,7 +267,9 @@ class TestFindRawFiles:
         (raw_dir / "THOB202603011500b.sbf.gz").touch()
 
         files = _find_raw_files(
-            "THOB", "1Hz_1hr", ".sbf.gz",
+            "THOB",
+            "1Hz_1hr",
+            ".sbf.gz",
             datetime(2026, 3, 1, 14, 0),
             datetime(2026, 3, 1, 16, 0),
             str(tmp_path),
@@ -239,8 +280,11 @@ class TestFindRawFiles:
     def test_no_files_returns_empty(self, tmp_path):
         """Missing directory returns empty list."""
         files = _find_raw_files(
-            "FAKE", "15s_24hr", ".sbf.gz",
-            datetime(2026, 3, 1), datetime(2026, 3, 2),
+            "FAKE",
+            "15s_24hr",
+            ".sbf.gz",
+            datetime(2026, 3, 1),
+            datetime(2026, 3, 2),
             str(tmp_path),
         )
         assert files == []
@@ -255,8 +299,11 @@ class TestFindRawFiles:
         (raw_dir / "ELDC20260302a.sbf.gz").touch()
 
         files = _find_raw_files(
-            "ELDC", "15s_24hr", ".sbf.gz",
-            datetime(2026, 3, 1), datetime(2026, 3, 4),
+            "ELDC",
+            "15s_24hr",
+            ".sbf.gz",
+            datetime(2026, 3, 1),
+            datetime(2026, 3, 4),
             str(tmp_path),
         )
 
@@ -274,8 +321,13 @@ class TestRinexWorker:
     @patch("receivers.config_utils.get_station_config")
     @patch("receivers.config.receivers_config.get_receivers_config")
     def test_worker_converts_files(
-        self, mock_config, mock_station_config, mock_create, mock_find,
-        mock_track, tmp_path,
+        self,
+        mock_config,
+        mock_station_config,
+        mock_create,
+        mock_find,
+        mock_track,
+        tmp_path,
     ):
         """Worker finds raw files, converts them, returns counts."""
         # Config mocks
@@ -302,8 +354,10 @@ class TestRinexWorker:
         mock_find.return_value = [raw_file]
 
         result = _rinex_worker(
-            "ELDC", "15s_24hr",
-            datetime(2026, 3, 1), datetime(2026, 3, 2),
+            "ELDC",
+            "15s_24hr",
+            datetime(2026, 3, 1),
+            datetime(2026, 3, 2),
         )
 
         assert result["converted"] == 1
@@ -315,7 +369,11 @@ class TestRinexWorker:
     @patch("receivers.config_utils.get_station_config")
     @patch("receivers.config.receivers_config.get_receivers_config")
     def test_worker_no_raw_files(
-        self, mock_config, mock_station_config, mock_create, mock_find,
+        self,
+        mock_config,
+        mock_station_config,
+        mock_create,
+        mock_find,
     ):
         """Worker with no raw files returns zero counts."""
         mock_cfg = MagicMock()
@@ -329,8 +387,10 @@ class TestRinexWorker:
         mock_find.return_value = []
 
         result = _rinex_worker(
-            "ELDC", "15s_24hr",
-            datetime(2026, 3, 1), datetime(2026, 3, 2),
+            "ELDC",
+            "15s_24hr",
+            datetime(2026, 3, 1),
+            datetime(2026, 3, 2),
         )
 
         assert result["converted"] == 0
@@ -339,7 +399,9 @@ class TestRinexWorker:
     @patch("receivers.config_utils.get_station_config")
     @patch("receivers.config.receivers_config.get_receivers_config")
     def test_worker_unknown_station(
-        self, mock_config, mock_station_config,
+        self,
+        mock_config,
+        mock_station_config,
     ):
         """Worker with unknown station returns skipped."""
         mock_cfg = MagicMock()
@@ -350,8 +412,10 @@ class TestRinexWorker:
         mock_station_config.return_value = None
 
         result = _rinex_worker(
-            "FAKE", "15s_24hr",
-            datetime(2026, 3, 1), datetime(2026, 3, 2),
+            "FAKE",
+            "15s_24hr",
+            datetime(2026, 3, 1),
+            datetime(2026, 3, 2),
         )
 
         assert result["skipped"] == 1
@@ -367,7 +431,11 @@ class TestParallelDownloadRinexHook:
     @patch("receivers.cli.main._download_station_period")
     @patch("receivers.cli.main._validate_station_for_download")
     def test_rinex_submitted_on_success(
-        self, mock_validate, mock_download, mock_submit, mock_ping,
+        self,
+        mock_validate,
+        mock_download,
+        mock_submit,
+        mock_ping,
     ):
         """RINEX is submitted when download succeeds and --rinex is set."""
         from receivers.cli.parallel import _download_one_station
@@ -385,7 +453,13 @@ class TestParallelDownloadRinexHook:
         end = datetime(2026, 3, 2)
 
         result = _download_one_station(
-            "ELDC", args, start, end, "1D", "15s", False,
+            "ELDC",
+            args,
+            start,
+            end,
+            "1D",
+            "15s",
+            False,
         )
 
         assert result.status == "completed"
@@ -398,7 +472,11 @@ class TestParallelDownloadRinexHook:
     @patch("receivers.cli.main._download_station_period")
     @patch("receivers.cli.main._validate_station_for_download")
     def test_rinex_not_submitted_without_flag(
-        self, mock_validate, mock_download, mock_submit, mock_ping,
+        self,
+        mock_validate,
+        mock_download,
+        mock_submit,
+        mock_ping,
     ):
         """RINEX is NOT submitted when --rinex is not set."""
         from receivers.cli.parallel import _download_one_station
@@ -413,8 +491,13 @@ class TestParallelDownloadRinexHook:
         args.rinex = False
 
         result = _download_one_station(
-            "ELDC", args, datetime(2026, 3, 1), datetime(2026, 3, 2),
-            "1D", "15s", False,
+            "ELDC",
+            args,
+            datetime(2026, 3, 1),
+            datetime(2026, 3, 2),
+            "1D",
+            "15s",
+            False,
         )
 
         assert result.status == "completed"
@@ -425,7 +508,11 @@ class TestParallelDownloadRinexHook:
     @patch("receivers.cli.main._download_station_period")
     @patch("receivers.cli.main._validate_station_for_download")
     def test_rinex_not_submitted_on_failure(
-        self, mock_validate, mock_download, mock_submit, mock_ping,
+        self,
+        mock_validate,
+        mock_download,
+        mock_submit,
+        mock_ping,
     ):
         """RINEX is NOT submitted when download fails."""
         from receivers.cli.parallel import _download_one_station
@@ -440,8 +527,13 @@ class TestParallelDownloadRinexHook:
         args.rinex = True
 
         result = _download_one_station(
-            "ELDC", args, datetime(2026, 3, 1), datetime(2026, 3, 2),
-            "1D", "15s", False,
+            "ELDC",
+            args,
+            datetime(2026, 3, 1),
+            datetime(2026, 3, 2),
+            "1D",
+            "15s",
+            False,
         )
 
         assert result.status == "failed"
@@ -452,7 +544,11 @@ class TestParallelDownloadRinexHook:
     @patch("receivers.cli.main._download_station_period")
     @patch("receivers.cli.main._validate_station_for_download")
     def test_rinex_not_submitted_when_up_to_date(
-        self, mock_validate, mock_download, mock_submit, mock_ping,
+        self,
+        mock_validate,
+        mock_download,
+        mock_submit,
+        mock_ping,
     ):
         """RINEX is NOT submitted for up_to_date (no new files)."""
         from receivers.cli.parallel import _download_one_station
@@ -467,8 +563,13 @@ class TestParallelDownloadRinexHook:
         args.rinex = True
 
         result = _download_one_station(
-            "ELDC", args, datetime(2026, 3, 1), datetime(2026, 3, 2),
-            "1D", "15s", False,
+            "ELDC",
+            args,
+            datetime(2026, 3, 1),
+            datetime(2026, 3, 2),
+            "1D",
+            "15s",
+            False,
         )
 
         assert result.status == "up_to_date"
@@ -487,11 +588,14 @@ class TestShutdownPool:
         mock_get_executor.return_value = mock_executor
 
         submit_rinex_conversion(
-            "ELDC", "15s_24hr",
-            datetime(2026, 3, 1), datetime(2026, 3, 2),
+            "ELDC",
+            "15s_24hr",
+            datetime(2026, 3, 1),
+            datetime(2026, 3, 2),
         )
 
         import receivers.rinex.async_converter as mod
+
         mod._executor = mock_executor
 
         shutdown_rinex_pool(wait=True)
@@ -500,5 +604,6 @@ class TestShutdownPool:
     def test_shutdown_noop_when_no_executor(self):
         """Shutdown is safe when no executor was ever created."""
         import receivers.rinex.async_converter as mod
+
         mod._executor = None
         shutdown_rinex_pool(wait=True)  # Should not raise

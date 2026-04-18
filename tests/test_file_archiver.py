@@ -6,23 +6,23 @@ both immediate and bulk archiving modes.
 """
 
 import gzip
-import pytest
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from receivers.utils.file_archiver import (
-    FileArchiver,
     ArchiveMode,
     ArchiveResult,
+    FileArchiver,
     GzipCompression,
-    NoCompression
+    NoCompression,
 )
 from receivers.utils.file_validator import FileValidator
-
 from tests.fixtures.test_data import (
     ARCHIVING_TEST_CASES,
     create_test_file,
-    get_test_case_by_name
+    get_test_case_by_name,
 )
 
 
@@ -48,9 +48,9 @@ class TestCompressionStrategies:
         assert self.dest_file.exists()
 
         # Verify it's actually gzipped
-        with open(self.dest_file, 'rb') as f:
+        with open(self.dest_file, "rb") as f:
             magic = f.read(2)
-            assert magic == b'\x1f\x8b'
+            assert magic == b"\x1f\x8b"
 
     def test_gzip_compression_ratio(self):
         """Test compression ratio calculation."""
@@ -81,7 +81,7 @@ class TestArchiveResult:
             archive_file=Path("/archive/file.sbf.gz"),
             source_size=2048,
             archived_size=1024,
-            compression_ratio=50.0
+            compression_ratio=50.0,
         )
 
         assert result.success is True
@@ -91,9 +91,7 @@ class TestArchiveResult:
     def test_failed_result(self):
         """Test failed archive result."""
         result = ArchiveResult(
-            success=False,
-            tmp_file=Path("/tmp/file.sbf"),
-            error="File not found"
+            success=False, tmp_file=Path("/tmp/file.sbf"), error="File not found"
         )
 
         assert result.success is False
@@ -124,10 +122,7 @@ class TestImmediateModeArchiving:
         # Archive immediately
         with FileArchiver(mode=ArchiveMode.IMMEDIATE) as archiver:
             success = archiver.archive_file(
-                tmp_file,
-                archive_path,
-                compress=True,
-                remove_tmp=True
+                tmp_file, archive_path, compress=True, remove_tmp=True
             )
 
             assert success is True
@@ -149,7 +144,9 @@ class TestImmediateModeArchiving:
         with FileArchiver(mode=ArchiveMode.IMMEDIATE) as archiver:
             for tmp_file in files:
                 archive_path = self.archive_dir / f"{tmp_file.stem}.sbf.gz"
-                if archiver.archive_file(tmp_file, archive_path, compress=True, remove_tmp=True):
+                if archiver.archive_file(
+                    tmp_file, archive_path, compress=True, remove_tmp=True
+                ):
                     archived_count += 1
 
         assert archived_count == 3
@@ -168,10 +165,7 @@ class TestImmediateModeArchiving:
 
         with FileArchiver(mode=ArchiveMode.IMMEDIATE) as archiver:
             success = archiver.archive_file(
-                tmp_file,
-                archive_path,
-                compress=False,
-                remove_tmp=True
+                tmp_file, archive_path, compress=False, remove_tmp=True
             )
 
             assert success is True
@@ -204,7 +198,9 @@ class TestBulkModeArchiving:
         archiver = FileArchiver(mode=ArchiveMode.BULK)
 
         # Queue file
-        success = archiver.archive_file(tmp_file, archive_path, compress=True, remove_tmp=True)
+        success = archiver.archive_file(
+            tmp_file, archive_path, compress=True, remove_tmp=True
+        )
 
         assert success is True  # Returns true even though not yet archived
         assert archiver.get_pending_count() == 1
@@ -224,7 +220,9 @@ class TestBulkModeArchiving:
         # Queue all files
         for tmp_file in files:
             archive_path = self.archive_dir / f"{tmp_file.stem}.sbf.gz"
-            archiver.archive_file(tmp_file, archive_path, compress=True, remove_tmp=True)
+            archiver.archive_file(
+                tmp_file, archive_path, compress=True, remove_tmp=True
+            )
 
         assert archiver.get_pending_count() == 3
 
@@ -250,7 +248,9 @@ class TestBulkModeArchiving:
         with FileArchiver(mode=ArchiveMode.BULK) as archiver:
             for tmp_file in files:
                 archive_path = self.archive_dir / f"{tmp_file.stem}.sbf.gz"
-                archiver.archive_file(tmp_file, archive_path, compress=True, remove_tmp=True)
+                archiver.archive_file(
+                    tmp_file, archive_path, compress=True, remove_tmp=True
+                )
 
             # Still pending inside context
             assert archiver.get_pending_count() == 2
@@ -290,10 +290,7 @@ class TestBatchArchiving:
         # Archive with immediate mode
         archiver = FileArchiver(mode=ArchiveMode.IMMEDIATE)
         archived_count = archiver.batch_archive_files(
-            downloaded_files,
-            archive_dict,
-            compress=True,
-            remove_tmp=True
+            downloaded_files, archive_dict, compress=True, remove_tmp=True
         )
 
         assert archived_count == 3
@@ -319,10 +316,7 @@ class TestBatchArchiving:
         # Archive with bulk mode
         archiver = FileArchiver(mode=ArchiveMode.BULK)
         archived_count = archiver.batch_archive_files(
-            downloaded_files,
-            archive_dict,
-            compress=True,
-            remove_tmp=True
+            downloaded_files, archive_dict, compress=True, remove_tmp=True
         )
 
         assert archived_count == 3
@@ -350,7 +344,9 @@ class TestErrorHandling:
         archive_path = self.archive_dir / "nonexistent.sbf.gz"
 
         with FileArchiver(mode=ArchiveMode.IMMEDIATE) as archiver:
-            success = archiver.archive_file(tmp_file, archive_path, compress=True, remove_tmp=True)
+            success = archiver.archive_file(
+                tmp_file, archive_path, compress=True, remove_tmp=True
+            )
 
             assert success is False
 
@@ -370,7 +366,9 @@ class TestErrorHandling:
         create_test_file(archive_path, size=2048, is_compressed=True)
 
         with FileArchiver(mode=ArchiveMode.IMMEDIATE) as archiver:
-            success = archiver.archive_file(tmp_file, archive_path, compress=True, remove_tmp=True)
+            success = archiver.archive_file(
+                tmp_file, archive_path, compress=True, remove_tmp=True
+            )
 
             # Should succeed (skip archiving, remove tmp)
             assert success is True
@@ -399,7 +397,9 @@ class TestStatisticsAndReporting:
         archive_path = self.archive_dir / "file.sbf.gz"
 
         with FileArchiver(mode=ArchiveMode.IMMEDIATE) as archiver:
-            archiver.archive_file(tmp_file, archive_path, compress=True, remove_tmp=True)
+            archiver.archive_file(
+                tmp_file, archive_path, compress=True, remove_tmp=True
+            )
 
         results = archiver.get_results()
         assert len(results) == 1
@@ -419,15 +419,17 @@ class TestStatisticsAndReporting:
         with FileArchiver(mode=ArchiveMode.IMMEDIATE) as archiver:
             for tmp_file in files:
                 archive_path = self.archive_dir / f"{tmp_file.stem}.sbf.gz"
-                archiver.archive_file(tmp_file, archive_path, compress=True, remove_tmp=True)
+                archiver.archive_file(
+                    tmp_file, archive_path, compress=True, remove_tmp=True
+                )
 
             stats = archiver.get_statistics()
 
-            assert stats['total_files'] == 3
-            assert stats['successful'] == 3
-            assert stats['failed'] == 0
-            assert stats['total_source_size'] == 2048 * 3
-            assert stats['average_compression_ratio'] > 0
+            assert stats["total_files"] == 3
+            assert stats["successful"] == 3
+            assert stats["failed"] == 0
+            assert stats["total_source_size"] == 2048 * 3
+            assert stats["average_compression_ratio"] > 0
 
     def test_clear_results(self):
         """Test clearing results history."""
@@ -437,7 +439,9 @@ class TestStatisticsAndReporting:
         archive_path = self.archive_dir / "file.sbf.gz"
 
         with FileArchiver(mode=ArchiveMode.IMMEDIATE) as archiver:
-            archiver.archive_file(tmp_file, archive_path, compress=True, remove_tmp=True)
+            archiver.archive_file(
+                tmp_file, archive_path, compress=True, remove_tmp=True
+            )
 
             assert len(archiver.get_results()) == 1
 
@@ -477,17 +481,18 @@ class TestCustomCompressionStrategy:
             def compress(self, source, destination):
                 # Just copy with custom extension
                 import shutil
+
                 shutil.copy2(source, destination)
                 return True
 
             def get_extension(self):
-                return '.dummy'
+                return ".dummy"
 
             def get_compression_ratio(self, source_size, compressed_size):
                 return 0.0
 
         archiver = FileArchiver()
-        archiver.register_compression_strategy('.dummy', DummyCompression())
+        archiver.register_compression_strategy(".dummy", DummyCompression())
 
         # Verify registered
-        assert '.dummy' in archiver._compression_strategies
+        assert ".dummy" in archiver._compression_strategies

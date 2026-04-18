@@ -22,11 +22,10 @@ Block IDs of interest:
 """
 
 import struct
-from typing import List, Dict, Any, Optional, BinaryIO
-from pathlib import Path
-from datetime import datetime, timedelta
 from dataclasses import dataclass
-
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, BinaryIO, Dict, List, Optional
 
 # GPS epoch: January 6, 1980 00:00:00 UTC
 GPS_EPOCH = datetime(1980, 1, 6, 0, 0, 0)
@@ -43,6 +42,7 @@ BLOCK_ID_PVT_GEODETIC = 4007
 @dataclass
 class SBFBlockHeader:
     """SBF block header information."""
+
     sync: bytes
     crc: int
     block_id: int
@@ -55,6 +55,7 @@ class SBFBlockHeader:
 @dataclass
 class ReceiverStatusData:
     """Parsed ReceiverStatus block data."""
+
     tow: int  # milliseconds
     wnc: int
     datetime: datetime
@@ -68,6 +69,7 @@ class ReceiverStatusData:
 @dataclass
 class PowerStatusData:
     """Parsed PowerStatus block data."""
+
     tow: int  # milliseconds
     wnc: int
     datetime: datetime
@@ -79,7 +81,7 @@ class PowerStatusData:
 class SBFParser:
     """Parser for SBF binary files."""
 
-    SYNC_BYTES = b'$@'
+    SYNC_BYTES = b"$@"
 
     def __init__(self, file_path: Path):
         """Initialize parser with SBF file path."""
@@ -120,9 +122,9 @@ class SBFParser:
 
         # Unpack header (little-endian)
         # sync(2), crc(2), id(2), length(2)
-        crc = struct.unpack('<H', data[2:4])[0]
-        id_field = struct.unpack('<H', data[4:6])[0]
-        length = struct.unpack('<H', data[6:8])[0]
+        crc = struct.unpack("<H", data[2:4])[0]
+        id_field = struct.unpack("<H", data[4:6])[0]
+        length = struct.unpack("<H", data[6:8])[0]
 
         # Extract block ID and revision
         # Lower 13 bits = block number, upper 3 bits = revision
@@ -133,8 +135,8 @@ class SBFParser:
         tow = 0
         wnc = 0
         if len(data) >= 14:
-            tow = struct.unpack('<I', data[8:12])[0]
-            wnc = struct.unpack('<H', data[12:14])[0]
+            tow = struct.unpack("<I", data[8:12])[0]
+            wnc = struct.unpack("<H", data[12:14])[0]
 
         return SBFBlockHeader(
             sync=data[0:2],
@@ -143,10 +145,12 @@ class SBFParser:
             block_rev=block_rev,
             length=length,
             tow=tow,
-            wnc=wnc
+            wnc=wnc,
         )
 
-    def parse_receiver_status(self, data: bytes, header: SBFBlockHeader) -> Optional[ReceiverStatusData]:
+    def parse_receiver_status(
+        self, data: bytes, header: SBFBlockHeader
+    ) -> Optional[ReceiverStatusData]:
         """
         Parse ReceiverStatus block (ID 4014).
 
@@ -166,12 +170,12 @@ class SBFParser:
             return None
 
         offset = 14
-        cpu_load = struct.unpack('<B', data[offset:offset+1])[0]
+        cpu_load = struct.unpack("<B", data[offset : offset + 1])[0]
         # ext_error = struct.unpack('<B', data[offset+1:offset+2])[0]
-        uptime = struct.unpack('<I', data[offset+2:offset+6])[0]
-        rx_error = struct.unpack('<I', data[offset+6:offset+10])[0]
-        rx_status = struct.unpack('<I', data[offset+10:offset+14])[0]
-        rx_state = struct.unpack('<B', data[offset+14:offset+15])[0]
+        uptime = struct.unpack("<I", data[offset + 2 : offset + 6])[0]
+        rx_error = struct.unpack("<I", data[offset + 6 : offset + 10])[0]
+        rx_status = struct.unpack("<I", data[offset + 10 : offset + 14])[0]
+        rx_state = struct.unpack("<B", data[offset + 14 : offset + 15])[0]
 
         return ReceiverStatusData(
             tow=header.tow,
@@ -181,10 +185,12 @@ class SBFParser:
             uptime=uptime,
             rx_error=rx_error,
             rx_status=rx_status,
-            rx_state=rx_state
+            rx_state=rx_state,
         )
 
-    def parse_power_status(self, data: bytes, header: SBFBlockHeader) -> Optional[PowerStatusData]:
+    def parse_power_status(
+        self, data: bytes, header: SBFBlockHeader
+    ) -> Optional[PowerStatusData]:
         """
         Parse PowerStatus block (ID 4101).
 
@@ -202,7 +208,7 @@ class SBFParser:
             return None
 
         offset = 14
-        voltage_raw = struct.unpack('<H', data[offset:offset+2])[0]
+        voltage_raw = struct.unpack("<H", data[offset : offset + 2])[0]
 
         # Verified with RxTools bin2asc utility:
         # bin2asc extracts PowerStatus "Vin Voltage [V]" field
@@ -219,7 +225,7 @@ class SBFParser:
             datetime=self.gps_time_to_datetime(header.wnc, header.tow),
             voltage_internal=voltage_internal,
             voltage_external=0.0,  # Not available in revision 0
-            power_source=0  # Unknown in revision 0
+            power_source=0,  # Unknown in revision 0
         )
 
     def read_blocks(self, block_ids: Optional[List[int]] = None) -> List[tuple]:
@@ -234,7 +240,7 @@ class SBFParser:
         """
         blocks = []
 
-        with open(self.file_path, 'rb') as f:
+        with open(self.file_path, "rb") as f:
             while True:
                 # Find next sync pattern
                 sync = f.read(2)
@@ -252,12 +258,12 @@ class SBFParser:
                     break
 
                 # Parse basic header to get length
-                crc = struct.unpack('<H', header_data[2:4])[0]
-                id_field = struct.unpack('<H', header_data[4:6])[0]
-                length = struct.unpack('<H', header_data[6:8])[0]
+                struct.unpack("<H", header_data[2:4])[0]
+                id_field = struct.unpack("<H", header_data[4:6])[0]
+                length = struct.unpack("<H", header_data[6:8])[0]
 
-                block_id = id_field & 0x1FFF
-                block_rev = (id_field >> 13) & 0x07
+                id_field & 0x1FFF
+                (id_field >> 13) & 0x07
 
                 # Read rest of block (length includes header)
                 remaining = length - 8
@@ -322,7 +328,9 @@ def main():
     print(f"Found {len(receiver_status)} ReceiverStatus blocks")
     if receiver_status:
         for i, data in enumerate(receiver_status[:3]):
-            print(f"  [{i}] {data.datetime} - CPU: {data.cpu_load}%, Uptime: {data.uptime}s")
+            print(
+                f"  [{i}] {data.datetime} - CPU: {data.cpu_load}%, Uptime: {data.uptime}s"
+            )
 
     # Extract PowerStatus
     print("\n=== PowerStatus ===")
@@ -330,9 +338,11 @@ def main():
     print(f"Found {len(power_status)} PowerStatus blocks")
     if power_status:
         for i, data in enumerate(power_status[:3]):
-            print(f"  [{i}] {data.datetime} - Vint: {data.voltage_internal:.2f}V, "
-                  f"Vext: {data.voltage_external:.2f}V, Source: {data.power_source}")
+            print(
+                f"  [{i}] {data.datetime} - Vint: {data.voltage_internal:.2f}V, "
+                f"Vext: {data.voltage_external:.2f}V, Source: {data.power_source}"
+            )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -14,8 +14,8 @@ logger = logging.getLogger(__name__)
 
 
 def get_connection(
-    host_override: Optional[str] = None,
-    database: Optional[str] = None,
+    host_override: str | None = None,
+    database: str | None = None,
 ) -> Any:
     """Get a database connection using centralized config.
 
@@ -42,7 +42,9 @@ def get_connection(
         old_host = os.environ.get("POSTGRES_HOST")
         os.environ["POSTGRES_HOST"] = host_override
         try:
-            conn = DatabaseConnectionFactory.get_connection(database=database or "gps_health")
+            conn = DatabaseConnectionFactory.get_connection(
+                database=database or "gps_health"
+            )
         finally:
             if old_host is not None:
                 os.environ["POSTGRES_HOST"] = old_host
@@ -55,8 +57,8 @@ def get_connection(
 
 @contextmanager
 def managed_connection(
-    host_override: Optional[str] = None,
-    database: Optional[str] = None,
+    host_override: str | None = None,
+    database: str | None = None,
 ) -> Generator:
     """Context manager for safe connection lifecycle.
 

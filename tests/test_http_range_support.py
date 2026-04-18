@@ -12,8 +12,9 @@ Example:
 """
 
 import sys
-import requests
 from pathlib import Path
+
+import requests
 
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -65,7 +66,7 @@ def test_range_support(station_id: str):
         try:
             head_response = requests.head(file_url, timeout=60)
             print(f"   HEAD response status: {head_response.status_code}")
-            content_length = head_response.headers.get('Content-Length')
+            content_length = head_response.headers.get("Content-Length")
         except Exception as e:
             print(f"   HEAD request failed: {e}")
             head_response = None
@@ -76,7 +77,7 @@ def test_range_support(station_id: str):
             # Some servers don't support HEAD, try GET
             get_response = requests.get(file_url, timeout=60, stream=True)
             print(f"   GET response status: {get_response.status_code}")
-            content_length = get_response.headers.get('Content-Length')
+            content_length = get_response.headers.get("Content-Length")
             print(f"   Headers: {dict(get_response.headers)}")
             get_response.close()
 
@@ -91,6 +92,7 @@ def test_range_support(station_id: str):
     except Exception as e:
         print(f"❌ Failed to get file size: {e}")
         import traceback
+
         traceback.print_exc()
         return False
 
@@ -101,23 +103,23 @@ def test_range_support(station_id: str):
         range_start = min(1024, file_size // 2)
         range_end = min(range_start + 1024, file_size - 1)
 
-        headers = {
-            'Range': f'bytes={range_start}-{range_end}'
-        }
+        headers = {"Range": f"bytes={range_start}-{range_end}"}
 
         print(f"   Requesting bytes {range_start}-{range_end}")
         range_response = requests.get(file_url, headers=headers, timeout=30)
 
         print(f"   Response status: {range_response.status_code}")
-        print(f"   Response headers:")
+        print("   Response headers:")
         for key, value in range_response.headers.items():
-            if key.lower() in ['content-length', 'content-range', 'accept-ranges']:
+            if key.lower() in ["content-length", "content-range", "accept-ranges"]:
                 print(f"      {key}: {value}")
 
         # Check if range request was honored
         if range_response.status_code == 206:
-            print("✅ SUCCESS: Server supports range requests (HTTP 206 Partial Content)")
-            content_range = range_response.headers.get('Content-Range')
+            print(
+                "✅ SUCCESS: Server supports range requests (HTTP 206 Partial Content)"
+            )
+            content_range = range_response.headers.get("Content-Range")
             if content_range:
                 print(f"   Content-Range: {content_range}")
             return True
@@ -128,10 +130,14 @@ def test_range_support(station_id: str):
 
             if received_size == file_size:
                 print("❌ Server does NOT support range requests")
-                print("   (Returned full file with status 200 instead of partial content)")
+                print(
+                    "   (Returned full file with status 200 instead of partial content)"
+                )
                 return False
             elif received_size == expected_size:
-                print("⚠️  Server sent partial content but with status 200 (non-standard)")
+                print(
+                    "⚠️  Server sent partial content but with status 200 (non-standard)"
+                )
                 print("   This might work but is not standard HTTP behavior")
                 return "partial"
             else:

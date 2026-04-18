@@ -60,8 +60,7 @@ def gather_comprehensive_health(
                 old_status = power.get("status")
                 power["status"] = "ok"
                 logger.debug(
-                    f"Mains-powered {station_id}: voltage status "
-                    f"{old_status} -> ok"
+                    f"Mains-powered {station_id}: voltage status {old_status} -> ok"
                 )
                 # Recalculate overall_status since we changed a metric
                 existing = []
@@ -80,13 +79,11 @@ def gather_comprehensive_health(
     # NTRIP / RTK checks
     if include_ntrip:
         try:
-            from ..monitoring.ntrip_client import check_ntrip_status
             from ..config.receivers_config import ReceiversConfig
+            from ..monitoring.ntrip_client import check_ntrip_status
 
             receivers_cfg = ReceiversConfig()
-            ntrip_status = check_ntrip_status(
-                station_id, receivers_cfg, station_config
-            )
+            ntrip_status = check_ntrip_status(station_id, receivers_cfg, station_config)
             if ntrip_status:
                 health["rtk"] = {
                     "status": ntrip_status.overall_status,
@@ -156,11 +153,18 @@ def gather_comprehensive_health(
 
                     # Recalculate overall_status when NTRIP importance
                     # can affect it (critical or normal).
-                    if importance in ("critical", "normal") and status_str != "connected":
+                    if (
+                        importance in ("critical", "normal")
+                        and status_str != "connected"
+                    ):
                         # Collect existing metric statuses and append the NTRIP one.
                         existing = []
                         for key, val in metrics.items():
-                            if isinstance(val, dict) and "status" in val and key != "ports":
+                            if (
+                                isinstance(val, dict)
+                                and "status" in val
+                                and key != "ports"
+                            ):
                                 s = val["status"]
                                 if s in ("ok", "warning", "critical"):
                                     existing.append(s)
@@ -171,7 +175,9 @@ def gather_comprehensive_health(
                         summary = health.get("status_summary", {})
                         summary["healthy"] = sum(1 for s in existing if s == "ok")
                         summary["warning"] = sum(1 for s in existing if s == "warning")
-                        summary["critical"] = sum(1 for s in existing if s == "critical")
+                        summary["critical"] = sum(
+                            1 for s in existing if s == "critical"
+                        )
                         health["status_summary"] = summary
 
         except Exception as e:
@@ -180,7 +186,10 @@ def gather_comprehensive_health(
     # File system checks
     if include_files:
         try:
-            from ..health.file_tracker import ArchiveFileChecker, ProcessingStatusChecker
+            from ..health.file_tracker import (
+                ArchiveFileChecker,
+                ProcessingStatusChecker,
+            )
 
             checker = ArchiveFileChecker()
             health["file_status"] = {}
@@ -201,16 +210,28 @@ def gather_comprehensive_health(
                 health["file_status"]["15s_24hr_rinex"] = stats
 
             stats = checker.check_file_status(station_id, "1Hz_1hr_rinex", days_back=1)
-            if stats and stats.get("dir_exists", False) and stats.get("files_found", 0) > 0:
+            if (
+                stats
+                and stats.get("dir_exists", False)
+                and stats.get("files_found", 0) > 0
+            ):
                 health["file_status"]["1Hz_1hr_rinex"] = stats
 
             # Check high-rate files if directory exists
             stats = checker.check_file_status(station_id, "20Hz_1hr", days_back=1)
-            if stats and stats.get("dir_exists", False) and stats.get("files_found", 0) > 0:
+            if (
+                stats
+                and stats.get("dir_exists", False)
+                and stats.get("files_found", 0) > 0
+            ):
                 health["file_status"]["20Hz_1hr"] = stats
 
             stats = checker.check_file_status(station_id, "50Hz_1hr", days_back=1)
-            if stats and stats.get("dir_exists", False) and stats.get("files_found", 0) > 0:
+            if (
+                stats
+                and stats.get("dir_exists", False)
+                and stats.get("files_found", 0) > 0
+            ):
                 health["file_status"]["50Hz_1hr"] = stats
 
             # Check archive status from file_tracking database

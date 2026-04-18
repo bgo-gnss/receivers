@@ -4,11 +4,11 @@ import socket
 import subprocess
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import Any, Dict, Union, Optional
+from typing import Any, Dict, Optional, Union
 
-from .config_manager import get_config_manager
 from ..config.receivers_config import get_receivers_config
 from ..health.connection_checker import ConnectionChecker, HealthStatus
+from .config_manager import get_config_manager
 
 
 class BaseReceiver(ABC):
@@ -59,7 +59,14 @@ class BaseReceiver(ABC):
             return True
         try:
             result = subprocess.run(
-                ["ping", "-c", str(self._ping_count), "-W", str(self._ping_timeout), host],
+                [
+                    "ping",
+                    "-c",
+                    str(self._ping_count),
+                    "-W",
+                    str(self._ping_timeout),
+                    host,
+                ],
                 capture_output=True,
                 timeout=self._ping_count * self._ping_timeout + 2,
             )
@@ -85,7 +92,7 @@ class BaseReceiver(ABC):
         """
         host = self.station_info.get("router", {}).get("ip")
         if not host or not port:
-            return True if not return_details else {'success': True}
+            return True if not return_details else {"success": True}
 
         import errno
 
@@ -94,52 +101,52 @@ class BaseReceiver(ABC):
             sock.settimeout(self._tcp_timeout)
             sock.connect((host, port))
             sock.close()
-            return True if not return_details else {'success': True}
+            return True if not return_details else {"success": True}
 
-        except socket.timeout:
+        except TimeoutError:
             # No response - host may be down or port filtered
             result = {
-                'success': False,
-                'error_type': 'timeout',
-                'message': f'Port {port} timeout (no response in {self._tcp_timeout}s)'
+                "success": False,
+                "error_type": "timeout",
+                "message": f"Port {port} timeout (no response in {self._tcp_timeout}s)",
             }
             return False if not return_details else result
 
         except ConnectionRefusedError:
             # Port closed but host is up - instant response
             result = {
-                'success': False,
-                'error_type': 'refused',
-                'message': f'Port {port} refused (service not running)'
+                "success": False,
+                "error_type": "refused",
+                "message": f"Port {port} refused (service not running)",
             }
             return False if not return_details else result
 
         except OSError as e:
             if e.errno == errno.EHOSTUNREACH:
                 result = {
-                    'success': False,
-                    'error_type': 'unreachable',
-                    'message': f'Host unreachable'
+                    "success": False,
+                    "error_type": "unreachable",
+                    "message": "Host unreachable",
                 }
             elif e.errno == errno.ENETUNREACH:
                 result = {
-                    'success': False,
-                    'error_type': 'unreachable',
-                    'message': f'Network unreachable'
+                    "success": False,
+                    "error_type": "unreachable",
+                    "message": "Network unreachable",
                 }
             else:
                 result = {
-                    'success': False,
-                    'error_type': 'error',
-                    'message': f'Connection error: {e}'
+                    "success": False,
+                    "error_type": "error",
+                    "message": f"Connection error: {e}",
                 }
             return False if not return_details else result
 
         except Exception as e:
             result = {
-                'success': False,
-                'error_type': 'error',
-                'message': f'Unexpected error: {e}'
+                "success": False,
+                "error_type": "error",
+                "message": f"Unexpected error: {e}",
             }
             return False if not return_details else result
 
@@ -292,13 +299,13 @@ class BaseReceiver(ABC):
             receiver_type = self.get_receiver_type().upper()
             if "POLARX" in receiver_type:
                 # PolaRX5: FTP and HTTP are critical, control is just warning
-                critical_ports = {'ftp', 'http'}
-            elif any(t in receiver_type for t in ['NETR', 'NETRS', 'NETR9', 'NETR5']):
+                critical_ports = {"ftp", "http"}
+            elif any(t in receiver_type for t in ["NETR", "NETRS", "NETR9", "NETR5"]):
                 # Trimble: HTTP is critical
-                critical_ports = {'http'}
+                critical_ports = {"http"}
             else:
                 # Default: all ports are critical
-                critical_ports = {'ftp', 'http', 'control'}
+                critical_ports = {"ftp", "http", "control"}
 
             for metric_name, metric_data in metrics.items():
                 if metric_name in non_health_metrics:
@@ -311,7 +318,8 @@ class BaseReceiver(ABC):
                                 port_status = _safe_health_status(port_data["status"])
                                 # Cap non-critical ports at WARNING
                                 if port_name not in critical_ports and port_status in (
-                                    HealthStatus.CRITICAL, HealthStatus.ERROR
+                                    HealthStatus.CRITICAL,
+                                    HealthStatus.ERROR,
                                 ):
                                     port_status = HealthStatus.WARNING
                                 statuses.append(port_status)
@@ -482,17 +490,25 @@ class BaseReceiver(ABC):
         # Create template with data_prepath and extension
         full_template = template.format(
             data_prepath=data_prepath,
-            station='{station}',
-            session='{session}',
+            station="{station}",
+            session="{session}",
             extension=extension,
-            session_letter='{session_letter}'
+            session_letter="{session_letter}",
         )
 
         # Use unified build_path method with "1D" frequency for archives
         archive_paths = self.build_path(dt, full_template, session, "1D")
         return archive_paths[0]
 
-    def build_path(self, dt_input, path_template: str, session: str, frequency: str = "1H", start_time=None, end_time=None) -> list:
+    def build_path(
+        self,
+        dt_input,
+        path_template: str,
+        session: str,
+        frequency: str = "1H",
+        start_time=None,
+        end_time=None,
+    ) -> list:
         """Unified path builder using gtimes datepathlist with comprehensive parameters.
 
         This method consolidates all path generation logic from receivers_config,
@@ -525,6 +541,7 @@ class BaseReceiver(ABC):
         if dt_input is None:
             # Generate datetime list manually (gtimes closed parameter doesn't work reliably)
             from datetime import timedelta
+
             dt_list = []
             current = start_time
 
@@ -555,20 +572,19 @@ class BaseReceiver(ABC):
             dt_list = [dt_input]
 
         # Substitute receiver-specific placeholders
-        if '{station}' in path_template or '{session_letter}' in path_template or '{session}' in path_template:
+        if (
+            "{station}" in path_template
+            or "{session_letter}" in path_template
+            or "{session}" in path_template
+        ):
             session_letter = self.get_session_letter(session)
             path_template = path_template.format(
-                station=self.station_id,
-                session=session,
-                session_letter=session_letter
+                station=self.station_id, session=session, session_letter=session_letter
             )
 
         # Use gtimes datepathlist for consistent datetime formatting
         return gt.datepathlist(
-            path_template,
-            frequency,
-            datelist=dt_list,
-            closed="both"
+            path_template, frequency, datelist=dt_list, closed="both"
         )
 
     @abstractmethod

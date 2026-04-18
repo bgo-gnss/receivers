@@ -14,7 +14,11 @@ from typing import List, Tuple
 
 from gtimes.timefunc import (
     generate_datetime_list as _gt_generate_datetime_list,
+)
+from gtimes.timefunc import (
     generate_period_ranges as _gt_generate_period_ranges,
+)
+from gtimes.timefunc import (
     generate_time_range as _gt_generate_time_range,
 )
 
@@ -81,4 +85,6 @@ def generate_period_ranges(
     Used by network-first download ordering: iterate over periods and process
     all stations for each period before moving on.
     """
-    return _gt_generate_period_ranges(start, end, _session_period(session_type), reverse=reverse)
+    return _gt_generate_period_ranges(
+        start, end, _session_period(session_type), reverse=reverse
+    )

@@ -15,9 +15,10 @@ import logging
 import re
 import socket
 import xml.etree.ElementTree as ET
-import requests
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+
+import requests
 
 from .metrics import MetricChecker
 
@@ -70,9 +71,11 @@ class G10HTTPExtractor:
 
         # Initialize centralized metric checker
         from .metrics import load_thresholds
+
         power_type = None
         try:
             from ..config_utils import get_station_config
+
             cfg = get_station_config(station_id)
             if cfg:
                 power_type = cfg.get("power_type") or None
@@ -194,9 +197,7 @@ class G10HTTPExtractor:
                 health_data["connection"]["http_port"]["accessible"] = True
                 health_data["connection"]["http_port"]["status"] = "ok"
                 # Fix stale statuses from initial connection test timeout
-                statuses = [
-                    "ok" if s == "critical" else s for s in statuses
-                ]
+                statuses = ["ok" if s == "critical" else s for s in statuses]
 
         # Mark unavailable metrics
         health_data["metrics"]["temperature"] = {"available": False}
@@ -269,9 +270,7 @@ class G10HTTPExtractor:
         try:
             response = session.get(url, timeout=self.timeout)
             if response.status_code == 200:
-                self.logger.debug(
-                    f"Fetched status block ({len(response.text)} bytes)"
-                )
+                self.logger.debug(f"Fetched status block ({len(response.text)} bytes)")
                 return response.text
             else:
                 self.logger.warning(
@@ -430,13 +429,27 @@ class G10HTTPExtractor:
             avail_prc_elem = sd_card.find("availSpPrc")
             total_elem = sd_card.find("totAvailSp")
 
-            state = state_elem.text.strip() if state_elem is not None and state_elem.text else "unknown"
-            free_percent = float(avail_prc_elem.text.strip()) if avail_prc_elem is not None and avail_prc_elem.text else None
+            state = (
+                state_elem.text.strip()
+                if state_elem is not None and state_elem.text
+                else "unknown"
+            )
+            free_percent = (
+                float(avail_prc_elem.text.strip())
+                if avail_prc_elem is not None and avail_prc_elem.text
+                else None
+            )
 
             # Parse total available space (e.g., "3.02 GB")
-            total_available_str = total_elem.text.strip() if total_elem is not None and total_elem.text else None
+            total_available_str = (
+                total_elem.text.strip()
+                if total_elem is not None and total_elem.text
+                else None
+            )
 
-            usage_percent = round(100.0 - free_percent, 1) if free_percent is not None else None
+            usage_percent = (
+                round(100.0 - free_percent, 1) if free_percent is not None else None
+            )
 
             # Determine status from usage percent
             status = "ok"
@@ -489,9 +502,21 @@ class G10HTTPExtractor:
             state_elem = streams.find("state")
             count_elem = streams.find("actDataStreams")
 
-            condition = condition_elem.text.strip() if condition_elem is not None and condition_elem.text else "unknown"
-            state = state_elem.text.strip() if state_elem is not None and state_elem.text else "unknown"
-            count = int(count_elem.text.strip()) if count_elem is not None and count_elem.text else 0
+            condition = (
+                condition_elem.text.strip()
+                if condition_elem is not None and condition_elem.text
+                else "unknown"
+            )
+            state = (
+                state_elem.text.strip()
+                if state_elem is not None and state_elem.text
+                else "unknown"
+            )
+            count = (
+                int(count_elem.text.strip())
+                if count_elem is not None and count_elem.text
+                else 0
+            )
 
             status = "ok" if condition == "ok" and state == "good" else "warning"
 
@@ -530,9 +555,21 @@ class G10HTTPExtractor:
             state_elem = logging_elem.find("state")
             count_elem = logging_elem.find("actLogSessions")
 
-            condition = condition_elem.text.strip() if condition_elem is not None and condition_elem.text else "unknown"
-            state = state_elem.text.strip() if state_elem is not None and state_elem.text else "unknown"
-            count = int(count_elem.text.strip()) if count_elem is not None and count_elem.text else 0
+            condition = (
+                condition_elem.text.strip()
+                if condition_elem is not None and condition_elem.text
+                else "unknown"
+            )
+            state = (
+                state_elem.text.strip()
+                if state_elem is not None and state_elem.text
+                else "unknown"
+            )
+            count = (
+                int(count_elem.text.strip())
+                if count_elem is not None and count_elem.text
+                else 0
+            )
 
             status = "ok" if condition == "ok" and state == "good" else "warning"
 
@@ -655,7 +692,9 @@ class G10HTTPExtractor:
                 "error": str(e),
             }
 
-    def _check_port_status(self, http_accessible: bool = False) -> Dict[str, Dict[str, Any]]:
+    def _check_port_status(
+        self, http_accessible: bool = False
+    ) -> Dict[str, Dict[str, Any]]:
         """Check HTTP and FTP port status.
 
         Args:

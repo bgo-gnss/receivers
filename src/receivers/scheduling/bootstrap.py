@@ -16,7 +16,7 @@ continues via the normal backfill scheduler for ``full_lookback_days``.
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,9 @@ def detect_cold_start(sessions: Optional[List[str]] = None) -> bool:
         logger.debug("psycopg2 not available — assuming cold start")
         return True
     except Exception as e:
-        logger.warning(f"Cannot check file_tracking for cold start: {e} — assuming cold start")
+        logger.warning(
+            f"Cannot check file_tracking for cold start: {e} — assuming cold start"
+        )
         return True
 
 
@@ -103,15 +105,15 @@ def schedule_bootstrap(
     """
     from .bulk_scheduler import _download_station_data_job
 
-    distribution_window = bootstrap_cfg.get('distribution_window', 10)
-    initial_lookback = bootstrap_cfg.get('initial_lookback_days', 3)
+    distribution_window = bootstrap_cfg.get("distribution_window", 10)
+    initial_lookback = bootstrap_cfg.get("initial_lookback_days", 3)
 
     # Determine eligible stations (active, not passive, not discontinued)
     eligible = []
     for station_id, config in sorted(stations.items()):
-        if config.get('station_status') in ('discontinued', 'inactive'):
+        if config.get("station_status") in ("discontinued", "inactive"):
             continue
-        if config.get('health_check') == 'passive':
+        if config.get("health_check") == "passive":
             continue
         if station_filter and station_id not in station_filter:
             continue
@@ -126,8 +128,8 @@ def schedule_bootstrap(
     wave_offset = 0
 
     # Session waves — use config list or all enabled sessions
-    configured_sessions = bootstrap_cfg.get('sessions')
-    session_order = configured_sessions or ['15s_24hr', '1Hz_1hr', 'status_1hr']
+    configured_sessions = bootstrap_cfg.get("sessions")
+    session_order = configured_sessions or ["15s_24hr", "1Hz_1hr", "status_1hr"]
 
     for session_type in session_order:
         if session_type not in session_configs:
@@ -154,11 +156,15 @@ def schedule_bootstrap(
 
             scheduler.add_job(
                 func=_download_station_data_job,
-                trigger='date',
+                trigger="date",
                 run_date=run_time,
                 args=[
-                    station_id, session_type, production_mode,
-                    initial_lookback, timeout, rinex,
+                    station_id,
+                    session_type,
+                    production_mode,
+                    initial_lookback,
+                    timeout,
+                    rinex,
                 ],
                 id=job_id,
                 replace_existing=True,

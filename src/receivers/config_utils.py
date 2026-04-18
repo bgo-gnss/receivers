@@ -8,14 +8,16 @@ All configuration data comes from the centralized gps_parser package.
 import logging
 import sys
 from datetime import datetime
-from typing import Dict, Any, Optional, List
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 # Import gtimes for path construction
 try:
     import gtimes.timefunc as gt
 except ImportError:
-    raise ImportError("gtimes package not found. Please install gtimes: pip install gtimes")
+    raise ImportError(
+        "gtimes package not found. Please install gtimes: pip install gtimes"
+    )
 
 # Import gps_parser with proper error handling
 try:
@@ -23,7 +25,7 @@ try:
 except ImportError:
     try:
         # Try with path adjustment for development
-        sys.path.append('../gps_parser/src')
+        sys.path.append("../gps_parser/src")
         import gps_parser
     except ImportError:
         raise ImportError(
@@ -59,21 +61,23 @@ def get_station_config(station_id: str) -> Optional[Dict[str, Any]]:
 
         # Get raw station information
         station_info = config_parser.getStationInfo(station_id)
-        if not station_info or 'station' not in station_info:
+        if not station_info or "station" not in station_info:
             logger.error(f"Station {station_id} not found in gps_parser configuration")
             return None
 
-        raw_config = station_info['station']
+        raw_config = station_info["station"]
 
         # Validate required fields (receiver_ftpport is optional - Trimble uses HTTP)
-        required_fields = ['router_ip', 'receiver_type']
+        required_fields = ["router_ip", "receiver_type"]
         missing_fields = [field for field in required_fields if field not in raw_config]
         if missing_fields:
-            logger.error(f"Station {station_id} missing required fields: {missing_fields}")
+            logger.error(
+                f"Station {station_id} missing required fields: {missing_fields}"
+            )
             return None
 
         # Get enhanced configuration data from gps_parser
-        router_ip = raw_config['router_ip']
+        router_ip = raw_config["router_ip"]
 
         # Get timeout configuration
         timeout_config = config_parser.getStationTimeout(station_id)
@@ -84,93 +88,91 @@ def get_station_config(station_id: str) -> Optional[Dict[str, Any]]:
         # Get system paths - USE RECEIVERS.CFG AS SINGLE SOURCE OF TRUTH
         # Import ReceiversConfig to read from receivers.cfg (not postprocess.cfg!)
         from .config.receivers_config import get_receivers_config
+
         receivers_config = get_receivers_config()
         data_prepath = receivers_config.get_prepath()  # From receivers.cfg
 
         # Tool paths still from gps_parser (postprocess.cfg) until migrated
-        bin2asc_path = config_parser.getSystemPath('bin2asc_path')
-        receiver_base_path = config_parser.getSystemPath('receiver_base_path')
+        bin2asc_path = config_parser.getSystemPath("bin2asc_path")
+        receiver_base_path = config_parser.getSystemPath("receiver_base_path")
 
         # Get default values
-        default_session = config_parser.getDefaultValue('default_session')
-        default_compression = config_parser.getDefaultValue('default_compression')
-        default_days_back = config_parser.getDefaultValue('default_days_back')
+        default_session = config_parser.getDefaultValue("default_session")
+        default_compression = config_parser.getDefaultValue("default_compression")
+        default_days_back = config_parser.getDefaultValue("default_days_back")
 
         # Create comprehensive configuration structure
         station_config = {
             # Basic station information
-            'station_id': station_id,
-            'station_name': raw_config.get('station_name', station_id),
-            'receiver_type': raw_config['receiver_type'],
-
+            "station_id": station_id,
+            "station_name": raw_config.get("station_name", station_id),
+            "receiver_type": raw_config["receiver_type"],
             # Network configuration
-            'router': {
-                'ip': router_ip,
-                'type': raw_config.get('router_type', ''),
-                'ftp_mode': ftp_mode
+            "router": {
+                "ip": router_ip,
+                "type": raw_config.get("router_type", ""),
+                "ftp_mode": ftp_mode,
             },
-
             # Receiver configuration
-            'receiver': {
-                'type': raw_config['receiver_type'],
-                'ftpport': raw_config.get('receiver_ftpport'),  # Optional, None if not configured
-                'httpport': raw_config.get('receiver_httpport', '8060'),
-                'controlport': raw_config.get('receiver_controlport', '28784'),
+            "receiver": {
+                "type": raw_config["receiver_type"],
+                "ftpport": raw_config.get(
+                    "receiver_ftpport"
+                ),  # Optional, None if not configured
+                "httpport": raw_config.get("receiver_httpport", "8060"),
+                "controlport": raw_config.get("receiver_controlport", "28784"),
                 # Authentication credentials (for HTTP Basic Auth, FTP login, etc.)
-                'user': raw_config.get('receiver_user', ''),
-                'pwd': raw_config.get('receiver_pwd', ''),
+                "user": raw_config.get("receiver_user", ""),
+                "pwd": raw_config.get("receiver_pwd", ""),
                 # Firmware bug handling
-                'firmware_underscore_pad': raw_config.get('receiver_firmware_underscore_pad', '').lower() in ['true', '1', 'yes'],
+                "firmware_underscore_pad": raw_config.get(
+                    "receiver_firmware_underscore_pad", ""
+                ).lower()
+                in ["true", "1", "yes"],
                 # Per-station path override (e.g., VARG uses %Y%m/%d since Jan 2026)
-                'remote_date_format': raw_config.get('receiver_remote_date_format', '')
+                "remote_date_format": raw_config.get("receiver_remote_date_format", ""),
             },
-
             # Connection and timing configuration
-            'connection': {
-                'type': raw_config.get('connection_type', ''),
-                'timeouts': timeout_config
+            "connection": {
+                "type": raw_config.get("connection_type", ""),
+                "timeouts": timeout_config,
             },
-
             # System paths
-            'paths': {
-                'data_prepath': data_prepath,
-                'bin2asc_path': bin2asc_path,
-                'receiver_base_path': receiver_base_path
+            "paths": {
+                "data_prepath": data_prepath,
+                "bin2asc_path": bin2asc_path,
+                "receiver_base_path": receiver_base_path,
             },
-
             # Default values
-            'defaults': {
-                'session': default_session,
-                'compression': default_compression,
-                'days_back': default_days_back
+            "defaults": {
+                "session": default_session,
+                "compression": default_compression,
+                "days_back": default_days_back,
             },
-
             # RINEX header metadata (from teqc configs)
-            'rinex': {
-                'marker_name': raw_config.get('rinex_marker_name', station_id),
-                'marker_number': raw_config.get('rinex_marker_number', station_id),
-                'observer': raw_config.get('rinex_observer', 'GNSS OPERATOR'),
-                'agency': raw_config.get('rinex_agency', 'IMO'),
-                'run_by': raw_config.get('rinex_run_by', ''),
-                'config_valid_from': raw_config.get('rinex_config_valid_from', ''),
+            "rinex": {
+                "marker_name": raw_config.get("rinex_marker_name", station_id),
+                "marker_number": raw_config.get("rinex_marker_number", station_id),
+                "observer": raw_config.get("rinex_observer", "GNSS OPERATOR"),
+                "agency": raw_config.get("rinex_agency", "IMO"),
+                "run_by": raw_config.get("rinex_run_by", ""),
+                "config_valid_from": raw_config.get("rinex_config_valid_from", ""),
             },
-
             # Antenna information (from teqc configs)
-            'antenna': {
-                'type': raw_config.get('antenna_type', ''),
-                'radome': raw_config.get('antenna_radome', 'NONE'),
-                'serial': raw_config.get('antenna_serial', ''),
-                'height': float(raw_config.get('antenna_height', 0) or 0),
-                'east': float(raw_config.get('antenna_east', 0) or 0),
-                'north': float(raw_config.get('antenna_north', 0) or 0),
+            "antenna": {
+                "type": raw_config.get("antenna_type", ""),
+                "radome": raw_config.get("antenna_radome", "NONE"),
+                "serial": raw_config.get("antenna_serial", ""),
+                "height": float(raw_config.get("antenna_height", 0) or 0),
+                "east": float(raw_config.get("antenna_east", 0) or 0),
+                "north": float(raw_config.get("antenna_north", 0) or 0),
             },
-
             # Station-level properties (unprefixed fields from stations.cfg)
-            'power_type': raw_config.get('power_type', 'battery'),
-            'ntrip_importance': raw_config.get('ntrip_importance'),
-            'station_status': raw_config.get('station_status'),
-            'health_check': raw_config.get('health_check'),
-            'station_owner': raw_config.get('station_owner'),
+            "power_type": raw_config.get("power_type", "battery"),
+            "ntrip_importance": raw_config.get("ntrip_importance"),
+            "station_status": raw_config.get("station_status"),
+            "health_check": raw_config.get("health_check"),
+            "station_owner": raw_config.get("station_owner"),
         }
 
         logger.debug(f"Successfully loaded configuration for {station_id}")
@@ -254,7 +256,7 @@ def build_data_paths(
     session_type: str,
     start_time: datetime,
     end_time: datetime,
-    compression: str = ".gz"
+    compression: str = ".gz",
 ) -> List[str]:
     """Build data file paths using gtimes for proper GPS time handling.
 
@@ -277,15 +279,15 @@ def build_data_paths(
             raise ValueError(f"No configuration found for station {station_id}")
 
         session_config = get_session_config(session_type)
-        data_prepath = station_config['paths']['data_prepath']
+        data_prepath = station_config["paths"]["data_prepath"]
 
         # Determine frequency based on session type
         frequency_map = {
-            '15s_24hr': '1D',    # Daily files
-            '1Hz_1hr': '1H',     # Hourly files
-            'status_1hr': '1H'   # Hourly status files
+            "15s_24hr": "1D",  # Daily files
+            "1Hz_1hr": "1H",  # Hourly files
+            "status_1hr": "1H",  # Hourly status files
         }
-        frequency = frequency_map.get(session_type, '1D')
+        frequency = frequency_map.get(session_type, "1D")
 
         # Build path format using gtimes-compatible format
         # Format: /data/YYYY/MMM/STATION/SESSION/raw/STATION_DDDF.YYT.gz
@@ -298,10 +300,12 @@ def build_data_paths(
             lfrequency=frequency,
             starttime=start_time,
             endtime=end_time,
-            closed="left"
+            closed="left",
         )
 
-        logger.debug(f"Generated {len(paths)} data paths for {station_id} session {session_type}")
+        logger.debug(
+            f"Generated {len(paths)} data paths for {station_id} session {session_type}"
+        )
         return paths
 
     except Exception as e:
@@ -310,10 +314,7 @@ def build_data_paths(
 
 
 def build_receiver_paths(
-    station_id: str,
-    session_type: str,
-    start_time: datetime,
-    end_time: datetime
+    station_id: str, session_type: str, start_time: datetime, end_time: datetime
 ) -> List[str]:
     """Build receiver-side file paths using gtimes and gps_parser configuration.
 
@@ -331,15 +332,11 @@ def build_receiver_paths(
     try:
         # Get session configuration
         session_config = get_session_config(session_type)
-        receiver_base_path = get_system_path('receiver_base_path')
+        receiver_base_path = get_system_path("receiver_base_path")
 
         # Determine frequency
-        frequency_map = {
-            '15s_24hr': '1D',
-            '1Hz_1hr': '1H',
-            'status_1hr': '1H'
-        }
-        frequency = frequency_map.get(session_type, '1D')
+        frequency_map = {"15s_24hr": "1D", "1Hz_1hr": "1H", "status_1hr": "1H"}
+        frequency = frequency_map.get(session_type, "1D")
 
         # Build receiver path format
         # Format: /DSK1/SSN/STATION_DDDF.YYT
@@ -351,7 +348,7 @@ def build_receiver_paths(
             lfrequency=frequency,
             starttime=start_time,
             endtime=end_time,
-            closed="left"
+            closed="left",
         )
 
         logger.debug(f"Generated {len(receiver_paths)} receiver paths for {station_id}")
@@ -367,7 +364,7 @@ def build_archive_paths(
     session_type: str,
     start_time: datetime,
     end_time: datetime,
-    compression: str = ".gz"
+    compression: str = ".gz",
 ) -> List[str]:
     """Build archive destination paths using gtimes and gps_parser configuration.
 
@@ -387,15 +384,11 @@ def build_archive_paths(
         # Get configuration
         station_config = get_station_config(station_id)
         session_config = get_session_config(session_type)
-        data_prepath = station_config['paths']['data_prepath']
+        data_prepath = station_config["paths"]["data_prepath"]
 
         # Determine frequency
-        frequency_map = {
-            '15s_24hr': '1D',
-            '1Hz_1hr': '1H',
-            'status_1hr': '1H'
-        }
-        frequency = frequency_map.get(session_type, '1D')
+        frequency_map = {"15s_24hr": "1D", "1Hz_1hr": "1H", "status_1hr": "1H"}
+        frequency = frequency_map.get(session_type, "1D")
 
         # Build archive path format
         # Format: /data/YYYY/MMM/STATION/SESSION/STATION_DDDF.YYT.gz
@@ -407,7 +400,7 @@ def build_archive_paths(
             lfrequency=frequency,
             starttime=start_time,
             endtime=end_time,
-            closed="left"
+            closed="left",
         )
 
         logger.debug(f"Generated {len(archive_paths)} archive paths for {station_id}")

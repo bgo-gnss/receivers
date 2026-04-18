@@ -4,13 +4,13 @@ Downloads data from GPS receivers as a scheduled task.
 Wraps the existing receiver download functionality with the ScheduledTask interface.
 """
 
-import time
 import logging
+import time
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
-from ..task_interface import ScheduledTask, TaskResult, TaskType, TaskConfig
 from ...utils.time_utils import calculate_download_time_range
+from ..task_interface import ScheduledTask, TaskConfig, TaskResult, TaskType
 
 
 class DownloadTask(ScheduledTask):
@@ -25,7 +25,7 @@ class DownloadTask(ScheduledTask):
         self,
         station_id: str,
         config: TaskConfig,
-        logger: Optional[logging.Logger] = None
+        logger: Optional[logging.Logger] = None,
     ):
         """Initialize download task.
 
@@ -57,12 +57,11 @@ class DownloadTask(ScheduledTask):
             Tuple of (start_time, end_time)
         """
         # Get lookback_periods from config (default to 1 if not specified)
-        lookback_periods = getattr(self.config, 'lookback_periods', 1)
+        lookback_periods = getattr(self.config, "lookback_periods", 1)
 
         # Use shared time utility - single source of truth for time calculation
         return calculate_download_time_range(
-            session_type=self.config.session_type,
-            lookback_periods=lookback_periods
+            session_type=self.config.session_type, lookback_periods=lookback_periods
         )
 
     def validate_prerequisites(self) -> Tuple[bool, Optional[str]]:
@@ -86,7 +85,7 @@ class DownloadTask(ScheduledTask):
                 return False, f"No configuration found for station {self.station_id}"
 
             # Check required fields
-            required_fields = ['receiver_type']
+            required_fields = ["receiver_type"]
             missing = [f for f in required_fields if f not in self._station_config]
             if missing:
                 return False, f"Missing required fields: {', '.join(missing)}"
@@ -111,12 +110,11 @@ class DownloadTask(ScheduledTask):
         from ...cli.main import create_receiver
 
         if not self._station_config:
-            raise ValueError("Station config not loaded - call validate_prerequisites first")
+            raise ValueError(
+                "Station config not loaded - call validate_prerequisites first"
+            )
 
-        self._receiver = create_receiver(
-            self.station_id,
-            self._station_config
-        )
+        self._receiver = create_receiver(self.station_id, self._station_config)
         return self._receiver
 
     def execute(self) -> TaskResult:
@@ -136,18 +134,20 @@ class DownloadTask(ScheduledTask):
 
         try:
             # Validate prerequisites
-            self.logger.info(f"Starting download: {self.station_id} ({self.config.session_type})")
+            self.logger.info(
+                f"Starting download: {self.station_id} ({self.config.session_type})"
+            )
 
             valid, error = self.validate_prerequisites()
             if not valid:
                 duration = time.time() - start_time_exec
                 return TaskResult(
                     success=False,
-                    status='validation_failed',
+                    status="validation_failed",
                     duration=duration,
                     message=f"Validation failed: {error}",
-                    data={'station_id': self.station_id},
-                    error=f"ValidationError: {error}"
+                    data={"station_id": self.station_id},
+                    error=f"ValidationError: {error}",
                 )
 
             # Create receiver
@@ -157,10 +157,10 @@ class DownloadTask(ScheduledTask):
             start_time, end_time = self.get_time_parameters()
 
             # Determine frequency based on session type
-            if self.config.session_type == '15s_24hr':
-                frequency = '1D'
+            if self.config.session_type == "15s_24hr":
+                frequency = "1D"
             else:
-                frequency = '1H'
+                frequency = "1H"
 
             # Execute download with all Phase 1 features
             result = receiver.download_data(
@@ -172,20 +172,20 @@ class DownloadTask(ScheduledTask):
                 archive=True,  # Always archive
                 immediate_archive=True,  # Use fault-tolerant immediate archiving
                 clean_tmp=True,
-                compression='.gz',
-                loglevel=logging.INFO
+                compression=".gz",
+                loglevel=logging.INFO,
             )
 
             # Calculate duration
             duration = time.time() - start_time_exec
 
             # Extract key metrics
-            files_downloaded = result.get('files_downloaded', 0)
-            bytes_downloaded = result.get('total_bytes', 0)
-            errors = result.get('errors', 0)
+            files_downloaded = result.get("files_downloaded", 0)
+            bytes_downloaded = result.get("total_bytes", 0)
+            errors = result.get("errors", 0)
 
             # Determine success
-            success = result.get('status') == 'completed' and errors == 0
+            success = result.get("status") == "completed" and errors == 0
 
             # Build result message
             if success:
@@ -193,42 +193,48 @@ class DownloadTask(ScheduledTask):
             else:
                 message = f"Download completed with {errors} errors"
 
-            self.logger.info(f"Completed: {self.station_id} ({self.config.session_type}) - {message}")
+            self.logger.info(
+                f"Completed: {self.station_id} ({self.config.session_type}) - {message}"
+            )
 
             return TaskResult(
                 success=success,
-                status=result.get('status', 'completed'),
+                status=result.get("status", "completed"),
                 duration=duration,
                 message=message,
                 data={
-                    'station_id': self.station_id,
-                    'session': self.config.session_type,
-                    'files_downloaded': files_downloaded,
-                    'bytes_downloaded': bytes_downloaded,
-                    'errors': errors,
-                    'start_time': start_time.isoformat(),
-                    'end_time': end_time.isoformat(),
+                    "station_id": self.station_id,
+                    "session": self.config.session_type,
+                    "files_downloaded": files_downloaded,
+                    "bytes_downloaded": bytes_downloaded,
+                    "errors": errors,
+                    "start_time": start_time.isoformat(),
+                    "end_time": end_time.isoformat(),
                 },
                 metrics={
-                    'connection_time': result.get('connection_time'),
-                    'download_speed': bytes_downloaded / duration if duration > 0 else 0,
-                }
+                    "connection_time": result.get("connection_time"),
+                    "download_speed": bytes_downloaded / duration
+                    if duration > 0
+                    else 0,
+                },
             )
 
         except Exception as e:
             duration = time.time() - start_time_exec
             error_msg = f"{type(e).__name__}: {str(e)}"
 
-            self.logger.error(f"Download failed: {self.station_id} ({self.config.session_type}) - {error_msg}")
+            self.logger.error(
+                f"Download failed: {self.station_id} ({self.config.session_type}) - {error_msg}"
+            )
 
             return TaskResult(
                 success=False,
-                status='error',
+                status="error",
                 duration=duration,
                 message=f"Download failed: {str(e)}",
                 data={
-                    'station_id': self.station_id,
-                    'session': self.config.session_type,
+                    "station_id": self.station_id,
+                    "session": self.config.session_type,
                 },
-                error=error_msg
+                error=error_msg,
             )

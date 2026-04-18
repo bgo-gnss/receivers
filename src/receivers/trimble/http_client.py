@@ -17,10 +17,10 @@ from urllib3.util.retry import Retry
 
 class TrimbleHTTPClient:
     """HTTP client for Trimble NetR9/NetRS receivers."""
-    
+
     def __init__(self, station_id: str, station_config: Dict[str, Any]):
         """Initialize HTTP client with station configuration.
-        
+
         Args:
             station_id: Station identifier
             station_config: Station configuration dictionary
@@ -29,22 +29,25 @@ class TrimbleHTTPClient:
 
         # Set up logging (matching PolaRX5 pattern)
         self.logger = self._get_logger()
-        
+
         # Extract connection details
         self.ip = station_config["router"]["ip"]
         self.http_port = station_config["receiver"].get("httpport", 8060)
-        self.timeout_category = station_config["receiver"].get("timeout_category", "mobile")
+        self.timeout_category = station_config["receiver"].get(
+            "timeout_category", "mobile"
+        )
 
         # Get NetR9-specific timeout settings if available
         from ..config.receivers_config import get_receivers_config
+
         receivers_config = get_receivers_config()
         netr9_config = receivers_config.get_receiver_config("netr9")
         self.connect_timeout = netr9_config.get("http_timeout_connect", 15)
         self.read_timeout = netr9_config.get("http_timeout_read", 120)
-        
+
         # Build base URL
         self.base_url = f"http://{self.ip}:{self.http_port}/"
-        
+
         # Authentication
         self.auth = None
         receiver_config = station_config.get("receiver", {})
@@ -52,152 +55,164 @@ class TrimbleHTTPClient:
         password = receiver_config.get("pwd")
         if username and password:
             self.auth = HTTPBasicAuth(username, password)
-        
+
         # Create session with retry strategy
         self.session = requests.Session()
         retry_strategy = Retry(
             total=3,
             status_forcelist=[429, 500, 502, 503, 504],
             allowed_methods=["HEAD", "GET", "OPTIONS"],  # Updated parameter name
-            backoff_factor=1
+            backoff_factor=1,
         )
         adapter = HTTPAdapter(max_retries=retry_strategy)
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
-        
+
         # Set timeout based on timeout category
         self.timeouts = {
             "fixed_wired": {"connect": 5, "read": 10},
             "mobile": {"connect": 10, "read": 30},
-            "very_remote": {"connect": 15, "read": 60}
+            "very_remote": {"connect": 15, "read": 60},
         }
         self.timeout = self.timeouts.get(self.timeout_category, self.timeouts["mobile"])
-    
-    def get_url(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Tuple[bool, Optional[str], Optional[str]]:
+
+    def get_url(
+        self, endpoint: str, params: Optional[Dict[str, Any]] = None
+    ) -> Tuple[bool, Optional[str], Optional[str]]:
         """Make HTTP GET request to receiver endpoint.
-        
+
         Args:
             endpoint: API endpoint path (e.g., '/status/voltage')
             params: Optional query parameters
-            
+
         Returns:
             Tuple of (success, response_text, error_message)
         """
-        url = urljoin(self.base_url, endpoint.lstrip('/'))
+        url = urljoin(self.base_url, endpoint.lstrip("/"))
         start_time = time.time()
-        
+
         try:
             self.logger.debug(f"HTTP GET {url}")
-            
+
             response = self.session.get(
                 url,
                 params=params,
                 auth=self.auth,
                 timeout=(self.connect_timeout, self.read_timeout),
-                stream=True  # Enable streaming for large downloads
+                stream=True,  # Enable streaming for large downloads
             )
-            
+
             duration = time.time() - start_time
-            self.logger.debug(f"HTTP response: {response.status_code} in {duration:.2f}s")
-            
+            self.logger.debug(
+                f"HTTP response: {response.status_code} in {duration:.2f}s"
+            )
+
             # Check for HTTP errors
             response.raise_for_status()
-            
+
             return True, response.text, None
-            
+
         except requests.exceptions.Timeout as e:
             duration = time.time() - start_time
             error_msg = f"HTTP timeout after {duration:.2f}s: {e}"
             self.logger.warning(error_msg)
             return False, None, error_msg
-            
+
         except requests.exceptions.ConnectionError as e:
             duration = time.time() - start_time
             error_msg = f"HTTP connection error after {duration:.2f}s: {e}"
             self.logger.warning(error_msg)
             return False, None, error_msg
-            
+
         except requests.exceptions.HTTPError as e:
             duration = time.time() - start_time
             error_msg = f"HTTP error {response.status_code} after {duration:.2f}s: {e}"
             self.logger.warning(error_msg)
             return False, None, error_msg
-            
+
         except Exception as e:
             duration = time.time() - start_time
             error_msg = f"Unexpected HTTP error after {duration:.2f}s: {e}"
             self.logger.error(error_msg)
             return False, None, error_msg
-    
-    def post_url(self, endpoint: str, data: Optional[Dict[str, Any]] = None, 
-                 json_data: Optional[Dict[str, Any]] = None) -> Tuple[bool, Optional[str], Optional[str]]:
+
+    def post_url(
+        self,
+        endpoint: str,
+        data: Optional[Dict[str, Any]] = None,
+        json_data: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[bool, Optional[str], Optional[str]]:
         """Make HTTP POST request to receiver endpoint.
-        
+
         Args:
             endpoint: API endpoint path
             data: Form data to send
             json_data: JSON data to send
-            
+
         Returns:
             Tuple of (success, response_text, error_message)
         """
-        url = urljoin(self.base_url, endpoint.lstrip('/'))
+        url = urljoin(self.base_url, endpoint.lstrip("/"))
         start_time = time.time()
-        
+
         try:
             self.logger.debug(f"HTTP POST {url}")
-            
+
             response = self.session.post(
                 url,
                 data=data,
                 json=json_data,
                 auth=self.auth,
-                timeout=(self.connect_timeout, self.read_timeout)
+                timeout=(self.connect_timeout, self.read_timeout),
             )
-            
+
             duration = time.time() - start_time
-            self.logger.debug(f"HTTP response: {response.status_code} in {duration:.2f}s")
-            
+            self.logger.debug(
+                f"HTTP response: {response.status_code} in {duration:.2f}s"
+            )
+
             # Check for HTTP errors
             response.raise_for_status()
-            
+
             return True, response.text, None
-            
+
         except requests.exceptions.RequestException as e:
             duration = time.time() - start_time
             error_msg = f"HTTP POST error after {duration:.2f}s: {e}"
             self.logger.warning(error_msg)
             return False, None, error_msg
-            
+
         except Exception as e:
             duration = time.time() - start_time
             error_msg = f"Unexpected HTTP POST error after {duration:.2f}s: {e}"
             self.logger.error(error_msg)
             return False, None, error_msg
-    
+
     def test_connection(self) -> Dict[str, Any]:
         """Test HTTP connection to receiver.
-        
+
         Returns:
             Dictionary with connection test results
         """
         start_time = time.time()
-        
+
         # Try to fetch a simple endpoint to test connectivity
         success, response, error = self.get_url("/")
-        
+
         duration = time.time() - start_time
-        
+
         return {
             "success": success,
             "duration": duration,
             "response_size": len(response) if response else 0,
             "error": error,
             "base_url": self.base_url,
-            "timeout_category": self.timeout_category
+            "timeout_category": self.timeout_category,
         }
-    
-    def download_file(self, endpoint: str, expected_size: Optional[int] = None) -> Tuple[bool, Any, Optional[str]]:
+
+    def download_file(
+        self, endpoint: str, expected_size: Optional[int] = None
+    ) -> Tuple[bool, Any, Optional[str]]:
         """Download a file with streaming and progress-aware timeouts.
 
         Args:
@@ -207,7 +222,7 @@ class TrimbleHTTPClient:
         Returns:
             Tuple of (success, response_object, error_message)
         """
-        url = urljoin(self.base_url, endpoint.lstrip('/'))
+        url = urljoin(self.base_url, endpoint.lstrip("/"))
         start_time = time.time()
 
         try:
@@ -215,21 +230,25 @@ class TrimbleHTTPClient:
 
             # Use longer timeout for file downloads
             connect_timeout = self.connect_timeout
-            read_timeout = max(self.read_timeout, 300)  # At least 5 minutes for large files
+            read_timeout = max(
+                self.read_timeout, 300
+            )  # At least 5 minutes for large files
 
             response = self.session.get(
                 url,
                 auth=self.auth,
                 timeout=(connect_timeout, read_timeout),
-                stream=True  # Always stream for file downloads
+                stream=True,  # Always stream for file downloads
             )
 
             # Check for HTTP errors
             response.raise_for_status()
 
             duration = time.time() - start_time
-            content_length = response.headers.get('content-length')
-            self.logger.debug(f"File download started, content-length: {content_length}, response time: {duration:.2f}s")
+            content_length = response.headers.get("content-length")
+            self.logger.debug(
+                f"File download started, content-length: {content_length}, response time: {duration:.2f}s"
+            )
 
             return True, response, None
 
@@ -259,13 +278,13 @@ class TrimbleHTTPClient:
 
     def close(self):
         """Close HTTP session."""
-        if hasattr(self, 'session'):
+        if hasattr(self, "session"):
             self.session.close()
-    
+
     def __enter__(self):
         """Context manager entry."""
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit."""
         self.close()

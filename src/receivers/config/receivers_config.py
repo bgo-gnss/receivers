@@ -11,9 +11,9 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-
 try:
     import gps_parser
+
     HAS_GPS_PARSER = True
 except ImportError:
     HAS_GPS_PARSER = False
@@ -169,26 +169,44 @@ class ReceiversConfig:
             for session_name, session_config in self.config.items("session_types"):
                 try:
                     # Parse CSV format: frequency,acquisition,description,file_frequency
-                    parts = session_config.split(',')
+                    parts = session_config.split(",")
                     if len(parts) >= 3:
                         session_data = {
                             "frequency": parts[0].strip(),
                             "acquisition": parts[1].strip(),
                             "description": parts[2].strip(),
-                            "file_frequency": parts[3].strip() if len(parts) > 3 else "24hr"
+                            "file_frequency": parts[3].strip()
+                            if len(parts) > 3
+                            else "24hr",
                         }
                         session_types[session_name] = session_data
                     else:
-                        self.logger.warning(f"Invalid session config format for {session_name}: {session_config}")
+                        self.logger.warning(
+                            f"Invalid session config format for {session_name}: {session_config}"
+                        )
                 except Exception as e:
-                    self.logger.warning(f"Could not parse session config for {session_name}: {e}")
+                    self.logger.warning(
+                        f"Could not parse session config for {session_name}: {e}"
+                    )
                     continue
         except configparser.NoSectionError:
             # Fallback session types
             session_types = {
-                "15s_24hr": {"frequency": "1D", "acquisition": "15s", "description": "Daily 15-second data"},
-                "1Hz_1hr": {"frequency": "1H", "acquisition": "1Hz", "description": "Hourly 1Hz data"},
-                "status_1hr": {"frequency": "1H", "acquisition": "status", "description": "Hourly status data"}
+                "15s_24hr": {
+                    "frequency": "1D",
+                    "acquisition": "15s",
+                    "description": "Daily 15-second data",
+                },
+                "1Hz_1hr": {
+                    "frequency": "1H",
+                    "acquisition": "1Hz",
+                    "description": "Hourly 1Hz data",
+                },
+                "status_1hr": {
+                    "frequency": "1H",
+                    "acquisition": "status",
+                    "description": "Hourly status data",
+                },
             }
             self.logger.warning("Using fallback session types")
 
@@ -228,11 +246,20 @@ class ReceiversConfig:
                     # Keep as string if not parseable
                     receiver_config[key] = value
         except configparser.NoSectionError:
-            self.logger.debug(f"No specific configuration found for receiver type: {receiver_type}")
+            self.logger.debug(
+                f"No specific configuration found for receiver type: {receiver_type}"
+            )
 
         return receiver_config
 
-    def build_archive_path(self, station_id: str, session: str, dt, extension: str, session_letter: str = "a") -> str:
+    def build_archive_path(
+        self,
+        station_id: str,
+        session: str,
+        dt,
+        extension: str,
+        session_letter: str = "a",
+    ) -> str:
         """Build archive path for a specific file.
 
         DEPRECATED: Use BaseReceiver.build_path() instead for unified path building.
@@ -261,7 +288,7 @@ class ReceiversConfig:
                 station=station_id,
                 session=session,
                 extension=extension,
-                session_letter=session_letter
+                session_letter=session_letter,
             )
 
             # Use gtimes to handle the datetime formatting
@@ -269,20 +296,22 @@ class ReceiversConfig:
                 filled_template,
                 "1D",  # We're building for single datetime
                 datelist=[dt],
-                closed="both"
+                closed="both",
             )
 
             return archive_paths[0]
 
         except ImportError:
             # Fallback without gtimes
-            self.logger.warning("gtimes not available - using simple datetime formatting")
+            self.logger.warning(
+                "gtimes not available - using simple datetime formatting"
+            )
             filled_template = template.format(
                 data_prepath=data_prepath,
                 station=station_id,
                 session=session,
                 extension=extension,
-                session_letter=session_letter
+                session_letter=session_letter,
             )
             # Simple datetime substitution
             return dt.strftime(filled_template)
@@ -299,7 +328,9 @@ class ReceiversConfig:
         session_types = self.get_session_types()
         return session in session_types
 
-    def is_session_supported_by_receiver(self, receiver_type: str, session: str) -> bool:
+    def is_session_supported_by_receiver(
+        self, receiver_type: str, session: str
+    ) -> bool:
         """Check if a session type is supported by a specific receiver type.
 
         Args:
@@ -328,7 +359,7 @@ class ReceiversConfig:
         for key in receiver_config:
             if key.startswith("session_map_"):
                 # Extract session name from key (e.g., "session_map_15s_24hr" -> "15s_24hr")
-                session_name = key[len("session_map_"):]
+                session_name = key[len("session_map_") :]
                 sessions.append(session_name)
         return sessions
 
@@ -365,7 +396,9 @@ class ReceiversConfig:
             naming = self.config.get("rinex", "default_naming")
             if naming.lower() in ("short", "long"):
                 return naming.lower()
-            self.logger.warning(f"Invalid rinex default_naming '{naming}', using 'short'")
+            self.logger.warning(
+                f"Invalid rinex default_naming '{naming}', using 'short'"
+            )
             return "short"
         except (configparser.NoSectionError, configparser.NoOptionError):
             return "short"  # Default to short naming
@@ -450,14 +483,16 @@ class ReceiversConfig:
                         )
                         continue
 
-                    locations.append({
-                        "location_id": location_id,
-                        "base_path": base_path,
-                        "location_type": location_type,
-                        "name": name,
-                        "is_primary": is_primary,
-                        "enabled": True,
-                    })
+                    locations.append(
+                        {
+                            "location_id": location_id,
+                            "base_path": base_path,
+                            "location_type": location_type,
+                            "name": name,
+                            "is_primary": is_primary,
+                            "enabled": True,
+                        }
+                    )
 
                 except Exception as e:
                     self.logger.warning(
@@ -468,14 +503,16 @@ class ReceiversConfig:
             # No [storage_locations] section — provide a sensible default
             # based on data_prepath
             data_prepath = self.get_data_prepath()
-            locations.append({
-                "location_id": "local_archive",
-                "base_path": data_prepath,
-                "location_type": "local",
-                "name": "Local archive",
-                "is_primary": True,
-                "enabled": True,
-            })
+            locations.append(
+                {
+                    "location_id": "local_archive",
+                    "base_path": data_prepath,
+                    "location_type": "local",
+                    "name": "Local archive",
+                    "is_primary": True,
+                    "enabled": True,
+                }
+            )
 
         return locations
 
@@ -513,7 +550,9 @@ def seed_storage_locations(connection_string: Optional[str] = None) -> int:
             connection_string=connection_string,
         )
     except Exception as e:
-        config_logger.debug(f"Cannot connect to database for storage location seeding: {e}")
+        config_logger.debug(
+            f"Cannot connect to database for storage location seeding: {e}"
+        )
         return 0
 
     inserted = 0

@@ -16,6 +16,7 @@ import pytest
 
 # ---- ReceiverSetup SBF block parsing ----
 
+
 class TestReceiverSetupParsing:
     """Test _query_receiver_setup() SBF block 4027 parsing."""
 
@@ -42,13 +43,13 @@ class TestReceiverSetupParsing:
         wnc = struct.pack("<H", 0)  # WNc placeholder
 
         fields = (
-            _pad(marker_name, 60)     # 14-73
+            _pad(marker_name, 60)  # 14-73
             + _pad(marker_number, 20)  # 74-93
-            + _pad(observer, 20)       # 94-113
-            + _pad(agency, 40)         # 114-153
+            + _pad(observer, 20)  # 94-113
+            + _pad(agency, 40)  # 114-153
             + _pad(serial_number, 20)  # 154-173
-            + _pad(rx_name, 20)        # 174-193
-            + _pad(rx_version, 20)     # 194-213
+            + _pad(rx_name, 20)  # 174-193
+            + _pad(rx_version, 20)  # 194-213
         )
 
         payload = tow + wnc + fields
@@ -111,9 +112,7 @@ class TestReceiverSetupParsing:
         from receivers.health.polarx5_tcp_extractor import PolaRX5TCPExtractor
 
         extractor = PolaRX5TCPExtractor("10.0.0.1", "TEST")
-        sbf_data = self._build_sbf_block(
-            serial_number="", rx_name="", rx_version=""
-        )
+        sbf_data = self._build_sbf_block(serial_number="", rx_name="", rx_version="")
         extractor._send_sbf_request = MagicMock(return_value=sbf_data)
 
         result = extractor._query_receiver_setup()
@@ -150,6 +149,7 @@ class TestReceiverSetupParsing:
 
 
 # ---- Fingerprint matching ----
+
 
 class TestReceiverFingerprint:
     """Test fingerprint matching and mismatch detection."""
@@ -231,6 +231,7 @@ class TestReceiverFingerprint:
 
 # ---- Trimble firmware extraction ----
 
+
 class TestTrimbleFirmware:
     """Test firmware version extraction from Trimble receivers."""
 
@@ -272,19 +273,21 @@ class TestTrimbleFirmware:
 
         # Build a minimal health_data manually to test the identity wiring
         # Mock all fetch methods to return test data
-        extractor._test_connection = MagicMock(return_value={
-            "status": "ok", "port": 8060, "accessible": True
-        })
+        extractor._test_connection = MagicMock(
+            return_value={"status": "ok", "port": 8060, "accessible": True}
+        )
         extractor._check_port_status = MagicMock(return_value={})
         extractor._fetch_merge_xml = MagicMock(return_value=None)
         extractor._fetch_and_parse_voltages = MagicMock(return_value=None)
         extractor._fetch_and_parse_temperature = MagicMock(return_value=None)
         extractor._fetch_and_parse_tracking = MagicMock(return_value=None)
         extractor._fetch_and_parse_position = MagicMock(return_value=None)
-        extractor._fetch_system_info = MagicMock(return_value={
-            "serial_number": "12345",
-            "firmware_version": "5.45",
-        })
+        extractor._fetch_system_info = MagicMock(
+            return_value={
+                "serial_number": "12345",
+                "firmware_version": "5.45",
+            }
+        )
 
         health_data = extractor.extract_health_data()
 
@@ -295,6 +298,7 @@ class TestTrimbleFirmware:
 
 
 # ---- FTP banner text ----
+
 
 class TestFTPBannerCapture:
     """Test FTP banner text storage in connection checker."""
@@ -314,7 +318,10 @@ class TestFTPBannerCapture:
 
             assert result.accessible is True
             assert result.details["ftp_banner"] is True
-            assert result.details["banner_text"] == "220 Septentrio PolaRx5 FTP server ready"
+            assert (
+                result.details["banner_text"]
+                == "220 Septentrio PolaRx5 FTP server ready"
+            )
 
     def test_ftp_no_banner(self):
         """Test FTP connection with no banner."""
@@ -336,12 +343,14 @@ class TestFTPBannerCapture:
 
 # ---- Port status detail reporting ----
 
+
 class TestPortStatusDetail:
     """Test that port status uses proper HealthStatus values with details."""
 
     def test_refused_port_is_warning(self):
         """Test that a refused port reports status=warning, detail=refused."""
         import errno
+
         from receivers.health.polarx5_tcp_extractor import PolaRX5TCPExtractor
 
         extractor = PolaRX5TCPExtractor("10.0.0.1", "TEST")
@@ -380,6 +389,7 @@ class TestPortStatusDetail:
     def test_timeout_port_is_critical(self):
         """Test that a timed-out port reports status=critical."""
         import errno
+
         from receivers.health.polarx5_tcp_extractor import PolaRX5TCPExtractor
 
         extractor = PolaRX5TCPExtractor("10.0.0.1", "TEST")
@@ -398,13 +408,14 @@ class TestPortStatusDetail:
 
 # ---- Overall status with unknown statuses ----
 
+
 class TestOverallStatusUnknown:
     """Test that overall status ignores unknowns when real data exists."""
 
     def test_ok_plus_unknown_is_healthy(self):
         """Test that OK + UNKNOWN statuses produce healthy, not unknown."""
-        from receivers.health.connection_checker import HealthStatus
         from receivers.base.receiver import BaseReceiver
+        from receivers.health.connection_checker import HealthStatus
 
         # Can't instantiate BaseReceiver directly, but we can test the logic
         # by checking the code path. Instead test via a mock.
@@ -447,6 +458,7 @@ class TestOverallStatusUnknown:
 
 
 # ---- Status formatter identity display ----
+
 
 class TestStatusFormatterIdentity:
     """Test that status formatter shows receiver identity."""
@@ -506,9 +518,24 @@ class TestStatusFormatterIdentity:
             "overall_status": "warning",
             "metrics": {
                 "ports": {
-                    "ftp": {"port": 2160, "open": True, "status": "ok", "detail": "open"},
-                    "http": {"port": 8060, "open": True, "status": "ok", "detail": "open"},
-                    "control": {"port": 28784, "open": False, "status": "warning", "detail": "refused"},
+                    "ftp": {
+                        "port": 2160,
+                        "open": True,
+                        "status": "ok",
+                        "detail": "open",
+                    },
+                    "http": {
+                        "port": 8060,
+                        "open": True,
+                        "status": "ok",
+                        "detail": "open",
+                    },
+                    "control": {
+                        "port": 28784,
+                        "open": False,
+                        "status": "warning",
+                        "detail": "refused",
+                    },
                 },
             },
         }

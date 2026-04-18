@@ -78,10 +78,9 @@ class HealthTask(ScheduledTask):
         """
         from ...utils.time_utils import calculate_download_time_range
 
-        lookback_periods = getattr(self.config, 'lookback_periods', 1)
+        lookback_periods = getattr(self.config, "lookback_periods", 1)
         return calculate_download_time_range(
-            session_type=self.config.session_type,
-            lookback_periods=lookback_periods
+            session_type=self.config.session_type, lookback_periods=lookback_periods
         )
 
     def validate_prerequisites(self) -> Tuple[bool, Optional[str]]:
@@ -130,9 +129,9 @@ class HealthTask(ScheduledTask):
             if not valid:
                 return self._create_failure_result(
                     start_time,
-                    'validation_failed',
+                    "validation_failed",
                     f"Validation failed: {error}",
-                    f"ValidationError: {error}"
+                    f"ValidationError: {error}",
                 )
 
             # Find input files if not provided
@@ -142,10 +141,10 @@ class HealthTask(ScheduledTask):
             if not self.input_files:
                 return TaskResult(
                     success=True,
-                    status='no_files',
+                    status="no_files",
                     duration=time.time() - start_time,
                     message="No status files found to process",
-                    data={'station_id': self.station_id, 'files_processed': 0},
+                    data={"station_id": self.station_id, "files_processed": 0},
                 )
 
             # Process files and extract health data
@@ -170,30 +169,31 @@ class HealthTask(ScheduledTask):
 
             return TaskResult(
                 success=True,
-                status='completed',
+                status="completed",
                 duration=duration,
                 message=f"Extracted {samples_written} samples from {files_processed} files",
                 data={
-                    'station_id': self.station_id,
-                    'files_processed': files_processed,
-                    'samples_written': samples_written,
-                    'input_files': self.input_files,
+                    "station_id": self.station_id,
+                    "files_processed": files_processed,
+                    "samples_written": samples_written,
+                    "input_files": self.input_files,
                 },
                 metrics={
-                    'extraction_rate': samples_written / duration if duration > 0 else 0,
-                }
+                    "extraction_rate": samples_written / duration
+                    if duration > 0
+                    else 0,
+                },
             )
 
         except Exception as e:
             duration = time.time() - start_time
             error_msg = f"{type(e).__name__}: {str(e)}"
-            self.logger.error(f"Health extraction failed: {self.station_id} - {error_msg}")
+            self.logger.error(
+                f"Health extraction failed: {self.station_id} - {error_msg}"
+            )
 
             return self._create_failure_result(
-                start_time,
-                'error',
-                f"Health extraction failed: {str(e)}",
-                error_msg
+                start_time, "error", f"Health extraction failed: {str(e)}", error_msg
             )
 
     def _find_status_files(self) -> List[str]:
@@ -206,11 +206,13 @@ class HealthTask(ScheduledTask):
             start_time, _ = self.get_time_parameters()
 
             # Try to find archive directory using gps_parser paths
-            archive_base = Path.home() / '.cache' / 'gps_receivers' / 'archive'
-            station_dir = archive_base / self.station_id / 'status_1hr'
+            archive_base = Path.home() / ".cache" / "gps_receivers" / "archive"
+            station_dir = archive_base / self.station_id / "status_1hr"
 
             # Try date-based subdirectory
-            date_dir = station_dir / start_time.strftime('%Y') / start_time.strftime('%j')
+            date_dir = (
+                station_dir / start_time.strftime("%Y") / start_time.strftime("%j")
+            )
 
             search_dirs = [date_dir, station_dir]
             for search_dir in search_dirs:
@@ -219,7 +221,7 @@ class HealthTask(ScheduledTask):
 
                 # Find .sbf or .sbf.gz files
                 files = []
-                for pattern in ['*.sbf', '*.sbf.gz']:
+                for pattern in ["*.sbf", "*.sbf.gz"]:
                     files.extend(search_dir.glob(pattern))
 
                 if files:
@@ -245,11 +247,11 @@ class HealthTask(ScheduledTask):
             self.logger.warning("Station config not loaded")
             return []
 
-        receiver_type = self._station_config.get('receiver_type', 'PolaRX5')
+        receiver_type = self._station_config.get("receiver_type", "PolaRX5")
         if isinstance(receiver_type, str):
             receiver_type = receiver_type.lower()
 
-        if receiver_type == 'polarx5':
+        if receiver_type == "polarx5":
             return self._extract_from_sbf(file_path)
         else:
             # For other receiver types, use generic extraction
@@ -315,6 +317,6 @@ class HealthTask(ScheduledTask):
             status=status,
             duration=time.time() - start_time,
             message=message,
-            data={'station_id': self.station_id},
+            data={"station_id": self.station_id},
             error=error,
         )

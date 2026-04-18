@@ -5,17 +5,18 @@ parameter resolution from config, and summary calculation.
 """
 
 import math
-import pytest
 from datetime import datetime
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import MagicMock, Mock, patch
+
+import pytest
 
 from receivers.cli.parallel import (
-    _split_into_groups,
-    _get_session_defaults,
-    _download_one_station,
-    download_parallel,
-    StationResult,
     ParallelSummary,
+    StationResult,
+    _download_one_station,
+    _get_session_defaults,
+    _split_into_groups,
+    download_parallel,
 )
 
 
@@ -191,8 +192,13 @@ class TestDownloadOneStation:
         args.session = "15s_24hr"
 
         result = _download_one_station(
-            "ELDC", args, datetime(2026, 2, 10), datetime(2026, 2, 11),
-            "1D", "15s", False,
+            "ELDC",
+            args,
+            datetime(2026, 2, 10),
+            datetime(2026, 2, 11),
+            "1D",
+            "15s",
+            False,
         )
 
         assert result.status == "completed"
@@ -213,8 +219,13 @@ class TestDownloadOneStation:
         args.session = "15s_24hr"
 
         result = _download_one_station(
-            "ELDC", args, datetime(2026, 2, 10), datetime(2026, 2, 11),
-            "1D", "15s", False,
+            "ELDC",
+            args,
+            datetime(2026, 2, 10),
+            datetime(2026, 2, 11),
+            "1D",
+            "15s",
+            False,
         )
 
         assert result.status == "up_to_date"
@@ -229,8 +240,13 @@ class TestDownloadOneStation:
         args.session = "15s_24hr"
 
         result = _download_one_station(
-            "FAKE", args, datetime(2026, 2, 10), datetime(2026, 2, 11),
-            "1D", "15s", False,
+            "FAKE",
+            args,
+            datetime(2026, 2, 10),
+            datetime(2026, 2, 11),
+            "1D",
+            "15s",
+            False,
         )
 
         assert result.status == "unreachable"
@@ -244,8 +260,13 @@ class TestDownloadOneStation:
         args.session = "15s_24hr"
 
         result = _download_one_station(
-            "FAKE", args, datetime(2026, 2, 10), datetime(2026, 2, 11),
-            "1D", "15s", False,
+            "FAKE",
+            args,
+            datetime(2026, 2, 10),
+            datetime(2026, 2, 11),
+            "1D",
+            "15s",
+            False,
         )
 
         assert result.status == "skipped"
@@ -263,8 +284,13 @@ class TestDownloadOneStation:
         args.session = "15s_24hr"
 
         result = _download_one_station(
-            "ELDC", args, datetime(2026, 2, 10), datetime(2026, 2, 11),
-            "1D", "15s", False,
+            "ELDC",
+            args,
+            datetime(2026, 2, 10),
+            datetime(2026, 2, 11),
+            "1D",
+            "15s",
+            False,
         )
 
         assert result.status == "failed"
@@ -284,8 +310,13 @@ class TestDownloadOneStation:
         args.session = "15s_24hr"
 
         result = _download_one_station(
-            "ELDC", args, datetime(2026, 2, 10), datetime(2026, 2, 11),
-            "1D", "15s", False,
+            "ELDC",
+            args,
+            datetime(2026, 2, 10),
+            datetime(2026, 2, 11),
+            "1D",
+            "15s",
+            False,
         )
 
         assert result.status == "failed"
@@ -304,8 +335,13 @@ class TestDownloadOneStation:
         args.session = "15s_24hr"
 
         result = _download_one_station(
-            "eldc", args, datetime(2026, 2, 10), datetime(2026, 2, 11),
-            "1D", "15s", False,
+            "eldc",
+            args,
+            datetime(2026, 2, 10),
+            datetime(2026, 2, 11),
+            "1D",
+            "15s",
+            False,
         )
 
         assert result.station_id == "ELDC"
@@ -323,8 +359,14 @@ class TestDownloadOneStation:
         args.session = "15s_24hr"
 
         result = _download_one_station(
-            "ELDC", args, datetime(2026, 2, 10), datetime(2026, 2, 11),
-            "1D", "15s", False, attempt=2,
+            "ELDC",
+            args,
+            datetime(2026, 2, 10),
+            datetime(2026, 2, 11),
+            "1D",
+            "15s",
+            False,
+            attempt=2,
         )
 
         assert result.attempt == 2
@@ -360,9 +402,13 @@ class TestDownloadParallel:
         def mock_fn(sid, *_rest, **_kw):
             attempt = _rest[-2] if len(_rest) >= 2 else 1
             return StationResult(
-                station_id=sid.upper(), status="completed",
-                files_downloaded=3, duration=5.0, attempt=attempt,
+                station_id=sid.upper(),
+                status="completed",
+                files_downloaded=3,
+                duration=5.0,
+                attempt=attempt,
             )
+
         mock_worker.side_effect = mock_fn
 
         args = self._make_args()
@@ -370,10 +416,12 @@ class TestDownloadParallel:
 
         summary = download_parallel(
             stations=["ELDC", "THOB", "ISFS"],
-            args=args, logger=logger,
+            args=args,
+            logger=logger,
             start_time=datetime(2026, 2, 10),
             end_time=datetime(2026, 2, 11),
-            ffrequency="1D", afrequency="15s",
+            ffrequency="1D",
+            afrequency="15s",
             reverse_chronological=False,
         )
 
@@ -395,14 +443,20 @@ class TestDownloadParallel:
             sid = sid.upper()
             if sid == "THOB" and attempt == 1:
                 return StationResult(
-                    station_id=sid, status="unreachable",
-                    duration=1.0, attempt=attempt,
+                    station_id=sid,
+                    status="unreachable",
+                    duration=1.0,
+                    attempt=attempt,
                     error_message="Ping check failed",
                 )
             return StationResult(
-                station_id=sid, status="completed",
-                files_downloaded=2, duration=5.0, attempt=attempt,
+                station_id=sid,
+                status="completed",
+                files_downloaded=2,
+                duration=5.0,
+                attempt=attempt,
             )
+
         mock_worker.side_effect = mock_fn
 
         args = self._make_args()
@@ -410,10 +464,12 @@ class TestDownloadParallel:
 
         summary = download_parallel(
             stations=["ELDC", "THOB"],
-            args=args, logger=logger,
+            args=args,
+            logger=logger,
             start_time=datetime(2026, 2, 10),
             end_time=datetime(2026, 2, 11),
-            ffrequency="1D", afrequency="15s",
+            ffrequency="1D",
+            afrequency="15s",
             reverse_chronological=False,
         )
 
@@ -434,14 +490,20 @@ class TestDownloadParallel:
             sid = sid.upper()
             if sid == "THOB" and attempt == 1:
                 return StationResult(
-                    station_id=sid, status="failed",
-                    duration=1.0, attempt=attempt,
+                    station_id=sid,
+                    status="failed",
+                    duration=1.0,
+                    attempt=attempt,
                     error_message="FTP timeout",
                 )
             return StationResult(
-                station_id=sid, status="completed",
-                files_downloaded=2, duration=5.0, attempt=attempt,
+                station_id=sid,
+                status="completed",
+                files_downloaded=2,
+                duration=5.0,
+                attempt=attempt,
             )
+
         mock_worker.side_effect = mock_fn
 
         args = self._make_args()
@@ -449,10 +511,12 @@ class TestDownloadParallel:
 
         summary = download_parallel(
             stations=["ELDC", "THOB"],
-            args=args, logger=logger,
+            args=args,
+            logger=logger,
             start_time=datetime(2026, 2, 10),
             end_time=datetime(2026, 2, 11),
-            ffrequency="1D", afrequency="15s",
+            ffrequency="1D",
+            afrequency="15s",
             reverse_chronological=False,
         )
 
@@ -473,14 +537,20 @@ class TestDownloadParallel:
             sid = sid.upper()
             if sid == "GRVM":
                 return StationResult(
-                    station_id=sid, status="unreachable",
-                    duration=1.0, attempt=attempt,
+                    station_id=sid,
+                    status="unreachable",
+                    duration=1.0,
+                    attempt=attempt,
                     error_message="Ping check failed",
                 )
             return StationResult(
-                station_id=sid, status="completed",
-                files_downloaded=2, duration=5.0, attempt=attempt,
+                station_id=sid,
+                status="completed",
+                files_downloaded=2,
+                duration=5.0,
+                attempt=attempt,
             )
+
         mock_worker.side_effect = mock_fn
 
         args = self._make_args()
@@ -488,10 +558,12 @@ class TestDownloadParallel:
 
         summary = download_parallel(
             stations=["ELDC", "GRVM"],
-            args=args, logger=logger,
+            args=args,
+            logger=logger,
             start_time=datetime(2026, 2, 10),
             end_time=datetime(2026, 2, 11),
-            ffrequency="1D", afrequency="15s",
+            ffrequency="1D",
+            afrequency="15s",
             reverse_chronological=False,
         )
 
@@ -511,14 +583,20 @@ class TestDownloadParallel:
             sid = sid.upper()
             if sid == "VOGC" and attempt < 3:
                 return StationResult(
-                    station_id=sid, status="failed",
-                    duration=1.0, attempt=attempt,
+                    station_id=sid,
+                    status="failed",
+                    duration=1.0,
+                    attempt=attempt,
                     error_message="Could not reconnect to FTP server",
                 )
             return StationResult(
-                station_id=sid, status="completed",
-                files_downloaded=2, duration=5.0, attempt=attempt,
+                station_id=sid,
+                status="completed",
+                files_downloaded=2,
+                duration=5.0,
+                attempt=attempt,
             )
+
         mock_worker.side_effect = mock_fn
 
         args = self._make_args(max_retries=3)
@@ -526,10 +604,12 @@ class TestDownloadParallel:
 
         summary = download_parallel(
             stations=["ELDC", "VOGC"],
-            args=args, logger=logger,
+            args=args,
+            logger=logger,
             start_time=datetime(2026, 2, 10),
             end_time=datetime(2026, 2, 11),
-            ffrequency="1D", afrequency="15s",
+            ffrequency="1D",
+            afrequency="15s",
             reverse_chronological=False,
         )
 
@@ -549,20 +629,28 @@ class TestDownloadParallel:
             sid = sid.upper()
             if sid == "HVEH":
                 return StationResult(
-                    station_id=sid, status="failed",
-                    duration=2400.0, attempt=attempt,
+                    station_id=sid,
+                    status="failed",
+                    duration=2400.0,
+                    attempt=attempt,
                     error_message="Station download timed out after 2400s (zombie connection)",
                 )
             if sid == "VOGC" and attempt == 1:
                 return StationResult(
-                    station_id=sid, status="failed",
-                    duration=1.0, attempt=attempt,
+                    station_id=sid,
+                    status="failed",
+                    duration=1.0,
+                    attempt=attempt,
                     error_message="FTP timeout",
                 )
             return StationResult(
-                station_id=sid, status="completed",
-                files_downloaded=2, duration=5.0, attempt=attempt,
+                station_id=sid,
+                status="completed",
+                files_downloaded=2,
+                duration=5.0,
+                attempt=attempt,
             )
+
         mock_worker.side_effect = mock_fn
 
         args = self._make_args(max_retries=3)
@@ -570,10 +658,12 @@ class TestDownloadParallel:
 
         summary = download_parallel(
             stations=["ELDC", "HVEH", "VOGC"],
-            args=args, logger=logger,
+            args=args,
+            logger=logger,
             start_time=datetime(2026, 2, 10),
             end_time=datetime(2026, 2, 11),
-            ffrequency="1D", afrequency="15s",
+            ffrequency="1D",
+            afrequency="15s",
             reverse_chronological=False,
         )
 
@@ -594,14 +684,20 @@ class TestDownloadParallel:
             sid = sid.upper()
             if sid == "THOB":
                 return StationResult(
-                    station_id=sid, status="failed",
-                    duration=1.0, attempt=attempt,
+                    station_id=sid,
+                    status="failed",
+                    duration=1.0,
+                    attempt=attempt,
                     error_message="FTP timeout",
                 )
             return StationResult(
-                station_id=sid, status="completed",
-                files_downloaded=2, duration=5.0, attempt=attempt,
+                station_id=sid,
+                status="completed",
+                files_downloaded=2,
+                duration=5.0,
+                attempt=attempt,
             )
+
         mock_worker.side_effect = mock_fn
 
         args = self._make_args(max_retries=0)
@@ -609,10 +705,12 @@ class TestDownloadParallel:
 
         summary = download_parallel(
             stations=["ELDC", "THOB"],
-            args=args, logger=logger,
+            args=args,
+            logger=logger,
             start_time=datetime(2026, 2, 10),
             end_time=datetime(2026, 2, 11),
-            ffrequency="1D", afrequency="15s",
+            ffrequency="1D",
+            afrequency="15s",
             reverse_chronological=False,
         )
 
@@ -635,14 +733,20 @@ class TestDownloadParallel:
             # Only ST00 succeeds (1/15 = 6.7% success < 20%)
             if sid == "ST00":
                 return StationResult(
-                    station_id=sid, status="completed",
-                    files_downloaded=1, duration=2.0, attempt=attempt,
+                    station_id=sid,
+                    status="completed",
+                    files_downloaded=1,
+                    duration=2.0,
+                    attempt=attempt,
                 )
             return StationResult(
-                station_id=sid, status="failed",
-                duration=1.0, attempt=attempt,
+                station_id=sid,
+                status="failed",
+                duration=1.0,
+                attempt=attempt,
                 error_message="Connection refused",
             )
+
         mock_worker.side_effect = mock_fn
 
         args = self._make_args(max_retries=3)
@@ -650,10 +754,12 @@ class TestDownloadParallel:
 
         summary = download_parallel(
             stations=station_names,
-            args=args, logger=logger,
+            args=args,
+            logger=logger,
             start_time=datetime(2026, 2, 10),
             end_time=datetime(2026, 2, 11),
-            ffrequency="1D", afrequency="15s",
+            ffrequency="1D",
+            afrequency="15s",
             reverse_chronological=False,
         )
 
@@ -672,14 +778,20 @@ class TestDownloadParallel:
             sid = sid.upper()
             if sid == "THOB" and attempt == 1:
                 return StationResult(
-                    station_id=sid, status="failed",
-                    duration=1.0, attempt=attempt,
+                    station_id=sid,
+                    status="failed",
+                    duration=1.0,
+                    attempt=attempt,
                     error_message="FTP timeout",
                 )
             return StationResult(
-                station_id=sid, status="completed",
-                files_downloaded=2, duration=5.0, attempt=attempt,
+                station_id=sid,
+                status="completed",
+                files_downloaded=2,
+                duration=5.0,
+                attempt=attempt,
             )
+
         mock_worker.side_effect = mock_fn
 
         args = self._make_args(max_retries=3)
@@ -687,10 +799,12 @@ class TestDownloadParallel:
 
         summary = download_parallel(
             stations=["ELDC", "THOB"],
-            args=args, logger=logger,
+            args=args,
+            logger=logger,
             start_time=datetime(2026, 2, 10),
             end_time=datetime(2026, 2, 11),
-            ffrequency="1D", afrequency="15s",
+            ffrequency="1D",
+            afrequency="15s",
             reverse_chronological=False,
         )
 
@@ -712,9 +826,13 @@ class TestDownloadParallel:
             attempt = _rest[-2] if len(_rest) >= 2 else 1
             call_count.append(sid.upper())
             return StationResult(
-                station_id=sid.upper(), status="completed",
-                files_downloaded=1, duration=1.0, attempt=attempt,
+                station_id=sid.upper(),
+                status="completed",
+                files_downloaded=1,
+                duration=1.0,
+                attempt=attempt,
             )
+
         mock_worker.side_effect = mock_fn
 
         # 10 stations, 5 batches -> 2 per group
@@ -723,10 +841,13 @@ class TestDownloadParallel:
         logger = MagicMock()
 
         summary = download_parallel(
-            stations=stations, args=args, logger=logger,
+            stations=stations,
+            args=args,
+            logger=logger,
             start_time=datetime(2026, 2, 10),
             end_time=datetime(2026, 2, 11),
-            ffrequency="1D", afrequency="15s",
+            ffrequency="1D",
+            afrequency="15s",
             reverse_chronological=False,
         )
 
@@ -746,9 +867,13 @@ class TestDownloadParallel:
             attempt = _rest[-2] if len(_rest) >= 2 else 1
             call_count.append(sid.upper())
             return StationResult(
-                station_id=sid.upper(), status="completed",
-                files_downloaded=1, duration=1.0, attempt=attempt,
+                station_id=sid.upper(),
+                status="completed",
+                files_downloaded=1,
+                duration=1.0,
+                attempt=attempt,
             )
+
         mock_worker.side_effect = mock_fn
 
         # CLI says 2 batches, config says 5 -> CLI wins
@@ -757,10 +882,13 @@ class TestDownloadParallel:
         logger = MagicMock()
 
         summary = download_parallel(
-            stations=stations, args=args, logger=logger,
+            stations=stations,
+            args=args,
+            logger=logger,
             start_time=datetime(2026, 2, 10),
             end_time=datetime(2026, 2, 11),
-            ffrequency="1D", afrequency="15s",
+            ffrequency="1D",
+            afrequency="15s",
             reverse_chronological=False,
         )
 
@@ -785,10 +913,14 @@ class TestDownloadParallel:
             sid = sid.upper()
             status, files = results_map[sid]
             return StationResult(
-                station_id=sid, status=status,
-                files_downloaded=files, duration=2.0, attempt=attempt,
+                station_id=sid,
+                status=status,
+                files_downloaded=files,
+                duration=2.0,
+                attempt=attempt,
                 error_message="err" if status == "failed" else None,
             )
+
         mock_worker.side_effect = mock_fn
 
         args = self._make_args()
@@ -796,10 +928,12 @@ class TestDownloadParallel:
 
         summary = download_parallel(
             stations=["ELDC", "THOB", "ISFS"],
-            args=args, logger=logger,
+            args=args,
+            logger=logger,
             start_time=datetime(2026, 2, 10),
             end_time=datetime(2026, 2, 11),
-            ffrequency="1D", afrequency="15s",
+            ffrequency="1D",
+            afrequency="15s",
             reverse_chronological=False,
         )
 
@@ -875,8 +1009,14 @@ class TestDownloadStationPeriod:
         logger = MagicMock()
 
         files, errors, checked = _download_station_period(
-            receiver, "INTA", datetime(2026, 2, 22), datetime(2026, 2, 23),
-            args, logger, ffrequency="1D", afrequency="15s",
+            receiver,
+            "INTA",
+            datetime(2026, 2, 22),
+            datetime(2026, 2, 23),
+            args,
+            logger,
+            ffrequency="1D",
+            afrequency="15s",
         )
 
         assert files == 0
@@ -898,8 +1038,14 @@ class TestDownloadStationPeriod:
         logger = MagicMock()
 
         files, errors, checked = _download_station_period(
-            receiver, "ELDC", datetime(2026, 2, 22), datetime(2026, 2, 23),
-            args, logger, ffrequency="1D", afrequency="15s",
+            receiver,
+            "ELDC",
+            datetime(2026, 2, 22),
+            datetime(2026, 2, 23),
+            args,
+            logger,
+            ffrequency="1D",
+            afrequency="15s",
         )
 
         assert files == 0
@@ -927,8 +1073,14 @@ class TestDownloadStationPeriod:
         logger = MagicMock()
 
         files, errors, checked = _download_station_period(
-            receiver, "AFST", datetime(2026, 2, 22), datetime(2026, 2, 23),
-            args, logger, ffrequency="1D", afrequency="15s",
+            receiver,
+            "AFST",
+            datetime(2026, 2, 22),
+            datetime(2026, 2, 23),
+            args,
+            logger,
+            ffrequency="1D",
+            afrequency="15s",
         )
 
         assert files == 0
@@ -951,8 +1103,14 @@ class TestDownloadStationPeriod:
         logger = MagicMock()
 
         files, errors, _checked = _download_station_period(
-            receiver, "THOB", datetime(2026, 2, 22), datetime(2026, 2, 23),
-            args, logger, ffrequency="1D", afrequency="15s",
+            receiver,
+            "THOB",
+            datetime(2026, 2, 22),
+            datetime(2026, 2, 23),
+            args,
+            logger,
+            ffrequency="1D",
+            afrequency="15s",
         )
 
         assert files == 3
@@ -974,8 +1132,14 @@ class TestDownloadStationPeriod:
         logger = MagicMock()
 
         files, errors, _checked = _download_station_period(
-            receiver, "BADCFG", datetime(2026, 2, 22), datetime(2026, 2, 23),
-            args, logger, ffrequency="1D", afrequency="15s",
+            receiver,
+            "BADCFG",
+            datetime(2026, 2, 22),
+            datetime(2026, 2, 23),
+            args,
+            logger,
+            ffrequency="1D",
+            afrequency="15s",
         )
 
         assert files == 0

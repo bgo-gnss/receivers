@@ -16,9 +16,12 @@ from pathlib import Path
 
 def _load_cfg_value(section: str, key: str, default: int) -> int:
     """Load an int from database.cfg, returning default if missing."""
-    cfg_path = Path(
-        os.environ.get("GPS_CONFIG_PATH", os.path.expanduser("~/.config/gpsconfig"))
-    ) / "database.cfg"
+    cfg_path = (
+        Path(
+            os.environ.get("GPS_CONFIG_PATH", os.path.expanduser("~/.config/gpsconfig"))
+        )
+        / "database.cfg"
+    )
     if not cfg_path.exists():
         return default
     parser = configparser.ConfigParser()

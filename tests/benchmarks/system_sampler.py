@@ -48,12 +48,12 @@ class SystemSampler:
         self.samples: list[Sample] = []
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self._start_time: float = 0.0
 
         # Network delta tracking
-        self._prev_net_bytes: Optional[int] = None
-        self._prev_net_time: Optional[float] = None
+        self._prev_net_bytes: int | None = None
+        self._prev_net_time: float | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -191,9 +191,7 @@ class SystemSampler:
                 "elapsed_seconds": s.elapsed_seconds,
                 "cpu_load_1m": round(s.cpu_load_1m, 2),
                 "cpu_load_5m": round(s.cpu_load_5m, 2),
-                "network_mbps": round(
-                    (s.network_bytes_sec * 8) / (1024 * 1024), 3
-                ),
+                "network_mbps": round((s.network_bytes_sec * 8) / (1024 * 1024), 3),
                 "open_connections": s.open_tcp_connections,
                 "memory_rss_mb": round(s.memory_rss_mb, 1),
             }

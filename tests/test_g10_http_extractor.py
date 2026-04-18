@@ -4,10 +4,11 @@ Tests parsing of real Leica GR10 AJAX endpoint response formats.
 Sample data captured from SKFC station.
 """
 
-import pytest
-from unittest.mock import patch, MagicMock
-from receivers.health.g10_http_extractor import G10HTTPExtractor
+from unittest.mock import MagicMock, patch
 
+import pytest
+
+from receivers.health.g10_http_extractor import G10HTTPExtractor
 
 # Sample responses captured from real SKFC receiver (Leica GR10)
 SAMPLE_STATUS_BLOCK_XML = """<block>
@@ -354,7 +355,9 @@ class TestG10FullExtraction:
             return {"status": "ok", "port": 8060, "accessible": True}
 
         with patch("requests.Session", return_value=mock_session):
-            with patch.object(extractor, "_test_connection", return_value=mock_test_conn()):
+            with patch.object(
+                extractor, "_test_connection", return_value=mock_test_conn()
+            ):
                 result = extractor.extract_health_data()
 
         # Check structure
@@ -399,12 +402,20 @@ class TestG10FullExtraction:
             return {"status": "ok", "port": 8060, "accessible": True}
 
         with patch("requests.Session", return_value=mock_session):
-            with patch.object(extractor, "_test_connection", return_value=mock_test_conn()):
+            with patch.object(
+                extractor, "_test_connection", return_value=mock_test_conn()
+            ):
                 result = extractor.extract_health_data()
 
         required_keys = [
-            "station_id", "receiver_type", "timestamp", "schema_version",
-            "connection", "metrics", "overall_status", "status_summary",
+            "station_id",
+            "receiver_type",
+            "timestamp",
+            "schema_version",
+            "connection",
+            "metrics",
+            "overall_status",
+            "status_summary",
             "extraction_metadata",
         ]
         for key in required_keys:
@@ -425,7 +436,9 @@ class TestG10Unavailable:
             return {"status": "ok", "port": 8060, "accessible": True}
 
         with patch("requests.Session", return_value=mock_session):
-            with patch.object(extractor, "_test_connection", return_value=mock_test_conn()):
+            with patch.object(
+                extractor, "_test_connection", return_value=mock_test_conn()
+            ):
                 result = extractor.extract_health_data()
 
         assert result["station_id"] == "SKFC"
@@ -466,7 +479,9 @@ class TestG10StatusCalculation:
 
     def test_any_critical_is_critical(self, extractor):
         """Any critical status makes overall critical."""
-        assert extractor._calculate_overall_status(["ok", "critical", "ok"]) == "critical"
+        assert (
+            extractor._calculate_overall_status(["ok", "critical", "ok"]) == "critical"
+        )
 
     def test_warning_without_critical(self, extractor):
         """Warning without critical results in warning."""
@@ -478,7 +493,9 @@ class TestG10StatusCalculation:
 
     def test_status_counting(self, extractor):
         """Test status counting."""
-        counts = extractor._count_statuses(["ok", "ok", "warning", "critical", "unknown"])
+        counts = extractor._count_statuses(
+            ["ok", "ok", "warning", "critical", "unknown"]
+        )
         assert counts["healthy"] == 2
         assert counts["warning"] == 1
         assert counts["critical"] == 1
