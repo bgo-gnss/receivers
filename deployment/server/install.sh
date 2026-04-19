@@ -5,10 +5,17 @@
 #
 # Usage:
 #   cd ~/git/receivers
-#   sudo bash deployment/server/install.sh              # Fresh install or update
+#   sudo bash deployment/server/install.sh              # Fresh install or update (URL-pinned deps)
+#   sudo bash deployment/server/install.sh --dev        # Editable installs of gtimes/gps_parser/tostools
 #   sudo bash deployment/server/install.sh --wipe       # Wipe venv + redeploy config
 #   sudo bash deployment/server/install.sh --wipe-all   # Drop DB + delete data + reinstall
 #   sudo bash deployment/server/install.sh --wipe-db    # Drop and recreate database only
+#
+# Dependency modes:
+#   Default (URL-pinned):  gtimes/gps_parser/tostools resolved from pyproject.toml git URLs
+#                          (immutable, reproducible — best for production)
+#   --dev                  gtimes/gps_parser/tostools cloned to ~/git/ and installed editable
+#                          (for hacking on sibling packages live; `git pull` picks up changes)
 #
 # Layout:
 #   /home/bgo/git/           — repos + venv (owned by bgo, world-readable)
@@ -35,9 +42,14 @@ readonly GIT_BASE="$ADMIN_HOME/git"
 readonly INSTALL_DIR="$GIT_BASE/receivers"
 readonly GTIMES_DIR="$GIT_BASE/gtimes"
 readonly GPS_PARSER_DIR="$GIT_BASE/gps_parser"
+readonly TOSTOOLS_DIR="$GIT_BASE/tostools"
 readonly CONFIG_REPO_DIR="$GIT_BASE/gps-config-data"
 readonly TOOLS_DIR="$GIT_BASE/gps-tools"
 readonly VENV_DIR="$INSTALL_DIR/venv"
+
+# Minimum Python version (see pyproject.toml requires-python)
+readonly MIN_PYTHON_MAJOR=3
+readonly MIN_PYTHON_MINOR=10
 
 # gpsops owns config + cache + data
 readonly CONFIG_DIR="$GPSOPS_HOME/.config/gpsconfig"
@@ -52,11 +64,13 @@ readonly NFS_OPTS="mountvers=3,auto,nofail,nolock,tcp,ro"
 # Git repositories — public (HTTPS, no auth needed)
 readonly REPO_GTIMES="https://github.com/bennigo/gtimes.git"
 readonly REPO_GPS_PARSER="https://github.com/bennigo/gps_parser.git"
+readonly REPO_TOSTOOLS="https://github.com/bennigo/tostools.git"
 # Internal (requires bgo's LDAP credentials)
 readonly REPO_CONFIG="https://git.vedur.is/bgo/gps-config-data.git"
 readonly REPO_TOOLS="https://git.vedur.is/gps/gps-tools.git"
 
 # ── Flags ──────────────────────────────────────────────────────────────────
+FLAG_DEV=false
 FLAG_WIPE=false
 FLAG_WIPE_ALL=false
 FLAG_WIPE_DB=false
@@ -74,6 +88,7 @@ phase(){ echo -e "\n${BLUE}━━━ Phase $1: $2 ━━━${NC}"; }
 # ── Parse arguments ───────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --dev)          FLAG_DEV=true ;;
         --wipe)         FLAG_WIPE=true ;;
         --wipe-all)     FLAG_WIPE_ALL=true; FLAG_WIPE=true ;;
         --wipe-db)      FLAG_WIPE_DB=true ;;
@@ -81,8 +96,10 @@ while [[ $# -gt 0 ]]; do
         --skip-db)      FLAG_SKIP_DB=true ;;
         --skip-docker)  FLAG_SKIP_DOCKER=true ;;
         -h|--help)
-            echo "Usage: $0 [--wipe] [--wipe-all] [--wipe-db] [--skip-tools] [--skip-db] [--skip-docker]"
+            echo "Usage: $0 [--dev] [--wipe] [--wipe-all] [--wipe-db] [--skip-tools] [--skip-db] [--skip-docker]"
             echo ""
+            echo "  --dev          Editable installs of gtimes/gps_parser/tostools"
+            echo "                 (default: URL-pinned from pyproject.toml — production mode)"
             echo "  --wipe         Wipe venv + redeploy config (keep data + DB)"
             echo "  --wipe-all     Drop DB + delete data + full reinstall"
             echo "  --wipe-db      Drop and recreate database only"
@@ -109,10 +126,27 @@ if [[ ! -f "$INSTALL_DIR/pyproject.toml" ]]; then
     exit 1
 fi
 
+# Verify Python version (pyproject.toml requires-python = ">=3.10")
+if ! command -v python3 &>/dev/null; then
+    err "python3 not found"
+    exit 1
+fi
+PYTHON_VERSION=$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')
+PY_MAJOR=${PYTHON_VERSION%%.*}
+PY_MINOR=${PYTHON_VERSION##*.}
+if (( PY_MAJOR < MIN_PYTHON_MAJOR )) || \
+   (( PY_MAJOR == MIN_PYTHON_MAJOR && PY_MINOR < MIN_PYTHON_MINOR )); then
+    err "Python ${MIN_PYTHON_MAJOR}.${MIN_PYTHON_MINOR}+ required (found $PYTHON_VERSION)"
+    err "Upgrade python3 (Ubuntu 22.04+ ships 3.10, 24.04 ships 3.12)"
+    exit 1
+fi
+
 echo -e "${BLUE}=== GPS Receivers Scheduler — Server Installation ===${NC}"
 echo "  Host:     $(hostname)"
 echo "  Date:     $(date -Iseconds)"
 echo "  OS:       $(lsb_release -ds 2>/dev/null || grep PRETTY_NAME /etc/os-release | cut -d= -f2)"
+echo "  Python:   $PYTHON_VERSION"
+echo "  Mode:     $($FLAG_DEV && echo 'dev (editable siblings)' || echo 'production (URL-pinned siblings)')"
 echo "  Wipe:     $FLAG_WIPE  Wipe-all: $FLAG_WIPE_ALL  Wipe-db: $FLAG_WIPE_DB"
 
 # ── Handle wipe modes ────────────────────────────────────────────────────
@@ -302,9 +336,15 @@ clone_or_update() {
 ok "receivers: $INSTALL_DIR"
 chmod -R o+rX "$INSTALL_DIR"
 
-# Dependencies
-clone_or_update "$REPO_GTIMES"     "$GTIMES_DIR"
-clone_or_update "$REPO_GPS_PARSER" "$GPS_PARSER_DIR"
+# Sibling packages: cloned for editable installs in --dev mode only.
+# In production mode, pyproject.toml's git-URL pins handle them.
+if $FLAG_DEV; then
+    clone_or_update "$REPO_GTIMES"     "$GTIMES_DIR"
+    clone_or_update "$REPO_GPS_PARSER" "$GPS_PARSER_DIR"
+    clone_or_update "$REPO_TOSTOOLS"   "$TOSTOOLS_DIR"
+else
+    ok "Siblings (gtimes/gps_parser/tostools): resolved from pyproject.toml git URLs"
+fi
 
 # Internal repo (needs bgo's LDAP credentials)
 if [[ ! -d "$CONFIG_REPO_DIR/.git" ]]; then
@@ -327,7 +367,6 @@ fi
 # ===========================================================================
 phase 4 "Python virtual environment"
 
-PYTHON_VERSION=$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')
 echo "  Python: $PYTHON_VERSION"
 
 if [[ ! -d "$VENV_DIR" ]]; then
@@ -339,10 +378,22 @@ fi
 
 # Install packages as bgo (bgo owns the venv)
 sudo -u "$ADMIN_USER" "$VENV_DIR/bin/pip" install --upgrade pip setuptools wheel -q
-sudo -u "$ADMIN_USER" "$VENV_DIR/bin/pip" install -e "$GTIMES_DIR" -q
-sudo -u "$ADMIN_USER" "$VENV_DIR/bin/pip" install -e "$GPS_PARSER_DIR" -q
+
+# Always install receivers first — this resolves the git-URL pins in
+# pyproject.toml for gtimes/gps_parser/tostools (the production path).
 sudo -u "$ADMIN_USER" "$VENV_DIR/bin/pip" install -e "$INSTALL_DIR" -q
-ok "Packages installed"
+
+if $FLAG_DEV; then
+    # Override the URL-resolved installs with editable siblings. `pip install -e`
+    # force-replaces prior installs of the same package, so `git pull` in any
+    # sibling dir becomes live without reinstall churn.
+    sudo -u "$ADMIN_USER" "$VENV_DIR/bin/pip" install -e "$GTIMES_DIR" -q
+    sudo -u "$ADMIN_USER" "$VENV_DIR/bin/pip" install -e "$GPS_PARSER_DIR" -q
+    sudo -u "$ADMIN_USER" "$VENV_DIR/bin/pip" install -e "$TOSTOOLS_DIR" -q
+    ok "Packages installed (receivers + editable gtimes/gps_parser/tostools)"
+else
+    ok "Packages installed (receivers + URL-pinned gtimes/gps_parser/tostools)"
+fi
 
 # Ensure venv is world-readable + executable
 chmod -R o+rX "$VENV_DIR"
@@ -758,6 +809,12 @@ echo "  Venv:       $VENV_DIR (owned by $ADMIN_USER)"
 echo "  Config:     $CONFIG_DIR (bgo:gpsops)"
 echo "  Data:       $DATA_DIR (owned by $SERVICE_USER)"
 echo "  Logs:       $CACHE_DIR/logs/ (owned by $SERVICE_USER)"
+if $FLAG_DEV; then
+    echo "  Mode:       dev — gtimes/gps_parser/tostools are editable at $GIT_BASE/{gtimes,gps_parser,tostools}"
+else
+    echo "  Mode:       production — gtimes/gps_parser/tostools pinned via pyproject.toml git URLs"
+    echo "              (to switch to editable siblings later: re-run with --dev)"
+fi
 if [[ $WARNINGS -gt 0 ]]; then
     echo ""
     warn "$WARNINGS warnings — review output above"
@@ -769,6 +826,12 @@ echo "  # Update code + reinstall (as bgo, no sudo needed):"
 echo "  cd ~/git/receivers && git pull"
 echo "  ~/git/receivers/venv/bin/pip install -e ."
 echo "  sudo systemctl restart gps-receivers-scheduler"
+if $FLAG_DEV; then
+    echo ""
+    echo "  # Update sibling package (editable — git pull is live, no reinstall):"
+    echo "  cd ~/git/gtimes && git pull"
+    echo "  sudo systemctl restart gps-receivers-scheduler"
+fi
 echo ""
 echo "  # Manual download:"
 echo "  sudo -u $SERVICE_USER receivers download ELDC --sync --archive"
