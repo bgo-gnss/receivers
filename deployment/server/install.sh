@@ -282,6 +282,15 @@ chmod o+x "$GIT_BASE"
 sudo -u "$SERVICE_USER" mkdir -p "$CONFIG_DIR"
 sudo -u "$SERVICE_USER" mkdir -p "$CACHE_DIR"/{logs,tmp}
 
+# Allow $ADMIN_USER (and anyone else in $SERVICE_GROUP) to traverse into
+# $GPSOPS_HOME and read the cache/logs tree. Default Ubuntu creates homes
+# mode 700 (owner-only), which blocks the admin from viewing logs without
+# sudo. 750 + group=$SERVICE_GROUP lets group members in.
+chgrp "$SERVICE_GROUP" "$GPSOPS_HOME"
+chmod 750 "$GPSOPS_HOME"
+# g+rX recursively: add group-read on files, group-exec only on dirs.
+chmod -R g+rX "$CACHE_DIR"
+
 # Data directories (system-level)
 mkdir -p "$DATA_DIR"
 chown "$SERVICE_USER":"$SERVICE_GROUP" "$DATA_DIR"
