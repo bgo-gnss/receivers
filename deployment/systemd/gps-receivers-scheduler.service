@@ -14,10 +14,11 @@ WorkingDirectory=/home/bgo/git/receivers
 # Environment — config at ~/.config/gpsconfig/ (gps_parser default, no env var needed)
 Environment="LANG=en_US.UTF-8"
 
-# Command to run - Pipeline scheduler schedules ALL stations from stations.cfg
-# Use --stations flag only for testing subsets
-ExecStart=/home/bgo/git/receivers/venv/bin/receivers scheduler start \
-    --max-workers 5
+# Command to run - Pipeline scheduler schedules ALL stations from stations.cfg.
+# Worker count is controlled via `scheduler.max_workers` in scheduler.yaml —
+# no --max-workers CLI flag here, so a single knob governs it.
+# Use --stations flag on manual CLI runs to test subsets.
+ExecStart=/home/bgo/git/receivers/venv/bin/receivers scheduler start
 
 # Graceful shutdown - allow active pipelines to complete
 ExecStop=/home/bgo/git/receivers/venv/bin/receivers scheduler stop
@@ -47,9 +48,15 @@ ProtectSystem=strict
 ProtectHome=false
 ReadWritePaths=/home/gpsops/.cache/gps_receivers /mnt/data/gpsdata /tmp
 
-# Watchdog (restart if no keep-alive for 5 minutes)
-WatchdogSec=300s
-NotifyAccess=main
+# Watchdog — DISABLED.
+# WatchdogSec only works when Type=notify AND the application sends
+# sd_notify WATCHDOG=1 keep-alives. The scheduler is Type=simple and
+# doesn't send keep-alives, so enabling this puts systemd in a kill loop
+# (every 5 min SIGKILL → restart) that prevents any job from ever firing.
+# Re-enable only after integrating sd_notify in the scheduler main loop
+# (e.g. via systemd-python or `sdnotify` package) AND flipping Type=notify.
+#WatchdogSec=300s
+#NotifyAccess=main
 
 [Install]
 WantedBy=multi-user.target
