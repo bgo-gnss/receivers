@@ -63,7 +63,7 @@ Switching modes later: re-run the install script with the opposite flag. The edi
 └── gps-tools/               # Proprietary binaries (from git.vedur.is)
 
 /home/gpsops/
-├── .config/gpsconfig/       # Config files (bgo:gpsops 640, group-readable)
+├── .config/gpsconfig/       # Config files (gpsops:gpsops 660, group-writable for admin)
 └── .cache/gps_receivers/    # Logs, scheduler DB, tmp (owned by gpsops)
     ├── logs/
     │   ├── receivers.log
@@ -100,7 +100,7 @@ Copies configs from gps-config-data to `/home/gpsops/.config/gpsconfig/`, patche
 - `database.cfg`: host=localhost, user=gpsops, mirror_host=pgdev.vedur.is, mirror_user=bgo
 - `receivers.cfg`: data_prepath=/mnt/data/gpsdata/
 
-Config files are owned `bgo:gpsops` with mode 640 (bgo edits, gpsops reads).
+Config files are owned `gpsops:gpsops` with mode 660 (service user owns its own config; admin — via membership in the `gpsops` group — has group-write access for direct edits without `sudo -u gpsops`). This removes any hardcoded admin-user assumption from the software: only the service user name matters at install time.
 
 ### Phase 6: PostgreSQL
 Creates roles (`bgo` superuser, `gpsops`), database `gps_health`, configures auth (peer + trust for localhost), disables JIT.

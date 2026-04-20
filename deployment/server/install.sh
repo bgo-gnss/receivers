@@ -453,11 +453,14 @@ for f in "${CONFIG_FILES[@]}"; do
     fi
 done
 
-# Config owned by bgo:gpsops, group-readable (bgo edits, gpsops reads)
-chown ${ADMIN_USER}:${SERVICE_GROUP} "$CONFIG_DIR"
-chown ${ADMIN_USER}:${SERVICE_GROUP} "$CONFIG_DIR"/*
-chmod 750 "$CONFIG_DIR"
-chmod 640 "$CONFIG_DIR"/*
+# Config owned by the service user (no admin-user assumption in software).
+# Admin has write access via group membership: install.sh Phase 2 adds
+# $ADMIN_USER to $SERVICE_GROUP, and the files are mode 660 (group-writable).
+# This matches the Unix convention that files under /home/<user>/ belong to <user>.
+chown ${SERVICE_USER}:${SERVICE_GROUP} "$CONFIG_DIR"
+chown ${SERVICE_USER}:${SERVICE_GROUP} "$CONFIG_DIR"/*
+chmod 770 "$CONFIG_DIR"
+chmod 660 "$CONFIG_DIR"/*
 
 # Patch database.cfg for local PostgreSQL + mirror
 if [[ -f "$CONFIG_DIR/database.cfg" ]]; then
