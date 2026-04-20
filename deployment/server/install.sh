@@ -67,7 +67,7 @@ readonly REPO_GPS_PARSER="https://github.com/bennigo/gps_parser.git"
 readonly REPO_TOSTOOLS="https://github.com/bennigo/tostools.git"
 # Internal (requires bgo's LDAP credentials)
 readonly REPO_CONFIG="https://git.vedur.is/bgo/gps-config-data.git"
-readonly REPO_TOOLS="https://git.vedur.is/gps/gps-tools.git"
+readonly REPO_TOOLS="https://git.vedur.is/bgo/gps-tools.git"  # TODO: move to gps/gps-tools once IT grants write access
 
 # ── Flags ──────────────────────────────────────────────────────────────────
 FLAG_DEV=false
