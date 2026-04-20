@@ -266,6 +266,12 @@ if getent group docker &>/dev/null; then
         usermod -aG docker "$SERVICE_USER"
         ok "Added $SERVICE_USER to docker group"
     fi
+    # Add admin user too — so `docker ps` / `docker logs` work without sudo.
+    # Note: group membership only takes effect on next login (or `newgrp docker`).
+    if ! id -nG "$ADMIN_USER" 2>/dev/null | grep -qw docker; then
+        usermod -aG docker "$ADMIN_USER"
+        ok "Added $ADMIN_USER to docker group (re-login needed to take effect)"
+    fi
 fi
 
 # Ensure bgo's home + git dir are traversable by gpsops (for venv + editable installs)
@@ -346,10 +352,12 @@ else
     ok "Siblings (gtimes/gps_parser/tostools): resolved from pyproject.toml git URLs"
 fi
 
-# Internal repo (needs bgo's LDAP credentials)
+# Internal repo — may need bgo's LDAP credentials if not public.
+# GIT_TERMINAL_PROMPT=0: fail fast instead of hanging at a username prompt.
+# Cached credentials (~/.netrc, credential helper) still work if present.
 if [[ ! -d "$CONFIG_REPO_DIR/.git" ]]; then
-    echo "  Cloning gps-config-data (needs LDAP credentials)..."
-    if sudo -u "$ADMIN_USER" git clone "$REPO_CONFIG" "$CONFIG_REPO_DIR" 2>&1 | tail -1; then
+    echo "  Cloning gps-config-data..."
+    if sudo -u "$ADMIN_USER" GIT_TERMINAL_PROMPT=0 git clone "$REPO_CONFIG" "$CONFIG_REPO_DIR" 2>&1 | tail -1; then
         chmod -R o+rX "$CONFIG_REPO_DIR"
         ok "Cloned gps-config-data"
     else
@@ -357,7 +365,7 @@ if [[ ! -d "$CONFIG_REPO_DIR/.git" ]]; then
     fi
 else
     cd "$CONFIG_REPO_DIR"
-    sudo -u "$ADMIN_USER" git pull --ff-only 2>&1 | tail -1 || true
+    sudo -u "$ADMIN_USER" GIT_TERMINAL_PROMPT=0 git pull --ff-only 2>&1 | tail -1 || true
     chmod -R o+rX "$CONFIG_REPO_DIR"
     ok "Updated gps-config-data"
 fi
@@ -609,18 +617,22 @@ fi
 if ! $FLAG_SKIP_TOOLS; then
 phase 8 "External tools"
 
-# gps-tools repo (internal, needs bgo's credentials)
+# gps-tools repo (git.vedur.is is IMO-internal; intended to be public-anon
+# once populated — tracked as TODO on receivers project hub).
+# GIT_TERMINAL_PROMPT=0 so we fail fast instead of prompting when the
+# repo doesn't exist yet.
 if [[ ! -d "$TOOLS_DIR/.git" ]]; then
-    echo "  Cloning gps-tools (needs LDAP credentials)..."
-    if sudo -u "$ADMIN_USER" git clone "$REPO_TOOLS" "$TOOLS_DIR" 2>/dev/null; then
+    echo "  Cloning gps-tools..."
+    if sudo -u "$ADMIN_USER" GIT_TERMINAL_PROMPT=0 git clone "$REPO_TOOLS" "$TOOLS_DIR" 2>/dev/null; then
         chmod -R o+rX "$TOOLS_DIR"
         ok "Cloned gps-tools"
     else
         warn "gps-tools not available — proprietary tools must be installed manually"
+        warn "See docs/gps-tools-repo.md (or ask bgo) for how to populate it"
     fi
 else
     cd "$TOOLS_DIR"
-    sudo -u "$ADMIN_USER" git pull --ff-only 2>/dev/null || true
+    sudo -u "$ADMIN_USER" GIT_TERMINAL_PROMPT=0 git pull --ff-only 2>/dev/null || true
     chmod -R o+rX "$TOOLS_DIR"
     ok "gps-tools updated"
 fi
