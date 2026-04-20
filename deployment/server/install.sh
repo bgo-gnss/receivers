@@ -638,15 +638,19 @@ else
 fi
 
 # Symlink RxTools binaries
+# Septentrio bundles .so libraries alongside binaries in rxtools/bin/ (no
+# separate lib/). Register bin/ with ld.so so the dynamic linker finds
+# libcomms/libgeod/Qt6/etc. when the binaries are called via the
+# /usr/local/bin/ symlinks.
 if [[ -d "$TOOLS_DIR/rxtools/bin" ]]; then
-    for bin in bin2asc sbf2rin sbfanalyzer; do
-        [[ -f "$TOOLS_DIR/rxtools/bin/$bin" ]] && ln -sf "$TOOLS_DIR/rxtools/bin/$bin" /usr/local/bin/
-    done
-    if [[ -d "$TOOLS_DIR/rxtools/lib" ]]; then
-        echo "$TOOLS_DIR/rxtools/lib" > /etc/ld.so.conf.d/rxtools.conf
-        ldconfig
-    fi
-    ok "RxTools symlinked"
+    # sbfanalyzer is wrapped by runSbfanalyzer (Qt plugin path setup).
+    # Symlink the wrapper, not the raw binary.
+    [[ -f "$TOOLS_DIR/rxtools/bin/bin2asc" ]] && ln -sf "$TOOLS_DIR/rxtools/bin/bin2asc" /usr/local/bin/bin2asc
+    [[ -f "$TOOLS_DIR/rxtools/bin/sbf2rin" ]] && ln -sf "$TOOLS_DIR/rxtools/bin/sbf2rin" /usr/local/bin/sbf2rin
+    [[ -f "$TOOLS_DIR/rxtools/bin/runSbfanalyzer" ]] && ln -sf "$TOOLS_DIR/rxtools/bin/runSbfanalyzer" /usr/local/bin/sbfanalyzer
+    echo "$TOOLS_DIR/rxtools/bin" > /etc/ld.so.conf.d/rxtools.conf
+    ldconfig
+    ok "RxTools symlinked (bin + ld.so path)"
 fi
 
 # Symlink other tools
