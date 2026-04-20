@@ -283,13 +283,28 @@ sudo -u "$SERVICE_USER" mkdir -p "$CONFIG_DIR"
 sudo -u "$SERVICE_USER" mkdir -p "$CACHE_DIR"/{logs,tmp}
 
 # Allow $ADMIN_USER (and anyone else in $SERVICE_GROUP) to traverse into
-# $GPSOPS_HOME and read the cache/logs tree. Default Ubuntu creates homes
-# mode 700 (owner-only), which blocks the admin from viewing logs without
-# sudo. 750 + group=$SERVICE_GROUP lets group members in.
+# $GPSOPS_HOME and read the cache/logs tree. Two layers matter:
+#
+# 1. $GPSOPS_HOME itself is mode 700 by default on Ubuntu. chmod 750 allows
+#    group traverse into /home/$SERVICE_USER/.
+# 2. On LDAP-integrated systems (e.g. Veðurstofa), new users can inherit a
+#    non-service primary group (e.g. starfsmenn). That makes files created
+#    by $SERVICE_USER land with the wrong group. Force the cache tree's
+#    group to $SERVICE_GROUP, and set the SGID bit on the cache dirs so
+#    subsequently created files (log rotations, scheduler.db re-inits)
+#    inherit the group too.
+# 3. `$CACHE_DIR/..` (i.e. /home/$SERVICE_USER/.cache/) also gets created
+#    with mode 700 — have to chmod it 750 separately or traversal fails
+#    one level before the cache tree.
 chgrp "$SERVICE_GROUP" "$GPSOPS_HOME"
 chmod 750 "$GPSOPS_HOME"
-# g+rX recursively: add group-read on files, group-exec only on dirs.
+# .cache parent (don't recurse — only adjust the traverse bit)
+chgrp "$SERVICE_GROUP" "$(dirname "$CACHE_DIR")"
+chmod 750 "$(dirname "$CACHE_DIR")"
+# Full cache tree: group ownership + group-read + SGID on directories
+chgrp -R "$SERVICE_GROUP" "$CACHE_DIR"
 chmod -R g+rX "$CACHE_DIR"
+find "$CACHE_DIR" -type d -exec chmod g+s {} \;
 
 # Data directories (system-level)
 mkdir -p "$DATA_DIR"
