@@ -18,12 +18,26 @@
 mkdir -p ~/git
 git clone https://github.com/bennigo/receivers.git ~/git/receivers
 
-# Run the install script
+# Production install (URL-pinned gtimes/gps_parser/tostools — default):
 cd ~/git/receivers
 sudo bash deployment/server/install.sh
+
+# Dev install (editable sibling packages — `git pull` is live):
+sudo bash deployment/server/install.sh --dev
 ```
 
 The script is idempotent — running it again updates everything without breaking existing state.
+
+### Dependency mode
+
+`pyproject.toml` pins `gtimes`, `gps_parser`, and `tostools` via direct git URLs (e.g. `git+https://github.com/bennigo/gtimes@v0.5.0`). Two install modes:
+
+| Mode | Behaviour | When |
+|------|-----------|------|
+| **Default** (URL-pinned) | `pip install -e receivers` resolves siblings from the URL pins. Siblings are *not* cloned to `~/git/`. | Production — reproducible, tied to release tags. |
+| **`--dev`** | Siblings cloned to `~/git/{gtimes,gps_parser,tostools}` and installed editable. `git pull` in any sibling is immediately live (just restart the service). | Hacking on `gtimes` / `gps_parser` / `tostools` against receivers without release cadence. |
+
+Switching modes later: re-run the install script with the opposite flag. The editable install force-replaces the URL-resolved install (and vice versa).
 
 ## Architecture
 
@@ -42,13 +56,14 @@ The script is idempotent — running it again updates everything without breakin
 /home/bgo/git/
 ├── receivers/               # Main package + venv
 │   └── venv/                # Python virtual environment
-├── gtimes/                  # GPS time library
-├── gps_parser/              # Config management
+├── gtimes/                  # GPS time library       (only with --dev; otherwise URL-pinned)
+├── gps_parser/              # Config management     (only with --dev; otherwise URL-pinned)
+├── tostools/                # RINEX + archive utils (only with --dev; otherwise URL-pinned)
 ├── gps-config-data/         # Station configs (from git.vedur.is)
 └── gps-tools/               # Proprietary binaries (from git.vedur.is)
 
 /home/gpsops/
-├── .config/gpsconfig/       # Config files (bgo:gpsops 640, group-readable)
+├── .config/gpsconfig/       # Config files (gpsops:gpsops 660, group-writable for admin)
 └── .cache/gps_receivers/    # Logs, scheduler DB, tmp (owned by gpsops)
     ├── logs/
     │   ├── receivers.log
@@ -75,17 +90,17 @@ PostgreSQL, Python 3, Git, NFS client, Docker.
 - Generates SSH key for `gpsops` (for rsync to production archive)
 
 ### Phase 3: Git repositories
-All repos cloned as `bgo` via HTTPS into `~/git/`. Public repos (receivers, gtimes, gps_parser) need no auth. Internal repos (gps-config-data from git.vedur.is) need bgo's LDAP credentials. All repos are made world-readable.
+All repos cloned as `bgo` via HTTPS into `~/git/`. Internal repos (gps-config-data, gps-tools from git.vedur.is) need bgo's LDAP credentials. Public sibling repos (gtimes, gps_parser, tostools) are cloned only in `--dev` mode; the default (URL-pinned) path lets pip fetch them directly from github at install time. All repos are made world-readable.
 
 ### Phase 4: Python virtual environment
-Creates `~/git/receivers/venv/` owned by bgo, installs all packages in editable mode. Symlinks `receivers` CLI to `/usr/local/bin/`. Verifies gpsops can execute it.
+Creates `~/git/receivers/venv/` owned by bgo. Always installs `receivers` editable — that's the package the scheduler runs. Sibling packages (`gtimes`, `gps_parser`, `tostools`) are either resolved from the pyproject.toml git-URL pins (default) or cloned + editable-installed (`--dev`). Symlinks `receivers` CLI to `/usr/local/bin/`. Verifies gpsops can execute it.
 
 ### Phase 5: Configuration
 Copies configs from gps-config-data to `/home/gpsops/.config/gpsconfig/`, patches:
 - `database.cfg`: host=localhost, user=gpsops, mirror_host=pgdev.vedur.is, mirror_user=bgo
 - `receivers.cfg`: data_prepath=/mnt/data/gpsdata/
 
-Config files are owned `bgo:gpsops` with mode 640 (bgo edits, gpsops reads).
+Config files are owned `gpsops:gpsops` with mode 660 (service user owns its own config; admin — via membership in the `gpsops` group — has group-write access for direct edits without `sudo -u gpsops`). This removes any hardcoded admin-user assumption from the software: only the service user name matters at install time.
 
 ### Phase 6: PostgreSQL
 Creates roles (`bgo` superuser, `gpsops`), database `gps_health`, configures auth (peer + trust for localhost), disables JIT.
