@@ -322,6 +322,18 @@ class DatabaseConnectionFactory:
         mirror_user = cfg.get("mirror_user")
         if mirror_user:
             mirror_params["user"] = mirror_user
+        # Mirror can use a different auth mechanism (e.g., LDAP) than the
+        # primary. If a mirror_password is provided, use it; otherwise drop
+        # the primary's password so libpq falls back to ~/.pgpass (the
+        # conventional way to supply a separate mirror credential without
+        # putting it in the checked-in config).
+        mirror_password = cfg.get("mirror_password")
+        if mirror_password is not None:
+            mirror_params["password"] = mirror_password
+        elif mirror_user and mirror_user != params.get("user"):
+            # Primary's password is meaningless for a different user on a
+            # different server — drop it so ~/.pgpass is consulted.
+            mirror_params.pop("password", None)
         try:
             conn = psycopg2.connect(**mirror_params)
             logger.info(
