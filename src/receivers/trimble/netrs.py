@@ -989,7 +989,6 @@ class NetRS(BaseReceiver):
                 self.endpoints["position"]
             )
             if success and response:
-                # TODO: Parse position response (would need to see actual response format)
                 return {
                     "success": True,
                     "raw_response": response,
