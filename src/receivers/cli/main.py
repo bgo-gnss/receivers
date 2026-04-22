@@ -2451,7 +2451,9 @@ def _push_configs(args, targets, logger, tcp_username=None, tcp_password=None) -
 
 def cmd_rec_provision(args) -> int:
     """Provision a Septentrio PolaRx5 receiver for fw 5.7.0."""
+    import re
     import socket
+    import ssl
     import time
     from pathlib import Path
 
@@ -2515,7 +2517,7 @@ def cmd_rec_provision(args) -> int:
                 if chunk:
                     buf += chunk
                     decoded = buf.decode("utf-8", errors="ignore")
-                    if decoded.rstrip().endswith(">") and "IP" in decoded[-20:]:
+                    if re.search(r'IP\d+>', decoded[-30:]):
                         break
             except (TimeoutError, OSError):
                 if buf:
@@ -2546,13 +2548,30 @@ def cmd_rec_provision(args) -> int:
             continue
 
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(args.timeout)
-            sock.connect((ip, port))
+            raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            raw.settimeout(args.timeout)
+            using_tls = False
+            try:
+                raw.connect((ip, port))
+                sock = raw
+            except ConnectionRefusedError:
+                # Receiver may be in TLS-only mode (e.g., after firmware upgrade resets sis).
+                # Try the TLS port (port - 1: 28784 → 28783).
+                tls_port = port - 1
+                raw.close()
+                raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                raw.settimeout(args.timeout)
+                raw.connect((ip, tls_port))
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                sock = ctx.wrap_socket(raw)
+                using_tls = True
+                print(f"  ⚠  Port {port} refused — connected via TLS port {tls_port}")
 
             # Read initial prompt
             prompt = sock.recv(1024).decode("utf-8", errors="ignore")
-            logger.debug(f"Initial prompt: {prompt!r}")
+            logger.debug(f"Initial prompt: {prompt!r} (tls={using_tls})")
 
             bootstrapped = False
 

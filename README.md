@@ -11,7 +11,7 @@ A Python package for managing GPS/GNSS receivers, downloading data, and monitori
 cd receivers
 pip install -e .
 
-# With development dependencies  
+# With development dependencies
 pip install -e .[dev]
 ```
 
@@ -56,7 +56,7 @@ print(f"Status: {health['overall_status']}")
 # Download data
 result = receiver.download_data(
     start="2024-01-15",
-    end="2024-01-20", 
+    end="2024-01-20",
     sync=True
 )
 print(f"Downloaded {result['files_downloaded']} files")
@@ -72,7 +72,7 @@ The receivers package includes comprehensive GPS receiver health monitoring thro
 # Extract all health messages from ORFC station
 python3 extract_health_bin2asc.py --station ORFC
 
-# Extract from specific session type  
+# Extract from specific session type
 python3 extract_health_bin2asc.py --station ELDC --session status_1hr
 
 # Process specific file pattern
@@ -86,12 +86,13 @@ python3 extract_health_bin2asc.py --station ORFC --pattern "*.sbf.gz"
 - **ReceiverStatus2**: Comprehensive receiver operational status
 - **WiFiAPStatus**: Wireless access point connectivity
 - **LogStatus**: Logging system health
-- **NTRIPServerStatus**: NTRIP server operational status  
+- **NTRIPServerStatus**: NTRIP server operational status
 - **NTRIPClientStatus**: NTRIP client connectivity status
 
 ### Output Formats
 
 **CSV Format** (optimized for grep/awk analysis):
+
 ```csv
 2025-09-06T22:59:42Z,12.83
 2025-09-06T23:00:42Z,12.83
@@ -99,6 +100,7 @@ python3 extract_health_bin2asc.py --station ORFC --pattern "*.sbf.gz"
 ```
 
 **JSON Lines Format** (structured for APIs and databases):
+
 ```json
 {
   "gps_week": 2382,
@@ -142,8 +144,9 @@ python3 extract_health_bin2asc.py --station ORFC --pattern "*.sbf.gz"
 ### Current Status: Phase 1 MVP
 
 ✅ **Completed**:
+
 - Modern package structure with pyproject.toml
-- Abstract base receiver class  
+- Abstract base receiver class
 - PolaRX5 implementation with modernized download logic
 - Advanced CLI with getSeptentrio3 compatibility and progress bars
 - Comprehensive file validation and integrity checking
@@ -154,10 +157,12 @@ python3 extract_health_bin2asc.py --station ORFC --pattern "*.sbf.gz"
 - Type hints and comprehensive error handling
 
 🔄 **In Progress**:
+
 - Integration with gps_parser for station configuration (requires full receiver config data)
 - Unit tests
 
 ✅ **Recently Completed**:
+
 - **Comprehensive Health Monitoring**: Complete SBF health message extraction system
   - RxTools bin2asc integration for precise data extraction
   - GPS time conversion using gtimes module for proper UTC timestamps
@@ -168,18 +173,21 @@ python3 extract_health_bin2asc.py --station ORFC --pattern "*.sbf.gz"
   - Production-ready extraction: `extract_health_bin2asc.py --station ORFC`
 
 ⚠️ **Current Configuration Status**:
+
 - gps_parser package available but only contains basic station info (name, ID)
-- Missing router/receiver connection details (IP, ports, etc.)  
+- Missing router/receiver connection details (IP, ports, etc.)
 - Using fallback configuration for testing (ELDC: 10.6.1.90:2160)
 - Full integration requires completing station configuration files
 
 🎯 **Future Integration Objective**:
+
 - **tostools integration**: tostools will be enhanced to automatically update stations.cfg
 - This will populate missing router/receiver connection details from operational data
 - Enables seamless configuration management between TOS API and receivers package
 - Reduces manual configuration maintenance and ensures data consistency
 
 📋 **Planned**:
+
 - Additional receiver types (Leica, NetRS, etc.)
 - API integration endpoints
 - Advanced health analytics
@@ -212,12 +220,14 @@ docker restart gps-receivers-scheduler-dev
 ```
 
 **Key Features**:
+
 - ✅ Live code updates without rebuilds
 - ✅ Git branch switching - test branches instantly
 - ✅ Production parity (same OS, packages, network config)
 - ✅ Auto-start after system reboot
 
 **📚 Complete Documentation**:
+
 - [Docker Development Workflow](docs/development/docker-workflow.md) - Comprehensive development guide
 - [Git Branch Testing](docs/development/git-branch-testing.md) - Branch testing workflows
 - [Docker Dev Setup](deployment/docker-dev/README.md) - Installation and monitoring
@@ -225,12 +235,14 @@ docker restart gps-receivers-scheduler-dev
 ## 📦 Dependencies
 
 ### Core Dependencies
+
 - `gtimes>=0.4.0`: GPS time conversions and RINEX filename formatting
 - `gps_parser`: Station configuration (local package)
 - `rich>=13.0.0`: Console output and logging
 - `tqdm>=4.60.0`: Modern progress bar with transfer speed and ETA
 
 ### Development Dependencies
+
 - `pytest`: Testing framework
 - `ruff`: Linting and formatting
 - `mypy`: Type checking
@@ -240,7 +252,7 @@ docker restart gps-receivers-scheduler-dev
 This package is part of the GPS library ecosystem:
 
 - **gtimes**: GPS time processing
-- **gps_parser**: Station configuration management  
+- **gps_parser**: Station configuration management
 - **geo_dataread**: GPS data analysis
 - **tostools**: TOS API integration → **Future objective: auto-update stations.cfg**
 
@@ -292,7 +304,7 @@ Configuration is typically managed through the `gps_parser` package.
 ### Network Configuration
 
 - Internal IMO network: Uses non-passive FTP (10.4.1.x, 10.4.2.x)
-- External networks: Uses passive FTP by default  
+- External networks: Uses passive FTP by default
 - Port forwards available: 2160, 8060 for remote station access
 - Configurable timeouts and retry logic
 
@@ -305,6 +317,7 @@ Configuration is typically managed through the `gps_parser` package.
 ### File Organization
 
 Downloaded files follow the structure:
+
 ```
 /data/YYYY/MMM/STATION/SESSION/raw/
 ```
@@ -334,6 +347,7 @@ MIT License - See LICENSE file for details.
 
 ## 🙏 Acknowledgments
 
-- Based on original work by Fjalar Sigurdsson (fjalar@vedur.is)
-- Continued development by Benedikt Gunnar Ófeigsson (bgo@vedur.is)
+- Based on original work by Fjalar Sigurdsson (<fjalar@vedur.is>)
+- Continued development by Benedikt Gunnar Ófeigsson (<bgo@vedur.is>)
 - Veðurstofa Íslands (Icelandic Met Office) for operational requirements
+

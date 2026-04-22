@@ -33,7 +33,9 @@ Usage:
 """
 
 import logging
+import re
 import socket
+import ssl
 import struct
 import time
 from datetime import datetime
@@ -42,8 +44,9 @@ from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Default TCP command port for Septentrio receivers
-DEFAULT_CONTROL_PORT = 28784
+# Default TCP command ports for Septentrio receivers
+DEFAULT_CONTROL_PORT = 28784         # Plaintext
+DEFAULT_SECURE_CONTROL_PORT = 28783  # TLS (same protocol, wrapped)
 DEFAULT_TIMEOUT = 10.0
 
 
@@ -61,16 +64,18 @@ class PolaRX5TCPClient:
         timeout: float = DEFAULT_TIMEOUT,
         username: Optional[str] = None,
         password: Optional[str] = None,
+        use_tls: bool = False,
     ):
         """Initialize TCP client.
 
         Args:
             host: Receiver IP address or hostname
             station_id: Station identifier for logging
-            port: TCP command port (default 28784)
+            port: TCP command port (default 28784; use 28783 with use_tls=True)
             timeout: Socket timeout in seconds
             username: TCP login username for fw 5.7.0+ (None = skip auth)
             password: TCP login password for fw 5.7.0+
+            use_tls: Wrap connection in TLS (for port 28783 when receiver is in secure mode)
         """
         self.host = host
         self.station_id = station_id
@@ -78,6 +83,7 @@ class PolaRX5TCPClient:
         self.timeout = timeout
         self.username = username
         self.password = password
+        self.use_tls = use_tls
         self.logger = logging.getLogger(f"receivers.septentrio.tcp.{station_id}")
         self._sock: Optional[socket.socket] = None
         self._conn_id: Optional[str] = None
@@ -89,9 +95,18 @@ class PolaRX5TCPClient:
             True if connected successfully
         """
         try:
-            self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self._sock.settimeout(self.timeout)
-            self._sock.connect((self.host, self.port))
+            raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            raw.settimeout(self.timeout)
+            raw.connect((self.host, self.port))
+
+            if self.use_tls:
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                self._sock = ctx.wrap_socket(raw)
+                self.logger.debug(f"TLS connected ({self._sock.version()})")  # type: ignore[attr-defined]
+            else:
+                self._sock = raw
 
             # Read initial prompt to get connection ID
             prompt = self._sock.recv(1024).decode("utf-8", errors="ignore")
@@ -161,15 +176,13 @@ class PolaRX5TCPClient:
         """Parse connection ID from receiver prompt.
 
         Args:
-            prompt: Initial prompt string (e.g., "IP11>")
+            prompt: Initial prompt string (e.g., "IP11>", possibly with binary SBF trailer)
 
         Returns:
             Connection ID (e.g., "IP11")
         """
-        prompt = prompt.strip()
-        if prompt.startswith("IP") and prompt.endswith(">"):
-            return prompt[:-1]
-        return "IP11"  # Default fallback
+        m = re.search(r'IP(\d+)', prompt)
+        return f"IP{m.group(1)}" if m else "IP11"
 
     def send_command(self, command: str, wait_time: float = 0.1) -> str:
         """Send a text command and receive response.
