@@ -573,11 +573,9 @@ All receivers use Phase 1 utilities by default:
 - **Simplicity**: No feature flags, single code path
 
 ### Documentation
-- **Phase 3C completion**: `docs/phase3c_complete.md` - Scheduler testing and extensibility
 - **Scheduler guide**: `docs/scheduler/scheduler-guide.md` - Complete operational guide
-- Phase 3B completion: `docs/phase3b_complete.md`
-- Phase 2 completion: `docs/phase2_complete.md`
 - Architecture diagrams: `docs/receivers/diagrams/`
+- Phase completion notes archived to `docs/archived/`
 
 ---
 
