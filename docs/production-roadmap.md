@@ -10,17 +10,17 @@ This file is a living in-repo companion to the private-vault version at `2.Areas
 
 ## M0 — PolaRX5 firmware update (prerequisite, blocks M1.2 / M1.3 at scale)
 
-A new PolaRX5 firmware version introduces significant changes that require code updates in the `receivers` package before 15s_24hr and 1Hz_1hr downloads can be trusted across all ~90 PolaRX5 stations.
+PolaRX5 firmware **v5.7.0** introduces significant changes that require code updates in the `receivers` package. GJAC is the first station with a new instrument running fw 5.7.0 and is the development canary. Must land before M1.2/M1.3 can be trusted across all ~90 PolaRX5 stations.
 
 | Item | Notes |
 |---|---|
-| Identify exactly what changed in the new firmware | Check Septentrio release notes; diff against current SBF parser and FTP/TCP protocol assumptions |
-| Update `polarx5_tcp_extractor.py` and any affected SBF parsers | Treat as a feature branch — `feat/polarx5-firmware-vX` — not a hotfix |
-| Update `rxtools_extractor.py` if RxTools CSV output format changed | Cross-check `bin2asc` field names against the new firmware |
+| Identify exactly what changed in fw 5.7.0 | Check Septentrio release notes; diff against current SBF parser and FTP/TCP protocol assumptions |
+| Update `polarx5_tcp_extractor.py` and any affected SBF parsers | Feature branch — `feat/polarx5-firmware-v5.7` — not a hotfix |
+| Update `rxtools_extractor.py` if RxTools CSV output format changed | Cross-check `bin2asc` field names against fw 5.7.0 |
 | Update receiver documentation | Protocol assumptions, SBF block versions, tested firmware versions |
-| Validate on one station before rolling to all PolaRX5 stations | Use ELDC or THOB as canary |
+| Validate on GJAC before rolling to full PolaRX5 fleet | GJAC already has fw 5.7.0 installed — use it as the canary |
 
-**Branch**: `feat/polarx5-firmware-vX` → PR → merge → `git pull` on reknew before enabling M1.2/M1.3.
+**Branch**: `feat/polarx5-firmware-v5.7` → PR → merge → `git pull` on reknew before enabling M1.2/M1.3.
 
 ---
 

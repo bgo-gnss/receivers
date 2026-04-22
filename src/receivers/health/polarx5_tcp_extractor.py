@@ -74,6 +74,19 @@ class PolaRX5TCPExtractor:
         self.logger = logging.getLogger(f"receivers.health.{station_id}")
         self._connection_id = None  # Will be detected from prompt (e.g., "IP11")
 
+        # TCP credentials for fw 5.7.0 authentication
+        # Loaded from receivers.cfg [polarx5] section, with per-station override
+        self.tcp_username: Optional[str] = None
+        self.tcp_password: Optional[str] = None
+        try:
+            from ..config.receivers_config import get_receivers_config
+
+            rec_cfg = get_receivers_config().get_receiver_config("polarx5")
+            self.tcp_username = rec_cfg.get("tcp_username") or None
+            self.tcp_password = rec_cfg.get("tcp_password") or None
+        except Exception as e:
+            self.logger.debug(f"Could not load TCP credentials from receivers.cfg: {e}")
+
         # Initialize centralized metric checker for consistent threshold evaluation
         # Load thresholds with receiver-type and power-type overrides
         power_type = None
@@ -83,8 +96,12 @@ class PolaRX5TCPExtractor:
             cfg = get_station_config(station_id)
             if cfg:
                 power_type = cfg.get("power_type") or None
+                if cfg.get("tcp_username"):
+                    self.tcp_username = cfg["tcp_username"]
+                if cfg.get("tcp_password"):
+                    self.tcp_password = cfg["tcp_password"]
         except Exception as e:
-            self.logger.debug(f"Could not load station config for thresholds: {e}")
+            self.logger.debug(f"Could not load station config: {e}")
         config = load_thresholds(receiver_type="PolaRX5", power_type=power_type)
         self.metric_checker = MetricChecker(config)
 
@@ -210,7 +227,7 @@ class PolaRX5TCPExtractor:
         return None
 
     def _query_receiver_status(self) -> Optional[Dict[str, Any]]:
-        """Query ReceiverStatus SBF block for CPU, temperature, uptime.
+        """Query ReceiverStatus SBF block (4014) for CPU, temperature, uptime.
 
         Returns:
             Dictionary with receiver metrics or None on failure
@@ -548,6 +565,10 @@ class PolaRX5TCPExtractor:
             conn_id = self._parse_connection_id(prompt)
             self.logger.debug(f"ASCII command connection as {conn_id}")
 
+            # fw 5.7.0: authenticate before issuing any command
+            if not self._login(sock):
+                return None
+
             # Send command
             sock.sendall((command + "\n").encode("utf-8"))
 
@@ -784,6 +805,10 @@ class PolaRX5TCPExtractor:
             prompt = sock.recv(1024)
             conn_id = self._parse_connection_id(prompt)
 
+            # fw 5.7.0: authenticate before issuing any command
+            if not self._login(sock):
+                return None
+
             # Send SBF once request using detected connection ID
             # The esoc command streams SBF data to the specified connection
             cmd = f"esoc, {conn_id}, {block_name}\n"
@@ -880,6 +905,68 @@ class PolaRX5TCPExtractor:
             pos = sync_pos + max(length, 8)
 
         return None
+
+    def _login(self, sock: socket.socket) -> bool:
+        """Authenticate TCP session for fw 5.7.0+.
+
+        Sends `login, <user>, <pw>` and drains the response plus the new
+        prompt that follows before returning control to the caller.
+
+        Behaviour by firmware:
+        - fw 5.7.0: returns `$R! LogIn` + body + new prompt → True
+        - fw 5.7.0, wrong creds: returns `$R? LogIn: Wrong username or password!` → True
+          (commands will fail with $E: Not authorized! — health blocks return None)
+        - fw ≤5.5.0: returns `$E: Invalid command!` (login unknown) → True (proceed unauthenticated)
+        - No credentials configured: no-op → True
+
+        Returns:
+            True if session is ready to accept commands, False on definitive auth error
+            that means proceeding is pointless.
+        """
+        if not self.tcp_username or not self.tcp_password:
+            return True
+
+        cmd = f"login, {self.tcp_username}, {self.tcp_password}\n"
+        sock.sendall(cmd.encode("utf-8"))
+
+        # Drain login response + subsequent prompt (IPxx>)
+        response = b""
+        end_time = time.time() + 3.0
+        while time.time() < end_time:
+            try:
+                sock.settimeout(1.0)
+                chunk = sock.recv(4096)
+                if chunk:
+                    response += chunk
+                    decoded = response.decode("utf-8", errors="ignore")
+                    if decoded.rstrip().endswith(">") and "IP" in decoded[-20:]:
+                        break
+            except TimeoutError:
+                if response:
+                    break
+
+        decoded = response.decode("utf-8", errors="ignore")
+
+        if "$R! LogIn" in decoded or "$R: login" in decoded:
+            self.logger.debug(f"TCP login successful for {self.station_id}")
+            return True
+        elif "$E: Invalid command" in decoded:
+            # fw ≤5.5.0 — login command did not exist; unauthenticated access is normal
+            self.logger.debug(
+                f"Login not recognised by {self.station_id} — assuming fw≤5.5.0, proceeding"
+            )
+            return True
+        elif "Wrong username or password" in decoded:
+            self.logger.warning(
+                f"TCP auth failed for {self.station_id}: wrong username or password"
+            )
+            return True  # Proceed; subsequent commands will return $E: Not authorized!
+        else:
+            if decoded.strip():
+                self.logger.debug(
+                    f"Unexpected login response for {self.station_id}: {decoded[:100]!r}"
+                )
+            return True
 
     def _parse_connection_id(self, prompt: bytes) -> str:
         """Parse connection ID from receiver prompt.

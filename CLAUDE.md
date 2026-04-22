@@ -596,6 +596,7 @@ A systematic review is needed to address recurring patterns of issues found duri
 - **Receiver capability awareness**: Dashboard should know what each receiver type supports (status session, control port, NTRIP) instead of per-field NULL checks
 
 ### Medium Priority
+- **systemd watchdog (sd_notify)**: The scheduler doesn't send sd_notify keepalives, so `WatchdogSec=300s` in the service file kills the process after 5 minutes. Currently disabled via commenting out `WatchdogSec`. Proper fix: integrate `sd_notify` (via `systemd.daemon` or `sdnotify` package) into the scheduler main loop — send `WATCHDOG=1` periodically and `READY=1` on startup. Also fix `.cache/` dir perms (`0700` → `0750`) so bgo can read gpsops logs.
 - **Codebase review**: Full audit of db_writer.py, connectivity_writer.py, and all extractors for protocol assumptions
 - **Test coverage**: Integration tests for Trimble health flow end-to-end (extractor → db_writer → dashboard views)
 - **Error handling patterns**: Standardize SAVEPOINT usage, transaction management, and value truncation across all DB writers
