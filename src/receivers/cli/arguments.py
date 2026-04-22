@@ -587,6 +587,75 @@ Examples:
     return parser
 
 
+def setup_rec_provision_parser(subparsers) -> argparse.ArgumentParser:
+    """Set up the rec-provision subcommand parser."""
+    parser = subparsers.add_parser(
+        "rec-provision",
+        help="Provision a Septentrio PolaRx5 receiver (fw 5.7.0)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""
+Provision a Septentrio PolaRx5 receiver running fw 5.7.0.
+
+Creates standard user accounts, enables FTP, disables HTTPS redirect,
+pushes the SSH public key to the gpsops account, and saves to Boot.
+
+Handles two cases automatically:
+  - Fresh receiver (no accounts): uses factory bootstrap credentials
+    (RxAdmin / S3pt3ntr10) to create gpsops as User1, then sets up
+    the rest.
+  - Already provisioned: skips account creation, updates FTP/HTTPS
+    settings and SSH key if needed.
+
+Credentials are read from receivers.cfg [polarx5]:
+  tcp_username, tcp_password, tcp_ssh_key_path
+
+Examples:
+  receivers rec-provision GJAC
+  receivers rec-provision ORFC GJAC
+  receivers rec-provision GJAC --dry-run
+  receivers rec-provision GJAC --skip-ssh-key
+        """,
+    )
+
+    parser.add_argument(
+        "stations",
+        metavar="STATIONS",
+        nargs="+",
+        help="Station ID(s) to provision",
+    )
+
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be done without executing",
+    )
+
+    parser.add_argument(
+        "--skip-ssh-key",
+        action="store_true",
+        help="Do not push SSH public key to receiver",
+    )
+
+    parser.add_argument(
+        "--port",
+        type=int,
+        metavar="PORT",
+        help="Override control port (default from config: 28784)",
+    )
+
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=15,
+        metavar="SECONDS",
+        help="Connection timeout in seconds (default: 15)",
+    )
+
+    add_verbose_flag(parser)
+
+    return parser
+
+
 def setup_rinex_parser(subparsers) -> argparse.ArgumentParser:
     """Set up the rinex subcommand parser."""
     defaults = get_default_values()
@@ -863,6 +932,7 @@ For subcommand help: receivers <command> --help
     setup_health_parser(subparsers)
     setup_validate_parser(subparsers)
     setup_rec_config_parser(subparsers)
+    setup_rec_provision_parser(subparsers)
     setup_rinex_parser(subparsers)
     setup_tools_parser(subparsers)
 

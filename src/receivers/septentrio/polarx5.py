@@ -193,8 +193,25 @@ class PolaRX5(BaseReceiver):
                 # routers where active mode PORT commands fail (IP mismatch).
                 self.pasv = True
 
+            # FTP credentials (fw 5.7.0 requires authenticated FTP)
+            self.ftp_anonymous = True
+            self.ftp_username: Optional[str] = None
+            self.ftp_password: Optional[str] = None
+            try:
+                from ..config.receivers_config import get_receivers_config
+
+                rec_cfg = get_receivers_config().get_receiver_config("polarx5")
+                anon_str = str(rec_cfg.get("ftp_anonymous_login", "true")).lower()
+                self.ftp_anonymous = anon_str not in ("false", "0", "no")
+                if not self.ftp_anonymous:
+                    self.ftp_username = rec_cfg.get("tcp_username") or None
+                    self.ftp_password = rec_cfg.get("tcp_password") or None
+            except Exception:
+                pass
+
             self.logger.info(
-                f"Station {self.station_id} - Address: {self.ip_number}:{self.ip_port}, FTP Passive: {self.pasv}"
+                f"Station {self.station_id} - Address: {self.ip_number}:{self.ip_port}, "
+                f"FTP Passive: {self.pasv}, anonymous: {self.ftp_anonymous}"
             )
 
         except KeyError as e:
@@ -1044,7 +1061,10 @@ class PolaRX5(BaseReceiver):
         try:
             ftp = FTP()
             ftp.connect(self.ip_number, self.ip_port, timeout=timeout)
-            ftp.login("anonymous")
+            if self.ftp_anonymous:
+                ftp.login("anonymous")
+            else:
+                ftp.login(self.ftp_username or "anonymous", self.ftp_password or "")
             ftp.set_pasv(self.pasv)
             connection_time = time.time() - connection_start
             self.logger.info(f"✅ Connected in {connection_time:.2f}s")

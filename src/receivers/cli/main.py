@@ -2203,9 +2203,11 @@ def cmd_rec_config(args) -> int:
     # Parse station list
     station_list = [s.strip().upper() for s in args.stations.split(",")]
 
-    # Get receiver config for default port
+    # Get receiver config for default port and TCP credentials
     receivers_config = get_receivers_config()
     polarx5_config = receivers_config.get_receiver_config("polarx5")
+    tcp_username = polarx5_config.get("tcp_username") or None
+    tcp_password = polarx5_config.get("tcp_password") or None
     default_port = args.port or polarx5_config.get("control_port", DEFAULT_CONTROL_PORT)
     if isinstance(default_port, str):
         default_port = int(default_port)
@@ -2247,16 +2249,16 @@ def cmd_rec_config(args) -> int:
 
     # Handle extract mode
     if args.extract:
-        return _extract_configs(args, targets, logger)
+        return _extract_configs(args, targets, logger, tcp_username, tcp_password)
 
     # Handle push mode
     if args.push:
-        return _push_configs(args, targets, logger)
+        return _push_configs(args, targets, logger, tcp_username, tcp_password)
 
     return 0
 
 
-def _extract_configs(args, targets, logger) -> int:
+def _extract_configs(args, targets, logger, tcp_username=None, tcp_password=None) -> int:
     """Extract configurations from receivers."""
     import difflib
     import os
@@ -2315,7 +2317,10 @@ def _extract_configs(args, targets, logger) -> int:
             continue
 
         try:
-            client = PolaRX5TCPClient(ip, station_id, port, timeout=args.timeout)
+            client = PolaRX5TCPClient(
+                ip, station_id, port, timeout=args.timeout,
+                username=tcp_username, password=tcp_password,
+            )
             config = client.extract_config(config_type)
             client.disconnect()
 
@@ -2383,7 +2388,7 @@ def _extract_configs(args, targets, logger) -> int:
     return 0 if success_count == len(targets) else 1
 
 
-def _push_configs(args, targets, logger) -> int:
+def _push_configs(args, targets, logger, tcp_username=None, tcp_password=None) -> int:
     """Push configuration to receivers."""
     from pathlib import Path
 
@@ -2417,7 +2422,10 @@ def _push_configs(args, targets, logger) -> int:
         print(f"{'=' * 50}")
 
         try:
-            client = PolaRX5TCPClient(ip, station_id, port, timeout=args.timeout)
+            client = PolaRX5TCPClient(
+                ip, station_id, port, timeout=args.timeout,
+                username=tcp_username, password=tcp_password,
+            )
             success, errors = client.push_config(
                 commands, save_to_boot=not args.no_save
             )
@@ -2438,6 +2446,195 @@ def _push_configs(args, targets, logger) -> int:
 
     print(f"\n{'=' * 50}")
     print(f"Successfully configured {success_count}/{len(targets)} receivers")
+    return 0 if success_count == len(targets) else 1
+
+
+def cmd_rec_provision(args) -> int:
+    """Provision a Septentrio PolaRx5 receiver for fw 5.7.0."""
+    import socket
+    import time
+    from pathlib import Path
+
+    logger = setup_logging(args.loglevel)
+
+    from ..config.receivers_config import get_receivers_config
+    from ..septentrio.tcp_client import DEFAULT_CONTROL_PORT
+
+    receivers_config = get_receivers_config()
+    polarx5_config = receivers_config.get_receiver_config("polarx5")
+
+    tcp_username = polarx5_config.get("tcp_username") or None
+    tcp_password = polarx5_config.get("tcp_password") or None
+    default_port = args.port or int(polarx5_config.get("control_port", DEFAULT_CONTROL_PORT))
+
+    if not tcp_username or not tcp_password:
+        logger.error("tcp_username and tcp_password must be set in receivers.cfg [polarx5]")
+        return 1
+
+    # Load SSH public key body if requested
+    ssh_key_body: Optional[str] = None
+    if not args.skip_ssh_key:
+        key_path_str = polarx5_config.get("tcp_ssh_key_path") or None
+        if key_path_str:
+            pub_path = Path(key_path_str).expanduser().with_suffix(".pub")
+            if not pub_path.exists():
+                pub_path = Path(str(Path(key_path_str).expanduser()) + ".pub")
+            if pub_path.exists():
+                parts = pub_path.read_text().strip().split()
+                if len(parts) >= 2:
+                    ssh_key_body = parts[1]
+                    logger.debug(f"SSH key loaded from {pub_path}")
+            else:
+                logger.warning(f"SSH public key not found at {pub_path} — skipping key push")
+
+    # Build target list
+    targets = []
+    for station_id in [s.strip().upper() for s in args.stations]:
+        station_config = get_station_config(station_id)
+        if station_config is None:
+            logger.warning(f"Station {station_id} not found — SKIPPING")
+            continue
+        ip = station_config.get("ip") or station_config.get("router", {}).get("ip")
+        if not ip:
+            logger.warning(f"Station {station_id} has no IP configured — SKIPPING")
+            continue
+        port = int(station_config.get("receiver", {}).get("controlport") or default_port)
+        targets.append((station_id, ip, port))
+
+    if not targets:
+        logger.error("No valid targets found")
+        return 1
+
+    def _recv_until_prompt(sock: socket.socket, timeout: float = 5.0) -> str:
+        buf = b""
+        end = time.time() + timeout
+        while time.time() < end:
+            try:
+                sock.settimeout(1.0)
+                chunk = sock.recv(4096)
+                if chunk:
+                    buf += chunk
+                    decoded = buf.decode("utf-8", errors="ignore")
+                    if decoded.rstrip().endswith(">") and "IP" in decoded[-20:]:
+                        break
+            except (TimeoutError, OSError):
+                if buf:
+                    break
+        return buf.decode("utf-8", errors="ignore")
+
+    def _send(sock: socket.socket, cmd: str) -> str:
+        time.sleep(0.15)  # brief drain before each command (avoids mixed responses)
+        sock.sendall((cmd + "\n").encode("utf-8"))
+        return _recv_until_prompt(sock)
+
+    success_count = 0
+    for station_id, ip, port in targets:
+        print(f"\n{'=' * 55}")
+        print(f"Provisioning {station_id}  ({ip}:{port})")
+        print(f"{'=' * 55}")
+
+        if args.dry_run:
+            print(f"  [DRY RUN] login, {tcp_username}, ***")
+            print(f"  [DRY RUN] factory bootstrap if needed")
+            print(f"  [DRY RUN] sual, User2, admin, ***, User")
+            if ssh_key_body:
+                print(f"  [DRY RUN] sual, User1, {tcp_username}, ***, User, <ssh-key>")
+            print("  [DRY RUN] sis, all, FTP")
+            print("  [DRY RUN] shs, HTTP")
+            print("  [DRY RUN] eccf, Current, Boot")
+            success_count += 1
+            continue
+
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(args.timeout)
+            sock.connect((ip, port))
+
+            # Read initial prompt
+            prompt = sock.recv(1024).decode("utf-8", errors="ignore")
+            logger.debug(f"Initial prompt: {prompt!r}")
+
+            bootstrapped = False
+
+            if "$E" in prompt or not prompt.strip():
+                print(f"  ⚠  Unexpected initial response — aborting")
+                sock.close()
+                continue
+
+            # Step 1: try standard login
+            resp = _send(sock, f"login, {tcp_username}, {tcp_password}")
+            if "$R! LogIn" in resp:
+                print(f"  ✓ Logged in as {tcp_username} (accounts already exist)")
+            elif "$E: Invalid command" in resp:
+                print(f"  ✓ fw≤5.5.0 — no auth required, proceeding")
+            else:
+                # Standard login failed — try factory bootstrap (creates User1 and logs in)
+                resp = _send(
+                    sock,
+                    f"login, {tcp_username}, {tcp_password}, RxAdmin, S3pt3ntr10",
+                )
+                if "$R! LogIn" in resp:
+                    print(f"  ✓ Factory bootstrap succeeded — {tcp_username} created as User1")
+                    bootstrapped = True
+                else:
+                    print(f"  ✗ Authentication failed: {resp[:120]!r}")
+                    print(f"    Check credentials in receivers.cfg [polarx5]")
+                    sock.close()
+                    continue
+
+            # Step 2: create admin account if this was a fresh bootstrap
+            if bootstrapped:
+                resp = _send(sock, "sual, User2, admin, <your_admin_password>, User")
+                if "$R:" in resp or "$R!" in resp:
+                    print(f"  ✓ Admin account created (User2)")
+                else:
+                    print(f"  ⚠  Admin account may not have been created: {resp[:80]!r}")
+
+            # Step 3: push SSH public key to gpsops account
+            if ssh_key_body:
+                resp = _send(
+                    sock,
+                    f"sual, User1, {tcp_username}, {tcp_password}, User, {ssh_key_body}",
+                )
+                if "$R:" in resp or "$R!" in resp:
+                    print(f"  ✓ SSH public key set on {tcp_username}")
+                else:
+                    print(f"  ⚠  SSH key push: {resp[:80]!r}")
+
+            # Step 4: enable FTP, keep both plaintext (28784) and TLS (28783) command ports
+            resp = _send(sock, "sis, all, FTP")
+            if "$R:" in resp or "$R!" in resp:
+                print(f"  ✓ FTP enabled (both command ports kept active)")
+            else:
+                print(f"  ⚠  setIPServices: {resp[:80]!r}")
+
+            # Step 6: disable HTTPS redirect (keep 8060->80 router forwards working)
+            resp = _send(sock, "shs, HTTP")
+            if "$R:" in resp or "$R!" in resp:
+                print(f"  ✓ HTTPS redirect disabled (HTTP only)")
+            else:
+                print(f"  ⚠  setHttpsSettings: {resp[:80]!r}")
+
+            # Step 7: save to Boot
+            resp = _send(sock, "eccf, Current, Boot")
+            if "$R:" in resp or "$R!" in resp:
+                print(f"  ✓ Saved to Boot config")
+            else:
+                print(f"  ⚠  eccf: {resp[:80]!r}")
+
+            sock.close()
+            print(f"  → {station_id} provisioned successfully")
+            success_count += 1
+
+        except ConnectionRefusedError:
+            print(f"  ✗ Connection refused to {ip}:{port}")
+        except TimeoutError:
+            print(f"  ✗ Connection timed out to {ip}:{port}")
+        except Exception as e:
+            logger.error(f"  ✗ {station_id}: {e}")
+
+    print(f"\n{'=' * 55}")
+    print(f"Provisioned {success_count}/{len(targets)} receivers")
     return 0 if success_count == len(targets) else 1
 
 
@@ -3167,6 +3364,8 @@ def create_parser() -> argparse.ArgumentParser:
                 subparsers_map["validate"].set_defaults(func=cmd_validate)
             if "rec-config" in subparsers_map:
                 subparsers_map["rec-config"].set_defaults(func=cmd_rec_config)
+            if "rec-provision" in subparsers_map:
+                subparsers_map["rec-provision"].set_defaults(func=cmd_rec_provision)
             if "rinex" in subparsers_map:
                 subparsers_map["rinex"].set_defaults(func=cmd_rinex)
             if "tools" in subparsers_map:
