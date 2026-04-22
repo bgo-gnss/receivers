@@ -8,6 +8,22 @@ This file is a living in-repo companion to the private-vault version at `2.Areas
 
 ---
 
+## M0 — PolaRX5 firmware update (prerequisite, blocks M1.2 / M1.3 at scale)
+
+A new PolaRX5 firmware version introduces significant changes that require code updates in the `receivers` package before 15s_24hr and 1Hz_1hr downloads can be trusted across all ~90 PolaRX5 stations.
+
+| Item | Notes |
+|---|---|
+| Identify exactly what changed in the new firmware | Check Septentrio release notes; diff against current SBF parser and FTP/TCP protocol assumptions |
+| Update `polarx5_tcp_extractor.py` and any affected SBF parsers | Treat as a feature branch — `feat/polarx5-firmware-vX` — not a hotfix |
+| Update `rxtools_extractor.py` if RxTools CSV output format changed | Cross-check `bin2asc` field names against the new firmware |
+| Update receiver documentation | Protocol assumptions, SBF block versions, tested firmware versions |
+| Validate on one station before rolling to all PolaRX5 stations | Use ELDC or THOB as canary |
+
+**Branch**: `feat/polarx5-firmware-vX` → PR → merge → `git pull` on reknew before enabling M1.2/M1.3.
+
+---
+
 ## M1 — Functional rollout (sequential, gated on validation)
 
 Each step: flip `enabled: true` in `scheduler.yaml`, restart scheduler, watch 24-48h, address anything that surfaces before advancing.
@@ -71,6 +87,64 @@ Each step: flip `enabled: true` in `scheduler.yaml`, restart scheduler, watch 24
 7. **M1.4** (maintenance jobs) — last, since they depend on everything else being populated
 8. **M5** — once M1-M4 are stable
 
+## Working procedure
+
+### Git workflow
+
+The laptop is the development environment. Reknew is always a consumer — it never originates changes.
+
+**Most changes — feature branch:**
+```
+main → feat/<topic> or fix/<topic>  (laptop)
+       ↓ develop + test locally
+       ↓ PR → review → merge to main
+       ↓ git pull on reknew
+```
+
+**Minor changes — direct to main:**
+```
+fix locally on laptop → commit directly to main → push → git pull on reknew
+```
+
+**Directly on reknew**: only in rare/emergency cases. If it happens, the change must be committed back immediately — never leave reknew ahead of the repo.
+
+### Which repo
+
+| Change | Repo |
+|---|---|
+| Code, tests, docs, systemd units | `receivers` (this repo) |
+| `scheduler.yaml`, `stations.cfg`, `database.cfg` | `gps-config-data` |
+
+Same rules apply to both repos — git is always the source of truth.
+
+### When to use a PR vs. direct commit to main
+
+| Use a PR | Commit directly to main |
+|---|---|
+| New feature, significant refactor | Single-line fix, typo, comment |
+| Anything touching the download pipeline or DB writers | Config-only tweak with no logic change |
+| M0 firmware work, M3 sd_notify integration | Trivial doc addition |
+| Changes that need local testing before reknew sees them | Changes that are obviously safe |
+
+### Documentation split
+
+| What to document | Where |
+|---|---|
+| What changed and how to reproduce | `docs/` in repo; update roadmap milestone status |
+| Why a decision was made, alternatives rejected | bgovault private companion note (`1776795087-production-roadmap.md`) |
+| Server-specific notes, timestamps, operator diary | bgovault companion note |
+| Significant architectural learnings (non-obvious, reusable) | `CLAUDE.md` + memory files |
+
+### Branch naming
+
+| Type | Pattern |
+|---|---|
+| New feature or milestone work | `feat/<topic>` |
+| Bug fix | `fix/<topic>` |
+| Docs only | `docs/<topic>` |
+
+---
+
 ## Lessons from the 2026-04-20/21 bootstrap
 
 All fixed in PR #7 (merged). Captured here for future-operators hitting the same issues on a different host:
@@ -86,5 +160,5 @@ All fixed in PR #7 (merged). Captured here for future-operators hitting the same
 
 ---
 
-**Updated**: 2026-04-21
+**Updated**: 2026-04-22
 **Private-vault companion**: `bgovault/1.Projects/Work_GPS_Receivers/1776795087-production-roadmap.md`
