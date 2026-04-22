@@ -193,17 +193,35 @@ class PolaRX5(BaseReceiver):
                 # routers where active mode PORT commands fail (IP mismatch).
                 self.pasv = True
 
-            # FTP credentials (fw 5.7.0 requires authenticated FTP)
+            # FTP credentials — only fw 5.7.0+ requires authenticated FTP.
+            # Read firmware_version from stations.cfg to gate credential use:
+            # unset or < 5.7.0 → anonymous; >= 5.7.0 → use configured credentials.
             self.ftp_anonymous = True
             self.ftp_username: Optional[str] = None
             self.ftp_password: Optional[str] = None
             try:
                 from ..config.receivers_config import get_receivers_config
+                from ..health.polarx5_tcp_extractor import _firmware_requires_auth
 
                 rec_cfg = get_receivers_config().get_receiver_config("polarx5")
                 anon_str = str(rec_cfg.get("ftp_anonymous_login", "true")).lower()
-                self.ftp_anonymous = anon_str not in ("false", "0", "no")
-                if not self.ftp_anonymous:
+                # ftp_anonymous_login=false means "use credentials" → cfg_wants_auth=True
+                cfg_wants_auth = anon_str in ("false", "0", "no")
+
+                # Gate on firmware version — default to anonymous when unset or pre-5.7
+                fw_ver: Optional[str] = None
+                try:
+                    import gps_parser as _gps
+
+                    raw = _gps.ConfigParser().getStationInfo(self.station_id)
+                    station_raw = raw.get("station", {}) if isinstance(raw, dict) else {}
+                    fw_ver = station_raw.get("receiver_firmware_version") or None
+                except Exception:
+                    pass
+
+                uses_auth = cfg_wants_auth and fw_ver is not None and _firmware_requires_auth(fw_ver)
+                self.ftp_anonymous = not uses_auth
+                if uses_auth:
                     self.ftp_username = rec_cfg.get("tcp_username") or None
                     self.ftp_password = rec_cfg.get("tcp_password") or None
             except Exception:
