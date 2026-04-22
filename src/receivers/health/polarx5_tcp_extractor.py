@@ -32,6 +32,15 @@ from typing import Any, Dict, List, Optional, Tuple
 from .metrics import MetricChecker, load_thresholds
 
 
+def _firmware_requires_auth(firmware_version: str) -> bool:
+    """Return True if the firmware version requires TCP authentication (>= 5.7.0)."""
+    try:
+        parts = [int(x) for x in firmware_version.split(".")]
+        return parts >= [5, 7, 0]
+    except (ValueError, AttributeError):
+        return True  # Unknown format — attempt auth to be safe
+
+
 class PolaRX5TCPExtractor:
     """Extract live health data from PolaRX5 via TCP command interface."""
 
@@ -80,6 +89,7 @@ class PolaRX5TCPExtractor:
         # Loaded from receivers.cfg [polarx5] section, with per-station override
         self.tcp_username: Optional[str] = None
         self.tcp_password: Optional[str] = None
+        self.firmware_version: Optional[str] = None  # from stations.cfg; gates _login()
         try:
             from ..config.receivers_config import get_receivers_config
 
@@ -104,6 +114,17 @@ class PolaRX5TCPExtractor:
                     self.tcp_password = cfg["tcp_password"]
         except Exception as e:
             self.logger.debug(f"Could not load station config: {e}")
+
+        # Load firmware_version directly from stations.cfg (get_station_config parses only
+        # known structured fields; receiver_firmware_version is a pass-through raw field)
+        try:
+            import gps_parser as _gps
+
+            raw = _gps.ConfigParser().getStationInfo(station_id)
+            station_raw = raw.get("station", {}) if isinstance(raw, dict) else {}
+            self.firmware_version = station_raw.get("receiver_firmware_version") or None
+        except Exception as e:
+            self.logger.debug(f"Could not read firmware_version from stations.cfg: {e}")
         config = load_thresholds(receiver_type="PolaRX5", power_type=power_type)
         self.metric_checker = MetricChecker(config)
 
@@ -1005,6 +1026,9 @@ class PolaRX5TCPExtractor:
             return True
         if self._auth_failed:
             # Previous attempt in this health check cycle failed — skip to avoid lockout.
+            return True
+        if self.firmware_version and not _firmware_requires_auth(self.firmware_version):
+            # Known pre-5.7 firmware — commands work without authentication.
             return True
 
         cmd = f"login, {self.tcp_username}, {self.tcp_password}\n"

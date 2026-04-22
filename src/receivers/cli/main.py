@@ -1650,6 +1650,20 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
             include_ntrip=include_ntrip,
         )
 
+        # Persist receiver identity to stations.cfg if retrieved
+        identity = health.get("receiver_identity", {})
+        if identity:
+            from ..config.receivers_config import update_station_identity_in_cfg
+
+            updated = update_station_identity_in_cfg(
+                station_id,
+                firmware_version=identity.get("firmware_version"),
+                receiver_model=identity.get("receiver_model"),
+                serial_number=identity.get("serial_number"),
+            )
+            if updated:
+                logger.info(f"[{station_id}] Updated receiver identity in stations.cfg")
+
         # Save to JSON if requested
         if getattr(args, "save_json", False):
             json_path = receiver.save_health_to_json(health)
