@@ -1692,6 +1692,13 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
             # Human-readable output (detailed)
             print(f"Station: {health['station_id']}")
             print(f"Receiver Type: {health['receiver_type']}")
+            identity = health.get("receiver_identity", {})
+            if identity.get("receiver_model"):
+                print(f"Model: {identity['receiver_model']}")
+            if identity.get("firmware_version"):
+                print(f"Firmware: {identity['firmware_version']}")
+            if identity.get("serial_number"):
+                print(f"Serial: {identity['serial_number']}")
             print(f"Timestamp: {health.get('timestamp', 'N/A')}")
             print(f"Overall Status: {health.get('overall_status', 'unknown').upper()}")
 
