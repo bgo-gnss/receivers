@@ -67,7 +67,7 @@ setUserAccessLevel, User2, admin, 4Supersil!, User
 setUserAccessLevel, User1, gpsops, GPS123ops, User, AAAA...base64key...==
 
 # 5. Enable FTP for the IMO download workflow
-setIPServices, secure, FTP
+sis, all, FTP
 
 # 6. Disable HTTPS redirect (keeps existing router port-forwards 8060->80 working)
 setHttpsSettings, HTTP
@@ -319,7 +319,7 @@ login, gpsops, GPS123ops, RxAdmin, S3pt3ntr10
 setUserAccessLevel, User2, admin, 4Supersil!, User
 
 # Enable FTP for IMO download workflow
-setIPServices, secure, FTP
+sis, all, FTP
 
 # Keep web interface on HTTP (router forwards 8060→80, not 443)
 setHttpsSettings, HTTP
