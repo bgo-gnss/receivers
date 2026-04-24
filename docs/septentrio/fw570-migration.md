@@ -30,6 +30,9 @@ The key mandate is eliminating insecure-by-default configurations.
 - `login` on receivers running ≤5.5.0 firmware returns `$E: Invalid command!` (the command did not exist). The updated `polarx5_tcp_extractor.py` treats this response as "old firmware — proceed unauthenticated", so it works against both firmware versions.
 - SBF block format and block IDs are unchanged between 5.5.0 and 5.7.0 for the blocks we parse (4101, 4014, 4059, 4082).
 - `bin2asc` (RxTools) output format is unchanged for these blocks — `rxtools_extractor.py` requires no changes.
+- **Getter abbreviations removed**: `gsis` and `gshs` (short forms of `getIPServices` / `getHttpsSettings`)
+  return `$R? Invalid command!` on fw 5.7.0. Use the full command names. Setter abbreviations (`sis`,
+  `shs`, `sual`, `eccf`) still work. Confirmed on GJAC (2026-04-24).
 
 ---
 
@@ -41,7 +44,9 @@ After provisioning, the `receivers` package handles everything programmatically.
 ### Prerequisites
 
 - TCP access to the receiver on port 28784 (plaintext)
-- Factory credentials: `RxAdmin` / `S3pt3ntr10` (Septentrio-wide, documented in the Reference Guide)
+- Factory credentials: configured in `receivers.cfg [polarx5]` as `factory_username` / `factory_password`.
+  Septentrio-wide defaults: `RxAdmin` / `S3pt3ntr10` (documented in Septentrio Reference Guide § 3.5).
+  Override in `receivers.cfg` only if your fleet ships with non-standard factory credentials.
 - The receiver must have **no user accounts** (fresh install or post-factory-reset state)
 
 ### Step-by-step provisioning sequence
@@ -238,6 +243,12 @@ upgrading to fw 5.7.0 — no router change required for the web interface.
 ---
 
 ### Procedure 1 — Firmware Upgrade to 5.7.0
+
+> **⚠ PREREQUISITE — do this before starting the upgrade:**
+> Port **28783 (TLS)** must be forwarded on the router before uploading firmware.
+> After the reboot, port 28784 closes immediately. Port 28783 is the only remaining
+> entry point. Without it, recovery requires a physical site visit.
+> See the port-forward table above — add the `28783 → 28783` rule now.
 
 **What happens during upgrade**: The firmware upgrade resets the `SISAuthData` permanent
 command area, setting `sis = secure` (TLS-only). After the reboot, port 28784 (plaintext)

@@ -2488,6 +2488,8 @@ def cmd_rec_provision(args) -> int:
 
     tcp_username = polarx5_config.get("tcp_username") or None
     tcp_password = polarx5_config.get("tcp_password") or None
+    factory_username = polarx5_config.get("factory_username") or "RxAdmin"
+    factory_password = polarx5_config.get("factory_password") or "S3pt3ntr10"
     default_port = args.port or int(polarx5_config.get("control_port", DEFAULT_CONTROL_PORT))
 
     if not tcp_username or not tcp_password:
@@ -2558,7 +2560,7 @@ def cmd_rec_provision(args) -> int:
 
         if args.dry_run:
             print(f"  [DRY RUN] login, {tcp_username}, ***")
-            print(f"  [DRY RUN] factory bootstrap if needed")
+            print(f"  [DRY RUN] factory bootstrap if needed (factory_username={factory_username})")
             print(f"  [DRY RUN] sual, User2, admin, ***, User")
             if ssh_key_body:
                 print(f"  [DRY RUN] sual, User1, {tcp_username}, ***, User, <ssh-key>")
@@ -2611,7 +2613,7 @@ def cmd_rec_provision(args) -> int:
                 # Standard login failed — try factory bootstrap (creates User1 and logs in)
                 resp = _send(
                     sock,
-                    f"login, {tcp_username}, {tcp_password}, RxAdmin, S3pt3ntr10",
+                    f"login, {tcp_username}, {tcp_password}, {factory_username}, {factory_password}",
                 )
                 if "$R! LogIn" in resp:
                     print(f"  ✓ Factory bootstrap succeeded — {tcp_username} created as User1")
