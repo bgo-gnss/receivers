@@ -2515,9 +2515,9 @@ class PolaRX5(BaseReceiver):
             # Build port configuration from station config
             receiver_config = self.station_info.get("receiver", {})
             port_config = {
-                "ftp": int(receiver_config.get("ftpport", 2160)),
-                "http": int(receiver_config.get("httpport", 8060)),
-                "control": int(receiver_config.get("controlport", 28784)),
+                "ftp": int(receiver_config.get("ftpport") or 2160),
+                "http": int(receiver_config.get("httpport") or 8060),
+                "control": int(receiver_config.get("controlport") or 28784),
             }
             control_port = port_config["control"]
 
