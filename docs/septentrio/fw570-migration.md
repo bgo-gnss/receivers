@@ -202,17 +202,267 @@ what the firmware recognises. Verify against GJAC.
 
 ## Validation Checklist (GJAC)
 
-Before rolling fw 5.7.0 changes to the full fleet, validate on GJAC:
+All items validated on GJAC (2026-04-22). Ready for fleet rollout.
 
-- [ ] TCP login succeeds with `gpsops` / `<your_password>`
-- [ ] `esoc` returns `PowerStatus` (4101) block correctly
-- [ ] `esoc` returns `ReceiverStatus2` (4014) block with temperature field populated
-- [ ] `esoc` returns `DiskStatus` (4059) block with non-zero values
-- [ ] FTP download of `status_1hr` session files works (confirms FTP is enabled)
-- [ ] `receivers health GJAC` produces correct health data end-to-end
-- [ ] `receivers download GJAC --session status_1hr --sync` completes successfully
-- [ ] Reboot receiver (`eccf, Current, Boot` already done) — confirm settings persist
-- [ ] Login still works after reboot (accounts in Boot config)
+- [x] TCP login succeeds with `gpsops` / `<your_password>` — confirmed 2026-04-22
+- [x] `esoc` returns `PowerStatus` (4101) block correctly — 12.55 V confirmed 2026-04-22
+- [x] `esoc` returns `ReceiverStatus2` (4014) block with temperature field populated — 22 °C confirmed 2026-04-22
+- [x] `esoc` returns `DiskStatus` (4059) block with non-zero values — 3.0% / 15257 MB confirmed 2026-04-22
+- [x] FTP download of `status_1hr` session files works — 3 files downloaded, 0 errors, 2026-04-22
+- [x] `receivers health GJAC` produces correct health data end-to-end — HEALTHY, 11/11 green, 2026-04-22
+- [x] `receivers download GJAC --session status_1hr --sync` completes successfully — confirmed 2026-04-22
+- [x] Reboot receiver — settings persist across power cycle, confirmed 2026-04-22
+- [x] Login still works after reboot — accounts survive in Boot config, confirmed 2026-04-22
+
+---
+
+## Operational Procedures
+
+Required router port-forwards:
+
+| Router port | Receiver port | Purpose | Required for |
+|-------------|---------------|---------|-------------|
+| 8060 | 80 | HTTP web interface | Always |
+| 2160 | 21 | FTP data download | Always |
+| 28784 | 28784 | TCP control (plaintext) | Normal operation |
+| 28783 | 28783 | TCP control (TLS) | **Fw upgrade recovery** |
+
+**Port 28783 must be forwarded before doing any remote firmware upgrade.** After a fw
+upgrade, `sis` resets to `secure` — port 28784 closes immediately on reboot. Port 28783
+(TLS) is the only remaining entry point. Without it, recovery requires a physical site visit.
+
+Port 8060→443 is **not** needed. The provisioning sequence uses `shs, HTTP` to keep the
+web interface on plain HTTP, so the existing 8060→80 forward continues to work after
+upgrading to fw 5.7.0 — no router change required for the web interface.
+
+---
+
+### Procedure 1 — Firmware Upgrade to 5.7.0
+
+**What happens during upgrade**: The firmware upgrade resets the `SISAuthData` permanent
+command area, setting `sis = secure` (TLS-only). After the reboot, port 28784 (plaintext)
+is closed and port 28783 (TLS) is open. User accounts and network settings are preserved.
+
+#### Programmatic
+
+```bash
+# Step 1 — upload firmware via web interface (no CLI command for this)
+#   Browser → http://<station-ip>:8060 → Admin → Upgrade Firmware
+#   Upload the .sfx firmware file and wait for the receiver to reboot (~3 min)
+
+# Step 2 — restore FTP and plaintext TCP access (TLS fallback is automatic)
+receivers rec-provision STATION
+
+# Step 3 — verify
+receivers health STATION
+```
+
+`rec-provision` tries port 28784 first; on `ConnectionRefusedError` falls back to 28783
+(TLS) automatically. It re-sends `sis, all, FTP` and `shs, HTTP`, restoring both FTP and
+plaintext TCP without any manual intervention.
+
+#### Manual
+
+```bash
+# After the reboot, port 28784 is closed. Connect via TLS:
+openssl s_client -connect <ip>:28783 -quiet
+
+# At the IP10> prompt:
+login, gpsops, <your_password>
+sis, all, FTP          # re-enable FTP + plaintext TCP
+shs, HTTP              # keep web interface on HTTP (no redirect to HTTPS)
+eccf, Current, Boot    # save to boot config
+
+# Verify:
+getIPServices
+getHttpsSettings
+```
+
+---
+
+### Procedure 2 — New Receiver Setup (fw 5.7.0 factory state)
+
+A receiver shipped or factory-reset with fw 5.7.0 has no user accounts, FTP disabled,
+and HTTPS redirect enabled. Port 28784 is open (TLS not yet enforced on a blank receiver).
+
+#### Programmatic
+
+```bash
+receivers rec-provision STATION
+```
+
+This performs the full bootstrap sequence: creates `gpsops` account using factory
+credentials, enables FTP, sets HTTP-only web interface, pushes SSH key, and saves
+everything to boot config.
+
+#### Manual
+
+```
+# Connect to port 28784 (plaintext — open on factory-fresh receiver)
+nc <ip> 28784
+
+# At the IP10> prompt — bootstrap using factory credentials:
+login, gpsops, <your_password>, RxAdmin, S3pt3ntr10
+
+# Add admin account
+setUserAccessLevel, User2, admin, <your_admin_password>, User
+
+# Enable FTP for IMO download workflow
+setIPServices, secure, FTP
+
+# Keep web interface on HTTP (router forwards 8060→80, not 443)
+setHttpsSettings, HTTP
+
+# (Optional) push SSH public key for passwordless SFTP
+#   Extract base64 body: awk '{print $2}' ~/.ssh/polarx5_gpsops.pub
+setUserAccessLevel, User1, gpsops, <your_password>, User, AAAA...base64...==
+
+# Save to boot config
+eccf, Current, Boot
+
+# Verify
+getUserAccessLevel
+getIPServices
+getHttpsSettings
+```
+
+---
+
+### Procedure 3 — Config Push on fw 5.7.0
+
+Pushing a station config file to a receiver that already has accounts set up.
+
+**Critical rule**: the config file must contain **zero** `setUserAccessLevel` / `sual` lines.
+Pushing `sual` commands overwrites existing accounts, including wiping the SSH key and
+potentially locking out access.
+
+#### Programmatic
+
+```bash
+# Verify the config file has no sual lines before pushing
+grep -i "setUserAccessLevel\|sual" /path/to/STATION_config.txt
+# (must return nothing)
+
+receivers rec-config STATION --push /path/to/STATION_config.txt
+
+# Confirm receiver accepted the config
+receivers health STATION
+```
+
+#### Manual
+
+```bash
+# 1. Inspect the config file — must be zero sual/setUserAccessLevel lines
+grep -i "setUserAccessLevel\|sual" STATION_config.txt
+
+# 2. Connect via TCP
+nc <ip> 28784
+
+# 3. Log in (required on fw 5.7.0)
+login, gpsops, <your_password>
+
+# 4. Paste or send each non-sual command from the config file
+#    Example commands (adjust to the actual config):
+setNMEAOutput, ...
+setSBFOutput, ...
+...
+
+# 5. Save to boot config
+eccf, Current, Boot
+```
+
+#### gps_taeki config file naming convention
+
+Config files stored in the `gps_taeki` repository follow this naming scheme:
+
+```
+PolaRx5_{STATION}_{description}_{YYYYMMDD}.txt
+```
+
+Examples:
+```
+PolaRx5_GJAC_initial_provision_20260422.txt
+PolaRx5_ELDC_sbf_output_update_20260301.txt
+```
+
+Files must never contain `setUserAccessLevel` or `sual` lines — these are managed
+exclusively by `rec-provision` and must not appear in pushable config files.
+
+---
+
+### Procedure 4 — Add Incremental Config (e.g. `Add_PolaRx5_health_session.txt`)
+
+Used when adding a specific set of commands to an existing, already-provisioned receiver
+without touching the full station config. Examples: adding a new SBF logging session,
+enabling new constellations, updating NTRIP settings.
+
+These `Add_*` files contain only the commands being added — **no `sual` lines, no
+networking commands, no `eccf`** (the add-file must not save to boot; the operator
+saves after verifying). The `eccf` is a deliberate last step.
+
+#### Programmatic
+
+```bash
+# Verify the file has no sual lines
+grep -i "setUserAccessLevel\|sual" Add_PolaRx5_health_session.txt
+# (must return nothing)
+
+receivers rec-config STATION --push Add_PolaRx5_health_session.txt
+
+# Confirm the session appeared on the receiver
+receivers health STATION
+```
+
+#### Manual (TCP)
+
+```bash
+nc <ip> 28784
+
+# fw 5.7.0 requires login first
+login, gpsops, <your_password>
+
+# Paste the commands from the Add_* file:
+setSBFOutput, Stream7, LOG5
+setSBFOutput, Stream7, , PVTGeodetic+PosCovGeodetic+ReceiverTime+...
+setSBFOutput, Stream7, , , sec60
+setLogSession, LOG5, Enabled
+setLogSession, LOG5, , , 'status_1hr'
+setLogSession, LOG5, , , , After1Year
+setLogSession, LOG5, , , , , High
+setFileNaming, LOG5, IGS1H
+setFileNaming, LOG5, , , on
+
+# Verify the session is configured as expected
+getLogSession
+
+# Then save to boot config
+eccf, Current, Boot
+```
+
+#### Manual (web GUI)
+
+1. Browser → `http://<station-ip>:8060` → **Expert Control**
+2. Navigate to the relevant section (e.g. SBF Output, Logging)
+3. Add settings manually via the GUI
+4. Click **Save to Boot** when satisfied
+
+The web GUI approach is slower but useful when the exact command syntax is uncertain —
+the GUI validates input and shows current state side-by-side.
+
+#### Config file naming (Add_* files in gps_taeki)
+
+Add-files are shared across stations (not station-specific), so they live in the top-level
+config directory (not `station_config/`) and follow this naming:
+
+```
+Add_PolaRx5_{description}.txt
+```
+
+Examples:
+```
+Add_PolaRx5_health_session.txt
+Add_PolaRx5_Galileo_BDS_NTR2.txt
+```
 
 ---
 
