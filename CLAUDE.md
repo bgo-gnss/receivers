@@ -531,6 +531,31 @@ All scheduler functionality maintains complete compatibility with manual operati
 - Same validation and error handling for both modes
 - Shared logging and audit systems
 
+## Deployment (rek-d01.vedur.is)
+
+**SSH targets**: `bgo@rek-d01.vedur.is` (code/install), `gpsops@rek-d01.vedur.is` (operational checks)
+
+**Role split**: bgo owns venv + code (`~/git/receivers/`); gpsops owns config + data + DB + logs.
+bgo is in the gpsops group — can read/write gpsops-owned dirs without owning them.
+
+**Deploy flow**:
+1. Merge branch to main
+2. On rek-d01 as bgo: `cd ~/git/receivers && git pull`
+3. Reinstall: `sudo bash deployment/server/install.sh` (idempotent; `--update` skips slow phases)
+
+**Config source**: install.sh Phase 5 checks `~/git/gps-config-data/<file>` first, then `config/defaults/<file>`.
+`~/git/gps-config-data/receivers.cfg` must exist (non-template) for TCP credentials to deploy correctly.
+
+**Log locations** (read as gpsops or bgo via group membership):
+- Main log: `~/.cache/gps_receivers/logs/receivers.log`
+- Audit: `~/.cache/gps_receivers/logs/download_audit.jsonl`
+
+**Quick health check**: `ssh gpsops@rek-d01.vedur.is 'receivers health GJAC'`
+
+**Gotcha**: After a PolaRX5 fw upgrade, `sis` resets to `secure` (TLS-only, port 28784 closes).
+Any provisioning changes made on the laptop must be committed to gps-config-data or they will be
+lost on the next `install.sh` run.
+
 ## Troubleshooting
 
 ### Common Issues

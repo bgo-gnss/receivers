@@ -505,7 +505,11 @@ fi
 if [[ -f "$CONFIG_DIR/receivers.cfg" ]]; then
     sed -i "s|^data_prepath\s*=.*|data_prepath = $DATA_DIR/|" "$CONFIG_DIR/receivers.cfg"
     sed -i "s|^tmp_dir\s*=.*|tmp_dir = $CACHE_DIR/tmp/|" "$CONFIG_DIR/receivers.cfg"
-    ok "Patched receivers.cfg (data_prepath=$DATA_DIR/)"
+    # Uncomment PolaRX5 TCP credentials (commented-out in package defaults for portability;
+    # idempotent: sed is a no-op when lines are already uncommented)
+    sed -i 's/^# tcp_username = /tcp_username = /' "$CONFIG_DIR/receivers.cfg"
+    sed -i 's/^# tcp_password = /tcp_password = /' "$CONFIG_DIR/receivers.cfg"
+    ok "Patched receivers.cfg (data_prepath=$DATA_DIR/, TCP auth activated)"
 fi
 
 # ===========================================================================
@@ -767,8 +771,8 @@ sed -e "s|WorkingDirectory=.*|WorkingDirectory=$INSTALL_DIR|" \
     > /etc/systemd/system/gps-receivers-scheduler.service
 
 systemctl daemon-reload
-systemctl enable gps-receivers-scheduler
-ok "systemd service installed and enabled"
+systemctl enable --now gps-receivers-scheduler
+ok "systemd service installed, enabled, and started"
 
 # Logrotate
 if [[ -f "$INSTALL_DIR/deployment/logrotate.d/gps-receivers" ]]; then
