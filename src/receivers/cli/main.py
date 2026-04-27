@@ -2536,6 +2536,8 @@ def cmd_rec_provision(args) -> int:
     set_ip = getattr(args, "set_ip", None)
     gateway = getattr(args, "gateway", None) or polarx5_config.get("desk_gateway") or "192.168.100.1"
     netmask = getattr(args, "netmask", None) or polarx5_config.get("desk_netmask") or "255.255.255.0"
+    dns1 = getattr(args, "dns1", None) or polarx5_config.get("desk_dns1") or ""
+    dns2 = getattr(args, "dns2", None) or polarx5_config.get("desk_dns2") or ""
     apply_config = getattr(args, "apply_config", None)
 
     if not tcp_username or not tcp_password:
@@ -2618,7 +2620,10 @@ def cmd_rec_provision(args) -> int:
             print(f"  [DRY RUN] factory bootstrap if needed (factory_username={factory_username})")
             print("  [DRY RUN] sual, User2, admin, ***, User")
             if set_ip:
-                print(f"  [DRY RUN] setIPSettings, Static, '{set_ip}', '{netmask}', '{gateway}'")
+                if dns1 or dns2:
+                    print(f"  [DRY RUN] setIPSettings, Static, '{set_ip}', '{netmask}', '{gateway}', '', '{dns1}', '{dns2}'")
+                else:
+                    print(f"  [DRY RUN] setIPSettings, Static, '{set_ip}', '{netmask}', '{gateway}'")
             if ssh_key_body:
                 print(f"  [DRY RUN] sual, User1, {tcp_username}, ***, User, <ssh-key>")
             print("  [DRY RUN] sis, all, FTP")
@@ -2697,9 +2702,15 @@ def cmd_rec_provision(args) -> int:
 
             # Step 3a: assign static IP (permanent — survives factoryReset, no eccf needed)
             if set_ip:
-                resp = _send(sock, f"setIPSettings, Static, '{set_ip}', '{netmask}', '{gateway}'")
+                if dns1 or dns2:
+                    ip_cmd = f"setIPSettings, Static, '{set_ip}', '{netmask}', '{gateway}', '', '{dns1}', '{dns2}'"
+                    dns_note = f" dns={dns1}/{dns2}"
+                else:
+                    ip_cmd = f"setIPSettings, Static, '{set_ip}', '{netmask}', '{gateway}'"
+                    dns_note = ""
+                resp = _send(sock, ip_cmd)
                 if "$R:" in resp or "$R!" in resp:
-                    print(f"  ✓ IP set: {set_ip}/{netmask} gw {gateway} (permanent, takes effect on reboot)")
+                    print(f"  ✓ IP set: {set_ip}/{netmask} gw {gateway}{dns_note} (permanent, takes effect on reboot)")
                 else:
                     print(f"  ⚠  setIPSettings: {resp[:80]!r}")
                 time.sleep(1.5)  # receiver briefly suspends I/O while applying IP change

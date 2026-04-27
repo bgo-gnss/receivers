@@ -700,6 +700,18 @@ Examples:
         default=None,
         help="Subnet mask for --set-ip (default: 255.255.255.0)",
     )
+    net_group.add_argument(
+        "--dns1",
+        metavar="IP",
+        default=None,
+        help="Primary DNS for --set-ip (default: desk_dns1 from receivers.cfg)",
+    )
+    net_group.add_argument(
+        "--dns2",
+        metavar="IP",
+        default=None,
+        help="Secondary DNS for --set-ip (default: desk_dns2 from receivers.cfg)",
+    )
 
     cfg_group = parser.add_argument_group("receiver config")
     cfg_group.add_argument(
