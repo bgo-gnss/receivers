@@ -38,7 +38,9 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-def get_station_config(station_id: str, *, silent: bool = False) -> Optional[Dict[str, Any]]:
+def get_station_config(
+    station_id: str, *, silent: bool = False
+) -> Optional[Dict[str, Any]]:
     """Get complete station configuration from gps_parser.
 
     Args:

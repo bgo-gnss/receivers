@@ -689,5 +689,7 @@ def update_station_identity_in_cfg(
     if serial_number:
         updates["receiver_serial"] = serial_number
 
-    results = [_update_cfg_field(cfg_path, station_id, k, v) for k, v in updates.items()]
+    results = [
+        _update_cfg_field(cfg_path, station_id, k, v) for k, v in updates.items()
+    ]
     return any(results)

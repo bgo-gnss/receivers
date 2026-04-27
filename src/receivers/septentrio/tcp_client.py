@@ -45,7 +45,7 @@ from typing import List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 # Default TCP command ports for Septentrio receivers
-DEFAULT_CONTROL_PORT = 28784         # Plaintext
+DEFAULT_CONTROL_PORT = 28784  # Plaintext
 DEFAULT_SECURE_CONTROL_PORT = 28783  # TLS (same protocol, wrapped)
 DEFAULT_TIMEOUT = 10.0
 
@@ -158,9 +158,13 @@ class PolaRX5TCPClient:
         if "$R! LogIn" in decoded or "$R: login" in decoded:
             self.logger.debug(f"TCP login successful for {self.station_id}")
         elif "$E: Invalid command" in decoded:
-            self.logger.debug(f"Login not recognised by {self.station_id} — fw≤5.5.0, proceeding")
+            self.logger.debug(
+                f"Login not recognised by {self.station_id} — fw≤5.5.0, proceeding"
+            )
         elif "Wrong username or password" in decoded:
-            self.logger.warning(f"TCP auth failed for {self.station_id}: wrong credentials")
+            self.logger.warning(
+                f"TCP auth failed for {self.station_id}: wrong credentials"
+            )
 
     def disconnect(self) -> None:
         """Close TCP connection."""
@@ -181,7 +185,7 @@ class PolaRX5TCPClient:
         Returns:
             Connection ID (e.g., "IP11")
         """
-        m = re.search(r'IP(\d+)', prompt)
+        m = re.search(r"IP(\d+)", prompt)
         return f"IP{m.group(1)}" if m else "IP11"
 
     def send_command(self, command: str, wait_time: float = 0.1) -> str:

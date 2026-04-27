@@ -58,9 +58,13 @@ class PolaRX5TCPExtractor:
     BLOCK_QUALITY_IND = 4082
     BLOCK_NTRIP_SERVER_STATUS = 4122  # NTRIP server connections
     BLOCK_NTRIP_CLIENT_STATUS = 4053  # NTRIP client connection
-    BLOCK_RECEIVER_SETUP = 5902  # ReceiverSetup - model, firmware, serial (all fw versions)
+    BLOCK_RECEIVER_SETUP = (
+        5902  # ReceiverSetup - model, firmware, serial (all fw versions)
+    )
 
-    SECURE_CONTROL_PORT = 28783  # TLS port — used when sis=secure (fw upgrade resets to this)
+    SECURE_CONTROL_PORT = (
+        28783  # TLS port — used when sis=secure (fw upgrade resets to this)
+    )
 
     def __init__(
         self,
@@ -86,8 +90,12 @@ class PolaRX5TCPExtractor:
         self.timeout = timeout
         self.logger = logging.getLogger(f"receivers.health.{station_id}")
         self._connection_id = None  # Will be detected from prompt (e.g., "IP11")
-        self._auth_failed = False   # Set on first bad-creds response; skips login for rest of session
-        self.use_tls = False        # Set on first TLS fallback; subsequent connections reuse TLS
+        self._auth_failed = (
+            False  # Set on first bad-creds response; skips login for rest of session
+        )
+        self.use_tls = (
+            False  # Set on first TLS fallback; subsequent connections reuse TLS
+        )
 
         # TCP credentials for fw 5.7.0 authentication
         # Loaded from receivers.cfg [polarx5] section, with per-station override
@@ -487,7 +495,9 @@ class PolaRX5TCPExtractor:
                                 "ReceiverSetup unauthenticated esoc blocked — fw requires auth"
                             )
                             return None  # Needs auth — caller will retry with login
-                        result = self._find_sbf_block(response, self.BLOCK_RECEIVER_SETUP)
+                        result = self._find_sbf_block(
+                            response, self.BLOCK_RECEIVER_SETUP
+                        )
                         if result is not None:
                             return result
                 except TimeoutError:
@@ -546,7 +556,9 @@ class PolaRX5TCPExtractor:
                     "ReceiverSetup unavailable unauthenticated and no credentials configured"
                 )
                 return None
-            sbf_data = self._send_sbf_request("ReceiverSetup", self.BLOCK_RECEIVER_SETUP)
+            sbf_data = self._send_sbf_request(
+                "ReceiverSetup", self.BLOCK_RECEIVER_SETUP
+            )
         if not sbf_data:
             return None
 
@@ -726,7 +738,7 @@ class PolaRX5TCPExtractor:
 
                         # Check if response ends with prompt (IPxx>)
                         decoded = response.decode("utf-8", errors="ignore")
-                        if re.search(r'IP\d+>', decoded[-30:]):
+                        if re.search(r"IP\d+>", decoded[-30:]):
                             break
                 except TimeoutError:
                     if response:
@@ -1084,7 +1096,7 @@ class PolaRX5TCPExtractor:
                 if chunk:
                     response += chunk
                     decoded = response.decode("utf-8", errors="ignore")
-                    if re.search(r'IP\d+>', decoded[-30:]):
+                    if re.search(r"IP\d+>", decoded[-30:]):
                         break
             except TimeoutError:
                 if response:
@@ -1101,7 +1113,10 @@ class PolaRX5TCPExtractor:
                 f"Login not recognised by {self.station_id} — assuming fw≤5.5.0, proceeding"
             )
             return True
-        elif "Wrong username or password" in decoded or "Too many failed login" in decoded:
+        elif (
+            "Wrong username or password" in decoded
+            or "Too many failed login" in decoded
+        ):
             self._auth_failed = True
             self.logger.warning(
                 f"TCP auth failed for {self.station_id}: wrong username or password"
