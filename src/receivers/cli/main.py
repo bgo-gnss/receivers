@@ -2522,7 +2522,7 @@ def cmd_rec_provision(args) -> int:
     logger = setup_logging(args.loglevel)
 
     from ..config.receivers_config import get_receivers_config
-    from ..septentrio.tcp_client import DEFAULT_CONTROL_PORT
+    from ..septentrio.tcp_client import DEFAULT_CONTROL_PORT, load_config_from_file
 
     receivers_config = get_receivers_config()
     polarx5_config = receivers_config.get_receiver_config("polarx5")
@@ -2532,6 +2532,11 @@ def cmd_rec_provision(args) -> int:
     factory_username = polarx5_config.get("factory_username") or "RxAdmin"
     factory_password = polarx5_config.get("factory_password") or "S3pt3ntr10"
     default_port = args.port or int(polarx5_config.get("control_port", DEFAULT_CONTROL_PORT))
+
+    set_ip = getattr(args, "set_ip", None)
+    gateway = getattr(args, "gateway", None) or polarx5_config.get("desk_gateway") or "192.168.100.1"
+    netmask = getattr(args, "netmask", None) or polarx5_config.get("desk_netmask") or "255.255.255.0"
+    apply_config = getattr(args, "apply_config", None)
 
     if not tcp_username or not tcp_password:
         logger.error("tcp_username and tcp_password must be set in receivers.cfg [polarx5]")
@@ -2612,11 +2617,19 @@ def cmd_rec_provision(args) -> int:
             print(f"  [DRY RUN] login, {tcp_username}, ***")
             print(f"  [DRY RUN] factory bootstrap if needed (factory_username={factory_username})")
             print("  [DRY RUN] sual, User2, admin, ***, User")
+            if set_ip:
+                print(f"  [DRY RUN] setIPSettings, Static, '{set_ip}', '{netmask}', '{gateway}'")
             if ssh_key_body:
                 print(f"  [DRY RUN] sual, User1, {tcp_username}, ***, User, <ssh-key>")
             print("  [DRY RUN] sis, all, FTP")
             print("  [DRY RUN] shs, HTTP")
             print("  [DRY RUN] eccf, Current, Boot")
+            if apply_config:
+                try:
+                    cmds = load_config_from_file(Path(apply_config))
+                    print(f"  [DRY RUN] Apply config {Path(apply_config).name} ({len(cmds)} commands)")
+                except FileNotFoundError:
+                    print(f"  [DRY RUN] Apply config — FILE NOT FOUND: {apply_config}")
             success_count += 1
             continue
 
@@ -2682,7 +2695,16 @@ def cmd_rec_provision(args) -> int:
                 else:
                     print(f"  ⚠  Admin account may not have been created: {resp[:80]!r}")
 
-            # Step 3: push SSH public key to gpsops account
+            # Step 3a: assign static IP (permanent — survives factoryReset, no eccf needed)
+            if set_ip:
+                resp = _send(sock, f"setIPSettings, Static, '{set_ip}', '{netmask}', '{gateway}'")
+                if "$R:" in resp or "$R!" in resp:
+                    print(f"  ✓ IP set: {set_ip}/{netmask} gw {gateway} (permanent, takes effect on reboot)")
+                else:
+                    print(f"  ⚠  setIPSettings: {resp[:80]!r}")
+                time.sleep(1.5)  # receiver briefly suspends I/O while applying IP change
+
+            # Step 3b: push SSH public key to gpsops account
             if ssh_key_body:
                 resp = _send(
                     sock,
@@ -2713,6 +2735,25 @@ def cmd_rec_provision(args) -> int:
                 print("  ✓ Saved to Boot config")
             else:
                 print(f"  ⚠  eccf: {resp[:80]!r}")
+
+            # Step 8: apply receiver config file (Expert Console upload)
+            if apply_config:
+                config_path = Path(apply_config)
+                try:
+                    cmds = load_config_from_file(config_path)
+                    print(f"  → Applying {config_path.name} ({len(cmds)} commands)…")
+                    errors = 0
+                    for cmd in cmds:
+                        resp = _send(sock, cmd)
+                        if "$E" in resp:
+                            print(f"  ⚠  {cmd[:50]} → {resp.strip()[:60]}")
+                            errors += 1
+                    if errors == 0:
+                        print(f"  ✓ Config applied ({len(cmds)} commands)")
+                    else:
+                        print(f"  ⚠  Config applied with {errors} command errors")
+                except FileNotFoundError:
+                    print(f"  ✗ Config file not found: {apply_config}")
 
             sock.close()
             print(f"  → {station_id} provisioned successfully")
