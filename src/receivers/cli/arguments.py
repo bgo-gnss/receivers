@@ -642,6 +642,10 @@ Examples:
   receivers rec-provision ORFC GJAC
   receivers rec-provision GJAC --dry-run
   receivers rec-provision GJAC --skip-ssh-key
+
+Desk/bench setup (one-shot bootstrap):
+  receivers rec-provision BENCH --host 192.168.3.1 --bootstrap
+  receivers rec-provision BENCH --host 192.168.3.1 --bootstrap --apply-config path/to/config.txt
         """,
     )
 
@@ -662,6 +666,16 @@ Examples:
         "--skip-ssh-key",
         action="store_true",
         help="Do not push SSH public key to receiver",
+    )
+
+    parser.add_argument(
+        "--bootstrap",
+        action="store_true",
+        help=(
+            "Standard bench profile: sets --set-ip to desk_bootstrap_ip from receivers.cfg "
+            "(default 192.168.100.60), fills --dns1/--dns2 from config. "
+            "Requires --host. Bench/desk use only — do not use on deployed stations."
+        ),
     )
 
     parser.add_argument(
