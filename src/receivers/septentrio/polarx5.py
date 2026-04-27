@@ -121,7 +121,8 @@ class PolaRX5(BaseReceiver):
 
         except Exception as e:
             # Fallback to default timeout configuration if gps_parser fails
-            self.logger.warning(f"Could not load timeout config from gps_parser: {e}")
+            log = self.logger.debug if self.station_info.get("_adhoc") else self.logger.warning
+            log(f"Could not load timeout config from gps_parser: {e}")
             self.logger.info("Using fallback timeout configuration")
 
             # Default fallback timeouts (mobile category as reasonable default)

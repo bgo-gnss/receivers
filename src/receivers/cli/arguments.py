@@ -272,6 +272,31 @@ Examples:
     return parser
 
 
+def add_host_flags(parser: argparse.ArgumentParser) -> None:
+    """Add --host / --receiver-type flags for direct (desk) receiver connections.
+
+    When --host is given the command bypasses stations.cfg and connects
+    directly to the receiver using native ports (21 FTP, 80 HTTP, 28784 control).
+    Only one station label is allowed when --host is specified.
+    """
+    direct_group = parser.add_argument_group("direct connection (desk/bench setup)")
+    direct_group.add_argument(
+        "--host",
+        metavar="IP",
+        help=(
+            "Direct connection IP/hostname — bypasses stations.cfg and uses native "
+            "receiver ports (21 FTP, 80 HTTP, 28784 TCP control). "
+            "Only one station label is allowed with --host."
+        ),
+    )
+    direct_group.add_argument(
+        "--receiver-type",
+        metavar="TYPE",
+        default="PolaRX5",
+        help="Receiver type for direct connection (default: PolaRX5)",
+    )
+
+
 def setup_status_parser(subparsers) -> argparse.ArgumentParser:
     """Set up the status subcommand parser."""
     parser = subparsers.add_parser(
@@ -313,6 +338,7 @@ Examples:
         help="Send check results to Icinga monitoring system",
     )
 
+    add_host_flags(parser)
     add_verbose_flag(parser)
 
     return parser
@@ -429,6 +455,7 @@ Multiple stations:
         "--skip-blocks", action="store_true", help="Skip per-block JSON extraction"
     )
 
+    add_host_flags(parser)
     add_verbose_flag(parser)
 
     return parser
@@ -582,6 +609,7 @@ Examples:
         help="Connection timeout in seconds (default: 10)",
     )
 
+    add_host_flags(parser)
     add_verbose_flag(parser)
 
     return parser
@@ -651,6 +679,7 @@ Examples:
         help="Connection timeout in seconds (default: 15)",
     )
 
+    add_host_flags(parser)
     add_verbose_flag(parser)
 
     return parser

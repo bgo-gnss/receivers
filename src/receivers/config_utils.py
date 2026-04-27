@@ -38,7 +38,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-def get_station_config(station_id: str) -> Optional[Dict[str, Any]]:
+def get_station_config(station_id: str, *, silent: bool = False) -> Optional[Dict[str, Any]]:
     """Get complete station configuration from gps_parser.
 
     Args:
@@ -62,7 +62,9 @@ def get_station_config(station_id: str) -> Optional[Dict[str, Any]]:
         # Get raw station information
         station_info = config_parser.getStationInfo(station_id)
         if not station_info or "station" not in station_info:
-            logger.error(f"Station {station_id} not found in gps_parser configuration")
+            (logger.debug if silent else logger.error)(
+                f"Station {station_id} not found in gps_parser configuration"
+            )
             return None
 
         raw_config = station_info["station"]
@@ -179,8 +181,84 @@ def get_station_config(station_id: str) -> Optional[Dict[str, Any]]:
         return station_config
 
     except Exception as e:
-        logger.error(f"Failed to get configuration for {station_id}: {e}")
+        (logger.debug if silent else logger.error)(
+            f"Failed to get configuration for {station_id}: {e}"
+        )
         return None
+
+
+def resolve_receiver_endpoint(args: Any, station_id: str) -> Optional[Dict[str, Any]]:
+    """Return station config, using a direct-connection stub when --host is given.
+
+    When *args.host* is set the function bypasses stations.cfg and builds an
+    ad-hoc config with native receiver ports (21/FTP, 80/HTTP, 28784/control)
+    instead of the router-forwarded ports used in the operational network.
+    The dict carries ``_adhoc: True`` so callers can suppress side-effects such
+    as DB writes and stations.cfg updates.
+
+    When *args.host* is not set this is a transparent pass-through to
+    :func:`get_station_config`.
+    """
+    host = getattr(args, "host", None)
+    if not host:
+        return get_station_config(station_id)
+
+    receiver_type = getattr(args, "receiver_type", None) or "PolaRX5"
+    control_port = int(getattr(args, "port", None) or 28784)
+
+    return {
+        "station_id": station_id,
+        "station_name": station_id,
+        "receiver_type": receiver_type,
+        "router": {
+            "ip": host,
+            "type": "direct",
+            "ftp_mode": "passive",
+        },
+        "receiver": {
+            "type": receiver_type,
+            "ftpport": "21",
+            "httpport": "80",
+            "controlport": str(control_port),
+            "user": "",
+            "pwd": "",
+            "firmware_underscore_pad": False,
+            "remote_date_format": "",
+        },
+        "connection": {"type": "direct", "timeouts": {}},
+        "paths": {
+            "data_prepath": "",
+            "bin2asc_path": "",
+            "receiver_base_path": "",
+        },
+        "defaults": {
+            "session": "15s_24hr",
+            "compression": ".gz",
+            "days_back": 10,
+        },
+        "rinex": {
+            "marker_name": station_id,
+            "marker_number": station_id,
+            "observer": "GNSS OPERATOR",
+            "agency": "IMO",
+            "run_by": "",
+            "config_valid_from": "",
+        },
+        "antenna": {
+            "type": "",
+            "radome": "NONE",
+            "serial": "",
+            "height": 0.0,
+            "east": 0.0,
+            "north": 0.0,
+        },
+        "power_type": "unknown",
+        "ntrip_importance": None,
+        "station_status": None,
+        "health_check": None,
+        "station_owner": None,
+        "_adhoc": True,
+    }
 
 
 def get_session_config(session_type: str) -> Dict[str, str]:
