@@ -679,6 +679,39 @@ Examples:
         help="Connection timeout in seconds (default: 15)",
     )
 
+    net_group = parser.add_argument_group("network setup (desk/bench)")
+    net_group.add_argument(
+        "--set-ip",
+        metavar="IP",
+        help=(
+            "Assign static IP to receiver via setIPSettings. "
+            "Permanent command — takes effect on reboot. Desk/bench use only."
+        ),
+    )
+    net_group.add_argument(
+        "--gateway",
+        metavar="GW",
+        default=None,
+        help="Gateway for --set-ip (default: desk_gateway from receivers.cfg or 192.168.100.1)",
+    )
+    net_group.add_argument(
+        "--netmask",
+        metavar="MASK",
+        default=None,
+        help="Subnet mask for --set-ip (default: 255.255.255.0)",
+    )
+
+    cfg_group = parser.add_argument_group("receiver config")
+    cfg_group.add_argument(
+        "--apply-config",
+        metavar="PATH",
+        help=(
+            "Push a receiver config script after provisioning "
+            "(e.g. TEST_PolaRx5_GPS_GLONASS_only.txt). "
+            "Sent as Expert Console upload — file must not contain sual/setUserAccessLevel lines."
+        ),
+    )
+
     add_host_flags(parser)
     add_verbose_flag(parser)
 
