@@ -203,6 +203,19 @@ Double-check that `esoc` requests use `ReceiverStatus2` (not `ReceiverStatus`) w
 block 4014 with the temperature field. The block name in the `esoc` command must match
 what the firmware recognises. Verify against GJAC.
 
+### 5. `polarx5_tcp_extractor.py` — TLS fallback for sis=secure
+
+After a firmware upgrade, `sis` resets to `secure` — port 28784 closes on reboot.
+The health extractor must fall back to TLS on port 28783 rather than failing the whole
+health check.
+
+**Fix**: `_open_socket()` helper tries port 28784 first. On `ConnectionRefusedError`, it
+retries with TLS on port 28783, sets `self.use_tls = True` and `self.port = 28783` so
+subsequent connections within the same extractor instance reuse TLS. Implemented in all
+three command-socket sites (`_request_receiver_setup_unauthenticated`, `_send_ascii_command`,
+`_request_sbf_block`). Port-checker sockets are intentionally excluded — they test
+specific ports and must not wrap unrelated ports in TLS.
+
 ---
 
 ## Validation Checklist (GJAC)
@@ -495,6 +508,6 @@ This means after a factory reset, the full provisioning sequence must be repeate
 
 ---
 
-**Last Updated**: 2026-04-22
+**Last Updated**: 2026-04-27
 **Branch**: `feat/polarx5-firmware-v5.7`
 **Canary station**: GJAC (fw 5.7.0 installed)
