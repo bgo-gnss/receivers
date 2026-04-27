@@ -44,6 +44,30 @@ class SeptentrioDownloadManager(BaseDownloadManager):
         ftp_mode = self.station_config.get("router", {}).get("ftp_mode", "passive")
         self.use_passive_ftp = ftp_mode == "passive"
 
+        # FTP credentials: load from receivers.cfg [polarx5]
+        # anonymous_login = true  →  use anonymous (fw ≤5.5.0 default)
+        # anonymous_login = false →  use tcp_username/tcp_password (fw 5.7.0)
+        self.ftp_anonymous = True
+        self.ftp_username: Optional[str] = None
+        self.ftp_password: Optional[str] = None
+        try:
+            from ..config.receivers_config import get_receivers_config
+
+            rec_cfg = get_receivers_config().get_receiver_config("polarx5")
+            anon_str = str(rec_cfg.get("ftp_anonymous_login", "true")).lower()
+            self.ftp_anonymous = anon_str not in ("false", "0", "no")
+            if not self.ftp_anonymous:
+                self.ftp_username = rec_cfg.get("tcp_username") or None
+                self.ftp_password = rec_cfg.get("tcp_password") or None
+        except Exception:
+            pass
+
+        # Per-station override
+        if self.station_config.get("ftp_username"):
+            self.ftp_anonymous = False
+            self.ftp_username = self.station_config["ftp_username"]
+            self.ftp_password = self.station_config.get("ftp_password") or ""
+
         # Session map for Septentrio receivers
         self.session_map = {
             "15s_24hr": ("a", "LOG1_15s_24hr"),
@@ -51,14 +75,24 @@ class SeptentrioDownloadManager(BaseDownloadManager):
             "status_1hr": ("c", "LOG5_status_1hr"),
         }
 
-        self.logger.debug(f"Septentrio config - FTP passive: {self.use_passive_ftp}")
+        self.logger.debug(
+            f"Septentrio config - FTP passive: {self.use_passive_ftp}, "
+            f"anonymous: {self.ftp_anonymous}"
+        )
+
+    def _ftp_login(self, ftp: FTP) -> None:
+        """Login to FTP using configured credentials (anonymous or authenticated)."""
+        if self.ftp_anonymous:
+            ftp.login("anonymous")
+        else:
+            ftp.login(self.ftp_username or "anonymous", self.ftp_password or "")
 
     def test_connection(self) -> Dict[str, Any]:
         """Test FTP connection to Septentrio receiver."""
         try:
             ftp = FTP()
             ftp.connect(self.ip_address, self.port, timeout=self.connection_timeout)
-            ftp.login("anonymous")
+            self._ftp_login(ftp)
             ftp.set_pasv(self.use_passive_ftp)
             ftp.quit()
 
@@ -112,7 +146,7 @@ class SeptentrioDownloadManager(BaseDownloadManager):
             )
             ftp = FTP()
             ftp.connect(self.ip_address, self.port, timeout=self.connection_timeout)
-            ftp.login("anonymous")
+            self._ftp_login(ftp)
             ftp.set_pasv(self.use_passive_ftp)
 
             connection_time = time.time() - connection_start
@@ -138,7 +172,7 @@ class SeptentrioDownloadManager(BaseDownloadManager):
                     ftp.connect(
                         self.ip_address, self.port, timeout=self.connection_timeout
                     )
-                    ftp.login("anonymous")
+                    self._ftp_login(ftp)
                     ftp.set_pasv(self.use_passive_ftp)
 
                     fallback_time = time.time() - connection_start

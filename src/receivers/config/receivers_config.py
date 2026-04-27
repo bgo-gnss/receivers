@@ -612,3 +612,84 @@ def reload_config() -> None:
         _global_config.reload()
     else:
         _global_config = ReceiversConfig()
+
+
+def _update_cfg_field(cfg_path: Path, station_id: str, key: str, value: str) -> bool:
+    """In-place update of one key=value line in a configparser-format file.
+
+    Preserves comments, ordering, and formatting.  Returns True if modified.
+    """
+    lines = cfg_path.read_text().splitlines(keepends=True)
+
+    section_header = f"[{station_id}]"
+    in_section = False
+    key_line_idx = -1
+    next_section_idx = len(lines)
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == section_header:
+            in_section = True
+            continue
+        if in_section:
+            if stripped.startswith("["):
+                next_section_idx = i
+                break
+            parts = stripped.split("=", 1)
+            if len(parts) == 2 and parts[0].strip().lower() == key.lower():
+                key_line_idx = i
+
+    if not in_section:
+        return False
+
+    target_line = f"{key} = {value}\n"
+
+    if key_line_idx >= 0:
+        existing = lines[key_line_idx].split("=", 1)[1].strip().rstrip("\n\r")
+        if existing == value:
+            return False
+        lines[key_line_idx] = target_line
+    else:
+        # Insert before next section, after last non-blank line in this section
+        insert_idx = next_section_idx
+        while insert_idx > 0 and not lines[insert_idx - 1].strip():
+            insert_idx -= 1
+        lines.insert(insert_idx, target_line)
+
+    cfg_path.write_text("".join(lines))
+    return True
+
+
+def update_station_identity_in_cfg(
+    station_id: str,
+    firmware_version: Optional[str] = None,
+    receiver_model: Optional[str] = None,
+    serial_number: Optional[str] = None,
+) -> bool:
+    """Persist receiver identity fields to stations.cfg for a station.
+
+    Only writes fields that are provided and differ from current values.
+    Returns True if any field was updated.
+    """
+    if not HAS_GPS_PARSER:
+        return False
+
+    try:
+        import gps_parser as _gps
+
+        cfg_path = Path(_gps.ConfigParser().get_stations_config_path())
+    except Exception:
+        return False
+
+    updates: Dict[str, str] = {}
+    if firmware_version:
+        updates["receiver_firmware_version"] = firmware_version
+    if receiver_model:
+        updates["receiver_model"] = receiver_model
+    if serial_number:
+        updates["receiver_serial"] = serial_number
+
+    results = [
+        _update_cfg_field(cfg_path, station_id, k, v) for k, v in updates.items()
+    ]
+    return any(results)

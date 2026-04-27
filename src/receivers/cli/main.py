@@ -39,7 +39,7 @@ except ImportError:
     gps_parser = None
 
 # Import station config from utility to avoid circular imports
-from ..config_utils import get_station_config
+from ..config_utils import get_station_config, resolve_receiver_endpoint
 
 # Module-level logger for functions that don't receive a logger argument
 _logger = logging.getLogger(__name__)
@@ -465,6 +465,11 @@ def cmd_status(args) -> int:
     args.compact = True
     args.no_files = False
     args.no_ntrip = False
+    # --host / --receiver-type are added to the status parser; ensure they exist
+    if not hasattr(args, "host"):
+        args.host = None
+    if not hasattr(args, "receiver_type"):
+        args.receiver_type = "PolaRX5"
     # Date flags — status is live-only
     args.start = None
     args.end = None
@@ -1614,7 +1619,7 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
         if getattr(args, "import_json", False):
             return cmd_health_json_import(args, station_id, logger)
 
-        station_config = get_station_config(station_id)
+        station_config = resolve_receiver_endpoint(args, station_id)
         if station_config is None:
             logger.warning(f"⚠️  Station {station_id} not found in configuration")
             return 1
@@ -1641,6 +1646,9 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
 
         include_files = not getattr(args, "no_files", False)
         include_ntrip = not getattr(args, "no_ntrip", False)
+        if station_config.get("_adhoc"):
+            include_files = False
+            include_ntrip = False
 
         health = gather_comprehensive_health(
             station_id,
@@ -1650,6 +1658,20 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
             include_ntrip=include_ntrip,
         )
 
+        # Persist receiver identity to stations.cfg if retrieved
+        identity = health.get("receiver_identity", {})
+        if identity and not station_config.get("_adhoc"):
+            from ..config.receivers_config import update_station_identity_in_cfg
+
+            updated = update_station_identity_in_cfg(
+                station_id,
+                firmware_version=identity.get("firmware_version"),
+                receiver_model=identity.get("receiver_model"),
+                serial_number=identity.get("serial_number"),
+            )
+            if updated:
+                logger.info(f"[{station_id}] Updated receiver identity in stations.cfg")
+
         # Save to JSON if requested
         if getattr(args, "save_json", False):
             json_path = receiver.save_health_to_json(health)
@@ -1658,13 +1680,18 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
 
         # Save to database if requested
         if getattr(args, "save_db", False):
-            success = receiver.save_health_to_database(health)
-            if success:
-                logger.info("Saved health data to database")
-                # Also write ping and port status for Grafana dashboard
-                _write_connectivity_status(station_id, health, logger)
+            if station_config.get("_adhoc"):
+                logger.info(
+                    f"[{station_id}] --host: skipping DB write for direct connection"
+                )
             else:
-                logger.warning("Failed to save health data to database")
+                success = receiver.save_health_to_database(health)
+                if success:
+                    logger.info("Saved health data to database")
+                    # Also write ping and port status for Grafana dashboard
+                    _write_connectivity_status(station_id, health, logger)
+                else:
+                    logger.warning("Failed to save health data to database")
 
         # Return health + config for Icinga/compact handling in cmd_health
         # Store on args for the caller to collect
@@ -1692,6 +1719,13 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
             # Human-readable output (detailed)
             print(f"Station: {health['station_id']}")
             print(f"Receiver Type: {health['receiver_type']}")
+            identity = health.get("receiver_identity", {})
+            if identity.get("receiver_model"):
+                print(f"Model: {identity['receiver_model']}")
+            if identity.get("firmware_version"):
+                print(f"Firmware: {identity['firmware_version']}")
+            if identity.get("serial_number"):
+                print(f"Serial: {identity['serial_number']}")
             print(f"Timestamp: {health.get('timestamp', 'N/A')}")
             print(f"Overall Status: {health.get('overall_status', 'unknown').upper()}")
 
@@ -1858,6 +1892,27 @@ def cmd_health(args) -> int:
 
     # Get list of stations (now supports multiple)
     stations = [s.upper() for s in args.stations]
+
+    # --host is single-target only: direct connection has no concept of "multiple stations"
+    if getattr(args, "host", None) and len(stations) > 1:
+        logger.error(
+            "--host requires exactly one station label; got: " + ", ".join(stations)
+        )
+        return 1
+
+    # --host is a live check only: date flags require DB access and make no sense for bench use
+    if getattr(args, "host", None) and any(
+        [
+            getattr(args, "start", None),
+            getattr(args, "end", None),
+            getattr(args, "days", None),
+            getattr(args, "extract_all", False),
+        ]
+    ):
+        logger.error(
+            "--host is for live checks only; --start/--end/--days/--extract-all are not supported"
+        )
+        return 1
 
     if len(stations) > 1:
         logger.info(f"Processing {len(stations)} stations: {', '.join(stations)}")
@@ -2203,41 +2258,53 @@ def cmd_rec_config(args) -> int:
     # Parse station list
     station_list = [s.strip().upper() for s in args.stations.split(",")]
 
-    # Get receiver config for default port
+    # Get receiver config for default port and TCP credentials
     receivers_config = get_receivers_config()
     polarx5_config = receivers_config.get_receiver_config("polarx5")
+    tcp_username = polarx5_config.get("tcp_username") or None
+    tcp_password = polarx5_config.get("tcp_password") or None
+    rec_config_dir = polarx5_config.get("rec_config_dir") or None
     default_port = args.port or polarx5_config.get("control_port", DEFAULT_CONTROL_PORT)
     if isinstance(default_port, str):
         default_port = int(default_port)
 
     # Build targets list with IPs and ports
     targets = []
-    for station_id in station_list:
-        station_config = get_station_config(station_id)
-        if station_config is None:
-            logger.warning(
-                f"Station {station_id} not found in configuration - SKIPPING"
+    if getattr(args, "host", None):
+        # Direct connection: bypass stations.cfg, use native receiver ports
+        if len(station_list) > 1:
+            logger.error("--host requires exactly one station label")
+            return 1
+        station_id = station_list[0]
+        port = int(args.port or default_port)
+        targets.append((station_id, args.host, port))
+    else:
+        for station_id in station_list:
+            station_config = get_station_config(station_id)
+            if station_config is None:
+                logger.warning(
+                    f"Station {station_id} not found in configuration - SKIPPING"
+                )
+                continue
+
+            # Get IP - try multiple sources
+            ip = (
+                station_config.get("ip")
+                or station_config.get("router", {}).get("ip")
+                or station_config.get("host")
             )
-            continue
+            if not ip:
+                logger.warning(f"Station {station_id} has no IP configured - SKIPPING")
+                continue
 
-        # Get IP - try multiple sources
-        ip = (
-            station_config.get("ip")
-            or station_config.get("router", {}).get("ip")
-            or station_config.get("host")
-        )
-        if not ip:
-            logger.warning(f"Station {station_id} has no IP configured - SKIPPING")
-            continue
+            # Get port (station override > cli arg > config default)
+            port = station_config.get("receiver", {}).get("controlport")
+            if port:
+                port = int(port)
+            else:
+                port = default_port
 
-        # Get port (station override > cli arg > config default)
-        port = station_config.get("receiver", {}).get("controlport")
-        if port:
-            port = int(port)
-        else:
-            port = default_port
-
-        targets.append((station_id, ip, port))
+            targets.append((station_id, ip, port))
 
     if not targets:
         logger.error("No valid targets found")
@@ -2247,16 +2314,20 @@ def cmd_rec_config(args) -> int:
 
     # Handle extract mode
     if args.extract:
-        return _extract_configs(args, targets, logger)
+        return _extract_configs(args, targets, logger, tcp_username, tcp_password)
 
     # Handle push mode
     if args.push:
-        return _push_configs(args, targets, logger)
+        return _push_configs(
+            args, targets, logger, tcp_username, tcp_password, rec_config_dir
+        )
 
     return 0
 
 
-def _extract_configs(args, targets, logger) -> int:
+def _extract_configs(
+    args, targets, logger, tcp_username=None, tcp_password=None
+) -> int:
     """Extract configurations from receivers."""
     import difflib
     import os
@@ -2315,7 +2386,14 @@ def _extract_configs(args, targets, logger) -> int:
             continue
 
         try:
-            client = PolaRX5TCPClient(ip, station_id, port, timeout=args.timeout)
+            client = PolaRX5TCPClient(
+                ip,
+                station_id,
+                port,
+                timeout=args.timeout,
+                username=tcp_username,
+                password=tcp_password,
+            )
             config = client.extract_config(config_type)
             client.disconnect()
 
@@ -2383,8 +2461,11 @@ def _extract_configs(args, targets, logger) -> int:
     return 0 if success_count == len(targets) else 1
 
 
-def _push_configs(args, targets, logger) -> int:
+def _push_configs(
+    args, targets, logger, tcp_username=None, tcp_password=None, rec_config_dir=None
+) -> int:
     """Push configuration to receivers."""
+    import datetime
     from pathlib import Path
 
     from ..septentrio.tcp_client import PolaRX5TCPClient, load_config_from_file
@@ -2395,10 +2476,21 @@ def _push_configs(args, targets, logger) -> int:
     except FileNotFoundError as e:
         logger.error(str(e))
         return 1
+    config_text = config_path.read_text()
 
     logger.info(f"Loaded {len(commands)} commands from {config_path.name}")
     if not args.no_save:
         logger.info("Will save to Boot config after applying")
+
+    # Resolve station_config archive directory (rec_config_dir points to station_config/)
+    archive_dir: Optional[Path] = None
+    if rec_config_dir:
+        archive_dir = Path(rec_config_dir).expanduser().resolve()
+        if not archive_dir.exists():
+            logger.warning(
+                f"rec_config_dir not found: {archive_dir} — skipping auto-archive"
+            )
+            archive_dir = None
 
     # Dry run - show commands and exit
     if args.dry_run:
@@ -2407,6 +2499,10 @@ def _push_configs(args, targets, logger) -> int:
             if cmd.strip() and not cmd.strip().startswith("#"):
                 print(f"  {cmd}")
         print("--- End of commands ---\n")
+        if archive_dir:
+            print(
+                f"  [DRY RUN] Would archive pushed config to {archive_dir}/STATION_SERIAL_Current_YYYYMMDD.txt"
+            )
         print("Dry run complete. Use without --dry-run to execute.")
         return 0
 
@@ -2417,10 +2513,34 @@ def _push_configs(args, targets, logger) -> int:
         print(f"{'=' * 50}")
 
         try:
-            client = PolaRX5TCPClient(ip, station_id, port, timeout=args.timeout)
+            client = PolaRX5TCPClient(
+                ip,
+                station_id,
+                port,
+                timeout=args.timeout,
+                username=tcp_username,
+                password=tcp_password,
+            )
             success, errors = client.push_config(
                 commands, save_to_boot=not args.no_save
             )
+
+            # Query serial number before disconnecting
+            serial = None
+            if success and archive_dir:
+                try:
+                    sbf = client.request_sbf_block("ReceiverSetup", 5902)
+                    if sbf and len(sbf) >= 176:
+                        raw = sbf[156:176]
+                        serial = (
+                            raw.split(b"\x00")[0]
+                            .decode("ascii", errors="ignore")
+                            .strip()
+                            or None
+                        )
+                except Exception:
+                    pass
+
             client.disconnect()
 
             if success:
@@ -2428,6 +2548,17 @@ def _push_configs(args, targets, logger) -> int:
                 if not args.no_save:
                     print("  ✓ Saved to Boot config")
                 success_count += 1
+
+                # Auto-archive pushed config to station_config/
+                if archive_dir:
+                    date_str = datetime.date.today().strftime("%Y%m%d")
+                    serial_part = serial or "UNKNOWN"
+                    dest = (
+                        archive_dir
+                        / f"{station_id}_{serial_part}_Current_{date_str}.txt"
+                    )
+                    dest.write_text(config_text)
+                    print(f"  ✓ Config archived → {dest.name}")
             else:
                 print("  ✗ Errors occurred:")
                 for err in errors:
@@ -2438,6 +2569,400 @@ def _push_configs(args, targets, logger) -> int:
 
     print(f"\n{'=' * 50}")
     print(f"Successfully configured {success_count}/{len(targets)} receivers")
+    return 0 if success_count == len(targets) else 1
+
+
+def cmd_rec_provision(args) -> int:
+    """Provision a Septentrio PolaRx5 receiver for fw 5.7.0."""
+    import re
+    import socket
+    import ssl
+    import struct
+    import time
+    from pathlib import Path
+
+    logger = setup_logging(args.loglevel)
+
+    from ..config.receivers_config import get_receivers_config
+    from ..septentrio.tcp_client import DEFAULT_CONTROL_PORT, load_config_from_file
+
+    receivers_config = get_receivers_config()
+    polarx5_config = receivers_config.get_receiver_config("polarx5")
+
+    tcp_username = polarx5_config.get("tcp_username") or None
+    tcp_password = polarx5_config.get("tcp_password") or None
+    factory_username = polarx5_config.get("factory_username") or "RxAdmin"
+    factory_password = polarx5_config.get("factory_password") or "S3pt3ntr10"
+    admin_username = polarx5_config.get("admin_username") or "admin"
+    admin_password = polarx5_config.get("admin_password") or None
+    default_port = args.port or int(
+        polarx5_config.get("control_port", DEFAULT_CONTROL_PORT)
+    )
+
+    set_ip = getattr(args, "set_ip", None)
+    gateway = (
+        getattr(args, "gateway", None)
+        or polarx5_config.get("desk_gateway")
+        or "192.168.100.1"
+    )
+    netmask = (
+        getattr(args, "netmask", None)
+        or polarx5_config.get("desk_netmask")
+        or "255.255.255.0"
+    )
+    dns1 = getattr(args, "dns1", None) or polarx5_config.get("desk_dns1") or ""
+    dns2 = getattr(args, "dns2", None) or polarx5_config.get("desk_dns2") or ""
+    apply_config = getattr(args, "apply_config", None)
+
+    if getattr(args, "bootstrap", False):
+        if not getattr(args, "host", None):
+            logger.error(
+                "--bootstrap requires --host (bench/desk use only — do not use on deployed stations)"
+            )
+            return 1
+        if not set_ip:
+            set_ip = polarx5_config.get("desk_bootstrap_ip") or "192.168.100.60"
+        if not dns1:
+            dns1 = polarx5_config.get("desk_dns1") or ""
+        if not dns2:
+            dns2 = polarx5_config.get("desk_dns2") or ""
+
+    if not tcp_username or not tcp_password:
+        logger.error(
+            "tcp_username and tcp_password must be set in receivers.cfg [polarx5]"
+        )
+        return 1
+
+    # Load SSH public key body if requested
+    ssh_key_body: Optional[str] = None
+    if not args.skip_ssh_key:
+        key_path_str = polarx5_config.get("tcp_ssh_key_path") or None
+        if key_path_str:
+            pub_path = Path(key_path_str).expanduser().with_suffix(".pub")
+            if not pub_path.exists():
+                pub_path = Path(str(Path(key_path_str).expanduser()) + ".pub")
+            if pub_path.exists():
+                parts = pub_path.read_text().strip().split()
+                if len(parts) >= 2:
+                    ssh_key_body = parts[1]
+                    logger.debug(f"SSH key loaded from {pub_path}")
+            else:
+                logger.warning(
+                    f"SSH public key not found at {pub_path} — skipping key push"
+                )
+
+    # Build target list
+    targets = []
+    if getattr(args, "host", None):
+        # Direct connection: bypass stations.cfg, use native receiver port
+        if len(args.stations) > 1:
+            logger.error("--host requires exactly one station label")
+            return 1
+        station_id = args.stations[0].strip().upper()
+        port = int(args.port or default_port)
+        targets.append((station_id, args.host, port))
+    else:
+        for station_id in [s.strip().upper() for s in args.stations]:
+            station_config = get_station_config(station_id)
+            if station_config is None:
+                logger.warning(f"Station {station_id} not found — SKIPPING")
+                continue
+            ip = station_config.get("ip") or station_config.get("router", {}).get("ip")
+            if not ip:
+                logger.warning(f"Station {station_id} has no IP configured — SKIPPING")
+                continue
+            port = int(
+                station_config.get("receiver", {}).get("controlport") or default_port
+            )
+            targets.append((station_id, ip, port))
+
+    if not targets:
+        logger.error("No valid targets found")
+        return 1
+
+    def _recv_until_prompt(sock: socket.socket, timeout: float = 5.0) -> str:
+        buf = b""
+        end = time.time() + timeout
+        while time.time() < end:
+            try:
+                sock.settimeout(1.0)
+                chunk = sock.recv(4096)
+                if chunk:
+                    buf += chunk
+                    decoded = buf.decode("utf-8", errors="ignore")
+                    if re.search(r"IP\d+>", decoded[-30:]):
+                        break
+            except (TimeoutError, OSError):
+                if buf:
+                    break
+        return buf.decode("utf-8", errors="ignore")
+
+    def _send(sock: socket.socket, cmd: str) -> str:
+        time.sleep(0.15)  # brief drain before each command (avoids mixed responses)
+        sock.sendall((cmd + "\n").encode("utf-8"))
+        return _recv_until_prompt(sock)
+
+    success_count = 0
+    for station_id, ip, port in targets:
+        print(f"\n{'=' * 55}")
+        print(f"Provisioning {station_id}  ({ip}:{port})")
+        print(f"{'=' * 55}")
+
+        if args.dry_run:
+            print(f"  [DRY RUN] login, {tcp_username}, ***")
+            print(
+                f"  [DRY RUN] factory bootstrap if needed (factory_username={factory_username})"
+            )
+            if admin_password:
+                print(f"  [DRY RUN] sual, User2, {admin_username}, ***, User")
+            if set_ip:
+                if dns1 or dns2:
+                    print(
+                        f"  [DRY RUN] setIPSettings, Static, '{set_ip}', '{netmask}', '{gateway}', '', '{dns1}', '{dns2}'"
+                    )
+                else:
+                    print(
+                        f"  [DRY RUN] setIPSettings, Static, '{set_ip}', '{netmask}', '{gateway}'"
+                    )
+            if ssh_key_body:
+                print(f"  [DRY RUN] sual, User1, {tcp_username}, ***, User, <ssh-key>")
+            print("  [DRY RUN] sis, all, FTP")
+            print("  [DRY RUN] shs, HTTP")
+            print("  [DRY RUN] eccf, Current, Boot")
+            if apply_config:
+                try:
+                    cmds = load_config_from_file(Path(apply_config))
+                    print(
+                        f"  [DRY RUN] Apply config {Path(apply_config).name} ({len(cmds)} commands)"
+                    )
+                except FileNotFoundError:
+                    print(f"  [DRY RUN] Apply config — FILE NOT FOUND: {apply_config}")
+            print("  [DRY RUN] Read serial number (esoc ReceiverSetup)")
+            if apply_config and polarx5_config.get("rec_config_dir"):
+                print(
+                    f"  [DRY RUN] Archive config → {polarx5_config.get('rec_config_dir')}/{station_id}_SERIAL_Current_YYYYMMDD.txt"
+                )
+            success_count += 1
+            continue
+
+        try:
+            raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            raw.settimeout(args.timeout)
+            using_tls = False
+            try:
+                raw.connect((ip, port))
+                sock = raw
+            except ConnectionRefusedError:
+                # Receiver may be in TLS-only mode (e.g., after firmware upgrade resets sis).
+                # Try the TLS port (port - 1: 28784 → 28783).
+                tls_port = port - 1
+                raw.close()
+                raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                raw.settimeout(args.timeout)
+                raw.connect((ip, tls_port))
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                sock = ctx.wrap_socket(raw)
+                using_tls = True
+                print(f"  ⚠  Port {port} refused — connected via TLS port {tls_port}")
+
+            # Read initial prompt
+            prompt = sock.recv(1024).decode("utf-8", errors="ignore")
+            logger.debug(f"Initial prompt: {prompt!r} (tls={using_tls})")
+
+            bootstrapped = False
+            conn_id = "IP10"
+
+            if "$E" in prompt or not prompt.strip():
+                print("  ⚠  Unexpected initial response — aborting")
+                sock.close()
+                continue
+
+            # Step 1: try standard login
+            resp = _send(sock, f"login, {tcp_username}, {tcp_password}")
+            if "$R! LogIn" in resp:
+                print(f"  ✓ Logged in as {tcp_username} (accounts already exist)")
+            elif "$E: Invalid command" in resp:
+                print("  ✓ fw≤5.5.0 — no auth required, proceeding")
+            else:
+                # Standard login failed — try factory bootstrap (creates User1 and logs in)
+                resp = _send(
+                    sock,
+                    f"login, {tcp_username}, {tcp_password}, {factory_username}, {factory_password}",
+                )
+                if "$R! LogIn" in resp:
+                    print(
+                        f"  ✓ Factory bootstrap succeeded — {tcp_username} created as User1"
+                    )
+                    bootstrapped = True
+                else:
+                    print(f"  ✗ Authentication failed: {resp[:120]!r}")
+                    print("    Check credentials in receivers.cfg [polarx5]")
+                    sock.close()
+                    continue
+
+            # Extract connection ID from prompt (e.g. "IP10>") for SBF requests
+            for line in reversed(resp.splitlines()):
+                stripped = line.strip()
+                if stripped.endswith(">") and stripped[:-1]:
+                    conn_id = stripped[:-1]
+                    break
+
+            # Step 2: create/update admin account (always — not just on fresh bootstrap)
+            if admin_password:
+                resp = _send(
+                    sock, f"sual, User2, {admin_username}, {admin_password}, User"
+                )
+                if "$R:" in resp or "$R!" in resp:
+                    action = "created" if bootstrapped else "updated"
+                    print(f"  ✓ Admin account {action} (User2: {admin_username})")
+                else:
+                    print(f"  ⚠  Admin account: {resp[:80]!r}")
+            elif bootstrapped:
+                print(
+                    "  ⚠  admin_password not set in receivers.cfg — skipping admin account"
+                )
+
+            # Step 3a: assign static IP (permanent — survives factoryReset, no eccf needed)
+            if set_ip:
+                if dns1 or dns2:
+                    ip_cmd = f"setIPSettings, Static, '{set_ip}', '{netmask}', '{gateway}', '', '{dns1}', '{dns2}'"
+                    dns_note = f" dns={dns1}/{dns2}"
+                else:
+                    ip_cmd = (
+                        f"setIPSettings, Static, '{set_ip}', '{netmask}', '{gateway}'"
+                    )
+                    dns_note = ""
+                resp = _send(sock, ip_cmd)
+                if "$R:" in resp or "$R!" in resp:
+                    print(
+                        f"  ✓ IP set: {set_ip}/{netmask} gw {gateway}{dns_note} (permanent, takes effect on reboot)"
+                    )
+                else:
+                    print(f"  ⚠  setIPSettings: {resp[:80]!r}")
+                time.sleep(
+                    1.5
+                )  # receiver briefly suspends I/O while applying IP change
+
+            # Step 3b: push SSH public key to gpsops account
+            if ssh_key_body:
+                resp = _send(
+                    sock,
+                    f"sual, User1, {tcp_username}, {tcp_password}, User, {ssh_key_body}",
+                )
+                if "$R:" in resp or "$R!" in resp:
+                    print(f"  ✓ SSH public key set on {tcp_username}")
+                else:
+                    print(f"  ⚠  SSH key push: {resp[:80]!r}")
+
+            # Step 4: enable FTP, keep both plaintext (28784) and TLS (28783) command ports
+            resp = _send(sock, "sis, all, FTP")
+            if "$R:" in resp or "$R!" in resp:
+                print("  ✓ FTP enabled (both command ports kept active)")
+            else:
+                print(f"  ⚠  setIPServices: {resp[:80]!r}")
+
+            # Step 6: disable HTTPS redirect (keep 8060->80 router forwards working)
+            resp = _send(sock, "shs, HTTP")
+            if "$R:" in resp or "$R!" in resp:
+                print("  ✓ HTTPS redirect disabled (HTTP only)")
+            else:
+                print(f"  ⚠  setHttpsSettings: {resp[:80]!r}")
+
+            # Step 7: save to Boot
+            resp = _send(sock, "eccf, Current, Boot")
+            if "$R:" in resp or "$R!" in resp:
+                print("  ✓ Saved to Boot config")
+            else:
+                print(f"  ⚠  eccf: {resp[:80]!r}")
+
+            # Step 8: apply receiver config file (Expert Console upload)
+            if apply_config:
+                config_path = Path(apply_config)
+                try:
+                    cmds = load_config_from_file(config_path)
+                    print(f"  → Applying {config_path.name} ({len(cmds)} commands)…")
+                    errors = 0
+                    for cmd in cmds:
+                        resp = _send(sock, cmd)
+                        if "$E" in resp:
+                            print(f"  ⚠  {cmd[:50]} → {resp.strip()[:60]}")
+                            errors += 1
+                    if errors == 0:
+                        print(f"  ✓ Config applied ({len(cmds)} commands)")
+                    else:
+                        print(f"  ⚠  Config applied with {errors} command errors")
+                except FileNotFoundError:
+                    print(f"  ✗ Config file not found: {apply_config}")
+
+            # Step 9: read serial number via SBF ReceiverSetup block (5902)
+            serial: Optional[str] = None
+            try:
+                sock.sendall(f"esoc, {conn_id}, ReceiverSetup\n".encode())
+                sbf_buf = b""
+                sbf_end = time.time() + 3.0
+                sock.settimeout(0.5)
+                while time.time() < sbf_end:
+                    try:
+                        chunk = sock.recv(8192)
+                        if chunk:
+                            sbf_buf += chunk
+                            idx = sbf_buf.find(b"\x24\x40")
+                            if idx >= 0 and len(sbf_buf) - idx >= 180:
+                                break
+                    except TimeoutError:
+                        if sbf_buf:
+                            break
+                idx = sbf_buf.find(b"\x24\x40")
+                if idx >= 0 and len(sbf_buf) - idx >= 176:
+                    data = sbf_buf[idx:]
+                    block_id = struct.unpack_from("<H", data, 4)[0] & 0x1FFF
+                    if block_id == 5902:
+                        raw = data[156:176]
+                        s = (
+                            raw.split(b"\x00")[0]
+                            .decode("ascii", errors="ignore")
+                            .strip()
+                        )
+                        serial = s or None
+            except Exception:
+                pass
+            if serial:
+                print(f"  Serial number: {serial}")
+            else:
+                print("  (serial number: could not read)")
+
+            # Auto-archive pushed config alongside rec-config archives
+            if apply_config:
+                import datetime as _dt
+
+                rec_config_dir_str = polarx5_config.get("rec_config_dir") or None
+                if rec_config_dir_str:
+                    archive_dir = Path(rec_config_dir_str).expanduser().resolve()
+                    if archive_dir.exists():
+                        date_str = _dt.date.today().strftime("%Y%m%d")
+                        serial_part = serial or "UNKNOWN"
+                        dest = (
+                            archive_dir
+                            / f"{station_id}_{serial_part}_Current_{date_str}.txt"
+                        )
+                        dest.write_text(Path(apply_config).read_text())
+                        print(f"  ✓ Config archived → {dest.name}")
+
+            sock.close()
+            print(f"  → {station_id} provisioned successfully")
+            success_count += 1
+
+        except ConnectionRefusedError:
+            print(f"  ✗ Connection refused to {ip}:{port}")
+        except TimeoutError:
+            print(f"  ✗ Connection timed out to {ip}:{port}")
+        except Exception as e:
+            logger.error(f"  ✗ {station_id}: {e}")
+
+    print(f"\n{'=' * 55}")
+    print(f"Provisioned {success_count}/{len(targets)} receivers")
     return 0 if success_count == len(targets) else 1
 
 
@@ -3167,6 +3692,8 @@ def create_parser() -> argparse.ArgumentParser:
                 subparsers_map["validate"].set_defaults(func=cmd_validate)
             if "rec-config" in subparsers_map:
                 subparsers_map["rec-config"].set_defaults(func=cmd_rec_config)
+            if "rec-provision" in subparsers_map:
+                subparsers_map["rec-provision"].set_defaults(func=cmd_rec_provision)
             if "rinex" in subparsers_map:
                 subparsers_map["rinex"].set_defaults(func=cmd_rinex)
             if "tools" in subparsers_map:

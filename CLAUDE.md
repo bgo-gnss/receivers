@@ -23,6 +23,29 @@ The `receivers` package provides GPS receiver management functionality for the I
 
 ## Command-Line Interface
 
+### Desk/Bench Provisioning
+
+```bash
+# Bootstrap a fresh receiver on the bench (USB or WiFi AP):
+receivers rec-provision BENCH --host 192.168.3.1  --bootstrap          # USB
+receivers rec-provision BENCH --host 192.168.20.1 --bootstrap          # WiFi AP
+receivers rec-provision BENCH --host 192.168.20.1 --bootstrap --dry-run
+
+# With config push:
+receivers rec-provision BENCH --host 192.168.20.1 --bootstrap \
+  --apply-config path/to/TEST_PolaRx5_GPS_GLONASS_only.txt
+
+# Provision deployed station (IP from stations.cfg):
+receivers rec-provision GJAC
+```
+
+**Connection options:** USB gives `192.168.3.1`. Built-in WiFi AP gives `192.168.20.1`
+(SSID: `PolaRx5-<serial>`). Both work identically. Laptop Ethernet internet stays active
+when connecting via WiFi — the receiver AP uses a separate 192.168.20.x subnet.
+
+**`--bootstrap`** fills in `--set-ip`/DNS from `receivers.cfg` (`desk_bootstrap_ip`,
+`desk_dns1/2`) and requires `--host`. Do not use on deployed stations.
+
 ### Basic Commands
 
 ```bash
@@ -573,11 +596,9 @@ All receivers use Phase 1 utilities by default:
 - **Simplicity**: No feature flags, single code path
 
 ### Documentation
-- **Phase 3C completion**: `docs/phase3c_complete.md` - Scheduler testing and extensibility
 - **Scheduler guide**: `docs/scheduler/scheduler-guide.md` - Complete operational guide
-- Phase 3B completion: `docs/phase3b_complete.md`
-- Phase 2 completion: `docs/phase2_complete.md`
 - Architecture diagrams: `docs/receivers/diagrams/`
+- Phase completion notes archived to `docs/archived/`
 
 ---
 
@@ -596,6 +617,7 @@ A systematic review is needed to address recurring patterns of issues found duri
 - **Receiver capability awareness**: Dashboard should know what each receiver type supports (status session, control port, NTRIP) instead of per-field NULL checks
 
 ### Medium Priority
+- **systemd watchdog (sd_notify)**: The scheduler doesn't send sd_notify keepalives, so `WatchdogSec=300s` in the service file kills the process after 5 minutes. Currently disabled via commenting out `WatchdogSec`. Proper fix: integrate `sd_notify` (via `systemd.daemon` or `sdnotify` package) into the scheduler main loop — send `WATCHDOG=1` periodically and `READY=1` on startup. Also fix `.cache/` dir perms (`0700` → `0750`) so bgo can read gpsops logs.
 - **Codebase review**: Full audit of db_writer.py, connectivity_writer.py, and all extractors for protocol assumptions
 - **Test coverage**: Integration tests for Trimble health flow end-to-end (extractor → db_writer → dashboard views)
 - **Error handling patterns**: Standardize SAVEPOINT usage, transaction management, and value truncation across all DB writers

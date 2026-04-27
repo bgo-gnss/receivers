@@ -272,6 +272,31 @@ Examples:
     return parser
 
 
+def add_host_flags(parser: argparse.ArgumentParser) -> None:
+    """Add --host / --receiver-type flags for direct (desk) receiver connections.
+
+    When --host is given the command bypasses stations.cfg and connects
+    directly to the receiver using native ports (21 FTP, 80 HTTP, 28784 control).
+    Only one station label is allowed when --host is specified.
+    """
+    direct_group = parser.add_argument_group("direct connection (desk/bench setup)")
+    direct_group.add_argument(
+        "--host",
+        metavar="IP",
+        help=(
+            "Direct connection IP/hostname — bypasses stations.cfg and uses native "
+            "receiver ports (21 FTP, 80 HTTP, 28784 TCP control). "
+            "Only one station label is allowed with --host."
+        ),
+    )
+    direct_group.add_argument(
+        "--receiver-type",
+        metavar="TYPE",
+        default="PolaRX5",
+        help="Receiver type for direct connection (default: PolaRX5)",
+    )
+
+
 def setup_status_parser(subparsers) -> argparse.ArgumentParser:
     """Set up the status subcommand parser."""
     parser = subparsers.add_parser(
@@ -313,6 +338,7 @@ Examples:
         help="Send check results to Icinga monitoring system",
     )
 
+    add_host_flags(parser)
     add_verbose_flag(parser)
 
     return parser
@@ -429,6 +455,7 @@ Multiple stations:
         "--skip-blocks", action="store_true", help="Skip per-block JSON extraction"
     )
 
+    add_host_flags(parser)
     add_verbose_flag(parser)
 
     return parser
@@ -582,6 +609,136 @@ Examples:
         help="Connection timeout in seconds (default: 10)",
     )
 
+    add_host_flags(parser)
+    add_verbose_flag(parser)
+
+    return parser
+
+
+def setup_rec_provision_parser(subparsers) -> argparse.ArgumentParser:
+    """Set up the rec-provision subcommand parser."""
+    parser = subparsers.add_parser(
+        "rec-provision",
+        help="Provision a Septentrio PolaRx5 receiver (fw 5.7.0)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""
+Provision a Septentrio PolaRx5 receiver running fw 5.7.0.
+
+Creates standard user accounts, enables FTP, disables HTTPS redirect,
+pushes the SSH public key to the gpsops account, and saves to Boot.
+
+Handles two cases automatically:
+  - Fresh receiver (no accounts): uses factory bootstrap credentials
+    (RxAdmin / S3pt3ntr10) to create gpsops as User1, then sets up
+    the rest.
+  - Already provisioned: skips account creation, updates FTP/HTTPS
+    settings and SSH key if needed.
+
+Credentials are read from receivers.cfg [polarx5]:
+  tcp_username, tcp_password, tcp_ssh_key_path
+
+Examples:
+  receivers rec-provision GJAC
+  receivers rec-provision ORFC GJAC
+  receivers rec-provision GJAC --dry-run
+  receivers rec-provision GJAC --skip-ssh-key
+
+Desk/bench setup (one-shot bootstrap):
+  receivers rec-provision BENCH --host 192.168.3.1 --bootstrap
+  receivers rec-provision BENCH --host 192.168.3.1 --bootstrap --apply-config path/to/config.txt
+        """,
+    )
+
+    parser.add_argument(
+        "stations",
+        metavar="STATIONS",
+        nargs="+",
+        help="Station ID(s) to provision",
+    )
+
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be done without executing",
+    )
+
+    parser.add_argument(
+        "--skip-ssh-key",
+        action="store_true",
+        help="Do not push SSH public key to receiver",
+    )
+
+    parser.add_argument(
+        "--bootstrap",
+        action="store_true",
+        help=(
+            "Standard bench profile: sets --set-ip to desk_bootstrap_ip from receivers.cfg "
+            "(default 192.168.100.60), fills --dns1/--dns2 from config. "
+            "Requires --host. Bench/desk use only — do not use on deployed stations."
+        ),
+    )
+
+    parser.add_argument(
+        "--port",
+        type=int,
+        metavar="PORT",
+        help="Override control port (default from config: 28784)",
+    )
+
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=15,
+        metavar="SECONDS",
+        help="Connection timeout in seconds (default: 15)",
+    )
+
+    net_group = parser.add_argument_group("network setup (desk/bench)")
+    net_group.add_argument(
+        "--set-ip",
+        metavar="IP",
+        help=(
+            "Assign static IP to receiver via setIPSettings. "
+            "Permanent command — takes effect on reboot. Desk/bench use only."
+        ),
+    )
+    net_group.add_argument(
+        "--gateway",
+        metavar="GW",
+        default=None,
+        help="Gateway for --set-ip (default: desk_gateway from receivers.cfg or 192.168.100.1)",
+    )
+    net_group.add_argument(
+        "--netmask",
+        metavar="MASK",
+        default=None,
+        help="Subnet mask for --set-ip (default: 255.255.255.0)",
+    )
+    net_group.add_argument(
+        "--dns1",
+        metavar="IP",
+        default=None,
+        help="Primary DNS for --set-ip (default: desk_dns1 from receivers.cfg)",
+    )
+    net_group.add_argument(
+        "--dns2",
+        metavar="IP",
+        default=None,
+        help="Secondary DNS for --set-ip (default: desk_dns2 from receivers.cfg)",
+    )
+
+    cfg_group = parser.add_argument_group("receiver config")
+    cfg_group.add_argument(
+        "--apply-config",
+        metavar="PATH",
+        help=(
+            "Push a receiver config script after provisioning "
+            "(e.g. TEST_PolaRx5_GPS_GLONASS_only.txt). "
+            "Sent as Expert Console upload — file must not contain sual/setUserAccessLevel lines."
+        ),
+    )
+
+    add_host_flags(parser)
     add_verbose_flag(parser)
 
     return parser
@@ -863,6 +1020,7 @@ For subcommand help: receivers <command> --help
     setup_health_parser(subparsers)
     setup_validate_parser(subparsers)
     setup_rec_config_parser(subparsers)
+    setup_rec_provision_parser(subparsers)
     setup_rinex_parser(subparsers)
     setup_tools_parser(subparsers)
 

@@ -13,7 +13,7 @@ logger = logging.getLogger("receivers.health.fingerprint")
 # Known receiver fingerprints: patterns that identify each receiver type
 RECEIVER_FINGERPRINTS: Dict[str, Dict[str, Any]] = {
     "PolaRX5": {
-        "model_patterns": ["PolaRx5", "PolaRX5", "POLARX5"],
+        "model_patterns": ["PolaRx5", "PolaRX5", "POLARX5", "SSRC7"],
         "banner_patterns": ["Septentrio"],
         "protocol": "sbf",
     },

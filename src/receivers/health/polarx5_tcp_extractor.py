@@ -14,6 +14,7 @@ SBF Blocks Used:
 - 4007 PVTGeodetic2: Position (lat, lon, alt) and accuracy
 - 4013 ChannelStatus: Satellite tracking per channel
 - 4082 QualityInd: Quality indicators including satellite counts
+- 5902 ReceiverSetup: Receiver model, firmware version, serial number (all fw versions)
 
 Usage:
     extractor = PolaRX5TCPExtractor('10.6.1.201', 'ISFS')
@@ -23,12 +24,22 @@ Usage:
 import logging
 import re
 import socket
+import ssl
 import struct
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from .metrics import MetricChecker, load_thresholds
+
+
+def _firmware_requires_auth(firmware_version: str) -> bool:
+    """Return True if the firmware version requires TCP authentication (>= 5.7.0)."""
+    try:
+        parts = [int(x) for x in firmware_version.split(".")]
+        return parts >= [5, 7, 0]
+    except (ValueError, AttributeError):
+        return True  # Unknown format — attempt auth to be safe
 
 
 class PolaRX5TCPExtractor:
@@ -47,7 +58,13 @@ class PolaRX5TCPExtractor:
     BLOCK_QUALITY_IND = 4082
     BLOCK_NTRIP_SERVER_STATUS = 4122  # NTRIP server connections
     BLOCK_NTRIP_CLIENT_STATUS = 4053  # NTRIP client connection
-    BLOCK_RECEIVER_SETUP = 4027  # ReceiverSetup - model, firmware, serial
+    BLOCK_RECEIVER_SETUP = (
+        5902  # ReceiverSetup - model, firmware, serial (all fw versions)
+    )
+
+    SECURE_CONTROL_PORT = (
+        28783  # TLS port — used when sis=secure (fw upgrade resets to this)
+    )
 
     def __init__(
         self,
@@ -73,6 +90,26 @@ class PolaRX5TCPExtractor:
         self.timeout = timeout
         self.logger = logging.getLogger(f"receivers.health.{station_id}")
         self._connection_id = None  # Will be detected from prompt (e.g., "IP11")
+        self._auth_failed = (
+            False  # Set on first bad-creds response; skips login for rest of session
+        )
+        self.use_tls = (
+            False  # Set on first TLS fallback; subsequent connections reuse TLS
+        )
+
+        # TCP credentials for fw 5.7.0 authentication
+        # Loaded from receivers.cfg [polarx5] section, with per-station override
+        self.tcp_username: Optional[str] = None
+        self.tcp_password: Optional[str] = None
+        self.firmware_version: Optional[str] = None  # from stations.cfg; gates _login()
+        try:
+            from ..config.receivers_config import get_receivers_config
+
+            rec_cfg = get_receivers_config().get_receiver_config("polarx5")
+            self.tcp_username = rec_cfg.get("tcp_username") or None
+            self.tcp_password = rec_cfg.get("tcp_password") or None
+        except Exception as e:
+            self.logger.debug(f"Could not load TCP credentials from receivers.cfg: {e}")
 
         # Initialize centralized metric checker for consistent threshold evaluation
         # Load thresholds with receiver-type and power-type overrides
@@ -80,16 +117,73 @@ class PolaRX5TCPExtractor:
         try:
             from ..config_utils import get_station_config
 
-            cfg = get_station_config(station_id)
+            cfg = get_station_config(station_id, silent=True)
             if cfg:
                 power_type = cfg.get("power_type") or None
+                if cfg.get("tcp_username"):
+                    self.tcp_username = cfg["tcp_username"]
+                if cfg.get("tcp_password"):
+                    self.tcp_password = cfg["tcp_password"]
         except Exception as e:
-            self.logger.debug(f"Could not load station config for thresholds: {e}")
+            self.logger.debug(f"Could not load station config: {e}")
+
+        # Load firmware_version directly from stations.cfg (get_station_config parses only
+        # known structured fields; receiver_firmware_version is a pass-through raw field)
+        try:
+            import gps_parser as _gps
+
+            raw = _gps.ConfigParser().getStationInfo(station_id)
+            station_raw = raw.get("station", {}) if isinstance(raw, dict) else {}
+            self.firmware_version = station_raw.get("receiver_firmware_version") or None
+        except Exception as e:
+            self.logger.debug(f"Could not read firmware_version from stations.cfg: {e}")
         config = load_thresholds(receiver_type="PolaRX5", power_type=power_type)
         self.metric_checker = MetricChecker(config)
 
         # Port configuration for status checks
         self.port_config = port_config or {"ftp": 2160, "http": 8060, "control": 28784}
+
+    def _open_socket(self) -> socket.socket:
+        """Open a connected socket to the receiver TCP command port.
+
+        Tries plaintext on self.port first. On ConnectionRefused, falls back to TLS on
+        SECURE_CONTROL_PORT (28783) — this happens when sis=secure (e.g. right after a
+        firmware upgrade before re-provisioning). Once TLS is confirmed, self.use_tls and
+        self.port are updated so subsequent calls reuse TLS without reattempting plaintext.
+
+        Returns the connected socket (plain or SSL-wrapped).
+        Raises on all other errors so callers can handle them.
+        """
+        raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        raw.settimeout(self.timeout)
+        try:
+            raw.connect((self.host, self.port))
+            if self.use_tls:
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                return ctx.wrap_socket(raw)  # type: ignore[return-value]
+            return raw
+        except ConnectionRefusedError:
+            if self.use_tls or self.port == self.SECURE_CONTROL_PORT:
+                raise  # already on TLS port — nothing to fall back to
+            raw.close()
+            self.logger.debug(
+                f"Port {self.port} refused — trying TLS on {self.SECURE_CONTROL_PORT}"
+            )
+            raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            raw.settimeout(self.timeout)
+            raw.connect((self.host, self.SECURE_CONTROL_PORT))
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            sock = ctx.wrap_socket(raw)  # type: ignore[assignment]
+            self.use_tls = True
+            self.port = self.SECURE_CONTROL_PORT
+            self.logger.info(
+                f"[{self.station_id}] TLS fallback active — receiver is in sis=secure mode"
+            )
+            return sock  # type: ignore[return-value]
 
     def extract_health_data(self) -> Dict[str, Any]:
         """Extract health data from all available SBF blocks.
@@ -210,7 +304,7 @@ class PolaRX5TCPExtractor:
         return None
 
     def _query_receiver_status(self) -> Optional[Dict[str, Any]]:
-        """Query ReceiverStatus SBF block for CPU, temperature, uptime.
+        """Query ReceiverStatus SBF block (4014) for CPU, temperature, uptime.
 
         Returns:
             Dictionary with receiver metrics or None on failure
@@ -367,34 +461,112 @@ class PolaRX5TCPExtractor:
 
         return None
 
+    def _request_receiver_setup_unauthenticated(self) -> Optional[bytes]:
+        """Request ReceiverSetup block without authenticating.
+
+        Pre-5.7 receivers are fully open — no credentials configured. Skipping
+        login here avoids spurious auth warnings on those stations and resolves
+        the bootstrap problem (we need fw version to know whether to auth).
+
+        Returns:
+            Raw SBF bytes for block 5902, or None if auth is required or failed.
+        """
+        sock = None
+        try:
+            sock = self._open_socket()
+
+            prompt = sock.recv(1024)
+            conn_id = self._parse_connection_id(prompt)
+
+            cmd = f"esoc, {conn_id}, ReceiverSetup\n"
+            sock.sendall(cmd.encode())
+
+            response = b""
+            end_time = time.time() + 2.0
+            while time.time() < end_time:
+                try:
+                    sock.settimeout(0.5)
+                    chunk = sock.recv(8192)
+                    if chunk:
+                        response += chunk
+                        decoded = response.decode("utf-8", errors="ignore")
+                        if "Not authorized" in decoded:
+                            self.logger.debug(
+                                "ReceiverSetup unauthenticated esoc blocked — fw requires auth"
+                            )
+                            return None  # Needs auth — caller will retry with login
+                        result = self._find_sbf_block(
+                            response, self.BLOCK_RECEIVER_SETUP
+                        )
+                        if result is not None:
+                            return result
+                except TimeoutError:
+                    if response:
+                        break
+
+            return self._find_sbf_block(response, self.BLOCK_RECEIVER_SETUP)
+
+        except Exception as e:
+            self.logger.debug(f"Unauthenticated ReceiverSetup query failed: {e}")
+            return None
+        finally:
+            if sock:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+
     def _query_receiver_setup(self) -> Optional[Dict[str, Any]]:
-        """Query ReceiverSetup SBF block (4027) for receiver identity.
+        """Query ReceiverSetup SBF block (5902) for receiver identity.
 
         Extracts model name, firmware version, and serial number from the
         ReceiverSetup block. This identifies the actual hardware connected,
         enabling mismatch detection against configured receiver type.
 
-        ReceiverSetup structure (after 14-byte standard SBF header+TOW+WNc):
-        - Bytes 14-73:   MarkerName (60 chars, null-padded)
-        - Bytes 74-93:   MarkerNumber (20 chars)
-        - Bytes 94-113:  Observer (20 chars)
-        - Bytes 114-153: Agency (40 chars)
-        - Bytes 154-173: RxSerialNumber (20 chars)
-        - Bytes 174-193: RxName (20 chars) — receiver model
-        - Bytes 194-213: RxVersion (20 chars) — firmware version
+        Bootstrap approach: tries WITHOUT auth first (pre-5.7 receivers have no
+        auth configured and are fully open). Falls back to authenticated request
+        if the receiver returns "Not authorized" (fw 5.7.0+).
+
+        ReceiverSetup byte layout (offsets from start of $@ sync):
+          0-7:   SBF header (Sync1, Sync2, CRC, ID, Length)
+          8-11:  TOW (u4)
+         12-13:  WNc (u2)
+         14-15:  Reserved (u1[2])   ← 2 bytes, must not skip these
+         16-75:  MarkerName (c1[60])
+         76-95:  MarkerNumber (c1[20])
+         96-115: Observer (c1[20])
+        116-155: Agency (c1[40])
+        156-175: RxSerialNumber (c1[20])
+        176-195: RxName (c1[20]) — receiver model
+        196-215: RxVersion (c1[20]) — firmware version
 
         Returns:
             Dictionary with receiver identity or None on failure
         """
-        sbf_data = self._send_sbf_request("ReceiverSetup", self.BLOCK_RECEIVER_SETUP)
+        # Try without auth first — pre-5.7 is fully open, no credentials needed.
+        # This avoids spurious "wrong username or password" warnings on open receivers
+        # and solves the bootstrap problem (need fw version to decide whether to auth).
+        sbf_data = self._request_receiver_setup_unauthenticated()
+        if sbf_data is None:
+            # Receiver requires auth — retry with credentials if configured.
+            # Without credentials there's nothing we can do; skip silently so
+            # the health check doesn't spam auth warnings for open-but-failing receivers.
+            if not self.tcp_username or not self.tcp_password:
+                self.logger.debug(
+                    "ReceiverSetup unavailable unauthenticated and no credentials configured"
+                )
+                return None
+            sbf_data = self._send_sbf_request(
+                "ReceiverSetup", self.BLOCK_RECEIVER_SETUP
+            )
         if not sbf_data:
             return None
 
         try:
             _, length = self._parse_sbf_header(sbf_data)
 
-            # Need at least 214 bytes to extract through RxVersion
-            if length < 214 or len(sbf_data) < 214:
+            # Need at least 216 bytes to extract through RxVersion (196 + 20)
+            if length < 216 or len(sbf_data) < 216:
                 self.logger.debug(f"ReceiverSetup response too short: {length} bytes")
                 return None
 
@@ -403,9 +575,9 @@ class PolaRX5TCPExtractor:
                 raw = data[start : start + size]
                 return raw.split(b"\x00", 1)[0].decode("ascii", errors="ignore").strip()
 
-            serial_number = _extract_string(sbf_data, 154, 20)
-            receiver_model = _extract_string(sbf_data, 174, 20)
-            firmware_version = _extract_string(sbf_data, 194, 20)
+            serial_number = _extract_string(sbf_data, 156, 20)
+            receiver_model = _extract_string(sbf_data, 176, 20)
+            firmware_version = _extract_string(sbf_data, 196, 20)
 
             if not any([serial_number, receiver_model, firmware_version]):
                 return None
@@ -539,14 +711,16 @@ class PolaRX5TCPExtractor:
         """
         sock = None
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(self.timeout)
-            sock.connect((self.host, self.port))
+            sock = self._open_socket()
 
             # Read initial prompt (e.g., "IP11>")
             prompt = sock.recv(1024)
             conn_id = self._parse_connection_id(prompt)
             self.logger.debug(f"ASCII command connection as {conn_id}")
+
+            # fw 5.7.0: authenticate before issuing any command
+            if not self._login(sock):
+                return None
 
             # Send command
             sock.sendall((command + "\n").encode("utf-8"))
@@ -564,7 +738,7 @@ class PolaRX5TCPExtractor:
 
                         # Check if response ends with prompt (IPxx>)
                         decoded = response.decode("utf-8", errors="ignore")
-                        if decoded.rstrip().endswith(">") and "IP" in decoded[-20:]:
+                        if re.search(r"IP\d+>", decoded[-30:]):
                             break
                 except TimeoutError:
                     if response:
@@ -651,11 +825,11 @@ class PolaRX5TCPExtractor:
         used_mb_sum = 0.0
 
         for row in rows:
-            disk_id = int(row.get("DiskID", 0))
-            mounted = row.get("DISK_MOUNTED", 0) == 1
-            disk_full = row.get("DISK_FULL", 0) == 1
-            disk_size_mb = float(row.get("DiskSize [MB]", 0))
-            usage_pct = float(row.get("DiskUsagePercent [%]", 0))
+            disk_id = int(row.get("DiskID") or 0)
+            mounted = (row.get("DISK_MOUNTED") or 0) == 1
+            disk_full = (row.get("DISK_FULL") or 0) == 1
+            disk_size_mb = float(row.get("DiskSize [MB]") or 0)
+            usage_pct = float(row.get("DiskUsagePercent [%]") or 0)
             error_str = row.get("Error", "")
 
             if mounted:
@@ -776,13 +950,15 @@ class PolaRX5TCPExtractor:
         """
         sock = None
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(self.timeout)
-            sock.connect((self.host, self.port))
+            sock = self._open_socket()
 
             # Read initial prompt to detect connection ID (e.g., "IP11>")
             prompt = sock.recv(1024)
             conn_id = self._parse_connection_id(prompt)
+
+            # fw 5.7.0: authenticate before issuing any command
+            if not self._login(sock):
+                return None
 
             # Send SBF once request using detected connection ID
             # The esoc command streams SBF data to the specified connection
@@ -880,6 +1056,78 @@ class PolaRX5TCPExtractor:
             pos = sync_pos + max(length, 8)
 
         return None
+
+    def _login(self, sock: socket.socket) -> bool:
+        """Authenticate TCP session for fw 5.7.0+.
+
+        Sends `login, <user>, <pw>` and drains the response plus the new
+        prompt that follows before returning control to the caller.
+
+        Behaviour by firmware:
+        - fw 5.7.0: returns `$R! LogIn` + body + new prompt → True
+        - fw 5.7.0, wrong creds: returns `$R? LogIn: Wrong username or password!` → True
+          (commands will fail with $E: Not authorized! — health blocks return None)
+        - fw ≤5.5.0: returns `$E: Invalid command!` (login unknown) → True (proceed unauthenticated)
+        - No credentials configured: no-op → True
+
+        Returns:
+            True if session is ready to accept commands, False on definitive auth error
+            that means proceeding is pointless.
+        """
+        if not self.tcp_username or not self.tcp_password:
+            return True
+        if self._auth_failed:
+            # Previous attempt in this health check cycle failed — skip to avoid lockout.
+            return True
+        if self.firmware_version and not _firmware_requires_auth(self.firmware_version):
+            # Known pre-5.7 firmware — commands work without authentication.
+            return True
+
+        cmd = f"login, {self.tcp_username}, {self.tcp_password}\n"
+        sock.sendall(cmd.encode("utf-8"))
+
+        # Drain login response + subsequent prompt (IPxx>)
+        response = b""
+        end_time = time.time() + 3.0
+        while time.time() < end_time:
+            try:
+                sock.settimeout(1.0)
+                chunk = sock.recv(4096)
+                if chunk:
+                    response += chunk
+                    decoded = response.decode("utf-8", errors="ignore")
+                    if re.search(r"IP\d+>", decoded[-30:]):
+                        break
+            except TimeoutError:
+                if response:
+                    break
+
+        decoded = response.decode("utf-8", errors="ignore")
+
+        if "$R! LogIn" in decoded or "$R: login" in decoded:
+            self.logger.debug(f"TCP login successful for {self.station_id}")
+            return True
+        elif "$E: Invalid command" in decoded:
+            # fw ≤5.5.0 — login command did not exist; unauthenticated access is normal
+            self.logger.debug(
+                f"Login not recognised by {self.station_id} — assuming fw≤5.5.0, proceeding"
+            )
+            return True
+        elif (
+            "Wrong username or password" in decoded
+            or "Too many failed login" in decoded
+        ):
+            self._auth_failed = True
+            self.logger.warning(
+                f"TCP auth failed for {self.station_id}: wrong username or password"
+            )
+            return True  # Proceed unauthenticated; pre-5.7 receivers allow commands after bad login
+        else:
+            if decoded.strip():
+                self.logger.debug(
+                    f"Unexpected login response for {self.station_id}: {decoded[:100]!r}"
+                )
+            return True
 
     def _parse_connection_id(self, prompt: bytes) -> str:
         """Parse connection ID from receiver prompt.
