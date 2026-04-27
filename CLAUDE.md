@@ -23,6 +23,29 @@ The `receivers` package provides GPS receiver management functionality for the I
 
 ## Command-Line Interface
 
+### Desk/Bench Provisioning
+
+```bash
+# Bootstrap a fresh receiver on the bench (USB or WiFi AP):
+receivers rec-provision BENCH --host 192.168.3.1  --bootstrap          # USB
+receivers rec-provision BENCH --host 192.168.20.1 --bootstrap          # WiFi AP
+receivers rec-provision BENCH --host 192.168.20.1 --bootstrap --dry-run
+
+# With config push:
+receivers rec-provision BENCH --host 192.168.20.1 --bootstrap \
+  --apply-config path/to/TEST_PolaRx5_GPS_GLONASS_only.txt
+
+# Provision deployed station (IP from stations.cfg):
+receivers rec-provision GJAC
+```
+
+**Connection options:** USB gives `192.168.3.1`. Built-in WiFi AP gives `192.168.20.1`
+(SSID: `PolaRx5-<serial>`). Both work identically. Laptop Ethernet internet stays active
+when connecting via WiFi — the receiver AP uses a separate 192.168.20.x subnet.
+
+**`--bootstrap`** fills in `--set-ip`/DNS from `receivers.cfg` (`desk_bootstrap_ip`,
+`desk_dns1/2`) and requires `--host`. Do not use on deployed stations.
+
 ### Basic Commands
 
 ```bash

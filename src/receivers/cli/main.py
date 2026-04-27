@@ -2551,6 +2551,7 @@ def cmd_rec_provision(args) -> int:
     import re
     import socket
     import ssl
+    import struct
     import time
     from pathlib import Path
 
@@ -2576,6 +2577,17 @@ def cmd_rec_provision(args) -> int:
     dns1 = getattr(args, "dns1", None) or polarx5_config.get("desk_dns1") or ""
     dns2 = getattr(args, "dns2", None) or polarx5_config.get("desk_dns2") or ""
     apply_config = getattr(args, "apply_config", None)
+
+    if getattr(args, "bootstrap", False):
+        if not getattr(args, "host", None):
+            logger.error("--bootstrap requires --host (bench/desk use only — do not use on deployed stations)")
+            return 1
+        if not set_ip:
+            set_ip = polarx5_config.get("desk_bootstrap_ip") or "192.168.100.60"
+        if not dns1:
+            dns1 = polarx5_config.get("desk_dns1") or ""
+        if not dns2:
+            dns2 = polarx5_config.get("desk_dns2") or ""
 
     if not tcp_username or not tcp_password:
         logger.error("tcp_username and tcp_password must be set in receivers.cfg [polarx5]")
@@ -2673,6 +2685,9 @@ def cmd_rec_provision(args) -> int:
                     print(f"  [DRY RUN] Apply config {Path(apply_config).name} ({len(cmds)} commands)")
                 except FileNotFoundError:
                     print(f"  [DRY RUN] Apply config — FILE NOT FOUND: {apply_config}")
+            print("  [DRY RUN] Read serial number (esoc ReceiverSetup)")
+            if apply_config and polarx5_config.get("rec_config_dir"):
+                print(f"  [DRY RUN] Archive config → {polarx5_config.get('rec_config_dir')}/{station_id}_SERIAL_Current_YYYYMMDD.txt")
             success_count += 1
             continue
 
@@ -2703,6 +2718,7 @@ def cmd_rec_provision(args) -> int:
             logger.debug(f"Initial prompt: {prompt!r} (tls={using_tls})")
 
             bootstrapped = False
+            conn_id = "IP10"
 
             if "$E" in prompt or not prompt.strip():
                 print("  ⚠  Unexpected initial response — aborting")
@@ -2729,6 +2745,13 @@ def cmd_rec_provision(args) -> int:
                     print("    Check credentials in receivers.cfg [polarx5]")
                     sock.close()
                     continue
+
+            # Extract connection ID from prompt (e.g. "IP10>") for SBF requests
+            for line in reversed(resp.splitlines()):
+                stripped = line.strip()
+                if stripped.endswith(">") and stripped[:-1]:
+                    conn_id = stripped[:-1]
+                    break
 
             # Step 2: create/update admin account (always — not just on fresh bootstrap)
             if admin_password:
@@ -2806,6 +2829,52 @@ def cmd_rec_provision(args) -> int:
                         print(f"  ⚠  Config applied with {errors} command errors")
                 except FileNotFoundError:
                     print(f"  ✗ Config file not found: {apply_config}")
+
+            # Step 9: read serial number via SBF ReceiverSetup block (5902)
+            serial: Optional[str] = None
+            try:
+                sock.sendall(f"esoc, {conn_id}, ReceiverSetup\n".encode())
+                sbf_buf = b""
+                sbf_end = time.time() + 3.0
+                sock.settimeout(0.5)
+                while time.time() < sbf_end:
+                    try:
+                        chunk = sock.recv(8192)
+                        if chunk:
+                            sbf_buf += chunk
+                            idx = sbf_buf.find(b"\x24\x40")
+                            if idx >= 0 and len(sbf_buf) - idx >= 180:
+                                break
+                    except (TimeoutError, socket.timeout):
+                        if sbf_buf:
+                            break
+                idx = sbf_buf.find(b"\x24\x40")
+                if idx >= 0 and len(sbf_buf) - idx >= 176:
+                    data = sbf_buf[idx:]
+                    block_id = struct.unpack_from("<H", data, 4)[0] & 0x1FFF
+                    if block_id == 5902:
+                        raw = data[156:176]
+                        s = raw.split(b"\x00")[0].decode("ascii", errors="ignore").strip()
+                        serial = s or None
+            except Exception:
+                pass
+            if serial:
+                print(f"  Serial number: {serial}")
+            else:
+                print("  (serial number: could not read)")
+
+            # Auto-archive pushed config alongside rec-config archives
+            if apply_config:
+                import datetime as _dt
+                rec_config_dir_str = polarx5_config.get("rec_config_dir") or None
+                if rec_config_dir_str:
+                    archive_dir = Path(rec_config_dir_str).expanduser().resolve()
+                    if archive_dir.exists():
+                        date_str = _dt.date.today().strftime("%Y%m%d")
+                        serial_part = serial or "UNKNOWN"
+                        dest = archive_dir / f"{station_id}_{serial_part}_Current_{date_str}.txt"
+                        dest.write_text(Path(apply_config).read_text())
+                        print(f"  ✓ Config archived → {dest.name}")
 
             sock.close()
             print(f"  → {station_id} provisioned successfully")

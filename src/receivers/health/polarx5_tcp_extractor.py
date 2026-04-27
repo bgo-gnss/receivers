@@ -24,6 +24,7 @@ Usage:
 import logging
 import re
 import socket
+import ssl
 import struct
 import time
 from datetime import datetime, timezone
@@ -59,6 +60,8 @@ class PolaRX5TCPExtractor:
     BLOCK_NTRIP_CLIENT_STATUS = 4053  # NTRIP client connection
     BLOCK_RECEIVER_SETUP = 5902  # ReceiverSetup - model, firmware, serial (all fw versions)
 
+    SECURE_CONTROL_PORT = 28783  # TLS port — used when sis=secure (fw upgrade resets to this)
+
     def __init__(
         self,
         host: str,
@@ -84,6 +87,7 @@ class PolaRX5TCPExtractor:
         self.logger = logging.getLogger(f"receivers.health.{station_id}")
         self._connection_id = None  # Will be detected from prompt (e.g., "IP11")
         self._auth_failed = False   # Set on first bad-creds response; skips login for rest of session
+        self.use_tls = False        # Set on first TLS fallback; subsequent connections reuse TLS
 
         # TCP credentials for fw 5.7.0 authentication
         # Loaded from receivers.cfg [polarx5] section, with per-station override
@@ -130,6 +134,48 @@ class PolaRX5TCPExtractor:
 
         # Port configuration for status checks
         self.port_config = port_config or {"ftp": 2160, "http": 8060, "control": 28784}
+
+    def _open_socket(self) -> socket.socket:
+        """Open a connected socket to the receiver TCP command port.
+
+        Tries plaintext on self.port first. On ConnectionRefused, falls back to TLS on
+        SECURE_CONTROL_PORT (28783) — this happens when sis=secure (e.g. right after a
+        firmware upgrade before re-provisioning). Once TLS is confirmed, self.use_tls and
+        self.port are updated so subsequent calls reuse TLS without reattempting plaintext.
+
+        Returns the connected socket (plain or SSL-wrapped).
+        Raises on all other errors so callers can handle them.
+        """
+        raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        raw.settimeout(self.timeout)
+        try:
+            raw.connect((self.host, self.port))
+            if self.use_tls:
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                return ctx.wrap_socket(raw)  # type: ignore[return-value]
+            return raw
+        except ConnectionRefusedError:
+            if self.use_tls or self.port == self.SECURE_CONTROL_PORT:
+                raise  # already on TLS port — nothing to fall back to
+            raw.close()
+            self.logger.debug(
+                f"Port {self.port} refused — trying TLS on {self.SECURE_CONTROL_PORT}"
+            )
+            raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            raw.settimeout(self.timeout)
+            raw.connect((self.host, self.SECURE_CONTROL_PORT))
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            sock = ctx.wrap_socket(raw)  # type: ignore[assignment]
+            self.use_tls = True
+            self.port = self.SECURE_CONTROL_PORT
+            self.logger.info(
+                f"[{self.station_id}] TLS fallback active — receiver is in sis=secure mode"
+            )
+            return sock  # type: ignore[return-value]
 
     def extract_health_data(self) -> Dict[str, Any]:
         """Extract health data from all available SBF blocks.
@@ -419,9 +465,7 @@ class PolaRX5TCPExtractor:
         """
         sock = None
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(self.timeout)
-            sock.connect((self.host, self.port))
+            sock = self._open_socket()
 
             prompt = sock.recv(1024)
             conn_id = self._parse_connection_id(prompt)
@@ -655,9 +699,7 @@ class PolaRX5TCPExtractor:
         """
         sock = None
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(self.timeout)
-            sock.connect((self.host, self.port))
+            sock = self._open_socket()
 
             # Read initial prompt (e.g., "IP11>")
             prompt = sock.recv(1024)
@@ -896,9 +938,7 @@ class PolaRX5TCPExtractor:
         """
         sock = None
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(self.timeout)
-            sock.connect((self.host, self.port))
+            sock = self._open_socket()
 
             # Read initial prompt to detect connection ID (e.g., "IP11>")
             prompt = sock.recv(1024)
