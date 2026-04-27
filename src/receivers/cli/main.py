@@ -2845,7 +2845,7 @@ def cmd_rec_provision(args) -> int:
                             idx = sbf_buf.find(b"\x24\x40")
                             if idx >= 0 and len(sbf_buf) - idx >= 180:
                                 break
-                    except (TimeoutError, socket.timeout):
+                    except TimeoutError:
                         if sbf_buf:
                             break
                 idx = sbf_buf.find(b"\x24\x40")
