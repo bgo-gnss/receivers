@@ -121,7 +121,11 @@ class PolaRX5(BaseReceiver):
 
         except Exception as e:
             # Fallback to default timeout configuration if gps_parser fails
-            log = self.logger.debug if self.station_info.get("_adhoc") else self.logger.warning
+            log = (
+                self.logger.debug
+                if self.station_info.get("_adhoc")
+                else self.logger.warning
+            )
             log(f"Could not load timeout config from gps_parser: {e}")
             self.logger.info("Using fallback timeout configuration")
 
@@ -215,12 +219,18 @@ class PolaRX5(BaseReceiver):
                     import gps_parser as _gps
 
                     raw = _gps.ConfigParser().getStationInfo(self.station_id)
-                    station_raw = raw.get("station", {}) if isinstance(raw, dict) else {}
+                    station_raw = (
+                        raw.get("station", {}) if isinstance(raw, dict) else {}
+                    )
                     fw_ver = station_raw.get("receiver_firmware_version") or None
                 except Exception:
                     pass
 
-                uses_auth = cfg_wants_auth and fw_ver is not None and _firmware_requires_auth(fw_ver)
+                uses_auth = (
+                    cfg_wants_auth
+                    and fw_ver is not None
+                    and _firmware_requires_auth(fw_ver)
+                )
                 self.ftp_anonymous = not uses_auth
                 if uses_auth:
                     self.ftp_username = rec_cfg.get("tcp_username") or None
@@ -2773,6 +2783,7 @@ class PolaRX5(BaseReceiver):
             sbf_files = sorted(status_dir.glob("*.sbf.gz"), reverse=True)
 
         return sbf_files[0] if sbf_files else None
+
     def _record_performance_metrics(self, performance_metrics: Dict[str, Any]) -> None:
         """
         Record performance metrics using gps_parser adaptive learning system.

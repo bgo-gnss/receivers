@@ -1909,7 +1909,9 @@ def cmd_health(args) -> int:
             getattr(args, "extract_all", False),
         ]
     ):
-        logger.error("--host is for live checks only; --start/--end/--days/--extract-all are not supported")
+        logger.error(
+            "--host is for live checks only; --start/--end/--days/--extract-all are not supported"
+        )
         return 1
 
     if len(stations) > 1:
@@ -2316,12 +2318,16 @@ def cmd_rec_config(args) -> int:
 
     # Handle push mode
     if args.push:
-        return _push_configs(args, targets, logger, tcp_username, tcp_password, rec_config_dir)
+        return _push_configs(
+            args, targets, logger, tcp_username, tcp_password, rec_config_dir
+        )
 
     return 0
 
 
-def _extract_configs(args, targets, logger, tcp_username=None, tcp_password=None) -> int:
+def _extract_configs(
+    args, targets, logger, tcp_username=None, tcp_password=None
+) -> int:
     """Extract configurations from receivers."""
     import difflib
     import os
@@ -2381,8 +2387,12 @@ def _extract_configs(args, targets, logger, tcp_username=None, tcp_password=None
 
         try:
             client = PolaRX5TCPClient(
-                ip, station_id, port, timeout=args.timeout,
-                username=tcp_username, password=tcp_password,
+                ip,
+                station_id,
+                port,
+                timeout=args.timeout,
+                username=tcp_username,
+                password=tcp_password,
             )
             config = client.extract_config(config_type)
             client.disconnect()
@@ -2477,7 +2487,9 @@ def _push_configs(
     if rec_config_dir:
         archive_dir = Path(rec_config_dir).expanduser().resolve()
         if not archive_dir.exists():
-            logger.warning(f"rec_config_dir not found: {archive_dir} — skipping auto-archive")
+            logger.warning(
+                f"rec_config_dir not found: {archive_dir} — skipping auto-archive"
+            )
             archive_dir = None
 
     # Dry run - show commands and exit
@@ -2488,7 +2500,9 @@ def _push_configs(
                 print(f"  {cmd}")
         print("--- End of commands ---\n")
         if archive_dir:
-            print(f"  [DRY RUN] Would archive pushed config to {archive_dir}/STATION_SERIAL_Current_YYYYMMDD.txt")
+            print(
+                f"  [DRY RUN] Would archive pushed config to {archive_dir}/STATION_SERIAL_Current_YYYYMMDD.txt"
+            )
         print("Dry run complete. Use without --dry-run to execute.")
         return 0
 
@@ -2500,8 +2514,12 @@ def _push_configs(
 
         try:
             client = PolaRX5TCPClient(
-                ip, station_id, port, timeout=args.timeout,
-                username=tcp_username, password=tcp_password,
+                ip,
+                station_id,
+                port,
+                timeout=args.timeout,
+                username=tcp_username,
+                password=tcp_password,
             )
             success, errors = client.push_config(
                 commands, save_to_boot=not args.no_save
@@ -2514,7 +2532,12 @@ def _push_configs(
                     sbf = client.request_sbf_block("ReceiverSetup", 5902)
                     if sbf and len(sbf) >= 176:
                         raw = sbf[156:176]
-                        serial = raw.split(b"\x00")[0].decode("ascii", errors="ignore").strip() or None
+                        serial = (
+                            raw.split(b"\x00")[0]
+                            .decode("ascii", errors="ignore")
+                            .strip()
+                            or None
+                        )
                 except Exception:
                     pass
 
@@ -2530,7 +2553,10 @@ def _push_configs(
                 if archive_dir:
                     date_str = datetime.date.today().strftime("%Y%m%d")
                     serial_part = serial or "UNKNOWN"
-                    dest = archive_dir / f"{station_id}_{serial_part}_Current_{date_str}.txt"
+                    dest = (
+                        archive_dir
+                        / f"{station_id}_{serial_part}_Current_{date_str}.txt"
+                    )
                     dest.write_text(config_text)
                     print(f"  ✓ Config archived → {dest.name}")
             else:
@@ -2569,18 +2595,30 @@ def cmd_rec_provision(args) -> int:
     factory_password = polarx5_config.get("factory_password") or "S3pt3ntr10"
     admin_username = polarx5_config.get("admin_username") or "admin"
     admin_password = polarx5_config.get("admin_password") or None
-    default_port = args.port or int(polarx5_config.get("control_port", DEFAULT_CONTROL_PORT))
+    default_port = args.port or int(
+        polarx5_config.get("control_port", DEFAULT_CONTROL_PORT)
+    )
 
     set_ip = getattr(args, "set_ip", None)
-    gateway = getattr(args, "gateway", None) or polarx5_config.get("desk_gateway") or "192.168.100.1"
-    netmask = getattr(args, "netmask", None) or polarx5_config.get("desk_netmask") or "255.255.255.0"
+    gateway = (
+        getattr(args, "gateway", None)
+        or polarx5_config.get("desk_gateway")
+        or "192.168.100.1"
+    )
+    netmask = (
+        getattr(args, "netmask", None)
+        or polarx5_config.get("desk_netmask")
+        or "255.255.255.0"
+    )
     dns1 = getattr(args, "dns1", None) or polarx5_config.get("desk_dns1") or ""
     dns2 = getattr(args, "dns2", None) or polarx5_config.get("desk_dns2") or ""
     apply_config = getattr(args, "apply_config", None)
 
     if getattr(args, "bootstrap", False):
         if not getattr(args, "host", None):
-            logger.error("--bootstrap requires --host (bench/desk use only — do not use on deployed stations)")
+            logger.error(
+                "--bootstrap requires --host (bench/desk use only — do not use on deployed stations)"
+            )
             return 1
         if not set_ip:
             set_ip = polarx5_config.get("desk_bootstrap_ip") or "192.168.100.60"
@@ -2590,7 +2628,9 @@ def cmd_rec_provision(args) -> int:
             dns2 = polarx5_config.get("desk_dns2") or ""
 
     if not tcp_username or not tcp_password:
-        logger.error("tcp_username and tcp_password must be set in receivers.cfg [polarx5]")
+        logger.error(
+            "tcp_username and tcp_password must be set in receivers.cfg [polarx5]"
+        )
         return 1
 
     # Load SSH public key body if requested
@@ -2607,7 +2647,9 @@ def cmd_rec_provision(args) -> int:
                     ssh_key_body = parts[1]
                     logger.debug(f"SSH key loaded from {pub_path}")
             else:
-                logger.warning(f"SSH public key not found at {pub_path} — skipping key push")
+                logger.warning(
+                    f"SSH public key not found at {pub_path} — skipping key push"
+                )
 
     # Build target list
     targets = []
@@ -2629,7 +2671,9 @@ def cmd_rec_provision(args) -> int:
             if not ip:
                 logger.warning(f"Station {station_id} has no IP configured — SKIPPING")
                 continue
-            port = int(station_config.get("receiver", {}).get("controlport") or default_port)
+            port = int(
+                station_config.get("receiver", {}).get("controlport") or default_port
+            )
             targets.append((station_id, ip, port))
 
     if not targets:
@@ -2646,7 +2690,7 @@ def cmd_rec_provision(args) -> int:
                 if chunk:
                     buf += chunk
                     decoded = buf.decode("utf-8", errors="ignore")
-                    if re.search(r'IP\d+>', decoded[-30:]):
+                    if re.search(r"IP\d+>", decoded[-30:]):
                         break
             except (TimeoutError, OSError):
                 if buf:
@@ -2666,14 +2710,20 @@ def cmd_rec_provision(args) -> int:
 
         if args.dry_run:
             print(f"  [DRY RUN] login, {tcp_username}, ***")
-            print(f"  [DRY RUN] factory bootstrap if needed (factory_username={factory_username})")
+            print(
+                f"  [DRY RUN] factory bootstrap if needed (factory_username={factory_username})"
+            )
             if admin_password:
                 print(f"  [DRY RUN] sual, User2, {admin_username}, ***, User")
             if set_ip:
                 if dns1 or dns2:
-                    print(f"  [DRY RUN] setIPSettings, Static, '{set_ip}', '{netmask}', '{gateway}', '', '{dns1}', '{dns2}'")
+                    print(
+                        f"  [DRY RUN] setIPSettings, Static, '{set_ip}', '{netmask}', '{gateway}', '', '{dns1}', '{dns2}'"
+                    )
                 else:
-                    print(f"  [DRY RUN] setIPSettings, Static, '{set_ip}', '{netmask}', '{gateway}'")
+                    print(
+                        f"  [DRY RUN] setIPSettings, Static, '{set_ip}', '{netmask}', '{gateway}'"
+                    )
             if ssh_key_body:
                 print(f"  [DRY RUN] sual, User1, {tcp_username}, ***, User, <ssh-key>")
             print("  [DRY RUN] sis, all, FTP")
@@ -2682,12 +2732,16 @@ def cmd_rec_provision(args) -> int:
             if apply_config:
                 try:
                     cmds = load_config_from_file(Path(apply_config))
-                    print(f"  [DRY RUN] Apply config {Path(apply_config).name} ({len(cmds)} commands)")
+                    print(
+                        f"  [DRY RUN] Apply config {Path(apply_config).name} ({len(cmds)} commands)"
+                    )
                 except FileNotFoundError:
                     print(f"  [DRY RUN] Apply config — FILE NOT FOUND: {apply_config}")
             print("  [DRY RUN] Read serial number (esoc ReceiverSetup)")
             if apply_config and polarx5_config.get("rec_config_dir"):
-                print(f"  [DRY RUN] Archive config → {polarx5_config.get('rec_config_dir')}/{station_id}_SERIAL_Current_YYYYMMDD.txt")
+                print(
+                    f"  [DRY RUN] Archive config → {polarx5_config.get('rec_config_dir')}/{station_id}_SERIAL_Current_YYYYMMDD.txt"
+                )
             success_count += 1
             continue
 
@@ -2738,7 +2792,9 @@ def cmd_rec_provision(args) -> int:
                     f"login, {tcp_username}, {tcp_password}, {factory_username}, {factory_password}",
                 )
                 if "$R! LogIn" in resp:
-                    print(f"  ✓ Factory bootstrap succeeded — {tcp_username} created as User1")
+                    print(
+                        f"  ✓ Factory bootstrap succeeded — {tcp_username} created as User1"
+                    )
                     bootstrapped = True
                 else:
                     print(f"  ✗ Authentication failed: {resp[:120]!r}")
@@ -2755,14 +2811,18 @@ def cmd_rec_provision(args) -> int:
 
             # Step 2: create/update admin account (always — not just on fresh bootstrap)
             if admin_password:
-                resp = _send(sock, f"sual, User2, {admin_username}, {admin_password}, User")
+                resp = _send(
+                    sock, f"sual, User2, {admin_username}, {admin_password}, User"
+                )
                 if "$R:" in resp or "$R!" in resp:
                     action = "created" if bootstrapped else "updated"
                     print(f"  ✓ Admin account {action} (User2: {admin_username})")
                 else:
                     print(f"  ⚠  Admin account: {resp[:80]!r}")
             elif bootstrapped:
-                print("  ⚠  admin_password not set in receivers.cfg — skipping admin account")
+                print(
+                    "  ⚠  admin_password not set in receivers.cfg — skipping admin account"
+                )
 
             # Step 3a: assign static IP (permanent — survives factoryReset, no eccf needed)
             if set_ip:
@@ -2770,14 +2830,20 @@ def cmd_rec_provision(args) -> int:
                     ip_cmd = f"setIPSettings, Static, '{set_ip}', '{netmask}', '{gateway}', '', '{dns1}', '{dns2}'"
                     dns_note = f" dns={dns1}/{dns2}"
                 else:
-                    ip_cmd = f"setIPSettings, Static, '{set_ip}', '{netmask}', '{gateway}'"
+                    ip_cmd = (
+                        f"setIPSettings, Static, '{set_ip}', '{netmask}', '{gateway}'"
+                    )
                     dns_note = ""
                 resp = _send(sock, ip_cmd)
                 if "$R:" in resp or "$R!" in resp:
-                    print(f"  ✓ IP set: {set_ip}/{netmask} gw {gateway}{dns_note} (permanent, takes effect on reboot)")
+                    print(
+                        f"  ✓ IP set: {set_ip}/{netmask} gw {gateway}{dns_note} (permanent, takes effect on reboot)"
+                    )
                 else:
                     print(f"  ⚠  setIPSettings: {resp[:80]!r}")
-                time.sleep(1.5)  # receiver briefly suspends I/O while applying IP change
+                time.sleep(
+                    1.5
+                )  # receiver briefly suspends I/O while applying IP change
 
             # Step 3b: push SSH public key to gpsops account
             if ssh_key_body:
@@ -2854,7 +2920,11 @@ def cmd_rec_provision(args) -> int:
                     block_id = struct.unpack_from("<H", data, 4)[0] & 0x1FFF
                     if block_id == 5902:
                         raw = data[156:176]
-                        s = raw.split(b"\x00")[0].decode("ascii", errors="ignore").strip()
+                        s = (
+                            raw.split(b"\x00")[0]
+                            .decode("ascii", errors="ignore")
+                            .strip()
+                        )
                         serial = s or None
             except Exception:
                 pass
@@ -2866,13 +2936,17 @@ def cmd_rec_provision(args) -> int:
             # Auto-archive pushed config alongside rec-config archives
             if apply_config:
                 import datetime as _dt
+
                 rec_config_dir_str = polarx5_config.get("rec_config_dir") or None
                 if rec_config_dir_str:
                     archive_dir = Path(rec_config_dir_str).expanduser().resolve()
                     if archive_dir.exists():
                         date_str = _dt.date.today().strftime("%Y%m%d")
                         serial_part = serial or "UNKNOWN"
-                        dest = archive_dir / f"{station_id}_{serial_part}_Current_{date_str}.txt"
+                        dest = (
+                            archive_dir
+                            / f"{station_id}_{serial_part}_Current_{date_str}.txt"
+                        )
                         dest.write_text(Path(apply_config).read_text())
                         print(f"  ✓ Config archived → {dest.name}")
 
