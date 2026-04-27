@@ -2531,6 +2531,8 @@ def cmd_rec_provision(args) -> int:
     tcp_password = polarx5_config.get("tcp_password") or None
     factory_username = polarx5_config.get("factory_username") or "RxAdmin"
     factory_password = polarx5_config.get("factory_password") or "S3pt3ntr10"
+    admin_username = polarx5_config.get("admin_username") or "admin"
+    admin_password = polarx5_config.get("admin_password") or None
     default_port = args.port or int(polarx5_config.get("control_port", DEFAULT_CONTROL_PORT))
 
     set_ip = getattr(args, "set_ip", None)
@@ -2618,7 +2620,8 @@ def cmd_rec_provision(args) -> int:
         if args.dry_run:
             print(f"  [DRY RUN] login, {tcp_username}, ***")
             print(f"  [DRY RUN] factory bootstrap if needed (factory_username={factory_username})")
-            print("  [DRY RUN] sual, User2, admin, ***, User")
+            if admin_password:
+                print(f"  [DRY RUN] sual, User2, {admin_username}, ***, User")
             if set_ip:
                 if dns1 or dns2:
                     print(f"  [DRY RUN] setIPSettings, Static, '{set_ip}', '{netmask}', '{gateway}', '', '{dns1}', '{dns2}'")
@@ -2692,13 +2695,16 @@ def cmd_rec_provision(args) -> int:
                     sock.close()
                     continue
 
-            # Step 2: create admin account if this was a fresh bootstrap
-            if bootstrapped:
-                resp = _send(sock, "sual, User2, admin, 4Supersil!, User")
+            # Step 2: create/update admin account (always — not just on fresh bootstrap)
+            if admin_password:
+                resp = _send(sock, f"sual, User2, {admin_username}, {admin_password}, User")
                 if "$R:" in resp or "$R!" in resp:
-                    print("  ✓ Admin account created (User2)")
+                    action = "created" if bootstrapped else "updated"
+                    print(f"  ✓ Admin account {action} (User2: {admin_username})")
                 else:
-                    print(f"  ⚠  Admin account may not have been created: {resp[:80]!r}")
+                    print(f"  ⚠  Admin account: {resp[:80]!r}")
+            elif bootstrapped:
+                print("  ⚠  admin_password not set in receivers.cfg — skipping admin account")
 
             # Step 3a: assign static IP (permanent — survives factoryReset, no eccf needed)
             if set_ip:
