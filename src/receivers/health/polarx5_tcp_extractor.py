@@ -105,7 +105,7 @@ class PolaRX5TCPExtractor:
         try:
             from ..config_utils import get_station_config
 
-            cfg = get_station_config(station_id)
+            cfg = get_station_config(station_id, silent=True)
             if cfg:
                 power_type = cfg.get("power_type") or None
                 if cfg.get("tcp_username"):
@@ -440,7 +440,7 @@ class PolaRX5TCPExtractor:
                         decoded = response.decode("utf-8", errors="ignore")
                         if "Not authorized" in decoded:
                             self.logger.debug(
-                                f"ReceiverSetup unauthenticated esoc blocked — fw requires auth"
+                                "ReceiverSetup unauthenticated esoc blocked — fw requires auth"
                             )
                             return None  # Needs auth — caller will retry with login
                         result = self._find_sbf_block(response, self.BLOCK_RECEIVER_SETUP)
@@ -499,7 +499,7 @@ class PolaRX5TCPExtractor:
             # the health check doesn't spam auth warnings for open-but-failing receivers.
             if not self.tcp_username or not self.tcp_password:
                 self.logger.debug(
-                    f"ReceiverSetup unavailable unauthenticated and no credentials configured"
+                    "ReceiverSetup unavailable unauthenticated and no credentials configured"
                 )
                 return None
             sbf_data = self._send_sbf_request("ReceiverSetup", self.BLOCK_RECEIVER_SETUP)
@@ -771,11 +771,11 @@ class PolaRX5TCPExtractor:
         used_mb_sum = 0.0
 
         for row in rows:
-            disk_id = int(row.get("DiskID", 0))
-            mounted = row.get("DISK_MOUNTED", 0) == 1
-            disk_full = row.get("DISK_FULL", 0) == 1
-            disk_size_mb = float(row.get("DiskSize [MB]", 0))
-            usage_pct = float(row.get("DiskUsagePercent [%]", 0))
+            disk_id = int(row.get("DiskID") or 0)
+            mounted = (row.get("DISK_MOUNTED") or 0) == 1
+            disk_full = (row.get("DISK_FULL") or 0) == 1
+            disk_size_mb = float(row.get("DiskSize [MB]") or 0)
+            usage_pct = float(row.get("DiskUsagePercent [%]") or 0)
             error_str = row.get("Error", "")
 
             if mounted:

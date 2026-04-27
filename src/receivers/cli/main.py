@@ -39,7 +39,7 @@ except ImportError:
     gps_parser = None
 
 # Import station config from utility to avoid circular imports
-from ..config_utils import get_station_config
+from ..config_utils import get_station_config, resolve_receiver_endpoint
 
 # Module-level logger for functions that don't receive a logger argument
 _logger = logging.getLogger(__name__)
@@ -465,6 +465,11 @@ def cmd_status(args) -> int:
     args.compact = True
     args.no_files = False
     args.no_ntrip = False
+    # --host / --receiver-type are added to the status parser; ensure they exist
+    if not hasattr(args, "host"):
+        args.host = None
+    if not hasattr(args, "receiver_type"):
+        args.receiver_type = "PolaRX5"
     # Date flags — status is live-only
     args.start = None
     args.end = None
@@ -1614,7 +1619,7 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
         if getattr(args, "import_json", False):
             return cmd_health_json_import(args, station_id, logger)
 
-        station_config = get_station_config(station_id)
+        station_config = resolve_receiver_endpoint(args, station_id)
         if station_config is None:
             logger.warning(f"⚠️  Station {station_id} not found in configuration")
             return 1
@@ -1641,6 +1646,9 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
 
         include_files = not getattr(args, "no_files", False)
         include_ntrip = not getattr(args, "no_ntrip", False)
+        if station_config.get("_adhoc"):
+            include_files = False
+            include_ntrip = False
 
         health = gather_comprehensive_health(
             station_id,
@@ -1652,7 +1660,7 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
 
         # Persist receiver identity to stations.cfg if retrieved
         identity = health.get("receiver_identity", {})
-        if identity:
+        if identity and not station_config.get("_adhoc"):
             from ..config.receivers_config import update_station_identity_in_cfg
 
             updated = update_station_identity_in_cfg(
@@ -1672,13 +1680,18 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
 
         # Save to database if requested
         if getattr(args, "save_db", False):
-            success = receiver.save_health_to_database(health)
-            if success:
-                logger.info("Saved health data to database")
-                # Also write ping and port status for Grafana dashboard
-                _write_connectivity_status(station_id, health, logger)
+            if station_config.get("_adhoc"):
+                logger.info(
+                    f"[{station_id}] --host: skipping DB write for direct connection"
+                )
             else:
-                logger.warning("Failed to save health data to database")
+                success = receiver.save_health_to_database(health)
+                if success:
+                    logger.info("Saved health data to database")
+                    # Also write ping and port status for Grafana dashboard
+                    _write_connectivity_status(station_id, health, logger)
+                else:
+                    logger.warning("Failed to save health data to database")
 
         # Return health + config for Icinga/compact handling in cmd_health
         # Store on args for the caller to collect
@@ -1879,6 +1892,25 @@ def cmd_health(args) -> int:
 
     # Get list of stations (now supports multiple)
     stations = [s.upper() for s in args.stations]
+
+    # --host is single-target only: direct connection has no concept of "multiple stations"
+    if getattr(args, "host", None) and len(stations) > 1:
+        logger.error(
+            "--host requires exactly one station label; got: " + ", ".join(stations)
+        )
+        return 1
+
+    # --host is a live check only: date flags require DB access and make no sense for bench use
+    if getattr(args, "host", None) and any(
+        [
+            getattr(args, "start", None),
+            getattr(args, "end", None),
+            getattr(args, "days", None),
+            getattr(args, "extract_all", False),
+        ]
+    ):
+        logger.error("--host is for live checks only; --start/--end/--days/--extract-all are not supported")
+        return 1
 
     if len(stations) > 1:
         logger.info(f"Processing {len(stations)} stations: {', '.join(stations)}")
@@ -2235,32 +2267,41 @@ def cmd_rec_config(args) -> int:
 
     # Build targets list with IPs and ports
     targets = []
-    for station_id in station_list:
-        station_config = get_station_config(station_id)
-        if station_config is None:
-            logger.warning(
-                f"Station {station_id} not found in configuration - SKIPPING"
+    if getattr(args, "host", None):
+        # Direct connection: bypass stations.cfg, use native receiver ports
+        if len(station_list) > 1:
+            logger.error("--host requires exactly one station label")
+            return 1
+        station_id = station_list[0]
+        port = int(args.port or default_port)
+        targets.append((station_id, args.host, port))
+    else:
+        for station_id in station_list:
+            station_config = get_station_config(station_id)
+            if station_config is None:
+                logger.warning(
+                    f"Station {station_id} not found in configuration - SKIPPING"
+                )
+                continue
+
+            # Get IP - try multiple sources
+            ip = (
+                station_config.get("ip")
+                or station_config.get("router", {}).get("ip")
+                or station_config.get("host")
             )
-            continue
+            if not ip:
+                logger.warning(f"Station {station_id} has no IP configured - SKIPPING")
+                continue
 
-        # Get IP - try multiple sources
-        ip = (
-            station_config.get("ip")
-            or station_config.get("router", {}).get("ip")
-            or station_config.get("host")
-        )
-        if not ip:
-            logger.warning(f"Station {station_id} has no IP configured - SKIPPING")
-            continue
+            # Get port (station override > cli arg > config default)
+            port = station_config.get("receiver", {}).get("controlport")
+            if port:
+                port = int(port)
+            else:
+                port = default_port
 
-        # Get port (station override > cli arg > config default)
-        port = station_config.get("receiver", {}).get("controlport")
-        if port:
-            port = int(port)
-        else:
-            port = default_port
-
-        targets.append((station_id, ip, port))
+            targets.append((station_id, ip, port))
 
     if not targets:
         logger.error("No valid targets found")
@@ -2514,17 +2555,26 @@ def cmd_rec_provision(args) -> int:
 
     # Build target list
     targets = []
-    for station_id in [s.strip().upper() for s in args.stations]:
-        station_config = get_station_config(station_id)
-        if station_config is None:
-            logger.warning(f"Station {station_id} not found — SKIPPING")
-            continue
-        ip = station_config.get("ip") or station_config.get("router", {}).get("ip")
-        if not ip:
-            logger.warning(f"Station {station_id} has no IP configured — SKIPPING")
-            continue
-        port = int(station_config.get("receiver", {}).get("controlport") or default_port)
-        targets.append((station_id, ip, port))
+    if getattr(args, "host", None):
+        # Direct connection: bypass stations.cfg, use native receiver port
+        if len(args.stations) > 1:
+            logger.error("--host requires exactly one station label")
+            return 1
+        station_id = args.stations[0].strip().upper()
+        port = int(args.port or default_port)
+        targets.append((station_id, args.host, port))
+    else:
+        for station_id in [s.strip().upper() for s in args.stations]:
+            station_config = get_station_config(station_id)
+            if station_config is None:
+                logger.warning(f"Station {station_id} not found — SKIPPING")
+                continue
+            ip = station_config.get("ip") or station_config.get("router", {}).get("ip")
+            if not ip:
+                logger.warning(f"Station {station_id} has no IP configured — SKIPPING")
+                continue
+            port = int(station_config.get("receiver", {}).get("controlport") or default_port)
+            targets.append((station_id, ip, port))
 
     if not targets:
         logger.error("No valid targets found")
@@ -2561,7 +2611,7 @@ def cmd_rec_provision(args) -> int:
         if args.dry_run:
             print(f"  [DRY RUN] login, {tcp_username}, ***")
             print(f"  [DRY RUN] factory bootstrap if needed (factory_username={factory_username})")
-            print(f"  [DRY RUN] sual, User2, admin, ***, User")
+            print("  [DRY RUN] sual, User2, admin, ***, User")
             if ssh_key_body:
                 print(f"  [DRY RUN] sual, User1, {tcp_username}, ***, User, <ssh-key>")
             print("  [DRY RUN] sis, all, FTP")
@@ -2599,7 +2649,7 @@ def cmd_rec_provision(args) -> int:
             bootstrapped = False
 
             if "$E" in prompt or not prompt.strip():
-                print(f"  ⚠  Unexpected initial response — aborting")
+                print("  ⚠  Unexpected initial response — aborting")
                 sock.close()
                 continue
 
@@ -2608,7 +2658,7 @@ def cmd_rec_provision(args) -> int:
             if "$R! LogIn" in resp:
                 print(f"  ✓ Logged in as {tcp_username} (accounts already exist)")
             elif "$E: Invalid command" in resp:
-                print(f"  ✓ fw≤5.5.0 — no auth required, proceeding")
+                print("  ✓ fw≤5.5.0 — no auth required, proceeding")
             else:
                 # Standard login failed — try factory bootstrap (creates User1 and logs in)
                 resp = _send(
@@ -2620,7 +2670,7 @@ def cmd_rec_provision(args) -> int:
                     bootstrapped = True
                 else:
                     print(f"  ✗ Authentication failed: {resp[:120]!r}")
-                    print(f"    Check credentials in receivers.cfg [polarx5]")
+                    print("    Check credentials in receivers.cfg [polarx5]")
                     sock.close()
                     continue
 
@@ -2628,7 +2678,7 @@ def cmd_rec_provision(args) -> int:
             if bootstrapped:
                 resp = _send(sock, "sual, User2, admin, <your_admin_password>, User")
                 if "$R:" in resp or "$R!" in resp:
-                    print(f"  ✓ Admin account created (User2)")
+                    print("  ✓ Admin account created (User2)")
                 else:
                     print(f"  ⚠  Admin account may not have been created: {resp[:80]!r}")
 
@@ -2646,21 +2696,21 @@ def cmd_rec_provision(args) -> int:
             # Step 4: enable FTP, keep both plaintext (28784) and TLS (28783) command ports
             resp = _send(sock, "sis, all, FTP")
             if "$R:" in resp or "$R!" in resp:
-                print(f"  ✓ FTP enabled (both command ports kept active)")
+                print("  ✓ FTP enabled (both command ports kept active)")
             else:
                 print(f"  ⚠  setIPServices: {resp[:80]!r}")
 
             # Step 6: disable HTTPS redirect (keep 8060->80 router forwards working)
             resp = _send(sock, "shs, HTTP")
             if "$R:" in resp or "$R!" in resp:
-                print(f"  ✓ HTTPS redirect disabled (HTTP only)")
+                print("  ✓ HTTPS redirect disabled (HTTP only)")
             else:
                 print(f"  ⚠  setHttpsSettings: {resp[:80]!r}")
 
             # Step 7: save to Boot
             resp = _send(sock, "eccf, Current, Boot")
             if "$R:" in resp or "$R!" in resp:
-                print(f"  ✓ Saved to Boot config")
+                print("  ✓ Saved to Boot config")
             else:
                 print(f"  ⚠  eccf: {resp[:80]!r}")
 

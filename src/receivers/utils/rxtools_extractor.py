@@ -167,7 +167,7 @@ def parse_csv_to_dict(csv_file: Path, skip_separator: bool = True) -> List[Dict]
 def _enrich_rows_with_datetime(rows: List[Dict]) -> None:
     """Add a ``datetime`` key to each row that has GPS time fields (TOW + WNc)."""
     for row in rows:
-        if "TOW [s]" in row and "WNc [w]" in row:
+        if "TOW [s]" in row and "WNc [w]" in row and row["WNc [w]"] != "":
             row["datetime"] = gps_time_to_datetime(row["TOW [s]"], int(row["WNc [w]"]))
 
 
