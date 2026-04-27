@@ -2261,6 +2261,7 @@ def cmd_rec_config(args) -> int:
     polarx5_config = receivers_config.get_receiver_config("polarx5")
     tcp_username = polarx5_config.get("tcp_username") or None
     tcp_password = polarx5_config.get("tcp_password") or None
+    rec_config_dir = polarx5_config.get("rec_config_dir") or None
     default_port = args.port or polarx5_config.get("control_port", DEFAULT_CONTROL_PORT)
     if isinstance(default_port, str):
         default_port = int(default_port)
@@ -2315,7 +2316,7 @@ def cmd_rec_config(args) -> int:
 
     # Handle push mode
     if args.push:
-        return _push_configs(args, targets, logger, tcp_username, tcp_password)
+        return _push_configs(args, targets, logger, tcp_username, tcp_password, rec_config_dir)
 
     return 0
 
@@ -2450,8 +2451,11 @@ def _extract_configs(args, targets, logger, tcp_username=None, tcp_password=None
     return 0 if success_count == len(targets) else 1
 
 
-def _push_configs(args, targets, logger, tcp_username=None, tcp_password=None) -> int:
+def _push_configs(
+    args, targets, logger, tcp_username=None, tcp_password=None, rec_config_dir=None
+) -> int:
     """Push configuration to receivers."""
+    import datetime
     from pathlib import Path
 
     from ..septentrio.tcp_client import PolaRX5TCPClient, load_config_from_file
@@ -2462,10 +2466,19 @@ def _push_configs(args, targets, logger, tcp_username=None, tcp_password=None) -
     except FileNotFoundError as e:
         logger.error(str(e))
         return 1
+    config_text = config_path.read_text()
 
     logger.info(f"Loaded {len(commands)} commands from {config_path.name}")
     if not args.no_save:
         logger.info("Will save to Boot config after applying")
+
+    # Resolve station_config archive directory (rec_config_dir points to station_config/)
+    archive_dir: Optional[Path] = None
+    if rec_config_dir:
+        archive_dir = Path(rec_config_dir).expanduser().resolve()
+        if not archive_dir.exists():
+            logger.warning(f"rec_config_dir not found: {archive_dir} — skipping auto-archive")
+            archive_dir = None
 
     # Dry run - show commands and exit
     if args.dry_run:
@@ -2474,6 +2487,8 @@ def _push_configs(args, targets, logger, tcp_username=None, tcp_password=None) -
             if cmd.strip() and not cmd.strip().startswith("#"):
                 print(f"  {cmd}")
         print("--- End of commands ---\n")
+        if archive_dir:
+            print(f"  [DRY RUN] Would archive pushed config to {archive_dir}/STATION_SERIAL_Current_YYYYMMDD.txt")
         print("Dry run complete. Use without --dry-run to execute.")
         return 0
 
@@ -2491,6 +2506,18 @@ def _push_configs(args, targets, logger, tcp_username=None, tcp_password=None) -
             success, errors = client.push_config(
                 commands, save_to_boot=not args.no_save
             )
+
+            # Query serial number before disconnecting
+            serial = None
+            if success and archive_dir:
+                try:
+                    sbf = client.request_sbf_block("ReceiverSetup", 5902)
+                    if sbf and len(sbf) >= 176:
+                        raw = sbf[156:176]
+                        serial = raw.split(b"\x00")[0].decode("ascii", errors="ignore").strip() or None
+                except Exception:
+                    pass
+
             client.disconnect()
 
             if success:
@@ -2498,6 +2525,14 @@ def _push_configs(args, targets, logger, tcp_username=None, tcp_password=None) -
                 if not args.no_save:
                     print("  ✓ Saved to Boot config")
                 success_count += 1
+
+                # Auto-archive pushed config to station_config/
+                if archive_dir:
+                    date_str = datetime.date.today().strftime("%Y%m%d")
+                    serial_part = serial or "UNKNOWN"
+                    dest = archive_dir / f"{station_id}_{serial_part}_Current_{date_str}.txt"
+                    dest.write_text(config_text)
+                    print(f"  ✓ Config archived → {dest.name}")
             else:
                 print("  ✗ Errors occurred:")
                 for err in errors:
