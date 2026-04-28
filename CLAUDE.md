@@ -363,6 +363,13 @@ logger = logging.getLogger(f"receivers.download.{station_id}")
 
 ## Configuration
 
+**Config architecture**: See `docs/architecture/config-data-flow.md` for the full design,
+including the config sync system and the future TOS/tostools integration vision.
+
+**Source of truth**: `gps-config-data` repo (`git.vedur.is/bgo/gps-config-data`). Edit there,
+never directly on the server. The sync timer (`gps-config-sync.timer`) propagates changes to
+the live server within ~10 minutes. `database.cfg` is the only file never synced (local credentials).
+
 ### Station Configuration
 ```bash
 # Configuration loaded from gps_parser package

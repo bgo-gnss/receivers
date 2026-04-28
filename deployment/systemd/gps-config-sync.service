@@ -1,0 +1,12 @@
+[Unit]
+Description=GPS config data sync from git
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=bgo
+ExecStart=/home/bgo/git/receivers/deployment/server/sync-config.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gps-config-sync

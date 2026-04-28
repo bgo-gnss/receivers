@@ -810,6 +810,20 @@ systemctl daemon-reload
 systemctl enable --now gps-receivers-scheduler
 ok "systemd service installed, enabled, and started"
 
+# Config sync timer — pulls gps-config-data every 10 min and copies safe files
+# (stations.cfg, receivers.cfg, scheduler.yaml, icinga.cfg) to CONFIG_DIR.
+# database.cfg is never synced (server-local credentials).
+# Runs as bgo so it can access the git repo in ~/git/gps-config-data.
+install -m 644 "$INSTALL_DIR/deployment/systemd/gps-config-sync.service" \
+    /etc/systemd/system/gps-config-sync.service
+install -m 644 "$INSTALL_DIR/deployment/systemd/gps-config-sync.timer" \
+    /etc/systemd/system/gps-config-sync.timer
+install -m 755 "$INSTALL_DIR/deployment/server/sync-config.sh" \
+    "$INSTALL_DIR/deployment/server/sync-config.sh"  # ensure executable bit
+systemctl daemon-reload
+systemctl enable --now gps-config-sync.timer
+ok "Config sync timer installed and enabled (pulls every 10 min)"
+
 # Logrotate
 if [[ -f "$INSTALL_DIR/deployment/logrotate.d/gps-receivers" ]]; then
     # Patch log path to match this installation
