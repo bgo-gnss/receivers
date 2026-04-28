@@ -871,8 +871,9 @@ phase 11 "Verification"
 
 WARNINGS=0
 
-# CLI — basic help (does not load config)
-if sudo -u "$SERVICE_USER" receivers --help &>/dev/null; then
+# CLI — basic help (does not load config).
+# Use full path: sudo-rs sets a restricted PATH that may not include /usr/local/bin.
+if sudo -u "$SERVICE_USER" "$VENV_DIR/bin/receivers" --help &>/dev/null; then
     ok "receivers CLI (as $SERVICE_USER)"
 else
     err "receivers CLI failed as $SERVICE_USER"
