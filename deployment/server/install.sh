@@ -521,25 +521,21 @@ if [[ -f "$CONFIG_DIR/database.cfg" ]]; then
     ok "Patched database.cfg (localhost/$SERVICE_USER, mirror=pgdev.vedur.is/bgo)"
 fi
 
-# Propagate mirror .pgpass entries to admin user so bgo can run receivers
-# commands (health, status) without hitting the GSSAPI/Kerberos wall on pgdev.
-# Copies only lines matching the mirror host from gpsops .pgpass — never
-# displays the credentials.
-GPSOPS_PGPASS="$GPSOPS_HOME/.pgpass"
-ADMIN_PGPASS="$ADMIN_HOME/.pgpass"
+# Mirror DB credentials (pgdev.vedur.is) must be configured manually by IT:
+# - A dedicated operational DB user on pgdev.vedur.is (not a personal account)
+# - ~/.pgpass entries for both $SERVICE_USER and $ADMIN_USER on this host
+# - pg_hba.conf on pgdev.vedur.is: allow password auth from rek-d01 for that user
+# The install script intentionally does not touch .pgpass — credentials stay
+# under IT control, never propagated by automation.
 MIRROR_HOST="pgdev.vedur.is"
-if [[ -f "$GPSOPS_PGPASS" ]]; then
-    touch "$ADMIN_PGPASS"
-    chown "$ADMIN_USER":"$(id -gn "$ADMIN_USER")" "$ADMIN_PGPASS"
-    chmod 600 "$ADMIN_PGPASS"
-    while IFS= read -r line; do
-        grep -qxF "$line" "$ADMIN_PGPASS" 2>/dev/null || echo "$line" >> "$ADMIN_PGPASS"
-    done < <(grep "^$MIRROR_HOST" "$GPSOPS_PGPASS")
-    ok "Mirror .pgpass entries propagated to $ADMIN_USER"
-else
-    warn "$SERVICE_USER has no .pgpass yet — mirror credentials not propagated to $ADMIN_USER"
-    warn "Re-run install.sh after $SERVICE_USER .pgpass is configured"
-fi
+for u in "$SERVICE_USER" "$ADMIN_USER"; do
+    u_home=$(getent passwd "$u" | cut -d: -f6)
+    if grep -q "^$MIRROR_HOST" "$u_home/.pgpass" 2>/dev/null; then
+        ok "Mirror .pgpass configured for $u"
+    else
+        warn "Mirror .pgpass not set for $u — IT must add $MIRROR_HOST entry to $u_home/.pgpass"
+    fi
+done
 
 # Patch receivers.cfg for server paths
 if [[ -f "$CONFIG_DIR/receivers.cfg" ]]; then
