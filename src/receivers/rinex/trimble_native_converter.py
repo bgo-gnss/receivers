@@ -167,9 +167,12 @@ class TrimbleNativeConverter(RawToRinexConverter):
 
         try:
             # Create temp directory for Docker volume mount.
-            # Must be world-traversable so the Docker container user (Wine/firstuser)
-            # can access files inside it.
-            temp_dir = Path(tempfile.mkdtemp(prefix="trimble_native_"))
+            # Must NOT be under /tmp when running under systemd with PrivateTmp=true —
+            # the Docker daemon runs in the host mount namespace and can't see into the
+            # service's private /tmp.  Using XDG cache dir is always in the real fs.
+            docker_tmp_base = Path.home() / ".cache" / "gps_receivers" / "tmp"
+            docker_tmp_base.mkdir(parents=True, exist_ok=True)
+            temp_dir = Path(tempfile.mkdtemp(prefix="trimble_native_", dir=docker_tmp_base))
             temp_dir.chmod(0o755)
             self._temp_dirs.append(temp_dir)
 
