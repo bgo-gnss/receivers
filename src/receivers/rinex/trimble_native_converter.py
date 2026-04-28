@@ -166,8 +166,11 @@ class TrimbleNativeConverter(RawToRinexConverter):
         import gzip
 
         try:
-            # Create temp directory for Docker volume mount
+            # Create temp directory for Docker volume mount.
+            # Must be world-traversable so the Docker container user (Wine/firstuser)
+            # can access files inside it.
             temp_dir = Path(tempfile.mkdtemp(prefix="trimble_native_"))
+            temp_dir.chmod(0o755)
             self._temp_dirs.append(temp_dir)
 
             # Decompress if needed and copy to temp dir
@@ -180,9 +183,12 @@ class TrimbleNativeConverter(RawToRinexConverter):
                 working_file = temp_dir / raw_file.name
                 shutil.copy(raw_file, working_file)
 
-            # Create output subdirectory
+            # Create output subdirectory — world-writable so the Docker container
+            # user (Wine/firstuser) can write output files. chmod() after mkdir()
+            # because mkdir(mode=...) is subject to the process umask.
             docker_out = temp_dir / "out"
             docker_out.mkdir()
+            docker_out.chmod(0o777)
 
             # Determine RINEX version string
             version_map = {
