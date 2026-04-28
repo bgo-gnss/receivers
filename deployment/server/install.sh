@@ -521,6 +521,26 @@ if [[ -f "$CONFIG_DIR/database.cfg" ]]; then
     ok "Patched database.cfg (localhost/$SERVICE_USER, mirror=pgdev.vedur.is/bgo)"
 fi
 
+# Propagate mirror .pgpass entries to admin user so bgo can run receivers
+# commands (health, status) without hitting the GSSAPI/Kerberos wall on pgdev.
+# Copies only lines matching the mirror host from gpsops .pgpass — never
+# displays the credentials.
+GPSOPS_PGPASS="$GPSOPS_HOME/.pgpass"
+ADMIN_PGPASS="$ADMIN_HOME/.pgpass"
+MIRROR_HOST="pgdev.vedur.is"
+if [[ -f "$GPSOPS_PGPASS" ]]; then
+    touch "$ADMIN_PGPASS"
+    chown "$ADMIN_USER":"$(id -gn "$ADMIN_USER")" "$ADMIN_PGPASS"
+    chmod 600 "$ADMIN_PGPASS"
+    while IFS= read -r line; do
+        grep -qxF "$line" "$ADMIN_PGPASS" 2>/dev/null || echo "$line" >> "$ADMIN_PGPASS"
+    done < <(grep "^$MIRROR_HOST" "$GPSOPS_PGPASS")
+    ok "Mirror .pgpass entries propagated to $ADMIN_USER"
+else
+    warn "$SERVICE_USER has no .pgpass yet — mirror credentials not propagated to $ADMIN_USER"
+    warn "Re-run install.sh after $SERVICE_USER .pgpass is configured"
+fi
+
 # Patch receivers.cfg for server paths
 if [[ -f "$CONFIG_DIR/receivers.cfg" ]]; then
     sed -i "s|^data_prepath\s*=.*|data_prepath = $DATA_DIR/|" "$CONFIG_DIR/receivers.cfg"
