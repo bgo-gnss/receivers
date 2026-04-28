@@ -1118,9 +1118,18 @@ class PolaRX5TCPExtractor:
             or "Too many failed login" in decoded
         ):
             self._auth_failed = True
-            self.logger.warning(
-                f"TCP auth failed for {self.station_id}: wrong username or password"
-            )
+            fw = self.firmware_version
+            if fw and _firmware_requires_auth(fw):
+                # Known fw ≥5.7 station with wrong credentials — real problem
+                self.logger.warning(
+                    f"TCP auth failed for {self.station_id}: wrong username or password"
+                )
+            else:
+                # Unknown firmware or known pre-5.7: login was speculative, not a problem
+                self.logger.debug(
+                    f"TCP login not accepted by {self.station_id} "
+                    f"(fw {fw or 'unknown'}), proceeding unauthenticated"
+                )
             return True  # Proceed unauthenticated; pre-5.7 receivers allow commands after bad login
         else:
             if decoded.strip():
