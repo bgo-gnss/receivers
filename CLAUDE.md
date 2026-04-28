@@ -363,6 +363,13 @@ logger = logging.getLogger(f"receivers.download.{station_id}")
 
 ## Configuration
 
+**Config architecture**: See `docs/architecture/config-data-flow.md` for the full design,
+including the config sync system and the future TOS/tostools integration vision.
+
+**Source of truth**: `gps-config-data` repo (`git.vedur.is/bgo/gps-config-data`). Edit there,
+never directly on the server. The sync timer (`gps-config-sync.timer`) propagates changes to
+the live server within ~10 minutes. `database.cfg` is the only file never synced (local credentials).
+
 ### Station Configuration
 ```bash
 # Configuration loaded from gps_parser package
@@ -541,7 +548,7 @@ bgo is in the gpsops group — can read/write gpsops-owned dirs without owning t
 **Deploy flow**:
 1. Merge branch to main
 2. On rek-d01 as bgo: `cd ~/git/receivers && git pull`
-3. Reinstall: `sudo bash deployment/server/install.sh` (idempotent; `--update` skips slow phases)
+3. Reinstall: `sudo bash deployment/server/install.sh` (idempotent — safe to re-run; skips protected files like `database.cfg`)
 
 **Config source**: install.sh Phase 5 checks `~/git/gps-config-data/<file>` first, then `config/defaults/<file>`.
 `~/git/gps-config-data/receivers.cfg` must exist (non-template) for TCP credentials to deploy correctly.

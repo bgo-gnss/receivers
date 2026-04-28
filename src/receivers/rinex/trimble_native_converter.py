@@ -33,6 +33,7 @@ from typing import List, Optional
 from .converter_base import (
     ConversionError,
     NamingConvention,
+    OutputFormat,
     RawToRinexConverter,
     RinexVersion,
 )
@@ -62,6 +63,7 @@ class TrimbleNativeConverter(RawToRinexConverter):
         self,
         station_id: str,
         rinex_version: RinexVersion = RinexVersion.RINEX_3,
+        output_format: Optional[OutputFormat] = None,
         naming_convention: Optional[NamingConvention] = None,
         apply_header_corrections: bool = True,
         apply_hatanaka: Optional[bool] = None,
@@ -74,6 +76,7 @@ class TrimbleNativeConverter(RawToRinexConverter):
         Args:
             station_id: Station identifier (e.g., 'MANA')
             rinex_version: Target RINEX version (3.02-3.05)
+            output_format: Legacy parameter (use apply_hatanaka/compression_format instead)
             naming_convention: Filename convention (SHORT or LONG)
             apply_header_corrections: Whether to apply TOS metadata corrections
             apply_hatanaka: Apply Hatanaka compression (None = read from config)
@@ -84,6 +87,7 @@ class TrimbleNativeConverter(RawToRinexConverter):
         super().__init__(
             station_id=station_id,
             rinex_version=rinex_version,
+            output_format=output_format,
             naming_convention=naming_convention,
             apply_header_corrections=apply_header_corrections,
             apply_hatanaka=apply_hatanaka,
@@ -166,8 +170,14 @@ class TrimbleNativeConverter(RawToRinexConverter):
         import gzip
 
         try:
-            # Create temp directory for Docker volume mount
-            temp_dir = Path(tempfile.mkdtemp(prefix="trimble_native_"))
+            # Create temp directory for Docker volume mount.
+            # Must NOT be under /tmp when running under systemd with PrivateTmp=true —
+            # the Docker daemon runs in the host mount namespace and can't see into the
+            # service's private /tmp.  Using XDG cache dir is always in the real fs.
+            docker_tmp_base = Path.home() / ".cache" / "gps_receivers" / "tmp"
+            docker_tmp_base.mkdir(parents=True, exist_ok=True)
+            temp_dir = Path(tempfile.mkdtemp(prefix="trimble_native_", dir=docker_tmp_base))
+            temp_dir.chmod(0o755)
             self._temp_dirs.append(temp_dir)
 
             # Decompress if needed and copy to temp dir
@@ -180,9 +190,12 @@ class TrimbleNativeConverter(RawToRinexConverter):
                 working_file = temp_dir / raw_file.name
                 shutil.copy(raw_file, working_file)
 
-            # Create output subdirectory
+            # Create output subdirectory — world-writable so the Docker container
+            # user (Wine/firstuser) can write output files. chmod() after mkdir()
+            # because mkdir(mode=...) is subject to the process umask.
             docker_out = temp_dir / "out"
             docker_out.mkdir()
+            docker_out.chmod(0o777)
 
             # Determine RINEX version string
             version_map = {

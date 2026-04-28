@@ -77,6 +77,8 @@ FLAG_WIPE_DB=false
 FLAG_SKIP_TOOLS=false
 FLAG_SKIP_DB=false
 FLAG_SKIP_DOCKER=false
+FLAG_SKIP_CONFIG_SYNC=false
+FLAG_ONLY_CONFIG_SYNC=false
 
 # ── Color helpers ──────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -92,9 +94,11 @@ while [[ $# -gt 0 ]]; do
         --wipe)         FLAG_WIPE=true ;;
         --wipe-all)     FLAG_WIPE_ALL=true; FLAG_WIPE=true ;;
         --wipe-db)      FLAG_WIPE_DB=true ;;
-        --skip-tools)   FLAG_SKIP_TOOLS=true ;;
-        --skip-db)      FLAG_SKIP_DB=true ;;
-        --skip-docker)  FLAG_SKIP_DOCKER=true ;;
+        --skip-tools)        FLAG_SKIP_TOOLS=true ;;
+        --skip-db)           FLAG_SKIP_DB=true ;;
+        --skip-docker)       FLAG_SKIP_DOCKER=true ;;
+        --skip-config-sync)  FLAG_SKIP_CONFIG_SYNC=true ;;
+        --only-config-sync)  FLAG_ONLY_CONFIG_SYNC=true ;;
         -h|--help)
             echo "Usage: $0 [--dev] [--wipe] [--wipe-all] [--wipe-db] [--skip-tools] [--skip-db] [--skip-docker]"
             echo ""
@@ -103,9 +107,11 @@ while [[ $# -gt 0 ]]; do
             echo "  --wipe         Wipe venv + redeploy config (keep data + DB)"
             echo "  --wipe-all     Drop DB + delete data + full reinstall"
             echo "  --wipe-db      Drop and recreate database only"
-            echo "  --skip-tools   Skip external tool installation (RxTools, teqc)"
-            echo "  --skip-db      Skip database setup (for remote DB)"
-            echo "  --skip-docker  Skip Docker/Grafana setup"
+            echo "  --skip-tools        Skip external tool installation (RxTools, teqc)"
+            echo "  --skip-db           Skip database setup (for remote DB)"
+            echo "  --skip-docker       Skip Docker/Grafana setup"
+            echo "  --skip-config-sync  Skip config sync timer (use when config is local-only, no git repo)"
+            echo "  --only-config-sync  Install/enable config sync timer only, skip all other phases"
             exit 0
             ;;
         *) err "Unknown option: $1"; exit 1 ;;
@@ -117,6 +123,25 @@ done
 if [[ $EUID -ne 0 ]]; then
     err "This script must be run as root (or with sudo)"
     exit 1
+fi
+
+# --only-config-sync: install the timer and exit, skip all other phases
+if $FLAG_ONLY_CONFIG_SYNC; then
+    phase "—" "Config sync timer (--only-config-sync)"
+    if [[ ! -d "$CONFIG_REPO_DIR/.git" ]]; then
+        err "gps-config-data repo not found at $CONFIG_REPO_DIR"
+        err "Clone it first or omit --only-config-sync for local-only config"
+        exit 1
+    fi
+    install -m 644 "$INSTALL_DIR/deployment/systemd/gps-config-sync.service" \
+        /etc/systemd/system/gps-config-sync.service
+    install -m 644 "$INSTALL_DIR/deployment/systemd/gps-config-sync.timer" \
+        /etc/systemd/system/gps-config-sync.timer
+    chmod +x "$INSTALL_DIR/deployment/server/sync-config.sh"
+    systemctl daemon-reload
+    systemctl enable --now gps-config-sync.timer
+    ok "Config sync timer installed and enabled (pulls every 10 min)"
+    exit 0
 fi
 
 # Verify we're running from the receivers repo
@@ -809,6 +834,25 @@ sed -e "s|WorkingDirectory=.*|WorkingDirectory=$INSTALL_DIR|" \
 systemctl daemon-reload
 systemctl enable --now gps-receivers-scheduler
 ok "systemd service installed, enabled, and started"
+
+# Config sync timer — pulls gps-config-data every 10 min and copies safe files
+# (stations.cfg, receivers.cfg, scheduler.yaml, icinga.cfg) to CONFIG_DIR.
+# Skipped automatically when ~/git/gps-config-data doesn't exist (local-only config).
+# Use --skip-config-sync to suppress it explicitly on servers without a git-managed config.
+if $FLAG_SKIP_CONFIG_SYNC; then
+    warn "Skipping config sync timer (--skip-config-sync)"
+elif [[ ! -d "$CONFIG_REPO_DIR/.git" ]]; then
+    warn "Skipping config sync timer (gps-config-data repo not found at $CONFIG_REPO_DIR)"
+else
+    install -m 644 "$INSTALL_DIR/deployment/systemd/gps-config-sync.service" \
+        /etc/systemd/system/gps-config-sync.service
+    install -m 644 "$INSTALL_DIR/deployment/systemd/gps-config-sync.timer" \
+        /etc/systemd/system/gps-config-sync.timer
+    chmod +x "$INSTALL_DIR/deployment/server/sync-config.sh"
+    systemctl daemon-reload
+    systemctl enable --now gps-config-sync.timer
+    ok "Config sync timer installed and enabled (pulls every 10 min)"
+fi
 
 # Logrotate
 if [[ -f "$INSTALL_DIR/deployment/logrotate.d/gps-receivers" ]]; then

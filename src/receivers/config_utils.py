@@ -177,6 +177,9 @@ def get_station_config(
             "station_status": raw_config.get("station_status"),
             "health_check": raw_config.get("health_check"),
             "station_owner": raw_config.get("station_owner"),
+            # Per-station FTP credentials (override anonymous login; used by fw 5.7+)
+            "ftp_username": raw_config.get("ftp_username", ""),
+            "ftp_password": raw_config.get("ftp_password", ""),
         }
 
         logger.debug(f"Successfully loaded configuration for {station_id}")

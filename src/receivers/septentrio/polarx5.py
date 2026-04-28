@@ -198,45 +198,52 @@ class PolaRX5(BaseReceiver):
                 # routers where active mode PORT commands fail (IP mismatch).
                 self.pasv = True
 
-            # FTP credentials — only fw 5.7.0+ requires authenticated FTP.
-            # Read firmware_version from stations.cfg to gate credential use:
-            # unset or < 5.7.0 → anonymous; >= 5.7.0 → use configured credentials.
+            # FTP credentials — fw 5.7.0+ requires authenticated FTP.
+            # Priority: per-station ftp_username in stations.cfg > firmware-version
+            # gate using global tcp_username/tcp_password from receivers.cfg.
             self.ftp_anonymous = True
             self.ftp_username: Optional[str] = None
             self.ftp_password: Optional[str] = None
-            try:
-                from ..config.receivers_config import get_receivers_config
-                from ..health.polarx5_tcp_extractor import _firmware_requires_auth
 
-                rec_cfg = get_receivers_config().get_receiver_config("polarx5")
-                anon_str = str(rec_cfg.get("ftp_anonymous_login", "true")).lower()
-                # ftp_anonymous_login=false means "use credentials" → cfg_wants_auth=True
-                cfg_wants_auth = anon_str in ("false", "0", "no")
-
-                # Gate on firmware version — default to anonymous when unset or pre-5.7
-                fw_ver: Optional[str] = None
+            # Per-station override (ftp_username in stations.cfg)
+            _per_station_user = self.station_info.get("ftp_username", "")
+            if _per_station_user:
+                self.ftp_anonymous = False
+                self.ftp_username = _per_station_user
+                self.ftp_password = self.station_info.get("ftp_password", "") or ""
+            else:
                 try:
-                    import gps_parser as _gps
+                    from ..config.receivers_config import get_receivers_config
+                    from ..health.polarx5_tcp_extractor import _firmware_requires_auth
 
-                    raw = _gps.ConfigParser().getStationInfo(self.station_id)
-                    station_raw = (
-                        raw.get("station", {}) if isinstance(raw, dict) else {}
+                    rec_cfg = get_receivers_config().get_receiver_config("polarx5")
+                    anon_str = str(rec_cfg.get("ftp_anonymous_login", "true")).lower()
+                    cfg_wants_auth = anon_str in ("false", "0", "no")
+
+                    # Gate on firmware version — default to anonymous when unset or pre-5.7
+                    fw_ver: Optional[str] = None
+                    try:
+                        import gps_parser as _gps
+
+                        raw = _gps.ConfigParser().getStationInfo(self.station_id)
+                        station_raw = (
+                            raw.get("station", {}) if isinstance(raw, dict) else {}
+                        )
+                        fw_ver = station_raw.get("receiver_firmware_version") or None
+                    except Exception:
+                        pass
+
+                    uses_auth = (
+                        cfg_wants_auth
+                        and fw_ver is not None
+                        and _firmware_requires_auth(fw_ver)
                     )
-                    fw_ver = station_raw.get("receiver_firmware_version") or None
+                    self.ftp_anonymous = not uses_auth
+                    if uses_auth:
+                        self.ftp_username = rec_cfg.get("tcp_username") or None
+                        self.ftp_password = rec_cfg.get("tcp_password") or None
                 except Exception:
                     pass
-
-                uses_auth = (
-                    cfg_wants_auth
-                    and fw_ver is not None
-                    and _firmware_requires_auth(fw_ver)
-                )
-                self.ftp_anonymous = not uses_auth
-                if uses_auth:
-                    self.ftp_username = rec_cfg.get("tcp_username") or None
-                    self.ftp_password = rec_cfg.get("tcp_password") or None
-            except Exception:
-                pass
 
             self.logger.info(
                 f"Station {self.station_id} - Address: {self.ip_number}:{self.ip_port}, "

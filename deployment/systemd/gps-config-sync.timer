@@ -1,0 +1,14 @@
+[Unit]
+Description=GPS config data sync — pull gps-config-data every 10 min
+After=network-online.target
+
+[Timer]
+# 3 min after boot so the network has time to settle before the first fetch
+OnBootSec=3min
+# Subsequent runs every 10 min — changes land within ~10 min of a git push
+OnUnitActiveSec=10min
+# Catch up on any missed firings if the machine was offline
+Persistent=true
+
+[Install]
+WantedBy=timers.target

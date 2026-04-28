@@ -288,8 +288,10 @@ class NetR9(BaseReceiver):
 
         start_time = time.time()
 
-        # Quick reachability check to skip offline stations fast
-        if not self._quick_ping():
+        # Quick reachability check to skip offline stations fast.
+        # Some routers block ICMP — fall back to TCP port check before giving up.
+        http_port = self.station_info["receiver"]["httpport"]
+        if not self._quick_ping() and not self._quick_tcp_check(http_port):
             self.logger.warning(
                 f"Station {self.station_id} is unreachable (ping failed), skipping download"
             )
@@ -302,7 +304,6 @@ class NetR9(BaseReceiver):
                 "error": "Station unreachable (ping failed)",
                 "duration": time.time() - start_time,
             }
-        http_port = self.station_info["receiver"]["httpport"]
         if not self._quick_tcp_check(http_port):
             self.logger.warning(
                 f"Station {self.station_id} HTTP port {http_port} not responding, skipping download"
