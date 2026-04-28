@@ -33,6 +33,7 @@ from typing import List, Optional
 from .converter_base import (
     ConversionError,
     NamingConvention,
+    OutputFormat,
     RawToRinexConverter,
     RinexVersion,
 )
@@ -62,6 +63,7 @@ class TrimbleNativeConverter(RawToRinexConverter):
         self,
         station_id: str,
         rinex_version: RinexVersion = RinexVersion.RINEX_3,
+        output_format: Optional[OutputFormat] = None,
         naming_convention: Optional[NamingConvention] = None,
         apply_header_corrections: bool = True,
         apply_hatanaka: Optional[bool] = None,
@@ -74,6 +76,7 @@ class TrimbleNativeConverter(RawToRinexConverter):
         Args:
             station_id: Station identifier (e.g., 'MANA')
             rinex_version: Target RINEX version (3.02-3.05)
+            output_format: Legacy parameter (use apply_hatanaka/compression_format instead)
             naming_convention: Filename convention (SHORT or LONG)
             apply_header_corrections: Whether to apply TOS metadata corrections
             apply_hatanaka: Apply Hatanaka compression (None = read from config)
@@ -84,6 +87,7 @@ class TrimbleNativeConverter(RawToRinexConverter):
         super().__init__(
             station_id=station_id,
             rinex_version=rinex_version,
+            output_format=output_format,
             naming_convention=naming_convention,
             apply_header_corrections=apply_header_corrections,
             apply_hatanaka=apply_hatanaka,

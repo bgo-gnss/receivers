@@ -30,6 +30,7 @@ from typing import List, Optional
 from .converter_base import (
     ConversionError,
     NamingConvention,
+    OutputFormat,
     RawToRinexConverter,
     RinexVersion,
 )
@@ -54,6 +55,7 @@ class SBFConverter(RawToRinexConverter):
         self,
         station_id: str,
         rinex_version: RinexVersion = RinexVersion.RINEX_3,
+        output_format: Optional[OutputFormat] = None,
         naming_convention: Optional["NamingConvention"] = None,
         apply_header_corrections: bool = True,
         apply_hatanaka: Optional[bool] = None,
@@ -66,6 +68,7 @@ class SBFConverter(RawToRinexConverter):
         Args:
             station_id: Station identifier (e.g., 'ELDC')
             rinex_version: Target RINEX version (2, 3, or 4)
+            output_format: Legacy parameter (use apply_hatanaka/compression_format instead)
             naming_convention: Filename convention (SHORT or LONG).
                               If None, reads from config default_naming,
                               then falls back based on rinex_version.
@@ -78,6 +81,7 @@ class SBFConverter(RawToRinexConverter):
         super().__init__(
             station_id=station_id,
             rinex_version=rinex_version,
+            output_format=output_format,
             naming_convention=naming_convention,
             apply_header_corrections=apply_header_corrections,
             apply_hatanaka=apply_hatanaka,
