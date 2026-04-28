@@ -450,6 +450,9 @@ phase 5 "Configuration"
 # Deploy config files: gps-config-data → package defaults → skip
 DEFAULTS_DIR="$INSTALL_DIR/config/defaults"
 CONFIG_FILES=(stations.cfg receivers.cfg scheduler.yaml database.cfg icinga.cfg)
+# database.cfg may contain credentials edited directly on the server — never
+# overwrite it on update runs; only deploy when the file is absent or --wipe.
+PROTECTED_FILES=(database.cfg)
 for f in "${CONFIG_FILES[@]}"; do
     dst="$CONFIG_DIR/$f"
     src=""
@@ -461,19 +464,26 @@ for f in "${CONFIG_FILES[@]}"; do
         src="$DEFAULTS_DIR/$f"
     fi
 
-    if [[ -n "$src" ]]; then
-        if [[ ! -f "$dst" ]] || [[ "$src" -nt "$dst" ]] || $FLAG_WIPE; then
-            cp "$src" "$dst"
-            if [[ "$src" == "$DEFAULTS_DIR"* ]]; then
-                ok "Deployed $f (from package defaults)"
-            else
-                ok "Deployed $f"
-            fi
+    if [[ -z "$src" ]]; then
+        warn "Not found: $f (not in config repo or package defaults)"
+        continue
+    fi
+
+    # Protected files: deploy only on first install (not on --wipe-unless-asked)
+    if [[ " ${PROTECTED_FILES[*]} " =~ " $f " ]] && [[ -f "$dst" ]] && ! $FLAG_WIPE; then
+        ok "$f protected — not overwritten (use --wipe to force redeploy)"
+        continue
+    fi
+
+    if [[ ! -f "$dst" ]] || [[ "$src" -nt "$dst" ]] || $FLAG_WIPE; then
+        cp "$src" "$dst"
+        if [[ "$src" == "$DEFAULTS_DIR"* ]]; then
+            ok "Deployed $f (from package defaults)"
         else
-            ok "$f unchanged"
+            ok "Deployed $f"
         fi
     else
-        warn "Not found: $f (not in config repo or package defaults)"
+        ok "$f unchanged"
     fi
 done
 
@@ -485,6 +495,16 @@ chown ${SERVICE_USER}:${SERVICE_GROUP} "$CONFIG_DIR"
 chown ${SERVICE_USER}:${SERVICE_GROUP} "$CONFIG_DIR"/*
 chmod 770 "$CONFIG_DIR"
 chmod 660 "$CONFIG_DIR"/*
+
+# Set GPS_CONFIG_PATH system-wide so all users (bgo, gpsops) find the shared config
+# without having to set it in their own shell profiles.
+# /etc/profile.d/ covers interactive login shells; /etc/environment covers
+# non-interactive PAM sessions (cron, sudo, ssh non-login).
+echo "export GPS_CONFIG_PATH=\"$CONFIG_DIR\"" > /etc/profile.d/gps-receivers.sh
+chmod 644 /etc/profile.d/gps-receivers.sh
+grep -q '^GPS_CONFIG_PATH=' /etc/environment 2>/dev/null || \
+    echo "GPS_CONFIG_PATH=$CONFIG_DIR" >> /etc/environment
+ok "GPS_CONFIG_PATH=$CONFIG_DIR (profile.d + /etc/environment)"
 
 # Patch database.cfg for local PostgreSQL + mirror
 if [[ -f "$CONFIG_DIR/database.cfg" ]]; then
@@ -791,13 +811,32 @@ phase 11 "Verification"
 
 WARNINGS=0
 
-# CLI
+# CLI — basic help (does not load config)
 if sudo -u "$SERVICE_USER" receivers --help &>/dev/null; then
     ok "receivers CLI (as $SERVICE_USER)"
 else
     err "receivers CLI failed as $SERVICE_USER"
     WARNINGS=$((WARNINGS + 1))
 fi
+
+# Config load — actually reads GPS_CONFIG_PATH; catches path/permission bugs
+# for both the service user and the admin user (different $HOME → different default path).
+for check_user in "$SERVICE_USER" "$ADMIN_USER"; do
+    if sudo -u "$check_user" env "GPS_CONFIG_PATH=$CONFIG_DIR" \
+            receivers scheduler status --show-jobs &>/dev/null 2>&1; then
+        ok "Config loads as $check_user (GPS_CONFIG_PATH=$CONFIG_DIR)"
+    else
+        # Tolerate "no scheduler running" — the failure we care about is config-not-found
+        config_err=$(sudo -u "$check_user" env "GPS_CONFIG_PATH=$CONFIG_DIR" \
+            receivers scheduler status 2>&1 | grep -i "does not exist\|not found\|No such file" || true)
+        if [[ -n "$config_err" ]]; then
+            err "Config not found for $check_user: $config_err"
+            WARNINGS=$((WARNINGS + 1))
+        else
+            ok "Config loads as $check_user (GPS_CONFIG_PATH=$CONFIG_DIR)"
+        fi
+    fi
+done
 
 # Config files
 for f in stations.cfg receivers.cfg scheduler.yaml database.cfg; do

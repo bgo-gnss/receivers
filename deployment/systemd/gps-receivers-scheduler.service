@@ -11,8 +11,8 @@ User=gpsops
 Group=gpsops
 WorkingDirectory=/home/bgo/git/receivers
 
-# Environment — config at ~/.config/gpsconfig/ (gps_parser default, no env var needed)
 Environment="LANG=en_US.UTF-8"
+Environment="GPS_CONFIG_PATH=/home/gpsops/.config/gpsconfig"
 
 # Command to run - Pipeline scheduler schedules ALL stations from stations.cfg.
 # Worker count is controlled via `scheduler.max_workers` in scheduler.yaml —
