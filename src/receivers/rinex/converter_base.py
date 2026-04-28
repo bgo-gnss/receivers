@@ -715,10 +715,10 @@ class RawToRinexConverter(ABC):
         except Exception:
             pass
 
-        # Try system PATH
+        # Try system PATH (also uppercase variant for tools like RNX2CRX)
         import shutil
 
-        system_path = shutil.which(tool_name)
+        system_path = shutil.which(tool_name) or shutil.which(tool_name.upper())
         if system_path:
             self._tool_paths[tool_name] = Path(system_path)
             return self._tool_paths[tool_name]
