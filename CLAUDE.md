@@ -548,7 +548,7 @@ bgo is in the gpsops group — can read/write gpsops-owned dirs without owning t
 **Deploy flow**:
 1. Merge branch to main
 2. On rek-d01 as bgo: `cd ~/git/receivers && git pull`
-3. Reinstall: `sudo bash deployment/server/install.sh` (idempotent; `--update` skips slow phases)
+3. Reinstall: `sudo bash deployment/server/install.sh` (idempotent — safe to re-run; skips protected files like `database.cfg`)
 
 **Config source**: install.sh Phase 5 checks `~/git/gps-config-data/<file>` first, then `config/defaults/<file>`.
 `~/git/gps-config-data/receivers.cfg` must exist (non-template) for TCP credentials to deploy correctly.
