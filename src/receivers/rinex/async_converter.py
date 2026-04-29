@@ -321,7 +321,7 @@ def _rinex_worker(
                     station_id, session_type, output_files, worker_logger
                 )
             except Exception as e:
-                worker_logger.debug(f"RINEX file tracking failed: {e}")
+                worker_logger.warning(f"RINEX file tracking failed: {e}")
 
     except Exception as e:
         worker_logger.error(

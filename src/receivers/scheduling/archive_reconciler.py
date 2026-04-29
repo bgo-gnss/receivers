@@ -494,7 +494,7 @@ def _convert_raw_to_rinex(
                         logger,
                     )
                 except Exception as e:
-                    logger.debug(f"Could not track RINEX file: {e}")
+                    logger.warning(f"Could not track RINEX file: {e}")
             return True
         else:
             logger.warning(
@@ -550,7 +550,7 @@ def _ensure_rinex_tracked(
         logger.debug(f"Tracked existing RINEX: {station_id}/{rinex_path.name}")
 
     except Exception as e:
-        logger.debug(f"Could not track RINEX {rinex_path.name}: {e}")
+        logger.warning(f"Could not track RINEX {rinex_path.name}: {e}")
 
 
 def _is_corrupt_gz(raw_path: Path) -> bool:
