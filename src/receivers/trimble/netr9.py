@@ -825,11 +825,14 @@ class NetR9(BaseReceiver):
         base_path = self.netr9_config.get("base_path", "/Internal/")
 
         for file_dt in adjusted_datetime_list:
-            # Get session mapping from configuration
-            # ConfigParser converts keys to lowercase, so normalize session key
+            # Get session mapping — per-station override in stations.cfg takes
+            # precedence over the global netr9 config (same pattern as remote_date_format)
             session_key = session.lower()
             session_map_key = f"session_map_{session_key}"
-            session_mapping = self.netr9_config.get(session_map_key, "A,unknown")
+            session_mapping = (
+                self.station_info.get("receiver", {}).get(session_map_key)
+                or self.netr9_config.get(session_map_key, "a,unknown")
+            )
             letter_code, remote_subdir = session_mapping.split(",")
 
             # NetR9 filename format: STATIONYYYYMMDDHHMM{session_letter}.T02
@@ -948,14 +951,13 @@ class NetR9(BaseReceiver):
         Returns:
             Session letter code for NetR9
         """
-        # Get session mapping from configuration
-        # ConfigParser converts keys to lowercase, so normalize session key
         session_key = session.lower()
         session_map_key = f"session_map_{session_key}"
-        session_mapping = self.netr9_config.get(session_map_key, "A,unknown")
-        # Format: "letter_code,remote_directory"
-        letter_code = session_mapping.split(",")[0]
-        return letter_code
+        session_mapping = (
+            self.station_info.get("receiver", {}).get(session_map_key)
+            or self.netr9_config.get(session_map_key, "a,unknown")
+        )
+        return session_mapping.split(",")[0]
 
     def __del__(self):
         """Clean up resources."""
