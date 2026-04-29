@@ -331,6 +331,10 @@ class RinexNamer:
         from gtimes.timefunc import parse_rinex2_filename, parse_rinex3_filename
 
         name = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        for _ext in (".Z", ".gz", ".bz2"):
+            if name.endswith(_ext):
+                name = name[: -len(_ext)]
+                break
 
         parsed = parse_rinex3_filename(name)
         if parsed is not None:

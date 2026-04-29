@@ -61,10 +61,11 @@ class TestGetConnectionParams:
 class TestGetConnection:
     """Test get_connection method."""
 
+    @patch("receivers.health.database_factory._load_config_file", return_value={})
     @patch(
         "receivers.health.database_factory.DatabaseConnectionFactory.get_connection_params"
     )
-    def test_get_connection_with_params(self, mock_params):
+    def test_get_connection_with_params(self, mock_params, _mock_cfg):
         """Test connection creation with environment parameters."""
         mock_params.return_value = {
             "host": "localhost",

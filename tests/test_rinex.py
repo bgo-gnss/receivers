@@ -160,6 +160,40 @@ class TestRinexNamer:
         assert RinexNamer.get_session_data_frequency("1Hz_1hr") == "01S"
         assert RinexNamer.get_session_data_frequency("30s_daily") == "30S"
 
+    def test_parse_date_hour_strips_compression_suffix(self):
+        """parse_date_hour must strip .Z/.gz/.bz2 before parsing.
+
+        Production files are stored compressed (RHOL1180.26o.Z). Without
+        suffix stripping the parser returns (None, None) and file_tracking
+        silently skips every RINEX file, leaving the dashboard blank.
+        """
+        from datetime import date
+
+        # .Z suffix (Unix compress — the common production case)
+        assert RinexNamer.parse_date_hour("RHOL1180.26o.Z", station_id="RHOL") == (
+            date(2026, 4, 28),
+            None,
+        )
+        # .gz suffix
+        assert RinexNamer.parse_date_hour("AUSV1130.26o.gz", station_id="AUSV") == (
+            date(2026, 4, 23),
+            None,
+        )
+        # .bz2 suffix
+        assert RinexNamer.parse_date_hour("KVSK1170.26o.bz2", station_id="KVSK") == (
+            date(2026, 4, 27),
+            None,
+        )
+        # No suffix still works (DOY 115 = April 25)
+        assert RinexNamer.parse_date_hour("VOGS1150.26o", station_id="VOGS") == (
+            date(2026, 4, 25),
+            None,
+        )
+        # Non-RINEX name still returns (None, None)
+        assert RinexNamer.parse_date_hour(
+            "EYVI202604260000a.26o", station_id="EYVI"
+        ) == (None, None)
+
 
 class TestEquipmentMetadata:
     """Tests for equipment metadata handling."""
