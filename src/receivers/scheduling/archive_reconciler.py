@@ -430,6 +430,12 @@ def _find_rinex_file(raw_path: Path) -> Optional[Path]:
                 hatanaka += list(search_dir.glob(f"{doy_pattern}*d.gz"))
                 if hatanaka:
                     return hatanaka[0]
+
+                # Standard RINEX 2 observation compressed (.YYo.Z, .YYo.gz)
+                obs = list(search_dir.glob(f"{doy_pattern}*o.Z"))
+                obs += list(search_dir.glob(f"{doy_pattern}*o.gz"))
+                if obs:
+                    return obs[0]
         else:
             # Fallback: no date extracted, use station-only (legacy behavior)
             for ext in rinex_extensions:
@@ -441,6 +447,11 @@ def _find_rinex_file(raw_path: Path) -> Optional[Path]:
             hatanaka += list(search_dir.glob(f"{station}*d.gz"))
             if hatanaka:
                 return hatanaka[0]
+
+            obs = list(search_dir.glob(f"{station}*o.Z"))
+            obs += list(search_dir.glob(f"{station}*o.gz"))
+            if obs:
+                return obs[0]
 
     return None
 

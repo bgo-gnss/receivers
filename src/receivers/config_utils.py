@@ -75,9 +75,14 @@ def get_station_config(
         required_fields = ["router_ip", "receiver_type"]
         missing_fields = [field for field in required_fields if field not in raw_config]
         if missing_fields:
-            logger.error(
-                f"Station {station_id} missing required fields: {missing_fields}"
-            )
+            if raw_config.get("health_check") == "passive":
+                logger.debug(
+                    f"Station {station_id} is passive (no direct connection): skipping"
+                )
+            else:
+                logger.error(
+                    f"Station {station_id} missing required fields: {missing_fields}"
+                )
             return None
 
         # Get enhanced configuration data from gps_parser
