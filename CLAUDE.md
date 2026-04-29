@@ -643,10 +643,10 @@ All receivers use Phase 1 utilities by default:
 A systematic review is needed to address recurring patterns of issues found during dashboard and health monitoring development. See **`docs/CODE_REVIEW_TRACKER.md`** for the full tracking document with details, priorities, and status.
 
 ### High Priority
-- **Trimble health check**: BRIK (NetR9) shows CRITICAL + NTRIP Inactive despite being healthy (port 8060 open, streaming NTRIP). Health extractor assumes PolaRX5 model (FTP+HTTP+Control) — Trimble HTTP-only receivers get false CRITICAL from missing FTP/Control ports. Fix: receiver capability table defining which ports/checks apply per receiver type, skip inapplicable checks instead of marking them failed.
-- **Protocol-agnostic data model**: Views and SQL assume PolaRX5 (FTP+HTTP+Control); Trimble HTTP-only receivers produce NULL/unknown in dashboards
-- **Status value vocabulary**: Inconsistent use of `'open'`/`'ok'`/`'active'` across `block_port_status`, `station_port_status`, and health summary
-- **Receiver capability awareness**: Dashboard should know what each receiver type supports (status session, control port, NTRIP) instead of per-field NULL checks
+- ~~**Trimble health check**: BRIK false CRITICAL~~ ✅ Fixed — `build_health_status()` already caps non-HTTP ports at WARNING for NetR*/NetRS/NetR5. BRIK shows `healthy` in production.
+- ~~**Protocol-agnostic data model**~~ ✅ Resolved — `ftp_open=NULL`/`control_open=NULL` for Trimble is semantically correct (N/A). Dashboard handles NULL gracefully.
+- ~~**Status value vocabulary**~~ ✅ Fixed (migration 034 + `connectivity_writer.py`) — `connectivity_writer` Path 2 fallback now writes `'ok'` instead of `'open'`. Both accepted downstream.
+- ~~**Receiver capability awareness**~~ ✅ Fixed (migration 034) — `health_good` CTE NULL bug: `(NOT dp.X OR h.X)` evaluated to NULL for Trimble, disabling debouncing. Fixed to `(dp.X IS NOT TRUE OR h.X IS TRUE)`. All Trimble stations now debounced correctly.
 
 ### Medium Priority
 - **systemd watchdog (sd_notify)**: The scheduler doesn't send sd_notify keepalives, so `WatchdogSec=300s` in the service file kills the process after 5 minutes. Currently disabled via commenting out `WatchdogSec`. Proper fix: integrate `sd_notify` (via `systemd.daemon` or `sdnotify` package) into the scheduler main loop — send `WATCHDOG=1` periodically and `READY=1` on startup. Also fix `.cache/` dir perms (`0700` → `0750`) so bgo can read gpsops logs.

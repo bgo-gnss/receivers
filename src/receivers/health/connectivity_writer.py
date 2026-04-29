@@ -268,7 +268,7 @@ class ConnectivityWriter:
         if download_port is None and protocol_info:
             download_port = protocol_info.get("port")
             if protocol_info.get("accessible"):
-                download_status = "open"
+                download_status = "ok"
             elif protocol_info.get("error_type"):
                 download_status = protocol_info["error_type"]
             download_response_ms = protocol_info.get("response_time_ms")
@@ -277,7 +277,7 @@ class ConnectivityWriter:
         if health_port is None and http_port_data:
             health_port = http_port_data.get("port")
             if http_port_data.get("accessible"):
-                health_status = "open"
+                health_status = "ok"
             elif http_port_data.get("error_type"):
                 health_status = http_port_data["error_type"]
             health_response_ms = http_port_data.get("response_time_ms")
