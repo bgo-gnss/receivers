@@ -450,21 +450,20 @@ def cmd_scheduler_reconcile(args) -> int:
         print("  DRY RUN: no conversions will be performed")
 
     try:
-        from datetime import date, datetime, timedelta, timezone
+        from datetime import date, timedelta
 
         from ..cli.main import get_all_station_configs
         from ..config.receiver_registry import has_rinex_converter
         from ..health.file_tracker import ArchiveFileChecker
         from ..scheduling.archive_reconciler import (
-            _convert_raw_to_rinex,
             _find_raw_file,
             _find_rinex_file,
+            _reconcile_station_session,
         )
 
         all_stations = get_all_station_configs()
 
         if stations:
-            # User-specified stations: use as-is, look up receiver types
             target_stations = {}
             for s in stations:
                 sid = s.upper()
@@ -472,13 +471,13 @@ def cmd_scheduler_reconcile(args) -> int:
                 rt = cfg.get("receiver_type", "").lower()
                 target_stations[sid] = rt if rt else "polarx5"
         else:
-            # All active stations with RINEX converters
             target_stations = {
                 sid: cfg.get("receiver_type", "").lower()
                 for sid, cfg in all_stations.items()
                 if cfg.get("enabled", True)
                 and has_rinex_converter(cfg.get("receiver_type", ""))
                 and cfg.get("station_status") not in ("discontinued", "inactive")
+                and cfg.get("health_check") != "passive"
             }
 
         session_types = ["15s_24hr", "1Hz_1hr"]
@@ -490,51 +489,48 @@ def cmd_scheduler_reconcile(args) -> int:
 
         total_missing = 0
         total_converted = 0
-
-        for station_id in sorted(target_stations):
-            receiver_type = target_stations[station_id]
-            for session_type in session_types:
-                current = start_date
-                while current <= end_date:
-                    dt = datetime.combine(current, datetime.min.time()).replace(
-                        tzinfo=timezone.utc
-                    )
-
-                    hours = [0] if session_type == "15s_24hr" else list(range(24))
-                    for hour in hours:
-                        file_dt = dt.replace(hour=hour)
-                        raw_path = _find_raw_file(
-                            station_id,
-                            session_type,
-                            file_dt,
-                            checker,
-                            receiver_type=receiver_type,
-                        )
-                        if raw_path is None:
-                            continue
-                        rinex_path = _find_rinex_file(raw_path)
-                        if rinex_path is not None:
-                            continue
-
-                        total_missing += 1
-                        if dry_run:
-                            print(f"  MISSING RINEX: {raw_path}")
-                        else:
-                            success = _convert_raw_to_rinex(
-                                station_id,
-                                raw_path,
-                                receiver_type=receiver_type,
-                            )
-                            if success:
-                                total_converted += 1
-
-                    current += timedelta(days=1)
+        total_errors = 0
 
         if dry_run:
+            # Dry-run: use lightweight inner loop to list missing files only
+            from datetime import datetime, timezone
+
+            for station_id in sorted(target_stations):
+                receiver_type = target_stations[station_id]
+                for session_type in session_types:
+                    current = start_date
+                    while current <= end_date:
+                        dt = datetime.combine(current, datetime.min.time()).replace(
+                            tzinfo=timezone.utc
+                        )
+                        hours = [0] if session_type == "15s_24hr" else list(range(24))
+                        for hour in hours:
+                            file_dt = dt.replace(hour=hour)
+                            raw_path = _find_raw_file(
+                                station_id, session_type, file_dt, checker,
+                                receiver_type=receiver_type,
+                            )
+                            if raw_path is None:
+                                continue
+                            if _find_rinex_file(raw_path) is None:
+                                total_missing += 1
+                                print(f"  MISSING RINEX: {raw_path}")
+                        current += timedelta(days=1)
             print(f"\nDry run complete: {total_missing} raw files missing RINEX")
         else:
+            for station_id in sorted(target_stations):
+                receiver_type = target_stations[station_id]
+                for session_type in session_types:
+                    missing, converted, errors = _reconcile_station_session(
+                        station_id, session_type, start_date, end_date,
+                        checker, receiver_type=receiver_type,
+                    )
+                    total_missing += missing
+                    total_converted += converted
+                    total_errors += errors
             print(
-                f"\nReconciliation complete: {total_missing} missing, {total_converted} converted"
+                f"\nReconciliation complete: {total_missing} missing, "
+                f"{total_converted} converted, {total_errors} errors"
             )
 
         return 0
