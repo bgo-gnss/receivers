@@ -262,6 +262,11 @@ class PolaRX5TCPExtractor:
             self.logger.error(f"Error extracting health data: {e}")
             health_data["error"] = str(e)
 
+        if self._auth_failed and not health_data.get("metrics"):
+            self.logger.warning(
+                f"All health data unavailable for {self.station_id} — TCP authentication failed"
+            )
+
         return health_data
 
     def _query_power_status(self) -> Optional[Dict[str, Any]]:
@@ -948,6 +953,8 @@ class PolaRX5TCPExtractor:
         Returns:
             Raw SBF data bytes or None on failure
         """
+        if self._auth_failed:
+            return None  # Auth known to be failing — suppress per-block warnings
         sock = None
         try:
             sock = self._open_socket()
@@ -1003,6 +1010,18 @@ class PolaRX5TCPExtractor:
                 result = self._find_sbf_block(response, expected_block_id)
                 if result is not None:
                     return result
+
+            decoded_resp = response.decode("utf-8", errors="ignore")
+            if "Not authorized" in decoded_resp:
+                if not self._auth_failed:
+                    self.logger.warning(
+                        f"TCP command denied for {self.station_id} ({block_name}): "
+                        f"receiver requires authentication — check tcp_username/tcp_password in receivers.cfg"
+                    )
+                    self._auth_failed = True
+                return None
+
+            if expected_block_id is not None:
                 self.logger.warning(
                     f"Block ID {expected_block_id} not found in response for {block_name}"
                 )
@@ -1075,6 +1094,14 @@ class PolaRX5TCPExtractor:
             that means proceeding is pointless.
         """
         if not self.tcp_username or not self.tcp_password:
+            if self.firmware_version and _firmware_requires_auth(self.firmware_version):
+                if not self._auth_failed:
+                    self.logger.warning(
+                        f"TCP credentials not configured for {self.station_id} "
+                        f"(fw {self.firmware_version} requires authentication) — "
+                        f"health data unavailable; set tcp_username/tcp_password in receivers.cfg"
+                    )
+                    self._auth_failed = True
             return True
         if self._auth_failed:
             # Previous attempt in this health check cycle failed — skip to avoid lockout.

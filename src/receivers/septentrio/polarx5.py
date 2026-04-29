@@ -1185,6 +1185,19 @@ class PolaRX5(BaseReceiver):
                     self.logger.error(
                         f"⚠️ NETWORK TIMEOUT: {network_check.get('analysis', 'No analysis available')}"
                     )
+            elif "530" in error_str or "login incorrect" in error_str or "login failed" in error_str:
+                self.logger.error(
+                    f"❌ FTP authentication failed for {self.station_id}: {e}"
+                )
+                if self.ftp_anonymous:
+                    self.logger.error(
+                        "💡 FTP is using anonymous login — if this receiver requires credentials, "
+                        "set ftp_anonymous_login = false in receivers.cfg"
+                    )
+                else:
+                    self.logger.error(
+                        f"💡 Check tcp_username/tcp_password in receivers.cfg for {self.station_id}"
+                    )
             else:
                 self.logger.error(f"Connection failed: {e}")
                 if network_check.get("analysis"):
