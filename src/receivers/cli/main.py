@@ -2702,6 +2702,13 @@ def cmd_rec_provision(args) -> int:
         sock.sendall((cmd + "\n").encode("utf-8"))
         return _recv_until_prompt(sock)
 
+    def _check_port(host: str, chk_port: int, timeout: float = 3.0) -> bool:
+        try:
+            with socket.create_connection((host, chk_port), timeout=timeout):
+                return True
+        except OSError:
+            return False
+
     success_count = 0
     for station_id, ip, port in targets:
         print(f"\n{'=' * 55}")
@@ -2765,7 +2772,11 @@ def cmd_rec_provision(args) -> int:
                 ctx.verify_mode = ssl.CERT_NONE
                 sock = ctx.wrap_socket(raw)
                 using_tls = True
-                print(f"  ⚠  Port {port} refused — connected via TLS port {tls_port}")
+                print(
+                    f"  ⚠  Port {port} refused — receiver is in sis=secure mode "
+                    f"(firmware upgrade resets IP services)"
+                )
+                print(f"     Connecting via TLS port {tls_port} and restoring services…")
 
             # Read initial prompt
             prompt = sock.recv(1024).decode("utf-8", errors="ignore")
@@ -2877,6 +2888,20 @@ def cmd_rec_provision(args) -> int:
             else:
                 print(f"  ⚠  eccf: {resp[:80]!r}")
 
+            # Step 7b: verify port restoration after sis (only when TLS fallback was needed)
+            if using_tls:
+                time.sleep(0.5)
+                ok_plain = _check_port(ip, port, timeout=3.0)
+                ok_ftp = _check_port(ip, 21, timeout=3.0)
+                plain_icon = "✓" if ok_plain else "✗"
+                ftp_icon = "✓" if ok_ftp else "✗"
+                print(
+                    f"  {plain_icon} Port {port} (plain) {'open' if ok_plain else 'STILL CLOSED'}"
+                    f"   {ftp_icon} FTP port 21 {'open' if ok_ftp else 'closed'}"
+                )
+                if not ok_plain:
+                    print(f"  ✗ sis restoration may have failed — run: nc -zv {ip} {port}")
+
             # Step 8: apply receiver config file (Expert Console upload)
             if apply_config:
                 config_path = Path(apply_config)
@@ -2933,22 +2958,35 @@ def cmd_rec_provision(args) -> int:
             else:
                 print("  (serial number: could not read)")
 
-            # Auto-archive pushed config alongside rec-config archives
-            if apply_config:
+            # Step 10: extract current config from receiver and save to station archive
+            rec_config_dir_str = polarx5_config.get("rec_config_dir") or None
+            if rec_config_dir_str:
                 import datetime as _dt
 
-                rec_config_dir_str = polarx5_config.get("rec_config_dir") or None
-                if rec_config_dir_str:
-                    archive_dir = Path(rec_config_dir_str).expanduser().resolve()
-                    if archive_dir.exists():
+                from ..septentrio.tcp_client import PolaRX5TCPClient
+
+                archive_dir = Path(rec_config_dir_str).expanduser().resolve()
+                archive_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    client = PolaRX5TCPClient(
+                        ip,
+                        station_id,
+                        port,
+                        timeout=args.timeout,
+                        username=tcp_username,
+                        password=tcp_password,
+                    )
+                    config = client.extract_config("Current")
+                    client.disconnect()
+                    if config and len(config.splitlines()) > 5:
                         date_str = _dt.date.today().strftime("%Y%m%d")
-                        serial_part = serial or "UNKNOWN"
-                        dest = (
-                            archive_dir
-                            / f"{station_id}_{serial_part}_Current_{date_str}.txt"
-                        )
-                        dest.write_text(Path(apply_config).read_text())
-                        print(f"  ✓ Config archived → {dest.name}")
+                        dest = archive_dir / f"{station_id}_PolaRx5_Current_{date_str}.txt"
+                        dest.write_text(config)
+                        print(f"  ✓ Config saved → {dest.name}")
+                    else:
+                        print("  ⚠  Config extraction returned too few lines — not saved")
+                except Exception as e:
+                    print(f"  ⚠  Config save failed: {e}")
 
             sock.close()
             print(f"  → {station_id} provisioned successfully")
