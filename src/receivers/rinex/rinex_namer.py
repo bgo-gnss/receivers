@@ -353,6 +353,9 @@ class RinexNamer:
             return file_date, parsed["hour"]
 
         parsed = parse_rinex2_filename(name)
+        if parsed is None and name.endswith("d") and len(name) >= 2 and name[-2].isdigit():
+            # gtimes doesn't recognise .YYd (Hatanaka) — normalise to .YYo and retry
+            parsed = parse_rinex2_filename(name[:-1] + "o")
         if parsed is not None:
             if (
                 station_id is not None
