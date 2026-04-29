@@ -75,12 +75,11 @@ rtt min/avg/max/mdev = 2.345/2.456/2.567/0.089 ms
         assert result.accessible is False
         assert "Ping failed" in result.error_message
 
-    @patch("requests.get")
-    def test_check_http_port_success(self, mock_get):
-        """Test successful HTTP port check."""
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_get.return_value = mock_response
+    @patch("socket.socket")
+    def test_check_http_port_success(self, mock_socket):
+        """Test successful HTTP port check (raw socket connect)."""
+        mock_sock_instance = MagicMock()
+        mock_socket.return_value = mock_sock_instance
 
         checker = ConnectionChecker(host="192.168.1.100", station_id="TEST")
         result = checker.check_http_port(port=80)
@@ -88,14 +87,13 @@ rtt min/avg/max/mdev = 2.345/2.456/2.567/0.089 ms
         assert result.status == HealthStatus.OK
         assert result.accessible is True
         assert result.details["port"] == 80
-        assert result.details["status_code"] == 200
 
-    @patch("requests.get")
-    def test_check_http_port_timeout(self, mock_get):
-        """Test HTTP port timeout."""
-        import requests
-
-        mock_get.side_effect = requests.Timeout("Connection timeout")
+    @patch("socket.socket")
+    def test_check_http_port_timeout(self, mock_socket):
+        """Test HTTP port timeout (raw socket connect)."""
+        mock_sock_instance = MagicMock()
+        mock_sock_instance.connect.side_effect = TimeoutError("timed out")
+        mock_socket.return_value = mock_sock_instance
 
         checker = ConnectionChecker(host="192.168.1.100", station_id="TEST")
         result = checker.check_http_port(port=80)
