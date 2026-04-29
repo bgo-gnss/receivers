@@ -194,10 +194,9 @@ def _reconcile_station_session(
                 if raw_path is None:
                     continue
 
-                # Check for existing RINEX — format-aware or glob fallback
+                # Check for preferred RINEX (.d.Z / .obs / etc.) — not legacy .o.Z
                 rinex_path = None
                 if rinex_format and resolver:
-                    # FormatResolver available: use template-based path check
                     rinex_path = _find_rinex_file_by_format(
                         station_id,
                         file_dt,
@@ -206,17 +205,20 @@ def _reconcile_station_session(
                         checker,
                     )
                 else:
-                    # No FormatResolver: fall back to filesystem glob
                     rinex_path = _find_rinex_file(raw_path)
 
                 if rinex_path is not None:
-                    # Ensure existing RINEX is tracked in file_tracking
+                    # Preferred format found — delete any legacy .o.Z sibling
+                    _delete_obs_sibling(rinex_path)
                     _ensure_rinex_tracked(
                         station_id,
                         session_type,
                         rinex_path,
                     )
                     continue
+
+                # No preferred RINEX — check for legacy .o.Z to clean up after conversion
+                old_obs_path = _find_obs_rinex_file(raw_path)
 
                 # Validate raw file before attempting conversion
                 if _is_corrupt_gz(raw_path):
@@ -229,7 +231,7 @@ def _reconcile_station_session(
                     errors += 1
                     continue
 
-                # Raw file exists but RINEX missing
+                # Convert raw → preferred format (.d.Z)
                 missing += 1
                 success = _convert_raw_to_rinex(
                     station_id,
@@ -239,6 +241,16 @@ def _reconcile_station_session(
                 )
                 if success:
                     converted += 1
+                    if old_obs_path and old_obs_path.exists():
+                        try:
+                            old_obs_path.unlink()
+                            logger.debug(
+                                f"Removed legacy RINEX: {old_obs_path.name}"
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"Could not remove legacy {old_obs_path.name}: {e}"
+                            )
                 else:
                     errors += 1
 
@@ -349,6 +361,57 @@ def _find_raw_file(
         return None
 
 
+def _find_obs_rinex_file(raw_path: Path) -> Optional[Path]:
+    """Find a legacy .o.Z / .o.gz RINEX observation file for the given raw file.
+
+    These are produced by the old rek.vedur.is pipeline (non-Hatanaka).
+    The reconciler uses this to clean them up after converting to .d.Z.
+    """
+    stem = raw_path.name
+    for ext in (".sbf.gz", ".sbf", ".T02.gz", ".T02", ".t02",
+                ".T00.gz", ".T00", ".t00", ".m00.gz", ".m00", ".M00"):
+        if stem.endswith(ext):
+            stem = stem[: -len(ext)]
+            break
+
+    station = stem[:4]
+    search_dirs = [raw_path.parent, raw_path.parent.parent / "rinex"]
+
+    try:
+        date_str = stem[4:12]
+        dt = datetime.strptime(date_str, "%Y%m%d")
+        doy = dt.strftime("%j")
+        doy_prefix = f"{station}{doy}0"
+        for search_dir in search_dirs:
+            if not search_dir.exists():
+                continue
+            for suffix in ("o.Z", "o.gz"):
+                matches = list(search_dir.glob(f"{doy_prefix}*{suffix}"))
+                if matches:
+                    return matches[0]
+    except (ValueError, IndexError):
+        pass
+    return None
+
+
+def _delete_obs_sibling(rinex_path: Path) -> None:
+    """Delete the legacy .o.Z / .o.gz counterpart of a preferred .d.Z file.
+
+    E.g. LFEL1160.26d.Z → deletes LFEL1160.26o.Z in the same directory.
+    """
+    name = rinex_path.name
+    for preferred, legacy in (("d.Z", "o.Z"), ("d.gz", "o.gz")):
+        if name.endswith(preferred):
+            obs_path = rinex_path.parent / (name[: -len(preferred)] + legacy)
+            if obs_path.exists():
+                try:
+                    obs_path.unlink()
+                    logger.debug(f"Removed legacy RINEX: {obs_path.name}")
+                except Exception as e:
+                    logger.warning(f"Could not remove legacy {obs_path.name}: {e}")
+            return
+
+
 def _find_rinex_file(raw_path: Path) -> Optional[Path]:
     """Check if a RINEX file exists for the given raw file.
 
@@ -430,12 +493,6 @@ def _find_rinex_file(raw_path: Path) -> Optional[Path]:
                 hatanaka += list(search_dir.glob(f"{doy_pattern}*d.gz"))
                 if hatanaka:
                     return hatanaka[0]
-
-                # Standard RINEX 2 observation compressed (.YYo.Z, .YYo.gz)
-                obs = list(search_dir.glob(f"{doy_pattern}*o.Z"))
-                obs += list(search_dir.glob(f"{doy_pattern}*o.gz"))
-                if obs:
-                    return obs[0]
         else:
             # Fallback: no date extracted, use station-only (legacy behavior)
             for ext in rinex_extensions:
@@ -447,11 +504,6 @@ def _find_rinex_file(raw_path: Path) -> Optional[Path]:
             hatanaka += list(search_dir.glob(f"{station}*d.gz"))
             if hatanaka:
                 return hatanaka[0]
-
-            obs = list(search_dir.glob(f"{station}*o.Z"))
-            obs += list(search_dir.glob(f"{station}*o.gz"))
-            if obs:
-                return obs[0]
 
     return None
 
