@@ -131,6 +131,57 @@ def _run_archive_reconciler_job(
             resolver.close()
 
 
+def _find_obs_rinex_file(raw_path: Path) -> Optional[Path]:
+    """Find a legacy .o.Z / .o.gz RINEX observation file for the given raw file.
+
+    These are produced by the old rek.vedur.is pipeline (non-Hatanaka).
+    The reconciler uses this to clean them up after converting to .d.Z.
+    """
+    stem = raw_path.name
+    for ext in (".sbf.gz", ".sbf", ".T02.gz", ".T02", ".t02",
+                ".T00.gz", ".T00", ".t00", ".m00.gz", ".m00", ".M00"):
+        if stem.endswith(ext):
+            stem = stem[: -len(ext)]
+            break
+
+    station = stem[:4]
+    search_dirs = [raw_path.parent, raw_path.parent.parent / "rinex"]
+
+    try:
+        date_str = stem[4:12]
+        dt = datetime.strptime(date_str, "%Y%m%d")
+        doy = dt.strftime("%j")
+        doy_prefix = f"{station}{doy}0"
+        for search_dir in search_dirs:
+            if not search_dir.exists():
+                continue
+            for suffix in ("o.Z", "o.gz"):
+                matches = list(search_dir.glob(f"{doy_prefix}*{suffix}"))
+                if matches:
+                    return matches[0]
+    except (ValueError, IndexError):
+        pass
+    return None
+
+
+def _delete_obs_sibling(rinex_path: Path) -> None:
+    """Delete the legacy .o.Z / .o.gz counterpart of a preferred .d.Z file.
+
+    E.g. LFEL1160.26d.Z → deletes LFEL1160.26o.Z in the same directory.
+    """
+    name = rinex_path.name
+    for preferred, legacy in (("d.Z", "o.Z"), ("d.gz", "o.gz")):
+        if name.endswith(preferred):
+            obs_path = rinex_path.parent / (name[: -len(preferred)] + legacy)
+            if obs_path.exists():
+                try:
+                    obs_path.unlink()
+                    logger.debug(f"Removed legacy RINEX: {obs_path.name}")
+                except Exception as e:
+                    logger.warning(f"Could not remove legacy {obs_path.name}: {e}")
+            return
+
+
 def _reconcile_station_session(
     station_id: str,
     session_type: str,
@@ -359,57 +410,6 @@ def _find_raw_file(
 
     except Exception:
         return None
-
-
-def _find_obs_rinex_file(raw_path: Path) -> Optional[Path]:
-    """Find a legacy .o.Z / .o.gz RINEX observation file for the given raw file.
-
-    These are produced by the old rek.vedur.is pipeline (non-Hatanaka).
-    The reconciler uses this to clean them up after converting to .d.Z.
-    """
-    stem = raw_path.name
-    for ext in (".sbf.gz", ".sbf", ".T02.gz", ".T02", ".t02",
-                ".T00.gz", ".T00", ".t00", ".m00.gz", ".m00", ".M00"):
-        if stem.endswith(ext):
-            stem = stem[: -len(ext)]
-            break
-
-    station = stem[:4]
-    search_dirs = [raw_path.parent, raw_path.parent.parent / "rinex"]
-
-    try:
-        date_str = stem[4:12]
-        dt = datetime.strptime(date_str, "%Y%m%d")
-        doy = dt.strftime("%j")
-        doy_prefix = f"{station}{doy}0"
-        for search_dir in search_dirs:
-            if not search_dir.exists():
-                continue
-            for suffix in ("o.Z", "o.gz"):
-                matches = list(search_dir.glob(f"{doy_prefix}*{suffix}"))
-                if matches:
-                    return matches[0]
-    except (ValueError, IndexError):
-        pass
-    return None
-
-
-def _delete_obs_sibling(rinex_path: Path) -> None:
-    """Delete the legacy .o.Z / .o.gz counterpart of a preferred .d.Z file.
-
-    E.g. LFEL1160.26d.Z → deletes LFEL1160.26o.Z in the same directory.
-    """
-    name = rinex_path.name
-    for preferred, legacy in (("d.Z", "o.Z"), ("d.gz", "o.gz")):
-        if name.endswith(preferred):
-            obs_path = rinex_path.parent / (name[: -len(preferred)] + legacy)
-            if obs_path.exists():
-                try:
-                    obs_path.unlink()
-                    logger.debug(f"Removed legacy RINEX: {obs_path.name}")
-                except Exception as e:
-                    logger.warning(f"Could not remove legacy {obs_path.name}: {e}")
-            return
 
 
 def _find_rinex_file(raw_path: Path) -> Optional[Path]:
