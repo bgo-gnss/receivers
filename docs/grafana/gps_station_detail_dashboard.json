@@ -972,7 +972,7 @@
             "properties": [
               {
                 "id": "displayName",
-                "value": "Check"
+                "value": "Model Check"
               },
               {
                 "id": "color",
@@ -1041,7 +1041,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  CASE\n    WHEN d.ip_address IS NOT NULL THEN host(d.ip_address) || ':' || COALESCE(d.station_http_port, 80)::text\n    ELSE ''\n  END AS url,\n  CASE\n    WHEN d.ip_address IS NOT NULL THEN host(d.ip_address) || ':' || COALESCE(d.station_http_port, 80)::text || ' (' || COALESCE(d.receiver_type, '?') || ')'\n    ELSE COALESCE(d.receiver_type, 'Unknown')\n  END AS \"Receiver\",\n  CASE\n    WHEN d.latitude IS NOT NULL THEN\n      ROUND(d.latitude::numeric, 4)::text || ', ' || ROUND(d.longitude::numeric, 4)::text\n    ELSE 'No coordinates'\n  END AS \"Location\",\n  COALESCE(d.serial_number, '—') AS \"S/N\",\n  COALESCE(d.firmware_version, '—') AS \"Firmware\",\n  CASE\n    WHEN d.configured_serial IS NULL THEN 0\n    WHEN d.serial_number IS NULL THEN 0\n    WHEN d.configured_serial = d.serial_number THEN 1\n    ELSE -1\n  END AS \"SN_flag\"\nFROM station_dashboard_data d\nWHERE d.station_id = '$station'",
+          "rawSql": "SELECT\n  CASE\n    WHEN d.ip_address IS NOT NULL THEN host(d.ip_address) || ':' || COALESCE(d.station_http_port, 80)::text\n    ELSE ''\n  END AS url,\n  CASE\n    WHEN d.ip_address IS NOT NULL THEN host(d.ip_address) || ':' || COALESCE(d.station_http_port, 80)::text || ' (' || COALESCE(d.receiver_type, '?') || ')'\n    ELSE COALESCE(d.receiver_type, 'Unknown')\n  END AS \"Receiver\",\n  CASE\n    WHEN d.latitude IS NOT NULL THEN\n      ROUND(d.latitude::numeric, 4)::text || ', ' || ROUND(d.longitude::numeric, 4)::text\n    ELSE 'No coordinates'\n  END AS \"Location\",\n  COALESCE(d.serial_number, '—') AS \"S/N\",\n  COALESCE(d.firmware_version, '—') AS \"Firmware\",\n  COALESCE(d.detected_model, '—') AS \"Model\",\n  CASE\n    WHEN d.detected_model IS NULL THEN 0\n    WHEN d.model_mismatch THEN -1\n    ELSE 1\n  END AS \"SN_flag\"\nFROM station_dashboard_data d\nWHERE d.station_id = '$station'",
           "refId": "A"
         }
       ],

@@ -1,27 +1,31 @@
--- Migration 036: Serial number mismatch detection
+-- Migration 036: Receiver model mismatch detection
 --
--- Adds configured_serial column to stations table and exposes it (along with
--- serial_number, firmware_version, detected_model) in station_dashboard_data.
+-- Adds model_mismatch column to stations table and exposes receiver identity
+-- fields (serial_number, firmware_version, detected_model, identity_last_checked)
+-- plus the mismatch flag in station_dashboard_data.
 --
 -- Workflow:
---   1. Operator sets expected_receiver_serial in stations.cfg when deploying
---      a receiver.  seeder.py populates configured_serial from that field.
---   2. Health checker writes live serial_number each health cycle (unchanged).
---   3. identity_mismatch is computed in the view: true when configured_serial
---      is set and differs from the live serial_number.
---   4. Grafana station detail panel shows S/N + firmware with a red indicator
---      when mismatch = true.
+--   1. Health checker extracts live receiver identity each health cycle.
+--      For PolaRX5: reads ProductName from SBF ReceiverSetup block (offset 328)
+--      which contains "PolaRx5" — not the IGS code "SSRC7".
+--   2. db_writer._update_station_identity() calls check_identity_mismatch()
+--      comparing detected_model against receiver_type from stations.cfg.
+--   3. model_mismatch is written to stations.model_mismatch (stored BOOLEAN).
+--   4. Grafana station detail panel shows S/N + firmware + model with a red
+--      indicator when model_mismatch = true.
 --
--- designed_serial is updated with EXCLUDED value (not COALESCE) so that
--- removing expected_receiver_serial from stations.cfg clears the check.
+-- No operator configuration required — mismatch is detected automatically
+-- by comparing the live detected_model against receiver_type in stations.cfg.
 
 BEGIN;
 
-ALTER TABLE stations ADD COLUMN IF NOT EXISTS configured_serial VARCHAR(50);
+ALTER TABLE stations ADD COLUMN IF NOT EXISTS model_mismatch BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE stations DROP COLUMN IF EXISTS configured_serial;
 
-COMMENT ON COLUMN stations.configured_serial IS
-  'Expected serial number set in stations.cfg (expected_receiver_serial). '
-  'NULL means no serial check is configured for this station.';
+COMMENT ON COLUMN stations.model_mismatch IS
+  'TRUE when detected_model (from live health check) is inconsistent with '
+  'receiver_type (from stations.cfg). Written by db_writer after each '
+  'successful identity extraction.';
 
 DROP VIEW IF EXISTS station_dashboard_data;
 
@@ -208,12 +212,8 @@ SELECT
     s.firmware_version,
     s.detected_model,
     s.identity_last_checked,
-    -- Configured serial (from stations.cfg expected_receiver_serial via seeder)
-    s.configured_serial,
-    -- True when configured_serial is set and differs from live serial_number
-    (s.configured_serial IS NOT NULL
-     AND s.serial_number IS NOT NULL
-     AND s.configured_serial != s.serial_number) AS identity_mismatch
+    -- Stored mismatch flag (written by db_writer after each identity extraction)
+    s.model_mismatch
 FROM station_latest_metrics m
 JOIN stations s ON s.sid = m.station_id
 LEFT JOIN latest_health lh          ON lh.sid = m.station_id

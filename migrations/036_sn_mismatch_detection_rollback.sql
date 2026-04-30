@@ -1,9 +1,9 @@
--- Rollback for migration 036: Serial number mismatch detection
+-- Rollback for migration 036: Receiver model mismatch detection
 BEGIN;
 
 DROP VIEW IF EXISTS station_dashboard_data;
 
--- Recreate view without configured_serial / identity_mismatch columns
+-- Recreate view without model_mismatch and identity columns
 CREATE VIEW station_dashboard_data AS
 WITH health_ranked AS (
     SELECT sid, ts, overall_status, status_details,
@@ -141,7 +141,7 @@ LEFT JOIN station_connectivity sc   ON sc.sid = m.station_id
 LEFT JOIN station_port_status sp    ON sp.sid = m.station_id
 LEFT JOIN station_download_summary ds ON ds.sid = m.station_id;
 
-ALTER TABLE stations DROP COLUMN IF EXISTS configured_serial;
+ALTER TABLE stations DROP COLUMN IF EXISTS model_mismatch;
 
 DELETE FROM schema_migrations WHERE migration_name = '036_sn_mismatch_detection';
 
