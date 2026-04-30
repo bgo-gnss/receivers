@@ -1103,6 +1103,22 @@ class BulkDownloadScheduler:
         """Load station configurations from gps_parser."""
         stations = {}
 
+        # Read configured_serial / configured_firmware directly from stations.cfg.
+        # get_all_station_configs() does not expose these fields.
+        cfg_identity: Dict[str, Dict[str, Any]] = {}
+        cfg_path = self._get_stations_cfg_path()
+        if cfg_path and cfg_path.exists():
+            import configparser as _cp
+
+            _parser = _cp.ConfigParser(strict=False)
+            _parser.read(str(cfg_path))
+            for section in _parser.sections():
+                sid = section.upper()
+                cfg_identity[sid] = {
+                    "configured_serial": _parser.get(section, "receiver_serial", fallback=None) or None,
+                    "configured_firmware": _parser.get(section, "receiver_firmware_version", fallback=None) or None,
+                }
+
         try:
             # Use the existing station loading from CLI
             from ..cli.main import get_all_station_configs
@@ -1126,6 +1142,7 @@ class BulkDownloadScheduler:
                     if rx_missing:
                         station_status = "inactive"
 
+                ident = cfg_identity.get(station_id, {})
                 stations[station_id] = {
                     "station_id": station_id,
                     "receiver_type": receiver_type,
@@ -1135,6 +1152,8 @@ class BulkDownloadScheduler:
                     "timeout_category": config.get("timeout_category", "default"),
                     "station_status": station_status,
                     "health_check": health_check,
+                    "configured_serial": ident.get("configured_serial"),
+                    "configured_firmware": ident.get("configured_firmware"),
                 }
 
         except Exception as e:
@@ -1161,23 +1180,35 @@ class BulkDownloadScheduler:
                 with conn.cursor() as cur:
                     status_synced = 0
                     hc_synced = 0
+                    identity_synced = 0
                     for station_id, config in self.stations.items():
                         station_status = config.get("station_status")
                         health_check = config.get("health_check")
+                        configured_serial = config.get("configured_serial")
+                        configured_firmware = config.get("configured_firmware")
                         cur.execute(
                             """
                             UPDATE stations
-                            SET station_status = %s, health_check = %s
+                            SET station_status    = %s,
+                                health_check      = %s,
+                                configured_serial   = %s,
+                                configured_firmware = %s
                             WHERE sid = %s
-                              AND (station_status IS DISTINCT FROM %s
-                                OR health_check IS DISTINCT FROM %s)
+                              AND (station_status    IS DISTINCT FROM %s
+                                OR health_check      IS DISTINCT FROM %s
+                                OR configured_serial   IS DISTINCT FROM %s
+                                OR configured_firmware IS DISTINCT FROM %s)
                         """,
                             (
                                 station_status,
                                 health_check,
+                                configured_serial,
+                                configured_firmware,
                                 station_id,
                                 station_status,
                                 health_check,
+                                configured_serial,
+                                configured_firmware,
                             ),
                         )
                         if cur.rowcount > 0:
@@ -1185,14 +1216,17 @@ class BulkDownloadScheduler:
                                 status_synced += 1
                             if health_check:
                                 hc_synced += 1
+                            if configured_serial or configured_firmware:
+                                identity_synced += 1
 
-                    if status_synced or hc_synced:
+                    if status_synced or hc_synced or identity_synced:
                         self.logger.info(
-                            f"Synced to DB: {status_synced} station_status, {hc_synced} health_check"
+                            f"Synced to DB: {status_synced} station_status, "
+                            f"{hc_synced} health_check, {identity_synced} configured_identity"
                         )
                     else:
                         self.logger.debug(
-                            "station_status/health_check already in sync with DB"
+                            "station_status/health_check/configured_identity already in sync with DB"
                         )
 
         except ImportError:

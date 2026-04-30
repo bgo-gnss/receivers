@@ -722,27 +722,63 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "CRITICAL" },
+            "matcher": {
+              "id": "byName",
+              "options": "CRITICAL"
+            },
             "properties": [
-              { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "WARNING" },
+            "matcher": {
+              "id": "byName",
+              "options": "WARNING"
+            },
             "properties": [
-              { "id": "color", "value": { "mode": "fixed", "fixedColor": "yellow" } }
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "yellow"
+                }
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "HEALTHY" },
+            "matcher": {
+              "id": "byName",
+              "options": "HEALTHY"
+            },
             "properties": [
-              { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "UNKNOWN" },
+            "matcher": {
+              "id": "byName",
+              "options": "UNKNOWN"
+            },
             "properties": [
-              { "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } }
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
             ]
           }
         ]
@@ -967,12 +1003,50 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "SN_flag"
+              "options": "_sort"
             },
             "properties": [
               {
-                "id": "displayName",
-                "value": "Model Check"
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "_mismatch"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "transparent",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": -1
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 0
+                    },
+                    {
+                      "color": "green",
+                      "value": 1
+                    }
+                  ]
+                }
               },
               {
                 "id": "color",
@@ -981,15 +1055,12 @@
                 }
               },
               {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {"color": "red", "value": null},
-                    {"color": "blue", "value": 0},
-                    {"color": "green", "value": 1}
-                  ]
-                }
+                "id": "custom.width",
+                "value": 55
+              },
+              {
+                "id": "displayName",
+                "value": "Status"
               },
               {
                 "id": "mappings",
@@ -997,24 +1068,39 @@
                   {
                     "type": "value",
                     "options": {
-                      "-1": {"text": "MISMATCH", "index": 0},
-                      "0": {"text": "—", "index": 1},
-                      "1": {"text": "✓", "index": 2}
+                      "-1": {
+                        "text": "\u2717",
+                        "index": 0
+                      },
+                      "0": {
+                        "text": "?",
+                        "index": 1
+                      },
+                      "1": {
+                        "text": "\u2713",
+                        "index": 2
+                      }
+                    }
+                  },
+                  {
+                    "type": "special",
+                    "options": {
+                      "match": "null",
+                      "result": {
+                        "text": "",
+                        "color": "transparent"
+                      }
                     }
                   }
                 ]
-              },
-              {
-                "id": "custom.width",
-                "value": 90
               }
             ]
           }
         ]
       },
       "gridPos": {
-        "h": 5,
-        "w": 8,
+        "h": 4,
+        "w": 5,
         "x": 6,
         "y": 5
       },
@@ -1041,11 +1127,11 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  CASE\n    WHEN d.ip_address IS NOT NULL THEN host(d.ip_address) || ':' || COALESCE(d.station_http_port, 80)::text\n    ELSE ''\n  END AS url,\n  CASE\n    WHEN d.ip_address IS NOT NULL THEN host(d.ip_address) || ':' || COALESCE(d.station_http_port, 80)::text || ' (' || COALESCE(d.receiver_type, '?') || ')'\n    ELSE COALESCE(d.receiver_type, 'Unknown')\n  END AS \"Receiver\",\n  CASE\n    WHEN d.latitude IS NOT NULL THEN\n      ROUND(d.latitude::numeric, 4)::text || ', ' || ROUND(d.longitude::numeric, 4)::text\n    ELSE 'No coordinates'\n  END AS \"Location\",\n  COALESCE(d.serial_number, '—') AS \"S/N\",\n  COALESCE(d.firmware_version, '—') AS \"Firmware\",\n  COALESCE(d.detected_model, '—') AS \"Model\",\n  CASE\n    WHEN d.detected_model IS NULL THEN 0\n    WHEN d.model_mismatch THEN -1\n    ELSE 1\n  END AS \"SN_flag\"\nFROM station_dashboard_data d\nWHERE d.station_id = '$station'",
+          "rawSql": "SELECT\n  0::integer AS \"_sort\",\n  CASE\n    WHEN d.ip_address IS NOT NULL THEN host(d.ip_address) || ':' || COALESCE(d.station_http_port, 80)::text\n    ELSE ''\n  END AS url,\n  CASE\n    WHEN d.ip_address IS NOT NULL\n      THEN host(d.ip_address) || ':' || COALESCE(d.station_http_port, 80)::text\n           || ' (' || COALESCE(d.receiver_type, '?') || ')'\n    ELSE COALESCE(d.receiver_type, 'Unknown')\n  END AS \"Receiver\",\n  CASE\n    WHEN d.latitude IS NOT NULL\n      THEN ROUND(d.latitude::numeric, 4)::text || ', ' || ROUND(d.longitude::numeric, 4)::text\n    ELSE 'No coordinates'\n  END AS \"Location\",\n  CASE\n    WHEN d.model_mismatch = true                                                                          THEN -1\n    WHEN d.configured_serial   IS NOT NULL AND d.serial_number    IS NOT NULL\n         AND d.configured_serial   != d.serial_number                                                     THEN -1\n    WHEN d.configured_firmware IS NOT NULL AND d.firmware_version IS NOT NULL\n         AND d.configured_firmware != d.firmware_version                                                  THEN -1\n    WHEN d.serial_number IS NULL AND d.firmware_version IS NULL                                           THEN 0\n    ELSE 1\n  END::integer AS \"_mismatch\"\nFROM station_dashboard_data d\nWHERE d.station_id = '$station'\nUNION ALL\nSELECT\n  1::integer AS \"_sort\",\n  ''         AS url,\n  'SN: ' || COALESCE(d.serial_number, '\u2014') || '     fw: ' || COALESCE(d.firmware_version, '\u2014') AS \"Receiver\",\n  ''         AS \"Location\",\n  NULL::integer AS \"_mismatch\"\nFROM station_dashboard_data d\nWHERE d.station_id = '$station'\nORDER BY \"_sort\"\n",
           "refId": "A"
         }
       ],
-      "title": "$station — $station_name",
+      "title": "$station \u2014 $station_name",
       "type": "table"
     },
     {
@@ -1121,85 +1207,6 @@
         "type": "grafana-postgresql-datasource",
         "uid": "gps_health"
       },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 1
-              },
-              {
-                "color": "green",
-                "value": 2
-              }
-            ]
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "status"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "options": {
-                      "0": {
-                        "color": "red",
-                        "index": 0,
-                        "text": "offline"
-                      },
-                      "1": {
-                        "color": "yellow",
-                        "index": 1,
-                        "text": "offline"
-                      },
-                      "2": {
-                        "color": "green",
-                        "index": 2,
-                        "text": "online"
-                      }
-                    },
-                    "type": "value"
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "duration"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "s"
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 2,
-        "x": 8,
-        "y": 1
-      },
-      "id": 50,
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1281,6 +1288,13 @@
           }
         ]
       },
+      "gridPos": {
+        "h": 4,
+        "w": 2,
+        "x": 8,
+        "y": 1
+      },
+      "id": 50,
       "options": {
         "colorMode": "background",
         "graphMode": "none",
@@ -1392,21 +1406,39 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "FTP" },
+            "matcher": {
+              "id": "byName",
+              "options": "FTP"
+            },
             "properties": [
-              { "id": "displayName", "value": "FTP\n$ftp_port" }
+              {
+                "id": "displayName",
+                "value": "FTP\n$ftp_port"
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "HTTP" },
+            "matcher": {
+              "id": "byName",
+              "options": "HTTP"
+            },
             "properties": [
-              { "id": "displayName", "value": "HTTP\n$http_port" }
+              {
+                "id": "displayName",
+                "value": "HTTP\n$http_port"
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "Ctrl" },
+            "matcher": {
+              "id": "byName",
+              "options": "Ctrl"
+            },
             "properties": [
-              { "id": "displayName", "value": "Ctrl\n$ctrl_port" }
+              {
+                "id": "displayName",
+                "value": "Ctrl\n$ctrl_port"
+              }
             ]
           }
         ]
