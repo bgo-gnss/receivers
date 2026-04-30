@@ -286,6 +286,20 @@ class HealthDatabaseWriter:
                 if mismatch:
                     self.logger.warning(f"[{station_id}] {mismatch}")
 
+            # Check S/N against configured_serial (set via expected_receiver_serial in stations.cfg)
+            if serial:
+                with self._conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT configured_serial FROM stations WHERE sid = %s",
+                        (station_id,),
+                    )
+                    row = cur.fetchone()
+                    if row and row[0] and row[0] != serial:
+                        self.logger.warning(
+                            "[%s] Serial number mismatch: configured=%s live=%s",
+                            station_id, row[0], serial,
+                        )
+
         except Exception as e:
             self.logger.debug(f"Station identity update failed for {station_id}: {e}")
 

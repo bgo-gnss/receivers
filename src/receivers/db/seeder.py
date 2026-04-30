@@ -95,6 +95,7 @@ class Seeder:
                         station_name = raw.get("station_name") or None
                         station_status = raw.get("station_status") or None
                         health_check = raw.get("health_check") or None
+                        configured_serial = raw.get("expected_receiver_serial") or None
 
                         # Station owner logic (same as db_writer._ensure_station)
                         station_owner = raw.get("station_owner") or None
@@ -145,12 +146,14 @@ class Seeder:
                                 marker_name, marker_number, observer, agency,
                                 ip_address, http_port, station_name, station_owner,
                                 station_status, health_check,
-                                latitude, longitude, height
+                                latitude, longitude, height,
+                                configured_serial
                             )
                             VALUES (
                                 %s, %s, %s, %s, %s, %s, %s, %s,
                                 %s::inet, %s, %s, %s, %s, %s,
-                                %s, %s, %s
+                                %s, %s, %s,
+                                %s
                             )
                             ON CONFLICT (sid) DO UPDATE SET
                                 receiver_type = COALESCE(EXCLUDED.receiver_type, stations.receiver_type),
@@ -169,6 +172,7 @@ class Seeder:
                                 latitude = COALESCE(EXCLUDED.latitude, stations.latitude),
                                 longitude = COALESCE(EXCLUDED.longitude, stations.longitude),
                                 height = COALESCE(EXCLUDED.height, stations.height),
+                                configured_serial = EXCLUDED.configured_serial,
                                 updated_at = NOW()
                             RETURNING (xmax = 0) AS is_insert
                         """,
@@ -190,6 +194,7 @@ class Seeder:
                                 latitude,
                                 longitude,
                                 height,
+                                configured_serial,
                             ),
                         )
                         row = cur.fetchone()
