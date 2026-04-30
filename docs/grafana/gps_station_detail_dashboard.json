@@ -14,7 +14,7 @@
       "keepTime": true,
       "tags": [],
       "targetBlank": false,
-      "title": "\u2190 Back to Overview",
+      "title": "← Back to Overview",
       "tooltip": "Return to main dashboard with map",
       "type": "link",
       "url": "/d/gps-health-voltage/gps-receiver-health-voltage?var-area=${area}&var-station=all&var-receiver=${receiver}&var-antenna=${antenna}"
@@ -722,27 +722,63 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "CRITICAL" },
+            "matcher": {
+              "id": "byName",
+              "options": "CRITICAL"
+            },
             "properties": [
-              { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "WARNING" },
+            "matcher": {
+              "id": "byName",
+              "options": "WARNING"
+            },
             "properties": [
-              { "id": "color", "value": { "mode": "fixed", "fixedColor": "yellow" } }
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "yellow"
+                }
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "HEALTHY" },
+            "matcher": {
+              "id": "byName",
+              "options": "HEALTHY"
+            },
             "properties": [
-              { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "UNKNOWN" },
+            "matcher": {
+              "id": "byName",
+              "options": "UNKNOWN"
+            },
             "properties": [
-              { "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } }
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
             ]
           }
         ]
@@ -963,60 +999,14 @@
                 "value": true
               }
             ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "SN_flag"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "Model Check"
-              },
-              {
-                "id": "color",
-                "value": {
-                  "mode": "thresholds"
-                }
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {"color": "red", "value": null},
-                    {"color": "blue", "value": 0},
-                    {"color": "green", "value": 1}
-                  ]
-                }
-              },
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "-1": {"text": "MISMATCH", "index": 0},
-                      "0": {"text": "—", "index": 1},
-                      "1": {"text": "✓", "index": 2}
-                    }
-                  }
-                ]
-              },
-              {
-                "id": "custom.width",
-                "value": 90
-              }
-            ]
           }
         ]
       },
       "gridPos": {
-        "h": 5,
-        "w": 8,
+        "h": 3,
+        "w": 5,
         "x": 6,
-        "y": 5
+        "y": 7
       },
       "id": 22,
       "options": {
@@ -1041,7 +1031,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  CASE\n    WHEN d.ip_address IS NOT NULL THEN host(d.ip_address) || ':' || COALESCE(d.station_http_port, 80)::text\n    ELSE ''\n  END AS url,\n  CASE\n    WHEN d.ip_address IS NOT NULL THEN host(d.ip_address) || ':' || COALESCE(d.station_http_port, 80)::text || ' (' || COALESCE(d.receiver_type, '?') || ')'\n    ELSE COALESCE(d.receiver_type, 'Unknown')\n  END AS \"Receiver\",\n  CASE\n    WHEN d.latitude IS NOT NULL THEN\n      ROUND(d.latitude::numeric, 4)::text || ', ' || ROUND(d.longitude::numeric, 4)::text\n    ELSE 'No coordinates'\n  END AS \"Location\",\n  COALESCE(d.serial_number, '—') AS \"S/N\",\n  COALESCE(d.firmware_version, '—') AS \"Firmware\",\n  COALESCE(d.detected_model, '—') AS \"Model\",\n  CASE\n    WHEN d.detected_model IS NULL THEN 0\n    WHEN d.model_mismatch THEN -1\n    ELSE 1\n  END AS \"SN_flag\"\nFROM station_dashboard_data d\nWHERE d.station_id = '$station'",
+          "rawSql": "SELECT\n  CASE\n    WHEN d.ip_address IS NOT NULL THEN host(d.ip_address) || ':' || COALESCE(d.station_http_port, 80)::text\n    ELSE ''\n  END AS url,\n  CASE\n    WHEN d.ip_address IS NOT NULL THEN host(d.ip_address) || ':' || COALESCE(d.station_http_port, 80)::text || ' (' || COALESCE(d.receiver_type, '?') || ')'\n    ELSE COALESCE(d.receiver_type, 'Unknown')\n  END AS \"Receiver\",\n  CASE\n    WHEN d.latitude IS NOT NULL THEN\n      ROUND(d.latitude::numeric, 4)::text || ', ' || ROUND(d.longitude::numeric, 4)::text\n    ELSE 'No coordinates'\n  END AS \"Location\"\nFROM station_dashboard_data d\nWHERE d.station_id = '$station'",
           "refId": "A"
         }
       ],
@@ -1126,85 +1116,6 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 1
-              },
-              {
-                "color": "green",
-                "value": 2
-              }
-            ]
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "status"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "options": {
-                      "0": {
-                        "color": "red",
-                        "index": 0,
-                        "text": "offline"
-                      },
-                      "1": {
-                        "color": "yellow",
-                        "index": 1,
-                        "text": "offline"
-                      },
-                      "2": {
-                        "color": "green",
-                        "index": 2,
-                        "text": "online"
-                      }
-                    },
-                    "type": "value"
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "duration"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "s"
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 2,
-        "x": 8,
-        "y": 1
-      },
-      "id": 50,
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
           "unit": "s",
           "thresholds": {
             "mode": "absolute",
@@ -1281,6 +1192,13 @@
           }
         ]
       },
+      "gridPos": {
+        "h": 4,
+        "w": 2,
+        "x": 8,
+        "y": 1
+      },
+      "id": 50,
       "options": {
         "colorMode": "background",
         "graphMode": "none",
@@ -1392,21 +1310,39 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "FTP" },
+            "matcher": {
+              "id": "byName",
+              "options": "FTP"
+            },
             "properties": [
-              { "id": "displayName", "value": "FTP\n$ftp_port" }
+              {
+                "id": "displayName",
+                "value": "FTP\n$ftp_port"
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "HTTP" },
+            "matcher": {
+              "id": "byName",
+              "options": "HTTP"
+            },
             "properties": [
-              { "id": "displayName", "value": "HTTP\n$http_port" }
+              {
+                "id": "displayName",
+                "value": "HTTP\n$http_port"
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "Ctrl" },
+            "matcher": {
+              "id": "byName",
+              "options": "Ctrl"
+            },
             "properties": [
-              { "id": "displayName", "value": "Ctrl\n$ctrl_port" }
+              {
+                "id": "displayName",
+                "value": "Ctrl\n$ctrl_port"
+              }
             ]
           }
         ]
@@ -1415,7 +1351,7 @@
         "h": 4,
         "w": 3,
         "x": 11,
-        "y": 5
+        "y": 7
       },
       "id": 27,
       "options": {
@@ -1536,7 +1472,7 @@
         "h": 4,
         "w": 3,
         "x": 14,
-        "y": 5
+        "y": 7
       },
       "id": 24,
       "options": {
@@ -1630,7 +1566,7 @@
         "h": 4,
         "w": 2,
         "x": 17,
-        "y": 5
+        "y": 7
       },
       "id": 51,
       "options": {
@@ -1714,7 +1650,7 @@
         "h": 4,
         "w": 3,
         "x": 19,
-        "y": 5
+        "y": 7
       },
       "id": 25,
       "options": {
@@ -1799,7 +1735,7 @@
         "h": 4,
         "w": 2,
         "x": 22,
-        "y": 5
+        "y": 7
       },
       "id": 26,
       "options": {
@@ -1946,7 +1882,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 9
+        "y": 11
       },
       "id": 10,
       "options": {
@@ -2103,7 +2039,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 17
+        "y": 19
       },
       "id": 11,
       "options": {
@@ -2147,7 +2083,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 25
+        "y": 27
       },
       "id": 52,
       "panels": [],
@@ -2213,7 +2149,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 26
+        "y": 28
       },
       "id": 53,
       "options": {
@@ -2310,7 +2246,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 26
+        "y": 28
       },
       "id": 54,
       "options": {
@@ -2372,7 +2308,7 @@
         "h": 4,
         "w": 8,
         "x": 0,
-        "y": 34
+        "y": 36
       },
       "id": 55,
       "options": {
@@ -2445,7 +2381,7 @@
         "h": 4,
         "w": 8,
         "x": 8,
-        "y": 34
+        "y": 36
       },
       "id": 56,
       "options": {
@@ -2522,7 +2458,7 @@
         "h": 4,
         "w": 8,
         "x": 16,
-        "y": 34
+        "y": 36
       },
       "id": 57,
       "options": {
@@ -2554,6 +2490,284 @@
         }
       ],
       "title": "Timeout Override",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {},
+          "mappings": [],
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 3,
+        "x": 6,
+        "y": 5
+      },
+      "id": 58,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(serial_number, '—') AS \"S/N\" FROM station_dashboard_data WHERE station_id = '$station'",
+          "refId": "A"
+        }
+      ],
+      "title": "S/N",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {},
+          "mappings": [],
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 3,
+        "x": 9,
+        "y": 5
+      },
+      "id": 59,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(firmware_version, '—') AS \"Firmware\" FROM station_dashboard_data WHERE station_id = '$station'",
+          "refId": "A"
+        }
+      ],
+      "title": "Firmware",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {},
+          "mappings": [],
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 3,
+        "x": 12,
+        "y": 5
+      },
+      "id": 60,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(detected_model, '—') AS \"Model\" FROM station_dashboard_data WHERE station_id = '$station'",
+          "refId": "A"
+        }
+      ],
+      "title": "Model",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {},
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "-1": {
+                  "text": "MISMATCH",
+                  "index": 0
+                },
+                "0": {
+                  "text": "—",
+                  "index": 1
+                },
+                "1": {
+                  "text": "✓",
+                  "index": 2
+                }
+              }
+            }
+          ],
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "blue",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 2,
+        "w": 2,
+        "x": 15,
+        "y": 5
+      },
+      "id": 61,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  CASE\n    WHEN detected_model IS NULL THEN 0\n    WHEN model_mismatch THEN -1\n    ELSE 1\n  END AS \"check\"\nFROM station_dashboard_data\nWHERE station_id = '$station'",
+          "refId": "A"
+        }
+      ],
+      "title": "Model Check",
       "type": "stat"
     }
   ],
