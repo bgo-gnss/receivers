@@ -25,7 +25,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from ..cfg.field_manifest import FIELDS, all_keys
+from ..cfg.field_manifest import FIELDS, all_keys, with_position_tolerance
 from ..cfg.reconciler import (
     FieldDiff,
     SourceUnavailableError,
@@ -92,13 +92,66 @@ def _query_receiver_identity(
         # Identity-only path: bypass NTRIP/file checks. Most extractors
         # populate receiver_identity inside get_health_status() itself.
         health = receiver.get_health_status()
-        identity = health.get("receiver_identity") if isinstance(health, dict) else None
+        if not isinstance(health, dict):
+            return None
+
+        identity = dict(health.get("receiver_identity") or {})
+
+        # Enrich identity with position from PVT solution — receiver coordinates
+        # are reconcilable QC values, but the extractor stores them under
+        # metrics.position rather than receiver_identity. Promote them here so
+        # the cfg reconcile field manifest can read everything from one dict.
+        position = (health.get("metrics") or {}).get("position") or {}
+        for key in ("latitude", "longitude", "height"):
+            val = position.get(key)
+            if val is not None:
+                identity[key] = val
+
+        # Antenna metadata (type/serial/radome/height delta) is only useful
+        # for cfg reconcile, so the extractor doesn't probe it during routine
+        # 5-min health checks. Run the dedicated ASCII probe here. Best-effort:
+        # failure leaves the antenna fields blank in the diff, which the
+        # reconciler renders as NO_DATA.
+        antenna_info = _query_antenna_info(station_id, station_config)
+        if antenna_info:
+            identity.update(antenna_info)
+
         if not identity:
             logger.debug("[%s] receiver returned no identity dict", station_id)
             return None
         return identity
     except Exception as exc:  # noqa: BLE001
         logger.warning("[%s] receiver probe failed: %s", station_id, exc)
+        return None
+
+
+def _query_antenna_info(
+    station_id: str, station_config: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """Probe antenna metadata via the PolaRX5 ASCII control channel.
+
+    Currently only PolaRX5 exposes antenna config over the control port. For
+    other receiver types this is a no-op — the cfg reconcile flow falls back
+    to TOS as the only authoritative source, which is correct.
+    """
+    try:
+        receiver_type = (station_config.get("receiver_type") or "").lower()
+        if "polarx" not in receiver_type:
+            return None
+        from ..health.polarx5_tcp_extractor import PolaRX5TCPExtractor
+
+        host = station_config.get("router_ip") or station_config.get("ip_number")
+        if not host:
+            return None
+        control_port = int(
+            station_config.get("receiver_controlport")
+            or station_config.get("control_port")
+            or 28784
+        )
+        extractor = PolaRX5TCPExtractor(host, station_id, port=control_port)
+        return extractor.query_antenna_info()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[%s] antenna probe failed: %s", station_id, exc)
         return None
 
 
@@ -319,6 +372,9 @@ def _reconcile_one(
         if tos_data is None:
             print(f"   ↳ {station_id}: not in TOS or TOS unavailable")
 
+    tolerance_m = getattr(args, "position_tolerance_m", 2.0)
+    field_specs = with_position_tolerance(tolerance_m) if tolerance_m else None
+
     diffs = compare_station(
         station_id=station_id,
         station_config=station_config,
@@ -326,6 +382,7 @@ def _reconcile_one(
         tos_data=tos_data,
         fields=fields,
         queried_sources=set(sources) | {"cfg"},
+        field_specs=field_specs,
     )
 
     show_ok = not args.only_diffs
@@ -785,6 +842,17 @@ Examples:
         "--list-fields",
         action="store_true",
         help="List reconcilable fields and exit",
+    )
+    rec.add_argument(
+        "--position-tolerance-m",
+        type=float,
+        default=2.0,
+        metavar="METERS",
+        help=(
+            "Tolerance for receiver↔TOS position comparison (default: 2.0 m). "
+            "Receiver coordinates come from a real-time PVT solution and are "
+            "used as a sanity check that the receiver is at the expected mark."
+        ),
     )
     rec.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
     rec.set_defaults(func=cmd_cfg_reconcile)

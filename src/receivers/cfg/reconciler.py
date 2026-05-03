@@ -17,7 +17,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, Iterable, List, Optional
 
-from .field_manifest import FIELDS, FieldSpec, fields_by_key
+from .field_manifest import FIELDS, FieldSpec
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +118,11 @@ def _suggest_value(
     fields, but for receiver-only fields (firmware/serial/type as reported
     by the device) the receiver itself is canonical reality. If both sources
     agree, return the agreed value tagged ``"agree"``.
+
+    When ``spec.receiver_authoritative`` is False, the receiver alone is not
+    a valid auto-fill source — the receiver value still drives QC/flagging
+    against TOS, but cfg is only ever auto-filled from TOS or from agreement
+    between TOS and receiver.
     """
     if receiver_value is not None and tos_value is not None:
         if spec.values_equal(receiver_value, tos_value):
@@ -125,7 +130,7 @@ def _suggest_value(
         return None, None  # disagreement; caller decides
     if tos_value is not None:
         return tos_value, "tos"
-    if receiver_value is not None:
+    if receiver_value is not None and spec.receiver_authoritative:
         return receiver_value, "receiver"
     return None, None
 
@@ -176,6 +181,7 @@ def compare_station(
     tos_data: Optional[Dict[str, Any]],
     fields: Optional[Iterable[str]] = None,
     queried_sources: Optional[Iterable[str]] = None,
+    field_specs: Optional[List[FieldSpec]] = None,
 ) -> List[FieldDiff]:
     """Build :class:`FieldDiff` records for one station.
 
@@ -207,11 +213,12 @@ def compare_station(
         sources = set(queried_sources)
     sources_frozen = frozenset(sources)
 
-    by_key = fields_by_key()
+    source_specs = list(field_specs) if field_specs is not None else list(FIELDS)
+    by_key = {f.cfg_key: f for f in source_specs}
     if fields is not None:
         wanted = [by_key[k] for k in fields if k in by_key]
     else:
-        wanted = list(FIELDS)
+        wanted = source_specs
 
     diffs: List[FieldDiff] = []
     for spec in wanted:

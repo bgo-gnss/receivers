@@ -10,9 +10,15 @@ from receivers.cfg import tos_adapter
 from receivers.cfg.field_manifest import (
     FIELDS,
     FieldSpec,
+    _abs_tol,
     _approx_eq,
+    _meters_to_lat_deg,
+    _meters_to_lon_deg,
     _receiver_type_eq,
+    _strip_placeholder,
     fields_by_key,
+    position_equality_for,
+    with_position_tolerance,
 )
 from receivers.cfg.reconciler import (
     Verdict,
@@ -54,6 +60,56 @@ class TestEqualityHelpers:
     def test_approx_eq_invalid_floats_falls_back_to_strings(self):
         assert _approx_eq(2)("abc", "abc")
         assert not _approx_eq(2)("abc", "def")
+
+
+class TestStripPlaceholder:
+    def test_real_serial_passes_through(self):
+        assert _strip_placeholder("4103914") == "4103914"
+        assert _strip_placeholder("  4103914  ") == "4103914"
+
+    def test_known_word_placeholders(self):
+        assert _strip_placeholder("Unknown") is None
+        assert _strip_placeholder("UNKNOWN") is None
+        assert _strip_placeholder("unknown") is None
+        assert _strip_placeholder("N/A") is None
+        assert _strip_placeholder("n/a") is None
+        assert _strip_placeholder("None") is None
+        assert _strip_placeholder("—") is None
+        assert _strip_placeholder("-") is None
+
+    def test_all_zero_serials(self):
+        assert _strip_placeholder("0000000000") is None
+        assert _strip_placeholder("000000") is None
+        assert _strip_placeholder("0") is None
+        assert _strip_placeholder("00") is None
+
+    def test_serial_with_leading_zeros_preserved(self):
+        # A genuine serial that happens to have a 0 is not all-zero.
+        assert _strip_placeholder("00012345") == "00012345"
+
+    def test_empty_and_none(self):
+        assert _strip_placeholder("") is None
+        assert _strip_placeholder("   ") is None
+        assert _strip_placeholder(None) is None
+
+    def test_placeholder_normalization_in_compare_station(self):
+        """GJAC-style: cfg='0000000000', rx='Unknown' should be MISSING, not CONFLICT."""
+        from receivers.cfg.reconciler import compare_station
+
+        cfg = {"antenna_serial": "0000000000"}
+        identity = {"antenna_serial": "Unknown"}
+        diffs = compare_station(
+            "GJAC",
+            cfg,
+            identity,
+            None,
+            fields=["antenna_serial"],
+            queried_sources={"cfg", "receiver"},
+        )
+        assert diffs[0].cfg_value is None
+        assert diffs[0].receiver_value is None
+        # Both sources admit ignorance — no real data, not a conflict
+        assert diffs[0].verdict == Verdict.NO_DATA
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +304,7 @@ class TestCompareStation:
             cfg,
             {},
             None,
-            fields=["antenna_type"],  # tos-only field
+            fields=["station_name"],  # tos-only field (long-form Icelandic name)
             queried_sources={"cfg", "receiver"},
         )
         assert diffs[0].verdict == Verdict.NOT_QUERYABLE
@@ -301,6 +357,97 @@ class TestCompareStation:
     def test_default_fields_returns_all(self):
         diffs = compare_station("ELDC", {}, None, None)
         assert len(diffs) == len(FIELDS)
+
+    def test_receiver_authoritative_false_suppresses_receiver_only_suggestion(self):
+        """Antenna fields are flag-only — receiver alone never auto-fills cfg."""
+        cfg = {}
+        identity = {"antenna_type": "SEPCHOKE_B3E6", "antenna_serial": "262509"}
+        diffs = compare_station(
+            "ORFC",
+            cfg,
+            identity,
+            None,
+            fields=["antenna_type", "antenna_serial"],
+            queried_sources={"cfg", "receiver"},
+        )
+        # Verdict is MISSING (cfg empty, receiver has value) but suggestion is None
+        for d in diffs:
+            assert d.verdict == Verdict.MISSING
+            assert d.suggestion is None
+            assert d.suggestion_source is None
+
+    def test_receiver_authoritative_true_still_suggests_from_receiver(self):
+        """receiver_serial keeps default authoritative=True — receiver-only OK."""
+        cfg = {}
+        identity = {"serial_number": "4103914"}
+        diffs = compare_station(
+            "ORFC",
+            cfg,
+            identity,
+            None,
+            fields=["receiver_serial"],
+            queried_sources={"cfg", "receiver"},
+        )
+        assert diffs[0].suggestion == "4103914"
+        assert diffs[0].suggestion_source == "receiver"
+
+
+# ---------------------------------------------------------------------------
+# Position tolerance — meters-based equality for lat/lon/height
+# ---------------------------------------------------------------------------
+
+
+class TestPositionTolerance:
+    def test_abs_tol_within_threshold(self):
+        # 1.5 m at Iceland latitude in degrees: 1.5/111111 ≈ 1.35e-5
+        assert _abs_tol(2e-5)("63.855149", "63.855162")  # 1.45 m
+        assert _abs_tol(2.0)("102.55", "104.00")  # 1.45 m height
+
+    def test_abs_tol_outside_threshold(self):
+        assert not _abs_tol(2.0)("102.55", "106.00")  # 3.45 m height
+        assert not _abs_tol(1e-5)("63.855149", "63.855170")  # 2.3 m
+
+    def test_meters_to_lat_deg(self):
+        # 1 m latitude ≈ 9e-6° anywhere
+        assert abs(_meters_to_lat_deg(1.0) - 9e-6) < 1e-7
+
+    def test_meters_to_lon_deg_at_iceland(self):
+        # 1 m longitude at 64° lat ≈ 2.05e-5°
+        assert abs(_meters_to_lon_deg(1.0) - 2.05e-5) < 1e-6
+
+    def test_position_equality_for_lat(self):
+        eq = position_equality_for("latitude", 2.0)
+        assert eq("63.855149", "63.855160")  # 1.2 m
+        assert not eq("63.855149", "63.855200")  # 5.7 m
+
+    def test_position_equality_for_height(self):
+        eq = position_equality_for("height", 2.0)
+        assert eq("102.55", "104.00")
+        assert not eq("102.55", "106.00")
+
+    def test_position_equality_for_unsupported_field(self):
+        import pytest
+
+        with pytest.raises(ValueError):
+            position_equality_for("antenna_height", 2.0)
+
+    def test_with_position_tolerance_overrides_lat_lon_height(self):
+        specs = with_position_tolerance(5.0)
+        by_key = {s.cfg_key: s for s in specs}
+        # 4 m diff in height should pass at 5 m tolerance
+        assert by_key["height"].values_equal("100.00", "104.00")
+        # but fail at default 2 m
+        default_height = next(f for f in FIELDS if f.cfg_key == "height")
+        assert not default_height.values_equal("100.00", "104.00")
+
+    def test_with_position_tolerance_preserves_other_fields(self):
+        specs = with_position_tolerance(5.0)
+        by_key = {s.cfg_key: s for s in specs}
+        # Non-position fields keep their original equality
+        assert by_key["receiver_type"].equal is not None
+        assert by_key["antenna_height"].equal is not None
+        # Length matches FIELDS
+        assert len(specs) == len(FIELDS)
 
 
 # ---------------------------------------------------------------------------
