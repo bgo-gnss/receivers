@@ -138,8 +138,19 @@ def _find_obs_rinex_file(raw_path: Path) -> Optional[Path]:
     The reconciler uses this to clean them up after converting to .d.Z.
     """
     stem = raw_path.name
-    for ext in (".sbf.gz", ".sbf", ".T02.gz", ".T02", ".t02",
-                ".T00.gz", ".T00", ".t00", ".m00.gz", ".m00", ".M00"):
+    for ext in (
+        ".sbf.gz",
+        ".sbf",
+        ".T02.gz",
+        ".T02",
+        ".t02",
+        ".T00.gz",
+        ".T00",
+        ".t00",
+        ".m00.gz",
+        ".m00",
+        ".M00",
+    ):
         if stem.endswith(ext):
             stem = stem[: -len(ext)]
             break
@@ -295,9 +306,7 @@ def _reconcile_station_session(
                     if old_obs_path and old_obs_path.exists():
                         try:
                             old_obs_path.unlink()
-                            logger.debug(
-                                f"Removed legacy RINEX: {old_obs_path.name}"
-                            )
+                            logger.debug(f"Removed legacy RINEX: {old_obs_path.name}")
                         except Exception as e:
                             logger.warning(
                                 f"Could not remove legacy {old_obs_path.name}: {e}"

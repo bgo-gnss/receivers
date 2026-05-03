@@ -1185,7 +1185,11 @@ class PolaRX5(BaseReceiver):
                     self.logger.error(
                         f"⚠️ NETWORK TIMEOUT: {network_check.get('analysis', 'No analysis available')}"
                     )
-            elif "530" in error_str or "login incorrect" in error_str or "login failed" in error_str:
+            elif (
+                "530" in error_str
+                or "login incorrect" in error_str
+                or "login failed" in error_str
+            ):
                 self.logger.error(
                     f"❌ FTP authentication failed for {self.station_id}: {e}"
                 )

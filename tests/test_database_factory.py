@@ -19,7 +19,9 @@ class TestGetConnectionParams:
 
     def test_default_params(self):
         """Test default connection parameters."""
-        with patch("receivers.health.database_factory._load_config_file", return_value={}):
+        with patch(
+            "receivers.health.database_factory._load_config_file", return_value={}
+        ):
             with patch.dict(os.environ, {"USER": "testuser"}, clear=True):
                 params = DatabaseConnectionFactory.get_connection_params()
                 assert params["host"] == "localhost"
@@ -52,7 +54,9 @@ class TestGetConnectionParams:
 
     def test_user_fallback_to_postgres(self):
         """Test USER fallback when no env vars set."""
-        with patch("receivers.health.database_factory._load_config_file", return_value={}):
+        with patch(
+            "receivers.health.database_factory._load_config_file", return_value={}
+        ):
             with patch.dict(os.environ, {}, clear=True):
                 params = DatabaseConnectionFactory.get_connection_params()
                 assert params["user"] == "postgres"

@@ -2776,7 +2776,9 @@ def cmd_rec_provision(args) -> int:
                     f"  ⚠  Port {port} refused — receiver is in sis=secure mode "
                     f"(firmware upgrade resets IP services)"
                 )
-                print(f"     Connecting via TLS port {tls_port} and restoring services…")
+                print(
+                    f"     Connecting via TLS port {tls_port} and restoring services…"
+                )
 
             # Read initial prompt
             prompt = sock.recv(1024).decode("utf-8", errors="ignore")
@@ -2900,7 +2902,9 @@ def cmd_rec_provision(args) -> int:
                     f"   {ftp_icon} FTP port 21 {'open' if ok_ftp else 'closed'}"
                 )
                 if not ok_plain:
-                    print(f"  ✗ sis restoration may have failed — run: nc -zv {ip} {port}")
+                    print(
+                        f"  ✗ sis restoration may have failed — run: nc -zv {ip} {port}"
+                    )
 
             # Step 8: apply receiver config file (Expert Console upload)
             if apply_config:
@@ -2980,11 +2984,15 @@ def cmd_rec_provision(args) -> int:
                     client.disconnect()
                     if config and len(config.splitlines()) > 5:
                         date_str = _dt.date.today().strftime("%Y%m%d")
-                        dest = archive_dir / f"{station_id}_PolaRx5_Current_{date_str}.txt"
+                        dest = (
+                            archive_dir / f"{station_id}_PolaRx5_Current_{date_str}.txt"
+                        )
                         dest.write_text(config)
                         print(f"  ✓ Config saved → {dest.name}")
                     else:
-                        print("  ⚠  Config extraction returned too few lines — not saved")
+                        print(
+                            "  ⚠  Config extraction returned too few lines — not saved"
+                        )
                 except Exception as e:
                     print(f"  ⚠  Config save failed: {e}")
 

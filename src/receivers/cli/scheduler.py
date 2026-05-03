@@ -507,7 +507,10 @@ def cmd_scheduler_reconcile(args) -> int:
                         for hour in hours:
                             file_dt = dt.replace(hour=hour)
                             raw_path = _find_raw_file(
-                                station_id, session_type, file_dt, checker,
+                                station_id,
+                                session_type,
+                                file_dt,
+                                checker,
                                 receiver_type=receiver_type,
                             )
                             if raw_path is None:
@@ -522,8 +525,12 @@ def cmd_scheduler_reconcile(args) -> int:
                 receiver_type = target_stations[station_id]
                 for session_type in session_types:
                     missing, converted, errors = _reconcile_station_session(
-                        station_id, session_type, start_date, end_date,
-                        checker, receiver_type=receiver_type,
+                        station_id,
+                        session_type,
+                        start_date,
+                        end_date,
+                        checker,
+                        receiver_type=receiver_type,
                     )
                     total_missing += missing
                     total_converted += converted
