@@ -25,9 +25,7 @@ def current_session(station: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _device_field(
-    station: Dict[str, Any], device: str, field: str
-) -> Optional[str]:
+def _device_field(station: Dict[str, Any], device: str, field: str) -> Optional[str]:
     session = current_session(station)
     if not session:
         return None

@@ -79,9 +79,7 @@ class FieldDiff:
 # ---------------------------------------------------------------------------
 
 
-def _read_cfg_value(
-    station_config: Dict[str, Any], spec: FieldSpec
-) -> Optional[str]:
+def _read_cfg_value(station_config: Dict[str, Any], spec: FieldSpec) -> Optional[str]:
     """Look up a field in a station config dict.
 
     Station configs come in two shapes in this codebase:
@@ -96,13 +94,13 @@ def _read_cfg_value(
     if val is None:
         # nested fallbacks
         if spec.cfg_key.startswith("receiver_"):
-            sub = spec.cfg_key[len("receiver_"):]
+            sub = spec.cfg_key[len("receiver_") :]
             val = (station_config.get("receiver") or {}).get(sub)
         elif spec.cfg_key.startswith("antenna_"):
-            sub = spec.cfg_key[len("antenna_"):]
+            sub = spec.cfg_key[len("antenna_") :]
             val = (station_config.get("antenna") or {}).get(sub)
         elif spec.cfg_key.startswith("router_"):
-            sub = spec.cfg_key[len("router_"):]
+            sub = spec.cfg_key[len("router_") :]
             val = (station_config.get("router") or {}).get(sub)
     if val is None or val == "":
         return None
@@ -220,20 +218,29 @@ def compare_station(
         cfg_val = spec.normalize(_read_cfg_value(station_config, spec))
 
         rx_val: Optional[str] = None
-        if "receiver" in sources and spec.receiver_extract is not None and receiver_identity is not None:
+        if (
+            "receiver" in sources
+            and spec.receiver_extract is not None
+            and receiver_identity is not None
+        ):
             try:
                 rx_val = spec.normalize(spec.receiver_extract(receiver_identity))
             except Exception as exc:  # noqa: BLE001
-                logger.debug("[%s] receiver extract for %s failed: %s",
-                             station_id, spec.cfg_key, exc)
+                logger.debug(
+                    "[%s] receiver extract for %s failed: %s",
+                    station_id,
+                    spec.cfg_key,
+                    exc,
+                )
 
         tos_val: Optional[str] = None
         if "tos" in sources and spec.tos_extract is not None and tos_data is not None:
             try:
                 tos_val = spec.normalize(spec.tos_extract(tos_data))
             except Exception as exc:  # noqa: BLE001
-                logger.debug("[%s] tos extract for %s failed: %s",
-                             station_id, spec.cfg_key, exc)
+                logger.debug(
+                    "[%s] tos extract for %s failed: %s", station_id, spec.cfg_key, exc
+                )
 
         verdict = _compute_verdict(spec, cfg_val, rx_val, tos_val, sources_frozen)
 

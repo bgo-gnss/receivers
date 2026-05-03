@@ -173,15 +173,13 @@ class TestCompareStation:
                 }
             ]
         }
-        diffs = compare_station("ELDC", cfg, identity, tos,
-                                fields=["receiver_serial"])
+        diffs = compare_station("ELDC", cfg, identity, tos, fields=["receiver_serial"])
         assert diffs[0].verdict == Verdict.OK
 
     def test_missing_when_cfg_empty_and_sources_have_value(self):
         cfg = {}
         identity = {"serial_number": "12345"}
-        diffs = compare_station("ELDC", cfg, identity, None,
-                                fields=["receiver_serial"])
+        diffs = compare_station("ELDC", cfg, identity, None, fields=["receiver_serial"])
         d = diffs[0]
         assert d.verdict == Verdict.MISSING
         assert d.suggestion == "12345"
@@ -190,8 +188,7 @@ class TestCompareStation:
     def test_conflict_when_cfg_disagrees_with_source(self):
         cfg = {"receiver_serial": "OLD123"}
         identity = {"serial_number": "NEW456"}
-        diffs = compare_station("ELDC", cfg, identity, None,
-                                fields=["receiver_serial"])
+        diffs = compare_station("ELDC", cfg, identity, None, fields=["receiver_serial"])
         assert diffs[0].verdict == Verdict.CONFLICT
         # No suggestion on conflict — caller decides.
         assert diffs[0].suggestion is None
@@ -203,12 +200,14 @@ class TestCompareStation:
         identity = {"serial_number": "RX_VALUE"}
         tos = {
             "device_history": [
-                {"time_from": "x", "time_to": None,
-                 "gnss_receiver": {"serial_number": "TOS_VALUE"}}
+                {
+                    "time_from": "x",
+                    "time_to": None,
+                    "gnss_receiver": {"serial_number": "TOS_VALUE"},
+                }
             ]
         }
-        diffs = compare_station("ELDC", cfg, identity, tos,
-                                fields=["receiver_serial"])
+        diffs = compare_station("ELDC", cfg, identity, tos, fields=["receiver_serial"])
         assert diffs[0].verdict == Verdict.CONFLICT
 
     def test_sources_disagree_when_cfg_matches_both_via_normalization(self):
@@ -219,27 +218,37 @@ class TestCompareStation:
         identity = {"receiver_model": "PolaRx5"}
         tos = {
             "device_history": [
-                {"time_from": "x", "time_to": None,
-                 "gnss_receiver": {"model": "POLARX5"}}
+                {
+                    "time_from": "x",
+                    "time_to": None,
+                    "gnss_receiver": {"model": "POLARX5"},
+                }
             ]
         }
-        diffs = compare_station("ELDC", cfg, identity, tos,
-                                fields=["receiver_type"])
+        diffs = compare_station("ELDC", cfg, identity, tos, fields=["receiver_type"])
         assert diffs[0].verdict == Verdict.OK
 
     def test_no_data_when_no_source_has_value(self):
         cfg = {}
         # Empty identity (probe succeeded but no fields)
-        diffs = compare_station("ELDC", cfg, {}, None,
-                                fields=["receiver_serial"],
-                                queried_sources={"cfg", "receiver"})
+        diffs = compare_station(
+            "ELDC",
+            cfg,
+            {},
+            None,
+            fields=["receiver_serial"],
+            queried_sources={"cfg", "receiver"},
+        )
         assert diffs[0].verdict == Verdict.NO_DATA
 
     def test_not_queryable_when_only_receiver_queried_for_tos_only_field(self):
         cfg = {}
         diffs = compare_station(
-            "ELDC", cfg, {}, None,
-            fields=["antenna_type"],   # tos-only field
+            "ELDC",
+            cfg,
+            {},
+            None,
+            fields=["antenna_type"],  # tos-only field
             queried_sources={"cfg", "receiver"},
         )
         assert diffs[0].verdict == Verdict.NOT_QUERYABLE
@@ -249,13 +258,15 @@ class TestCompareStation:
         identity = {"serial_number": "12345"}
         tos = {
             "device_history": [
-                {"time_from": "x", "time_to": None,
-                 "gnss_receiver": {"serial_number": "12345"}}
+                {
+                    "time_from": "x",
+                    "time_to": None,
+                    "gnss_receiver": {"serial_number": "12345"},
+                }
             ]
         }
         d = _diff_for(
-            compare_station("ELDC", cfg, identity, tos,
-                            fields=["receiver_serial"]),
+            compare_station("ELDC", cfg, identity, tos, fields=["receiver_serial"]),
             "receiver_serial",
         )
         assert d.suggestion == "12345"
@@ -267,13 +278,15 @@ class TestCompareStation:
         identity = {"serial_number": "RX"}
         tos = {
             "device_history": [
-                {"time_from": "x", "time_to": None,
-                 "gnss_receiver": {"serial_number": "TOS"}}
+                {
+                    "time_from": "x",
+                    "time_to": None,
+                    "gnss_receiver": {"serial_number": "TOS"},
+                }
             ]
         }
         d = _diff_for(
-            compare_station("ELDC", cfg, identity, tos,
-                            fields=["receiver_serial"]),
+            compare_station("ELDC", cfg, identity, tos, fields=["receiver_serial"]),
             "receiver_serial",
         )
         assert d.verdict == Verdict.MISSING
@@ -281,8 +294,7 @@ class TestCompareStation:
 
     def test_field_filter(self):
         cfg = {}
-        diffs = compare_station("ELDC", cfg, {}, None,
-                                fields=["receiver_serial"])
+        diffs = compare_station("ELDC", cfg, {}, None, fields=["receiver_serial"])
         assert len(diffs) == 1
         assert diffs[0].cfg_key == "receiver_serial"
 
@@ -309,8 +321,11 @@ class TestApplyDiff:
         )
         spec = fields_by_key()["receiver_serial"]
         from receivers.cfg.reconciler import FieldDiff
+
         diff = FieldDiff(
-            spec=spec, cfg_value=None, receiver_value="3001234",
+            spec=spec,
+            cfg_value=None,
+            receiver_value="3001234",
             tos_value=None,
         )
         changed = apply_diff("ELDC", diff, "3001234", cfg_path=cfg)
@@ -327,8 +342,11 @@ class TestApplyDiff:
         )
         spec = fields_by_key()["receiver_serial"]
         from receivers.cfg.reconciler import FieldDiff
+
         diff = FieldDiff(
-            spec=spec, cfg_value="OLD", receiver_value="NEW",
+            spec=spec,
+            cfg_value="OLD",
+            receiver_value="NEW",
             tos_value=None,
         )
         changed = apply_diff("ELDC", diff, "NEW", cfg_path=cfg)
@@ -342,8 +360,11 @@ class TestApplyDiff:
         )
         spec = fields_by_key()["receiver_serial"]
         from receivers.cfg.reconciler import FieldDiff
+
         diff = FieldDiff(
-            spec=spec, cfg_value="SAME", receiver_value="SAME",
+            spec=spec,
+            cfg_value="SAME",
+            receiver_value="SAME",
             tos_value=None,
         )
         changed = apply_diff("ELDC", diff, "SAME", cfg_path=cfg)
@@ -353,8 +374,12 @@ class TestApplyDiff:
         cfg = self._make_cfg(tmp_path, "[ELDC]\nfoo = bar\n")
         spec = fields_by_key()["receiver_serial"]
         from receivers.cfg.reconciler import FieldDiff
+
         diff = FieldDiff(
-            spec=spec, cfg_value=None, receiver_value="X", tos_value=None,
+            spec=spec,
+            cfg_value=None,
+            receiver_value="X",
+            tos_value=None,
         )
         changed = apply_diff("XXXX", diff, "X", cfg_path=cfg)
         assert not changed

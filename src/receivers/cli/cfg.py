@@ -181,10 +181,8 @@ def _print_diff_table(
     show_ok: bool = True,
 ) -> None:
     print()
-    print(
-        f"   {'Field':<24} {'stations.cfg':<22} {'Receiver':<22} {'TOS':<22}"
-    )
-    print(f"   {'-'*24} {'-'*22} {'-'*22} {'-'*22}")
+    print(f"   {'Field':<24} {'stations.cfg':<22} {'Receiver':<22} {'TOS':<22}")
+    print(f"   {'-' * 24} {'-' * 22} {'-' * 22} {'-' * 22}")
     for d in diffs:
         if not show_ok and d.verdict == Verdict.OK:
             continue
@@ -232,10 +230,7 @@ def _interactive_prompt(diff: FieldDiff) -> Tuple[str, Optional[str]]:
     if diff.suggestion is not None:
         src = diff.suggestion_source or "?"
         options.append(f"[s]et to {diff.suggestion!r} ({src})")
-    if (
-        diff.receiver_value is not None
-        and diff.receiver_value != diff.suggestion
-    ):
+    if diff.receiver_value is not None and diff.receiver_value != diff.suggestion:
         options.append(f"[r]eceiver={diff.receiver_value!r}")
     if diff.tos_value is not None and diff.tos_value != diff.suggestion:
         options.append(f"[t]os={diff.tos_value!r}")
@@ -346,7 +341,9 @@ def _reconcile_one(
     for idx, d in enumerate(actionable, start=1):
         header = f"  [{idx}/{len(actionable)}] {d.cfg_key} ({d.verdict.value})"
         print(header)
-        print(f"     cfg:      {d.cfg_value if d.cfg_value is not None else '[missing]'}")
+        print(
+            f"     cfg:      {d.cfg_value if d.cfg_value is not None else '[missing]'}"
+        )
         if "receiver" in sources:
             rx = d.receiver_value if d.receiver_value is not None else "[N/A]"
             print(f"     receiver: {rx}")
@@ -603,9 +600,7 @@ Examples:
         action="store_true",
         help="List reconcilable fields and exit",
     )
-    rec.add_argument(
-        "-v", "--verbose", action="store_true", help="Verbose logging"
-    )
+    rec.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
     rec.set_defaults(func=cmd_cfg_reconcile)
 
 

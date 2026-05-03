@@ -1625,6 +1625,7 @@ def _flag_identity_vs_cfg(
     if reported_model:
         try:
             from ..health.receiver_fingerprint import check_identity_mismatch
+
             mismatch = check_identity_mismatch(
                 str(cfg_type) if cfg_type else "", identity
             )
@@ -1633,9 +1634,7 @@ def _flag_identity_vs_cfg(
         if mismatch and not cfg_type:
             flagged.append(f"receiver_type=[missing] reported={reported_model!r}")
         elif mismatch:
-            flagged.append(
-                f"receiver_type={cfg_type!r} reported={reported_model!r}"
-            )
+            flagged.append(f"receiver_type={cfg_type!r} reported={reported_model!r}")
 
     # Serial / firmware: simple string compare (no fuzzy semantics).
     for cfg_key, reported in [
