@@ -727,6 +727,16 @@ def _status_check_job(
             logger.warning(f"Could not get live health from {station_id}: {e}")
             health_data = {"station_id": station_id, "error": str(e)}
 
+        # Compare receiver identity against stations.cfg and update the
+        # cfg_discrepancy log so `cfg list` / `cfg history` reflect the
+        # latest probe. Best-effort: failures must not break the health job.
+        try:
+            from ..cfg.identity_check import flag_from_health_data
+
+            flag_from_health_data(station_id, health_data, station_config, logger)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"[{station_id}] cfg discrepancy check failed: {exc}")
+
         # Write to PostgreSQL
         db_success = False
         if send_to_db and health_data:

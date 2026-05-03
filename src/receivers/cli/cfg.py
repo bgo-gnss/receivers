@@ -1,4 +1,4 @@
-"""``receivers cfg reconcile`` — three-way reconciliation CLI.
+"""``receivers cfg`` — three-way reconciliation CLI.
 
 Compares values in ``stations.cfg`` against:
 
@@ -12,7 +12,9 @@ removed in favour of this explicit, reviewable workflow.
 
 Subcommands:
 
-* ``reconcile``  — show diffs and (optionally) write fixes to stations.cfg
+* ``reconcile`` — show diffs and (optionally) write fixes to stations.cfg
+* ``list``      — show currently-open discrepancies (queryable audit log)
+* ``history``   — show the full detection/resolution history for a station or field
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from ..cfg.field_manifest import FIELDS, all_keys
@@ -40,7 +43,12 @@ logger = logging.getLogger(__name__)
 
 
 def _load_station_configs(station_ids: Sequence[str]) -> Dict[str, Dict[str, Any]]:
-    """Return ``{station_id: station_config}`` for the requested stations."""
+    """Return ``{station_id: station_config}`` for the requested stations.
+
+    ``get_station_config()`` already merges raw stations.cfg keys into
+    the typed dict (via ``setdefault``), so flat fields like
+    ``receiver_serial`` and ``latitude`` are readable here.
+    """
     from ..config_utils import get_station_config
 
     configs: Dict[str, Dict[str, Any]] = {}
@@ -507,6 +515,184 @@ def cmd_cfg_reconcile(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# `cfg list` / `cfg history`
+# ---------------------------------------------------------------------------
+
+
+def _parse_since(spec: str) -> datetime:
+    """Parse ``--since`` values: ``30d``, ``12h``, ``45m`` or ISO 8601."""
+    s = spec.strip().lower()
+    if s and s[-1] in ("d", "h", "m"):
+        try:
+            n = int(s[:-1])
+        except ValueError as exc:
+            raise ValueError(f"invalid --since value {spec!r}") from exc
+        unit = s[-1]
+        delta = (
+            timedelta(days=n)
+            if unit == "d"
+            else timedelta(hours=n)
+            if unit == "h"
+            else timedelta(minutes=n)
+        )
+        return datetime.now(timezone.utc) - delta
+    try:
+        # Accept "2026-04-01" or "2026-04-01T12:00:00+00:00"
+        dt = datetime.fromisoformat(spec)
+    except ValueError as exc:
+        raise ValueError(
+            f"invalid --since value {spec!r} (use 30d/12h/45m or ISO 8601)"
+        ) from exc
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _fmt_ts(ts: Optional[datetime]) -> str:
+    if ts is None:
+        return "—"
+    return ts.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M")
+
+
+def _print_records_table(records, *, show_resolution: bool) -> None:
+    if not records:
+        print("(no rows)")
+        return
+    if show_resolution:
+        header = (
+            f"{'Station':<8} {'Field':<28} {'Verdict':<18} "
+            f"{'Detected':<17} {'By':<14} {'Resolved':<17} {'Action':<14}"
+        )
+    else:
+        header = (
+            f"{'Station':<8} {'Field':<28} {'Verdict':<18} "
+            f"{'Detected':<17} {'By':<14} {'cfg':<14} {'rx':<14} {'tos':<14}"
+        )
+    print(header)
+    print("-" * len(header))
+    for r in records:
+        if show_resolution:
+            print(
+                f"{r.station_id:<8} {r.cfg_key:<28} {r.verdict:<18} "
+                f"{_fmt_ts(r.detected_at):<17} {(r.detected_by or ''):<14} "
+                f"{_fmt_ts(r.resolved_at):<17} {(r.resolved_action or '—'):<14}"
+            )
+        else:
+            print(
+                f"{r.station_id:<8} {r.cfg_key:<28} {r.verdict:<18} "
+                f"{_fmt_ts(r.detected_at):<17} {(r.detected_by or ''):<14} "
+                f"{_render(r.cfg_value, 14)}{_render(r.receiver_value, 14)}"
+                f"{_render(r.tos_value, 14)}"
+            )
+
+
+def cmd_cfg_list(args) -> int:
+    """``cfg list`` — open discrepancies, optionally filtered."""
+    from ..cfg import discrepancy_log as _dlog  # type: ignore[attr-defined]
+
+    station_ids = [s.upper() for s in args.station] if args.station else None
+    fields: Optional[List[str]] = None
+    if args.field:
+        valid = set(all_keys())
+        invalid = [f for f in args.field if f not in valid]
+        if invalid:
+            print(f"❌ unknown fields: {invalid}")
+            print(f"   available: {sorted(valid)}")
+            return 2
+        fields = list(args.field)
+    verdicts = list(args.verdict) if args.verdict else None
+
+    try:
+        records = _dlog.list_open(
+            station_ids=station_ids,
+            cfg_keys=fields,
+            verdicts=verdicts,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"❌ could not query cfg_discrepancy: {exc}")
+        return 1
+
+    if args.json:
+        print(json.dumps([r.as_dict() for r in records], indent=2, default=str))
+        return 0
+
+    print(f"Open discrepancies: {len(records)}")
+    if records:
+        print()
+        _print_records_table(records, show_resolution=False)
+    return 0
+
+
+def cmd_cfg_history(args) -> int:
+    """``cfg history`` — full audit trail for a station and/or field."""
+    from ..cfg import discrepancy_log as _dlog  # type: ignore[attr-defined]
+
+    if not args.station and not args.field:
+        print("❌ specify a station ID, --field KEY, or both")
+        return 2
+
+    station_id = args.station[0].upper() if args.station else None
+    if args.field:
+        valid = set(all_keys())
+        invalid = [f for f in args.field if f not in valid]
+        if invalid:
+            print(f"❌ unknown fields: {invalid}")
+            print(f"   available: {sorted(valid)}")
+            return 2
+        cfg_keys: List[str] = list(args.field)
+    else:
+        cfg_keys = []
+
+    since: Optional[datetime] = None
+    if args.since:
+        try:
+            since = _parse_since(args.since)
+        except ValueError as exc:
+            print(f"❌ {exc}")
+            return 2
+
+    try:
+        if cfg_keys:
+            records = []
+            for key in cfg_keys:
+                records.extend(
+                    _dlog.get_history(
+                        station_id=station_id,
+                        cfg_key=key,
+                        since=since,
+                        limit=args.limit,
+                    )
+                )
+            records.sort(key=lambda r: r.detected_at, reverse=True)
+            records = records[: args.limit]
+        else:
+            records = _dlog.get_history(
+                station_id=station_id,
+                since=since,
+                limit=args.limit,
+            )
+    except Exception as exc:  # noqa: BLE001
+        print(f"❌ could not query cfg_discrepancy: {exc}")
+        return 1
+
+    if args.json:
+        print(json.dumps([r.as_dict() for r in records], indent=2, default=str))
+        return 0
+
+    target = station_id or f"--field {','.join(cfg_keys)}"
+    print(f"History for {target} ({len(records)} row(s)):")
+    if records:
+        print()
+        _print_records_table(records, show_resolution=True)
+        if args.verbose:
+            print("\nResolution notes:")
+            for r in records:
+                if r.resolution_note:
+                    print(f"  [{r.id}] {r.station_id} {r.cfg_key}: {r.resolution_note}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # argparse wiring
 # ---------------------------------------------------------------------------
 
@@ -603,12 +789,105 @@ Examples:
     rec.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
     rec.set_defaults(func=cmd_cfg_reconcile)
 
+    # ----- cfg list -------------------------------------------------------
+    lst = cfg_subparsers.add_parser(
+        "list",
+        help="List currently-open cfg discrepancies",
+        description=(
+            "Show every discrepancy that has been detected and not yet "
+            "resolved. Filter by station, field, or verdict."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  receivers cfg list
+  receivers cfg list ELDC THOB
+  receivers cfg list --field receiver_serial receiver_firmware_version
+  receivers cfg list --verdict conflict --json
+        """,
+    )
+    lst.add_argument(
+        "station",
+        nargs="*",
+        metavar="SID",
+        help="Restrict to specific station IDs",
+    )
+    lst.add_argument(
+        "--field",
+        nargs="+",
+        metavar="KEY",
+        help="Restrict to specific cfg keys",
+    )
+    lst.add_argument(
+        "--verdict",
+        nargs="+",
+        choices=[
+            Verdict.MISSING.value,
+            Verdict.CONFLICT.value,
+            Verdict.SOURCES_DISAGREE.value,
+        ],
+        help="Restrict to specific verdicts (default: all open)",
+    )
+    lst.add_argument(
+        "--json", action="store_true", help="Emit JSON instead of a table"
+    )
+    lst.set_defaults(func=cmd_cfg_list)
+
+    # ----- cfg history ----------------------------------------------------
+    hist = cfg_subparsers.add_parser(
+        "history",
+        help="Show the detection/resolution history for a station or field",
+        description=(
+            "Print every cfg_discrepancy row matching the given station "
+            "and/or field, including resolved rows. At least one of "
+            "<SID> or --field is required."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  receivers cfg history ELDC
+  receivers cfg history ELDC --field receiver_serial
+  receivers cfg history --field receiver_firmware_version --since 30d
+  receivers cfg history ELDC --json
+        """,
+    )
+    hist.add_argument(
+        "station",
+        nargs="*",
+        metavar="SID",
+        help="Station ID to inspect (one)",
+    )
+    hist.add_argument(
+        "--field",
+        nargs="+",
+        metavar="KEY",
+        help="Restrict to specific cfg keys",
+    )
+    hist.add_argument(
+        "--since",
+        metavar="WHEN",
+        help="Only rows detected on/after WHEN (e.g. 30d, 12h, 2026-04-01)",
+    )
+    hist.add_argument(
+        "--limit",
+        type=int,
+        default=200,
+        help="Maximum rows to return (default 200)",
+    )
+    hist.add_argument(
+        "--json", action="store_true", help="Emit JSON instead of a table"
+    )
+    hist.add_argument(
+        "-v", "--verbose", action="store_true", help="Show resolution notes"
+    )
+    hist.set_defaults(func=cmd_cfg_history)
+
 
 def handle_cfg_command(args) -> int:
     """Handle cfg subcommands; called from main()."""
     if not getattr(args, "cfg_command", None):
         print("❌ No cfg subcommand specified")
-        print("Available: reconcile")
+        print("Available: reconcile, list, history")
         print("\nTry: receivers cfg reconcile --help")
         return 2
     return args.func(args)

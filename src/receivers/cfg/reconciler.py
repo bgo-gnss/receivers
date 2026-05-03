@@ -257,6 +257,44 @@ def compare_station(
         ):
             note = f"receiver={rx_val!r} but TOS={tos_val!r}"
 
+        # Sync the discrepancy log with what we just observed:
+        #   * actionable verdicts (MISSING/CONFLICT/SOURCES_DISAGREE) → record/refresh open row
+        #   * OK → only auto-close when *every* source that could supply this
+        #     field was actually queried this run, otherwise we'd close a row
+        #     we have no business closing (e.g. cfg=AAA, TOS=AAA, but a stale
+        #     receiver=BBB drift is still real and we just didn't probe).
+        #   * NO_DATA / NOT_QUERYABLE → leave existing rows untouched.
+        try:
+            from . import discrepancy_log as _dlog  # type: ignore[attr-defined]
+
+            if verdict in (
+                Verdict.MISSING,
+                Verdict.CONFLICT,
+                Verdict.SOURCES_DISAGREE,
+            ):
+                _dlog.record_detection(
+                    station_id,
+                    spec.cfg_key,
+                    cfg_value=cfg_val,
+                    receiver_value=rx_val,
+                    tos_value=tos_val,
+                    verdict=verdict.value,
+                    detected_by=_dlog.DETECTED_BY_RECONCILE,
+                )
+            elif verdict == Verdict.OK:
+                fully_observed = (
+                    spec.receiver_extract is None or "receiver" in sources_frozen
+                ) and (spec.tos_extract is None or "tos" in sources_frozen)
+                if fully_observed:
+                    _dlog.auto_resolve_if_open(station_id, spec.cfg_key)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "[%s] discrepancy_log sync failed for %s: %s",
+                station_id,
+                spec.cfg_key,
+                exc,
+            )
+
         diffs.append(
             FieldDiff(
                 spec=spec,
@@ -283,11 +321,17 @@ def apply_diff(
     diff: FieldDiff,
     new_value: str,
     cfg_path: Optional[Path] = None,
+    resolved_by: Optional[str] = None,
 ) -> bool:
     """Write ``new_value`` for ``diff.cfg_key`` to stations.cfg.
 
     Returns True if the file changed, False if the value already matched.
     Raises :class:`FileNotFoundError` if the cfg path can't be located.
+
+    On a successful write the matching open row in ``cfg_discrepancy``
+    is marked resolved (``resolved_action='cfg_updated'``). DB failures
+    are swallowed — the cfg write is the operator-visible action; the
+    audit log is best-effort.
     """
     from ..config.receivers_config import _update_cfg_field
 
@@ -300,4 +344,30 @@ def apply_diff(
             ) from exc
         cfg_path = Path(_gps.ConfigParser().get_stations_config_path())
 
-    return _update_cfg_field(cfg_path, station_id, diff.cfg_key, new_value)
+    changed = _update_cfg_field(cfg_path, station_id, diff.cfg_key, new_value)
+
+    if changed:
+        try:
+            from . import discrepancy_log as _dlog  # type: ignore[attr-defined]
+
+            note = (
+                f"cfg updated from {diff.cfg_value!r} to {new_value!r} "
+                f"(receiver={diff.receiver_value!r}, tos={diff.tos_value!r})"
+            )
+            _dlog.record_resolution(
+                station_id,
+                diff.cfg_key,
+                action=_dlog.ACTION_CFG_UPDATED,
+                resolved_value=new_value,
+                resolved_by=resolved_by,
+                note=note,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "[%s] failed to log resolution for %s: %s",
+                station_id,
+                diff.cfg_key,
+                exc,
+            )
+
+    return changed
