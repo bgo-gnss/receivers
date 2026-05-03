@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from receivers.cfg import tos_adapter
 from receivers.cfg.field_manifest import (
     FIELDS,
     FieldSpec,
@@ -18,8 +19,6 @@ from receivers.cfg.reconciler import (
     apply_diff,
     compare_station,
 )
-from receivers.cfg import tos_adapter
-
 
 # ---------------------------------------------------------------------------
 # field_manifest equality helpers

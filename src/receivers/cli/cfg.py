@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from ..cfg.field_manifest import FIELDS, all_keys
 from ..cfg.reconciler import (
     FieldDiff,
-    SourceUnavailable,
+    SourceUnavailableError,
     Verdict,
     apply_diff,
     compare_station,
@@ -380,7 +380,7 @@ def _reconcile_one(
                     print(f"     ✅ wrote {d.cfg_key} = {new_value!r}")
                 else:
                     print(f"     ⏭  unchanged ({d.cfg_key} already = {new_value!r})")
-            except SourceUnavailable as exc:
+            except SourceUnavailableError as exc:
                 print(f"     ❌ could not write: {exc}")
             except Exception as exc:  # noqa: BLE001
                 print(f"     ❌ write failed: {exc}")

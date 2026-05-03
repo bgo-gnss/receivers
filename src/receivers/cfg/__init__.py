@@ -16,7 +16,7 @@ The CLI front-end is :mod:`receivers.cli.cfg`.
 
 from .reconciler import (
     FieldDiff,
-    SourceUnavailable,
+    SourceUnavailableError,
     Verdict,
     apply_diff,
     compare_station,
@@ -24,7 +24,7 @@ from .reconciler import (
 
 __all__ = [
     "FieldDiff",
-    "SourceUnavailable",
+    "SourceUnavailableError",
     "Verdict",
     "apply_diff",
     "compare_station",

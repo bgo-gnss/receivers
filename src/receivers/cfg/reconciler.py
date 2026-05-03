@@ -31,7 +31,7 @@ class Verdict(str, Enum):
     NOT_QUERYABLE = "not_queryable"  # field can't be derived from requested sources
 
 
-class SourceUnavailable(Exception):
+class SourceUnavailableError(Exception):
     """Raised when a requested source could not be queried."""
 
 
@@ -288,7 +288,7 @@ def apply_diff(
         try:
             import gps_parser as _gps  # type: ignore
         except ImportError as exc:
-            raise SourceUnavailable(
+            raise SourceUnavailableError(
                 "gps_parser not importable — cannot locate stations.cfg"
             ) from exc
         cfg_path = Path(_gps.ConfigParser().get_stations_config_path())
