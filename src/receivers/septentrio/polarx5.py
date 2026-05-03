@@ -198,9 +198,14 @@ class PolaRX5(BaseReceiver):
                 # routers where active mode PORT commands fail (IP mismatch).
                 self.pasv = True
 
-            # FTP credentials — fw 5.7.0+ requires authenticated FTP.
-            # Priority: per-station ftp_username in stations.cfg > firmware-version
-            # gate using global tcp_username/tcp_password from receivers.cfg.
+            # FTP credentials — firmware version is the primary auth gate.
+            # Priority:
+            #   1. Per-station ftp_username in stations.cfg (override; only
+            #      needed when this station differs from receivers.cfg defaults)
+            #   2. fw >= 5.7.0  → tcp_username / tcp_password from receivers.cfg
+            #   3. fw  < 5.7.0  → anonymous
+            #   4. ftp_anonymous_login = "force" in receivers.cfg overrides #2
+            #      to anonymous (rare; for testing or open receivers)
             self.ftp_anonymous = True
             self.ftp_username: Optional[str] = None
             self.ftp_password: Optional[str] = None
@@ -217,10 +222,9 @@ class PolaRX5(BaseReceiver):
                     from ..health.polarx5_tcp_extractor import _firmware_requires_auth
 
                     rec_cfg = get_receivers_config().get_receiver_config("polarx5")
-                    anon_str = str(rec_cfg.get("ftp_anonymous_login", "true")).lower()
-                    cfg_wants_auth = anon_str in ("false", "0", "no")
 
-                    # Gate on firmware version — default to anonymous when unset or pre-5.7
+                    # Resolve firmware from stations.cfg (raw, since gps_parser
+                    # processes the value and we need the literal string).
                     fw_ver: Optional[str] = None
                     try:
                         import gps_parser as _gps
@@ -233,13 +237,19 @@ class PolaRX5(BaseReceiver):
                     except Exception:
                         pass
 
-                    uses_auth = (
-                        cfg_wants_auth
-                        and fw_ver is not None
-                        and _firmware_requires_auth(fw_ver)
+                    fw_needs_auth = fw_ver is not None and _firmware_requires_auth(
+                        fw_ver
                     )
-                    self.ftp_anonymous = not uses_auth
-                    if uses_auth:
+
+                    # Allow operators to force anonymous on a 5.7.0+ receiver
+                    # via `ftp_anonymous_login = force` (rare).
+                    anon_force = (
+                        str(rec_cfg.get("ftp_anonymous_login", "")).lower()
+                        in ("force", "always")
+                    )
+
+                    if fw_needs_auth and not anon_force:
+                        self.ftp_anonymous = False
                         self.ftp_username = rec_cfg.get("tcp_username") or None
                         self.ftp_password = rec_cfg.get("tcp_password") or None
                 except Exception:
