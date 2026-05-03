@@ -542,8 +542,10 @@ class PolaRX5TCPExtractor:
          96-115: Observer (c1[20])
         116-155: Agency (c1[40])
         156-175: RxSerialNumber (c1[20])
-        176-195: RxName (c1[20]) — receiver model
+        176-195: RxName (c1[20]) — IGS/RINEX receiver type code (e.g. "SSRC7")
         196-215: RxVersion (c1[20]) — firmware version
+        288-327: GNSSFWVersion (c1[40]) — Rev 2+
+        328-367: ProductName (c1[40]) — Rev 2+, human-readable (e.g. "PolaRx5")
 
         Returns:
             Dictionary with receiver identity or None on failure
@@ -581,8 +583,17 @@ class PolaRX5TCPExtractor:
                 return raw.split(b"\x00", 1)[0].decode("ascii", errors="ignore").strip()
 
             serial_number = _extract_string(sbf_data, 156, 20)
-            receiver_model = _extract_string(sbf_data, 176, 20)
+            rx_name = _extract_string(sbf_data, 176, 20)
             firmware_version = _extract_string(sbf_data, 196, 20)
+
+            # ProductName (Rev 2+, offset 328) is the human-readable product name
+            # e.g. "PolaRx5" — firmware-set, not operator-configurable.
+            # Prefer it over RxName ("SSRC7" = IGS code) for model identification.
+            receiver_model = rx_name
+            if len(sbf_data) >= 368:
+                product_name = _extract_string(sbf_data, 328, 40)
+                if product_name:
+                    receiver_model = product_name
 
             if not any([serial_number, receiver_model, firmware_version]):
                 return None

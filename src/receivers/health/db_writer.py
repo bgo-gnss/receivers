@@ -281,10 +281,18 @@ class HealthDatabaseWriter:
                 if row:
                     configured_type = row[0]
 
+            model_mismatch = False
             if configured_type:
                 mismatch = check_identity_mismatch(configured_type, identity)
                 if mismatch:
                     self.logger.warning(f"[{station_id}] {mismatch}")
+                    model_mismatch = True
+
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE stations SET model_mismatch = %s WHERE sid = %s",
+                    (model_mismatch, station_id),
+                )
 
         except Exception as e:
             self.logger.debug(f"Station identity update failed for {station_id}: {e}")

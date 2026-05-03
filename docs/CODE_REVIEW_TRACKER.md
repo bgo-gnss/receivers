@@ -535,6 +535,15 @@ Tracking document for code weaknesses, recurring issues, and optimization opport
 - **Fix**: Added `_pick_station_by_gap_count()` to `backfill.py` — queries `file_tracking` to count archived files per station and picks the one with fewest (most gaps). New `strategy` parameter on `_backfill_next_station_for_session()`: `'gap_priority'` uses DB query, falls back to round-robin if query fails or returns None. `'round_robin'` (default) preserves legacy behavior. Configurable via `backfill.strategy` in scheduler.yaml. Added 5 unit tests (`TestGapBackfill`).
 - **Files**: `scheduling/backfill.py`, `scheduling/bulk_scheduler.py`, `scheduling/config_loader.py`, `tests/test_scheduler_basic.py`
 
+### SCHEDULER-021: Gap detector detects gaps but does not feed them to the backfill
+- **Category**: SCHEDULER
+- **Severity**: Medium
+- **Status**: Open
+- **Found**: 2026-04-29
+- **Description**: `_run_gap_detection_job()` calls `GapDetector.get_gap_summary()` and logs results, but never creates or updates `backfill_progress` entries for stations with detected gaps. The backfill's `gap_priority` strategy queries `backfill_progress` first — stations not present there are silently skipped. Confirmed on DYNG, HAUD, VARG: gap detector logs their gaps every 2 h but the backfill never acts on them.
+- **Fix**: After `get_gap_summary()`, for each station with gaps, ensure a `backfill_progress` row exists with `status='pending'` and a `backfill_start`/`backfill_end` that covers the detected gap range. The backfill's existing `gap_priority` path then picks them up naturally. Alternatively, make the gap detector create `file_tracking` records so the gap_priority counter already sees the station as under-archived.
+- **Files**: `scheduling/gap_scheduler.py`, `scheduling/backfill.py`, `health/file_tracker.py`
+
 ---
 
 ## Review Checklist (for systematic audit)
@@ -567,5 +576,5 @@ When reviewing a file, check for these patterns:
 ---
 
 **Created**: 2026-02-09
-**Last updated**: 2026-02-12 (SCHEDULER-015 through SCHEDULER-020)
+**Last updated**: 2026-04-29 (SCHEDULER-021: gap detector → backfill feed)
 **Purpose**: Track code quality issues for systematic review and optimization

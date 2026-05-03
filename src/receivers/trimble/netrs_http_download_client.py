@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, urljoin
 
+import requests
+
 from ..utils.file_validator import FileValidator
 from .http_client import TrimbleHTTPClient
 
@@ -111,6 +113,7 @@ class NetRSHTTPDownloader:
             station_config: Station configuration dictionary
         """
         self.station_id = station_id.upper()
+        self._station_config = station_config
 
         # Set up logging (matching NetR9 pattern)
         self.logger = self._get_logger()
@@ -228,14 +231,14 @@ class NetRSHTTPDownloader:
                 )
 
             try:
-                # Use simple requests.get() like NetR9 - proven to work
-                import requests
-
                 self.logger.debug(f"HTTP URL: {full_url}")
 
-                # Use progress-based timeout: only timeout if no data received for stall_timeout seconds
-                response = requests.get(
-                    full_url, stream=True, timeout=(self.connect_timeout, None)
+                # Use session (retry adapter) with auth credentials, matching NetR9 pattern
+                response = self.http_client.session.get(
+                    full_url,
+                    stream=True,
+                    timeout=(self.connect_timeout, None),
+                    auth=self.http_client.auth,
                 )
                 response.raise_for_status()
 
@@ -452,11 +455,8 @@ class NetRSHTTPDownloader:
                 if any(pattern in error_msg for pattern in timeout_patterns):
                     self.logger.info("🔄 Reconnecting HTTP client...")
                     try:
-                        # Reinitialize the HTTP client to get fresh session
-                        from .netrs_http_client import NetRSHTTPClient
-
-                        self.http_client = NetRSHTTPClient(
-                            self.station_id, self.ip, self.http_port, self.logger
+                        self.http_client = TrimbleHTTPClient(
+                            self.station_id, self._station_config
                         )
                         self.logger.info("✅ HTTP client reconnected")
                     except Exception as reconnect_error:
