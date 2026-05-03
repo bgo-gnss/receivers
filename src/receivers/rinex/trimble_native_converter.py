@@ -176,7 +176,9 @@ class TrimbleNativeConverter(RawToRinexConverter):
             # service's private /tmp.  Using XDG cache dir is always in the real fs.
             docker_tmp_base = Path.home() / ".cache" / "gps_receivers" / "tmp"
             docker_tmp_base.mkdir(parents=True, exist_ok=True)
-            temp_dir = Path(tempfile.mkdtemp(prefix="trimble_native_", dir=docker_tmp_base))
+            temp_dir = Path(
+                tempfile.mkdtemp(prefix="trimble_native_", dir=docker_tmp_base)
+            )
             temp_dir.chmod(0o755)
             self._temp_dirs.append(temp_dir)
 

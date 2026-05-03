@@ -27,6 +27,11 @@ RECEIVER_FINGERPRINTS: Dict[str, Dict[str, Any]] = {
         "banner_patterns": [],
         "protocol": "trimble_http",
     },
+    "NetR5": {
+        "model_patterns": ["NetR5", "NETR5"],
+        "banner_patterns": [],
+        "protocol": "trimble_http",
+    },
     "G10": {
         "model_patterns": ["G10", "GR10", "GR25", "Leica"],
         "banner_patterns": [],

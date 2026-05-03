@@ -1599,6 +1599,66 @@ def cmd_health_json_export(args, station_id: str, logger: logging.Logger) -> int
         return 1
 
 
+def _flag_identity_vs_cfg(
+    station_id: str,
+    identity: Dict[str, Any],
+    station_config: Dict[str, Any],
+    logger: logging.Logger,
+) -> None:
+    """Log a one-line warning per discrepancy between live identity and cfg.
+
+    The previous behaviour silently overwrote ``stations.cfg`` whenever a
+    health probe returned identity values. That bypassed TOS — the
+    authoritative source — so it has been replaced with this passive
+    check. Use ``receivers cfg reconcile <SID>`` to review and fix
+    discrepancies.
+
+    For ``receiver_type``, comparisons go through the fingerprint matcher
+    so e.g. cfg=``PolaRX5`` versus reported=``SEPT POLARX5`` is not
+    flagged as a mismatch.
+    """
+    flagged: list[str] = []
+
+    # Receiver model is fuzzy: same canonical type counts as a match.
+    reported_model = identity.get("receiver_model")
+    cfg_type = station_config.get("receiver_type")
+    if reported_model:
+        try:
+            from ..health.receiver_fingerprint import check_identity_mismatch
+
+            mismatch = check_identity_mismatch(
+                str(cfg_type) if cfg_type else "", identity
+            )
+        except Exception:  # noqa: BLE001
+            mismatch = None
+        if mismatch and not cfg_type:
+            flagged.append(f"receiver_type=[missing] reported={reported_model!r}")
+        elif mismatch:
+            flagged.append(f"receiver_type={cfg_type!r} reported={reported_model!r}")
+
+    # Serial / firmware: simple string compare (no fuzzy semantics).
+    for cfg_key, reported in [
+        ("receiver_serial", identity.get("serial_number")),
+        ("receiver_firmware_version", identity.get("firmware_version")),
+    ]:
+        if not reported:
+            continue
+        cfg_val = station_config.get(cfg_key)
+        if cfg_val and str(cfg_val).strip().lower() == str(reported).strip().lower():
+            continue
+        if not cfg_val:
+            flagged.append(f"{cfg_key}=[missing] reported={reported!r}")
+        else:
+            flagged.append(f"{cfg_key}={cfg_val!r} reported={reported!r}")
+
+    if flagged:
+        logger.warning(
+            f"[{station_id}] receiver identity differs from stations.cfg: "
+            f"{'; '.join(flagged)} — review with "
+            f"'receivers cfg reconcile {station_id}'"
+        )
+
+
 def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
     """Process health command for a single station.
 
@@ -1658,19 +1718,27 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
             include_ntrip=include_ntrip,
         )
 
-        # Persist receiver identity to stations.cfg if retrieved
+        # Compare receiver identity against stations.cfg.
+        # The canonical workflow is TOS → cfg via `receivers cfg reconcile`,
+        # so health no longer auto-writes. We only flag discrepancies and,
+        # opt-in via --update-cfg, perform the legacy in-place update.
         identity = health.get("receiver_identity", {})
         if identity and not station_config.get("_adhoc"):
-            from ..config.receivers_config import update_station_identity_in_cfg
+            _flag_identity_vs_cfg(station_id, identity, station_config, logger)
+            if getattr(args, "update_cfg", False):
+                from ..config.receivers_config import update_station_identity_in_cfg
 
-            updated = update_station_identity_in_cfg(
-                station_id,
-                firmware_version=identity.get("firmware_version"),
-                receiver_model=identity.get("receiver_model"),
-                serial_number=identity.get("serial_number"),
-            )
-            if updated:
-                logger.info(f"[{station_id}] Updated receiver identity in stations.cfg")
+                updated = update_station_identity_in_cfg(
+                    station_id,
+                    firmware_version=identity.get("firmware_version"),
+                    receiver_model=identity.get("receiver_model"),
+                    serial_number=identity.get("serial_number"),
+                )
+                if updated:
+                    logger.info(
+                        f"[{station_id}] Updated receiver identity in stations.cfg "
+                        f"(--update-cfg)"
+                    )
 
         # Save to JSON if requested
         if getattr(args, "save_json", False):
@@ -2776,7 +2844,9 @@ def cmd_rec_provision(args) -> int:
                     f"  ⚠  Port {port} refused — receiver is in sis=secure mode "
                     f"(firmware upgrade resets IP services)"
                 )
-                print(f"     Connecting via TLS port {tls_port} and restoring services…")
+                print(
+                    f"     Connecting via TLS port {tls_port} and restoring services…"
+                )
 
             # Read initial prompt
             prompt = sock.recv(1024).decode("utf-8", errors="ignore")
@@ -2900,7 +2970,9 @@ def cmd_rec_provision(args) -> int:
                     f"   {ftp_icon} FTP port 21 {'open' if ok_ftp else 'closed'}"
                 )
                 if not ok_plain:
-                    print(f"  ✗ sis restoration may have failed — run: nc -zv {ip} {port}")
+                    print(
+                        f"  ✗ sis restoration may have failed — run: nc -zv {ip} {port}"
+                    )
 
             # Step 8: apply receiver config file (Expert Console upload)
             if apply_config:
@@ -2980,11 +3052,15 @@ def cmd_rec_provision(args) -> int:
                     client.disconnect()
                     if config and len(config.splitlines()) > 5:
                         date_str = _dt.date.today().strftime("%Y%m%d")
-                        dest = archive_dir / f"{station_id}_PolaRx5_Current_{date_str}.txt"
+                        dest = (
+                            archive_dir / f"{station_id}_PolaRx5_Current_{date_str}.txt"
+                        )
                         dest.write_text(config)
                         print(f"  ✓ Config saved → {dest.name}")
                     else:
-                        print("  ⚠  Config extraction returned too few lines — not saved")
+                        print(
+                            "  ⚠  Config extraction returned too few lines — not saved"
+                        )
                 except Exception as e:
                     print(f"  ⚠  Config save failed: {e}")
 
@@ -3780,6 +3856,12 @@ def main() -> int:
         from .db import handle_db_command
 
         return handle_db_command(args)
+
+    # Handle cfg reconciliation subcommands
+    if args.command == "cfg":
+        from .cfg import handle_cfg_command
+
+        return handle_cfg_command(args)
 
     try:
         return args.func(args)
