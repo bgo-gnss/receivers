@@ -32,7 +32,7 @@
       },
       "id": 8,
       "panels": [],
-      "title": "Station: $station",
+      "title": "Station: $station \u2014 $station_name",
       "type": "row"
     },
     {
@@ -213,7 +213,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 6,
+        "w": 5,
         "x": 0,
         "y": 1
       },
@@ -596,9 +596,9 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 1,
-        "x": 12,
-        "y": 1
+        "w": 2,
+        "x": 7,
+        "y": 5
       },
       "id": 16,
       "options": {
@@ -667,9 +667,9 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 2,
-        "x": 13,
-        "y": 1
+        "w": 3,
+        "x": 9,
+        "y": 5
       },
       "id": 29,
       "options": {
@@ -786,8 +786,8 @@
       "gridPos": {
         "h": 4,
         "w": 2,
-        "x": 10,
-        "y": 1
+        "x": 5,
+        "y": 5
       },
       "id": 17,
       "options": {
@@ -887,8 +887,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 3,
-        "x": 15,
+        "w": 2,
+        "x": 16,
         "y": 1
       },
       "id": 23,
@@ -933,217 +933,6 @@
           "color": {
             "mode": "thresholds"
           },
-          "custom": {
-            "align": "left",
-            "cellOptions": {
-              "type": "auto"
-            },
-            "inspect": false
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "blue",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Receiver"
-            },
-            "properties": [
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "Open receiver web interface",
-                    "url": "http://${__data.fields.url}",
-                    "targetBlank": true
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Location"
-            },
-            "properties": [
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "Open in Google Maps",
-                    "url": "https://www.google.com/maps/search/?api=1&query=${__data.fields.Location}",
-                    "targetBlank": true
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "url"
-            },
-            "properties": [
-              {
-                "id": "custom.hidden",
-                "value": true
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "_sort"
-            },
-            "properties": [
-              {
-                "id": "custom.hidden",
-                "value": true
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "_mismatch"
-            },
-            "properties": [
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "type": "color-background"
-                }
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "transparent",
-                      "value": null
-                    },
-                    {
-                      "color": "red",
-                      "value": -1
-                    },
-                    {
-                      "color": "yellow",
-                      "value": 0
-                    },
-                    {
-                      "color": "green",
-                      "value": 1
-                    }
-                  ]
-                }
-              },
-              {
-                "id": "color",
-                "value": {
-                  "mode": "thresholds"
-                }
-              },
-              {
-                "id": "custom.width",
-                "value": 55
-              },
-              {
-                "id": "displayName",
-                "value": "Status"
-              },
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "-1": {
-                        "text": "\u2717",
-                        "index": 0
-                      },
-                      "0": {
-                        "text": "?",
-                        "index": 1
-                      },
-                      "1": {
-                        "text": "\u2713",
-                        "index": 2
-                      }
-                    }
-                  },
-                  {
-                    "type": "special",
-                    "options": {
-                      "match": "null",
-                      "result": {
-                        "text": "",
-                        "color": "transparent"
-                      }
-                    }
-                  }
-                ]
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 5,
-        "x": 6,
-        "y": 5
-      },
-      "id": 22,
-      "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
-        "showHeader": true
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "gps_health"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT\n  0::integer AS \"_sort\",\n  CASE\n    WHEN d.ip_address IS NOT NULL THEN host(d.ip_address) || ':' || COALESCE(d.station_http_port, 80)::text\n    ELSE ''\n  END AS url,\n  CASE\n    WHEN d.ip_address IS NOT NULL\n      THEN host(d.ip_address) || ':' || COALESCE(d.station_http_port, 80)::text\n           || ' (' || COALESCE(d.receiver_type, '?') || ')'\n    ELSE COALESCE(d.receiver_type, 'Unknown')\n  END AS \"Receiver\",\n  CASE\n    WHEN d.latitude IS NOT NULL\n      THEN ROUND(d.latitude::numeric, 4)::text || ', ' || ROUND(d.longitude::numeric, 4)::text\n    ELSE 'No coordinates'\n  END AS \"Location\",\n  CASE\n    WHEN d.model_mismatch = true                                                                          THEN -1\n    WHEN d.configured_serial   IS NOT NULL AND d.serial_number    IS NOT NULL\n         AND d.configured_serial   != d.serial_number                                                     THEN -1\n    WHEN d.configured_firmware IS NOT NULL AND d.firmware_version IS NOT NULL\n         AND d.configured_firmware != d.firmware_version                                                  THEN -1\n    WHEN d.serial_number IS NULL AND d.firmware_version IS NULL                                           THEN 0\n    ELSE 1\n  END::integer AS \"_mismatch\"\nFROM station_dashboard_data d\nWHERE d.station_id = '$station'\nUNION ALL\nSELECT\n  1::integer AS \"_sort\",\n  ''         AS url,\n  'SN: ' || COALESCE(d.serial_number, '\u2014') || '     fw: ' || COALESCE(d.firmware_version, '\u2014') AS \"Receiver\",\n  ''         AS \"Location\",\n  NULL::integer AS \"_mismatch\"\nFROM station_dashboard_data d\nWHERE d.station_id = '$station'\nORDER BY \"_sort\"\n",
-          "refId": "A"
-        }
-      ],
-      "title": "$station \u2014 $station_name",
-      "type": "table"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "gps_health"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -1169,7 +958,7 @@
       "gridPos": {
         "h": 4,
         "w": 2,
-        "x": 6,
+        "x": 12,
         "y": 1
       },
       "id": 28,
@@ -1291,7 +1080,7 @@
       "gridPos": {
         "h": 4,
         "w": 2,
-        "x": 8,
+        "x": 14,
         "y": 1
       },
       "id": 50,
@@ -1446,7 +1235,7 @@
       "gridPos": {
         "h": 4,
         "w": 3,
-        "x": 11,
+        "x": 12,
         "y": 5
       },
       "id": 27,
@@ -1567,7 +1356,7 @@
       "gridPos": {
         "h": 4,
         "w": 3,
-        "x": 14,
+        "x": 15,
         "y": 5
       },
       "id": 24,
@@ -1661,7 +1450,7 @@
       "gridPos": {
         "h": 4,
         "w": 2,
-        "x": 17,
+        "x": 18,
         "y": 5
       },
       "id": 51,
@@ -1745,7 +1534,7 @@
       "gridPos": {
         "h": 4,
         "w": 3,
-        "x": 19,
+        "x": 20,
         "y": 5
       },
       "id": 25,
@@ -1829,8 +1618,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 2,
-        "x": 22,
+        "w": 1,
+        "x": 23,
         "y": 5
       },
       "id": 26,
@@ -2587,6 +2376,211 @@
       ],
       "title": "Timeout Override",
       "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "center",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "c1"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "center"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {"type": "color-background"}
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {"type": "regex", "options": {"pattern": "^⚠(.+)$", "result": {"color": "yellow", "index": 0, "text": "$1"}}},
+                  {"type": "regex", "options": {"pattern": "^✗(.+)$", "result": {"color": "red", "index": 1, "text": "$1"}}}
+                ]
+              },
+              {
+                "id": "thresholds",
+                "value": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]}
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "",
+                    "url": "${__data.fields.ip_url}",
+                    "targetBlank": true
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "c2"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "center"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {"type": "color-background"}
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {"type": "regex", "options": {"pattern": "^⚠(.+)$", "result": {"color": "yellow", "index": 0, "text": "$1"}}},
+                  {"type": "regex", "options": {"pattern": "^✗(.+)$", "result": {"color": "red", "index": 1, "text": "$1"}}}
+                ]
+              },
+              {
+                "id": "thresholds",
+                "value": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]}
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "",
+                    "url": "${__data.fields.maps_url}",
+                    "targetBlank": true
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "c3"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "center"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {"type": "color-background"}
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {"type": "regex", "options": {"pattern": "^⚠(.+)$", "result": {"color": "yellow", "index": 0, "text": "$1"}}},
+                  {"type": "regex", "options": {"pattern": "^✗(.+)$", "result": {"color": "red", "index": 1, "text": "$1"}}}
+                ]
+              },
+              {
+                "id": "thresholds",
+                "value": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]}
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ord"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ip_url"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "maps_url"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 7,
+        "x": 5,
+        "y": 1
+      },
+      "id": 22,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": false
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  'Receiver:' AS \"c1\",\n  'SN:'        AS \"c2\",\n  'Fw:'        AS \"c3\",\n  NULL         AS \"ip_url\",\n  NULL         AS \"maps_url\",\n  0            AS \"ord\"\nUNION ALL\nSELECT\n  CASE WHEN s.receiver_type IS NULL THEN '\u26a0'||COALESCE(s.detected_model,'\u2014') WHEN LOWER(s.receiver_type)!=LOWER(COALESCE(s.detected_model,'')) THEN '\u2717'||COALESCE(s.detected_model,'\u2014') ELSE COALESCE(s.detected_model,'\u2014') END,\n  CASE WHEN s.configured_serial IS NULL THEN '\u26a0'||COALESCE(s.serial_number,'\u2014') WHEN s.configured_serial!=COALESCE(s.serial_number,'') THEN '\u2717'||COALESCE(s.serial_number,'\u2014') ELSE COALESCE(s.serial_number,'\u2014') END,\n  CASE WHEN s.configured_firmware IS NULL THEN '\u26a0'||COALESCE(s.firmware_version,'\u2014') WHEN s.configured_firmware!=COALESCE(s.firmware_version,'') THEN '\u2717'||COALESCE(s.firmware_version,'\u2014') ELSE COALESCE(s.firmware_version,'\u2014') END,\n  NULL,\n  NULL,\n  1\nFROM stations s WHERE s.sid = '$station'\nUNION ALL\nSELECT\n  CASE WHEN d.ip_address IS NOT NULL\n       THEN host(d.ip_address)||':'||COALESCE(d.station_http_port,80)::text\n       ELSE '\u2014' END,\n  CASE WHEN d.latitude IS NOT NULL\n       THEN ROUND(d.latitude::numeric,4)::text||', '||ROUND(d.longitude::numeric,4)::text\n       ELSE 'No coordinates' END,\n  NULL,\n  CASE WHEN d.ip_address IS NOT NULL\n       THEN 'http://'||host(d.ip_address)||':'||COALESCE(d.station_http_port,80)::text\n       ELSE NULL END,\n  CASE WHEN d.latitude IS NOT NULL\n       THEN 'https://www.google.com/maps/search/?api=1&query='\n         ||ROUND(d.latitude::numeric,4)::text||','||ROUND(d.longitude::numeric,4)::text\n       ELSE NULL END,\n  2\nFROM station_dashboard_data d WHERE d.station_id = '$station'\nORDER BY ord",
+          "refId": "A"
+        }
+      ],
+      "title": "",
+      "type": "table",
+      "transparent": false
     }
   ],
   "refresh": "5m",
