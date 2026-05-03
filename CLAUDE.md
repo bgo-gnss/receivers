@@ -70,6 +70,35 @@ receivers health THOB --save-db           # Save to database
 receivers validate ELDC --verbose
 ```
 
+### Configuration Reconciliation
+
+Three-way comparison between `stations.cfg`, the live receiver, and TOS.
+TOS is the canonical source; the live receiver is a validation source
+that flags discrepancies. See `src/receivers/cfg/` and the "Cfg
+Reconciliation — Future Work" TODO subsection below.
+
+```bash
+# Interactive review for one station (queries both receiver and TOS)
+receivers cfg reconcile ELDC
+
+# TOS-only inventory across all stations
+receivers cfg reconcile --all --source tos --dry-run
+
+# Auto-fill missing cfg values where sources agree (no prompts)
+receivers cfg reconcile --all --auto-fill --field receiver_serial firmware
+
+# JSON output for tooling / dashboards
+receivers cfg reconcile --all --source tos --json --only-diffs
+
+# List reconcilable fields
+receivers cfg reconcile --list-fields
+```
+
+**Behaviour change**: as of this feature, `receivers health <SID>` no
+longer silently writes to `stations.cfg`. Discrepancies are logged with
+a hint to run `receivers cfg reconcile <SID>`. Pass `--update-cfg` to
+restore the legacy in-place write for the rare cases that need it.
+
 ### Production Mode
 
 ```bash
@@ -674,8 +703,40 @@ A systematic review is needed to address recurring patterns of issues found duri
 - **Navigation RINEX**: Add format definitions for nav files when needed.
 - **Apply migration to production**: Run `021_archive_format.sql` on the production database (10.170.110.80) when ready.
 
+### Cfg Reconciliation — Future Work
+The `receivers cfg reconcile` command (introduced 2026-05) currently
+covers TOS → cfg and receiver → cfg with interactive review, auto-fill,
+JSON output, and field-scoped batch mode. Open follow-ups:
+- **`--push-tos`** (anticipated): write back from cfg/receiver to TOS so
+  ad-hoc field corrections close the loop with the authoritative
+  registry. Requires `tostools.api.tos_client` to expose POST/PUT
+  methods. Coordinate with the TOS team since it is shared.
+- **Source visibility hint**: when a source is excluded (e.g.
+  `--source tos`), surface "receiver skipped — re-run with
+  `--source both`" in the output header so it's obvious from the dump
+  alone.
+- **Parallel `--all`**: today the loop is sequential per station. With
+  173 stations × ~30s receiver probe worst case, a sweep can take
+  ~90 min. Add a `--workers N` knob using the same parallel pattern
+  as `download_parallel`.
+- **Batch writes per station**: each accepted prompt currently rewrites
+  `stations.cfg`. Stage all accepted changes per station and write once.
+- **Resume / checkpoint**: a long `--all` run that's interrupted starts
+  over. Persist visited stations to a state file.
+- **Field expansion**: composite IGS antenna code (type + radome),
+  DOMES number, install date, owner, in_network_epos. Validate antenna
+  codes against `igs_antenna.dat`.
+- **`cfg audit --all`**: read-only summary mode (count of stations
+  with issues per field) to drive a Grafana panel.
+- **One-time inventory**: run
+  `receivers cfg reconcile --all --source tos --dry-run --json --only-diffs > tos_audit.json`
+  on rek-d01 to size the bulk-fix scope before any writes.
+- **Auto-fill policy**: decide which fields are "safe to auto-fill from
+  TOS" (coordinates, station_name) versus which always require manual
+  review (antenna_serial, receiver_serial, antenna_height).
+
 ### Tracking
 - Full issue tracker: `docs/CODE_REVIEW_TRACKER.md`
-- Updated: 2026-02-11
+- Updated: 2026-05-03
 
 **Maintainer**: Veðurstofa Íslands GPS Team

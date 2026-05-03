@@ -447,6 +447,16 @@ Multiple stations:
         "--no-ntrip", action="store_true", help="Skip NTRIP/RTK checks in live mode"
     )
 
+    live_group.add_argument(
+        "--update-cfg",
+        action="store_true",
+        help=(
+            "Write reported receiver identity (model/firmware/serial) into "
+            "stations.cfg. Off by default; the canonical workflow is "
+            "'receivers cfg reconcile'."
+        ),
+    )
+
     # Extraction behavior
     behavior_group = parser.add_argument_group("behavior options")
     add_force_flag(behavior_group)
@@ -1039,6 +1049,11 @@ For subcommand help: receivers <command> --help
         create_tos_parser(subparsers)
     except ImportError:
         pass
+
+    # cfg reconciliation (always available — TOS source is gated at runtime)
+    from .cfg import create_cfg_parser
+
+    create_cfg_parser(subparsers)
 
     # Database management
     from .db import create_db_parser
