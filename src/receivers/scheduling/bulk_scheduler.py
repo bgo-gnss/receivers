@@ -1115,8 +1115,14 @@ class BulkDownloadScheduler:
             for section in _parser.sections():
                 sid = section.upper()
                 cfg_identity[sid] = {
-                    "configured_serial": _parser.get(section, "receiver_serial", fallback=None) or None,
-                    "configured_firmware": _parser.get(section, "receiver_firmware_version", fallback=None) or None,
+                    "configured_serial": _parser.get(
+                        section, "receiver_serial", fallback=None
+                    )
+                    or None,
+                    "configured_firmware": _parser.get(
+                        section, "receiver_firmware_version", fallback=None
+                    )
+                    or None,
                 }
 
         try:

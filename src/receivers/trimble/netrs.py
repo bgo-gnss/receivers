@@ -785,10 +785,9 @@ class NetRS(BaseReceiver):
             # Per-station override in stations.cfg takes precedence over global config
             session_key = session.lower()
             session_map_key = f"session_map_{session_key}"
-            session_mapping = (
-                self.station_info.get("receiver", {}).get(session_map_key)
-                or self.netrs_config.get(session_map_key, "a,a")
-            )
+            session_mapping = self.station_info.get("receiver", {}).get(
+                session_map_key
+            ) or self.netrs_config.get(session_map_key, "a,a")
             letter_code, remote_subdir = session_mapping.split(",")
 
             # NetRS filename format: STATIONYYYYMMDDHHMM{session_letter}.T00
@@ -899,10 +898,9 @@ class NetRS(BaseReceiver):
         """
         session_key = session.lower()
         session_map_key = f"session_map_{session_key}"
-        session_mapping = (
-            self.station_info.get("receiver", {}).get(session_map_key)
-            or self.netrs_config.get(session_map_key, "a,a")
-        )
+        session_mapping = self.station_info.get("receiver", {}).get(
+            session_map_key
+        ) or self.netrs_config.get(session_map_key, "a,a")
         return session_mapping.split(",")[0]
 
     def _track_validated_files(self, files_dict: Dict, session: str) -> None:

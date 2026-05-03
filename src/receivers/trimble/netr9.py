@@ -829,10 +829,9 @@ class NetR9(BaseReceiver):
             # precedence over the global netr9 config (same pattern as remote_date_format)
             session_key = session.lower()
             session_map_key = f"session_map_{session_key}"
-            session_mapping = (
-                self.station_info.get("receiver", {}).get(session_map_key)
-                or self.netr9_config.get(session_map_key, "a,unknown")
-            )
+            session_mapping = self.station_info.get("receiver", {}).get(
+                session_map_key
+            ) or self.netr9_config.get(session_map_key, "a,unknown")
             letter_code, remote_subdir = session_mapping.split(",")
 
             # NetR9 filename format: STATIONYYYYMMDDHHMM{session_letter}.T02
@@ -953,10 +952,9 @@ class NetR9(BaseReceiver):
         """
         session_key = session.lower()
         session_map_key = f"session_map_{session_key}"
-        session_mapping = (
-            self.station_info.get("receiver", {}).get(session_map_key)
-            or self.netr9_config.get(session_map_key, "a,unknown")
-        )
+        session_mapping = self.station_info.get("receiver", {}).get(
+            session_map_key
+        ) or self.netr9_config.get(session_map_key, "a,unknown")
         return session_mapping.split(",")[0]
 
     def __del__(self):
