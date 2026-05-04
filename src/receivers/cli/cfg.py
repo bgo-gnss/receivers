@@ -1,4 +1,4 @@
-"""``receivers cfg reconcile`` — three-way reconciliation CLI.
+"""``receivers cfg`` — three-way reconciliation CLI.
 
 Compares values in ``stations.cfg`` against:
 
@@ -12,7 +12,9 @@ removed in favour of this explicit, reviewable workflow.
 
 Subcommands:
 
-* ``reconcile``  — show diffs and (optionally) write fixes to stations.cfg
+* ``reconcile`` — show diffs and (optionally) write fixes to stations.cfg
+* ``list``      — show currently-open discrepancies (queryable audit log)
+* ``history``   — show the full detection/resolution history for a station or field
 """
 
 from __future__ import annotations
@@ -20,9 +22,17 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from ..cfg.field_manifest import FIELDS, all_keys
+from ..cfg.field_manifest import (
+    FIELDS,
+    all_keys,
+    fields_by_key,
+    with_position_tolerance,
+)
 from ..cfg.reconciler import (
     FieldDiff,
     SourceUnavailableError,
@@ -34,20 +44,43 @@ from ..cfg.reconciler import (
 logger = logging.getLogger(__name__)
 
 
+def _progress(message: str, *, json_mode: bool, **kwargs) -> None:
+    """Print progress lines to stderr in JSON mode, stdout otherwise.
+
+    Without this, every "↳ STATION: querying TOS…" line lands on stdout
+    and corrupts the JSON document the caller expects.
+    """
+    stream = sys.stderr if json_mode else sys.stdout
+    print(message, file=stream, **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Source acquisition
 # ---------------------------------------------------------------------------
 
 
-def _load_station_configs(station_ids: Sequence[str]) -> Dict[str, Dict[str, Any]]:
-    """Return ``{station_id: station_config}`` for the requested stations."""
+def _load_station_configs(
+    station_ids: Sequence[str], *, json_mode: bool = False
+) -> Dict[str, Dict[str, Any]]:
+    """Return ``{station_id: station_config}`` for the requested stations.
+
+    ``get_station_config()`` already merges raw stations.cfg keys into
+    the typed dict (via ``setdefault``), so flat fields like
+    ``receiver_serial`` and ``latitude`` are readable here.
+
+    Skip warnings go to stderr when ``json_mode`` is set so they don't
+    contaminate the JSON document on stdout.
+    """
     from ..config_utils import get_station_config
 
     configs: Dict[str, Dict[str, Any]] = {}
     for sid in station_ids:
         cfg = get_station_config(sid)
         if cfg is None:
-            print(f"⚠️  {sid}: not found in stations.cfg — skipping")
+            _progress(
+                f"⚠️  {sid}: not found in stations.cfg — skipping",
+                json_mode=json_mode,
+            )
             continue
         configs[sid] = cfg
     return configs
@@ -84,13 +117,66 @@ def _query_receiver_identity(
         # Identity-only path: bypass NTRIP/file checks. Most extractors
         # populate receiver_identity inside get_health_status() itself.
         health = receiver.get_health_status()
-        identity = health.get("receiver_identity") if isinstance(health, dict) else None
+        if not isinstance(health, dict):
+            return None
+
+        identity = dict(health.get("receiver_identity") or {})
+
+        # Enrich identity with position from PVT solution — receiver coordinates
+        # are reconcilable QC values, but the extractor stores them under
+        # metrics.position rather than receiver_identity. Promote them here so
+        # the cfg reconcile field manifest can read everything from one dict.
+        position = (health.get("metrics") or {}).get("position") or {}
+        for key in ("latitude", "longitude", "height"):
+            val = position.get(key)
+            if val is not None:
+                identity[key] = val
+
+        # Antenna metadata (type/serial/radome/height delta) is only useful
+        # for cfg reconcile, so the extractor doesn't probe it during routine
+        # 5-min health checks. Run the dedicated ASCII probe here. Best-effort:
+        # failure leaves the antenna fields blank in the diff, which the
+        # reconciler renders as NO_DATA.
+        antenna_info = _query_antenna_info(station_id, station_config)
+        if antenna_info:
+            identity.update(antenna_info)
+
         if not identity:
             logger.debug("[%s] receiver returned no identity dict", station_id)
             return None
         return identity
     except Exception as exc:  # noqa: BLE001
         logger.warning("[%s] receiver probe failed: %s", station_id, exc)
+        return None
+
+
+def _query_antenna_info(
+    station_id: str, station_config: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """Probe antenna metadata via the PolaRX5 ASCII control channel.
+
+    Currently only PolaRX5 exposes antenna config over the control port. For
+    other receiver types this is a no-op — the cfg reconcile flow falls back
+    to TOS as the only authoritative source, which is correct.
+    """
+    try:
+        receiver_type = (station_config.get("receiver_type") or "").lower()
+        if "polarx" not in receiver_type:
+            return None
+        from ..health.polarx5_tcp_extractor import PolaRX5TCPExtractor
+
+        host = station_config.get("router_ip") or station_config.get("ip_number")
+        if not host:
+            return None
+        control_port = int(
+            station_config.get("receiver_controlport")
+            or station_config.get("control_port")
+            or 28784
+        )
+        extractor = PolaRX5TCPExtractor(host, station_id, port=control_port)
+        return extractor.query_antenna_info()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[%s] antenna probe failed: %s", station_id, exc)
         return None
 
 
@@ -106,6 +192,68 @@ def _query_tos(station_id: str) -> Optional[Dict[str, Any]]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("[%s] TOS query failed: %s", station_id, exc)
         return None
+
+
+# ---------------------------------------------------------------------------
+# Per-station probe (parallelisable I/O — no side effects, no prompts)
+# ---------------------------------------------------------------------------
+
+
+def _probe_station(
+    station_id: str,
+    station_config: Dict[str, Any],
+    sources: List[str],
+    json_mode: bool,
+    verbose: bool = True,
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Query receiver and TOS for one station.
+
+    Pure I/O — creates its own network connections, returns data only.
+    Safe to call from a thread.  When ``verbose=False`` (parallel mode)
+    per-station progress lines are suppressed so interleaved output doesn't
+    corrupt the terminal.
+
+    Returns ``(receiver_identity, tos_data)``.
+    """
+    receiver_identity: Optional[Dict[str, Any]] = None
+    tos_data: Optional[Dict[str, Any]] = None
+
+    if "receiver" in sources:
+        if station_config.get("_adhoc"):
+            if verbose:
+                _progress(
+                    f"   ↳ {station_id}: ad-hoc config, skipping receiver probe",
+                    json_mode=json_mode,
+                )
+        else:
+            if verbose:
+                _progress(
+                    f"   ↳ {station_id}: probing receiver…",
+                    json_mode=json_mode,
+                    flush=True,
+                )
+            receiver_identity = _query_receiver_identity(station_id, station_config)
+            if receiver_identity is None and verbose:
+                _progress(
+                    f"   ↳ {station_id}: receiver unreachable or no identity",
+                    json_mode=json_mode,
+                )
+
+    if "tos" in sources:
+        if verbose:
+            _progress(
+                f"   ↳ {station_id}: querying TOS…",
+                json_mode=json_mode,
+                flush=True,
+            )
+        tos_data = _query_tos(station_id)
+        if tos_data is None and verbose:
+            _progress(
+                f"   ↳ {station_id}: not in TOS or TOS unavailable",
+                json_mode=json_mode,
+            )
+
+    return receiver_identity, tos_data
 
 
 # ---------------------------------------------------------------------------
@@ -288,28 +436,22 @@ def _reconcile_one(
     sources: List[str],
     fields: Optional[List[str]],
     args: argparse.Namespace,
+    receiver_identity: Optional[Dict[str, Any]] = None,
+    tos_data: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[FieldDiff], int, int]:
-    """Reconcile one station. Returns (diffs, n_written, n_skipped)."""
-    receiver_identity: Optional[Dict[str, Any]] = None
-    tos_data: Optional[Dict[str, Any]] = None
+    """Reconcile one station given pre-fetched probe data.
 
+    ``receiver_identity`` and ``tos_data`` must already be fetched by the
+    caller (via :func:`_probe_station`). This function only handles
+    comparison, display, and writes — no network I/O.
+
+    Returns ``(diffs, n_written, n_skipped)``.
+    """
     if not args.json:
         _print_setup_header(station_id, station_config)
 
-    if "receiver" in sources:
-        if station_config.get("_adhoc"):
-            print(f"   ↳ {station_id}: ad-hoc config, skipping receiver probe")
-        else:
-            print(f"   ↳ {station_id}: probing receiver…", flush=True)
-            receiver_identity = _query_receiver_identity(station_id, station_config)
-            if receiver_identity is None:
-                print(f"   ↳ {station_id}: receiver unreachable or no identity")
-
-    if "tos" in sources:
-        print(f"   ↳ {station_id}: querying TOS…", flush=True)
-        tos_data = _query_tos(station_id)
-        if tos_data is None:
-            print(f"   ↳ {station_id}: not in TOS or TOS unavailable")
+    tolerance_m = getattr(args, "position_tolerance_m", 2.0)
+    field_specs = with_position_tolerance(tolerance_m) if tolerance_m else None
 
     diffs = compare_station(
         station_id=station_id,
@@ -318,14 +460,13 @@ def _reconcile_one(
         tos_data=tos_data,
         fields=fields,
         queried_sources=set(sources) | {"cfg"},
+        field_specs=field_specs,
     )
 
-    show_ok = not args.only_diffs
-    if not args.json:
+    silent = args.json
+    show_ok = not (args.only_diffs or getattr(args, "open", False))
+    if not silent:
         _print_diff_table(diffs, show_ok=show_ok)
-
-    if args.json:
-        return diffs, 0, 0
 
     n_written = 0
     n_skipped = 0
@@ -334,53 +475,93 @@ def _reconcile_one(
         return diffs, 0, 0
 
     if args.dry_run:
-        print(f"\n   {len(actionable)} field(s) need attention (dry-run, no writes)")
+        if not silent:
+            print(f"\n   {len(actionable)} field(s) need attention (dry-run, no writes)")
         return diffs, 0, len(actionable)
 
-    print()
+    # In JSON mode without an auto-resolution flag we can't make decisions —
+    # nothing to do beyond returning diffs for the caller to report.
+    if silent and not (args.auto_fill or args.yes):
+        return diffs, 0, 0
+
+    field_specs_by_key = fields_by_key()
+
+    if not silent:
+        print()
     for idx, d in enumerate(actionable, start=1):
-        header = f"  [{idx}/{len(actionable)}] {d.cfg_key} ({d.verdict.value})"
-        print(header)
-        print(
-            f"     cfg:      {d.cfg_value if d.cfg_value is not None else '[missing]'}"
-        )
-        if "receiver" in sources:
-            rx = d.receiver_value if d.receiver_value is not None else "[N/A]"
-            print(f"     receiver: {rx}")
-        if "tos" in sources:
-            tos = d.tos_value if d.tos_value is not None else "[N/A]"
-            print(f"     TOS:      {tos}")
+        if not silent:
+            header = f"  [{idx}/{len(actionable)}] {d.cfg_key} ({d.verdict.value})"
+            print(header)
+            print(
+                f"     cfg:      {d.cfg_value if d.cfg_value is not None else '[missing]'}"
+            )
+            if "receiver" in sources:
+                rx = d.receiver_value if d.receiver_value is not None else "[N/A]"
+                print(f"     receiver: {rx}")
+            if "tos" in sources:
+                tos = d.tos_value if d.tos_value is not None else "[N/A]"
+                print(f"     TOS:      {tos}")
 
         # Resolve action
         action: str
         new_value: Optional[str]
         if args.auto_fill and d.verdict == Verdict.MISSING and d.suggestion is not None:
             action, new_value = "set", d.suggestion
-            print(f"     → auto-fill from {d.suggestion_source}: {d.suggestion!r}")
+            if not silent:
+                print(f"     → auto-fill from {d.suggestion_source}: {d.suggestion!r}")
         elif args.yes and d.suggestion is not None:
             action, new_value = "set", d.suggestion
-            print(f"     → accept suggestion ({d.suggestion_source}): {d.suggestion!r}")
+            if not silent:
+                print(f"     → accept suggestion ({d.suggestion_source}): {d.suggestion!r}")
+        elif silent:
+            # JSON mode without an applicable auto-rule: cannot prompt; skip.
+            action, new_value = "skip", None
         else:
             action, new_value = _interactive_prompt(d)
 
         if action == "quit":
-            print(f"\n     stopped at field {idx}/{len(actionable)}")
+            if not silent:
+                print(f"\n     stopped at field {idx}/{len(actionable)}")
             break
         if action == "skip":
             n_skipped += 1
             continue
         if action == "set" and new_value is not None:
+            # Apply per-field cfg vocabulary mapping (e.g. TOS "SEPT POLARX5"
+            # → cfg "PolaRX5"). Identity for fields without an explicit map.
+            spec = field_specs_by_key.get(d.cfg_key)
+            if spec is not None:
+                try:
+                    mapped = spec.cfg_format(new_value)
+                except Exception as exc:  # noqa: BLE001
+                    if not silent:
+                        print(f"     ❌ cfg_format failed for {d.cfg_key}: {exc}")
+                    continue
+                if mapped is None:
+                    if not silent:
+                        print(
+                            f"     ❌ cfg_format normalised {new_value!r} to None — skipping"
+                        )
+                    continue
+                if mapped != new_value and not silent:
+                    print(
+                        f"     ↺ normalised {new_value!r} → {mapped!r} for cfg vocabulary"
+                    )
+                new_value = mapped
             try:
                 changed = apply_diff(station_id, d, new_value)
                 if changed:
                     n_written += 1
-                    print(f"     ✅ wrote {d.cfg_key} = {new_value!r}")
-                else:
+                    if not silent:
+                        print(f"     ✅ wrote {d.cfg_key} = {new_value!r}")
+                elif not silent:
                     print(f"     ⏭  unchanged ({d.cfg_key} already = {new_value!r})")
             except SourceUnavailableError as exc:
-                print(f"     ❌ could not write: {exc}")
+                if not silent:
+                    print(f"     ❌ could not write: {exc}")
             except Exception as exc:  # noqa: BLE001
-                print(f"     ❌ write failed: {exc}")
+                if not silent:
+                    print(f"     ❌ write failed: {exc}")
 
     return diffs, n_written, n_skipped
 
@@ -403,12 +584,23 @@ def cmd_cfg_reconcile(args) -> int:
         return 0
 
     # Stations
-    if args.all:
+    open_mode = getattr(args, "open", False)
+    if open_mode:
+        try:
+            from ..cfg import discrepancy_log as _dlog
+            station_ids = _dlog.open_station_ids()
+        except Exception as exc:  # noqa: BLE001
+            _progress(f"❌ could not read discrepancy log: {exc}", json_mode=args.json)
+            return 1
+        if not station_ids:
+            _progress("✅ no open discrepancies — config is clean", json_mode=args.json)
+            return 0
+    elif args.all:
         station_ids = _all_station_ids()
     elif args.station:
         station_ids = [s.upper() for s in args.station]
     else:
-        print("❌ specify station IDs or --all")
+        print("❌ specify station IDs, --all, or --open")
         print("   try: receivers cfg reconcile --help")
         return 2
 
@@ -431,10 +623,13 @@ def cmd_cfg_reconcile(args) -> int:
         try:
             from tostools.api.tos_client import TOSClient  # noqa: F401
         except ImportError:
-            print("⚠️  tostools not installed — disabling TOS source")
+            _progress(
+                "⚠️  tostools not installed — disabling TOS source",
+                json_mode=args.json,
+            )
             sources = [s for s in sources if s != "tos"]
             if not sources:
-                print("❌ no usable sources remain")
+                _progress("❌ no usable sources remain", json_mode=args.json)
                 return 1
 
     # Fields
@@ -447,20 +642,104 @@ def cmd_cfg_reconcile(args) -> int:
             print(f"   available: {sorted(valid)}")
             return 2
         fields = list(args.field)
+    elif open_mode:
+        # Auto-derive fields that have open conflicts — no point probing unaffected fields.
+        try:
+            from ..cfg import discrepancy_log as _dlog
+            fields = _dlog.open_field_keys(station_ids=station_ids) or None
+        except Exception:  # noqa: BLE001
+            fields = None  # fall back to all fields
 
     # Load configs
-    configs = _load_station_configs(station_ids)
+    configs = _load_station_configs(station_ids, json_mode=args.json)
     if not configs:
         return 1
 
-    # Header
-    print(
+    # Skip discontinued / inactive stations — probing them is pointless and,
+    # in some cases, harmful (e.g. BLAL shares an IP with SODU).
+    _SKIP_STATUSES = frozenset({"discontinued", "inactive"})
+    skipped_status = {sid: cfg.get("station_status") for sid, cfg in configs.items()
+                      if cfg.get("station_status") in _SKIP_STATUSES}
+    skipped = list(skipped_status)
+    for sid in skipped:
+        del configs[sid]
+    if skipped:
+        _progress(
+            f"⏭  skipping {len(skipped)} non-active station(s): {', '.join(sorted(skipped))}",
+            json_mode=args.json,
+        )
+        # Auto-close any stale log entries so they don't resurface on the next --open run.
+        try:
+            from ..cfg import discrepancy_log as _dlog
+            open_rows = _dlog.list_open(station_ids=skipped)
+            for row in open_rows:
+                _dlog.record_resolution(
+                    row.station_id,
+                    row.cfg_key,
+                    action=_dlog.ACTION_IGNORED,
+                    resolved_value=None,
+                    note=f"station_status={skipped_status.get(row.station_id, '?')} — no longer reconciled",
+                )
+            if open_rows:
+                _progress(
+                    f"   closed {len(open_rows)} stale log entries for non-active stations",
+                    json_mode=args.json,
+                )
+        except Exception as exc:  # noqa: BLE001
+            _progress(f"⚠️  could not close stale log entries: {exc}", json_mode=args.json)
+    if not configs:
+        _progress("✅ no active stations with open discrepancies", json_mode=args.json)
+        return 0
+
+    # Header — keep stdout clean in JSON mode so output stays parseable
+    _progress(
         f"Reconciling {len(configs)} station(s) — sources={','.join(sources)}"
+        + (" — open discrepancies only" if open_mode else "")
         + (f" — fields={','.join(fields)}" if fields else "")
         + (" — dry-run" if args.dry_run else "")
-        + (" — auto-fill" if args.auto_fill else "")
+        + (" — auto-fill" if args.auto_fill else ""),
+        json_mode=args.json,
     )
 
+    # Resolve effective worker count (0 = auto).
+    workers: int = getattr(args, "workers", 1)
+    if workers == 0:
+        workers = min(8, len(configs))
+
+    # Single-station or single-worker: keep per-station verbose progress.
+    parallel = workers > 1 and len(configs) > 1
+
+    # --- Probe phase (parallel-safe I/O) ------------------------------------
+    probe_results: Dict[str, Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]] = {}
+
+    if parallel:
+        _progress(
+            f"Probing {len(configs)} station(s) with {workers} workers…",
+            json_mode=args.json,
+        )
+        ordered_sids = [sid for sid in station_ids if sid in configs]
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(
+                    _probe_station, sid, configs[sid], sources, args.json, False
+                ): sid
+                for sid in ordered_sids
+            }
+            for future in as_completed(futures):
+                sid = futures[future]
+                try:
+                    probe_results[sid] = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[%s] probe thread raised: %s", sid, exc)
+                    probe_results[sid] = (None, None)
+    else:
+        for sid in station_ids:
+            if sid in configs:
+                probe_results[sid] = _probe_station(
+                    sid, configs[sid], sources, args.json, verbose=True
+                )
+
+    # --- Process phase (sequential: display, write, prompt) -----------------
     json_collect: List[Dict[str, Any]] = []
     total_written = 0
     total_skipped = 0
@@ -470,9 +749,10 @@ def cmd_cfg_reconcile(args) -> int:
         cfg = configs.get(sid)
         if cfg is None:
             continue
+        rx_identity, tos_d = probe_results.get(sid, (None, None))
         try:
             diffs, n_written, n_skipped = _reconcile_one(
-                sid, cfg, sources, fields, args
+                sid, cfg, sources, fields, args, rx_identity, tos_d
             )
         except KeyboardInterrupt:
             print("\nInterrupted")
@@ -484,13 +764,15 @@ def cmd_cfg_reconcile(args) -> int:
             n_with_issues += 1
 
         if args.json:
-            json_collect.append(
-                {
-                    "station_id": sid,
-                    "diffs": [d.as_dict() for d in diffs],
-                    "summary": _summary_counts(diffs),
-                }
-            )
+            entry: Dict[str, Any] = {
+                "station_id": sid,
+                "diffs": [d.as_dict() for d in diffs],
+                "summary": _summary_counts(diffs),
+            }
+            if args.auto_fill or args.yes:
+                entry["writes"] = n_written
+                entry["skipped"] = n_skipped
+            json_collect.append(entry)
 
     if args.json:
         print(json.dumps(json_collect, indent=2, default=str))
@@ -503,6 +785,184 @@ def cmd_cfg_reconcile(args) -> int:
         f"with issues: {n_with_issues}   "
         f"writes: {total_written}   skipped: {total_skipped}"
     )
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# `cfg list` / `cfg history`
+# ---------------------------------------------------------------------------
+
+
+def _parse_since(spec: str) -> datetime:
+    """Parse ``--since`` values: ``30d``, ``12h``, ``45m`` or ISO 8601."""
+    s = spec.strip().lower()
+    if s and s[-1] in ("d", "h", "m"):
+        try:
+            n = int(s[:-1])
+        except ValueError as exc:
+            raise ValueError(f"invalid --since value {spec!r}") from exc
+        unit = s[-1]
+        delta = (
+            timedelta(days=n)
+            if unit == "d"
+            else timedelta(hours=n)
+            if unit == "h"
+            else timedelta(minutes=n)
+        )
+        return datetime.now(timezone.utc) - delta
+    try:
+        # Accept "2026-04-01" or "2026-04-01T12:00:00+00:00"
+        dt = datetime.fromisoformat(spec)
+    except ValueError as exc:
+        raise ValueError(
+            f"invalid --since value {spec!r} (use 30d/12h/45m or ISO 8601)"
+        ) from exc
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _fmt_ts(ts: Optional[datetime]) -> str:
+    if ts is None:
+        return "—"
+    return ts.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M")
+
+
+def _print_records_table(records, *, show_resolution: bool) -> None:
+    if not records:
+        print("(no rows)")
+        return
+    if show_resolution:
+        header = (
+            f"{'Station':<8} {'Field':<28} {'Verdict':<18} "
+            f"{'Detected':<17} {'By':<14} {'Resolved':<17} {'Action':<14}"
+        )
+    else:
+        header = (
+            f"{'Station':<8} {'Field':<28} {'Verdict':<18} "
+            f"{'Detected':<17} {'By':<14} {'cfg':<14} {'rx':<14} {'tos':<14}"
+        )
+    print(header)
+    print("-" * len(header))
+    for r in records:
+        if show_resolution:
+            print(
+                f"{r.station_id:<8} {r.cfg_key:<28} {r.verdict:<18} "
+                f"{_fmt_ts(r.detected_at):<17} {(r.detected_by or ''):<14} "
+                f"{_fmt_ts(r.resolved_at):<17} {(r.resolved_action or '—'):<14}"
+            )
+        else:
+            print(
+                f"{r.station_id:<8} {r.cfg_key:<28} {r.verdict:<18} "
+                f"{_fmt_ts(r.detected_at):<17} {(r.detected_by or ''):<14} "
+                f"{_render(r.cfg_value, 14)}{_render(r.receiver_value, 14)}"
+                f"{_render(r.tos_value, 14)}"
+            )
+
+
+def cmd_cfg_list(args) -> int:
+    """``cfg list`` — open discrepancies, optionally filtered."""
+    from ..cfg import discrepancy_log as _dlog  # type: ignore[attr-defined]
+
+    station_ids = [s.upper() for s in args.station] if args.station else None
+    fields: Optional[List[str]] = None
+    if args.field:
+        valid = set(all_keys())
+        invalid = [f for f in args.field if f not in valid]
+        if invalid:
+            print(f"❌ unknown fields: {invalid}")
+            print(f"   available: {sorted(valid)}")
+            return 2
+        fields = list(args.field)
+    verdicts = list(args.verdict) if args.verdict else None
+
+    try:
+        records = _dlog.list_open(
+            station_ids=station_ids,
+            cfg_keys=fields,
+            verdicts=verdicts,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"❌ could not query cfg_discrepancy: {exc}")
+        return 1
+
+    if args.json:
+        print(json.dumps([r.as_dict() for r in records], indent=2, default=str))
+        return 0
+
+    print(f"Open discrepancies: {len(records)}")
+    if records:
+        print()
+        _print_records_table(records, show_resolution=False)
+    return 0
+
+
+def cmd_cfg_history(args) -> int:
+    """``cfg history`` — full audit trail for a station and/or field."""
+    from ..cfg import discrepancy_log as _dlog  # type: ignore[attr-defined]
+
+    if not args.station and not args.field:
+        print("❌ specify a station ID, --field KEY, or both")
+        return 2
+
+    station_id = args.station[0].upper() if args.station else None
+    if args.field:
+        valid = set(all_keys())
+        invalid = [f for f in args.field if f not in valid]
+        if invalid:
+            print(f"❌ unknown fields: {invalid}")
+            print(f"   available: {sorted(valid)}")
+            return 2
+        cfg_keys: List[str] = list(args.field)
+    else:
+        cfg_keys = []
+
+    since: Optional[datetime] = None
+    if args.since:
+        try:
+            since = _parse_since(args.since)
+        except ValueError as exc:
+            print(f"❌ {exc}")
+            return 2
+
+    try:
+        if cfg_keys:
+            records = []
+            for key in cfg_keys:
+                records.extend(
+                    _dlog.get_history(
+                        station_id=station_id,
+                        cfg_key=key,
+                        since=since,
+                        limit=args.limit,
+                    )
+                )
+            records.sort(key=lambda r: r.detected_at, reverse=True)
+            records = records[: args.limit]
+        else:
+            records = _dlog.get_history(
+                station_id=station_id,
+                since=since,
+                limit=args.limit,
+            )
+    except Exception as exc:  # noqa: BLE001
+        print(f"❌ could not query cfg_discrepancy: {exc}")
+        return 1
+
+    if args.json:
+        print(json.dumps([r.as_dict() for r in records], indent=2, default=str))
+        return 0
+
+    target = station_id or f"--field {','.join(cfg_keys)}"
+    print(f"History for {target} ({len(records)} row(s)):")
+    if records:
+        print()
+        _print_records_table(records, show_resolution=True)
+        if args.verbose:
+            print("\nResolution notes:")
+            for r in records:
+                if r.resolution_note:
+                    print(f"  [{r.id}] {r.station_id} {r.cfg_key}: {r.resolution_note}")
     return 0
 
 
@@ -540,9 +1000,26 @@ def create_cfg_parser(subparsers) -> None:
 Examples:
   receivers cfg reconcile ELDC
   receivers cfg reconcile ELDC THOB --source tos
+  receivers cfg reconcile --open                   # QC: review all known open issues
+  receivers cfg reconcile --open --dry-run --json  # machine-readable health report
   receivers cfg reconcile --all --auto-fill --field receiver_serial
   receivers cfg reconcile --all --dry-run --json
   receivers cfg reconcile --list-fields
+
+Diagnosing TCP authentication failures:
+  If health checks log "TCP command denied: receiver requires authentication"
+  for a PolaRX5 station, the most common cause is a stale
+  receiver_firmware_version in stations.cfg (e.g. recorded as 5.2.0 while
+  the receiver has been upgraded to 5.7.0+).  The TCP login command was
+  introduced in firmware 5.7.0; if stations.cfg records an older version the
+  health probe skips sending credentials and the receiver rejects subsequent
+  commands.  Fix with:
+    receivers cfg reconcile <SID> --field receiver_firmware_version
+  or in bulk (accepts receiver-reported version without prompting):
+    receivers cfg reconcile --all --yes --field receiver_firmware_version \\
+        --source receiver --dry-run   # preview first
+    receivers cfg reconcile --all --yes --field receiver_firmware_version \\
+        --source receiver             # then apply
         """,
     )
     rec.add_argument(
@@ -555,6 +1032,15 @@ Examples:
         "--all",
         action="store_true",
         help="Reconcile every station in stations.cfg",
+    )
+    rec.add_argument(
+        "--open",
+        action="store_true",
+        help=(
+            "Reconcile only stations with open discrepancies in the log "
+            "(faster than --all; implies --only-diffs). "
+            "Fields default to those with open discrepancies unless --field is given."
+        ),
     )
     rec.add_argument(
         "--source",
@@ -600,15 +1086,131 @@ Examples:
         action="store_true",
         help="List reconcilable fields and exit",
     )
+    rec.add_argument(
+        "--position-tolerance-m",
+        type=float,
+        default=2.0,
+        metavar="METERS",
+        help=(
+            "Tolerance for receiver↔TOS position comparison (default: 2.0 m). "
+            "Receiver coordinates come from a real-time PVT solution and are "
+            "used as a sanity check that the receiver is at the expected mark."
+        ),
+    )
     rec.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
+    rec.add_argument(
+        "--workers",
+        type=int,
+        default=8,
+        metavar="N",
+        help=(
+            "Parallel probe workers when reconciling multiple stations "
+            "(default: 8; 0=auto=min(8,N); 1=sequential). "
+            "Only the network probe phase is parallelised — writes and "
+            "interactive prompts always run sequentially."
+        ),
+    )
     rec.set_defaults(func=cmd_cfg_reconcile)
+
+    # ----- cfg list -------------------------------------------------------
+    lst = cfg_subparsers.add_parser(
+        "list",
+        help="List currently-open cfg discrepancies",
+        description=(
+            "Show every discrepancy that has been detected and not yet "
+            "resolved. Filter by station, field, or verdict."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  receivers cfg list
+  receivers cfg list ELDC THOB
+  receivers cfg list --field receiver_serial receiver_firmware_version
+  receivers cfg list --verdict conflict --json
+        """,
+    )
+    lst.add_argument(
+        "station",
+        nargs="*",
+        metavar="SID",
+        help="Restrict to specific station IDs",
+    )
+    lst.add_argument(
+        "--field",
+        nargs="+",
+        metavar="KEY",
+        help="Restrict to specific cfg keys",
+    )
+    lst.add_argument(
+        "--verdict",
+        nargs="+",
+        choices=[
+            Verdict.MISSING.value,
+            Verdict.CONFLICT.value,
+            Verdict.SOURCES_DISAGREE.value,
+        ],
+        help="Restrict to specific verdicts (default: all open)",
+    )
+    lst.add_argument(
+        "--json", action="store_true", help="Emit JSON instead of a table"
+    )
+    lst.set_defaults(func=cmd_cfg_list)
+
+    # ----- cfg history ----------------------------------------------------
+    hist = cfg_subparsers.add_parser(
+        "history",
+        help="Show the detection/resolution history for a station or field",
+        description=(
+            "Print every cfg_discrepancy row matching the given station "
+            "and/or field, including resolved rows. At least one of "
+            "<SID> or --field is required."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  receivers cfg history ELDC
+  receivers cfg history ELDC --field receiver_serial
+  receivers cfg history --field receiver_firmware_version --since 30d
+  receivers cfg history ELDC --json
+        """,
+    )
+    hist.add_argument(
+        "station",
+        nargs="*",
+        metavar="SID",
+        help="Station ID to inspect (one)",
+    )
+    hist.add_argument(
+        "--field",
+        nargs="+",
+        metavar="KEY",
+        help="Restrict to specific cfg keys",
+    )
+    hist.add_argument(
+        "--since",
+        metavar="WHEN",
+        help="Only rows detected on/after WHEN (e.g. 30d, 12h, 2026-04-01)",
+    )
+    hist.add_argument(
+        "--limit",
+        type=int,
+        default=200,
+        help="Maximum rows to return (default 200)",
+    )
+    hist.add_argument(
+        "--json", action="store_true", help="Emit JSON instead of a table"
+    )
+    hist.add_argument(
+        "-v", "--verbose", action="store_true", help="Show resolution notes"
+    )
+    hist.set_defaults(func=cmd_cfg_history)
 
 
 def handle_cfg_command(args) -> int:
     """Handle cfg subcommands; called from main()."""
     if not getattr(args, "cfg_command", None):
         print("❌ No cfg subcommand specified")
-        print("Available: reconcile")
+        print("Available: reconcile, list, history")
         print("\nTry: receivers cfg reconcile --help")
         return 2
     return args.func(args)

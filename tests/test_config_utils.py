@@ -1,0 +1,160 @@
+"""Regression tests for receivers.config_utils.get_station_config.
+
+The function builds a *typed* dict with nested ``receiver``/``antenna``/
+``router`` sub-dicts. For a long time it silently dropped flat keys
+that don't fit the typed structure (``receiver_serial``,
+``receiver_firmware_version``, ``latitude``, ``longitude``,
+``height``, …). Any code path comparing values against ``stations.cfg``
+got ``None`` from those getters regardless of file content, which broke
+``cfg reconcile``, the ``cfg_discrepancy`` audit log, and the live
+identity check in the health flow.
+
+Fix landed in commit "feat(cfg): cfg discrepancy audit log" — every raw
+``stations.cfg`` key is merged into the returned dict via
+``setdefault``. These tests pin that contract.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Iterator
+
+import pytest
+
+# A self-contained stations.cfg shaped to exercise every flat field the
+# reconciler needs, plus enough surrounding sections that gps_parser is
+# happy to load the file.
+_STATIONS_CFG = """\
+[Configs]
+data_prepath = /tmp/gpsdata
+
+[PATHS]
+bin2asc_path = /usr/local/bin/bin2asc
+receiver_base_path = /Disk/internal
+
+[DEFAULTS]
+default_session = 15s_24hr
+default_compression = .gz
+default_days_back = 5
+
+[TIMEOUT_CATEGORIES]
+fixed_wired = 10,30,180,8192
+mobile = 20,60,300,2048
+very_remote = 30,120,600,1024
+
+[NETWORK_RULES]
+default = passive
+
+[ELDC]
+sessions = 15s_24hr, 1Hz_1hr, status_1hr
+router_ip = 10.0.0.1
+router_type = Teltonika-rut240
+receiver_type = PolaRX5
+receiver_ftpport = 2160
+receiver_httpport = 8060
+receiver_controlport = 28784
+station_id = ELDC
+station_name = Eldcraft
+power_type = battery
+connection_type = IP
+antenna_type = SEPPOLANT_X_MF
+antenna_radome = NONE
+antenna_serial = 9999
+antenna_height = 0.05
+latitude = 64.123456
+longitude = -22.654321
+height = 250.55
+receiver_serial = 4103914
+receiver_firmware_version = 5.7.0
+ftp_username = gpsops
+ftp_password = secret
+"""
+
+# Minimal postprocess.cfg so gps_parser doesn't error during init.
+_POSTPROCESS_CFG = """\
+[FILES]
+stations_cfg = stations.cfg
+"""
+
+
+@pytest.fixture
+def fake_gps_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """Point GPS_CONFIG_PATH at a tmp dir holding a self-contained stations.cfg."""
+    (tmp_path / "stations.cfg").write_text(_STATIONS_CFG)
+    (tmp_path / "postprocess.cfg").write_text(_POSTPROCESS_CFG)
+    monkeypatch.setenv("GPS_CONFIG_PATH", str(tmp_path))
+    yield tmp_path
+
+
+def test_typed_structure_still_present(fake_gps_config):
+    """Backwards-compat: the nested layout consumers depend on still works."""
+    from receivers.config_utils import get_station_config
+
+    cfg = get_station_config("ELDC")
+    assert cfg is not None
+
+    assert cfg["station_id"] == "ELDC"
+    assert cfg["receiver_type"] == "PolaRX5"
+    assert cfg["receiver"]["type"] == "PolaRX5"
+    assert cfg["receiver"]["ftpport"] == "2160"
+    assert cfg["antenna"]["type"] == "SEPPOLANT_X_MF"
+    assert cfg["antenna"]["serial"] == "9999"
+    assert cfg["router"]["ip"] == "10.0.0.1"
+
+
+@pytest.mark.parametrize(
+    "key, expected",
+    [
+        ("receiver_serial", "4103914"),
+        ("receiver_firmware_version", "5.7.0"),
+        ("latitude", "64.123456"),
+        ("longitude", "-22.654321"),
+        ("height", "250.55"),
+        ("station_name", "Eldcraft"),
+        ("antenna_serial", "9999"),
+        ("antenna_radome", "NONE"),
+        ("antenna_type", "SEPPOLANT_X_MF"),
+    ],
+)
+def test_flat_cfg_keys_visible_at_top_level(fake_gps_config, key, expected):
+    """The reconciler reads flat keys directly — they must be present.
+
+    Regression: before the setdefault merge in get_station_config, all
+    of these returned None even though the values were on disk, so
+    `cfg reconcile` reported them as missing forever.
+    """
+    from receivers.config_utils import get_station_config
+
+    cfg = get_station_config("ELDC")
+    assert cfg is not None
+    assert cfg.get(key) == expected, (
+        f"{key} should propagate from stations.cfg to top-level dict; "
+        f"got {cfg.get(key)!r}"
+    )
+
+
+def test_typed_keys_win_over_raw_on_overlap(fake_gps_config):
+    """When the typed structure already sets a key, raw must not clobber it.
+
+    ``station_name`` exists both as a flat raw key (``Eldcraft``) and as
+    an explicit field built into the typed dict from the same source —
+    the values match here, but the contract is "typed wins". Verify by
+    spot-checking the typed-only fallback (``station_name`` defaults to
+    station_id when raw is missing) still applies.
+    """
+    from receivers.config_utils import get_station_config
+
+    cfg = get_station_config("ELDC")
+    assert cfg is not None
+    # station_name should be the explicit raw value, not a fallback.
+    assert cfg["station_name"] == "Eldcraft"
+    # receiver_type is set explicitly in the typed dict; raw merge can
+    # only fill, not overwrite.
+    assert cfg["receiver_type"] == "PolaRX5"
+
+
+def test_unknown_station_returns_none(fake_gps_config, caplog):
+    from receivers.config_utils import get_station_config
+
+    cfg = get_station_config("ZZZZ", silent=True)
+    assert cfg is None

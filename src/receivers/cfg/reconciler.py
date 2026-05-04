@@ -17,7 +17,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, Iterable, List, Optional
 
-from .field_manifest import FIELDS, FieldSpec, fields_by_key
+from .field_manifest import FIELDS, FieldSpec
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +118,11 @@ def _suggest_value(
     fields, but for receiver-only fields (firmware/serial/type as reported
     by the device) the receiver itself is canonical reality. If both sources
     agree, return the agreed value tagged ``"agree"``.
+
+    When ``spec.receiver_authoritative`` is False, the receiver alone is not
+    a valid auto-fill source — the receiver value still drives QC/flagging
+    against TOS, but cfg is only ever auto-filled from TOS or from agreement
+    between TOS and receiver.
     """
     if receiver_value is not None and tos_value is not None:
         if spec.values_equal(receiver_value, tos_value):
@@ -125,7 +130,7 @@ def _suggest_value(
         return None, None  # disagreement; caller decides
     if tos_value is not None:
         return tos_value, "tos"
-    if receiver_value is not None:
+    if receiver_value is not None and spec.receiver_authoritative:
         return receiver_value, "receiver"
     return None, None
 
@@ -176,6 +181,7 @@ def compare_station(
     tos_data: Optional[Dict[str, Any]],
     fields: Optional[Iterable[str]] = None,
     queried_sources: Optional[Iterable[str]] = None,
+    field_specs: Optional[List[FieldSpec]] = None,
 ) -> List[FieldDiff]:
     """Build :class:`FieldDiff` records for one station.
 
@@ -207,11 +213,12 @@ def compare_station(
         sources = set(queried_sources)
     sources_frozen = frozenset(sources)
 
-    by_key = fields_by_key()
+    source_specs = list(field_specs) if field_specs is not None else list(FIELDS)
+    by_key = {f.cfg_key: f for f in source_specs}
     if fields is not None:
         wanted = [by_key[k] for k in fields if k in by_key]
     else:
-        wanted = list(FIELDS)
+        wanted = source_specs
 
     diffs: List[FieldDiff] = []
     for spec in wanted:
@@ -246,7 +253,7 @@ def compare_station(
 
         suggestion: Optional[str] = None
         suggestion_source: Optional[str] = None
-        if verdict in (Verdict.MISSING,):
+        if verdict in (Verdict.MISSING, Verdict.CONFLICT):
             suggestion, suggestion_source = _suggest_value(spec, rx_val, tos_val)
 
         note: Optional[str] = None
@@ -256,6 +263,44 @@ def compare_station(
             and tos_val is not None
         ):
             note = f"receiver={rx_val!r} but TOS={tos_val!r}"
+
+        # Sync the discrepancy log with what we just observed:
+        #   * actionable verdicts (MISSING/CONFLICT/SOURCES_DISAGREE) → record/refresh open row
+        #   * OK → only auto-close when *every* source that could supply this
+        #     field was actually queried this run, otherwise we'd close a row
+        #     we have no business closing (e.g. cfg=AAA, TOS=AAA, but a stale
+        #     receiver=BBB drift is still real and we just didn't probe).
+        #   * NO_DATA / NOT_QUERYABLE → leave existing rows untouched.
+        try:
+            from . import discrepancy_log as _dlog  # type: ignore[attr-defined]
+
+            if verdict in (
+                Verdict.MISSING,
+                Verdict.CONFLICT,
+                Verdict.SOURCES_DISAGREE,
+            ):
+                _dlog.record_detection(
+                    station_id,
+                    spec.cfg_key,
+                    cfg_value=cfg_val,
+                    receiver_value=rx_val,
+                    tos_value=tos_val,
+                    verdict=verdict.value,
+                    detected_by=_dlog.DETECTED_BY_RECONCILE,
+                )
+            elif verdict == Verdict.OK:
+                fully_observed = (
+                    spec.receiver_extract is None or "receiver" in sources_frozen
+                ) and (spec.tos_extract is None or "tos" in sources_frozen)
+                if fully_observed:
+                    _dlog.auto_resolve_if_open(station_id, spec.cfg_key)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "[%s] discrepancy_log sync failed for %s: %s",
+                station_id,
+                spec.cfg_key,
+                exc,
+            )
 
         diffs.append(
             FieldDiff(
@@ -283,11 +328,17 @@ def apply_diff(
     diff: FieldDiff,
     new_value: str,
     cfg_path: Optional[Path] = None,
+    resolved_by: Optional[str] = None,
 ) -> bool:
     """Write ``new_value`` for ``diff.cfg_key`` to stations.cfg.
 
     Returns True if the file changed, False if the value already matched.
     Raises :class:`FileNotFoundError` if the cfg path can't be located.
+
+    On a successful write the matching open row in ``cfg_discrepancy``
+    is marked resolved (``resolved_action='cfg_updated'``). DB failures
+    are swallowed — the cfg write is the operator-visible action; the
+    audit log is best-effort.
     """
     from ..config.receivers_config import _update_cfg_field
 
@@ -300,4 +351,30 @@ def apply_diff(
             ) from exc
         cfg_path = Path(_gps.ConfigParser().get_stations_config_path())
 
-    return _update_cfg_field(cfg_path, station_id, diff.cfg_key, new_value)
+    changed = _update_cfg_field(cfg_path, station_id, diff.cfg_key, new_value)
+
+    if changed:
+        try:
+            from . import discrepancy_log as _dlog  # type: ignore[attr-defined]
+
+            note = (
+                f"cfg updated from {diff.cfg_value!r} to {new_value!r} "
+                f"(receiver={diff.receiver_value!r}, tos={diff.tos_value!r})"
+            )
+            _dlog.record_resolution(
+                station_id,
+                diff.cfg_key,
+                action=_dlog.ACTION_CFG_UPDATED,
+                resolved_value=new_value,
+                resolved_by=resolved_by,
+                note=note,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "[%s] failed to log resolution for %s: %s",
+                station_id,
+                diff.cfg_key,
+                exc,
+            )
+
+    return changed

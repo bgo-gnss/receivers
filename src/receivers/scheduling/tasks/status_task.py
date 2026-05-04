@@ -154,6 +154,18 @@ class StatusTask(ScheduledTask):
                 include_ntrip=True,  # Include NTRIP/RTK status
             )
 
+            # Sync the cfg discrepancy log so `cfg list` reflects this probe.
+            try:
+                from ...cfg.identity_check import flag_from_health_data
+
+                flag_from_health_data(
+                    self.station_id, health_data, station_config, self.logger
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.logger.debug(
+                    f"[{self.station_id}] cfg discrepancy check failed: {exc}"
+                )
+
             # Write to database
             db_success = False
             if self.send_to_database:

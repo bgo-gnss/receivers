@@ -44,19 +44,27 @@ class SeptentrioDownloadManager(BaseDownloadManager):
         ftp_mode = self.station_config.get("router", {}).get("ftp_mode", "passive")
         self.use_passive_ftp = ftp_mode == "passive"
 
-        # FTP credentials: load from receivers.cfg [polarx5]
-        # anonymous_login = true  →  use anonymous (fw ≤5.5.0 default)
-        # anonymous_login = false →  use tcp_username/tcp_password (fw 5.7.0)
+        # FTP credentials — firmware-gated (matches polarx5.py logic).
+        # fw >= 5.7.0 → use tcp_username / tcp_password from receivers.cfg.
+        # fw  < 5.7.0 → anonymous.
+        # Per-station ftp_username in stations.cfg overrides everything.
+        # `ftp_anonymous_login = force` in receivers.cfg forces anonymous.
         self.ftp_anonymous = True
         self.ftp_username: Optional[str] = None
         self.ftp_password: Optional[str] = None
         try:
             from ..config.receivers_config import get_receivers_config
+            from ..health.polarx5_tcp_extractor import _firmware_requires_auth
 
             rec_cfg = get_receivers_config().get_receiver_config("polarx5")
-            anon_str = str(rec_cfg.get("ftp_anonymous_login", "true")).lower()
-            self.ftp_anonymous = anon_str not in ("false", "0", "no")
-            if not self.ftp_anonymous:
+            fw_ver = self.station_config.get("receiver_firmware_version")
+            fw_needs_auth = bool(fw_ver) and _firmware_requires_auth(fw_ver)
+            anon_force = str(rec_cfg.get("ftp_anonymous_login", "")).lower() in (
+                "force",
+                "always",
+            )
+            if fw_needs_auth and not anon_force:
+                self.ftp_anonymous = False
                 self.ftp_username = rec_cfg.get("tcp_username") or None
                 self.ftp_password = rec_cfg.get("tcp_password") or None
         except Exception:

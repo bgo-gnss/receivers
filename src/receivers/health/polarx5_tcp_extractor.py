@@ -248,7 +248,7 @@ class PolaRX5TCPExtractor:
             if ntrip_server:
                 health_data["metrics"]["ntrip_server"] = ntrip_server
 
-            # Query ReceiverSetup for identity (model, firmware, serial)
+            # Query ReceiverSetup for identity (model, firmware, serial, marker)
             setup_data = self._query_receiver_setup()
             if setup_data:
                 health_data["receiver_identity"] = setup_data
@@ -582,6 +582,7 @@ class PolaRX5TCPExtractor:
                 raw = data[start : start + size]
                 return raw.split(b"\x00", 1)[0].decode("ascii", errors="ignore").strip()
 
+            marker_name = _extract_string(sbf_data, 16, 60)
             serial_number = _extract_string(sbf_data, 156, 20)
             rx_name = _extract_string(sbf_data, 176, 20)
             firmware_version = _extract_string(sbf_data, 196, 20)
@@ -605,10 +606,13 @@ class PolaRX5TCPExtractor:
                 identity["firmware_version"] = firmware_version
             if serial_number:
                 identity["serial_number"] = serial_number
+            if marker_name:
+                identity["marker_name"] = marker_name
 
             self.logger.info(
                 f"Receiver identity: model={receiver_model}, "
-                f"firmware={firmware_version}, serial={serial_number}"
+                f"firmware={firmware_version}, serial={serial_number}, "
+                f"marker={marker_name}"
             )
             return identity
 
@@ -712,6 +716,118 @@ class PolaRX5TCPExtractor:
             "sessions": active_sessions,
             "status": "ok",
         }
+
+    def query_antenna_info(self) -> Optional[Dict[str, Any]]:
+        """Public alias for :meth:`_query_antenna_info`.
+
+        The antenna probe is excluded from :meth:`extract_health_data` so that
+        routine 5-minute health checks across 173 stations don't generate
+        unnecessary ASCII-command load. Callers that need antenna metadata —
+        currently only ``receivers cfg reconcile`` — invoke this directly.
+        """
+        return self._query_antenna_info()
+
+    def _query_antenna_info(self) -> Optional[Dict[str, Any]]:
+        """Query antenna configuration via getAntennaOffset ASCII command.
+
+        Returns a dict with antenna_type / antenna_radome / antenna_serial /
+        antenna_height_delta extracted from the receiver's configured antenna.
+        Values are operator-typed on the receiver and not authoritative —
+        cfg reconciliation flags mismatches but treats TOS as canonical.
+
+        Response format (one line, fields comma-separated, strings double-quoted):
+            setAntennaOffset, Main, 0.0000, 0.0000, 0.0000, "SEPCHOKE_B3E6   SPKE", "262509", "ELEY"
+
+        AntType field is the IGS-standard 20-char code: 16-char antenna name
+        (right-padded with spaces) + 4-char radome (right-padded). We split it.
+        """
+        response = self._send_ascii_command("getAntennaOffset")
+        if not response:
+            return None
+
+        # Find the AntennaOffset row (the receiver echoes the setX form on read).
+        target_line: Optional[str] = None
+        for raw in response.split("\n"):
+            line = raw.strip()
+            if not line:
+                continue
+            if "AntennaOffset" not in line:
+                continue
+            if "Main" not in line:
+                # Skip auxiliary antenna entries (Aux1, Aux2, etc.)
+                continue
+            target_line = line
+            break
+
+        if not target_line:
+            return None
+
+        # Tokenise: comma-separated, strings may be 'single' or "double" quoted.
+        # Use a regex that captures quoted or bare tokens.
+        tokens = re.findall(r'"([^"]*)"|\'([^\']*)\'|([^,\s][^,]*)', target_line)
+        # Each match is a tuple of (double, single, bare); collapse to a flat list.
+        flat = [next((t for t in tup if t), "").strip() for tup in tokens]
+        # Drop the leading "setAntennaOffset" / "AntennaOffset" / "$R:" prefix tokens
+        # so we land on the data fields.
+        while flat and flat[0] in ("setAntennaOffset", "AntennaOffset", "$R:"):
+            flat = flat[1:]
+
+        # Expected layout after prefix removal (Septentrio setAntennaOffset order):
+        #   [0] Source ("Main")
+        #   [1] DeltaE
+        #   [2] DeltaN
+        #   [3] DeltaH  ← vertical / Up component = antenna_height in stations.cfg
+        #   [4] AntType (20-char IGS code)
+        #   [5] Serial (optional)
+        #   [6] Description (optional)
+        if len(flat) < 5 or flat[0] != "Main":
+            self.logger.debug(f"Unexpected getAntennaOffset format: {target_line!r}")
+            return None
+
+        def _f(s: str) -> Optional[float]:
+            try:
+                return float(s) if s else None
+            except ValueError:
+                return None
+
+        delta_e = _f(flat[1])
+        delta_n = _f(flat[2])
+        delta_h = _f(flat[3])
+        ant_code = flat[4] if len(flat) > 4 else ""
+        serial = flat[5] if len(flat) > 5 else ""
+
+        # Split IGS 20-char antenna code: 16 chars type + 4 chars radome.
+        # Some receivers store a shorter string — handle gracefully.
+        ant_type: Optional[str] = None
+        radome: Optional[str] = None
+        if ant_code:
+            # Pad to 20 to make slicing safe, then strip each piece.
+            padded = ant_code.ljust(20)
+            ant_type = padded[:16].strip() or None
+            radome = padded[16:20].strip() or None
+            # IGS convention: NONE means no radome.
+            if radome is None:
+                radome = "NONE"
+
+        info: Dict[str, Any] = {}
+        if ant_type:
+            info["antenna_type"] = ant_type
+        if radome is not None:
+            info["antenna_radome"] = radome
+        if serial:
+            info["antenna_serial"] = serial
+        if delta_e is not None:
+            info["antenna_east_delta"] = round(delta_e, 4)
+        if delta_n is not None:
+            info["antenna_north_delta"] = round(delta_n, 4)
+        if delta_h is not None:
+            info["antenna_height_delta"] = round(delta_h, 4)
+
+        if not info:
+            return None
+
+        self.logger.debug(f"Antenna info: {info}")
+        return info
 
     def _send_ascii_command(self, command: str) -> Optional[str]:
         """Send an ASCII command to the receiver and return text response.
@@ -1027,7 +1143,8 @@ class PolaRX5TCPExtractor:
                 if not self._auth_failed:
                     self.logger.warning(
                         f"TCP command denied for {self.station_id} ({block_name}): "
-                        f"receiver requires authentication — check tcp_username/tcp_password in receivers.cfg"
+                        f"receiver requires authentication — verify tcp_username/tcp_password "
+                        f"in receivers.cfg and receiver_firmware_version in stations.cfg"
                     )
                     self._auth_failed = True
                 return None
@@ -1117,9 +1234,12 @@ class PolaRX5TCPExtractor:
         if self._auth_failed:
             # Previous attempt in this health check cycle failed — skip to avoid lockout.
             return True
-        if self.firmware_version and not _firmware_requires_auth(self.firmware_version):
-            # Known pre-5.7 firmware — commands work without authentication.
-            return True
+
+        # Always attempt login when credentials are configured — pre-5.7 receivers
+        # respond with "$E: Invalid command!" which is handled below, and 5.7.0+
+        # accept it normally. Skipping based on the stations.cfg firmware version
+        # silently breaks auth whenever the recorded version is stale (e.g. after
+        # a firmware upgrade that wasn't reflected in stations.cfg).
 
         cmd = f"login, {self.tcp_username}, {self.tcp_password}\n"
         sock.sendall(cmd.encode("utf-8"))

@@ -1605,58 +1605,15 @@ def _flag_identity_vs_cfg(
     station_config: Dict[str, Any],
     logger: logging.Logger,
 ) -> None:
-    """Log a one-line warning per discrepancy between live identity and cfg.
+    """Log + record cfg/receiver identity drift.
 
-    The previous behaviour silently overwrote ``stations.cfg`` whenever a
-    health probe returned identity values. That bypassed TOS — the
-    authoritative source — so it has been replaced with this passive
-    check. Use ``receivers cfg reconcile <SID>`` to review and fix
-    discrepancies.
-
-    For ``receiver_type``, comparisons go through the fingerprint matcher
-    so e.g. cfg=``PolaRX5`` versus reported=``SEPT POLARX5`` is not
-    flagged as a mismatch.
+    Thin wrapper around :func:`receivers.cfg.identity_check.flag_identity_vs_cfg`
+    so the scheduler health jobs and this CLI path share the exact same
+    detection rules and write to the same ``cfg_discrepancy`` log.
     """
-    flagged: list[str] = []
+    from ..cfg.identity_check import flag_identity_vs_cfg
 
-    # Receiver model is fuzzy: same canonical type counts as a match.
-    reported_model = identity.get("receiver_model")
-    cfg_type = station_config.get("receiver_type")
-    if reported_model:
-        try:
-            from ..health.receiver_fingerprint import check_identity_mismatch
-
-            mismatch = check_identity_mismatch(
-                str(cfg_type) if cfg_type else "", identity
-            )
-        except Exception:  # noqa: BLE001
-            mismatch = None
-        if mismatch and not cfg_type:
-            flagged.append(f"receiver_type=[missing] reported={reported_model!r}")
-        elif mismatch:
-            flagged.append(f"receiver_type={cfg_type!r} reported={reported_model!r}")
-
-    # Serial / firmware: simple string compare (no fuzzy semantics).
-    for cfg_key, reported in [
-        ("receiver_serial", identity.get("serial_number")),
-        ("receiver_firmware_version", identity.get("firmware_version")),
-    ]:
-        if not reported:
-            continue
-        cfg_val = station_config.get(cfg_key)
-        if cfg_val and str(cfg_val).strip().lower() == str(reported).strip().lower():
-            continue
-        if not cfg_val:
-            flagged.append(f"{cfg_key}=[missing] reported={reported!r}")
-        else:
-            flagged.append(f"{cfg_key}={cfg_val!r} reported={reported!r}")
-
-    if flagged:
-        logger.warning(
-            f"[{station_id}] receiver identity differs from stations.cfg: "
-            f"{'; '.join(flagged)} — review with "
-            f"'receivers cfg reconcile {station_id}'"
-        )
+    flag_identity_vs_cfg(station_id, identity, station_config, logger)
 
 
 def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:

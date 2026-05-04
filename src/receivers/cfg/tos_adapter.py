@@ -68,29 +68,41 @@ def current_radome_model(station: Dict[str, Any]) -> Optional[str]:
     return val
 
 
-def current_antenna_height(station: Dict[str, Any]) -> Optional[str]:
-    """Antenna height = antenna.antenna_height + monument.monument_height.
-
-    Returns the composite as a string with 4 decimals (matching stations.cfg
-    convention). If the antenna height is missing the value is ``None``;
-    a missing monument is treated as offset 0.
-    """
+def _antenna_composite(
+    station: Dict[str, Any],
+    antenna_key: str,
+    monument_key: str,
+) -> Optional[str]:
+    """Return antenna_key + monument_key as a 4-decimal string, or None."""
     session = current_session(station)
     if not session:
         return None
     antenna = session.get("antenna") or {}
-    ah = antenna.get("antenna_height")
-    if ah is None:
+    av = antenna.get(antenna_key)
+    if av is None:
         return None
-
     monument = session.get("monument") or {}
-    mh = monument.get("monument_height") or 0.0
-
+    mv = monument.get(monument_key) or 0.0
     try:
-        composite = float(ah) + float(mh)
+        composite = float(av) + float(mv)
     except (TypeError, ValueError):
         return None
     return f"{composite:.4f}"
+
+
+def current_antenna_height(station: Dict[str, Any]) -> Optional[str]:
+    """Composite antenna height: antenna.antenna_height + monument.monument_height."""
+    return _antenna_composite(station, "antenna_height", "monument_height")
+
+
+def current_antenna_east(station: Dict[str, Any]) -> Optional[str]:
+    """Composite East offset: antenna.antenna_offset_east + monument.monument_offset_east."""
+    return _antenna_composite(station, "antenna_offset_east", "monument_offset_east")
+
+
+def current_antenna_north(station: Dict[str, Any]) -> Optional[str]:
+    """Composite North offset: antenna.antenna_offset_north + monument.monument_offset_north."""
+    return _antenna_composite(station, "antenna_offset_north", "monument_offset_north")
 
 
 def station_latitude(station: Dict[str, Any]) -> Optional[str]:

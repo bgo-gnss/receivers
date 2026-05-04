@@ -187,6 +187,16 @@ def get_station_config(
             "ftp_password": raw_config.get("ftp_password", ""),
         }
 
+        # Surface every raw stations.cfg key that the typed structure
+        # didn't already claim. cfg reconcile / health identity drift
+        # detection / future audit tooling all need to read fields like
+        # receiver_serial, receiver_firmware_version, latitude,
+        # longitude, height directly — they do not appear anywhere in
+        # the nested layout above. setdefault preserves the typed
+        # structure on overlap.
+        for raw_key, raw_val in raw_config.items():
+            station_config.setdefault(raw_key, raw_val)
+
         logger.debug(f"Successfully loaded configuration for {station_id}")
         return station_config
 

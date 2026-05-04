@@ -90,9 +90,21 @@ receivers cfg reconcile --all --auto-fill --field receiver_serial firmware
 # JSON output for tooling / dashboards
 receivers cfg reconcile --all --source tos --json --only-diffs
 
+# Loosen position QC threshold (default 2 m)
+receivers cfg reconcile --all --position-tolerance-m 5.0
+
 # List reconcilable fields
 receivers cfg reconcile --list-fields
 ```
+
+**Reconcilable fields** (all 11 fields covered):
+- Receiver identity (receiver-authoritative): `receiver_type`, `receiver_serial`, `receiver_firmware_version`
+- Antenna metadata (flag-only — TOS canonical, receiver value used for QC mismatch only):
+  `antenna_type`, `antenna_serial`, `antenna_radome`, `antenna_height`
+- Position (flag-only — surveyed coords from TOS canonical, receiver PVT value confirms
+  receiver is at the expected mark within `--position-tolerance-m`, default 2 m):
+  `latitude`, `longitude`, `height`
+- TOS-only: `station_name` (receiver MarkerName carries the 4-char ID)
 
 **Behaviour change**: as of this feature, `receivers health <SID>` no
 longer silently writes to `stations.cfg`. Discrepancies are logged with
@@ -723,9 +735,15 @@ JSON output, and field-scoped batch mode. Open follow-ups:
   `stations.cfg`. Stage all accepted changes per station and write once.
 - **Resume / checkpoint**: a long `--all` run that's interrupted starts
   over. Persist visited stations to a state file.
-- **Field expansion**: composite IGS antenna code (type + radome),
+- **Field expansion**: receiver-side extraction now covers antenna
+  type/serial/radome/height (flag-only) and position lat/lon/height
+  (flag-only, default ±2 m via `--position-tolerance-m`). Still pending:
   DOMES number, install date, owner, in_network_epos. Validate antenna
   codes against `igs_antenna.dat`.
+- **Position group QC**: per-field tolerance is a sanity check, not a
+  haversine 3D-distance check. Fine for "right station / wrong station"
+  detection; consider a dedicated 3D distance verdict if survey-grade
+  drift detection becomes a use case.
 - **`cfg audit --all`**: read-only summary mode (count of stations
   with issues per field) to drive a Grafana panel.
 - **One-time inventory**: run

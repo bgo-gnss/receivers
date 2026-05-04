@@ -183,3 +183,9 @@ dumps/
 
 # Local resource files
 resources/
+
+# AI assistant memory (project-local session notes, not source code)
+.claude/
+
+# Generated audit/report outputs
+tos_audit.json
