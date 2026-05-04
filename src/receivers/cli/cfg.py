@@ -23,10 +23,16 @@ import argparse
 import json
 import logging
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from ..cfg.field_manifest import FIELDS, all_keys, fields_by_key, with_position_tolerance
+from ..cfg.field_manifest import (
+    FIELDS,
+    all_keys,
+    fields_by_key,
+    with_position_tolerance,
+)
 from ..cfg.reconciler import (
     FieldDiff,
     SourceUnavailableError,
@@ -186,6 +192,68 @@ def _query_tos(station_id: str) -> Optional[Dict[str, Any]]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("[%s] TOS query failed: %s", station_id, exc)
         return None
+
+
+# ---------------------------------------------------------------------------
+# Per-station probe (parallelisable I/O — no side effects, no prompts)
+# ---------------------------------------------------------------------------
+
+
+def _probe_station(
+    station_id: str,
+    station_config: Dict[str, Any],
+    sources: List[str],
+    json_mode: bool,
+    verbose: bool = True,
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Query receiver and TOS for one station.
+
+    Pure I/O — creates its own network connections, returns data only.
+    Safe to call from a thread.  When ``verbose=False`` (parallel mode)
+    per-station progress lines are suppressed so interleaved output doesn't
+    corrupt the terminal.
+
+    Returns ``(receiver_identity, tos_data)``.
+    """
+    receiver_identity: Optional[Dict[str, Any]] = None
+    tos_data: Optional[Dict[str, Any]] = None
+
+    if "receiver" in sources:
+        if station_config.get("_adhoc"):
+            if verbose:
+                _progress(
+                    f"   ↳ {station_id}: ad-hoc config, skipping receiver probe",
+                    json_mode=json_mode,
+                )
+        else:
+            if verbose:
+                _progress(
+                    f"   ↳ {station_id}: probing receiver…",
+                    json_mode=json_mode,
+                    flush=True,
+                )
+            receiver_identity = _query_receiver_identity(station_id, station_config)
+            if receiver_identity is None and verbose:
+                _progress(
+                    f"   ↳ {station_id}: receiver unreachable or no identity",
+                    json_mode=json_mode,
+                )
+
+    if "tos" in sources:
+        if verbose:
+            _progress(
+                f"   ↳ {station_id}: querying TOS…",
+                json_mode=json_mode,
+                flush=True,
+            )
+        tos_data = _query_tos(station_id)
+        if tos_data is None and verbose:
+            _progress(
+                f"   ↳ {station_id}: not in TOS or TOS unavailable",
+                json_mode=json_mode,
+            )
+
+    return receiver_identity, tos_data
 
 
 # ---------------------------------------------------------------------------
@@ -368,45 +436,19 @@ def _reconcile_one(
     sources: List[str],
     fields: Optional[List[str]],
     args: argparse.Namespace,
+    receiver_identity: Optional[Dict[str, Any]] = None,
+    tos_data: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[FieldDiff], int, int]:
-    """Reconcile one station. Returns (diffs, n_written, n_skipped)."""
-    receiver_identity: Optional[Dict[str, Any]] = None
-    tos_data: Optional[Dict[str, Any]] = None
+    """Reconcile one station given pre-fetched probe data.
 
+    ``receiver_identity`` and ``tos_data`` must already be fetched by the
+    caller (via :func:`_probe_station`). This function only handles
+    comparison, display, and writes — no network I/O.
+
+    Returns ``(diffs, n_written, n_skipped)``.
+    """
     if not args.json:
         _print_setup_header(station_id, station_config)
-
-    if "receiver" in sources:
-        if station_config.get("_adhoc"):
-            _progress(
-                f"   ↳ {station_id}: ad-hoc config, skipping receiver probe",
-                json_mode=args.json,
-            )
-        else:
-            _progress(
-                f"   ↳ {station_id}: probing receiver…",
-                json_mode=args.json,
-                flush=True,
-            )
-            receiver_identity = _query_receiver_identity(station_id, station_config)
-            if receiver_identity is None:
-                _progress(
-                    f"   ↳ {station_id}: receiver unreachable or no identity",
-                    json_mode=args.json,
-                )
-
-    if "tos" in sources:
-        _progress(
-            f"   ↳ {station_id}: querying TOS…",
-            json_mode=args.json,
-            flush=True,
-        )
-        tos_data = _query_tos(station_id)
-        if tos_data is None:
-            _progress(
-                f"   ↳ {station_id}: not in TOS or TOS unavailable",
-                json_mode=args.json,
-            )
 
     tolerance_m = getattr(args, "position_tolerance_m", 2.0)
     field_specs = with_position_tolerance(tolerance_m) if tolerance_m else None
@@ -604,6 +646,45 @@ def cmd_cfg_reconcile(args) -> int:
         json_mode=args.json,
     )
 
+    # Resolve effective worker count (0 = auto).
+    workers: int = getattr(args, "workers", 1)
+    if workers == 0:
+        workers = min(8, len(configs))
+
+    # Single-station or single-worker: keep per-station verbose progress.
+    parallel = workers > 1 and len(configs) > 1
+
+    # --- Probe phase (parallel-safe I/O) ------------------------------------
+    probe_results: Dict[str, Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]] = {}
+
+    if parallel:
+        _progress(
+            f"Probing {len(configs)} station(s) with {workers} workers…",
+            json_mode=args.json,
+        )
+        ordered_sids = [sid for sid in station_ids if sid in configs]
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(
+                    _probe_station, sid, configs[sid], sources, args.json, False
+                ): sid
+                for sid in ordered_sids
+            }
+            for future in as_completed(futures):
+                sid = futures[future]
+                try:
+                    probe_results[sid] = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[%s] probe thread raised: %s", sid, exc)
+                    probe_results[sid] = (None, None)
+    else:
+        for sid in station_ids:
+            if sid in configs:
+                probe_results[sid] = _probe_station(
+                    sid, configs[sid], sources, args.json, verbose=True
+                )
+
+    # --- Process phase (sequential: display, write, prompt) -----------------
     json_collect: List[Dict[str, Any]] = []
     total_written = 0
     total_skipped = 0
@@ -613,9 +694,10 @@ def cmd_cfg_reconcile(args) -> int:
         cfg = configs.get(sid)
         if cfg is None:
             continue
+        rx_identity, tos_d = probe_results.get(sid, (None, None))
         try:
             diffs, n_written, n_skipped = _reconcile_one(
-                sid, cfg, sources, fields, args
+                sid, cfg, sources, fields, args, rx_identity, tos_d
             )
         except KeyboardInterrupt:
             print("\nInterrupted")
@@ -935,6 +1017,18 @@ Examples:
         ),
     )
     rec.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
+    rec.add_argument(
+        "--workers",
+        type=int,
+        default=8,
+        metavar="N",
+        help=(
+            "Parallel probe workers when reconciling multiple stations "
+            "(default: 8; 0=auto=min(8,N); 1=sequential). "
+            "Only the network probe phase is parallelised — writes and "
+            "interactive prompts always run sequentially."
+        ),
+    )
     rec.set_defaults(func=cmd_cfg_reconcile)
 
     # ----- cfg list -------------------------------------------------------

@@ -428,7 +428,6 @@ class TestPositionTolerance:
         assert not eq("102.55", "106.00")
 
     def test_position_equality_for_unsupported_field(self):
-        import pytest
 
         with pytest.raises(ValueError):
             position_equality_for("antenna_height", 2.0)
@@ -611,3 +610,111 @@ class TestProgressRouting:
         captured = capsys.readouterr()
         assert "hello" in captured.out
         assert captured.err == ""
+
+
+# ---------------------------------------------------------------------------
+# _probe_station — parallel probe unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestProbeStation:
+    """_probe_station returns (receiver_identity, tos_data) and is thread-safe."""
+
+    def test_returns_none_when_both_sources_fail(self, monkeypatch):
+        from receivers.cli.cfg import _probe_station
+
+        monkeypatch.setattr("receivers.cli.cfg._query_receiver_identity", lambda *_: None)
+        monkeypatch.setattr("receivers.cli.cfg._query_tos", lambda *_: None)
+
+        rx, tos = _probe_station("ELDC", {}, ["receiver", "tos"], json_mode=True)
+        assert rx is None
+        assert tos is None
+
+    def test_returns_data_from_both_sources(self, monkeypatch):
+        from receivers.cli.cfg import _probe_station
+
+        rx_data = {"receiver_model": "PolaRX5", "serial_number": "12345"}
+        tos_data = {"name": "Eldey", "device_history": []}
+        monkeypatch.setattr("receivers.cli.cfg._query_receiver_identity", lambda *_: rx_data)
+        monkeypatch.setattr("receivers.cli.cfg._query_tos", lambda *_: tos_data)
+
+        rx, tos = _probe_station("ELDC", {}, ["receiver", "tos"], json_mode=True)
+        assert rx == rx_data
+        assert tos == tos_data
+
+    def test_skips_receiver_when_not_in_sources(self, monkeypatch):
+        from receivers.cli.cfg import _probe_station
+
+        called: list = []
+        monkeypatch.setattr(
+            "receivers.cli.cfg._query_receiver_identity", lambda *_: called.append("rx") or {}
+        )
+        tos_data = {"name": "Eldey"}
+        monkeypatch.setattr("receivers.cli.cfg._query_tos", lambda *_: tos_data)
+
+        _, tos = _probe_station("ELDC", {}, ["tos"], json_mode=True)
+        assert called == []
+        assert tos == tos_data
+
+    def test_skips_tos_when_not_in_sources(self, monkeypatch):
+        from receivers.cli.cfg import _probe_station
+
+        called: list = []
+        monkeypatch.setattr("receivers.cli.cfg._query_tos", lambda *_: called.append("tos") or {})
+        rx_data = {"receiver_model": "PolaRX5"}
+        monkeypatch.setattr("receivers.cli.cfg._query_receiver_identity", lambda *_: rx_data)
+
+        rx, _ = _probe_station("ELDC", {}, ["receiver"], json_mode=True)
+        assert called == []
+        assert rx == rx_data
+
+    def test_adhoc_skips_receiver_probe(self, monkeypatch):
+        from receivers.cli.cfg import _probe_station
+
+        called = []
+        monkeypatch.setattr(
+            "receivers.cli.cfg._query_receiver_identity", lambda *_: called.append("rx") or {}
+        )
+        monkeypatch.setattr("receivers.cli.cfg._query_tos", lambda *_: None)
+
+        cfg = {"_adhoc": True}
+        rx, _ = _probe_station("ELDC", cfg, ["receiver", "tos"], json_mode=True)
+        assert called == []
+        assert rx is None
+
+    def test_parallel_probes_produce_same_results_as_sequential(self, monkeypatch):
+        """Parallel probe phase collects same data as sequential calls."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        from receivers.cli.cfg import _probe_station
+
+        station_ids = ["ELDC", "THOB", "GJAC"]
+        # Each station gets a distinct identity and TOS record
+        rx_map = {sid: {"serial_number": f"SN-{sid}"} for sid in station_ids}
+        tos_map = {sid: {"name": f"Name-{sid}"} for sid in station_ids}
+
+        monkeypatch.setattr(
+            "receivers.cli.cfg._query_receiver_identity",
+            lambda sid, _: rx_map.get(sid),
+        )
+        monkeypatch.setattr(
+            "receivers.cli.cfg._query_tos",
+            lambda sid: tos_map.get(sid),
+        )
+
+        sources = ["receiver", "tos"]
+        sequential = {
+            sid: _probe_station(sid, {}, sources, json_mode=True) for sid in station_ids
+        }
+
+        parallel: dict = {}
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = {
+                executor.submit(_probe_station, sid, {}, sources, True, False): sid
+                for sid in station_ids
+            }
+            for future in as_completed(futures):
+                sid = futures[future]
+                parallel[sid] = future.result()
+
+        assert parallel == sequential
