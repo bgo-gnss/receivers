@@ -772,11 +772,11 @@ class PolaRX5TCPExtractor:
         while flat and flat[0] in ("setAntennaOffset", "AntennaOffset", "$R:"):
             flat = flat[1:]
 
-        # Expected layout after prefix removal:
+        # Expected layout after prefix removal (Septentrio setAntennaOffset order):
         #   [0] Source ("Main")
-        #   [1] DeltaH
-        #   [2] DeltaE
-        #   [3] DeltaN
+        #   [1] DeltaE
+        #   [2] DeltaN
+        #   [3] DeltaH  ← vertical / Up component = antenna_height in stations.cfg
         #   [4] AntType (20-char IGS code)
         #   [5] Serial (optional)
         #   [6] Description (optional)
@@ -790,7 +790,9 @@ class PolaRX5TCPExtractor:
             except ValueError:
                 return None
 
-        delta_h = _f(flat[1])
+        delta_e = _f(flat[1])
+        delta_n = _f(flat[2])
+        delta_h = _f(flat[3])
         ant_code = flat[4] if len(flat) > 4 else ""
         serial = flat[5] if len(flat) > 5 else ""
 
@@ -814,6 +816,10 @@ class PolaRX5TCPExtractor:
             info["antenna_radome"] = radome
         if serial:
             info["antenna_serial"] = serial
+        if delta_e is not None:
+            info["antenna_east_delta"] = round(delta_e, 4)
+        if delta_n is not None:
+            info["antenna_north_delta"] = round(delta_n, 4)
         if delta_h is not None:
             info["antenna_height_delta"] = round(delta_h, 4)
 

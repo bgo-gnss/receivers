@@ -655,6 +655,42 @@ def cmd_cfg_reconcile(args) -> int:
     if not configs:
         return 1
 
+    # Skip discontinued / inactive stations — probing them is pointless and,
+    # in some cases, harmful (e.g. BLAL shares an IP with SODU).
+    _SKIP_STATUSES = frozenset({"discontinued", "inactive"})
+    skipped_status = {sid: cfg.get("station_status") for sid, cfg in configs.items()
+                      if cfg.get("station_status") in _SKIP_STATUSES}
+    skipped = list(skipped_status)
+    for sid in skipped:
+        del configs[sid]
+    if skipped:
+        _progress(
+            f"⏭  skipping {len(skipped)} non-active station(s): {', '.join(sorted(skipped))}",
+            json_mode=args.json,
+        )
+        # Auto-close any stale log entries so they don't resurface on the next --open run.
+        try:
+            from ..cfg import discrepancy_log as _dlog
+            open_rows = _dlog.list_open(station_ids=skipped)
+            for row in open_rows:
+                _dlog.record_resolution(
+                    row.station_id,
+                    row.cfg_key,
+                    action=_dlog.ACTION_IGNORED,
+                    resolved_value=None,
+                    note=f"station_status={skipped_status.get(row.station_id, '?')} — no longer reconciled",
+                )
+            if open_rows:
+                _progress(
+                    f"   closed {len(open_rows)} stale log entries for non-active stations",
+                    json_mode=args.json,
+                )
+        except Exception as exc:  # noqa: BLE001
+            _progress(f"⚠️  could not close stale log entries: {exc}", json_mode=args.json)
+    if not configs:
+        _progress("✅ no active stations with open discrepancies", json_mode=args.json)
+        return 0
+
     # Header — keep stdout clean in JSON mode so output stays parseable
     _progress(
         f"Reconciling {len(configs)} station(s) — sources={','.join(sources)}"

@@ -43,6 +43,24 @@ def _strip(value: Optional[str]) -> Optional[str]:
 _SERIAL_PLACEHOLDERS = frozenset({"unknown", "n/a", "na", "none", "—", "-"})
 
 
+def _zero_default(value: Optional[str]) -> Optional[str]:
+    """Normalize antenna offset fields where absence means zero.
+
+    Maps None (field not in cfg) and zero-equivalent strings ("0", "0.0",
+    "0.0000") to "0.0000" so a missing cfg entry compares as zero rather
+    than triggering MISSING.  Non-zero values are returned as stripped strings.
+    """
+    s = _strip(value)
+    if s is None:
+        return "0.0000"
+    try:
+        if float(s) == 0.0:
+            return "0.0000"
+    except ValueError:
+        pass
+    return s
+
+
 def _strip_placeholder(value: Optional[str]) -> Optional[str]:
     """Strip + treat known serial-number placeholders as missing.
 
@@ -323,6 +341,34 @@ FIELDS: List[FieldSpec] = [
         equal=_approx_eq(4),
         receiver_authoritative=False,
         description="Antenna height above mark including monument offset (m)",
+    ),
+    FieldSpec(
+        cfg_key="antenna_east",
+        label="Antenna East",
+        receiver_extract=lambda identity: (
+            None
+            if identity.get("antenna_east_delta") is None
+            else f"{identity['antenna_east_delta']:.4f}"
+        ),
+        tos_extract=tos_adapter.current_antenna_east,
+        normalize=_zero_default,
+        equal=_approx_eq(4),
+        receiver_authoritative=False,
+        description="Marker-to-ARP East offset (m); absent from cfg = 0.0000",
+    ),
+    FieldSpec(
+        cfg_key="antenna_north",
+        label="Antenna North",
+        receiver_extract=lambda identity: (
+            None
+            if identity.get("antenna_north_delta") is None
+            else f"{identity['antenna_north_delta']:.4f}"
+        ),
+        tos_extract=tos_adapter.current_antenna_north,
+        normalize=_zero_default,
+        equal=_approx_eq(4),
+        receiver_authoritative=False,
+        description="Marker-to-ARP North offset (m); absent from cfg = 0.0000",
     ),
     # Coordinates — TOS is canonical (surveyed); receiver values come from a
     # real-time PVT solution (~1-2 m accuracy) and are used purely as a sanity
