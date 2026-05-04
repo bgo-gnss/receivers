@@ -253,7 +253,7 @@ def compare_station(
 
         suggestion: Optional[str] = None
         suggestion_source: Optional[str] = None
-        if verdict in (Verdict.MISSING,):
+        if verdict in (Verdict.MISSING, Verdict.CONFLICT):
             suggestion, suggestion_source = _suggest_value(spec, rx_val, tos_val)
 
         note: Optional[str] = None

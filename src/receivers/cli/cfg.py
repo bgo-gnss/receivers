@@ -948,6 +948,21 @@ Examples:
   receivers cfg reconcile --all --auto-fill --field receiver_serial
   receivers cfg reconcile --all --dry-run --json
   receivers cfg reconcile --list-fields
+
+Diagnosing TCP authentication failures:
+  If health checks log "TCP command denied: receiver requires authentication"
+  for a PolaRX5 station, the most common cause is a stale
+  receiver_firmware_version in stations.cfg (e.g. recorded as 5.2.0 while
+  the receiver has been upgraded to 5.7.0+).  The TCP login command was
+  introduced in firmware 5.7.0; if stations.cfg records an older version the
+  health probe skips sending credentials and the receiver rejects subsequent
+  commands.  Fix with:
+    receivers cfg reconcile <SID> --field receiver_firmware_version
+  or in bulk (accepts receiver-reported version without prompting):
+    receivers cfg reconcile --all --yes --field receiver_firmware_version \\
+        --source receiver --dry-run   # preview first
+    receivers cfg reconcile --all --yes --field receiver_firmware_version \\
+        --source receiver             # then apply
         """,
     )
     rec.add_argument(

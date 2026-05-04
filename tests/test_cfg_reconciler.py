@@ -249,7 +249,25 @@ class TestCompareStation:
         identity = {"serial_number": "NEW456"}
         diffs = compare_station("ELDC", cfg, identity, None, fields=["receiver_serial"])
         assert diffs[0].verdict == Verdict.CONFLICT
-        # No suggestion on conflict — caller decides.
+        # CONFLICT with unambiguous source → suggestion populated so --yes can auto-accept.
+        assert diffs[0].suggestion == "NEW456"
+        assert diffs[0].suggestion_source == "receiver"
+
+    def test_conflict_no_suggestion_when_sources_ambiguous(self):
+        # Both rx and TOS disagree with each other (and with cfg) → no suggestion.
+        cfg = {"receiver_serial": "OLD"}
+        identity = {"serial_number": "RX_VALUE"}
+        tos = {
+            "device_history": [
+                {
+                    "time_from": "x",
+                    "time_to": None,
+                    "gnss_receiver": {"serial_number": "TOS_VALUE"},
+                }
+            ]
+        }
+        diffs = compare_station("ELDC", cfg, identity, tos, fields=["receiver_serial"])
+        assert diffs[0].verdict == Verdict.CONFLICT
         assert diffs[0].suggestion is None
 
     def test_sources_disagree_but_cfg_matches_one(self):
