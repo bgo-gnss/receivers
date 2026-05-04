@@ -22,10 +22,11 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import sys
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from ..cfg.field_manifest import FIELDS, all_keys, with_position_tolerance
+from ..cfg.field_manifest import FIELDS, all_keys, fields_by_key, with_position_tolerance
 from ..cfg.reconciler import (
     FieldDiff,
     SourceUnavailableError,
@@ -37,17 +38,32 @@ from ..cfg.reconciler import (
 logger = logging.getLogger(__name__)
 
 
+def _progress(message: str, *, json_mode: bool, **kwargs) -> None:
+    """Print progress lines to stderr in JSON mode, stdout otherwise.
+
+    Without this, every "↳ STATION: querying TOS…" line lands on stdout
+    and corrupts the JSON document the caller expects.
+    """
+    stream = sys.stderr if json_mode else sys.stdout
+    print(message, file=stream, **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Source acquisition
 # ---------------------------------------------------------------------------
 
 
-def _load_station_configs(station_ids: Sequence[str]) -> Dict[str, Dict[str, Any]]:
+def _load_station_configs(
+    station_ids: Sequence[str], *, json_mode: bool = False
+) -> Dict[str, Dict[str, Any]]:
     """Return ``{station_id: station_config}`` for the requested stations.
 
     ``get_station_config()`` already merges raw stations.cfg keys into
     the typed dict (via ``setdefault``), so flat fields like
     ``receiver_serial`` and ``latitude`` are readable here.
+
+    Skip warnings go to stderr when ``json_mode`` is set so they don't
+    contaminate the JSON document on stdout.
     """
     from ..config_utils import get_station_config
 
@@ -55,7 +71,10 @@ def _load_station_configs(station_ids: Sequence[str]) -> Dict[str, Dict[str, Any
     for sid in station_ids:
         cfg = get_station_config(sid)
         if cfg is None:
-            print(f"⚠️  {sid}: not found in stations.cfg — skipping")
+            _progress(
+                f"⚠️  {sid}: not found in stations.cfg — skipping",
+                json_mode=json_mode,
+            )
             continue
         configs[sid] = cfg
     return configs
@@ -359,18 +378,35 @@ def _reconcile_one(
 
     if "receiver" in sources:
         if station_config.get("_adhoc"):
-            print(f"   ↳ {station_id}: ad-hoc config, skipping receiver probe")
+            _progress(
+                f"   ↳ {station_id}: ad-hoc config, skipping receiver probe",
+                json_mode=args.json,
+            )
         else:
-            print(f"   ↳ {station_id}: probing receiver…", flush=True)
+            _progress(
+                f"   ↳ {station_id}: probing receiver…",
+                json_mode=args.json,
+                flush=True,
+            )
             receiver_identity = _query_receiver_identity(station_id, station_config)
             if receiver_identity is None:
-                print(f"   ↳ {station_id}: receiver unreachable or no identity")
+                _progress(
+                    f"   ↳ {station_id}: receiver unreachable or no identity",
+                    json_mode=args.json,
+                )
 
     if "tos" in sources:
-        print(f"   ↳ {station_id}: querying TOS…", flush=True)
+        _progress(
+            f"   ↳ {station_id}: querying TOS…",
+            json_mode=args.json,
+            flush=True,
+        )
         tos_data = _query_tos(station_id)
         if tos_data is None:
-            print(f"   ↳ {station_id}: not in TOS or TOS unavailable")
+            _progress(
+                f"   ↳ {station_id}: not in TOS or TOS unavailable",
+                json_mode=args.json,
+            )
 
     tolerance_m = getattr(args, "position_tolerance_m", 2.0)
     field_specs = with_position_tolerance(tolerance_m) if tolerance_m else None
@@ -385,12 +421,10 @@ def _reconcile_one(
         field_specs=field_specs,
     )
 
+    silent = args.json
     show_ok = not args.only_diffs
-    if not args.json:
+    if not silent:
         _print_diff_table(diffs, show_ok=show_ok)
-
-    if args.json:
-        return diffs, 0, 0
 
     n_written = 0
     n_skipped = 0
@@ -399,53 +433,93 @@ def _reconcile_one(
         return diffs, 0, 0
 
     if args.dry_run:
-        print(f"\n   {len(actionable)} field(s) need attention (dry-run, no writes)")
+        if not silent:
+            print(f"\n   {len(actionable)} field(s) need attention (dry-run, no writes)")
         return diffs, 0, len(actionable)
 
-    print()
+    # In JSON mode without an auto-resolution flag we can't make decisions —
+    # nothing to do beyond returning diffs for the caller to report.
+    if silent and not (args.auto_fill or args.yes):
+        return diffs, 0, 0
+
+    field_specs_by_key = fields_by_key()
+
+    if not silent:
+        print()
     for idx, d in enumerate(actionable, start=1):
-        header = f"  [{idx}/{len(actionable)}] {d.cfg_key} ({d.verdict.value})"
-        print(header)
-        print(
-            f"     cfg:      {d.cfg_value if d.cfg_value is not None else '[missing]'}"
-        )
-        if "receiver" in sources:
-            rx = d.receiver_value if d.receiver_value is not None else "[N/A]"
-            print(f"     receiver: {rx}")
-        if "tos" in sources:
-            tos = d.tos_value if d.tos_value is not None else "[N/A]"
-            print(f"     TOS:      {tos}")
+        if not silent:
+            header = f"  [{idx}/{len(actionable)}] {d.cfg_key} ({d.verdict.value})"
+            print(header)
+            print(
+                f"     cfg:      {d.cfg_value if d.cfg_value is not None else '[missing]'}"
+            )
+            if "receiver" in sources:
+                rx = d.receiver_value if d.receiver_value is not None else "[N/A]"
+                print(f"     receiver: {rx}")
+            if "tos" in sources:
+                tos = d.tos_value if d.tos_value is not None else "[N/A]"
+                print(f"     TOS:      {tos}")
 
         # Resolve action
         action: str
         new_value: Optional[str]
         if args.auto_fill and d.verdict == Verdict.MISSING and d.suggestion is not None:
             action, new_value = "set", d.suggestion
-            print(f"     → auto-fill from {d.suggestion_source}: {d.suggestion!r}")
+            if not silent:
+                print(f"     → auto-fill from {d.suggestion_source}: {d.suggestion!r}")
         elif args.yes and d.suggestion is not None:
             action, new_value = "set", d.suggestion
-            print(f"     → accept suggestion ({d.suggestion_source}): {d.suggestion!r}")
+            if not silent:
+                print(f"     → accept suggestion ({d.suggestion_source}): {d.suggestion!r}")
+        elif silent:
+            # JSON mode without an applicable auto-rule: cannot prompt; skip.
+            action, new_value = "skip", None
         else:
             action, new_value = _interactive_prompt(d)
 
         if action == "quit":
-            print(f"\n     stopped at field {idx}/{len(actionable)}")
+            if not silent:
+                print(f"\n     stopped at field {idx}/{len(actionable)}")
             break
         if action == "skip":
             n_skipped += 1
             continue
         if action == "set" and new_value is not None:
+            # Apply per-field cfg vocabulary mapping (e.g. TOS "SEPT POLARX5"
+            # → cfg "PolaRX5"). Identity for fields without an explicit map.
+            spec = field_specs_by_key.get(d.cfg_key)
+            if spec is not None:
+                try:
+                    mapped = spec.cfg_format(new_value)
+                except Exception as exc:  # noqa: BLE001
+                    if not silent:
+                        print(f"     ❌ cfg_format failed for {d.cfg_key}: {exc}")
+                    continue
+                if mapped is None:
+                    if not silent:
+                        print(
+                            f"     ❌ cfg_format normalised {new_value!r} to None — skipping"
+                        )
+                    continue
+                if mapped != new_value and not silent:
+                    print(
+                        f"     ↺ normalised {new_value!r} → {mapped!r} for cfg vocabulary"
+                    )
+                new_value = mapped
             try:
                 changed = apply_diff(station_id, d, new_value)
                 if changed:
                     n_written += 1
-                    print(f"     ✅ wrote {d.cfg_key} = {new_value!r}")
-                else:
+                    if not silent:
+                        print(f"     ✅ wrote {d.cfg_key} = {new_value!r}")
+                elif not silent:
                     print(f"     ⏭  unchanged ({d.cfg_key} already = {new_value!r})")
             except SourceUnavailableError as exc:
-                print(f"     ❌ could not write: {exc}")
+                if not silent:
+                    print(f"     ❌ could not write: {exc}")
             except Exception as exc:  # noqa: BLE001
-                print(f"     ❌ write failed: {exc}")
+                if not silent:
+                    print(f"     ❌ write failed: {exc}")
 
     return diffs, n_written, n_skipped
 
@@ -496,10 +570,13 @@ def cmd_cfg_reconcile(args) -> int:
         try:
             from tostools.api.tos_client import TOSClient  # noqa: F401
         except ImportError:
-            print("⚠️  tostools not installed — disabling TOS source")
+            _progress(
+                "⚠️  tostools not installed — disabling TOS source",
+                json_mode=args.json,
+            )
             sources = [s for s in sources if s != "tos"]
             if not sources:
-                print("❌ no usable sources remain")
+                _progress("❌ no usable sources remain", json_mode=args.json)
                 return 1
 
     # Fields
@@ -514,16 +591,17 @@ def cmd_cfg_reconcile(args) -> int:
         fields = list(args.field)
 
     # Load configs
-    configs = _load_station_configs(station_ids)
+    configs = _load_station_configs(station_ids, json_mode=args.json)
     if not configs:
         return 1
 
-    # Header
-    print(
+    # Header — keep stdout clean in JSON mode so output stays parseable
+    _progress(
         f"Reconciling {len(configs)} station(s) — sources={','.join(sources)}"
         + (f" — fields={','.join(fields)}" if fields else "")
         + (" — dry-run" if args.dry_run else "")
-        + (" — auto-fill" if args.auto_fill else "")
+        + (" — auto-fill" if args.auto_fill else ""),
+        json_mode=args.json,
     )
 
     json_collect: List[Dict[str, Any]] = []
@@ -549,13 +627,15 @@ def cmd_cfg_reconcile(args) -> int:
             n_with_issues += 1
 
         if args.json:
-            json_collect.append(
-                {
-                    "station_id": sid,
-                    "diffs": [d.as_dict() for d in diffs],
-                    "summary": _summary_counts(diffs),
-                }
-            )
+            entry: Dict[str, Any] = {
+                "station_id": sid,
+                "diffs": [d.as_dict() for d in diffs],
+                "summary": _summary_counts(diffs),
+            }
+            if args.auto_fill or args.yes:
+                entry["writes"] = n_written
+                entry["skipped"] = n_skipped
+            json_collect.append(entry)
 
     if args.json:
         print(json.dumps(json_collect, indent=2, default=str))

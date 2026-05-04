@@ -12,9 +12,11 @@ from receivers.cfg.field_manifest import (
     FieldSpec,
     _abs_tol,
     _approx_eq,
+    _identity,
     _meters_to_lat_deg,
     _meters_to_lon_deg,
     _receiver_type_eq,
+    _receiver_type_to_cfg,
     _strip_placeholder,
     fields_by_key,
     position_equality_for,
@@ -530,3 +532,82 @@ class TestApplyDiff:
         )
         changed = apply_diff("XXXX", diff, "X", cfg_path=cfg)
         assert not changed
+
+
+# ---------------------------------------------------------------------------
+# cfg_format — write-time vocabulary normalization (bug #9)
+# ---------------------------------------------------------------------------
+
+
+class TestReceiverTypeCfgFormat:
+    """The cfg_format hook maps source vocabularies to cfg vocabulary on write.
+
+    Without this, accepting a TOS suggestion writes "SEPT POLARX5" verbatim
+    while the codebase expects "PolaRX5" (108 of 173 stations use the short
+    form). Caused KOTC/KVIC corruption during the bulk cleanup until manually
+    repaired with sed.
+    """
+
+    def test_maps_tos_igs_name_to_short_cfg_form(self):
+        assert _receiver_type_to_cfg("SEPT POLARX5") == "PolaRX5"
+
+    def test_maps_capitalisation_variants(self):
+        # Receiver banners and TOS records use mixed case; all canonicalise.
+        assert _receiver_type_to_cfg("PolaRx5") == "PolaRX5"
+        assert _receiver_type_to_cfg("POLARX5") == "PolaRX5"
+        assert _receiver_type_to_cfg("PolaRX5") == "PolaRX5"
+
+    def test_maps_trimble_variants_to_netr_short_forms(self):
+        assert _receiver_type_to_cfg("TRIMBLE NETR9") == "NetR9"
+        assert _receiver_type_to_cfg("NETRS") == "NetRS"
+
+    def test_passes_through_unknown_value_unchanged(self):
+        # Unknown receiver types must not be silently corrupted to None.
+        assert _receiver_type_to_cfg("unknown_thing") == "unknown_thing"
+
+    def test_handles_none(self):
+        assert _receiver_type_to_cfg(None) is None
+
+    def test_field_manifest_wires_cfg_format_on_receiver_type(self):
+        spec = fields_by_key()["receiver_type"]
+        assert spec.cfg_format is _receiver_type_to_cfg
+
+    def test_default_cfg_format_is_identity(self):
+        # Other fields keep _identity so values pass through verbatim.
+        for key in ("receiver_serial", "receiver_firmware_version", "antenna_serial"):
+            assert fields_by_key()[key].cfg_format is _identity
+
+    def test_with_position_tolerance_preserves_cfg_format(self):
+        # The override path used to drop cfg_format; would silently revert
+        # to identity for receiver_type when a position tolerance was passed.
+        specs_by_key = {s.cfg_key: s for s in with_position_tolerance(2.0)}
+        assert specs_by_key["receiver_type"].cfg_format is _receiver_type_to_cfg
+
+
+# ---------------------------------------------------------------------------
+# CLI _progress helper — keeps stdout clean for --json (bug #6 supporting fix)
+# ---------------------------------------------------------------------------
+
+
+class TestProgressRouting:
+    """Progress lines must go to stderr in JSON mode so they don't pollute
+    the JSON document on stdout — without this fix, ``receivers cfg reconcile
+    --json`` produces 200+ lines of "↳ STATION: querying TOS…" before the
+    JSON, requiring the caller to grep/skip to find the actual document.
+    """
+
+    def test_json_mode_routes_to_stderr(self, capsys):
+        from receivers.cli.cfg import _progress
+
+        _progress("hello", json_mode=True)
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "hello" in captured.err
+
+    def test_text_mode_routes_to_stdout(self, capsys):
+        from receivers.cli.cfg import _progress
+
+        _progress("hello", json_mode=False)
+        captured = capsys.readouterr()
+        assert "hello" in captured.out
+        assert captured.err == ""

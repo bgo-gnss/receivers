@@ -88,6 +88,28 @@ def _receiver_type_eq(a: Optional[str], b: Optional[str]) -> bool:
     return type_a == type_b
 
 
+def _receiver_type_to_cfg(value: Optional[str]) -> Optional[str]:
+    """Map IGS-style receiver names to the short cfg vocabulary on write.
+
+    TOS surfaces ``"SEPT POLARX5"`` while ``stations.cfg`` (and the rest of
+    the codebase) uses the short form ``"PolaRX5"``. Without this mapping,
+    accepting a TOS suggestion writes an unrecognised value that breaks
+    type-detection.
+
+    Returns the canonical short form when the value matches a known
+    fingerprint pattern; otherwise returns the input unchanged so unknown
+    types aren't silently corrupted.
+    """
+    if value is None:
+        return None
+    try:
+        from ..health.receiver_fingerprint import identify_receiver_type
+    except ImportError:
+        return value
+    canonical = identify_receiver_type({"receiver_model": value})
+    return canonical if canonical is not None else value
+
+
 def _approx_eq(decimals: int) -> Callable[[Optional[str], Optional[str]], bool]:
     """Equality up to ``decimals`` decimal places, for floats stored as strings."""
 
@@ -158,6 +180,11 @@ def position_equality_for(field_key: str, tolerance_m: float) -> Callable[[Optio
 # ---------------------------------------------------------------------------
 
 
+def _identity(value: Optional[str]) -> Optional[str]:
+    """Default :attr:`FieldSpec.cfg_format` — write source values verbatim."""
+    return value
+
+
 @dataclass(frozen=True)
 class FieldSpec:
     cfg_key: str
@@ -166,6 +193,10 @@ class FieldSpec:
     tos_extract: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None
     equal: Optional[Callable[[Optional[str], Optional[str]], bool]] = None
     normalize: Callable[[Optional[str]], Optional[str]] = _strip
+    # Vocabulary mapping applied at WRITE time, not comparison time. Used for
+    # fields where the source vocabulary differs from cfg's (e.g. TOS uses the
+    # IGS name "SEPT POLARX5"; cfg uses "PolaRX5"). Default is identity.
+    cfg_format: Callable[[Optional[str]], Optional[str]] = _identity
     description: str = ""
     # If False, the receiver value is for QC/flagging only — never used as
     # an auto-fill suggestion when cfg is missing. Used for fields where the
@@ -197,6 +228,7 @@ FIELDS: List[FieldSpec] = [
         receiver_extract=lambda identity: identity.get("receiver_model"),
         tos_extract=tos_adapter.current_receiver_model,
         equal=_receiver_type_eq,
+        cfg_format=_receiver_type_to_cfg,
         description="Receiver model/type (e.g. PolaRX5, NetR9)",
     ),
     FieldSpec(
@@ -330,6 +362,7 @@ def with_position_tolerance(tolerance_m: float) -> List[FieldSpec]:
                     tos_extract=spec.tos_extract,
                     equal=overrides[spec.cfg_key],
                     normalize=spec.normalize,
+                    cfg_format=spec.cfg_format,
                     description=spec.description,
                     receiver_authoritative=spec.receiver_authoritative,
                 )
