@@ -397,6 +397,28 @@ __all__ = [
     "auto_resolve_if_open",
     "get_history",
     "list_open",
+    "open_station_ids",
+    "open_field_keys",
     "record_detection",
     "record_resolution",
 ]
+
+
+def open_station_ids(
+    verdicts: Optional[Sequence[str]] = None,
+    cfg_keys: Optional[Sequence[str]] = None,
+) -> List[str]:
+    """Unique station IDs that have at least one open discrepancy."""
+    records = list_open(cfg_keys=cfg_keys, verdicts=verdicts)
+    seen: set = set()
+    return [r.station_id for r in records if not (r.station_id in seen or seen.add(r.station_id))]
+
+
+def open_field_keys(
+    verdicts: Optional[Sequence[str]] = None,
+    station_ids: Optional[Sequence[str]] = None,
+) -> List[str]:
+    """Unique cfg_key values that have at least one open discrepancy."""
+    records = list_open(station_ids=station_ids, verdicts=verdicts)
+    seen: set = set()
+    return [r.cfg_key for r in records if not (r.cfg_key in seen or seen.add(r.cfg_key))]

@@ -464,7 +464,7 @@ def _reconcile_one(
     )
 
     silent = args.json
-    show_ok = not args.only_diffs
+    show_ok = not (args.only_diffs or getattr(args, "open", False))
     if not silent:
         _print_diff_table(diffs, show_ok=show_ok)
 
@@ -584,12 +584,23 @@ def cmd_cfg_reconcile(args) -> int:
         return 0
 
     # Stations
-    if args.all:
+    open_mode = getattr(args, "open", False)
+    if open_mode:
+        try:
+            from ..cfg import discrepancy_log as _dlog
+            station_ids = _dlog.open_station_ids()
+        except Exception as exc:  # noqa: BLE001
+            _progress(f"❌ could not read discrepancy log: {exc}", json_mode=args.json)
+            return 1
+        if not station_ids:
+            _progress("✅ no open discrepancies — config is clean", json_mode=args.json)
+            return 0
+    elif args.all:
         station_ids = _all_station_ids()
     elif args.station:
         station_ids = [s.upper() for s in args.station]
     else:
-        print("❌ specify station IDs or --all")
+        print("❌ specify station IDs, --all, or --open")
         print("   try: receivers cfg reconcile --help")
         return 2
 
@@ -631,6 +642,13 @@ def cmd_cfg_reconcile(args) -> int:
             print(f"   available: {sorted(valid)}")
             return 2
         fields = list(args.field)
+    elif open_mode:
+        # Auto-derive fields that have open conflicts — no point probing unaffected fields.
+        try:
+            from ..cfg import discrepancy_log as _dlog
+            fields = _dlog.open_field_keys(station_ids=station_ids) or None
+        except Exception:  # noqa: BLE001
+            fields = None  # fall back to all fields
 
     # Load configs
     configs = _load_station_configs(station_ids, json_mode=args.json)
@@ -640,6 +658,7 @@ def cmd_cfg_reconcile(args) -> int:
     # Header — keep stdout clean in JSON mode so output stays parseable
     _progress(
         f"Reconciling {len(configs)} station(s) — sources={','.join(sources)}"
+        + (" — open discrepancies only" if open_mode else "")
         + (f" — fields={','.join(fields)}" if fields else "")
         + (" — dry-run" if args.dry_run else "")
         + (" — auto-fill" if args.auto_fill else ""),
@@ -945,6 +964,8 @@ def create_cfg_parser(subparsers) -> None:
 Examples:
   receivers cfg reconcile ELDC
   receivers cfg reconcile ELDC THOB --source tos
+  receivers cfg reconcile --open                   # QC: review all known open issues
+  receivers cfg reconcile --open --dry-run --json  # machine-readable health report
   receivers cfg reconcile --all --auto-fill --field receiver_serial
   receivers cfg reconcile --all --dry-run --json
   receivers cfg reconcile --list-fields
@@ -975,6 +996,15 @@ Diagnosing TCP authentication failures:
         "--all",
         action="store_true",
         help="Reconcile every station in stations.cfg",
+    )
+    rec.add_argument(
+        "--open",
+        action="store_true",
+        help=(
+            "Reconcile only stations with open discrepancies in the log "
+            "(faster than --all; implies --only-diffs). "
+            "Fields default to those with open discrepancies unless --field is given."
+        ),
     )
     rec.add_argument(
         "--source",
