@@ -15,6 +15,7 @@ from receivers.cfg.field_manifest import (
     _identity,
     _meters_to_lat_deg,
     _meters_to_lon_deg,
+    _normalize_firmware_version,
     _receiver_type_eq,
     _receiver_type_to_cfg,
     _strip_placeholder,
@@ -581,6 +582,64 @@ class TestReceiverTypeCfgFormat:
         # to identity for receiver_type when a position tolerance was passed.
         specs_by_key = {s.cfg_key: s for s in with_position_tolerance(2.0)}
         assert specs_by_key["receiver_type"].cfg_format is _receiver_type_to_cfg
+
+
+# ---------------------------------------------------------------------------
+# Firmware version normalisation
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeFirmwareVersion:
+    """_normalize_firmware_version collapses two families of false-positive
+    conflicts seen in production:
+
+    1. Septentrio compact two-component: "5.50" ↔ "5.5.0", "5.35" ↔ "5.3.5"
+    2. Trimble NP/SP prefix: "NP 4.81 / SP 4.81" ↔ "4.81"
+    """
+
+    def test_septentrio_compact_trailing_zero(self):
+        assert _normalize_firmware_version("5.50") == "5.5.0"
+        assert _normalize_firmware_version("5.40") == "5.4.0"
+
+    def test_septentrio_compact_nonzero_patch(self):
+        assert _normalize_firmware_version("5.35") == "5.3.5"
+        assert _normalize_firmware_version("5.22") == "5.2.2"
+
+    def test_septentrio_canonical_unchanged(self):
+        assert _normalize_firmware_version("5.5.0") == "5.5.0"
+        assert _normalize_firmware_version("5.3.5") == "5.3.5"
+
+    def test_trimble_np_sp_full(self):
+        assert _normalize_firmware_version("NP 4.81 / SP 4.81") == "4.8.1"
+
+    def test_trimble_np_only(self):
+        assert _normalize_firmware_version("NP 4.81") == "4.8.1"
+
+    def test_trimble_plain_matches_np_extracted(self):
+        # "4.81" (health probe output) == "NP 4.81 / SP 4.81" (cfg entry)
+        assert _normalize_firmware_version("4.81") == _normalize_firmware_version(
+            "NP 4.81 / SP 4.81"
+        )
+
+    def test_hyphen_version_unchanged(self):
+        # G10 firmware "1.3-2" must not be mangled.
+        assert _normalize_firmware_version("1.3-2") == "1.3-2"
+
+    def test_beta_tag_preserved(self):
+        assert _normalize_firmware_version("5.5.0-beta2") == "5.5.0-beta2"
+
+    def test_none_returns_none(self):
+        assert _normalize_firmware_version(None) is None
+
+    def test_field_manifest_wires_normalize_on_firmware(self):
+        spec = fields_by_key()["receiver_firmware_version"]
+        assert spec.normalize is _normalize_firmware_version
+
+    def test_values_equal_compact_vs_canonical(self):
+        spec = fields_by_key()["receiver_firmware_version"]
+        assert spec.values_equal("5.50", "5.5.0")
+        assert spec.values_equal("5.35", "5.3.5")
+        assert spec.values_equal("NP 4.81 / SP 4.81", "4.81")
 
 
 # ---------------------------------------------------------------------------

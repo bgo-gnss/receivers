@@ -1137,7 +1137,8 @@ class PolaRX5TCPExtractor:
                 if not self._auth_failed:
                     self.logger.warning(
                         f"TCP command denied for {self.station_id} ({block_name}): "
-                        f"receiver requires authentication — check tcp_username/tcp_password in receivers.cfg"
+                        f"receiver requires authentication — verify tcp_username/tcp_password "
+                        f"in receivers.cfg and receiver_firmware_version in stations.cfg"
                     )
                     self._auth_failed = True
                 return None
@@ -1227,9 +1228,12 @@ class PolaRX5TCPExtractor:
         if self._auth_failed:
             # Previous attempt in this health check cycle failed — skip to avoid lockout.
             return True
-        if self.firmware_version and not _firmware_requires_auth(self.firmware_version):
-            # Known pre-5.7 firmware — commands work without authentication.
-            return True
+
+        # Always attempt login when credentials are configured — pre-5.7 receivers
+        # respond with "$E: Invalid command!" which is handled below, and 5.7.0+
+        # accept it normally. Skipping based on the stations.cfg firmware version
+        # silently breaks auth whenever the recorded version is stale (e.g. after
+        # a firmware upgrade that wasn't reflected in stations.cfg).
 
         cmd = f"login, {self.tcp_username}, {self.tcp_password}\n"
         sock.sendall(cmd.encode("utf-8"))

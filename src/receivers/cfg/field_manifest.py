@@ -19,6 +19,7 @@ Adding a new reconcilable field is a matter of appending a ``FieldSpec`` to
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
@@ -58,6 +59,42 @@ def _strip_placeholder(value: Optional[str]) -> Optional[str]:
     if s and set(s) == {"0"}:
         return None
     return s
+
+
+def _normalize_firmware_version(value: Optional[str]) -> Optional[str]:
+    """Normalize firmware version strings for robust comparison.
+
+    Two known format families produce false-positive conflicts:
+
+    1. Trimble NP/SP strings — ``"NP 4.81 / SP 4.81"`` (operator-entered in
+       stations.cfg) vs ``"4.81"`` (what the health probe extracts).  Strip
+       the ``NP`` prefix and everything from ``/ SP`` onward.
+
+    2. Septentrio compact two-component — ``"5.50"`` means ``5.5.0``
+       (major=5, combined minor+patch written as two digits).  Expand to the
+       canonical three-component form so ``"5.50" == "5.5.0"`` and
+       ``"5.35" == "5.3.5"``.
+    """
+    s = _strip(value)
+    if s is None:
+        return None
+
+    # Strip Trimble NP/SP prefix: "NP 4.81 / SP 4.81" → "4.81"
+    np_match = re.match(r"^NP\s+([\d.]+(?:-[\w.]+)?)", s, re.IGNORECASE)
+    if np_match:
+        s = np_match.group(1)
+
+    # Expand Septentrio compact two-component: "5.50" → "5.5.0", "5.35" → "5.3.5"
+    # Only applies when the minor part is exactly two ASCII digits.
+    parts = s.split(".")
+    if len(parts) == 2 and parts[1].isdigit() and len(parts[1]) == 2:
+        try:
+            int(parts[0])  # guard: major must be numeric
+            s = f"{parts[0]}.{parts[1][0]}.{parts[1][1]}"
+        except ValueError:
+            pass
+
+    return s.lower()
 
 
 def _strip_lower_eq(a: Optional[str], b: Optional[str]) -> bool:
@@ -244,6 +281,7 @@ FIELDS: List[FieldSpec] = [
         label="Receiver Firmware",
         receiver_extract=lambda identity: identity.get("firmware_version"),
         tos_extract=tos_adapter.current_receiver_firmware,
+        normalize=_normalize_firmware_version,
         description="Active firmware version reported by the receiver",
     ),
     # Antenna fields — TOS is canonical; receiver values are operator-typed
