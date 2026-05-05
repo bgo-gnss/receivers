@@ -19,6 +19,7 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import discrepancy_log as _dlog  # type: ignore[attr-defined]
+from .field_manifest import fields_by_key as _fields_by_key
 
 
 def flag_identity_vs_cfg(
@@ -70,6 +71,7 @@ def flag_identity_vs_cfg(
         else:
             _dlog.auto_resolve_if_open(station_id, "receiver_type")
 
+    _field_specs = _fields_by_key()
     for cfg_key, reported in [
         ("receiver_serial", identity.get("serial_number")),
         ("receiver_firmware_version", identity.get("firmware_version")),
@@ -77,9 +79,19 @@ def flag_identity_vs_cfg(
         if not reported:
             continue
         cfg_val = station_config.get(cfg_key)
-        if cfg_val and str(cfg_val).strip().lower() == str(reported).strip().lower():
-            _dlog.auto_resolve_if_open(station_id, cfg_key)
-            continue
+        spec = _field_specs.get(cfg_key)
+        # Use normalized comparison when a FieldSpec is available (handles
+        # firmware notation variants like "4.6.2" == "4.62"). Fall back to
+        # case-insensitive string equality for fields without a spec.
+        if cfg_val:
+            equal = (
+                spec.values_equal(str(cfg_val), str(reported))
+                if spec is not None
+                else str(cfg_val).strip().lower() == str(reported).strip().lower()
+            )
+            if equal:
+                _dlog.auto_resolve_if_open(station_id, cfg_key)
+                continue
         if not cfg_val:
             flagged.append(f"{cfg_key}=[missing] reported={reported!r}")
             records.append((cfg_key, None, str(reported), "missing"))
