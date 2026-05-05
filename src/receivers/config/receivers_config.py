@@ -660,6 +660,38 @@ def _update_cfg_field(cfg_path: Path, station_id: str, key: str, value: str) -> 
     return True
 
 
+def _remove_cfg_field(cfg_path: Path, station_id: str, key: str) -> bool:
+    """Remove a key line from a station section in a configparser-format file.
+
+    Preserves comments, ordering, and formatting.  Returns True if a line was
+    removed, False if the key was not found.
+    """
+    lines = cfg_path.read_text().splitlines(keepends=True)
+
+    section_header = f"[{station_id}]"
+    in_section = False
+    key_line_idx = -1
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == section_header:
+            in_section = True
+            continue
+        if in_section:
+            if stripped.startswith("["):
+                break
+            parts = stripped.split("=", 1)
+            if len(parts) == 2 and parts[0].strip().lower() == key.lower():
+                key_line_idx = i
+
+    if key_line_idx < 0:
+        return False
+
+    del lines[key_line_idx]
+    cfg_path.write_text("".join(lines))
+    return True
+
+
 def update_station_identity_in_cfg(
     station_id: str,
     firmware_version: Optional[str] = None,

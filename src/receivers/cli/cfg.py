@@ -39,6 +39,7 @@ from ..cfg.reconciler import (
     Verdict,
     apply_diff,
     compare_station,
+    remove_diff,
 )
 
 logger = logging.getLogger(__name__)
@@ -332,10 +333,17 @@ def _print_diff_table(
     print(f"   {'Field':<24} {'stations.cfg':<22} {'Receiver':<22} {'TOS':<22}")
     print(f"   {'-' * 24} {'-' * 22} {'-' * 22} {'-' * 22}")
     for d in diffs:
-        # format_mismatch rows are verdict=OK but notation differs — always show
+        # Always show format_mismatch and cfg_placeholder rows — they need cleanup
         if not show_ok and d.verdict == Verdict.OK and not d.format_mismatch:
             continue
-        glyph = "≈" if d.format_mismatch else _VERDICT_GLYPH.get(d.verdict, "?")
+        if not show_ok and d.verdict == Verdict.NO_DATA and not d.cfg_placeholder:
+            continue
+        if d.cfg_placeholder:
+            glyph = "~"
+        elif d.format_mismatch:
+            glyph = "≈"
+        else:
+            glyph = _VERDICT_GLYPH.get(d.verdict, "?")
         cfg_display = d.cfg_raw if d.cfg_raw is not None else d.cfg_value
         print(
             f" {glyph} {d.label:<24} {_render(cfg_display)} "
@@ -643,12 +651,18 @@ def _reconcile_one(
     actionable = [d for d in diffs if d.needs_attention]
     canonicalize_on = getattr(args, "canonicalize", False)
     fmt_mismatches = [d for d in diffs if d.format_mismatch] if canonicalize_on else []
-    if not actionable and not fmt_mismatches:
+    # cfg_placeholder rows are always collected — cleaned in --canonicalize or
+    # interactively, independent of whether other fields need attention.
+    cfg_placeholders = [d for d in diffs if d.cfg_placeholder]
+    if not actionable and not fmt_mismatches and not cfg_placeholders:
         return diffs, 0, 0
 
     if args.dry_run:
         if not silent and actionable:
             print(f"\n   {len(actionable)} field(s) need attention (dry-run, no writes)")
+        if not silent and cfg_placeholders:
+            keys = ", ".join(d.cfg_key for d in cfg_placeholders)
+            print(f"\n   {len(cfg_placeholders)} placeholder value(s) to remove: {keys} (dry-run)")
         # canonicalize dry-run section handled below; fall through
         if not canonicalize_on:
             return diffs, 0, len(actionable)
@@ -878,6 +892,59 @@ def _reconcile_one(
                 except Exception as exc:  # noqa: BLE001
                     if not silent:
                         print(f"     ❌ {d.cfg_key}: write failed: {exc}")
+
+    # Placeholder cleanup: remove keys whose raw cfg value is a recognized placeholder
+    # (e.g. TOS synthetic serials like antenna-AFST-20210527).
+    # --canonicalize auto-removes without prompting; interactive mode asks [d]elete.
+    if cfg_placeholders:
+        if canonicalize_on:
+            if not silent:
+                print(f"\n   Removing {len(cfg_placeholders)} placeholder value(s)…")
+            for d in cfg_placeholders:
+                if args.dry_run:
+                    if not silent:
+                        print(f"     ~ {d.cfg_key}: remove {d.cfg_raw!r} (dry-run)")
+                else:
+                    try:
+                        changed = remove_diff(
+                            station_id, d, resolved_by="canonicalize"
+                        )
+                        if changed:
+                            n_written += 1
+                            if not silent:
+                                print(f"     ✅ {d.cfg_key}: removed {d.cfg_raw!r}")
+                        elif not silent:
+                            print(f"     ⏭  {d.cfg_key} already absent")
+                    except SourceUnavailableError as exc:
+                        if not silent:
+                            print(f"     ❌ {d.cfg_key}: could not remove: {exc}")
+                    except Exception as exc:  # noqa: BLE001
+                        if not silent:
+                            print(f"     ❌ {d.cfg_key}: removal failed: {exc}")
+        elif not silent and not args.dry_run:
+            # Interactive: prompt for each placeholder
+            print(f"\n   {len(cfg_placeholders)} placeholder value(s) in cfg:")
+            for d in cfg_placeholders:
+                print(f"\n     ~ {d.cfg_key} = {d.cfg_raw!r}  (placeholder — no real value)")
+                print(f"       [d]elete · [k]eep · [q]uit")
+                try:
+                    choice = input("       > ").strip().lower()
+                except EOFError:
+                    choice = "q"
+                if choice in ("q", "quit"):
+                    break
+                if choice in ("d", "delete", ""):
+                    try:
+                        changed = remove_diff(station_id, d)
+                        if changed:
+                            n_written += 1
+                            print(f"       ✅ removed {d.cfg_key}")
+                        else:
+                            print(f"       ⏭  already absent")
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"       ❌ removal failed: {exc}")
+                else:
+                    n_skipped += 1
 
     return diffs, n_written, n_skipped
 
