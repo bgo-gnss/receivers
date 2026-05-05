@@ -105,6 +105,39 @@ def current_antenna_north(station: Dict[str, Any]) -> Optional[str]:
     return _antenna_composite(station, "antenna_offset_north", "monument_offset_north")
 
 
+def _antenna_breakdown(
+    station: Dict[str, Any],
+    antenna_key: str,
+    monument_key: str,
+    label: str,
+) -> Optional[str]:
+    """Return a human-readable breakdown of the two TOS components that sum to the composite."""
+    session = current_session(station)
+    if not session:
+        return None
+    antenna = session.get("antenna") or {}
+    monument = session.get("monument") or {}
+    av = antenna.get(antenna_key)
+    mv = monument.get(monument_key)
+    if av is None:
+        return None
+    av_s = f"{float(av):.4f}"
+    mv_s = f"{float(mv):.4f}" if mv is not None else "0.0000"
+    return f"TOS breakdown: antenna.{label}={av_s} + monument.{monument_key}={mv_s}"
+
+
+def antenna_height_breakdown(station: Dict[str, Any]) -> Optional[str]:
+    return _antenna_breakdown(station, "antenna_height", "monument_height", "antenna_height")
+
+
+def antenna_east_breakdown(station: Dict[str, Any]) -> Optional[str]:
+    return _antenna_breakdown(station, "antenna_offset_east", "monument_offset_east", "antenna_offset_east")
+
+
+def antenna_north_breakdown(station: Dict[str, Any]) -> Optional[str]:
+    return _antenna_breakdown(station, "antenna_offset_north", "monument_offset_north", "antenna_offset_north")
+
+
 def station_latitude(station: Dict[str, Any]) -> Optional[str]:
     val = station.get("lat")
     if val in (None, 0, 0.0, "", "0", "0.0"):

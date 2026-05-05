@@ -424,6 +424,9 @@ def _interactive_prompt(
             options.append("[C]push-cfg-to-TOS")
     options.extend(["[e]dit", "[k]eep", "[q]uit", "[?]help"])
 
+    if diff.note:
+        print(f"     ↳ {diff.note}")
+
     while True:
         print(f"     {' · '.join(options)}")
         try:
@@ -715,7 +718,9 @@ def _reconcile_one(
             print("   ⚠️  --push-tos requires --source tos or --source both")
 
     field_specs_by_key = fields_by_key()
-    no_receiver_primary: bool = getattr(args, "no_receiver_primary", False)
+    no_receiver_primary: bool = getattr(args, "no_receiver_primary", False) or getattr(
+        args, "interactive", False
+    )
     # Position sanity failure disables receiver-primary auto-push regardless of flags.
     receiver_primary_active = not no_receiver_primary and position_warn is None
 
@@ -1577,6 +1582,17 @@ Diagnosing TCP authentication failures:
             "Use this flag to revert to the traditional per-action prompt "
             "for the rare cases where the receiver value is not trustworthy "
             "(e.g. just-provisioned hardware with stale factory defaults)."
+        ),
+    )
+    rec.add_argument(
+        "--interactive",
+        action="store_true",
+        default=False,
+        help=(
+            "Force full interactive prompt for every field, including "
+            "receiver-primary fields (type/serial/firmware) that would "
+            "otherwise auto-accept the receiver value. Implies "
+            "--no-receiver-primary. Useful for testing and manual review."
         ),
     )
     rec.add_argument(

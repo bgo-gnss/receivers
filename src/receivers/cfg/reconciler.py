@@ -292,6 +292,18 @@ def compare_station(
         ):
             note = f"receiver={rx_val!r} but TOS={tos_val!r}"
 
+        if (
+            verdict in (Verdict.CONFLICT, Verdict.MISSING, Verdict.SOURCES_DISAGREE)
+            and spec.tos_breakdown is not None
+            and tos_data is not None
+        ):
+            try:
+                breakdown = spec.tos_breakdown(tos_data)
+                if breakdown:
+                    note = f"{note}; {breakdown}" if note else breakdown
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[%s] tos_breakdown for %s failed: %s", station_id, spec.cfg_key, exc)
+
         # Sync the discrepancy log with what we just observed:
         #   * actionable verdicts (MISSING/CONFLICT/SOURCES_DISAGREE) → record/refresh open row
         #   * OK → only auto-close when *every* source that could supply this

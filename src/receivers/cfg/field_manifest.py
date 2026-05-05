@@ -288,6 +288,12 @@ class FieldSpec:
     tos_attribute_code: Optional[str] = None
     tos_target_entity: Optional[str] = None
     tos_format: Callable[[Optional[str]], Optional[str]] = _identity
+    # Optional callable that takes the raw TOS station dict and returns a
+    # human-readable breakdown string shown in the interactive prompt.
+    # Used for composite fields (antenna_height/east/north) where the TOS
+    # value is a sum of two attributes and the operator needs to see the
+    # split to know which one to fix in TOS.
+    tos_breakdown: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None
 
     @property
     def tos_writable(self) -> bool:
@@ -394,6 +400,7 @@ FIELDS: List[FieldSpec] = [
         equal=_approx_eq(4),
         receiver_authoritative=False,
         description="Antenna height above mark including monument offset (m)",
+        tos_breakdown=tos_adapter.antenna_height_breakdown,
         # Composite of antenna.antenna_height + monument.monument_height — cannot
         # be written back without knowing the split; tos_attribute_code stays None.
     ),
@@ -410,6 +417,7 @@ FIELDS: List[FieldSpec] = [
         equal=_approx_eq(4),
         receiver_authoritative=False,
         description="Marker-to-ARP East offset (m); absent from cfg = 0.0000",
+        tos_breakdown=tos_adapter.antenna_east_breakdown,
         # Composite of antenna + monument offsets — not directly writable.
     ),
     FieldSpec(
@@ -425,6 +433,7 @@ FIELDS: List[FieldSpec] = [
         equal=_approx_eq(4),
         receiver_authoritative=False,
         description="Marker-to-ARP North offset (m); absent from cfg = 0.0000",
+        tos_breakdown=tos_adapter.antenna_north_breakdown,
         # Composite of antenna + monument offsets — not directly writable.
     ),
     # Coordinates — TOS is canonical (surveyed); receiver values come from a
