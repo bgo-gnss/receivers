@@ -732,7 +732,10 @@ def _reconcile_one(
     # cfg_placeholder rows are always collected — cleaned in --canonicalize or
     # interactively, independent of whether other fields need attention.
     cfg_placeholders = [d for d in diffs if d.cfg_placeholder]
-    if not actionable and not fmt_mismatches and not cfg_placeholders:
+    # tos_fillable: cfg has a value but TOS has none — offered after the main loop.
+    # Computed here so the early-return guard can include them.
+    tos_fillable_list = [d for d in diffs if _is_tos_fillable(d)] if not silent else []
+    if not actionable and not fmt_mismatches and not cfg_placeholders and not tos_fillable_list:
         return diffs, 0, 0
 
     if args.dry_run:
@@ -741,6 +744,9 @@ def _reconcile_one(
         if not silent and cfg_placeholders:
             keys = ", ".join(d.cfg_key for d in cfg_placeholders)
             print(f"\n   {len(cfg_placeholders)} placeholder value(s) to remove: {keys} (dry-run)")
+        if not silent and tos_fillable_list:
+            keys = ", ".join(d.cfg_key for d in tos_fillable_list)
+            print(f"\n   {len(tos_fillable_list)} field(s) with cfg value but TOS empty: {keys} (use C to populate)")
         # canonicalize dry-run section handled below; fall through
         if not canonicalize_on:
             return diffs, 0, len(actionable)
@@ -1078,11 +1084,9 @@ def _reconcile_one(
     # These are NOT "needs_attention" conflicts — they're silent gaps the operator
     # may want to fill. Show them separately so `C` is available without cluttering
     # the main diff flow.
-    if not silent and not args.dry_run:
-        tos_fillable = [d for d in diffs if _is_tos_fillable(d)]
-        if tos_fillable:
-            print(f"\n   {len(tos_fillable)} field(s) where cfg has a value but TOS has none:")
-            for d in tos_fillable:
+    if not silent and not args.dry_run and tos_fillable_list:
+        print(f"\n   {len(tos_fillable_list)} field(s) where cfg has a value but TOS has none:")
+        for d in tos_fillable_list:
                 print(f"\n     ↑ {d.label} ({d.cfg_key})")
                 print(f"       cfg: {d.cfg_value!r}")
                 print("       TOS: [no value — use C to populate]")
