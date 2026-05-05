@@ -715,14 +715,32 @@ A systematic review is needed to address recurring patterns of issues found duri
 - **Navigation RINEX**: Add format definitions for nav files when needed.
 - **Apply migration to production**: Run `021_archive_format.sql` on the production database (10.170.110.80) when ready.
 
+### Cfg Reconciliation — TOS Write Mechanics
+
+`receivers cfg reconcile STATION --push-tos` writes corrected values back to TOS via `tostools.api.tos_writer.TOSWriter`. This is built on TOS's temporal attribute store model:
+
+**Three write patterns** (see `tostools/docs/architecture/tos-write-api.md` for full reference):
+
+| Pattern | Use case | Mechanism |
+|---------|---------|-----------|
+| **1 — Correct in-place** | Fix wrong value, same period | `PATCH /attribute_value/{id_attribute_value}` with new `value` only — dates unchanged |
+| **2 — Record change** | New instrument, FW update | Close old period (`PATCH date_to=install_date`) + open new (`POST`) |
+| **3 — New attribute** | Attribute never set | `POST /attribute_values` with date_from = station install date |
+| **4 — Historical fix** | Correct a closed period | Same PATCH as Pattern 1 but targeting a specific historical `id_attribute_value` |
+
+**`--push-tos` currently implements Pattern 1 only** — correct the open (currently active) value in-place. Interactive prompt `T` (uppercase) triggers the push; the corrected value is taken from the receiver or cfg side, passed through `to_igs_*()` for IGS name conversion, then PATCHed on TOS.
+
+Key facts:
+- `TOSWriter` is dry-run by default — `--dry-run` is safe, `--push-tos` without `--dry-run` sends live writes
+- Date format: `"YYYY-MM-DDTHH:MM:SS"` only — no timezone (handled internally by `_tos_date()`)
+- TOS stores IGS equipment names; health system reports abbreviated names — conversion via `tostools.standards.igs_equipment`
+- Credentials: configure `[tos]` section in `database.cfg` to avoid interactive prompts
+
 ### Cfg Reconciliation — Future Work
 The `receivers cfg reconcile` command (introduced 2026-05) currently
 covers TOS → cfg and receiver → cfg with interactive review, auto-fill,
 JSON output, and field-scoped batch mode. Open follow-ups:
-- **`--push-tos`** (anticipated): write back from cfg/receiver to TOS so
-  ad-hoc field corrections close the loop with the authoritative
-  registry. Requires `tostools.api.tos_client` to expose POST/PUT
-  methods. Coordinate with the TOS team since it is shared.
+- **`--push-tos` Pattern 2 (instrument change)**: close old attribute period and open a new one when firmware/receiver changes. Currently only Pattern 1 (correct existing open value) is implemented.
 - **Source visibility hint**: when a source is excluded (e.g.
   `--source tos`), surface "receiver skipped — re-run with
   `--source both`" in the output header so it's obvious from the dump
@@ -752,9 +770,12 @@ JSON output, and field-scoped batch mode. Open follow-ups:
 - **Auto-fill policy**: decide which fields are "safe to auto-fill from
   TOS" (coordinates, station_name) versus which always require manual
   review (antenna_serial, receiver_serial, antenna_height).
+- **Pattern 4 — historical fixes**: `upsert_attribute_value` targets the most recent open value. For correcting a closed historical period, need a `date_hint` parameter to select the record by `date_from`. Useful for bulk-fixing old data entry errors without overwriting current values.
+- **Device entity writes**: `--push-tos` currently writes to the station entity only. Receiver model/serial/firmware live on the `gnss_receiver` child entity (`children_connections[].id_entity_child`). Needs a second history fetch + entity resolution step.
+- **Join record updates**: Device session start/end dates live in the join record (not the device entity). `TOSWriter.patch_entity_connection()` is implemented; needs wiring to reconcile workflow.
 
 ### Tracking
 - Full issue tracker: `docs/CODE_REVIEW_TRACKER.md`
-- Updated: 2026-05-03
+- Updated: 2026-05-05
 
 **Maintainer**: Veðurstofa Íslands GPS Team

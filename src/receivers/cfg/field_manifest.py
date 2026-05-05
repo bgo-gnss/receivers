@@ -20,10 +20,15 @@ Adding a new reconcilable field is a matter of appending a ``FieldSpec`` to
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, List, Optional
 
 from . import tos_adapter
+from tostools.standards.igs_equipment import (
+    to_igs_antenna,
+    to_igs_radome,
+    to_igs_receiver,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -258,6 +263,20 @@ class FieldSpec:
     # receiver carries operator-typed values (antenna metadata) or PVT
     # solutions that should not overwrite surveyed coordinates from TOS.
     receiver_authoritative: bool = True
+    # TOS write-side metadata. ``tos_attribute_code=None`` means the field is
+    # not writable via ``--push-tos`` (e.g. composite fields).
+    # ``tos_target_entity`` is the entity type that owns the attribute:
+    # "station" | "gnss_receiver" | "antenna" | "radome".
+    # ``tos_format`` transforms the value from receiver/cfg vocabulary to TOS
+    # attribute vocabulary before the write (default: identity).
+    tos_attribute_code: Optional[str] = None
+    tos_target_entity: Optional[str] = None
+    tos_format: Callable[[Optional[str]], Optional[str]] = _identity
+
+    @property
+    def tos_writable(self) -> bool:
+        """True if this field can be pushed to TOS via ``--push-tos``."""
+        return self.tos_attribute_code is not None and self.tos_target_entity is not None
 
     def values_equal(self, a: Optional[str], b: Optional[str]) -> bool:
         a_n = self.normalize(a)
@@ -285,6 +304,9 @@ FIELDS: List[FieldSpec] = [
         equal=_receiver_type_eq,
         cfg_format=_receiver_type_to_cfg,
         description="Receiver model/type (e.g. PolaRX5, NetR9)",
+        tos_attribute_code="model",
+        tos_target_entity="gnss_receiver",
+        tos_format=to_igs_receiver,
     ),
     FieldSpec(
         cfg_key="receiver_serial",
@@ -293,6 +315,8 @@ FIELDS: List[FieldSpec] = [
         tos_extract=tos_adapter.current_receiver_serial,
         normalize=_strip_placeholder,
         description="Receiver serial number",
+        tos_attribute_code="serial_number",
+        tos_target_entity="gnss_receiver",
     ),
     FieldSpec(
         cfg_key="receiver_firmware_version",
@@ -301,6 +325,8 @@ FIELDS: List[FieldSpec] = [
         tos_extract=tos_adapter.current_receiver_firmware,
         normalize=_normalize_firmware_version,
         description="Active firmware version reported by the receiver",
+        tos_attribute_code="firmware_version",
+        tos_target_entity="gnss_receiver",
     ),
     # Antenna fields — TOS is canonical; receiver values are operator-typed
     # so they're flagged on mismatch but never auto-fill cfg from receiver alone.
@@ -311,6 +337,9 @@ FIELDS: List[FieldSpec] = [
         tos_extract=tos_adapter.current_antenna_model,
         receiver_authoritative=False,
         description="IGS-style antenna model code",
+        tos_attribute_code="model",
+        tos_target_entity="antenna",
+        tos_format=to_igs_antenna,
     ),
     FieldSpec(
         cfg_key="antenna_serial",
@@ -320,6 +349,8 @@ FIELDS: List[FieldSpec] = [
         normalize=_strip_placeholder,
         receiver_authoritative=False,
         description="Antenna serial number",
+        tos_attribute_code="serial_number",
+        tos_target_entity="antenna",
     ),
     FieldSpec(
         cfg_key="antenna_radome",
@@ -328,6 +359,9 @@ FIELDS: List[FieldSpec] = [
         tos_extract=tos_adapter.current_radome_model,
         receiver_authoritative=False,
         description="Radome model code (NONE if absent)",
+        tos_attribute_code="model",
+        tos_target_entity="radome",
+        tos_format=to_igs_radome,
     ),
     FieldSpec(
         cfg_key="antenna_height",
@@ -341,6 +375,8 @@ FIELDS: List[FieldSpec] = [
         equal=_approx_eq(4),
         receiver_authoritative=False,
         description="Antenna height above mark including monument offset (m)",
+        # Composite of antenna.antenna_height + monument.monument_height — cannot
+        # be written back without knowing the split; tos_attribute_code stays None.
     ),
     FieldSpec(
         cfg_key="antenna_east",
@@ -355,6 +391,7 @@ FIELDS: List[FieldSpec] = [
         equal=_approx_eq(4),
         receiver_authoritative=False,
         description="Marker-to-ARP East offset (m); absent from cfg = 0.0000",
+        # Composite of antenna + monument offsets — not directly writable.
     ),
     FieldSpec(
         cfg_key="antenna_north",
@@ -369,11 +406,14 @@ FIELDS: List[FieldSpec] = [
         equal=_approx_eq(4),
         receiver_authoritative=False,
         description="Marker-to-ARP North offset (m); absent from cfg = 0.0000",
+        # Composite of antenna + monument offsets — not directly writable.
     ),
     # Coordinates — TOS is canonical (surveyed); receiver values come from a
     # real-time PVT solution (~1-2 m accuracy) and are used purely as a sanity
     # check that the receiver is at the expected mark. Equality tolerance is
     # rebuilt at CLI invocation from --position-tolerance-m.
+    # tos_attribute_code is populated so operator-driven corrections are possible;
+    # CLI policy (not manifest) guards against pushing PVT estimates.
     FieldSpec(
         cfg_key="latitude",
         label="Latitude",
@@ -386,6 +426,8 @@ FIELDS: List[FieldSpec] = [
         equal=_abs_tol(_meters_to_lat_deg(DEFAULT_POSITION_TOLERANCE_M)),
         receiver_authoritative=False,
         description="Decimal-degree latitude",
+        tos_attribute_code="lat",
+        tos_target_entity="station",
     ),
     FieldSpec(
         cfg_key="longitude",
@@ -399,6 +441,8 @@ FIELDS: List[FieldSpec] = [
         equal=_abs_tol(_meters_to_lon_deg(DEFAULT_POSITION_TOLERANCE_M)),
         receiver_authoritative=False,
         description="Decimal-degree longitude",
+        tos_attribute_code="lon",
+        tos_target_entity="station",
     ),
     FieldSpec(
         cfg_key="height",
@@ -412,12 +456,16 @@ FIELDS: List[FieldSpec] = [
         equal=_abs_tol(DEFAULT_POSITION_TOLERANCE_M),
         receiver_authoritative=False,
         description="Ellipsoidal height (m)",
+        tos_attribute_code="altitude",
+        tos_target_entity="station",
     ),
     FieldSpec(
         cfg_key="station_name",
         label="Station Name",
         tos_extract=tos_adapter.station_name,
         description="Long-form station name (TOS-only; receiver MarkerName carries the 4-char ID)",
+        tos_attribute_code="name",
+        tos_target_entity="station",
     ),
 ]
 
@@ -435,25 +483,10 @@ def with_position_tolerance(tolerance_m: float) -> List[FieldSpec]:
         "longitude": position_equality_for("longitude", tolerance_m),
         "height": position_equality_for("height", tolerance_m),
     }
-    out: List[FieldSpec] = []
-    for spec in FIELDS:
-        if spec.cfg_key in overrides:
-            out.append(
-                FieldSpec(
-                    cfg_key=spec.cfg_key,
-                    label=spec.label,
-                    receiver_extract=spec.receiver_extract,
-                    tos_extract=spec.tos_extract,
-                    equal=overrides[spec.cfg_key],
-                    normalize=spec.normalize,
-                    cfg_format=spec.cfg_format,
-                    description=spec.description,
-                    receiver_authoritative=spec.receiver_authoritative,
-                )
-            )
-        else:
-            out.append(spec)
-    return out
+    return [
+        replace(spec, equal=overrides[spec.cfg_key]) if spec.cfg_key in overrides else spec
+        for spec in FIELDS
+    ]
 
 
 def fields_by_key() -> Dict[str, FieldSpec]:

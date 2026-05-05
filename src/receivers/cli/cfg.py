@@ -362,6 +362,7 @@ Actions:
   s   set the field to the suggested value (when shown)
   r   set to the receiver-reported value
   t   set to the TOS value
+  T   push the receiver value to TOS (write to TOS, not cfg)
   e   enter a custom value
   k   keep the existing cfg value (skip)
   q   quit reconciliation for this station
@@ -373,8 +374,8 @@ def _interactive_prompt(diff: FieldDiff) -> Tuple[str, Optional[str]]:
     """Ask the user what to do for one field.
 
     Returns ``(action, value)`` where action is one of
-    ``set``, ``skip``, ``quit`` and ``value`` is the chosen value
-    when action is ``set``.
+    ``set``, ``push_tos``, ``skip``, ``quit`` and ``value`` is the chosen
+    value (for ``set`` and ``push_tos``).
     """
     options: List[str] = []
     if diff.suggestion is not None:
@@ -384,12 +385,15 @@ def _interactive_prompt(diff: FieldDiff) -> Tuple[str, Optional[str]]:
         options.append(f"[r]eceiver={diff.receiver_value!r}")
     if diff.tos_value is not None and diff.tos_value != diff.suggestion:
         options.append(f"[t]os={diff.tos_value!r}")
+    if diff.spec.tos_writable and diff.receiver_value is not None:
+        options.append("[T]push-to-TOS")
     options.extend(["[e]dit", "[k]eep", "[q]uit", "[?]help"])
 
     while True:
         print(f"     {' · '.join(options)}")
         try:
-            choice = input("     > ").strip().lower()
+            raw = input("     > ").strip()
+            choice = raw.lower()
         except EOFError:
             return ("quit", None)
 
@@ -410,6 +414,14 @@ def _interactive_prompt(diff: FieldDiff) -> Tuple[str, Optional[str]]:
                 print("     (receiver value not available)")
                 continue
             return ("set", diff.receiver_value)
+        if raw == "T":  # case-sensitive: uppercase T = push to TOS
+            if not diff.spec.tos_writable:
+                print(f"     (field {diff.cfg_key!r} is not TOS-writable)")
+                continue
+            if diff.receiver_value is None:
+                print("     (no receiver value to push)")
+                continue
+            return ("push_tos", diff.receiver_value)
         if choice in ("t", "tos"):
             if diff.tos_value is None:
                 print("     (TOS value not available)")
@@ -425,6 +437,80 @@ def _interactive_prompt(diff: FieldDiff) -> Tuple[str, Optional[str]]:
                 return ("skip", None)
             return ("set", custom)
         print(f"     unknown action {choice!r}")
+
+
+# ---------------------------------------------------------------------------
+# TOS push helper
+# ---------------------------------------------------------------------------
+
+
+def _effective_date_for(args: argparse.Namespace) -> str:
+    """Return an ISO-8601 date_from for TOS attribute writes.
+
+    Uses ``args.effective_date`` when set, otherwise falls back to current UTC
+    with a warning — correct for serial/firmware corrections where the operator
+    knows the actual change date only approximately.
+    """
+    ed = getattr(args, "effective_date", None)
+    if ed:
+        return ed
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    logger.debug("--effective-date not set; defaulting to now (%s)", now)
+    return now
+
+
+def _do_push_tos(
+    station_id: str,
+    diff: FieldDiff,
+    value: str,
+    tos_data: Optional[Dict[str, Any]],
+    args: argparse.Namespace,
+    silent: bool,
+) -> None:
+    """Push *value* for *diff.spec* to TOS; handles errors and dry-run."""
+    if tos_data is None:
+        if not silent:
+            print(f"     ❌ cannot push to TOS: no TOS data for {station_id}")
+        return
+
+    try:
+        from tostools.api.tos_writer import TOSWriter
+
+        from ..cfg.tos_push import push_field_to_tos
+    except ImportError as exc:
+        if not silent:
+            print(f"     ❌ tostools not available: {exc}")
+        return
+
+    dry_run: bool = getattr(args, "dry_run", True)
+    writer = TOSWriter(dry_run=dry_run)
+    date_from = _effective_date_for(args)
+
+    if not silent:
+        mode = "[DRY-RUN] " if dry_run else ""
+        print(
+            f"     {mode}→ push to TOS: {diff.cfg_key} = {value!r} "
+            f"(attr={diff.spec.tos_attribute_code!r}, "
+            f"entity={diff.spec.tos_target_entity}, date_from={date_from})"
+        )
+
+    try:
+        result = push_field_to_tos(
+            writer=writer,
+            spec=diff.spec,
+            value=value,
+            tos_data=tos_data,
+            date_from=date_from,
+        )
+        if not silent:
+            if hasattr(result, "method"):  # DryRunResult
+                print(f"     ✅ [dry-run] would {result.method} {result.endpoint}")
+            else:
+                print(f"     ✅ TOS updated: {diff.cfg_key} = {value!r}")
+    except Exception as exc:  # noqa: BLE001
+        if not silent:
+            print(f"     ❌ TOS push failed: {exc}")
+        logger.warning("[%s] TOS push failed for %s: %s", station_id, diff.cfg_key, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -487,8 +573,35 @@ def _reconcile_one(
 
     # In JSON mode without an auto-resolution flag we can't make decisions —
     # nothing to do beyond returning diffs for the caller to report.
-    if silent and not (args.auto_fill or args.yes):
+    push_to_tos_on = getattr(args, "push_tos", False)
+    if silent and not (args.auto_fill or args.yes or push_to_tos_on):
         return diffs, 0, 0
+
+    # --push-tos batch mode: push receiver values to TOS for all writable fields
+    # that have a receiver value, independent of the cfg reconciliation loop below.
+    if push_to_tos_on and "tos" in sources and tos_data is not None:
+        if not silent:
+            writable = [
+                d for d in actionable
+                if d.spec.tos_writable and d.receiver_value is not None
+            ]
+            if writable:
+                print(f"\n   Pushing {len(writable)} field(s) to TOS…")
+        for d in actionable:
+            if not d.spec.tos_writable or d.receiver_value is None:
+                continue
+            if args.yes or not silent:
+                _do_push_tos(
+                    station_id=station_id,
+                    diff=d,
+                    value=d.receiver_value,
+                    tos_data=tos_data,
+                    args=args,
+                    silent=silent,
+                )
+    elif push_to_tos_on and "tos" not in sources:
+        if not silent:
+            print("   ⚠️  --push-tos requires --source tos or --source both")
 
     field_specs_by_key = fields_by_key()
 
@@ -532,6 +645,16 @@ def _reconcile_one(
             break
         if action == "skip":
             n_skipped += 1
+            continue
+        if action == "push_tos" and new_value is not None:
+            _do_push_tos(
+                station_id=station_id,
+                diff=d,
+                value=new_value,
+                tos_data=tos_data,
+                args=args,
+                silent=silent,
+            )
             continue
         if action == "set" and new_value is not None:
             # Apply per-field cfg vocabulary mapping (e.g. TOS "SEPT POLARX5"
@@ -1162,6 +1285,28 @@ Diagnosing TCP authentication failures:
             "(default: 8; 0=auto=min(8,N); 1=sequential). "
             "Only the network probe phase is parallelised — writes and "
             "interactive prompts always run sequentially."
+        ),
+    )
+    rec.add_argument(
+        "--push-tos",
+        action="store_true",
+        help=(
+            "For each field that has a receiver-reported value and is TOS-writable, "
+            "push the receiver value to TOS (in addition to — or instead of — writing "
+            "to stations.cfg). Requires --source to include 'tos'. "
+            "Combine with --field to target specific fields (e.g. "
+            "--field receiver_firmware_version --push-tos --yes). "
+            "Honours --dry-run."
+        ),
+    )
+    rec.add_argument(
+        "--effective-date",
+        metavar="ISO8601",
+        help=(
+            "date_from timestamp for TOS attribute writes (ISO-8601, e.g. "
+            "2025-03-15T00:00:00+00:00). Defaults to the current UTC time when "
+            "omitted — correct for write-now corrections; use an explicit date "
+            "for historical fixes (e.g. the actual firmware upgrade date)."
         ),
     )
     rec.set_defaults(func=cmd_cfg_reconcile)
