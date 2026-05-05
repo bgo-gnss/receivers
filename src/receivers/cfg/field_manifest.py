@@ -24,6 +24,11 @@ from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, List, Optional
 
 from . import tos_adapter
+from tostools.standards.igs_equipment import (
+    to_igs_antenna,
+    to_igs_radome,
+    to_igs_receiver,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -301,9 +306,7 @@ FIELDS: List[FieldSpec] = [
         description="Receiver model/type (e.g. PolaRX5, NetR9)",
         tos_attribute_code="model",
         tos_target_entity="gnss_receiver",
-        # Receiver reports short canonical names ("PolaRX5"); TOS expects IGS
-        # codes ("SEPT POLARX5"). Until a complete IGS code mapper is wired up,
-        # push whatever the receiver reports — the operator reviews before confirming.
+        tos_format=to_igs_receiver,
     ),
     FieldSpec(
         cfg_key="receiver_serial",
@@ -336,6 +339,7 @@ FIELDS: List[FieldSpec] = [
         description="IGS-style antenna model code",
         tos_attribute_code="model",
         tos_target_entity="antenna",
+        tos_format=to_igs_antenna,
     ),
     FieldSpec(
         cfg_key="antenna_serial",
@@ -357,6 +361,7 @@ FIELDS: List[FieldSpec] = [
         description="Radome model code (NONE if absent)",
         tos_attribute_code="model",
         tos_target_entity="radome",
+        tos_format=to_igs_radome,
     ),
     FieldSpec(
         cfg_key="antenna_height",
