@@ -740,7 +740,7 @@ Key facts:
 The `receivers cfg reconcile` command (introduced 2026-05) currently
 covers TOS → cfg and receiver → cfg with interactive review, auto-fill,
 JSON output, and field-scoped batch mode. Open follow-ups:
-- **`--push-tos` Pattern 2 (instrument change)**: close old attribute period and open a new one when firmware/receiver changes. Currently only Pattern 1 (correct existing open value) is implemented.
+- **Pattern 2 (instrument change) — separate workflow needed**: when receiver/antenna/firmware discrepancy reflects an actual swap or upgrade (not a data-entry error), the fix is to close the old TOS period (`date_to`) and open a new one (`date_from` = install date). This is distinct from Pattern 1 (PATCH open value for typos). Currently the interactive prompt warns the operator to check which case applies and handle Pattern 2 manually in TOS. A future `receivers tos add-instrument` (or tostools) command should automate this — interface not yet designed.
 - **Source visibility hint**: when a source is excluded (e.g.
   `--source tos`), surface "receiver skipped — re-run with
   `--source both`" in the output header so it's obvious from the dump

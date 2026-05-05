@@ -368,20 +368,22 @@ def _summary_counts(diffs: List[FieldDiff]) -> Dict[str, int]:
 _HELP = """
 Actions:
   s   set the field to the suggested value (when shown)
-  r   set to the receiver-reported value
-      (for receiver-primary fields: also pushes to TOS automatically)
+  r   set to the receiver-reported value (cfg only)
   t   set to the TOS value (cfg only, no TOS push)
-  T   push the receiver value to TOS (write to TOS, not cfg)
+  T   push the receiver value to TOS — use only after confirming this is a
+      data-entry error (Pattern 1: correct the open value in-place).
+      If the discrepancy reflects an instrument change (new receiver, fw
+      upgrade, antenna swap), close the old TOS period and add a new one
+      manually — do NOT use T in that case.
   C   push the cfg value to TOS (when cfg is correct but TOS is wrong)
   e   enter a custom value
   k   keep the existing cfg value (skip)
   q   quit reconciliation for this station
   ?   show this help
 
-Receiver-primary fields (type, serial, firmware): the receiver is the
-hardware ground-truth. Pressing r or Enter accepts the receiver value into
-cfg AND pushes it to TOS in one step. Use --no-receiver-primary to revert
-to individual-action prompts for all fields.
+Receiver-primary fields (type, serial, firmware) show a warning when TOS
+disagrees. Check the TOS history first: data-entry error → fix with T;
+instrument change → handle manually in TOS (close old period, add new).
 
 For antenna fields (type, serial, radome): TOS is canonical but the operator
 may have a correct value in cfg that TOS lacks. Use C to push cfg → TOS
@@ -395,34 +397,36 @@ def _interactive_prompt(
     """Ask the user what to do for one field.
 
     Returns ``(action, value)`` where action is one of
-    ``set``, ``set_and_push_tos``, ``push_tos``, ``skip``, ``quit``
+    ``set``, ``push_tos``, ``push_cfg_to_tos``, ``skip``, ``quit``
     and ``value`` is the chosen value (for write actions).
 
     When ``receiver_primary_active`` is True and ``diff.spec.receiver_primary``
-    is set, pressing Enter or ``r`` triggers ``set_and_push_tos`` — a single
-    atomic action that writes the receiver value to cfg AND pushes it to TOS.
+    is set, a warning is shown reminding the operator to check whether the
+    TOS discrepancy is a data-entry error (fix with T) or an unlogged
+    instrument change (requires manual TOS period management).
     """
     is_primary = receiver_primary_active and diff.spec.receiver_primary and diff.receiver_value is not None
 
     options: List[str] = []
-    if is_primary:
-        # Receiver-primary: lead with the combined accept+push action
-        options.append(f"[r/enter]=accept receiver+TOS ({diff.receiver_value!r})")
-        if diff.tos_value is not None:
-            options.append(f"[t]os-only={diff.tos_value!r}")
-    else:
-        if diff.suggestion is not None:
-            src = diff.suggestion_source or "?"
-            options.append(f"[s]et to {diff.suggestion!r} ({src})")
-        if diff.receiver_value is not None and diff.receiver_value != diff.suggestion:
-            options.append(f"[r]eceiver={diff.receiver_value!r}")
-        if diff.tos_value is not None and diff.tos_value != diff.suggestion:
-            options.append(f"[t]os={diff.tos_value!r}")
-        if diff.spec.tos_writable and diff.receiver_value is not None:
-            options.append("[T]push-receiver-to-TOS")
-        if diff.spec.tos_writable and diff.cfg_value is not None:
-            options.append("[C]push-cfg-to-TOS")
+    if diff.suggestion is not None:
+        src = diff.suggestion_source or "?"
+        options.append(f"[s]et to {diff.suggestion!r} ({src})")
+    if diff.receiver_value is not None and diff.receiver_value != diff.suggestion:
+        options.append(f"[r]eceiver={diff.receiver_value!r}")
+    if diff.tos_value is not None and diff.tos_value != diff.suggestion:
+        options.append(f"[t]os={diff.tos_value!r}")
+    if diff.spec.tos_writable and diff.receiver_value is not None:
+        options.append("[T]push-receiver-to-TOS")
+    if diff.spec.tos_writable and diff.cfg_value is not None:
+        options.append("[C]push-cfg-to-TOS")
     options.extend(["[e]dit", "[k]eep", "[q]uit", "[?]help"])
+
+    if is_primary:
+        print(
+            "     ⚠  TOS discrepancy on hardware-identity field — check history before pushing:"
+            " data-entry error → [T] to correct in-place;"
+            " instrument change → close old period in TOS and add new one (manual)."
+        )
 
     if diff.note:
         print(f"     ↳ {diff.note}")
@@ -446,13 +450,8 @@ def _interactive_prompt(
             if diff.receiver_value is None:
                 print("     (receiver value not available)")
                 continue
-            if is_primary:
-                return ("set_and_push_tos", diff.receiver_value)
             return ("set", diff.receiver_value)
         if choice in ("s", "set"):
-            if is_primary:
-                print("     (use r/enter to accept receiver, t for TOS-only, e to edit)")
-                continue
             if diff.suggestion is None:
                 print("     (no suggestion available — pick r/t/e)")
                 continue
