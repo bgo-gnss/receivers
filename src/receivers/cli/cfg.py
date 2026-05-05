@@ -372,6 +372,7 @@ Actions:
       (for receiver-primary fields: also pushes to TOS automatically)
   t   set to the TOS value (cfg only, no TOS push)
   T   push the receiver value to TOS (write to TOS, not cfg)
+  C   push the cfg value to TOS (when cfg is correct but TOS is wrong)
   e   enter a custom value
   k   keep the existing cfg value (skip)
   q   quit reconciliation for this station
@@ -381,6 +382,10 @@ Receiver-primary fields (type, serial, firmware): the receiver is the
 hardware ground-truth. Pressing r or Enter accepts the receiver value into
 cfg AND pushes it to TOS in one step. Use --no-receiver-primary to revert
 to individual-action prompts for all fields.
+
+For antenna fields (type, serial, radome): TOS is canonical but the operator
+may have a correct value in cfg that TOS lacks. Use C to push cfg → TOS
+without changing cfg itself.
 """.rstrip()
 
 
@@ -414,7 +419,9 @@ def _interactive_prompt(
         if diff.tos_value is not None and diff.tos_value != diff.suggestion:
             options.append(f"[t]os={diff.tos_value!r}")
         if diff.spec.tos_writable and diff.receiver_value is not None:
-            options.append("[T]push-to-TOS")
+            options.append("[T]push-receiver-to-TOS")
+        if diff.spec.tos_writable and diff.cfg_value is not None:
+            options.append("[C]push-cfg-to-TOS")
     options.extend(["[e]dit", "[k]eep", "[q]uit", "[?]help"])
 
     while True:
@@ -447,14 +454,22 @@ def _interactive_prompt(
                 print("     (no suggestion available — pick r/t/e)")
                 continue
             return ("set", diff.suggestion)
-        if raw == "T":  # case-sensitive: uppercase T = push to TOS
+        if raw == "T":  # case-sensitive: uppercase T = push receiver value to TOS
             if not diff.spec.tos_writable:
                 print(f"     (field {diff.cfg_key!r} is not TOS-writable)")
                 continue
             if diff.receiver_value is None:
-                print("     (no receiver value to push)")
+                print("     (no receiver value to push — use C to push cfg value)")
                 continue
             return ("push_tos", diff.receiver_value)
+        if raw == "C":  # case-sensitive: uppercase C = push cfg value to TOS
+            if not diff.spec.tos_writable:
+                print(f"     (field {diff.cfg_key!r} is not TOS-writable)")
+                continue
+            if diff.cfg_value is None:
+                print("     (no cfg value to push)")
+                continue
+            return ("push_cfg_to_tos", diff.cfg_value)
         if choice in ("t", "tos"):
             if diff.tos_value is None:
                 print("     (TOS value not available)")
@@ -772,6 +787,18 @@ def _reconcile_one(
             n_skipped += 1
             continue
         if action == "push_tos" and new_value is not None:
+            _do_push_tos(
+                station_id=station_id,
+                diff=d,
+                value=new_value,
+                tos_data=tos_data,
+                args=args,
+                silent=silent,
+            )
+            continue
+        if action == "push_cfg_to_tos" and new_value is not None:
+            if not silent:
+                print(f"     → push cfg value to TOS: {d.cfg_key} = {new_value!r}")
             _do_push_tos(
                 station_id=station_id,
                 diff=d,
