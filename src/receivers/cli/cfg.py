@@ -326,10 +326,17 @@ def _print_setup_header(station_id: str, station_config: Dict[str, Any]) -> None
 
 
 def _is_tos_fillable(d: FieldDiff) -> bool:
-    """True when cfg has a real value and TOS was queried but has nothing."""
+    """True when cfg has a real value, TOS was queried but returned nothing, and the field is TOS-writable.
+
+    Catches two cases:
+    - NO_DATA: both receiver and TOS have no value (only cfg has it)
+    - OK: cfg and receiver agree, but TOS has nothing — these show as ✓ but
+      TOS still needs to be populated
+    """
     return (
-        d.verdict == Verdict.NO_DATA
+        d.verdict in (Verdict.NO_DATA, Verdict.OK)
         and d.cfg_value is not None
+        and d.tos_value is None
         and "tos" in d.sources_queried
         and d.spec.tos_writable
     )
@@ -344,7 +351,7 @@ def _print_diff_table(
     print(f"   {'-' * 24} {'-' * 22} {'-' * 22} {'-' * 22}")
     for d in diffs:
         # Always show format_mismatch, cfg_placeholder, and tos_fillable rows
-        if not show_ok and d.verdict == Verdict.OK and not d.format_mismatch:
+        if not show_ok and d.verdict == Verdict.OK and not d.format_mismatch and not _is_tos_fillable(d):
             continue
         if not show_ok and d.verdict == Verdict.NO_DATA and not d.cfg_placeholder and not _is_tos_fillable(d):
             continue
@@ -1087,31 +1094,31 @@ def _reconcile_one(
     if not silent and not args.dry_run and tos_fillable_list:
         print(f"\n   {len(tos_fillable_list)} field(s) where cfg has a value but TOS has none:")
         for d in tos_fillable_list:
-                print(f"\n     ↑ {d.label} ({d.cfg_key})")
-                print(f"       cfg: {d.cfg_value!r}")
-                print("       TOS: [no value — use C to populate]")
-                print("       [C]push-cfg-to-TOS · [k]eep · [q]uit")
-                try:
-                    raw = input("       > ").strip()
-                except EOFError:
-                    break
-                if raw in ("q", "quit"):
-                    break
-                if raw == "C":
-                    cfg_val = d.cfg_value
-                    assert cfg_val is not None  # guaranteed by _is_tos_fillable
-                    if not silent:
-                        print(f"       → push cfg value to TOS: {d.cfg_key} = {cfg_val!r}")
-                    _do_push_tos(
-                        station_id=station_id,
-                        diff=d,
-                        value=cfg_val,
-                        tos_data=tos_data,
-                        args=args,
-                        silent=silent,
-                    )
-                else:
-                    n_skipped += 1
+            print(f"\n     ↑ {d.label} ({d.cfg_key})")
+            print(f"       cfg: {d.cfg_value!r}")
+            print("       TOS: [no value — use C to populate]")
+            print("       [C]push-cfg-to-TOS · [k]eep · [q]uit")
+            try:
+                raw = input("       > ").strip()
+            except EOFError:
+                break
+            if raw in ("q", "quit"):
+                break
+            if raw == "C":
+                cfg_val = d.cfg_value
+                assert cfg_val is not None  # guaranteed by _is_tos_fillable
+                if not silent:
+                    print(f"       → push cfg value to TOS: {d.cfg_key} = {cfg_val!r}")
+                _do_push_tos(
+                    station_id=station_id,
+                    diff=d,
+                    value=cfg_val,
+                    tos_data=tos_data,
+                    args=args,
+                    silent=silent,
+                )
+            else:
+                n_skipped += 1
 
     return diffs, n_written, n_skipped
 
