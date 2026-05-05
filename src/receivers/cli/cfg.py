@@ -473,13 +473,17 @@ def _reconcile_one(
     n_written = 0
     n_skipped = 0
     actionable = [d for d in diffs if d.needs_attention]
-    if not actionable:
+    canonicalize_on = getattr(args, "canonicalize", False)
+    fmt_mismatches = [d for d in diffs if d.format_mismatch] if canonicalize_on else []
+    if not actionable and not fmt_mismatches:
         return diffs, 0, 0
 
     if args.dry_run:
-        if not silent:
+        if not silent and actionable:
             print(f"\n   {len(actionable)} field(s) need attention (dry-run, no writes)")
-        return diffs, 0, len(actionable)
+        # canonicalize dry-run section handled below; fall through
+        if not canonicalize_on:
+            return diffs, 0, len(actionable)
 
     # In JSON mode without an auto-resolution flag we can't make decisions —
     # nothing to do beyond returning diffs for the caller to report.
@@ -567,36 +571,32 @@ def _reconcile_one(
                     print(f"     ❌ write failed: {exc}")
 
     # --canonicalize: rewrite format-mismatch fields to receiver notation
-    if getattr(args, "canonicalize", False):
-        fmt_mismatches = [d for d in diffs if d.format_mismatch]
-        if fmt_mismatches:
-            if not silent:
-                print(f"\n   Canonicalizing {len(fmt_mismatches)} notation-only field(s)…")
-            for d in fmt_mismatches:
-                rx_val = d.receiver_value  # guaranteed non-None by format_mismatch
-                assert rx_val is not None
-                if args.dry_run:
+    if canonicalize_on and fmt_mismatches:
+        if not silent:
+            print(f"\n   Canonicalizing {len(fmt_mismatches)} notation-only field(s)…")
+        for d in fmt_mismatches:
+            rx_val = d.receiver_value  # guaranteed non-None by format_mismatch
+            assert rx_val is not None
+            if args.dry_run:
+                if not silent:
+                    print(f"     ≈ {d.cfg_key}: {d.cfg_raw!r} → {rx_val!r} (dry-run)")
+            else:
+                try:
+                    changed = apply_diff(
+                        station_id, d, rx_val, resolved_by="canonicalize"
+                    )
+                    if changed:
+                        n_written += 1
+                        if not silent:
+                            print(f"     ✅ {d.cfg_key}: {d.cfg_raw!r} → {rx_val!r}")
+                    elif not silent:
+                        print(f"     ⏭  {d.cfg_key} already canonical")
+                except SourceUnavailableError as exc:
                     if not silent:
-                        print(f"     ≈ {d.cfg_key}: {d.cfg_raw!r} → {rx_val!r} (dry-run)")
-                else:
-                    try:
-                        changed = apply_diff(
-                            station_id, d, rx_val, resolved_by="canonicalize"
-                        )
-                        if changed:
-                            n_written += 1
-                            if not silent:
-                                print(
-                                    f"     ✅ {d.cfg_key}: {d.cfg_raw!r} → {rx_val!r}"
-                                )
-                        elif not silent:
-                            print(f"     ⏭  {d.cfg_key} already canonical")
-                    except SourceUnavailableError as exc:
-                        if not silent:
-                            print(f"     ❌ {d.cfg_key}: could not write: {exc}")
-                    except Exception as exc:  # noqa: BLE001
-                        if not silent:
-                            print(f"     ❌ {d.cfg_key}: write failed: {exc}")
+                        print(f"     ❌ {d.cfg_key}: could not write: {exc}")
+                except Exception as exc:  # noqa: BLE001
+                    if not silent:
+                        print(f"     ❌ {d.cfg_key}: write failed: {exc}")
 
     return diffs, n_written, n_skipped
 
