@@ -332,9 +332,10 @@ def _print_diff_table(
     print(f"   {'Field':<24} {'stations.cfg':<22} {'Receiver':<22} {'TOS':<22}")
     print(f"   {'-' * 24} {'-' * 22} {'-' * 22} {'-' * 22}")
     for d in diffs:
-        if not show_ok and d.verdict == Verdict.OK:
+        # format_mismatch rows are verdict=OK but notation differs — always show
+        if not show_ok and d.verdict == Verdict.OK and not d.format_mismatch:
             continue
-        glyph = _VERDICT_GLYPH.get(d.verdict, "?")
+        glyph = "≈" if d.format_mismatch else _VERDICT_GLYPH.get(d.verdict, "?")
         cfg_display = d.cfg_raw if d.cfg_raw is not None else d.cfg_value
         print(
             f" {glyph} {d.label:<24} {_render(cfg_display)} "
@@ -565,6 +566,38 @@ def _reconcile_one(
                 if not silent:
                     print(f"     ❌ write failed: {exc}")
 
+    # --canonicalize: rewrite format-mismatch fields to receiver notation
+    if getattr(args, "canonicalize", False):
+        fmt_mismatches = [d for d in diffs if d.format_mismatch]
+        if fmt_mismatches:
+            if not silent:
+                print(f"\n   Canonicalizing {len(fmt_mismatches)} notation-only field(s)…")
+            for d in fmt_mismatches:
+                rx_val = d.receiver_value  # guaranteed non-None by format_mismatch
+                assert rx_val is not None
+                if args.dry_run:
+                    if not silent:
+                        print(f"     ≈ {d.cfg_key}: {d.cfg_raw!r} → {rx_val!r} (dry-run)")
+                else:
+                    try:
+                        changed = apply_diff(
+                            station_id, d, rx_val, resolved_by="canonicalize"
+                        )
+                        if changed:
+                            n_written += 1
+                            if not silent:
+                                print(
+                                    f"     ✅ {d.cfg_key}: {d.cfg_raw!r} → {rx_val!r}"
+                                )
+                        elif not silent:
+                            print(f"     ⏭  {d.cfg_key} already canonical")
+                    except SourceUnavailableError as exc:
+                        if not silent:
+                            print(f"     ❌ {d.cfg_key}: could not write: {exc}")
+                    except Exception as exc:  # noqa: BLE001
+                        if not silent:
+                            print(f"     ❌ {d.cfg_key}: write failed: {exc}")
+
     return diffs, n_written, n_skipped
 
 
@@ -699,7 +732,8 @@ def cmd_cfg_reconcile(args) -> int:
         + (" — open discrepancies only" if open_mode else "")
         + (f" — fields={','.join(fields)}" if fields else "")
         + (" — dry-run" if args.dry_run else "")
-        + (" — auto-fill" if args.auto_fill else ""),
+        + (" — auto-fill" if args.auto_fill else "")
+        + (" — canonicalize" if getattr(args, "canonicalize", False) else ""),
         json_mode=args.json,
     )
 
@@ -1008,6 +1042,12 @@ Examples:
   receivers cfg reconcile --all --dry-run --json
   receivers cfg reconcile --list-fields
 
+Fixing firmware notation mismatches (e.g. 'NP 4.81 / SP 4.81' → '4.81'):
+  receivers cfg reconcile --all --field receiver_firmware_version \\
+      --source receiver --canonicalize --dry-run   # preview
+  receivers cfg reconcile --all --field receiver_firmware_version \\
+      --source receiver --canonicalize             # apply
+
 Diagnosing TCP authentication failures:
   If health checks log "TCP command denied: receiver requires authentication"
   for a PolaRX5 station, the most common cause is a stale
@@ -1066,6 +1106,18 @@ Diagnosing TCP authentication failures:
         "--yes",
         action="store_true",
         help="Accept all suggested values without prompting (use with care)",
+    )
+    rec.add_argument(
+        "--canonicalize",
+        action="store_true",
+        help=(
+            "Rewrite cfg values that are logically correct but stored in a "
+            "different notation than the receiver uses (e.g. "
+            "'NP 4.81 / SP 4.81' → '4.81', '4.8.1' → '4.81'). "
+            "Only touches verdict=OK fields where raw cfg ≠ receiver value. "
+            "Combine with --field receiver_firmware_version and --source receiver "
+            "to canonicalize firmware notation across all stations."
+        ),
     )
     rec.add_argument(
         "-n",

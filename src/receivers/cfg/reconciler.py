@@ -60,6 +60,22 @@ class FieldDiff:
     def needs_attention(self) -> bool:
         return self.verdict not in (Verdict.OK, Verdict.NO_DATA, Verdict.NOT_QUERYABLE)
 
+    @property
+    def format_mismatch(self) -> bool:
+        """cfg is logically correct but stored in a different notation than the receiver uses.
+
+        True when verdict is OK (normalized values agree) but the raw cfg value
+        differs from the receiver's raw value. Indicates a notation-only
+        discrepancy (e.g. "NP 4.81 / SP 4.81" vs "4.81", or "4.8.1" vs "4.81")
+        that can be fixed by writing the receiver value to cfg.
+        """
+        return (
+            self.verdict == Verdict.OK
+            and self.cfg_raw is not None
+            and self.receiver_value is not None
+            and self.cfg_raw != self.receiver_value
+        )
+
     def as_dict(self) -> Dict[str, Any]:
         return {
             "field": self.cfg_key,
