@@ -539,6 +539,56 @@ def _do_push_tos(
 
 
 # ---------------------------------------------------------------------------
+# Position sanity gate
+# ---------------------------------------------------------------------------
+
+
+def _position_sanity_check(
+    diffs: List[FieldDiff],
+    abort_m: float,
+) -> Optional[str]:
+    """Return an error message if the receiver position is suspiciously far from TOS.
+
+    Computes the receiver-vs-TOS delta for each position field in metres and
+    returns a message when any single axis exceeds ``abort_m``.  Returns None
+    when the position looks sane or when position data is unavailable.
+
+    This is intentionally a per-axis check rather than a 3-D distance so that
+    a single bad axis (e.g. PVT height spike) is still caught even when
+    horizontal looks fine.
+    """
+    import math
+
+    _DEG_PER_M_LAT = 1.0 / 111111.0
+    _DEG_PER_M_LON = 1.0 / (111111.0 * math.cos(math.radians(64.0)))
+
+    for d in diffs:
+        if d.cfg_key not in ("latitude", "longitude", "height"):
+            continue
+        if d.receiver_value is None or d.tos_value is None:
+            continue
+        try:
+            delta = abs(float(d.receiver_value) - float(d.tos_value))
+        except (ValueError, TypeError):
+            continue
+        if d.cfg_key == "latitude":
+            delta_m = delta / _DEG_PER_M_LAT
+        elif d.cfg_key == "longitude":
+            delta_m = delta / _DEG_PER_M_LON
+        else:
+            delta_m = delta
+
+        if delta_m > abort_m:
+            return (
+                f"⛔  POSITION SANITY FAIL: {d.label} differs by {delta_m:.0f} m "
+                f"(receiver={d.receiver_value}, TOS={d.tos_value}, threshold={abort_m:.0f} m). "
+                f"Receiver may be at the wrong station — "
+                f"hardware-identity auto-push blocked."
+            )
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Per-station reconciliation
 # ---------------------------------------------------------------------------
 
@@ -580,6 +630,13 @@ def _reconcile_one(
     show_ok = not (args.only_diffs or getattr(args, "open", False))
     if not silent:
         _print_diff_table(diffs, show_ok=show_ok)
+
+    # Position sanity gate — must run before any write logic so the warning
+    # is visible even in dry-run mode.
+    abort_m: float = getattr(args, "position_abort_m", 50.0)
+    position_warn = _position_sanity_check(diffs, abort_m)
+    if position_warn and not silent:
+        print(f"\n   {position_warn}")
 
     n_written = 0
     n_skipped = 0
@@ -630,7 +687,8 @@ def _reconcile_one(
 
     field_specs_by_key = fields_by_key()
     no_receiver_primary: bool = getattr(args, "no_receiver_primary", False)
-    receiver_primary_active = not no_receiver_primary
+    # Position sanity failure disables receiver-primary auto-push regardless of flags.
+    receiver_primary_active = not no_receiver_primary and position_warn is None
 
     if not silent:
         print()
@@ -1372,6 +1430,20 @@ Diagnosing TCP authentication failures:
             "Tolerance for receiver↔TOS position comparison (default: 2.0 m). "
             "Receiver coordinates come from a real-time PVT solution and are "
             "used as a sanity check that the receiver is at the expected mark."
+        ),
+    )
+    rec.add_argument(
+        "--position-abort-m",
+        type=float,
+        default=50.0,
+        metavar="METERS",
+        help=(
+            "Position discrepancy threshold above which receiver-primary "
+            "auto-push (type/serial/firmware → TOS) is blocked for that "
+            "station (default: 50.0 m). A large position delta suggests the "
+            "receiver may be at the wrong station or TOS coordinates are "
+            "corrupt — hardware identity should not be written automatically "
+            "in that case. A warning is printed even in dry-run mode."
         ),
     )
     rec.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
