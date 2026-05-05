@@ -484,6 +484,32 @@ def _interactive_prompt(
             return ("skip", None)
         if choice in ("q", "quit"):
             return ("quit", None)
+        # Uppercase-sensitive actions must be checked against `raw` BEFORE the
+        # lowercase fallbacks that share the same letter (r/R, t/T, c/C).
+        if raw == "R":  # uppercase R = set cfg to receiver value AND push to TOS
+            if not diff.spec.tos_writable:
+                print(f"     (field {diff.cfg_key!r} is not TOS-writable — use r for cfg only)")
+                continue
+            if diff.receiver_value is None:
+                print("     (no receiver value available)")
+                continue
+            return ("set_and_push_tos", diff.receiver_value)
+        if raw == "T":  # uppercase T = push receiver value to TOS only
+            if not diff.spec.tos_writable:
+                print(f"     (field {diff.cfg_key!r} is not TOS-writable)")
+                continue
+            if diff.receiver_value is None:
+                print("     (no receiver value to push — use C to push cfg value)")
+                continue
+            return ("push_tos", diff.receiver_value)
+        if raw == "C":  # uppercase C = push cfg value to TOS
+            if not diff.spec.tos_writable:
+                print(f"     (field {diff.cfg_key!r} is not TOS-writable)")
+                continue
+            if diff.cfg_value is None:
+                print("     (no cfg value to push)")
+                continue
+            return ("push_cfg_to_tos", diff.cfg_value)
         if choice in ("r", "receiver", ""):
             if diff.receiver_value is None:
                 print("     (receiver value not available)")
@@ -494,30 +520,6 @@ def _interactive_prompt(
                 print("     (no suggestion available — pick r/t/e)")
                 continue
             return ("set", diff.suggestion)
-        if raw == "R":  # uppercase R = set cfg to receiver value AND push to TOS
-            if not diff.spec.tos_writable:
-                print(f"     (field {diff.cfg_key!r} is not TOS-writable — use r for cfg only)")
-                continue
-            if diff.receiver_value is None:
-                print("     (no receiver value available)")
-                continue
-            return ("set_and_push_tos", diff.receiver_value)
-        if raw == "T":  # case-sensitive: uppercase T = push receiver value to TOS only
-            if not diff.spec.tos_writable:
-                print(f"     (field {diff.cfg_key!r} is not TOS-writable)")
-                continue
-            if diff.receiver_value is None:
-                print("     (no receiver value to push — use C to push cfg value)")
-                continue
-            return ("push_tos", diff.receiver_value)
-        if raw == "C":  # case-sensitive: uppercase C = push cfg value to TOS
-            if not diff.spec.tos_writable:
-                print(f"     (field {diff.cfg_key!r} is not TOS-writable)")
-                continue
-            if diff.cfg_value is None:
-                print("     (no cfg value to push)")
-                continue
-            return ("push_cfg_to_tos", diff.cfg_value)
         if choice in ("t", "tos"):
             if diff.tos_value is None:
                 print("     (TOS value not available)")
