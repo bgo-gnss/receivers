@@ -414,11 +414,6 @@ def _interactive_prompt(diff: FieldDiff) -> Tuple[str, Optional[str]]:
                 print("     (receiver value not available)")
                 continue
             return ("set", diff.receiver_value)
-        if choice in ("t", "tos"):
-            if diff.tos_value is None:
-                print("     (TOS value not available)")
-                continue
-            return ("set", diff.tos_value)
         if raw == "T":  # case-sensitive: uppercase T = push to TOS
             if not diff.spec.tos_writable:
                 print(f"     (field {diff.cfg_key!r} is not TOS-writable)")
@@ -427,6 +422,11 @@ def _interactive_prompt(diff: FieldDiff) -> Tuple[str, Optional[str]]:
                 print("     (no receiver value to push)")
                 continue
             return ("push_tos", diff.receiver_value)
+        if choice in ("t", "tos"):
+            if diff.tos_value is None:
+                print("     (TOS value not available)")
+                continue
+            return ("set", diff.tos_value)
         if choice in ("e", "edit"):
             try:
                 custom = input("     value: ").strip()
