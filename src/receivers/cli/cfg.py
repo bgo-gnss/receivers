@@ -382,8 +382,9 @@ Actions:
   ?   show this help
 
 Receiver-primary fields (type, serial, firmware) show a warning when TOS
-disagrees. Check the TOS history first: data-entry error → fix with T;
-instrument change → handle manually in TOS (close old period, add new).
+disagrees. Check the TOS history first:
+  data-entry error (wrong value typed) → fix cfg with r, then T to correct TOS in-place.
+  instrument change (swap/upgrade not logged) → k to keep cfg, then add new period in TOS manually.
 
 For antenna fields (type, serial, radome): TOS is canonical but the operator
 may have a correct value in cfg that TOS lacks. Use C to push cfg → TOS
@@ -423,9 +424,9 @@ def _interactive_prompt(
 
     if is_primary:
         print(
-            "     ⚠  TOS discrepancy on hardware-identity field — check history before pushing:"
-            " data-entry error → [T] to correct in-place;"
-            " instrument change → close old period in TOS and add new one (manual)."
+            "     ⚠  TOS discrepancy on hardware-identity field — check TOS history first:\n"
+            "        data-entry error (wrong value typed) → fix cfg with [r], then [T] to correct TOS in-place.\n"
+            "        instrument change (swap/upgrade not logged) → [k] keep cfg, then add new period in TOS manually."
         )
 
     if diff.note:
