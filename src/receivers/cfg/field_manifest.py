@@ -263,6 +263,14 @@ class FieldSpec:
     # receiver carries operator-typed values (antenna metadata) or PVT
     # solutions that should not overwrite surveyed coordinates from TOS.
     receiver_authoritative: bool = True
+    # If True, the receiver is the ground-truth source for this field. In
+    # interactive mode, the default action for a conflict becomes "accept
+    # receiver value and push it to TOS in one step." The user can still
+    # choose any other action; --no-receiver-primary disables this default.
+    # Only applies to hardware-identity fields (type, serial, firmware) where
+    # the receiver hardware is literally the authoritative source. Position
+    # fields are flag-only even though the receiver can supply them.
+    receiver_primary: bool = False
     # TOS write-side metadata. ``tos_attribute_code=None`` means the field is
     # not writable via ``--push-tos`` (e.g. composite fields).
     # ``tos_target_entity`` is the entity type that owns the attribute:
@@ -304,6 +312,7 @@ FIELDS: List[FieldSpec] = [
         equal=_receiver_type_eq,
         cfg_format=_receiver_type_to_cfg,
         description="Receiver model/type (e.g. PolaRX5, NetR9)",
+        receiver_primary=True,
         tos_attribute_code="model",
         tos_target_entity="gnss_receiver",
         tos_format=to_igs_receiver,
@@ -315,6 +324,7 @@ FIELDS: List[FieldSpec] = [
         tos_extract=tos_adapter.current_receiver_serial,
         normalize=_strip_placeholder,
         description="Receiver serial number",
+        receiver_primary=True,
         tos_attribute_code="serial_number",
         tos_target_entity="gnss_receiver",
     ),
@@ -325,6 +335,7 @@ FIELDS: List[FieldSpec] = [
         tos_extract=tos_adapter.current_receiver_firmware,
         normalize=_normalize_firmware_version,
         description="Active firmware version reported by the receiver",
+        receiver_primary=True,
         tos_attribute_code="firmware_version",
         tos_target_entity="gnss_receiver",
     ),

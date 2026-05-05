@@ -361,32 +361,52 @@ _HELP = """
 Actions:
   s   set the field to the suggested value (when shown)
   r   set to the receiver-reported value
-  t   set to the TOS value
+      (for receiver-primary fields: also pushes to TOS automatically)
+  t   set to the TOS value (cfg only, no TOS push)
   T   push the receiver value to TOS (write to TOS, not cfg)
   e   enter a custom value
   k   keep the existing cfg value (skip)
   q   quit reconciliation for this station
   ?   show this help
+
+Receiver-primary fields (type, serial, firmware): the receiver is the
+hardware ground-truth. Pressing r or Enter accepts the receiver value into
+cfg AND pushes it to TOS in one step. Use --no-receiver-primary to revert
+to individual-action prompts for all fields.
 """.rstrip()
 
 
-def _interactive_prompt(diff: FieldDiff) -> Tuple[str, Optional[str]]:
+def _interactive_prompt(
+    diff: FieldDiff, *, receiver_primary_active: bool = True
+) -> Tuple[str, Optional[str]]:
     """Ask the user what to do for one field.
 
     Returns ``(action, value)`` where action is one of
-    ``set``, ``push_tos``, ``skip``, ``quit`` and ``value`` is the chosen
-    value (for ``set`` and ``push_tos``).
+    ``set``, ``set_and_push_tos``, ``push_tos``, ``skip``, ``quit``
+    and ``value`` is the chosen value (for write actions).
+
+    When ``receiver_primary_active`` is True and ``diff.spec.receiver_primary``
+    is set, pressing Enter or ``r`` triggers ``set_and_push_tos`` — a single
+    atomic action that writes the receiver value to cfg AND pushes it to TOS.
     """
+    is_primary = receiver_primary_active and diff.spec.receiver_primary and diff.receiver_value is not None
+
     options: List[str] = []
-    if diff.suggestion is not None:
-        src = diff.suggestion_source or "?"
-        options.append(f"[s]et to {diff.suggestion!r} ({src})")
-    if diff.receiver_value is not None and diff.receiver_value != diff.suggestion:
-        options.append(f"[r]eceiver={diff.receiver_value!r}")
-    if diff.tos_value is not None and diff.tos_value != diff.suggestion:
-        options.append(f"[t]os={diff.tos_value!r}")
-    if diff.spec.tos_writable and diff.receiver_value is not None:
-        options.append("[T]push-to-TOS")
+    if is_primary:
+        # Receiver-primary: lead with the combined accept+push action
+        options.append(f"[r/enter]=accept receiver+TOS ({diff.receiver_value!r})")
+        if diff.tos_value is not None:
+            options.append(f"[t]os-only={diff.tos_value!r}")
+    else:
+        if diff.suggestion is not None:
+            src = diff.suggestion_source or "?"
+            options.append(f"[s]et to {diff.suggestion!r} ({src})")
+        if diff.receiver_value is not None and diff.receiver_value != diff.suggestion:
+            options.append(f"[r]eceiver={diff.receiver_value!r}")
+        if diff.tos_value is not None and diff.tos_value != diff.suggestion:
+            options.append(f"[t]os={diff.tos_value!r}")
+        if diff.spec.tos_writable and diff.receiver_value is not None:
+            options.append("[T]push-to-TOS")
     options.extend(["[e]dit", "[k]eep", "[q]uit", "[?]help"])
 
     while True:
@@ -400,20 +420,25 @@ def _interactive_prompt(diff: FieldDiff) -> Tuple[str, Optional[str]]:
         if choice == "?" or choice == "help":
             print(_HELP)
             continue
-        if choice in ("k", "keep", ""):
+        if choice in ("k", "keep"):
             return ("skip", None)
         if choice in ("q", "quit"):
             return ("quit", None)
+        if choice in ("r", "receiver", ""):
+            if diff.receiver_value is None:
+                print("     (receiver value not available)")
+                continue
+            if is_primary:
+                return ("set_and_push_tos", diff.receiver_value)
+            return ("set", diff.receiver_value)
         if choice in ("s", "set"):
+            if is_primary:
+                print("     (use r/enter to accept receiver, t for TOS-only, e to edit)")
+                continue
             if diff.suggestion is None:
                 print("     (no suggestion available — pick r/t/e)")
                 continue
             return ("set", diff.suggestion)
-        if choice in ("r", "receiver"):
-            if diff.receiver_value is None:
-                print("     (receiver value not available)")
-                continue
-            return ("set", diff.receiver_value)
         if raw == "T":  # case-sensitive: uppercase T = push to TOS
             if not diff.spec.tos_writable:
                 print(f"     (field {diff.cfg_key!r} is not TOS-writable)")
@@ -604,12 +629,16 @@ def _reconcile_one(
             print("   ⚠️  --push-tos requires --source tos or --source both")
 
     field_specs_by_key = fields_by_key()
+    no_receiver_primary: bool = getattr(args, "no_receiver_primary", False)
+    receiver_primary_active = not no_receiver_primary
 
     if not silent:
         print()
     for idx, d in enumerate(actionable, start=1):
         if not silent:
             header = f"  [{idx}/{len(actionable)}] {d.cfg_key} ({d.verdict.value})"
+            if d.spec.receiver_primary and receiver_primary_active:
+                header += "  [receiver-primary]"
             print(header)
             cfg_disp = d.cfg_raw if d.cfg_raw is not None else d.cfg_value
             print(
@@ -625,19 +654,43 @@ def _reconcile_one(
         # Resolve action
         action: str
         new_value: Optional[str]
+        is_primary = (
+            receiver_primary_active
+            and d.spec.receiver_primary
+            and d.receiver_value is not None
+            and d.spec.tos_writable
+            and tos_data is not None
+        )
         if args.auto_fill and d.verdict == Verdict.MISSING and d.suggestion is not None:
-            action, new_value = "set", d.suggestion
-            if not silent:
-                print(f"     → auto-fill from {d.suggestion_source}: {d.suggestion!r}")
+            if is_primary and d.suggestion_source in ("receiver", "agree"):
+                action, new_value = "set_and_push_tos", d.suggestion
+                if not silent:
+                    print(f"     → auto-fill from {d.suggestion_source}: {d.suggestion!r} (cfg + TOS)")
+            else:
+                action, new_value = "set", d.suggestion
+                if not silent:
+                    print(f"     → auto-fill from {d.suggestion_source}: {d.suggestion!r}")
         elif args.yes and d.suggestion is not None:
-            action, new_value = "set", d.suggestion
+            if is_primary and d.suggestion_source in ("receiver", "agree"):
+                action, new_value = "set_and_push_tos", d.suggestion
+                if not silent:
+                    print(f"     → accept suggestion ({d.suggestion_source}): {d.suggestion!r} (cfg + TOS)")
+            else:
+                action, new_value = "set", d.suggestion
+                if not silent:
+                    print(f"     → accept suggestion ({d.suggestion_source}): {d.suggestion!r}")
+        elif args.yes and is_primary and d.receiver_value is not None:
+            # --yes with receiver_primary but no agreed suggestion: still take receiver
+            action, new_value = "set_and_push_tos", d.receiver_value
             if not silent:
-                print(f"     → accept suggestion ({d.suggestion_source}): {d.suggestion!r}")
+                print(f"     → accept receiver (primary): {d.receiver_value!r} (cfg + TOS)")
         elif silent:
             # JSON mode without an applicable auto-rule: cannot prompt; skip.
             action, new_value = "skip", None
         else:
-            action, new_value = _interactive_prompt(d)
+            action, new_value = _interactive_prompt(
+                d, receiver_primary_active=receiver_primary_active
+            )
 
         if action == "quit":
             if not silent:
@@ -651,6 +704,53 @@ def _reconcile_one(
                 station_id=station_id,
                 diff=d,
                 value=new_value,
+                tos_data=tos_data,
+                args=args,
+                silent=silent,
+            )
+            continue
+        if action == "set_and_push_tos" and new_value is not None:
+            # Apply cfg vocabulary mapping first (same as "set")
+            spec = field_specs_by_key.get(d.cfg_key)
+            if spec is not None:
+                try:
+                    mapped = spec.cfg_format(new_value)
+                except Exception as exc:  # noqa: BLE001
+                    if not silent:
+                        print(f"     ❌ cfg_format failed for {d.cfg_key}: {exc}")
+                    continue
+                if mapped is None:
+                    if not silent:
+                        print(
+                            f"     ❌ cfg_format normalised {new_value!r} to None — skipping"
+                        )
+                    continue
+                if mapped != new_value and not silent:
+                    print(
+                        f"     ↺ normalised {new_value!r} → {mapped!r} for cfg vocabulary"
+                    )
+                new_value = mapped
+            try:
+                changed = apply_diff(station_id, d, new_value)
+                if changed:
+                    n_written += 1
+                    if not silent:
+                        print(f"     ✅ wrote {d.cfg_key} = {new_value!r} to cfg")
+                elif not silent:
+                    print(f"     ⏭  cfg unchanged ({d.cfg_key} already = {new_value!r})")
+            except SourceUnavailableError as exc:
+                if not silent:
+                    print(f"     ❌ could not write cfg: {exc}")
+                continue
+            except Exception as exc:  # noqa: BLE001
+                if not silent:
+                    print(f"     ❌ cfg write failed: {exc}")
+                continue
+            # Now push to TOS — best-effort, cfg write already succeeded
+            _do_push_tos(
+                station_id=station_id,
+                diff=d,
+                value=d.receiver_value or new_value,
                 tos_data=tos_data,
                 args=args,
                 silent=silent,
@@ -1297,6 +1397,20 @@ Diagnosing TCP authentication failures:
             "Combine with --field to target specific fields (e.g. "
             "--field receiver_firmware_version --push-tos --yes). "
             "Honours --dry-run."
+        ),
+    )
+    rec.add_argument(
+        "--no-receiver-primary",
+        action="store_true",
+        default=False,
+        help=(
+            "Disable receiver-primary mode for hardware-identity fields "
+            "(receiver_type, receiver_serial, receiver_firmware_version). "
+            "By default, conflicts on these fields show a single combined "
+            "'accept receiver → cfg + TOS' action as the default choice. "
+            "Use this flag to revert to the traditional per-action prompt "
+            "for the rare cases where the receiver value is not trustworthy "
+            "(e.g. just-provisioned hardware with stale factory defaults)."
         ),
     )
     rec.add_argument(
