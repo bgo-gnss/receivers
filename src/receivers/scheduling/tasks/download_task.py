@@ -171,7 +171,7 @@ class DownloadTask(ScheduledTask):
                 sync=True,  # Always sync in scheduled mode
                 archive=True,  # Always archive
                 immediate_archive=True,  # Use fault-tolerant immediate archiving
-                clean_tmp=True,
+                clean_tmp=False,  # Keep partial files so FTP REST resume works
                 compression=".gz",
                 loglevel=logging.INFO,
             )

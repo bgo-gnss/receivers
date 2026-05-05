@@ -276,7 +276,7 @@ def _download_station_data_job(
             sync=True,  # Always sync in scheduled mode
             archive=True,  # Always archive
             immediate_archive=True,  # Use fault-tolerant immediate archiving
-            clean_tmp=True,
+            clean_tmp=False,  # Keep partial files so FTP REST resume works on retry
             compression=".gz",
             reverse_chronological=True,  # Prioritize latest data (like -D flag)
             retry_missing=True,  # Always retry known-missing files in scheduled mode
@@ -1598,13 +1598,13 @@ class BulkDownloadScheduler:
                 f"(window={config.distribution_window}m, {base_trigger.description}{extra})"
             )
             # Register a batch-summary job for daily sessions (cron with explicit hour+minute).
-            # Fires distribution_window + 90 minutes after the session start so all station
+            # Fires distribution_window + 45 minutes after the session start so all station
             # slots have had time to complete before the summary is logged.
             tkw = base_trigger.trigger_kwargs
             if base_trigger.trigger_type == "cron" and "hour" in tkw and "minute" in tkw:
                 sched_hour = int(str(tkw["hour"]).split(",")[0])
                 sched_minute = int(tkw["minute"])
-                total_offset = config.distribution_window + 90
+                total_offset = config.distribution_window + 45
                 summary_minute = (sched_minute + total_offset) % 60
                 summary_hour = (sched_hour + (sched_minute + total_offset) // 60) % 24
                 self.scheduler.add_job(

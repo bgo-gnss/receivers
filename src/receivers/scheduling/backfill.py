@@ -363,7 +363,7 @@ def _download_day_generic(
             sync=True,
             archive=True,
             immediate_archive=immediate_archive,
-            clean_tmp=True,
+            clean_tmp=False,  # Keep partial files so FTP REST resume works
             compression=".gz",
             reverse_chronological=False,
             loglevel=logging.INFO,
