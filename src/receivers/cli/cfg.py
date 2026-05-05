@@ -25,7 +25,7 @@ import logging
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 
 from ..cfg.field_manifest import (
     FIELDS,
@@ -325,6 +325,16 @@ def _print_setup_header(station_id: str, station_config: Dict[str, Any]) -> None
             print(f"  {label:<20} {val}")
 
 
+def _is_tos_fillable(d: FieldDiff) -> bool:
+    """True when cfg has a real value and TOS was queried but has nothing."""
+    return (
+        d.verdict == Verdict.NO_DATA
+        and d.cfg_value is not None
+        and "tos" in d.sources_queried
+        and d.spec.tos_writable
+    )
+
+
 def _print_diff_table(
     diffs: List[FieldDiff],
     show_ok: bool = True,
@@ -333,15 +343,17 @@ def _print_diff_table(
     print(f"   {'Field':<24} {'stations.cfg':<22} {'Receiver':<22} {'TOS':<22}")
     print(f"   {'-' * 24} {'-' * 22} {'-' * 22} {'-' * 22}")
     for d in diffs:
-        # Always show format_mismatch and cfg_placeholder rows — they need cleanup
+        # Always show format_mismatch, cfg_placeholder, and tos_fillable rows
         if not show_ok and d.verdict == Verdict.OK and not d.format_mismatch:
             continue
-        if not show_ok and d.verdict == Verdict.NO_DATA and not d.cfg_placeholder:
+        if not show_ok and d.verdict == Verdict.NO_DATA and not d.cfg_placeholder and not _is_tos_fillable(d):
             continue
         if d.cfg_placeholder:
             glyph = "~"
         elif d.format_mismatch:
             glyph = "≈"
+        elif _is_tos_fillable(d):
+            glyph = "↑"
         else:
             glyph = _VERDICT_GLYPH.get(d.verdict, "?")
         cfg_display = d.cfg_raw if d.cfg_raw is not None else d.cfg_value
@@ -390,6 +402,16 @@ disagrees. Check the TOS history first:
 For antenna fields (type, serial, radome): TOS is canonical but the operator
 may have a correct value in cfg that TOS lacks. Use C to push cfg → TOS
 without changing cfg itself.
+
+Table glyphs:
+  ✓  OK — cfg matches all queried sources
+  ?  MISSING — cfg empty, at least one source has a value
+  ✗  CONFLICT — cfg disagrees with a source
+  !  SOURCES_DISAGREE — receiver and TOS give different values
+  ~  cfg holds a placeholder value (e.g. a synthetic TOS serial) — should be removed
+  ≈  format mismatch — normalized values agree but raw notation differs
+  ↑  TOS has no value for this field but cfg does — offered after the main diff loop
+  ·  no actionable data (both sources empty)
 """.rstrip()
 
 
@@ -852,7 +874,7 @@ def _reconcile_one(
             )
             continue
         if action == "push_component" and isinstance(new_value, dict):
-            component_info: Dict[str, str] = new_value
+            component_info = cast(Dict[str, str], new_value)
             entity = component_info["entity"]
             attribute_code = component_info["attribute_code"]
             value = component_info["value"]
@@ -861,11 +883,12 @@ def _reconcile_one(
                 print(f"     {mode}→ push component to TOS: {entity}.{attribute_code} = {value!r}")
             if tos_data is None:
                 if not silent:
-                    print(f"     ❌ no TOS data — cannot push component")
+                    print("     ❌ no TOS data — cannot push component")
                 continue
             try:
-                from ..cfg.tos_push import push_component_to_tos
                 from tostools.api.tos_writer import TOSWriter
+
+                from ..cfg.tos_push import push_component_to_tos
 
                 writer = TOSWriter(dry_run=getattr(args, "dry_run", True))
                 result = push_component_to_tos(
@@ -1031,7 +1054,7 @@ def _reconcile_one(
             print(f"\n   {len(cfg_placeholders)} placeholder value(s) in cfg:")
             for d in cfg_placeholders:
                 print(f"\n     ~ {d.cfg_key} = {d.cfg_raw!r}  (placeholder — no real value)")
-                print(f"       [d]elete · [k]eep · [q]uit")
+                print("       [d]elete · [k]eep · [q]uit")
                 try:
                     choice = input("       > ").strip().lower()
                 except EOFError:
@@ -1045,9 +1068,44 @@ def _reconcile_one(
                             n_written += 1
                             print(f"       ✅ removed {d.cfg_key}")
                         else:
-                            print(f"       ⏭  already absent")
+                            print("       ⏭  already absent")
                     except Exception as exc:  # noqa: BLE001
                         print(f"       ❌ removal failed: {exc}")
+                else:
+                    n_skipped += 1
+
+    # TOS-fillable fields: cfg has a real value but TOS was queried and has nothing.
+    # These are NOT "needs_attention" conflicts — they're silent gaps the operator
+    # may want to fill. Show them separately so `C` is available without cluttering
+    # the main diff flow.
+    if not silent and not args.dry_run:
+        tos_fillable = [d for d in diffs if _is_tos_fillable(d)]
+        if tos_fillable:
+            print(f"\n   {len(tos_fillable)} field(s) where cfg has a value but TOS has none:")
+            for d in tos_fillable:
+                print(f"\n     ↑ {d.label} ({d.cfg_key})")
+                print(f"       cfg: {d.cfg_value!r}")
+                print("       TOS: [no value — use C to populate]")
+                print("       [C]push-cfg-to-TOS · [k]eep · [q]uit")
+                try:
+                    raw = input("       > ").strip()
+                except EOFError:
+                    break
+                if raw in ("q", "quit"):
+                    break
+                if raw == "C":
+                    cfg_val = d.cfg_value
+                    assert cfg_val is not None  # guaranteed by _is_tos_fillable
+                    if not silent:
+                        print(f"       → push cfg value to TOS: {d.cfg_key} = {cfg_val!r}")
+                    _do_push_tos(
+                        station_id=station_id,
+                        diff=d,
+                        value=cfg_val,
+                        tos_data=tos_data,
+                        args=args,
+                        silent=silent,
+                    )
                 else:
                     n_skipped += 1
 
