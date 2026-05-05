@@ -369,8 +369,9 @@ _HELP = """
 Actions:
   s   set the field to the suggested value (when shown)
   r   set to the receiver-reported value (cfg only)
+  R   set cfg to receiver value AND push to TOS in one step (tos_writable fields only)
   t   set to the TOS value (cfg only, no TOS push)
-  T   push the receiver value to TOS — use only after confirming this is a
+  T   push the receiver value to TOS only (cfg unchanged) — use only after confirming this is a
       data-entry error (Pattern 1: correct the open value in-place).
       If the discrepancy reflects an instrument change (new receiver, fw
       upgrade, antenna swap), close the old TOS period and add a new one
@@ -421,6 +422,7 @@ def _interactive_prompt(
         options.append(f"[t]os={diff.tos_value!r}")
     if diff.spec.tos_writable and diff.receiver_value is not None:
         options.append("[T]push-receiver-to-TOS")
+        options.append(f"[R]receiver→cfg+TOS ({diff.receiver_value!r})")
     if diff.spec.tos_writable and diff.cfg_value is not None:
         options.append("[C]push-cfg-to-TOS")
     if diff.spec.tos_components:
@@ -463,7 +465,15 @@ def _interactive_prompt(
                 print("     (no suggestion available — pick r/t/e)")
                 continue
             return ("set", diff.suggestion)
-        if raw == "T":  # case-sensitive: uppercase T = push receiver value to TOS
+        if raw == "R":  # uppercase R = set cfg to receiver value AND push to TOS
+            if not diff.spec.tos_writable:
+                print(f"     (field {diff.cfg_key!r} is not TOS-writable — use r for cfg only)")
+                continue
+            if diff.receiver_value is None:
+                print("     (no receiver value available)")
+                continue
+            return ("set_and_push_tos", diff.receiver_value)
+        if raw == "T":  # case-sensitive: uppercase T = push receiver value to TOS only
             if not diff.spec.tos_writable:
                 print(f"     (field {diff.cfg_key!r} is not TOS-writable)")
                 continue
