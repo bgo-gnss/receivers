@@ -136,6 +136,10 @@ class _DualCursor:
             self._mirror.execute(query, params)
         except Exception as exc:
             logger.warning("Mirror %s execute failed: %s", self._mirror_host, exc)
+            try:
+                self._mirror.connection.rollback()
+            except Exception:
+                pass
 
     def executemany(self, query: Any, params_seq: Any) -> None:
         self._primary.executemany(query, params_seq)
@@ -143,6 +147,10 @@ class _DualCursor:
             self._mirror.executemany(query, params_seq)
         except Exception as exc:
             logger.warning("Mirror %s executemany failed: %s", self._mirror_host, exc)
+            try:
+                self._mirror.connection.rollback()
+            except Exception:
+                pass
 
     # ── Reads: primary only ────────────────────────────────────────────────
 
