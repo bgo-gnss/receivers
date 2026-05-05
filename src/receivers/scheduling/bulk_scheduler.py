@@ -37,6 +37,44 @@ _pipeline_store: Optional["PipelineStateStore"] = None
 # Module-level load monitor (lazy-initialized)
 _load_monitor: Optional["LoadMonitor"] = None
 
+# Per-session batch result accumulator (thread-safe, reset after each daily summary)
+import threading as _threading
+
+_BATCH_STATS: dict = {}  # {session_type: {"ok": [station_id, ...], "fail": {station_id: error_msg}}}
+_BATCH_LOCK = _threading.Lock()
+
+
+def _record_batch_result(session_type: str, station_id: str, outcome: str, error: str = "") -> None:
+    """Accumulate per-job result for the batch summary (non-blocking, fire-and-forget)."""
+    with _BATCH_LOCK:
+        bucket = _BATCH_STATS.setdefault(session_type, {"ok": [], "fail": {}})
+        if outcome == "ok":
+            bucket["ok"].append(station_id)
+        else:
+            bucket["fail"][station_id] = error or outcome
+
+
+def _log_batch_summary_job(session_type: str) -> None:
+    """Log accumulated batch results and reset the counter (APScheduler job)."""
+    _log = logging.getLogger("receivers.scheduler")
+    with _BATCH_LOCK:
+        stats = _BATCH_STATS.pop(session_type, {})
+    ok = stats.get("ok", [])
+    fail = stats.get("fail", {})
+    total = len(ok) + len(fail)
+    if total == 0:
+        _log.debug(f"📋 {session_type} batch summary: no results accumulated yet")
+        return
+    fail_names = sorted(fail.keys())
+    if len(fail_names) > 5:
+        fail_str = ", ".join(fail_names[:5]) + f" [+{len(fail_names) - 5} more]"
+    else:
+        fail_str = ", ".join(fail_names) if fail_names else "—"
+    _log.info(
+        f"📋 {session_type} batch: {len(ok)} ✅  {len(fail)} ❌  ({total} total)"
+        + (f" — failed: {fail_str}" if fail else "")
+    )
+
 
 def _get_pipeline_store() -> Optional["PipelineStateStore"]:
     """Get or create the module-level PipelineStateStore instance."""
@@ -329,7 +367,7 @@ def _download_station_data_job(
                     "duration": duration,
                     "job_duration": job_duration_seconds,
                     "files_downloaded": files_downloaded,
-                    "bytes_downloaded": result.get("total_bytes", 0),
+                    "bytes_downloaded": result.get("bytes_downloaded", 0),
                     "errors": result.get("errors", 0),
                     "scheduled": True,
                     "start_time": start_time.isoformat(),
@@ -369,6 +407,14 @@ def _download_station_data_job(
                     logger.warning(
                         f"⚠️  No files: {station_id} ({session_type}) - 0 files checked/downloaded in {duration:.1f}s"
                     )
+
+        # Accumulate result for batch summary (daily sessions only)
+        _record_batch_result(
+            session_type,
+            station_id,
+            "ok" if status in success_statuses else "fail",
+            result.get("error_message", status) if status not in success_statuses else "",
+        )
 
         # Run RINEX conversion if enabled and download was successful
         if run_rinex and status in success_statuses:
@@ -1540,7 +1586,7 @@ class BulkDownloadScheduler:
                     )
                     total_jobs += 1
 
-        # Log summary
+        # Log summary + register batch summary jobs for daily sessions
         for session_type, stations in session_stations.items():
             config = self.schedule_configs[session_type]
             base_trigger = parse_schedule(config.schedule)
@@ -1551,6 +1597,30 @@ class BulkDownloadScheduler:
                 f"Scheduled {len(stations)} stations for {session_type} "
                 f"(window={config.distribution_window}m, {base_trigger.description}{extra})"
             )
+            # Register a batch-summary job for daily sessions (cron with explicit hour+minute).
+            # Fires distribution_window + 90 minutes after the session start so all station
+            # slots have had time to complete before the summary is logged.
+            tkw = base_trigger.trigger_kwargs
+            if base_trigger.trigger_type == "cron" and "hour" in tkw and "minute" in tkw:
+                sched_hour = int(str(tkw["hour"]).split(",")[0])
+                sched_minute = int(tkw["minute"])
+                total_offset = config.distribution_window + 90
+                summary_minute = (sched_minute + total_offset) % 60
+                summary_hour = (sched_hour + (sched_minute + total_offset) // 60) % 24
+                self.scheduler.add_job(
+                    func=_log_batch_summary_job,
+                    trigger="cron",
+                    args=[session_type],
+                    hour=summary_hour,
+                    minute=summary_minute,
+                    id=f"{session_type}_batch_summary",
+                    replace_existing=True,
+                    misfire_grace_time=600,
+                )
+                self.logger.debug(
+                    f"Batch summary for {session_type} scheduled at "
+                    f"{summary_hour:02d}:{summary_minute:02d} UTC"
+                )
 
         if midnight_jobs:
             self.logger.info(f"Created {midnight_jobs} midnight-offset jobs")
@@ -2248,6 +2318,80 @@ class BulkDownloadScheduler:
             except OSError:
                 pass
 
+    def _log_misfire_status(self) -> None:
+        """Log whether daily download jobs were misfired or recovered at startup."""
+        from datetime import timezone
+
+        now = datetime.now(timezone.utc)
+        for job in self.scheduler.get_jobs():
+            if not job.id.endswith("_batch_summary") and "_00_" not in job.id:
+                continue
+            # Only inspect the first station slot of each daily session
+            # (job IDs for midnight 15s_24hr look like "15s_24hr_ELDC_0001")
+            next_run = getattr(job, "next_run_time", None)
+            if next_run is None:
+                continue
+            # If the next run is more than 23 hours away the current trigger
+            # fired today — check whether the previous window was misfired
+            delta_h = (next_run - now).total_seconds() / 3600
+            if delta_h > 23:
+                # Already ran today (next_run is tomorrow)
+                pass
+            # We focus on the *session-level* picture; inspect named summary jobs
+        # Check each registered batch-summary job to surface misfire state
+        seen: set[str] = set()
+        for job in self.scheduler.get_jobs():
+            if not job.id.endswith("_batch_summary"):
+                continue
+            session_type = job.args[0] if job.args else job.id
+            if session_type in seen:
+                continue
+            seen.add(session_type)
+            next_run = getattr(job, "next_run_time", None)
+            if next_run is None:
+                self.logger.warning(
+                    f"⚠️  {session_type} batch-summary job has no next_run_time — "
+                    "may have been paused or misfired"
+                )
+                continue
+            # Find the matching download trigger to determine last scheduled window
+            config = self.schedule_configs.get(session_type)
+            if config is None:
+                continue
+            base_trigger = parse_schedule(config.schedule)
+            tkw = base_trigger.trigger_kwargs
+            if base_trigger.trigger_type != "cron" or "hour" not in tkw:
+                continue
+            from datetime import timezone
+
+            now = datetime.now(timezone.utc)
+            sched_hour = int(str(tkw["hour"]).split(",")[0])
+            sched_minute = int(tkw["minute"])
+            window_end = now.replace(
+                hour=sched_hour,
+                minute=(sched_minute + config.distribution_window) % 60,
+                second=0,
+                microsecond=0,
+            )
+            if window_end > now:
+                # Window hasn't happened today yet — nothing to check
+                continue
+            # Window has passed — was there a download run?
+            minutes_since_window = (now - window_end).total_seconds() / 60
+            if minutes_since_window < 600 / 60:
+                self.logger.info(
+                    f"✅ {session_type} midnight window recently closed "
+                    f"({minutes_since_window:.0f}m ago) — misfire check not needed"
+                )
+            else:
+                self.logger.warning(
+                    f"⚠️  {session_type} midnight window was {minutes_since_window:.0f}m ago "
+                    f"(00:{sched_minute:02d}–{sched_hour:02d}:{(sched_minute + config.distribution_window) % 60:02d} UTC). "
+                    "If scheduler was down then, files may be missing. "
+                    "Run: receivers scheduler backfill --session "
+                    f"{session_type} --days 1"
+                )
+
     def start(self):
         """Start the scheduler.
 
@@ -2257,6 +2401,7 @@ class BulkDownloadScheduler:
         try:
             self.scheduler.start()
             self.logger.info(f"Scheduler started successfully (PID {os.getpid()})")
+            self._log_misfire_status()
         except Exception as e:
             self._release_lock()
             self.logger.error(f"Failed to start scheduler: {e}")

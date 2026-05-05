@@ -78,23 +78,26 @@ def _run_gap_detection_job(
                 total_archived = summary.get("total_archived", 0)
 
                 if total_gaps > 0:
-                    # Find top stations with gaps
-                    stations_with_gaps = [
-                        (sid, info)
-                        for sid, info in summary.get("stations", {}).items()
-                        if info.get("gaps", 0) > 0
-                    ]
-                    top_stations = sorted(
-                        stations_with_gaps, key=lambda x: -x[1]["gaps"]
-                    )[:5]
-                    top_str = ", ".join(
-                        f"{sid}({info['gaps']})" for sid, info in top_stations
+                    stations_with_gaps = sorted(
+                        [
+                            sid
+                            for sid, info in summary.get("stations", {}).items()
+                            if info.get("gaps", 0) > 0
+                        ]
                     )
+                    _MAX_LISTED = 10
+                    if len(stations_with_gaps) > _MAX_LISTED:
+                        gap_str = (
+                            " ".join(stations_with_gaps[:_MAX_LISTED])
+                            + f" [+{len(stations_with_gaps) - _MAX_LISTED} more]"
+                        )
+                    else:
+                        gap_str = " ".join(stations_with_gaps)
                     logger.info(
                         f"Gap detection {session_type}: "
                         f"{total_gaps} gaps / {total_expected} expected "
                         f"({total_archived} archived). "
-                        f"Top: {top_str}"
+                        f"Missing: {gap_str}"
                     )
                 else:
                     logger.info(

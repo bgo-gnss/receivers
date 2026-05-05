@@ -61,7 +61,7 @@ class TestSchedulerDownloadExecution:
         mock_receiver.download_data.return_value = {
             "status": "completed",
             "files_downloaded": 2,
-            "total_bytes": 10000,
+            "bytes_downloaded": 10000,
             "duration": 5.0,
             "errors": 0,
         }
@@ -218,7 +218,7 @@ class TestSchedulerDownloadExecution:
         mock_receiver.download_data.return_value = {
             "status": "completed",
             "files_downloaded": 3,
-            "total_bytes": 50000,
+            "bytes_downloaded": 50000,
             "duration": 15.5,
             "errors": 0,
         }
