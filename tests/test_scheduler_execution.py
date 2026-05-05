@@ -88,7 +88,7 @@ class TestSchedulerDownloadExecution:
         assert call_kwargs["sync"] is True
         assert call_kwargs["archive"] is True
         assert call_kwargs["immediate_archive"] is True
-        assert call_kwargs["clean_tmp"] is True
+        assert call_kwargs["clean_tmp"] is False
 
         # Verify time parameters for hourly session
         # With lookback_periods=1:
