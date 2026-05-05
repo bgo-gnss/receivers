@@ -1275,20 +1275,24 @@ class PolaRX5TCPExtractor:
             "Wrong username or password" in decoded
             or "Too many failed login" in decoded
         ):
-            self._auth_failed = True
             fw = self.firmware_version
             if fw and _firmware_requires_auth(fw):
-                # Known fw ≥5.7 station with wrong credentials — real problem
+                # Known fw ≥5.7 station with wrong credentials — real auth failure.
+                # Set _auth_failed so subsequent block queries don't waste time.
+                self._auth_failed = True
                 self.logger.warning(
                     f"TCP auth failed for {self.station_id}: wrong username or password"
                 )
             else:
-                # Unknown firmware or known pre-5.7: login was speculative, not a problem
+                # Pre-5.7 firmware: login command exists but auth is not enforced.
+                # A "wrong password" response does NOT lock out unauthenticated SBF
+                # queries — do NOT set _auth_failed or subsequent blocks will silently
+                # return None.
                 self.logger.debug(
                     f"TCP login not accepted by {self.station_id} "
                     f"(fw {fw or 'unknown'}), proceeding unauthenticated"
                 )
-            return True  # Proceed unauthenticated; pre-5.7 receivers allow commands after bad login
+            return True
         else:
             if decoded.strip():
                 self.logger.debug(
