@@ -393,13 +393,16 @@ without changing cfg itself.
 
 
 def _interactive_prompt(
-    diff: FieldDiff, *, receiver_primary_active: bool = True
-) -> Tuple[str, Optional[str]]:
+    diff: FieldDiff,
+    *,
+    receiver_primary_active: bool = True,
+    tos_data: Optional[Dict[str, Any]] = None,
+) -> Tuple[str, Any]:
     """Ask the user what to do for one field.
 
     Returns ``(action, value)`` where action is one of
-    ``set``, ``push_tos``, ``push_cfg_to_tos``, ``skip``, ``quit``
-    and ``value`` is the chosen value (for write actions).
+    ``set``, ``push_tos``, ``push_cfg_to_tos``, ``push_component``, ``skip``, ``quit``
+    and ``value`` is the chosen value (or a component dict for ``push_component``).
 
     When ``receiver_primary_active`` is True and ``diff.spec.receiver_primary``
     is set, a warning is shown reminding the operator to check whether the
@@ -420,6 +423,9 @@ def _interactive_prompt(
         options.append("[T]push-receiver-to-TOS")
     if diff.spec.tos_writable and diff.cfg_value is not None:
         options.append("[C]push-cfg-to-TOS")
+    if diff.spec.tos_components:
+        for comp in diff.spec.tos_components:
+            options.append(f"[{comp.key}]edit {comp.label}")
     options.extend(["[e]dit", "[k]eep", "[q]uit", "[?]help"])
 
     if is_primary:
@@ -478,6 +484,28 @@ def _interactive_prompt(
                 print("     (TOS value not available)")
                 continue
             return ("set", diff.tos_value)
+        if diff.spec.tos_components:
+            for comp in diff.spec.tos_components:
+                if raw == comp.key:
+                    from ..cfg import tos_adapter as _ta
+
+                    current = (
+                        _ta.current_component_value(tos_data, comp.entity, comp.current_value_key)
+                        if tos_data is not None
+                        else None
+                    )
+                    hint = f" [{current}]" if current is not None else ""
+                    try:
+                        new_val = input(f"     {comp.label}{hint}: ").strip()
+                    except EOFError:
+                        return ("quit", None)
+                    if not new_val:
+                        print("     (empty — skipping)")
+                        break
+                    return (
+                        "push_component",
+                        {"entity": comp.entity, "attribute_code": comp.attribute_code, "value": new_val},
+                    )
         if choice in ("e", "edit"):
             try:
                 custom = input("     value: ").strip()
@@ -781,7 +809,7 @@ def _reconcile_one(
             action, new_value = "skip", None
         else:
             action, new_value = _interactive_prompt(
-                d, receiver_primary_active=receiver_primary_active
+                d, receiver_primary_active=receiver_primary_active, tos_data=tos_data
             )
 
         if action == "quit":
@@ -812,6 +840,41 @@ def _reconcile_one(
                 args=args,
                 silent=silent,
             )
+            continue
+        if action == "push_component" and isinstance(new_value, dict):
+            component_info: Dict[str, str] = new_value
+            entity = component_info["entity"]
+            attribute_code = component_info["attribute_code"]
+            value = component_info["value"]
+            if not silent:
+                mode = "[DRY-RUN] " if getattr(args, "dry_run", True) else ""
+                print(f"     {mode}→ push component to TOS: {entity}.{attribute_code} = {value!r}")
+            if tos_data is None:
+                if not silent:
+                    print(f"     ❌ no TOS data — cannot push component")
+                continue
+            try:
+                from ..cfg.tos_push import push_component_to_tos
+                from tostools.api.tos_writer import TOSWriter
+
+                writer = TOSWriter(dry_run=getattr(args, "dry_run", True))
+                result = push_component_to_tos(
+                    writer=writer,
+                    entity=entity,
+                    attribute_code=attribute_code,
+                    value=value,
+                    tos_data=tos_data,
+                    date_from=_effective_date_for(args),
+                )
+                if not silent:
+                    if hasattr(result, "method"):
+                        print(f"     ✅ [dry-run] would {result.method} {result.endpoint}")
+                    else:
+                        print(f"     ✅ TOS updated: {entity}.{attribute_code} = {value!r}")
+            except Exception as exc:  # noqa: BLE001
+                if not silent:
+                    print(f"     ❌ component push failed: {exc}")
+                logger.warning("[%s] component push failed for %s.%s: %s", station_id, entity, attribute_code, exc)
             continue
         if action == "set_and_push_tos" and new_value is not None:
             # Apply cfg vocabulary mapping first (same as "set")

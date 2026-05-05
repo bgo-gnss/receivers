@@ -126,6 +126,20 @@ def _antenna_breakdown(
     return f"TOS breakdown: antenna.{label}={av_s} + monument.{monument_key}={mv_s}"
 
 
+def current_component_value(station: Dict[str, Any], entity: str, key: str) -> Optional[str]:
+    """Return the raw value for one component of a composite field from TOS session data."""
+    session = current_session(station)
+    if not session:
+        return None
+    val = (session.get(entity) or {}).get(key)
+    if val is None:
+        return None
+    try:
+        return f"{float(val):.4f}"
+    except (TypeError, ValueError):
+        return str(val)
+
+
 def antenna_height_breakdown(station: Dict[str, Any]) -> Optional[str]:
     return _antenna_breakdown(station, "antenna_height", "monument_height", "antenna_height")
 

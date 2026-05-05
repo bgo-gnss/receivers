@@ -254,6 +254,17 @@ def _identity(value: Optional[str]) -> Optional[str]:
 
 
 @dataclass(frozen=True)
+class TOSComponent:
+    """One component of a composite TOS field (e.g. antenna.antenna_height)."""
+
+    label: str           # display label, e.g. "antenna.antenna_height"
+    entity: str          # TOS entity subtype, e.g. "antenna" or "monument"
+    attribute_code: str  # TOS attribute code, e.g. "antenna_height"
+    key: str             # single letter for interactive prompt, e.g. "a" or "m"
+    current_value_key: str  # key to read current value from tos_adapter session dict
+
+
+@dataclass(frozen=True)
 class FieldSpec:
     cfg_key: str
     label: str
@@ -294,6 +305,11 @@ class FieldSpec:
     # value is a sum of two attributes and the operator needs to see the
     # split to know which one to fix in TOS.
     tos_breakdown: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None
+    # For composite fields: individual TOS components that can be edited and
+    # pushed to TOS separately.  Each TOSComponent has its own entity and
+    # attribute code.  When set, the interactive prompt offers lettered
+    # options ([a]/[m]) for editing each component independently.
+    tos_components: Optional[List[TOSComponent]] = None
 
     @property
     def tos_writable(self) -> bool:
@@ -401,6 +417,10 @@ FIELDS: List[FieldSpec] = [
         receiver_authoritative=False,
         description="Antenna height above mark including monument offset (m)",
         tos_breakdown=tos_adapter.antenna_height_breakdown,
+        tos_components=[
+            TOSComponent("antenna.antenna_height", "antenna", "antenna_height", "a", "antenna_height"),
+            TOSComponent("monument.monument_height", "monument", "monument_height", "m", "monument_height"),
+        ],
         # Composite of antenna.antenna_height + monument.monument_height — cannot
         # be written back without knowing the split; tos_attribute_code stays None.
     ),
@@ -418,6 +438,10 @@ FIELDS: List[FieldSpec] = [
         receiver_authoritative=False,
         description="Marker-to-ARP East offset (m); absent from cfg = 0.0000",
         tos_breakdown=tos_adapter.antenna_east_breakdown,
+        tos_components=[
+            TOSComponent("antenna.antenna_offset_east", "antenna", "antenna_offset_east", "a", "antenna_offset_east"),
+            TOSComponent("monument.monument_offset_east", "monument", "monument_offset_east", "m", "monument_offset_east"),
+        ],
         # Composite of antenna + monument offsets — not directly writable.
     ),
     FieldSpec(
@@ -434,6 +458,10 @@ FIELDS: List[FieldSpec] = [
         receiver_authoritative=False,
         description="Marker-to-ARP North offset (m); absent from cfg = 0.0000",
         tos_breakdown=tos_adapter.antenna_north_breakdown,
+        tos_components=[
+            TOSComponent("antenna.antenna_offset_north", "antenna", "antenna_offset_north", "a", "antenna_offset_north"),
+            TOSComponent("monument.monument_offset_north", "monument", "monument_offset_north", "m", "monument_offset_north"),
+        ],
         # Composite of antenna + monument offsets — not directly writable.
     ),
     # Coordinates — TOS is canonical (surveyed); receiver values come from a

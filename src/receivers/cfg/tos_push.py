@@ -149,3 +149,53 @@ def push_field_to_tos(
         value=tos_value,
         date_from=date_from,
     )
+
+
+def push_component_to_tos(
+    writer: "TOSWriter",
+    entity: str,
+    attribute_code: str,
+    value: str,
+    tos_data: Dict[str, Any],
+    date_from: str,
+) -> "DryRunResult | Any":
+    """Push one component of a composite field to TOS.
+
+    Used for antenna_height/east/north where the cfg value is the sum of
+    two separate TOS attributes (antenna + monument).  Each component is
+    pushed independently.
+
+    Args:
+        writer: Authenticated :class:`TOSWriter` instance.
+        entity: TOS entity subtype, e.g. ``"antenna"`` or ``"monument"``.
+        attribute_code: TOS attribute code, e.g. ``"antenna_height"``.
+        value: The raw value string to write (no tos_format applied — caller
+            is responsible for correct formatting).
+        tos_data: Processed station dict containing ``id_entity``.
+        date_from: ISO-8601 timestamp for attribute validity start.
+    """
+    station_entity_id = tos_data.get("id_entity")
+    if station_entity_id is None:
+        raise ValueError("push_component_to_tos: tos_data has no 'id_entity'")
+
+    target_entity_id = resolve_entity_id(writer, station_entity_id, entity)
+    if target_entity_id is None:
+        raise RuntimeError(
+            f"push_component_to_tos: could not resolve entity ID for {entity!r}"
+        )
+
+    logger.info(
+        "push_component_to_tos: %s.%s → TOS entity %d = %r (date_from=%s)",
+        entity,
+        attribute_code,
+        target_entity_id,
+        value,
+        date_from,
+    )
+
+    return writer.upsert_attribute_value(
+        id_entity=target_entity_id,
+        code=attribute_code,
+        value=value,
+        date_from=date_from,
+    )
