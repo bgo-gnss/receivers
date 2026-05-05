@@ -38,7 +38,7 @@ class SourceUnavailableError(Exception):
 @dataclass
 class FieldDiff:
     spec: FieldSpec
-    cfg_value: Optional[str]
+    cfg_value: Optional[str]  # normalized — used for comparison and DB storage
     receiver_value: Optional[str]  # None: not queried OR field not receiver-derivable
     tos_value: Optional[str]  # None: not queried OR field absent in TOS
     sources_queried: FrozenSet[str] = field(default_factory=frozenset)
@@ -46,6 +46,7 @@ class FieldDiff:
     suggestion: Optional[str] = None
     suggestion_source: Optional[str] = None  # "receiver", "tos", "agree"
     note: Optional[str] = None
+    cfg_raw: Optional[str] = None  # raw value from stations.cfg, for display only
 
     @property
     def cfg_key(self) -> str:
@@ -222,7 +223,8 @@ def compare_station(
 
     diffs: List[FieldDiff] = []
     for spec in wanted:
-        cfg_val = spec.normalize(_read_cfg_value(station_config, spec))
+        cfg_raw = _read_cfg_value(station_config, spec)
+        cfg_val = spec.normalize(cfg_raw)
 
         rx_val: Optional[str] = None
         if (
@@ -313,6 +315,7 @@ def compare_station(
                 suggestion=suggestion,
                 suggestion_source=suggestion_source,
                 note=note,
+                cfg_raw=cfg_raw,
             )
         )
     return diffs

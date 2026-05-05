@@ -335,8 +335,9 @@ def _print_diff_table(
         if not show_ok and d.verdict == Verdict.OK:
             continue
         glyph = _VERDICT_GLYPH.get(d.verdict, "?")
+        cfg_display = d.cfg_raw if d.cfg_raw is not None else d.cfg_value
         print(
-            f" {glyph} {d.label:<24} {_render(d.cfg_value)} "
+            f" {glyph} {d.label:<24} {_render(cfg_display)} "
             f"{_render(d.receiver_value)} {_render(d.tos_value)}"
         )
         if d.note:
@@ -492,8 +493,9 @@ def _reconcile_one(
         if not silent:
             header = f"  [{idx}/{len(actionable)}] {d.cfg_key} ({d.verdict.value})"
             print(header)
+            cfg_disp = d.cfg_raw if d.cfg_raw is not None else d.cfg_value
             print(
-                f"     cfg:      {d.cfg_value if d.cfg_value is not None else '[missing]'}"
+                f"     cfg:      {cfg_disp if cfg_disp is not None else '[missing]'}"
             )
             if "receiver" in sources:
                 rx = d.receiver_value if d.receiver_value is not None else "[N/A]"
