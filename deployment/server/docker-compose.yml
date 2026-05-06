@@ -22,6 +22,7 @@ services:
       - GF_DATASOURCE_PASSWORD=${GF_DATASOURCE_PASSWORD:-}
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_AUTH_LOGIN_COOKIE_NAME=gps_grafana_session
       - TZ=Atlantic/Reykjavik
     volumes:
       # Dashboard provisioning
