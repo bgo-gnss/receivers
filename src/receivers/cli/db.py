@@ -424,6 +424,51 @@ def cmd_db_drop_station(args: argparse.Namespace) -> int:
 # ── Parser registration ───────────────────────────────────────────────────────
 
 
+def cmd_db_list_suppressed(args: argparse.Namespace) -> int:
+    """List stations suppressed because they were removed from stations.cfg."""
+    from ..db.connection import get_connection
+
+    host = getattr(args, "host", None)
+    try:
+        conn = get_connection(host_override=host)
+    except Exception as e:
+        print(f"Cannot connect: {e}")
+        return 1
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT sid, station_name, receiver_type, updated_at
+                FROM stations
+                WHERE station_status = 'suppressed'
+                ORDER BY updated_at DESC
+                """
+            )
+            rows = cur.fetchall()
+
+        if not rows:
+            print("No suppressed stations.")
+            return 0
+
+        print(f"{'SID':<6}  {'Name':<30}  {'Receiver':<12}  Suppressed at")
+        print("-" * 72)
+        for sid, name, rtype, ts in rows:
+            name_str = name or ""
+            rtype_str = rtype or ""
+            ts_str = ts.strftime("%Y-%m-%d %H:%M") if ts else ""
+            print(f"{sid:<6}  {name_str:<30}  {rtype_str:<12}  {ts_str}")
+
+        print(f"\n{len(rows)} suppressed station(s). Use 'receivers db drop-station SID' to remove permanently.")
+        return 0
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+    finally:
+        conn.close()
+
+
 def create_db_parser(subparsers) -> None:
     """Add db subcommands to the main parser."""
     db_parser = subparsers.add_parser(
@@ -495,6 +540,14 @@ def create_db_parser(subparsers) -> None:
     restore_parser.add_argument("file", help="SQL dump file to restore")
     restore_parser.add_argument("--host", help="PostgreSQL host (default: localhost)")
     restore_parser.set_defaults(func=cmd_db_restore)
+
+    # list-suppressed
+    list_sup_parser = db_subparsers.add_parser(
+        "list-suppressed",
+        help="List stations suppressed because they were removed from stations.cfg",
+    )
+    list_sup_parser.add_argument("--host", help="PostgreSQL host (default: from config)")
+    list_sup_parser.set_defaults(func=cmd_db_list_suppressed)
 
     # drop-station
     drop_parser = db_subparsers.add_parser(

@@ -1304,6 +1304,27 @@ class BulkDownloadScheduler:
                             "station_status/health_check/configured_identity already in sync with DB"
                         )
 
+                    # Suppress stations that disappeared from stations.cfg.
+                    if self.stations:
+                        placeholders = ",".join(["%s"] * len(self.stations))
+                        cur.execute(
+                            f"""
+                            UPDATE stations
+                            SET station_status = 'suppressed', updated_at = NOW()
+                            WHERE sid NOT IN ({placeholders})
+                              AND station_status IS NULL
+                            RETURNING sid
+                            """,
+                            list(self.stations.keys()),
+                        )
+                        gone = [r[0] for r in cur.fetchall()]
+                        if gone:
+                            self.logger.warning(
+                                "Suppressed %d station(s) no longer in stations.cfg: %s",
+                                len(gone),
+                                ", ".join(gone),
+                            )
+
         except ImportError:
             self.logger.debug("psycopg2 not available — skipping status sync")
         except Exception as e:
