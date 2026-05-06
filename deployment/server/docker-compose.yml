@@ -23,6 +23,7 @@ services:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
       - GF_AUTH_LOGIN_COOKIE_NAME=gps_grafana_session
+      - GF_DATABASE_WAL=true
       - TZ=Atlantic/Reykjavik
     volumes:
       # Dashboard provisioning
