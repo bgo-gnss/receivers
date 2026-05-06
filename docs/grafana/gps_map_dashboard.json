@@ -653,7 +653,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "text",
+                "color": "#888888",
                 "value": null
               },
               {
