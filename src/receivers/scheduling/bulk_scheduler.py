@@ -392,10 +392,13 @@ def _download_station_data_job(
         # Report based on actual status with emoji-based logging style
         if status not in success_statuses:
             # Any non-success status: failed, unreachable, configuration_error, etc.
-            error_msg = result.get("error_message", status)
+            error_msg = result.get("error_message") or result.get("error", status)
             logger.error(
                 f"❌ Failed: {station_id} ({session_type}) - {error_msg} ({duration:.1f}s)"
             )
+            from ..utils.stall_timeout import record_download
+
+            record_download(station_id, session_type, outcome=status, message=str(error_msg))
         elif status == "up_to_date":
             # All files already in archive - verified on disk
             logger.info(

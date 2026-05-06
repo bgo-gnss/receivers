@@ -2,6 +2,7 @@
 
 import socket
 import subprocess
+import time
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Union
@@ -96,6 +97,7 @@ class BaseReceiver(ABC):
 
         import errno
 
+        connect_start = time.monotonic()
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(self._tcp_timeout)
@@ -104,49 +106,58 @@ class BaseReceiver(ABC):
             return True if not return_details else {"success": True}
 
         except TimeoutError:
-            # No response - host may be down or port filtered
+            connect_ms = int((time.monotonic() - connect_start) * 1000)
             result = {
                 "success": False,
                 "error_type": "timeout",
-                "message": f"Port {port} timeout (no response in {self._tcp_timeout}s)",
+                "message": f"Port {port} timeout (no response in {self._tcp_timeout}s, connect_ms={connect_ms})",
+                "connect_ms": connect_ms,
             }
             return False if not return_details else result
 
         except ConnectionRefusedError:
-            # Port closed but host is up - instant response
+            # Immediate RST — port closed, host is up (e.g. FTP service temporarily down)
+            connect_ms = int((time.monotonic() - connect_start) * 1000)
             result = {
                 "success": False,
                 "error_type": "refused",
-                "message": f"Port {port} refused (service not running)",
+                "message": f"Port {port} refused (service not running, connect_ms={connect_ms})",
+                "connect_ms": connect_ms,
             }
             return False if not return_details else result
 
         except OSError as e:
+            connect_ms = int((time.monotonic() - connect_start) * 1000)
             if e.errno == errno.EHOSTUNREACH:
                 result = {
                     "success": False,
                     "error_type": "unreachable",
-                    "message": "Host unreachable",
+                    "message": f"Host unreachable (connect_ms={connect_ms})",
+                    "connect_ms": connect_ms,
                 }
             elif e.errno == errno.ENETUNREACH:
                 result = {
                     "success": False,
                     "error_type": "unreachable",
-                    "message": "Network unreachable",
+                    "message": f"Network unreachable (connect_ms={connect_ms})",
+                    "connect_ms": connect_ms,
                 }
             else:
                 result = {
                     "success": False,
                     "error_type": "error",
-                    "message": f"Connection error: {e}",
+                    "message": f"Connection error: {e} (connect_ms={connect_ms})",
+                    "connect_ms": connect_ms,
                 }
             return False if not return_details else result
 
         except Exception as e:
+            connect_ms = int((time.monotonic() - connect_start) * 1000)
             result = {
                 "success": False,
                 "error_type": "error",
-                "message": f"Unexpected error: {e}",
+                "message": f"Unexpected error: {e} (connect_ms={connect_ms})",
+                "connect_ms": connect_ms,
             }
             return False if not return_details else result
 

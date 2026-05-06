@@ -422,9 +422,16 @@ class PolaRX5(BaseReceiver):
                 "error": "Station unreachable (ping failed)",
                 "duration": time.time() - start_time,
             }
-        if not self._quick_tcp_check(self.ip_port):
+        tcp_result = self._quick_tcp_check(self.ip_port, return_details=True)
+        if isinstance(tcp_result, dict):
+            tcp_ok = bool(tcp_result.get("success"))
+            tcp_msg: str = tcp_result.get("message") or f"FTP port {self.ip_port} not responding"
+        else:
+            tcp_ok = bool(tcp_result)
+            tcp_msg = f"FTP port {self.ip_port} not responding"
+        if not tcp_ok:
             self.logger.warning(
-                f"Station {self.station_id} FTP port {self.ip_port} not responding, skipping download"
+                f"Station {self.station_id} FTP port {self.ip_port} not responding — {tcp_msg}"
             )
             return {
                 "station_id": self.station_id,
@@ -432,7 +439,7 @@ class PolaRX5(BaseReceiver):
                 "status": "unreachable",
                 "files_downloaded": 0,
                 "downloaded_files": [],
-                "error": f"FTP port {self.ip_port} not responding",
+                "error_message": tcp_msg,
                 "duration": time.time() - start_time,
             }
 
