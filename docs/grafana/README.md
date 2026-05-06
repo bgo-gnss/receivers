@@ -114,6 +114,39 @@ export GF_DATASOURCE_PASSWORD=your_password
 docker compose up -d grafana
 ```
 
+## Troubleshooting
+
+### "context canceled" / "Grafana has failed to load its application files" after restart
+
+**Symptom**: After `docker restart gps-grafana` or `docker compose up --force-recreate`, the browser shows either a blank page, an HTTP 500, or "Grafana has failed to load its application files". `curl http://localhost:3000/` works fine.
+
+**Root cause**: The browser's HTTP keep-alive connection pool holds TCP connections that were open to the old Grafana container. The new container does not recognise these connections. When the browser sends a new request on a stale socket:
+1. Grafana's TCP stack receives the request bytes but the socket is already half-dead.
+2. Go's `net/http` server cancels the request context as soon as it detects the dead connection.
+3. Any downstream operation (secrets-service DEK lookup, datasource password decryption) immediately fails with `"context canceled"`.
+4. Grafana tries to render an error page, but Grafana 11.x has a broken error template (`.Assets.Dark` field missing) — returns 343 bytes of partial HTML.
+5. The browser renders the partial HTML as "failed to load application files".
+
+The error log pattern looks severe but is entirely caused by the stale connection:
+```
+logger=secrets msg="Failed to get current data key" error="context canceled"
+logger=context  msg="Failed to get settings"        error="context canceled"
+logger=context  msg="Request error" error="Context.HTML - Error rendering template: error …
+                     template: error:16:42: … can't evaluate field Assets …"
+logger=context  msg="Request Completed" status=500 remote_addr=… size=343
+```
+A tell-tale additional line when the response is larger (200 OK full page):
+```
+logger=context  msg="Request error" error="Context.HTML - Error rendering template: index …
+                     write tcp …:3000->…: write: connection reset by peer"
+```
+
+**Fix**: Hard-refresh the browser (**Ctrl+Shift+R**) or open an incognito/private window. Either clears the stale connection pool. No Grafana configuration change is needed.
+
+**Note**: This affects access via VPN more visibly than local access because VPN keep-alive behaviour is more aggressive. The underlying cause is the same regardless of network path.
+
+---
+
 ## Syncing to grafana.vedur.is
 
 The `scripts/grafana_sync.py` tool pushes local dashboard JSON to the production Grafana instance. It remaps datasource UIDs and inter-dashboard link UIDs automatically.
