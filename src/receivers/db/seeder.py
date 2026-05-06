@@ -203,6 +203,34 @@ class Seeder:
                         skipped += 1
                         conn.rollback()
 
+            # Suppress stations that are in the DB but no longer in stations.cfg.
+            # Only touch active stations (station_status IS NULL) to avoid
+            # overwriting deliberately set inactive/discontinued flags.
+            suppressed = 0
+            if not dry_run and station_ids:
+                placeholders = ",".join(["%s"] * len(station_ids))
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"""
+                        UPDATE stations
+                        SET station_status = 'suppressed', updated_at = NOW()
+                        WHERE sid NOT IN ({placeholders})
+                          AND station_status IS NULL
+                        RETURNING sid
+                        """,
+                        station_ids,
+                    )
+                    suppressed_rows = cur.fetchall()
+                    suppressed = len(suppressed_rows)
+                    if suppressed:
+                        sids = ", ".join(r[0] for r in suppressed_rows)
+                        logger.warning(
+                            "Suppressed %d station(s) no longer in stations.cfg: %s",
+                            suppressed,
+                            sids,
+                        )
+                        print(f"Suppressed (removed from cfg): {sids}")
+
             if not dry_run:
                 conn.commit()
 
@@ -212,8 +240,8 @@ class Seeder:
         finally:
             conn.close()
 
-        counts = {"inserted": inserted, "updated": updated, "skipped": skipped}
-        print(f"Stations: {inserted} inserted, {updated} updated, {skipped} skipped")
+        counts = {"inserted": inserted, "updated": updated, "skipped": skipped, "suppressed": suppressed}
+        print(f"Stations: {inserted} inserted, {updated} updated, {skipped} skipped, {suppressed} suppressed")
         return counts
 
     def seed_coordinates(self, dry_run: bool = False) -> dict[str, int]:
