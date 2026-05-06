@@ -61,6 +61,16 @@ class FieldDiff:
         return self.verdict not in (Verdict.OK, Verdict.NO_DATA, Verdict.NOT_QUERYABLE)
 
     @property
+    def cfg_placeholder(self) -> bool:
+        """cfg contains a raw value that normalizes to None (recognized placeholder).
+
+        True when the raw cfg line holds a value (e.g. ``antenna-AFST-20210527``)
+        that ``spec.normalize`` strips to ``None``.  The key should be removed
+        from stations.cfg rather than kept or written to.
+        """
+        return self.cfg_raw is not None and self.cfg_value is None
+
+    @property
     def format_mismatch(self) -> bool:
         """cfg is logically correct but stored in a different notation than the receiver uses.
 
@@ -282,6 +292,18 @@ def compare_station(
         ):
             note = f"receiver={rx_val!r} but TOS={tos_val!r}"
 
+        if (
+            verdict in (Verdict.CONFLICT, Verdict.MISSING, Verdict.SOURCES_DISAGREE)
+            and spec.tos_breakdown is not None
+            and tos_data is not None
+        ):
+            try:
+                breakdown = spec.tos_breakdown(tos_data)
+                if breakdown:
+                    note = f"{note}; {breakdown}" if note else breakdown
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[%s] tos_breakdown for %s failed: %s", station_id, spec.cfg_key, exc)
+
         # Sync the discrepancy log with what we just observed:
         #   * actionable verdicts (MISSING/CONFLICT/SOURCES_DISAGREE) → record/refresh open row
         #   * OK → only auto-close when *every* source that could supply this
@@ -391,6 +413,56 @@ def apply_diff(
         except Exception as exc:  # noqa: BLE001
             logger.debug(
                 "[%s] failed to log resolution for %s: %s",
+                station_id,
+                diff.cfg_key,
+                exc,
+            )
+
+    return changed
+
+
+def remove_diff(
+    station_id: str,
+    diff: FieldDiff,
+    cfg_path: Optional[Path] = None,
+    resolved_by: Optional[str] = None,
+) -> bool:
+    """Remove the key for ``diff.cfg_key`` from stations.cfg entirely.
+
+    Used to clean up placeholder values (e.g. TOS synthetic antenna serials
+    like ``antenna-AFST-20210527``) that should not be stored in cfg at all.
+    The RINEX pipeline handles the absent field gracefully.
+
+    Returns True if a line was removed. DB audit is best-effort.
+    """
+    from ..config.receivers_config import _remove_cfg_field
+
+    if cfg_path is None:
+        try:
+            import gps_parser as _gps  # type: ignore
+        except ImportError as exc:
+            raise SourceUnavailableError(
+                "gps_parser not importable — cannot locate stations.cfg"
+            ) from exc
+        cfg_path = Path(_gps.ConfigParser().get_stations_config_path())
+
+    changed = _remove_cfg_field(cfg_path, station_id, diff.cfg_key)
+
+    if changed:
+        try:
+            from . import discrepancy_log as _dlog  # type: ignore[attr-defined]
+
+            _dlog.record_resolution(
+                station_id,
+                diff.cfg_key,
+                action=_dlog.ACTION_CFG_UPDATED,
+                resolved_value=None,
+                resolved_by=resolved_by,
+                note=f"removed placeholder {diff.cfg_raw!r} from cfg",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "[%s] failed to log removal for %s: %s",
                 station_id,
                 diff.cfg_key,
                 exc,

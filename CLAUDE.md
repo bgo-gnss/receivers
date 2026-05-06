@@ -740,7 +740,7 @@ Key facts:
 The `receivers cfg reconcile` command (introduced 2026-05) currently
 covers TOS → cfg and receiver → cfg with interactive review, auto-fill,
 JSON output, and field-scoped batch mode. Open follow-ups:
-- **`--push-tos` Pattern 2 (instrument change)**: close old attribute period and open a new one when firmware/receiver changes. Currently only Pattern 1 (correct existing open value) is implemented.
+- **Pattern 2 (instrument change) — separate workflow needed**: when receiver/antenna/firmware discrepancy reflects an actual swap or upgrade (not a data-entry error), the fix is to close the old TOS period (`date_to`) and open a new one (`date_from` = install date). This is distinct from Pattern 1 (PATCH open value for typos). Currently the interactive prompt warns the operator to check which case applies and handle Pattern 2 manually in TOS. A future `receivers tos add-instrument` (or tostools) command should automate this — interface not yet designed.
 - **Source visibility hint**: when a source is excluded (e.g.
   `--source tos`), surface "receiver skipped — re-run with
   `--source both`" in the output header so it's obvious from the dump
@@ -773,6 +773,7 @@ JSON output, and field-scoped batch mode. Open follow-ups:
 - **Pattern 4 — historical fixes**: `upsert_attribute_value` targets the most recent open value. For correcting a closed historical period, need a `date_hint` parameter to select the record by `date_from`. Useful for bulk-fixing old data entry errors without overwriting current values.
 - **Device entity writes**: `--push-tos` currently writes to the station entity only. Receiver model/serial/firmware live on the `gnss_receiver` child entity (`children_connections[].id_entity_child`). Needs a second history fetch + entity resolution step.
 - **Join record updates**: Device session start/end dates live in the join record (not the device entity). `TOSWriter.patch_entity_connection()` is implemented; needs wiring to reconcile workflow.
+- **Scheduled TOS consistency sweep** (post-TOS cleanup): add `receivers cfg reconcile --all --source tos --dry-run --json --only-diffs` as a nightly scheduler job once TOS data is reliable. Output feeds a Grafana discrepancy panel (`cfg_discrepancy` table). Prereqs: TOS bulk cleanup complete, Grafana panel built, `--workers N` parallelism implemented. Long-term: once TOS is authoritative, flip to generating stations.cfg FROM TOS (`receivers cfg generate`).
 
 ### Tracking
 - Full issue tracker: `docs/CODE_REVIEW_TRACKER.md`

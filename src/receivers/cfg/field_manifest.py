@@ -72,6 +72,11 @@ def _strip_placeholder(value: Optional[str]) -> Optional[str]:
     Used for ``receiver_serial`` and ``antenna_serial`` where operators and
     receivers both surface "I don't have a real value" via well-known
     sentinels (``"0000000000"``, ``"Unknown"``, ``""``).
+
+    Also strips TOS synthetic antenna identifiers of the form
+    ``antenna-{STATION}-{YYYYMMDD}`` (e.g. ``antenna-AFST-20210527``).
+    TOS generates these when no real serial is recorded; they carry no
+    hardware meaning and must not be written to stations.cfg.
     """
     s = _strip(value)
     if s is None:
@@ -80,6 +85,9 @@ def _strip_placeholder(value: Optional[str]) -> Optional[str]:
         return None
     # All-zero serials of any length (0, 00, 000000, 0000000000, …).
     if s and set(s) == {"0"}:
+        return None
+    # TOS synthetic antenna identifier: antenna-{4-letter-station}-{YYYYMMDD}
+    if re.match(r"^antenna-[A-Z]{4}-\d{8}$", s, re.IGNORECASE):
         return None
     return s
 
@@ -246,6 +254,17 @@ def _identity(value: Optional[str]) -> Optional[str]:
 
 
 @dataclass(frozen=True)
+class TOSComponent:
+    """One component of a composite TOS field (e.g. antenna.antenna_height)."""
+
+    label: str           # display label, e.g. "antenna.antenna_height"
+    entity: str          # TOS entity subtype, e.g. "antenna" or "monument"
+    attribute_code: str  # TOS attribute code, e.g. "antenna_height"
+    key: str             # single letter for interactive prompt, e.g. "a" or "m"
+    current_value_key: str  # key to read current value from tos_adapter session dict
+
+
+@dataclass(frozen=True)
 class FieldSpec:
     cfg_key: str
     label: str
@@ -263,6 +282,14 @@ class FieldSpec:
     # receiver carries operator-typed values (antenna metadata) or PVT
     # solutions that should not overwrite surveyed coordinates from TOS.
     receiver_authoritative: bool = True
+    # If True, the receiver is the ground-truth source for this field. In
+    # interactive mode, the default action for a conflict becomes "accept
+    # receiver value and push it to TOS in one step." The user can still
+    # choose any other action; --no-receiver-primary disables this default.
+    # Only applies to hardware-identity fields (type, serial, firmware) where
+    # the receiver hardware is literally the authoritative source. Position
+    # fields are flag-only even though the receiver can supply them.
+    receiver_primary: bool = False
     # TOS write-side metadata. ``tos_attribute_code=None`` means the field is
     # not writable via ``--push-tos`` (e.g. composite fields).
     # ``tos_target_entity`` is the entity type that owns the attribute:
@@ -272,6 +299,17 @@ class FieldSpec:
     tos_attribute_code: Optional[str] = None
     tos_target_entity: Optional[str] = None
     tos_format: Callable[[Optional[str]], Optional[str]] = _identity
+    # Optional callable that takes the raw TOS station dict and returns a
+    # human-readable breakdown string shown in the interactive prompt.
+    # Used for composite fields (antenna_height/east/north) where the TOS
+    # value is a sum of two attributes and the operator needs to see the
+    # split to know which one to fix in TOS.
+    tos_breakdown: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None
+    # For composite fields: individual TOS components that can be edited and
+    # pushed to TOS separately.  Each TOSComponent has its own entity and
+    # attribute code.  When set, the interactive prompt offers lettered
+    # options ([a]/[m]) for editing each component independently.
+    tos_components: Optional[List[TOSComponent]] = None
 
     @property
     def tos_writable(self) -> bool:
@@ -304,6 +342,7 @@ FIELDS: List[FieldSpec] = [
         equal=_receiver_type_eq,
         cfg_format=_receiver_type_to_cfg,
         description="Receiver model/type (e.g. PolaRX5, NetR9)",
+        receiver_primary=True,
         tos_attribute_code="model",
         tos_target_entity="gnss_receiver",
         tos_format=to_igs_receiver,
@@ -315,6 +354,7 @@ FIELDS: List[FieldSpec] = [
         tos_extract=tos_adapter.current_receiver_serial,
         normalize=_strip_placeholder,
         description="Receiver serial number",
+        receiver_primary=True,
         tos_attribute_code="serial_number",
         tos_target_entity="gnss_receiver",
     ),
@@ -325,6 +365,7 @@ FIELDS: List[FieldSpec] = [
         tos_extract=tos_adapter.current_receiver_firmware,
         normalize=_normalize_firmware_version,
         description="Active firmware version reported by the receiver",
+        receiver_primary=True,
         tos_attribute_code="firmware_version",
         tos_target_entity="gnss_receiver",
     ),
@@ -375,6 +416,11 @@ FIELDS: List[FieldSpec] = [
         equal=_approx_eq(4),
         receiver_authoritative=False,
         description="Antenna height above mark including monument offset (m)",
+        tos_breakdown=tos_adapter.antenna_height_breakdown,
+        tos_components=[
+            TOSComponent("antenna.antenna_height", "antenna", "antenna_height", "a", "antenna_height"),
+            TOSComponent("monument.monument_height", "monument", "monument_height", "m", "monument_height"),
+        ],
         # Composite of antenna.antenna_height + monument.monument_height — cannot
         # be written back without knowing the split; tos_attribute_code stays None.
     ),
@@ -391,6 +437,11 @@ FIELDS: List[FieldSpec] = [
         equal=_approx_eq(4),
         receiver_authoritative=False,
         description="Marker-to-ARP East offset (m); absent from cfg = 0.0000",
+        tos_breakdown=tos_adapter.antenna_east_breakdown,
+        tos_components=[
+            TOSComponent("antenna.antenna_offset_east", "antenna", "antenna_offset_east", "a", "antenna_offset_east"),
+            TOSComponent("monument.monument_offset_east", "monument", "monument_offset_east", "m", "monument_offset_east"),
+        ],
         # Composite of antenna + monument offsets — not directly writable.
     ),
     FieldSpec(
@@ -406,6 +457,11 @@ FIELDS: List[FieldSpec] = [
         equal=_approx_eq(4),
         receiver_authoritative=False,
         description="Marker-to-ARP North offset (m); absent from cfg = 0.0000",
+        tos_breakdown=tos_adapter.antenna_north_breakdown,
+        tos_components=[
+            TOSComponent("antenna.antenna_offset_north", "antenna", "antenna_offset_north", "a", "antenna_offset_north"),
+            TOSComponent("monument.monument_offset_north", "monument", "monument_offset_north", "m", "monument_offset_north"),
+        ],
         # Composite of antenna + monument offsets — not directly writable.
     ),
     # Coordinates — TOS is canonical (surveyed); receiver values come from a

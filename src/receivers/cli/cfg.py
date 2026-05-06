@@ -25,7 +25,7 @@ import logging
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 
 from ..cfg.field_manifest import (
     FIELDS,
@@ -39,6 +39,7 @@ from ..cfg.reconciler import (
     Verdict,
     apply_diff,
     compare_station,
+    remove_diff,
 )
 
 logger = logging.getLogger(__name__)
@@ -324,6 +325,23 @@ def _print_setup_header(station_id: str, station_config: Dict[str, Any]) -> None
             print(f"  {label:<20} {val}")
 
 
+def _is_tos_fillable(d: FieldDiff) -> bool:
+    """True when cfg has a real value, TOS was queried but returned nothing, and the field is TOS-writable.
+
+    Catches two cases:
+    - NO_DATA: both receiver and TOS have no value (only cfg has it)
+    - OK: cfg and receiver agree, but TOS has nothing — these show as ✓ but
+      TOS still needs to be populated
+    """
+    return (
+        d.verdict in (Verdict.NO_DATA, Verdict.OK)
+        and d.cfg_value is not None
+        and d.tos_value is None
+        and "tos" in d.sources_queried
+        and d.spec.tos_writable
+    )
+
+
 def _print_diff_table(
     diffs: List[FieldDiff],
     show_ok: bool = True,
@@ -332,10 +350,19 @@ def _print_diff_table(
     print(f"   {'Field':<24} {'stations.cfg':<22} {'Receiver':<22} {'TOS':<22}")
     print(f"   {'-' * 24} {'-' * 22} {'-' * 22} {'-' * 22}")
     for d in diffs:
-        # format_mismatch rows are verdict=OK but notation differs — always show
-        if not show_ok and d.verdict == Verdict.OK and not d.format_mismatch:
+        # Always show format_mismatch, cfg_placeholder, and tos_fillable rows
+        if not show_ok and d.verdict == Verdict.OK and not d.format_mismatch and not _is_tos_fillable(d):
             continue
-        glyph = "≈" if d.format_mismatch else _VERDICT_GLYPH.get(d.verdict, "?")
+        if not show_ok and d.verdict == Verdict.NO_DATA and not d.cfg_placeholder and not _is_tos_fillable(d):
+            continue
+        if d.cfg_placeholder:
+            glyph = "~"
+        elif d.format_mismatch:
+            glyph = "≈"
+        elif _is_tos_fillable(d):
+            glyph = "↑"
+        else:
+            glyph = _VERDICT_GLYPH.get(d.verdict, "?")
         cfg_display = d.cfg_raw if d.cfg_raw is not None else d.cfg_value
         print(
             f" {glyph} {d.label:<24} {_render(cfg_display)} "
@@ -360,23 +387,60 @@ def _summary_counts(diffs: List[FieldDiff]) -> Dict[str, int]:
 _HELP = """
 Actions:
   s   set the field to the suggested value (when shown)
-  r   set to the receiver-reported value
-  t   set to the TOS value
-  T   push the receiver value to TOS (write to TOS, not cfg)
+  r   set to the receiver-reported value (cfg only)
+  R   set cfg to receiver value AND push to TOS in one step (tos_writable fields only)
+  t   set to the TOS value (cfg only, no TOS push)
+  T   push the receiver value to TOS only (cfg unchanged) — use only after confirming this is a
+      data-entry error (Pattern 1: correct the open value in-place).
+      If the discrepancy reflects an instrument change (new receiver, fw
+      upgrade, antenna swap), close the old TOS period and add a new one
+      manually — do NOT use T in that case.
+  C   push the cfg value to TOS (when cfg is correct but TOS is wrong)
   e   enter a custom value
   k   keep the existing cfg value (skip)
   q   quit reconciliation for this station
   ?   show this help
+
+Receiver-primary fields (type, serial, firmware) show a warning when TOS
+disagrees. Check the TOS history first:
+  data-entry error (wrong value typed) → fix cfg with r, then T to correct TOS in-place.
+  instrument change (swap/upgrade not logged) → k to keep cfg, then add new period in TOS manually.
+
+For antenna fields (type, serial, radome): TOS is canonical but the operator
+may have a correct value in cfg that TOS lacks. Use C to push cfg → TOS
+without changing cfg itself.
+
+Table glyphs:
+  ✓  OK — cfg matches all queried sources
+  ?  MISSING — cfg empty, at least one source has a value
+  ✗  CONFLICT — cfg disagrees with a source
+  !  SOURCES_DISAGREE — receiver and TOS give different values
+  ~  cfg holds a placeholder value (e.g. a synthetic TOS serial) — should be removed
+  ≈  format mismatch — normalized values agree but raw notation differs
+  ↑  TOS has no value for this field but cfg does — offered after the main diff loop
+  ·  no actionable data (both sources empty)
 """.rstrip()
 
 
-def _interactive_prompt(diff: FieldDiff) -> Tuple[str, Optional[str]]:
+def _interactive_prompt(
+    diff: FieldDiff,
+    *,
+    receiver_primary_active: bool = True,
+    tos_data: Optional[Dict[str, Any]] = None,
+) -> Tuple[str, Any]:
     """Ask the user what to do for one field.
 
     Returns ``(action, value)`` where action is one of
-    ``set``, ``push_tos``, ``skip``, ``quit`` and ``value`` is the chosen
-    value (for ``set`` and ``push_tos``).
+    ``set``, ``push_tos``, ``push_cfg_to_tos``, ``push_component``, ``skip``, ``quit``
+    and ``value`` is the chosen value (or a component dict for ``push_component``).
+
+    When ``receiver_primary_active`` is True and ``diff.spec.receiver_primary``
+    is set, a warning is shown reminding the operator to check whether the
+    TOS discrepancy is a data-entry error (fix with T) or an unlogged
+    instrument change (requires manual TOS period management).
     """
+    is_primary = receiver_primary_active and diff.spec.receiver_primary and diff.receiver_value is not None
+
     options: List[str] = []
     if diff.suggestion is not None:
         src = diff.suggestion_source or "?"
@@ -386,8 +450,24 @@ def _interactive_prompt(diff: FieldDiff) -> Tuple[str, Optional[str]]:
     if diff.tos_value is not None and diff.tos_value != diff.suggestion:
         options.append(f"[t]os={diff.tos_value!r}")
     if diff.spec.tos_writable and diff.receiver_value is not None:
-        options.append("[T]push-to-TOS")
+        options.append("[T]push-receiver-to-TOS")
+        options.append(f"[R]receiver→cfg+TOS ({diff.receiver_value!r})")
+    if diff.spec.tos_writable and diff.cfg_value is not None:
+        options.append("[C]push-cfg-to-TOS")
+    if diff.spec.tos_components:
+        for comp in diff.spec.tos_components:
+            options.append(f"[{comp.key}]edit {comp.label}")
     options.extend(["[e]dit", "[k]eep", "[q]uit", "[?]help"])
+
+    if is_primary:
+        print(
+            "     ⚠  TOS discrepancy on hardware-identity field — check TOS history first:\n"
+            "        data-entry error (wrong value typed) → fix cfg with [r], then [T] to correct TOS in-place.\n"
+            "        instrument change (swap/upgrade not logged) → [k] keep cfg, then add new period in TOS manually."
+        )
+
+    if diff.note:
+        print(f"     ↳ {diff.note}")
 
     while True:
         print(f"     {' · '.join(options)}")
@@ -400,33 +480,73 @@ def _interactive_prompt(diff: FieldDiff) -> Tuple[str, Optional[str]]:
         if choice == "?" or choice == "help":
             print(_HELP)
             continue
-        if choice in ("k", "keep", ""):
+        if choice in ("k", "keep"):
             return ("skip", None)
         if choice in ("q", "quit"):
             return ("quit", None)
+        # Uppercase-sensitive actions must be checked against `raw` BEFORE the
+        # lowercase fallbacks that share the same letter (r/R, t/T, c/C).
+        if raw == "R":  # uppercase R = set cfg to receiver value AND push to TOS
+            if not diff.spec.tos_writable:
+                print(f"     (field {diff.cfg_key!r} is not TOS-writable — use r for cfg only)")
+                continue
+            if diff.receiver_value is None:
+                print("     (no receiver value available)")
+                continue
+            return ("set_and_push_tos", diff.receiver_value)
+        if raw == "T":  # uppercase T = push receiver value to TOS only
+            if not diff.spec.tos_writable:
+                print(f"     (field {diff.cfg_key!r} is not TOS-writable)")
+                continue
+            if diff.receiver_value is None:
+                print("     (no receiver value to push — use C to push cfg value)")
+                continue
+            return ("push_tos", diff.receiver_value)
+        if raw == "C":  # uppercase C = push cfg value to TOS
+            if not diff.spec.tos_writable:
+                print(f"     (field {diff.cfg_key!r} is not TOS-writable)")
+                continue
+            if diff.cfg_value is None:
+                print("     (no cfg value to push)")
+                continue
+            return ("push_cfg_to_tos", diff.cfg_value)
+        if choice in ("r", "receiver", ""):
+            if diff.receiver_value is None:
+                print("     (receiver value not available)")
+                continue
+            return ("set", diff.receiver_value)
         if choice in ("s", "set"):
             if diff.suggestion is None:
                 print("     (no suggestion available — pick r/t/e)")
                 continue
             return ("set", diff.suggestion)
-        if choice in ("r", "receiver"):
-            if diff.receiver_value is None:
-                print("     (receiver value not available)")
-                continue
-            return ("set", diff.receiver_value)
-        if raw == "T":  # case-sensitive: uppercase T = push to TOS
-            if not diff.spec.tos_writable:
-                print(f"     (field {diff.cfg_key!r} is not TOS-writable)")
-                continue
-            if diff.receiver_value is None:
-                print("     (no receiver value to push)")
-                continue
-            return ("push_tos", diff.receiver_value)
         if choice in ("t", "tos"):
             if diff.tos_value is None:
                 print("     (TOS value not available)")
                 continue
             return ("set", diff.tos_value)
+        if diff.spec.tos_components:
+            for comp in diff.spec.tos_components:
+                if raw == comp.key:
+                    from ..cfg import tos_adapter as _ta
+
+                    current = (
+                        _ta.current_component_value(tos_data, comp.entity, comp.current_value_key)
+                        if tos_data is not None
+                        else None
+                    )
+                    hint = f" [{current}]" if current is not None else ""
+                    try:
+                        new_val = input(f"     {comp.label}{hint}: ").strip()
+                    except EOFError:
+                        return ("quit", None)
+                    if not new_val:
+                        print("     (empty — skipping)")
+                        break
+                    return (
+                        "push_component",
+                        {"entity": comp.entity, "attribute_code": comp.attribute_code, "value": new_val},
+                    )
         if choice in ("e", "edit"):
             try:
                 custom = input("     value: ").strip()
@@ -514,6 +634,56 @@ def _do_push_tos(
 
 
 # ---------------------------------------------------------------------------
+# Position sanity gate
+# ---------------------------------------------------------------------------
+
+
+def _position_sanity_check(
+    diffs: List[FieldDiff],
+    abort_m: float,
+) -> Optional[str]:
+    """Return an error message if the receiver position is suspiciously far from TOS.
+
+    Computes the receiver-vs-TOS delta for each position field in metres and
+    returns a message when any single axis exceeds ``abort_m``.  Returns None
+    when the position looks sane or when position data is unavailable.
+
+    This is intentionally a per-axis check rather than a 3-D distance so that
+    a single bad axis (e.g. PVT height spike) is still caught even when
+    horizontal looks fine.
+    """
+    import math
+
+    _DEG_PER_M_LAT = 1.0 / 111111.0
+    _DEG_PER_M_LON = 1.0 / (111111.0 * math.cos(math.radians(64.0)))
+
+    for d in diffs:
+        if d.cfg_key not in ("latitude", "longitude", "height"):
+            continue
+        if d.receiver_value is None or d.tos_value is None:
+            continue
+        try:
+            delta = abs(float(d.receiver_value) - float(d.tos_value))
+        except (ValueError, TypeError):
+            continue
+        if d.cfg_key == "latitude":
+            delta_m = delta / _DEG_PER_M_LAT
+        elif d.cfg_key == "longitude":
+            delta_m = delta / _DEG_PER_M_LON
+        else:
+            delta_m = delta
+
+        if delta_m > abort_m:
+            return (
+                f"⛔  POSITION SANITY FAIL: {d.label} differs by {delta_m:.0f} m "
+                f"(receiver={d.receiver_value}, TOS={d.tos_value}, threshold={abort_m:.0f} m). "
+                f"Receiver may be at the wrong station — "
+                f"hardware-identity auto-push blocked."
+            )
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Per-station reconciliation
 # ---------------------------------------------------------------------------
 
@@ -556,17 +726,36 @@ def _reconcile_one(
     if not silent:
         _print_diff_table(diffs, show_ok=show_ok)
 
+    # Position sanity gate — must run before any write logic so the warning
+    # is visible even in dry-run mode.
+    abort_m: float = getattr(args, "position_abort_m", 50.0)
+    position_warn = _position_sanity_check(diffs, abort_m)
+    if position_warn and not silent:
+        print(f"\n   {position_warn}")
+
     n_written = 0
     n_skipped = 0
     actionable = [d for d in diffs if d.needs_attention]
     canonicalize_on = getattr(args, "canonicalize", False)
     fmt_mismatches = [d for d in diffs if d.format_mismatch] if canonicalize_on else []
-    if not actionable and not fmt_mismatches:
+    # cfg_placeholder rows are always collected — cleaned in --canonicalize or
+    # interactively, independent of whether other fields need attention.
+    cfg_placeholders = [d for d in diffs if d.cfg_placeholder]
+    # tos_fillable: cfg has a value but TOS has none — offered after the main loop.
+    # Computed here so the early-return guard can include them.
+    tos_fillable_list = [d for d in diffs if _is_tos_fillable(d)] if not silent else []
+    if not actionable and not fmt_mismatches and not cfg_placeholders and not tos_fillable_list:
         return diffs, 0, 0
 
     if args.dry_run:
         if not silent and actionable:
             print(f"\n   {len(actionable)} field(s) need attention (dry-run, no writes)")
+        if not silent and cfg_placeholders:
+            keys = ", ".join(d.cfg_key for d in cfg_placeholders)
+            print(f"\n   {len(cfg_placeholders)} placeholder value(s) to remove: {keys} (dry-run)")
+        if not silent and tos_fillable_list:
+            keys = ", ".join(d.cfg_key for d in tos_fillable_list)
+            print(f"\n   {len(tos_fillable_list)} field(s) with cfg value but TOS empty: {keys} (use C to populate)")
         # canonicalize dry-run section handled below; fall through
         if not canonicalize_on:
             return diffs, 0, len(actionable)
@@ -604,12 +793,19 @@ def _reconcile_one(
             print("   ⚠️  --push-tos requires --source tos or --source both")
 
     field_specs_by_key = fields_by_key()
+    no_receiver_primary: bool = getattr(args, "no_receiver_primary", False) or getattr(
+        args, "interactive", False
+    )
+    # Position sanity failure disables receiver-primary auto-push regardless of flags.
+    receiver_primary_active = not no_receiver_primary and position_warn is None
 
     if not silent:
         print()
     for idx, d in enumerate(actionable, start=1):
         if not silent:
             header = f"  [{idx}/{len(actionable)}] {d.cfg_key} ({d.verdict.value})"
+            if d.spec.receiver_primary and receiver_primary_active:
+                header += "  [receiver-primary]"
             print(header)
             cfg_disp = d.cfg_raw if d.cfg_raw is not None else d.cfg_value
             print(
@@ -625,19 +821,43 @@ def _reconcile_one(
         # Resolve action
         action: str
         new_value: Optional[str]
+        is_primary = (
+            receiver_primary_active
+            and d.spec.receiver_primary
+            and d.receiver_value is not None
+            and d.spec.tos_writable
+            and tos_data is not None
+        )
         if args.auto_fill and d.verdict == Verdict.MISSING and d.suggestion is not None:
-            action, new_value = "set", d.suggestion
-            if not silent:
-                print(f"     → auto-fill from {d.suggestion_source}: {d.suggestion!r}")
+            if is_primary and d.suggestion_source in ("receiver", "agree"):
+                action, new_value = "set_and_push_tos", d.suggestion
+                if not silent:
+                    print(f"     → auto-fill from {d.suggestion_source}: {d.suggestion!r} (cfg + TOS)")
+            else:
+                action, new_value = "set", d.suggestion
+                if not silent:
+                    print(f"     → auto-fill from {d.suggestion_source}: {d.suggestion!r}")
         elif args.yes and d.suggestion is not None:
-            action, new_value = "set", d.suggestion
+            if is_primary and d.suggestion_source in ("receiver", "agree"):
+                action, new_value = "set_and_push_tos", d.suggestion
+                if not silent:
+                    print(f"     → accept suggestion ({d.suggestion_source}): {d.suggestion!r} (cfg + TOS)")
+            else:
+                action, new_value = "set", d.suggestion
+                if not silent:
+                    print(f"     → accept suggestion ({d.suggestion_source}): {d.suggestion!r}")
+        elif args.yes and is_primary and d.receiver_value is not None:
+            # --yes with receiver_primary but no agreed suggestion: still take receiver
+            action, new_value = "set_and_push_tos", d.receiver_value
             if not silent:
-                print(f"     → accept suggestion ({d.suggestion_source}): {d.suggestion!r}")
+                print(f"     → accept receiver (primary): {d.receiver_value!r} (cfg + TOS)")
         elif silent:
             # JSON mode without an applicable auto-rule: cannot prompt; skip.
             action, new_value = "skip", None
         else:
-            action, new_value = _interactive_prompt(d)
+            action, new_value = _interactive_prompt(
+                d, receiver_primary_active=receiver_primary_active, tos_data=tos_data
+            )
 
         if action == "quit":
             if not silent:
@@ -651,6 +871,101 @@ def _reconcile_one(
                 station_id=station_id,
                 diff=d,
                 value=new_value,
+                tos_data=tos_data,
+                args=args,
+                silent=silent,
+            )
+            continue
+        if action == "push_cfg_to_tos" and new_value is not None:
+            if not silent:
+                print(f"     → push cfg value to TOS: {d.cfg_key} = {new_value!r}")
+            _do_push_tos(
+                station_id=station_id,
+                diff=d,
+                value=new_value,
+                tos_data=tos_data,
+                args=args,
+                silent=silent,
+            )
+            continue
+        if action == "push_component" and isinstance(new_value, dict):
+            component_info = cast(Dict[str, str], new_value)
+            entity = component_info["entity"]
+            attribute_code = component_info["attribute_code"]
+            value = component_info["value"]
+            if not silent:
+                mode = "[DRY-RUN] " if getattr(args, "dry_run", True) else ""
+                print(f"     {mode}→ push component to TOS: {entity}.{attribute_code} = {value!r}")
+            if tos_data is None:
+                if not silent:
+                    print("     ❌ no TOS data — cannot push component")
+                continue
+            try:
+                from tostools.api.tos_writer import TOSWriter
+
+                from ..cfg.tos_push import push_component_to_tos
+
+                writer = TOSWriter(dry_run=getattr(args, "dry_run", True))
+                result = push_component_to_tos(
+                    writer=writer,
+                    entity=entity,
+                    attribute_code=attribute_code,
+                    value=value,
+                    tos_data=tos_data,
+                    date_from=_effective_date_for(args),
+                )
+                if not silent:
+                    if hasattr(result, "method"):
+                        print(f"     ✅ [dry-run] would {result.method} {result.endpoint}")
+                    else:
+                        print(f"     ✅ TOS updated: {entity}.{attribute_code} = {value!r}")
+            except Exception as exc:  # noqa: BLE001
+                if not silent:
+                    print(f"     ❌ component push failed: {exc}")
+                logger.warning("[%s] component push failed for %s.%s: %s", station_id, entity, attribute_code, exc)
+            continue
+        if action == "set_and_push_tos" and new_value is not None:
+            # Apply cfg vocabulary mapping first (same as "set")
+            spec = field_specs_by_key.get(d.cfg_key)
+            if spec is not None:
+                try:
+                    mapped = spec.cfg_format(new_value)
+                except Exception as exc:  # noqa: BLE001
+                    if not silent:
+                        print(f"     ❌ cfg_format failed for {d.cfg_key}: {exc}")
+                    continue
+                if mapped is None:
+                    if not silent:
+                        print(
+                            f"     ❌ cfg_format normalised {new_value!r} to None — skipping"
+                        )
+                    continue
+                if mapped != new_value and not silent:
+                    print(
+                        f"     ↺ normalised {new_value!r} → {mapped!r} for cfg vocabulary"
+                    )
+                new_value = mapped
+            try:
+                changed = apply_diff(station_id, d, new_value)
+                if changed:
+                    n_written += 1
+                    if not silent:
+                        print(f"     ✅ wrote {d.cfg_key} = {new_value!r} to cfg")
+                elif not silent:
+                    print(f"     ⏭  cfg unchanged ({d.cfg_key} already = {new_value!r})")
+            except SourceUnavailableError as exc:
+                if not silent:
+                    print(f"     ❌ could not write cfg: {exc}")
+                continue
+            except Exception as exc:  # noqa: BLE001
+                if not silent:
+                    print(f"     ❌ cfg write failed: {exc}")
+                continue
+            # Now push to TOS — best-effort, cfg write already succeeded
+            _do_push_tos(
+                station_id=station_id,
+                diff=d,
+                value=d.receiver_value or new_value,
                 tos_data=tos_data,
                 args=args,
                 silent=silent,
@@ -720,6 +1035,92 @@ def _reconcile_one(
                 except Exception as exc:  # noqa: BLE001
                     if not silent:
                         print(f"     ❌ {d.cfg_key}: write failed: {exc}")
+
+    # Placeholder cleanup: remove keys whose raw cfg value is a recognized placeholder
+    # (e.g. TOS synthetic serials like antenna-AFST-20210527).
+    # --canonicalize auto-removes without prompting; interactive mode asks [d]elete.
+    if cfg_placeholders:
+        if canonicalize_on:
+            if not silent:
+                print(f"\n   Removing {len(cfg_placeholders)} placeholder value(s)…")
+            for d in cfg_placeholders:
+                if args.dry_run:
+                    if not silent:
+                        print(f"     ~ {d.cfg_key}: remove {d.cfg_raw!r} (dry-run)")
+                else:
+                    try:
+                        changed = remove_diff(
+                            station_id, d, resolved_by="canonicalize"
+                        )
+                        if changed:
+                            n_written += 1
+                            if not silent:
+                                print(f"     ✅ {d.cfg_key}: removed {d.cfg_raw!r}")
+                        elif not silent:
+                            print(f"     ⏭  {d.cfg_key} already absent")
+                    except SourceUnavailableError as exc:
+                        if not silent:
+                            print(f"     ❌ {d.cfg_key}: could not remove: {exc}")
+                    except Exception as exc:  # noqa: BLE001
+                        if not silent:
+                            print(f"     ❌ {d.cfg_key}: removal failed: {exc}")
+        elif not silent and not args.dry_run:
+            # Interactive: prompt for each placeholder
+            print(f"\n   {len(cfg_placeholders)} placeholder value(s) in cfg:")
+            for d in cfg_placeholders:
+                print(f"\n     ~ {d.cfg_key} = {d.cfg_raw!r}  (placeholder — no real value)")
+                print("       [d]elete · [k]eep · [q]uit")
+                try:
+                    choice = input("       > ").strip().lower()
+                except EOFError:
+                    choice = "q"
+                if choice in ("q", "quit"):
+                    break
+                if choice in ("d", "delete", ""):
+                    try:
+                        changed = remove_diff(station_id, d)
+                        if changed:
+                            n_written += 1
+                            print(f"       ✅ removed {d.cfg_key}")
+                        else:
+                            print("       ⏭  already absent")
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"       ❌ removal failed: {exc}")
+                else:
+                    n_skipped += 1
+
+    # TOS-fillable fields: cfg has a real value but TOS was queried and has nothing.
+    # These are NOT "needs_attention" conflicts — they're silent gaps the operator
+    # may want to fill. Show them separately so `C` is available without cluttering
+    # the main diff flow.
+    if not silent and not args.dry_run and tos_fillable_list:
+        print(f"\n   {len(tos_fillable_list)} field(s) where cfg has a value but TOS has none:")
+        for d in tos_fillable_list:
+            print(f"\n     ↑ {d.label} ({d.cfg_key})")
+            print(f"       cfg: {d.cfg_value!r}")
+            print("       TOS: [no value — use C to populate]")
+            print("       [C]push-cfg-to-TOS · [k]eep · [q]uit")
+            try:
+                raw = input("       > ").strip()
+            except EOFError:
+                break
+            if raw in ("q", "quit"):
+                break
+            if raw == "C":
+                cfg_val = d.cfg_value
+                assert cfg_val is not None  # guaranteed by _is_tos_fillable
+                if not silent:
+                    print(f"       → push cfg value to TOS: {d.cfg_key} = {cfg_val!r}")
+                _do_push_tos(
+                    station_id=station_id,
+                    diff=d,
+                    value=cfg_val,
+                    tos_data=tos_data,
+                    args=args,
+                    silent=silent,
+                )
+            else:
+                n_skipped += 1
 
     return diffs, n_written, n_skipped
 
@@ -1274,6 +1675,20 @@ Diagnosing TCP authentication failures:
             "used as a sanity check that the receiver is at the expected mark."
         ),
     )
+    rec.add_argument(
+        "--position-abort-m",
+        type=float,
+        default=50.0,
+        metavar="METERS",
+        help=(
+            "Position discrepancy threshold above which receiver-primary "
+            "auto-push (type/serial/firmware → TOS) is blocked for that "
+            "station (default: 50.0 m). A large position delta suggests the "
+            "receiver may be at the wrong station or TOS coordinates are "
+            "corrupt — hardware identity should not be written automatically "
+            "in that case. A warning is printed even in dry-run mode."
+        ),
+    )
     rec.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
     rec.add_argument(
         "--workers",
@@ -1297,6 +1712,31 @@ Diagnosing TCP authentication failures:
             "Combine with --field to target specific fields (e.g. "
             "--field receiver_firmware_version --push-tos --yes). "
             "Honours --dry-run."
+        ),
+    )
+    rec.add_argument(
+        "--no-receiver-primary",
+        action="store_true",
+        default=False,
+        help=(
+            "Disable receiver-primary mode for hardware-identity fields "
+            "(receiver_type, receiver_serial, receiver_firmware_version). "
+            "By default, conflicts on these fields show a single combined "
+            "'accept receiver → cfg + TOS' action as the default choice. "
+            "Use this flag to revert to the traditional per-action prompt "
+            "for the rare cases where the receiver value is not trustworthy "
+            "(e.g. just-provisioned hardware with stale factory defaults)."
+        ),
+    )
+    rec.add_argument(
+        "--interactive",
+        action="store_true",
+        default=False,
+        help=(
+            "Force full interactive prompt for every field, including "
+            "receiver-primary fields (type/serial/firmware) that would "
+            "otherwise auto-accept the receiver value. Implies "
+            "--no-receiver-primary. Useful for testing and manual review."
         ),
     )
     rec.add_argument(
