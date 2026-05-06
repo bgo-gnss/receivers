@@ -151,6 +151,9 @@ def _is_retryable_download(result: Dict[str, Any]) -> bool:
         "broken pipe",
         "watchdog",
         "no progress",
+        # Septentrio midnight file rollover briefly refuses FTP connections
+        "connection refused",
+        "errno 111",
     ]
     return any(p in error_msg for p in retryable_patterns)
 
@@ -194,10 +197,17 @@ def _download_station_data_job(
             priority = _TP.STANDARD
         job_priority = priority
         if not monitor.can_start_job(job_priority):
+            load = monitor.get_load()
+            load_msg = (
+                f"load gate: cpu={load.cpu_load_1m:.1f} threads={load.active_threads}"
+            )
             logger.info(
                 f"⏳ Load gate: skipping {station_id} ({session_type}) — "
-                f"system overloaded, will retry on next trigger"
+                f"system overloaded ({load_msg}), will retry on next trigger"
             )
+            from ..utils.stall_timeout import record_download
+
+            record_download(station_id, session_type, outcome="skipped", message=load_msg)
             return
 
     # Pipeline tracking (lightweight observability)
