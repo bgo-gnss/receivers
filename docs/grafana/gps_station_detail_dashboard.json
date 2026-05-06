@@ -173,11 +173,11 @@
             "properties": [
               {
                 "id": "max",
-                "value": 35
+                "value": 32
               },
               {
                 "id": "min",
-                "value": 15
+                "value": 13
               },
               {
                 "id": "thresholds",
@@ -190,15 +190,15 @@
                     },
                     {
                       "color": "yellow",
-                      "value": 18
+                      "value": 15
                     },
                     {
                       "color": "green",
-                      "value": 20
+                      "value": 17
                     },
                     {
                       "color": "yellow",
-                      "value": 28
+                      "value": 26.5
                     },
                     {
                       "color": "red",
@@ -1760,6 +1760,56 @@
                 }
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "DC/DC 24V"
+            },
+            "properties": [
+              {
+                "id": "custom.axisSoftMin",
+                "value": 13
+              },
+              {
+                "id": "custom.axisSoftMax",
+                "value": 32
+              },
+              {
+                "id": "custom.thresholdsStyle",
+                "value": {
+                  "mode": "line"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 15
+                    },
+                    {
+                      "color": "green",
+                      "value": 17
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 26.5
+                    },
+                    {
+                      "color": "red",
+                      "value": 30
+                    }
+                  ]
+                }
+              }
+            ]
           }
         ]
       },
@@ -2418,18 +2468,48 @@
               },
               {
                 "id": "custom.cellOptions",
-                "value": {"type": "color-background"}
+                "value": {
+                  "type": "color-background"
+                }
               },
               {
                 "id": "mappings",
                 "value": [
-                  {"type": "regex", "options": {"pattern": "^⚠(.+)$", "result": {"color": "yellow", "index": 0, "text": "$1"}}},
-                  {"type": "regex", "options": {"pattern": "^✗(.+)$", "result": {"color": "red", "index": 1, "text": "$1"}}}
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^\u26a0(.+)$",
+                      "result": {
+                        "color": "yellow",
+                        "index": 0,
+                        "text": "$1"
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^\u2717(.+)$",
+                      "result": {
+                        "color": "red",
+                        "index": 1,
+                        "text": "$1"
+                      }
+                    }
+                  }
                 ]
               },
               {
                 "id": "thresholds",
-                "value": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]}
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "transparent",
+                      "value": null
+                    }
+                  ]
+                }
               },
               {
                 "id": "links",
@@ -2455,18 +2535,48 @@
               },
               {
                 "id": "custom.cellOptions",
-                "value": {"type": "color-background"}
+                "value": {
+                  "type": "color-background"
+                }
               },
               {
                 "id": "mappings",
                 "value": [
-                  {"type": "regex", "options": {"pattern": "^⚠(.+)$", "result": {"color": "yellow", "index": 0, "text": "$1"}}},
-                  {"type": "regex", "options": {"pattern": "^✗(.+)$", "result": {"color": "red", "index": 1, "text": "$1"}}}
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^\u26a0(.+)$",
+                      "result": {
+                        "color": "yellow",
+                        "index": 0,
+                        "text": "$1"
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^\u2717(.+)$",
+                      "result": {
+                        "color": "red",
+                        "index": 1,
+                        "text": "$1"
+                      }
+                    }
+                  }
                 ]
               },
               {
                 "id": "thresholds",
-                "value": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]}
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "transparent",
+                      "value": null
+                    }
+                  ]
+                }
               },
               {
                 "id": "links",
@@ -2492,18 +2602,48 @@
               },
               {
                 "id": "custom.cellOptions",
-                "value": {"type": "color-background"}
+                "value": {
+                  "type": "color-background"
+                }
               },
               {
                 "id": "mappings",
                 "value": [
-                  {"type": "regex", "options": {"pattern": "^⚠(.+)$", "result": {"color": "yellow", "index": 0, "text": "$1"}}},
-                  {"type": "regex", "options": {"pattern": "^✗(.+)$", "result": {"color": "red", "index": 1, "text": "$1"}}}
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^\u26a0(.+)$",
+                      "result": {
+                        "color": "yellow",
+                        "index": 0,
+                        "text": "$1"
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^\u2717(.+)$",
+                      "result": {
+                        "color": "red",
+                        "index": 1,
+                        "text": "$1"
+                      }
+                    }
+                  }
                 ]
               },
               {
                 "id": "thresholds",
-                "value": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]}
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "transparent",
+                      "value": null
+                    }
+                  ]
+                }
               }
             ]
           },
