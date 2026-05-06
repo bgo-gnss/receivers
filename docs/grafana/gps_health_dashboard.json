@@ -2181,7 +2181,7 @@
         "h": 12,
         "w": 16,
         "x": 0,
-        "y": 8
+        "y": 5
       },
       "id": 5,
       "options": {
@@ -2538,7 +2538,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 20
+        "y": 17
       },
       "id": 12,
       "options": {
@@ -2740,7 +2740,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 20
+        "y": 17
       },
       "id": 13,
       "options": {
@@ -2842,7 +2842,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 28
+        "y": 25
       },
       "id": 7,
       "options": {
@@ -2917,10 +2917,10 @@
       "title": "Total in cfg",
       "description": "All stations registered in stations.cfg",
       "gridPos": {
-        "x": 0,
-        "y": 5,
-        "w": 8,
-        "h": 3
+        "x": 16,
+        "y": 1,
+        "w": 4,
+        "h": 4
       },
       "targets": [
         {
@@ -2978,10 +2978,10 @@
       "title": "In table",
       "description": "Stations currently shown in overview table (with active filters)",
       "gridPos": {
-        "x": 8,
-        "y": 5,
-        "w": 8,
-        "h": 3
+        "x": 20,
+        "y": 1,
+        "w": 4,
+        "h": 4
       },
       "targets": [
         {
