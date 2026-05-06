@@ -229,6 +229,9 @@ SELECT sid,
     END AS combined_status
 FROM base;
 
+-- Re-grant after DROP+CREATE (DROP removes all object-level grants)
+GRANT SELECT ON station_data_flow_status TO grafana_read;
+
 INSERT INTO schema_migrations (migration_name)
 VALUES ('041_status24h_chronic_failure')
 ON CONFLICT DO NOTHING;
