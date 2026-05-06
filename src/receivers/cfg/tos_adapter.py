@@ -59,13 +59,25 @@ def current_antenna_serial(station: Dict[str, Any]) -> Optional[str]:
 
 
 def current_radome_model(station: Dict[str, Any]) -> Optional[str]:
-    """Return current radome model. ``NONE`` if no radome session is active."""
-    val = _device_field(station, "radome", "model")
-    if val is None:
-        # Per existing convention in the codebase, absence of a radome session
-        # implies NONE rather than "unknown".
+    """Return current radome model, or ``None`` if TOS has no radome entity.
+
+    Distinguishes two cases:
+    - TOS has a radome entity whose model is blank/NONE → return ``"NONE"``
+      (TOS actively recorded that no radome is fitted).
+    - TOS has no radome entity at all → return ``None``
+      (missing data, not the same as "no radome").
+    """
+    session = current_session(station)
+    if not session:
+        return None
+    radome = session.get("radome")
+    if not isinstance(radome, dict):
+        # No radome entity connected in TOS — missing data, not "no radome"
+        return None
+    val = radome.get("model")
+    if val is None or val == "":
         return "NONE"
-    return val
+    return str(val)
 
 
 def _antenna_composite(
