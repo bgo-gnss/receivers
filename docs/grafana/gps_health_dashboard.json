@@ -1108,7 +1108,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 70
+                "value": 62
               },
               {
                 "id": "custom.cellOptions",
@@ -1233,7 +1233,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 80
+                "value": 70
               },
               {
                 "id": "custom.cellOptions",
@@ -1312,7 +1312,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 55
+                "value": 44
               },
               {
                 "id": "custom.cellOptions",
@@ -1569,7 +1569,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 65
+                "value": 55
               },
               {
                 "id": "custom.cellOptions",
@@ -1654,7 +1654,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 60
+                "value": 52
               },
               {
                 "id": "custom.cellOptions",
