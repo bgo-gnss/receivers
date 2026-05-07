@@ -127,7 +127,7 @@ def _retry_failed_daily_job(session_type: str) -> None:
                 cur.execute(
                     """
                     WITH today_failures AS (
-                        SELECT DISTINCT station_id
+                        SELECT DISTINCT sid
                         FROM download_log
                         WHERE session_type = %s
                           AND ts >= %s
@@ -140,11 +140,11 @@ def _retry_failed_daily_job(session_type: str) -> None:
                           AND file_date = CURRENT_DATE - 1
                           AND status IN ('downloaded', 'archived')
                     )
-                    SELECT f.station_id
+                    SELECT f.sid
                     FROM today_failures f
-                    LEFT JOIN today_successes s ON s.sid = f.station_id
+                    LEFT JOIN today_successes s ON s.sid = f.sid
                     WHERE s.sid IS NULL
-                    ORDER BY f.station_id
+                    ORDER BY f.sid
                     """,
                     (session_type, today_midnight, session_type),
                 )
