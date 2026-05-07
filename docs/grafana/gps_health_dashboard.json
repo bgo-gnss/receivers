@@ -951,7 +951,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 90
+                "value": 60
               },
               {
                 "id": "custom.cellOptions",
@@ -964,46 +964,51 @@
                 "id": "mappings",
                 "value": [
                   {
+                    "type": "regex",
                     "options": {
-                      "pattern": "^online.*",
+                      "pattern": "^online (.+)$",
                       "result": {
                         "color": "green",
-                        "index": 0
+                        "index": 0,
+                        "text": "$1"
                       }
-                    },
-                    "type": "regex"
+                    }
                   },
                   {
+                    "type": "regex",
                     "options": {
-                      "pattern": "^degraded.*",
+                      "pattern": "^degraded (.+)$",
                       "result": {
                         "color": "orange",
-                        "index": 1
+                        "index": 1,
+                        "text": "$1"
                       }
-                    },
-                    "type": "regex"
+                    }
                   },
                   {
+                    "type": "regex",
                     "options": {
-                      "pattern": "^offline \\d+[mh]$",
+                      "pattern": "^offline (\\d+[mhd])$",
                       "result": {
                         "color": "yellow",
-                        "index": 2
+                        "index": 2,
+                        "text": "$1"
                       }
-                    },
-                    "type": "regex"
+                    }
                   },
                   {
+                    "type": "regex",
                     "options": {
-                      "pattern": "^offline.*",
+                      "pattern": "^offline (.+)$",
                       "result": {
                         "color": "red",
-                        "index": 3
+                        "index": 3,
+                        "text": "$1"
                       }
-                    },
-                    "type": "regex"
+                    }
                   },
                   {
+                    "type": "special",
                     "options": {
                       "match": "null",
                       "result": {
@@ -1011,17 +1016,16 @@
                         "index": 4,
                         "text": "-"
                       }
-                    },
-                    "type": "special"
+                    }
                   },
                   {
+                    "type": "value",
                     "options": {
                       "N/A": {
                         "color": "dark-gray",
                         "index": 5
                       }
-                    },
-                    "type": "value"
+                    }
                   }
                 ]
               }
