@@ -1853,7 +1853,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 60
+                "value": 44
               },
               {
                 "id": "custom.cellOptions",
@@ -1871,17 +1871,17 @@
                       "0": {
                         "color": "green",
                         "index": 0,
-                        "text": "OK"
+                        "text": "rin"
                       },
                       "1": {
                         "color": "yellow",
                         "index": 1,
-                        "text": "No RNX"
+                        "text": "raw"
                       },
                       "2": {
                         "color": "red",
                         "index": 2,
-                        "text": "Missing"
+                        "text": "mis"
                       },
                       "-1": {
                         "color": "#464646",
