@@ -1651,3 +1651,83 @@ class TestGapBackfill:
                 mock_gap.assert_called_once_with("15s_24hr")
                 # Should fall back to round-robin and still process a station
                 mock_backfill.assert_called_once()
+
+
+class TestIsRetryableDownload:
+    """Tests for _is_retryable_download and _categorize_failure."""
+
+    def setup_method(self):
+        from receivers.scheduling.bulk_scheduler import (
+            _categorize_failure,
+            _is_retryable_download,
+        )
+        self._is_retryable = _is_retryable_download
+        self._categorize = _categorize_failure
+
+    # --- _is_retryable_download ---
+
+    def test_unreachable_not_retryable(self):
+        assert not self._is_retryable({"status": "unreachable"})
+
+    def test_configuration_error_not_retryable(self):
+        assert not self._is_retryable({"status": "configuration_error"})
+
+    def test_auth_401_not_retryable(self):
+        assert not self._is_retryable({"status": "failed", "error_message": "401 Unauthorized"})
+
+    def test_auth_530_not_retryable(self):
+        assert not self._is_retryable({"status": "failed", "error_message": "530 Login incorrect"})
+
+    def test_timeout_retryable(self):
+        assert self._is_retryable({"status": "failed", "error_message": "Connection timed out"})
+
+    def test_connection_refused_retryable(self):
+        assert self._is_retryable({"status": "failed", "error_message": "[Errno 111] Connection refused"})
+
+    def test_404_retryable(self):
+        # File not ready at midnight — must be retryable now
+        assert self._is_retryable({"status": "failed", "error_message": "HTTP 404 Not Found"})
+
+    def test_not_found_retryable(self):
+        # FTP 550 file not found at midnight
+        assert self._is_retryable({"status": "failed", "error_message": "File not found on server"})
+
+    def test_ftp_550_retryable(self):
+        assert self._is_retryable({"status": "failed", "error_message": "550 No such file"})
+
+    def test_size_mismatch_retryable(self):
+        # File was still growing when downloaded
+        assert self._is_retryable(
+            {"status": "failed", "error_message": "Size mismatch after clean retry: got 22249690, expected 20519110"}
+        )
+
+    def test_watchdog_retryable(self):
+        assert self._is_retryable({"status": "failed", "error_message": "Watchdog triggered: no progress"})
+
+    def test_empty_error_not_retryable(self):
+        # No recognized pattern → False
+        assert not self._is_retryable({"status": "failed", "error_message": ""})
+
+    # --- _categorize_failure ---
+
+    def test_categorize_timeout(self):
+        assert self._categorize("Connection timed out after 600s") == "timeout"
+
+    def test_categorize_conn_refused(self):
+        assert self._categorize("[Errno 111] Connection refused") == "conn_refused"
+
+    def test_categorize_file_not_ready(self):
+        assert self._categorize("HTTP 404 Not Found") == "file_not_ready"
+        assert self._categorize("FTP 550 No such file") == "file_not_ready"
+
+    def test_categorize_size_mismatch(self):
+        assert self._categorize("Size mismatch after clean retry") == "size_mismatch"
+
+    def test_categorize_unreachable(self):
+        assert self._categorize("Host unreachable") == "unreachable"
+
+    def test_categorize_auth(self):
+        assert self._categorize("530 Login incorrect") == "auth"
+
+    def test_categorize_other(self):
+        assert self._categorize("Something completely unknown") == "other"
