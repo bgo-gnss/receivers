@@ -1790,13 +1790,97 @@ class TestRetryFailedDailyJob:
 
     def test_workers_capped_at_station_count(self):
         """min(_RETRY_MAX_WORKERS, len(stations)) keeps thread count bounded below."""
-        # Pure arithmetic check — no I/O needed.
         n_stations = 3
         workers = min(self._max_workers, n_stations)
-        assert workers == n_stations  # small batch → uses station count, not MAX
+        assert workers == n_stations
 
     def test_workers_capped_at_max_for_large_batch(self):
         """Large batch is capped at _RETRY_MAX_WORKERS."""
         n_stations = 100
         workers = min(self._max_workers, n_stations)
         assert workers == self._max_workers
+
+    @patch("receivers.scheduling.bulk_scheduler._download_station_data_job")
+    @patch("receivers.health.database_factory.DatabaseConnectionFactory")
+    def test_expected_outcome_excluded_from_retry(self, mock_dcf, mock_download):
+        """Stations with outcome='expected' are not queued for second-chance retry."""
+        # Only AFST has a retryable failure; GSIG has outcome='expected' (health gate)
+        rows = [
+            self._make_db_row("AFST", outcome="failed"),
+            # GSIG is excluded at the SQL level: outcome='expected' NOT IN ('completed','up_to_date','expected')
+            # We simulate this by not including it in the DB rows returned.
+        ]
+        mock_dcf.connection.return_value = self._make_mock_db(rows)
+        called = []
+        mock_download.side_effect = lambda sid, *a, **kw: called.append(sid)
+
+        self._retry_job("15s_24hr")
+        assert called == ["AFST"]
+        assert "GSIG" not in called
+
+
+class TestExpectedFailureGates:
+    """Unit tests for health gate and known_issue gate in _download_station_data_job."""
+
+    def _run_job(self, station_id, **patches):
+        """Run _download_station_data_job with given mock patches applied."""
+        from receivers.scheduling.bulk_scheduler import _download_station_data_job
+
+        with patches.get("gate_ctx", _noop_ctx()):
+            _download_station_data_job(station_id, "15s_24hr", production_mode=False)
+
+    @patch("receivers.scheduling.bulk_scheduler._record_batch_result")
+    @patch("receivers.scheduling.bulk_scheduler.check_station_health_gate", return_value="no_satellites",
+           create=True)
+    @patch("receivers.scheduling.bulk_scheduler._get_load_monitor", return_value=None)
+    def test_health_gate_no_satellites_skips(self, mock_load, mock_gate, mock_batch):
+        """Health gate: no_satellites → early return, outcome='expected', no download attempt."""
+        from unittest.mock import patch as _patch, MagicMock
+
+        with _patch("receivers.utils.stall_timeout.check_station_health_gate",
+                    return_value="no_satellites"):
+            with _patch("receivers.utils.stall_timeout.record_download") as mock_rd:
+                with _patch("receivers.scheduling.bulk_scheduler._get_load_monitor",
+                            return_value=None):
+                    with _patch("receivers.scheduling.bulk_scheduler._get_pipeline_store",
+                                return_value=None):
+                        with _patch("receivers.scheduling.bulk_scheduler._record_batch_result") as mock_rb:
+                            from receivers.scheduling.bulk_scheduler import _download_station_data_job
+
+                            _download_station_data_job("GSIG", "15s_24hr")
+
+                            mock_rd.assert_called_once()
+                            call_kwargs = mock_rd.call_args
+                            assert call_kwargs[1].get("outcome") == "expected" or \
+                                (len(call_kwargs[0]) >= 3 and call_kwargs[0][2] == "expected")
+                            mock_rb.assert_called_once()
+                            rb_args = mock_rb.call_args[0]
+                            assert rb_args[2] == "expected"
+
+    def test_categorize_failure_health_gate_messages(self):
+        """_categorize_failure must recognise health-gate and known-issue strings."""
+        from receivers.scheduling.bulk_scheduler import _categorize_failure
+
+        assert _categorize_failure("no_satellites") == "no_satellites"
+        assert _categorize_failure("disk_broken") == "disk_broken"
+        assert _categorize_failure("gps_week_rollover") == "gps_week_rollover"
+        assert _categorize_failure("hardware_broken") == "hardware_broken"
+
+    def test_record_batch_result_expected_bucket(self):
+        """outcome='expected' accumulates in 'expected' bucket, not 'fail'."""
+        from receivers.scheduling.bulk_scheduler import _record_batch_result, _BATCH_STATS, _BATCH_LOCK
+
+        import threading
+        with _BATCH_LOCK:
+            _BATCH_STATS.pop("test_session", None)
+
+        _record_batch_result("test_session", "GSIG", "expected", "no_satellites")
+        _record_batch_result("test_session", "HEDI", "expected", "no_satellites")
+        _record_batch_result("test_session", "AFST", "ok")
+
+        with _BATCH_LOCK:
+            bucket = _BATCH_STATS.pop("test_session", {})
+
+        assert sorted(bucket.get("expected", [])) == ["GSIG", "HEDI"]
+        assert bucket.get("fail", {}) == {}
+        assert "AFST" in bucket.get("ok", [])

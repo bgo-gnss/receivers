@@ -47,9 +47,11 @@ _BATCH_LOCK = _threading.Lock()
 def _record_batch_result(session_type: str, station_id: str, outcome: str, error: str = "") -> None:
     """Accumulate per-job result for the batch summary (non-blocking, fire-and-forget)."""
     with _BATCH_LOCK:
-        bucket = _BATCH_STATS.setdefault(session_type, {"ok": [], "fail": {}})
+        bucket = _BATCH_STATS.setdefault(session_type, {"ok": [], "fail": {}, "expected": []})
         if outcome == "ok":
             bucket["ok"].append(station_id)
+        elif outcome == "expected":
+            bucket.setdefault("expected", []).append(station_id)
         else:
             bucket["fail"][station_id] = error or outcome
 
@@ -57,6 +59,16 @@ def _record_batch_result(session_type: str, station_id: str, outcome: str, error
 def _categorize_failure(error_msg: str) -> str:
     """Return a short failure category tag from an error message."""
     msg = error_msg.lower()
+    # Expected/known-issue categories (checked first — explicit beats heuristic)
+    if msg in ("no_satellites", "disk_broken", "disk_full"):
+        return msg
+    if "gps_week_rollover" in msg:
+        return "gps_week_rollover"
+    if "hardware_broken" in msg:
+        return "hardware_broken"
+    if "no_signal" in msg:
+        return "no_signal"
+    # Connection / network
     if any(p in msg for p in ("unreachable", "no route", "network")):
         return "unreachable"
     if any(p in msg for p in ("connection refused", "errno 111")):
@@ -81,7 +93,8 @@ def _log_batch_summary_job(session_type: str) -> None:
         stats = _BATCH_STATS.pop(session_type, {})
     ok = stats.get("ok", [])
     fail = stats.get("fail", {})
-    total = len(ok) + len(fail)
+    expected = stats.get("expected", [])
+    total = len(ok) + len(fail) + len(expected)
     if total == 0:
         _log.debug(f"📋 {session_type} batch summary: no results accumulated yet")
         return
@@ -101,6 +114,7 @@ def _log_batch_summary_job(session_type: str) -> None:
     _log.info(
         f"📋 {session_type} batch: {len(ok)} ✅  {len(fail)} ❌  ({total} total)"
         + (f" — {cat_str} — {fail_str}" if fail else "")
+        + (f" — ⏭️  {len(expected)} expected: {', '.join(sorted(expected))}" if expected else "")
     )
 
 
@@ -140,7 +154,7 @@ def _retry_failed_daily_job(session_type: str) -> None:
                         FROM download_log
                         WHERE session_type = %s
                           AND ts >= %s
-                          AND outcome NOT IN ('completed', 'up_to_date')
+                          AND outcome NOT IN ('completed', 'up_to_date', 'expected')
                         ORDER BY sid, ts DESC
                     ),
                     today_successes AS (
@@ -392,6 +406,24 @@ def _download_station_data_job(
             record_download(station_id, session_type, outcome="skipped", message=load_msg)
             return
 
+    # Health gate: skip stations with known hardware issues (no satellites, broken disk).
+    # Uses cached station_latest_metrics — cheap DB read. Only fires on fresh data (<30 min).
+    # outcome='expected' excludes these from the second-chance retry queue.
+    try:
+        from ..utils.stall_timeout import check_station_health_gate
+        from ..utils.stall_timeout import record_download as _rd_health
+
+        health_skip = check_station_health_gate(station_id, session_type)
+        if health_skip:
+            logger.info(
+                f"⏭️  {station_id} ({session_type}) [{health_skip}] — expected, not retried"
+            )
+            _rd_health(station_id, session_type, outcome="expected", message=health_skip)
+            _record_batch_result(session_type, station_id, "expected", health_skip)
+            return
+    except Exception:
+        pass  # Gate failure is non-fatal — proceed with download attempt
+
     # Pipeline tracking (lightweight observability)
     pipeline_job = None
     pipeline_store = _get_pipeline_store()
@@ -442,6 +474,21 @@ def _download_station_data_job(
         station_config = get_station_config(station_id)
         if not station_config:
             raise ValueError(f"No configuration found for station {station_id}")
+
+        # Known-issue gate: skip stations with explicitly configured issues.
+        # Set known_issue = <reason> in stations.cfg for receivers that can't
+        # produce data due to firmware bugs, broken hardware, etc.
+        # outcome='expected' excludes these from the second-chance retry queue.
+        known_issue = (station_config.get("known_issue") or "").strip()
+        if known_issue:
+            logger.info(
+                f"⏭️  {station_id} ({session_type}) [known_issue:{known_issue}] — expected, not retried"
+            )
+            from ..utils.stall_timeout import record_download as _rd_ki
+
+            _rd_ki(station_id, session_type, outcome="expected", message=known_issue)
+            _record_batch_result(session_type, station_id, "expected", known_issue)
+            return
 
         # Create receiver instance
         receiver = create_receiver(station_id, station_config)
