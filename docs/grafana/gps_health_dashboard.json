@@ -22,6 +22,30 @@
   "links": [
     {
       "asDropdown": false,
+      "icon": "bolt",
+      "includeVars": false,
+      "keepTime": false,
+      "tags": [],
+      "targetBlank": false,
+      "title": "\u26a1 Reset Filters",
+      "tooltip": "Clear all filters",
+      "type": "link",
+      "url": "/d/gps-health-voltage/gps-receiver-health-overview?var-area=all&var-owner=all&var-station=all&var-receiver=all&var-antenna=all&var-status_filter=all"
+    },
+    {
+      "asDropdown": false,
+      "icon": "filter",
+      "includeVars": false,
+      "keepTime": false,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Filter: ${status_filter}",
+      "tooltip": "Active status filter",
+      "type": "link",
+      "url": ""
+    },
+    {
+      "asDropdown": false,
       "icon": "external-link",
       "includeVars": true,
       "keepTime": true,
@@ -48,44 +72,12 @@
   "liveNow": false,
   "panels": [
     {
-      "id": 39,
-      "type": "text",
-      "title": "",
-      "options": {
-        "mode": "html",
-        "content": "<div style=\"display:flex;align-items:center;height:100%;padding:4px 8px;\">\n  <a href=\"#\" onclick=\"window.location.href='/d/gps-health-voltage/gps-receiver-health-overview?var-area=all&var-owner=all&var-station=all&var-receiver=all&var-antenna=all&var-status_filter=all&_t='+Date.now();return false;\"\n     style=\"display:inline-flex;align-items:center;gap:6px;padding:6px 14px;\n            background:#1f1f1f;border:1px solid #444;border-radius:4px;\n            color:#d8d9da;text-decoration:none;font-size:14px;cursor:pointer;\">\n    \u26a1 Reset Filters\n  </a>\n</div>"
-      },
-      "transparent": true,
-      "gridPos": {
-        "h": 2,
-        "w": 4,
-        "x": 0,
-        "y": 0
-      }
-    },
-    {
-      "id": 40,
-      "type": "text",
-      "title": "",
-      "options": {
-        "mode": "html",
-        "content": "<div style=\"display:flex;align-items:center;height:100%;padding:4px 12px;color:#888;font-size:13px;\">\n  Filter:&nbsp;<strong style=\"color:#d8d9da;\">${status_filter}</strong>\n  &nbsp;&nbsp;Area:&nbsp;<strong style=\"color:#d8d9da;\">${area}</strong>\n</div>"
-      },
-      "transparent": true,
-      "gridPos": {
-        "h": 2,
-        "w": 8,
-        "x": 4,
-        "y": 0
-      }
-    },
-    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 2
+        "y": 0
       },
       "id": 1,
       "panels": [],
@@ -119,7 +111,7 @@
         "h": 4,
         "w": 2,
         "x": 0,
-        "y": 3
+        "y": 1
       },
       "id": 2,
       "options": {
@@ -195,7 +187,7 @@
         "h": 4,
         "w": 2,
         "x": 4,
-        "y": 3
+        "y": 1
       },
       "id": 14,
       "options": {
@@ -271,7 +263,7 @@
         "h": 4,
         "w": 2,
         "x": 10,
-        "y": 3
+        "y": 1
       },
       "id": 3,
       "options": {
@@ -343,7 +335,7 @@
         "h": 4,
         "w": 2,
         "x": 14,
-        "y": 3
+        "y": 1
       },
       "id": 32,
       "options": {
@@ -419,7 +411,7 @@
         "h": 4,
         "w": 2,
         "x": 6,
-        "y": 3
+        "y": 1
       },
       "id": 33,
       "options": {
@@ -495,7 +487,7 @@
         "h": 4,
         "w": 2,
         "x": 8,
-        "y": 3
+        "y": 1
       },
       "id": 34,
       "options": {
@@ -567,7 +559,7 @@
         "h": 4,
         "w": 2,
         "x": 2,
-        "y": 3
+        "y": 1
       },
       "id": 35,
       "options": {
@@ -643,7 +635,7 @@
         "h": 4,
         "w": 2,
         "x": 12,
-        "y": 3
+        "y": 1
       },
       "id": 36,
       "options": {
@@ -729,7 +721,7 @@
         "h": 16,
         "w": 8,
         "x": 16,
-        "y": 7
+        "y": 5
       },
       "id": 31,
       "options": {
@@ -2201,7 +2193,7 @@
         "h": 16,
         "w": 16,
         "x": 0,
-        "y": 7
+        "y": 5
       },
       "id": 5,
       "options": {
@@ -2558,7 +2550,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 23
+        "y": 21
       },
       "id": 12,
       "options": {
@@ -2760,7 +2752,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 23
+        "y": 21
       },
       "id": 13,
       "options": {
@@ -2862,7 +2854,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 31
+        "y": 29
       },
       "id": 7,
       "options": {
@@ -2938,7 +2930,7 @@
       "description": "All stations registered in stations.cfg",
       "gridPos": {
         "x": 16,
-        "y": 3,
+        "y": 1,
         "w": 4,
         "h": 4
       },
@@ -2999,7 +2991,7 @@
       "description": "Stations currently shown in overview table (with active filters)",
       "gridPos": {
         "x": 20,
-        "y": 3,
+        "y": 1,
         "w": 4,
         "h": 4
       },
