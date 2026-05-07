@@ -2139,7 +2139,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "fixedColor": "text",
+            "mode": "fixed"
           },
           "custom": {
             "align": "auto",
@@ -2153,7 +2154,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
+                "color": "green",
                 "value": null
               }
             ]
@@ -2284,80 +2285,7 @@
               "id": "byName",
               "options": "Cause"
             },
-            "properties": [
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "mode": "basic",
-                  "type": "color-background"
-                }
-              },
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "options": {
-                      "pattern": "^power failure.*",
-                      "result": {
-                        "color": "red",
-                        "index": 0
-                      }
-                    },
-                    "type": "regex"
-                  },
-                  {
-                    "options": {
-                      "pattern": "^low voltage.*",
-                      "result": {
-                        "color": "orange",
-                        "index": 1
-                      }
-                    },
-                    "type": "regex"
-                  },
-                  {
-                    "options": {
-                      "pattern": "^battery low.*",
-                      "result": {
-                        "color": "yellow",
-                        "index": 2
-                      }
-                    },
-                    "type": "regex"
-                  },
-                  {
-                    "options": {
-                      "pattern": "^connection lost.*",
-                      "result": {
-                        "color": "blue",
-                        "index": 3
-                      }
-                    },
-                    "type": "regex"
-                  },
-                  {
-                    "options": {
-                      "pattern": "^unreachable$",
-                      "result": {
-                        "color": "text",
-                        "index": 4
-                      }
-                    },
-                    "type": "regex"
-                  },
-                  {
-                    "options": {
-                      "pattern": ".*",
-                      "result": {
-                        "color": "semi-dark-red",
-                        "index": 5
-                      }
-                    },
-                    "type": "regex"
-                  }
-                ]
-              }
-            ]
+            "properties": []
           },
           {
             "matcher": {
@@ -2496,7 +2424,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "fixedColor": "text",
+            "mode": "fixed"
           },
           "custom": {
             "align": "auto",
@@ -2510,7 +2439,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "yellow",
+                "color": "green",
                 "value": null
               }
             ]
@@ -2556,22 +2485,7 @@
               "id": "byName",
               "options": "Cause"
             },
-            "properties": [
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "mode": "basic",
-                  "type": "color-background"
-                }
-              },
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "yellow",
-                  "mode": "fixed"
-                }
-              }
-            ]
+            "properties": []
           },
           {
             "matcher": {
