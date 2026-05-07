@@ -5,8 +5,8 @@ providers:
     folder: 'GPS'
     type: file
     disableDeletion: false
-    editable: true
-    allowUiUpdates: true
+    editable: false
+    allowUiUpdates: false
     updateIntervalSeconds: 30
     options:
       path: /etc/grafana/provisioning/dashboards/json

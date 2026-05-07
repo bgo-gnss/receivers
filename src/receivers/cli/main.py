@@ -1915,6 +1915,15 @@ def cmd_health(args) -> int:
     # Initialize results collector for compact/icinga modes
     args._health_results = []
 
+    # Expand --all to all configured stations
+    if getattr(args, "all_stations", False):
+        all_configs = get_all_station_configs()
+        args.stations = sorted(all_configs.keys())
+        logger.info(f"--all: resolved {len(args.stations)} stations")
+    elif not args.stations:
+        logger.error("No stations specified. Use station IDs or --all")
+        return 1
+
     # Get list of stations (now supports multiple)
     stations = [s.upper() for s in args.stations]
 
@@ -2012,19 +2021,58 @@ def cmd_health(args) -> int:
                 else:
                     error_count += 1
     else:
-        # Station-first: current behavior
-        for station_id in stations:
-            if len(stations) > 1:
-                logger.info(f"\n{'=' * 60}")
-                logger.info(f"Processing station: {station_id}")
-                logger.info(f"{'=' * 60}")
+        workers = getattr(args, "workers", 1)
+        if workers > 1 and len(stations) > 1:
+            # Parallel path
+            import copy
+            import threading
+            from concurrent.futures import ThreadPoolExecutor, as_completed
 
-            result = cmd_health_single(args, station_id, logger)
+            results_lock = threading.Lock()
 
-            if result == 0:
-                success_count += 1
-            else:
-                error_count += 1
+            def _run_one(sid: str) -> int:
+                station_args = copy.copy(args)
+                station_args._health_results = []
+                station_logger = logging.getLogger(f"receivers.health.{sid}")
+                rc = cmd_health_single(station_args, sid, station_logger)
+                with results_lock:
+                    args._health_results.extend(station_args._health_results)
+                return rc
+
+            logger.info(
+                f"Running health checks for {len(stations)} stations "
+                f"with {workers} parallel workers"
+            )
+            futures = {}
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                for sid in stations:
+                    futures[pool.submit(_run_one, sid)] = sid
+
+            for future in as_completed(futures):
+                sid = futures[future]
+                try:
+                    rc = future.result()
+                except Exception as exc:
+                    logger.error(f"{sid}: health check raised {exc}")
+                    rc = 1
+                if rc == 0:
+                    success_count += 1
+                else:
+                    error_count += 1
+        else:
+            # Sequential: current behavior
+            for station_id in stations:
+                if len(stations) > 1:
+                    logger.info(f"\n{'=' * 60}")
+                    logger.info(f"Processing station: {station_id}")
+                    logger.info(f"{'=' * 60}")
+
+                result = cmd_health_single(args, station_id, logger)
+
+                if result == 0:
+                    success_count += 1
+                else:
+                    error_count += 1
 
     # --- Post-collection output for compact/icinga modes ---
     results = args._health_results

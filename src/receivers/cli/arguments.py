@@ -366,14 +366,33 @@ Multiple stations:
   receivers health ELDC THOB ISFS --import-json  # Import all
   receivers health ELDC ELEY --export-json       # Export all
   receivers health ELDC THOB -s 20260101 -e 20260115 --save-db
+
+All stations (parallel):
+  receivers health --all --workers 10 --compact
+  receivers health --all --workers 20 --save-db
         """,
     )
 
     parser.add_argument(
         "stations",
         metavar="STATION",
-        nargs="+",
+        nargs="*",
         help="Station ID(s) to process (e.g., ISFS or ELDC THOB ISFS)",
+    )
+
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        dest="all_stations",
+        help="Run health check on all configured stations",
+    )
+
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Number of parallel workers (default: 1, sequential)",
     )
 
     # Date options for extraction (same as download command)
