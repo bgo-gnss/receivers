@@ -27,7 +27,7 @@
       "keepTime": false,
       "tags": [],
       "targetBlank": false,
-      "title": "\u26a1 Reset Filters",
+      "title": "⚡ Reset Filters",
       "tooltip": "Clear all filters",
       "type": "link",
       "url": "/d/gps-health-voltage/gps-receiver-health-overview?var-area=all&var-owner=all&var-station=all&var-receiver=all&var-antenna=all&var-status_filter=all"
@@ -65,7 +65,7 @@
       "title": "",
       "options": {
         "mode": "html",
-        "content": "<div style=\"display:flex;align-items:center;justify-content:center;height:100%;gap:8px;\"><span style=\"color:#666;font-size:12px;letter-spacing:0.3px;\">filter:</span><span style=\"color:#e87327;font-size:13px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;\">${status_filter}</span></div>"
+        "content": "<div style=\"display:flex;align-items:center;justify-content:center;height:100%;gap:14px;letter-spacing:0.3px;\"><span style=\"color:#555;font-size:11px;\">filter:</span><span style=\"color:#e87327;font-size:12px;font-weight:700;text-transform:uppercase;\">${status_filter}</span><span style=\"color:#444;font-size:12px;\">·</span><span style=\"color:#555;font-size:11px;\">region:</span><span style=\"color:#7eb8d4;font-size:12px;font-weight:600;\">${area:text}</span><span style=\"color:#444;font-size:12px;\">·</span><span style=\"color:#555;font-size:11px;\">range end:</span><span style=\"color:#888;font-size:11px;\">${__to:date:HH:mm}</span></div>"
       },
       "transparent": true,
       "gridPos": {
@@ -1564,61 +1564,83 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Checked"
+              "options": "Check"
             },
             "properties": [
               {
                 "id": "custom.width",
-                "value": 90
-              },
-              {
-                "id": "unit",
-                "value": "s"
+                "value": 65
               },
               {
                 "id": "custom.cellOptions",
                 "value": {
-                  "mode": "gradient",
+                  "mode": "basic",
                   "type": "color-background"
-                }
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "text",
-                      "value": null
-                    },
-                    {
-                      "color": "green",
-                      "value": 0
-                    },
-                    {
-                      "color": "yellow",
-                      "value": 7200
-                    },
-                    {
-                      "color": "red",
-                      "value": 86400
-                    }
-                  ]
                 }
               },
               {
                 "id": "mappings",
                 "value": [
                   {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^[0-9]+s$",
+                      "result": {
+                        "color": "green",
+                        "index": 0
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^[0-9]+m$",
+                      "result": {
+                        "color": "green",
+                        "index": 1
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^[01]\\.[0-9]+h$",
+                      "result": {
+                        "color": "green",
+                        "index": 2
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^[0-9]+\\.[0-9]+h$",
+                      "result": {
+                        "color": "yellow",
+                        "index": 3
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^[0-9]+\\.[0-9]+d$",
+                      "result": {
+                        "color": "red",
+                        "index": 4
+                      }
+                    }
+                  },
+                  {
+                    "type": "special",
                     "options": {
                       "match": "null",
                       "result": {
                         "color": "text",
-                        "index": 0,
+                        "index": 5,
                         "text": "-"
                       }
-                    },
-                    "type": "special"
+                    }
                   }
                 ]
               }
@@ -2228,7 +2250,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  d.station_id AS \"Station\",\n  s.station_owner AS \"Agency\",\n  CASE WHEN d.station_status IS NOT NULL THEN NULL ELSE d.receiver_type END AS \"Receiver\",\n  CASE WHEN d.station_status IS NOT NULL THEN NULL ELSE d.antenna_type END AS \"Antenna\",\n  CASE WHEN d.station_status IS NOT NULL THEN NULL ELSE f.combined_status END AS \"Status\",\n  CASE WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN NULL ELSE d.voltage END AS \"Voltage\",\n  CASE WHEN d.station_status IS NOT NULL THEN NULL ELSE f.status_24h END AS \"Data\",\n  CASE WHEN d.station_status IS NOT NULL THEN NULL ELSE f.health_status END AS \"Health\",\n  CASE WHEN d.station_status IS NOT NULL THEN NULL ELSE f.download_status END AS \"DL\",\n  CASE WHEN d.station_status IS NOT NULL THEN NULL ELSE f.disk_status END AS \"Disk\",\n  d.seconds_since_update AS \"Checked\",\n  CASE\n    WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN 'N/A'\n    WHEN d.connection_state IS NULL THEN NULL\n    WHEN d.connection_state = 'online' THEN 'online ' || format_duration(d.state_duration)\n    WHEN d.connection_state = 'degraded' THEN 'degraded ' || format_duration(d.state_duration)\n    ELSE 'offline ' || format_duration(d.state_duration)\n  END AS \"Conn\",\n  CASE WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN NULL ELSE d.packet_loss END AS \"Loss\",\n  CASE\n    WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN 'N/A'\n    WHEN d.ftp_open IS NULL AND d.http_open IS NULL THEN NULL\n    WHEN COALESCE(d.ftp_open, true) AND COALESCE(d.http_open, true) THEN 'active'\n    WHEN d.ftp_open = false THEN\n      CASE WHEN d.status_details LIKE '%FTP refused%' THEN 'dl:refused'\n           WHEN d.status_details LIKE '%FTP timeout%' THEN 'dl:timeout'\n           ELSE 'dl:down' END\n    WHEN d.http_open = false THEN\n      CASE WHEN d.status_details LIKE '%HTTP refused%' THEN 'hc:refused'\n           WHEN d.status_details LIKE '%HTTP timeout%' THEN 'hc:timeout'\n           ELSE 'hc:down' END\n    ELSE 'unknown'\n  END AS \"Port\",\n  CASE WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN 'N/A' ELSE d.ntrip_status END AS \"NTRIP\",\n  CASE WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN NULL WHEN d.is_online = false THEN NULL WHEN d.receiver_type = 'NetR5' THEN -1 ELSE d.satellites_tracked END AS \"Sats\",\n  CASE WHEN d.station_status IS NOT NULL THEN NULL ELSE f.rinex_24h_status END AS \"24h Data\",\n  CASE WHEN d.station_status IS NOT NULL THEN NULL ELSE f.status_1hz END AS \"1Hz Data\",\n  dl.avg_speed_bps AS \"Avg Speed\",\n  dl.stalls AS \"Stalls\",\n  CASE WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN NULL WHEN d.is_online = false THEN NULL ELSE d.uptime_seconds END AS \"Uptime\",\n  d.stall_timeout_override AS \"Timeout Override\"\nFROM station_dashboard_data d\nLEFT JOIN station_data_flow_status f ON f.sid = d.station_id\nLEFT JOIN stations s ON s.sid = d.station_id\nLEFT JOIN LATERAL (\n  SELECT\n    AVG(avg_speed_bps)::bigint AS avg_speed_bps,\n    SUM(CASE WHEN outcome = 'stall_timeout' THEN 1 ELSE 0 END)::integer AS stalls\n  FROM download_log\n  WHERE download_log.sid = d.station_id\n    AND ts BETWEEN $__timeFrom() AND $__timeTo()\n) dl ON true\nWHERE ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = d.station_id AND sam.area_id = '$area'))\n  AND (${station:singlequote} = 'all' OR d.station_id = ${station:singlequote})\n  AND (${receiver:singlequote} = 'all' OR (${receiver:singlequote} = 'NONE' AND d.receiver_type IS NULL) OR d.receiver_type = ${receiver:singlequote})\n  AND (${antenna:singlequote} = 'all' OR (${antenna:singlequote} = 'NONE' AND d.antenna_type IS NULL) OR d.antenna_type = ${antenna:singlequote})\n  AND (${owner:singlequote} = 'all' OR s.station_owner = ${owner:singlequote})\n  AND ('$status_filter' = 'all'\n    OR ('$status_filter' = 'online' AND d.is_online = true AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'offline' AND d.connection_state = 'offline' AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'degraded' AND d.connection_state = 'degraded' AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'critical' AND f.combined_status = 2 AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'warning' AND f.combined_status = 1 AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'ping_failed' AND d.status_details LIKE '%Ping%' AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'ftp_down' AND d.ftp_open = false AND d.is_online = true AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'ctrl_refused' AND d.control_open = false AND d.is_online = true AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'disk_warning' AND d.status_details LIKE '%Disk%' AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'discontinued' AND d.station_status = 'discontinued')\n    OR ('$status_filter' = 'passive' AND d.health_check = 'passive')\n    OR ('$status_filter' = 'inactive' AND d.station_status = 'inactive')\n    OR ('$status_filter' = 'suppressed' AND d.station_status = 'suppressed')\n    OR ('$status_filter' = '24hr_rinex_missing' AND d.is_online = true AND d.station_status IS NULL AND d.health_check IS NULL\n        AND f.status_24h = 1)\n    OR ('$status_filter' = '1hr_rinex_missing' AND f.status_1hz = 2 AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = '24hr_raw_missing' AND d.is_online = true AND d.station_status IS NULL AND d.health_check IS NULL\n        AND f.status_24h = 2)\n    OR ('$status_filter' = 'voltage_warning' AND d.voltage IS NOT NULL AND (d.status_details LIKE '%Voltage%' OR (d.is_online = false AND ((COALESCE(s.power_type, 'battery') = 'battery' AND (d.voltage < 11.8 OR d.voltage > 15.0)) OR (s.power_type = 'dcdc' AND (d.voltage < 12.0 OR d.voltage > 16.5)) OR (s.power_type = 'dcdc24' AND (d.voltage < 20.0 OR d.voltage > 28.0)) OR (s.power_type = 'mains' AND (d.voltage < 15.0 OR d.voltage > 25.0))))))\n    OR ('$status_filter' = 'stall' AND d.station_id IN (SELECT sid FROM download_log WHERE outcome = 'stall_timeout' AND ts BETWEEN $__timeFrom() AND $__timeTo()))\n    OR ('$status_filter' = 'low_sats' AND d.satellites_tracked IS NOT NULL AND d.satellites_tracked < 4 AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'download_warning' AND f.download_status >= 1 AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'disk_error' AND f.disk_status = 2 AND d.station_status IS NULL AND d.health_check IS NULL)\n  )\n  AND ('$status_filter' IN ('discontinued', 'inactive', 'suppressed') OR d.station_status IS NULL)\nORDER BY d.station_id",
+          "rawSql": "SELECT\n  d.station_id AS \"Station\",\n  s.station_owner AS \"Agency\",\n  CASE WHEN d.station_status IS NOT NULL THEN NULL ELSE d.receiver_type END AS \"Receiver\",\n  CASE WHEN d.station_status IS NOT NULL THEN NULL ELSE d.antenna_type END AS \"Antenna\",\n  CASE\n    WHEN d.seconds_since_update IS NULL THEN NULL\n    WHEN d.seconds_since_update < 60 THEN d.seconds_since_update::text || 's'\n    WHEN d.seconds_since_update < 3600 THEN (d.seconds_since_update / 60)::text || 'm'\n    WHEN d.seconds_since_update < 86400 THEN round(d.seconds_since_update / 3600.0, 1)::text || 'h'\n    ELSE round(d.seconds_since_update / 86400.0, 1)::text || 'd'\n  END AS \"Check\",\n  CASE WHEN d.station_status IS NOT NULL THEN NULL ELSE f.combined_status END AS \"Status\",\n  CASE WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN NULL ELSE d.voltage END AS \"Voltage\",\n  CASE WHEN d.station_status IS NOT NULL THEN NULL ELSE f.status_24h END AS \"Data\",\n  CASE WHEN d.station_status IS NOT NULL THEN NULL ELSE f.health_status END AS \"Health\",\n  CASE WHEN d.station_status IS NOT NULL THEN NULL ELSE f.download_status END AS \"DL\",\n  CASE WHEN d.station_status IS NOT NULL THEN NULL ELSE f.disk_status END AS \"Disk\",\n  CASE\n    WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN 'N/A'\n    WHEN d.connection_state IS NULL THEN NULL\n    WHEN d.connection_state = 'online' THEN 'online ' || format_duration(d.state_duration)\n    WHEN d.connection_state = 'degraded' THEN 'degraded ' || format_duration(d.state_duration)\n    ELSE 'offline ' || format_duration(d.state_duration)\n  END AS \"Conn\",\n  CASE WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN NULL ELSE d.packet_loss END AS \"Loss\",\n  CASE\n    WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN 'N/A'\n    WHEN d.ftp_open IS NULL AND d.http_open IS NULL THEN NULL\n    WHEN COALESCE(d.ftp_open, true) AND COALESCE(d.http_open, true) THEN 'active'\n    WHEN d.ftp_open = false THEN\n      CASE WHEN d.status_details LIKE '%FTP refused%' THEN 'dl:refused'\n           WHEN d.status_details LIKE '%FTP timeout%' THEN 'dl:timeout'\n           ELSE 'dl:down' END\n    WHEN d.http_open = false THEN\n      CASE WHEN d.status_details LIKE '%HTTP refused%' THEN 'hc:refused'\n           WHEN d.status_details LIKE '%HTTP timeout%' THEN 'hc:timeout'\n           ELSE 'hc:down' END\n    ELSE 'unknown'\n  END AS \"Port\",\n  CASE WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN 'N/A' ELSE d.ntrip_status END AS \"NTRIP\",\n  CASE WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN NULL WHEN d.is_online = false THEN NULL WHEN d.receiver_type = 'NetR5' THEN -1 ELSE d.satellites_tracked END AS \"Sats\",\n  CASE WHEN d.station_status IS NOT NULL THEN NULL ELSE f.rinex_24h_status END AS \"24h Data\",\n  CASE WHEN d.station_status IS NOT NULL THEN NULL ELSE f.status_1hz END AS \"1Hz Data\",\n  dl.avg_speed_bps AS \"Avg Speed\",\n  dl.stalls AS \"Stalls\",\n  CASE WHEN d.station_status IS NOT NULL OR d.health_check IS NOT NULL THEN NULL WHEN d.is_online = false THEN NULL ELSE d.uptime_seconds END AS \"Uptime\",\n  d.stall_timeout_override AS \"Timeout Override\"\nFROM station_dashboard_data d\nLEFT JOIN station_data_flow_status f ON f.sid = d.station_id\nLEFT JOIN stations s ON s.sid = d.station_id\nLEFT JOIN LATERAL (\n  SELECT\n    AVG(avg_speed_bps)::bigint AS avg_speed_bps,\n    SUM(CASE WHEN outcome = 'stall_timeout' THEN 1 ELSE 0 END)::integer AS stalls\n  FROM download_log\n  WHERE download_log.sid = d.station_id\n    AND ts BETWEEN $__timeFrom() AND $__timeTo()\n) dl ON true\nWHERE ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = d.station_id AND sam.area_id = '$area'))\n  AND (${station:singlequote} = 'all' OR d.station_id = ${station:singlequote})\n  AND (${receiver:singlequote} = 'all' OR (${receiver:singlequote} = 'NONE' AND d.receiver_type IS NULL) OR d.receiver_type = ${receiver:singlequote})\n  AND (${antenna:singlequote} = 'all' OR (${antenna:singlequote} = 'NONE' AND d.antenna_type IS NULL) OR d.antenna_type = ${antenna:singlequote})\n  AND (${owner:singlequote} = 'all' OR s.station_owner = ${owner:singlequote})\n  AND ('$status_filter' = 'all'\n    OR ('$status_filter' = 'online' AND d.is_online = true AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'offline' AND d.connection_state = 'offline' AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'degraded' AND d.connection_state = 'degraded' AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'critical' AND f.combined_status = 2 AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'warning' AND f.combined_status = 1 AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'ping_failed' AND d.status_details LIKE '%Ping%' AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'ftp_down' AND d.ftp_open = false AND d.is_online = true AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'ctrl_refused' AND d.control_open = false AND d.is_online = true AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'disk_warning' AND d.status_details LIKE '%Disk%' AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'discontinued' AND d.station_status = 'discontinued')\n    OR ('$status_filter' = 'passive' AND d.health_check = 'passive')\n    OR ('$status_filter' = 'inactive' AND d.station_status = 'inactive')\n    OR ('$status_filter' = 'suppressed' AND d.station_status = 'suppressed')\n    OR ('$status_filter' = '24hr_rinex_missing' AND d.is_online = true AND d.station_status IS NULL AND d.health_check IS NULL\n        AND f.status_24h = 1)\n    OR ('$status_filter' = '1hr_rinex_missing' AND f.status_1hz = 2 AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = '24hr_raw_missing' AND d.is_online = true AND d.station_status IS NULL AND d.health_check IS NULL\n        AND f.status_24h = 2)\n    OR ('$status_filter' = 'voltage_warning' AND d.voltage IS NOT NULL AND (d.status_details LIKE '%Voltage%' OR (d.is_online = false AND ((COALESCE(s.power_type, 'battery') = 'battery' AND (d.voltage < 11.8 OR d.voltage > 15.0)) OR (s.power_type = 'dcdc' AND (d.voltage < 12.0 OR d.voltage > 16.5)) OR (s.power_type = 'dcdc24' AND (d.voltage < 20.0 OR d.voltage > 28.0)) OR (s.power_type = 'mains' AND (d.voltage < 15.0 OR d.voltage > 25.0))))))\n    OR ('$status_filter' = 'stall' AND d.station_id IN (SELECT sid FROM download_log WHERE outcome = 'stall_timeout' AND ts BETWEEN $__timeFrom() AND $__timeTo()))\n    OR ('$status_filter' = 'low_sats' AND d.satellites_tracked IS NOT NULL AND d.satellites_tracked < 4 AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'download_warning' AND f.download_status >= 1 AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'disk_error' AND f.disk_status = 2 AND d.station_status IS NULL AND d.health_check IS NULL)\n  )\n  AND ('$status_filter' IN ('discontinued', 'inactive', 'suppressed') OR d.station_status IS NULL)\nORDER BY d.station_id",
           "refId": "A"
         }
       ],
