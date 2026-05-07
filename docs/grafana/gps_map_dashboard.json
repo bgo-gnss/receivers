@@ -1195,7 +1195,7 @@
         },
         "view": {
           "id": "coords",
-          "lat": 65.3,
+          "lat": 65.28,
           "lon": -18.8,
           "zoom": 7.3,
           "allLayers": true
