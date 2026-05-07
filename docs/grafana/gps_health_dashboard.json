@@ -65,11 +65,11 @@
       "title": "",
       "options": {
         "mode": "html",
-        "content": "<div style=\"display:flex;align-items:center;justify-content:center;height:100%;gap:10px;\"><span style=\"color:#888;font-size:13px;\">Active filter:</span><span style=\"background:rgba(232,113,29,0.15);border:1px solid rgba(232,113,29,0.55);color:#e87327;font-size:16px;font-weight:600;padding:3px 18px;border-radius:14px;letter-spacing:0.5px;\">${status_filter}</span></div>"
+        "content": "<div style=\"display:flex;align-items:center;justify-content:center;height:100%;gap:8px;\"><span style=\"color:#666;font-size:12px;letter-spacing:0.3px;\">filter:</span><span style=\"color:#e87327;font-size:13px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;\">${status_filter}</span></div>"
       },
       "transparent": true,
       "gridPos": {
-        "h": 2,
+        "h": 1,
         "w": 24,
         "x": 0,
         "y": 0
@@ -81,7 +81,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 2
+        "y": 1
       },
       "id": 1,
       "panels": [],
@@ -115,7 +115,7 @@
         "h": 4,
         "w": 2,
         "x": 0,
-        "y": 3
+        "y": 2
       },
       "id": 2,
       "options": {
@@ -191,7 +191,7 @@
         "h": 4,
         "w": 2,
         "x": 4,
-        "y": 3
+        "y": 2
       },
       "id": 14,
       "options": {
@@ -267,7 +267,7 @@
         "h": 4,
         "w": 2,
         "x": 10,
-        "y": 3
+        "y": 2
       },
       "id": 3,
       "options": {
@@ -339,7 +339,7 @@
         "h": 4,
         "w": 2,
         "x": 14,
-        "y": 3
+        "y": 2
       },
       "id": 32,
       "options": {
@@ -415,7 +415,7 @@
         "h": 4,
         "w": 2,
         "x": 6,
-        "y": 3
+        "y": 2
       },
       "id": 33,
       "options": {
@@ -491,7 +491,7 @@
         "h": 4,
         "w": 2,
         "x": 8,
-        "y": 3
+        "y": 2
       },
       "id": 34,
       "options": {
@@ -563,7 +563,7 @@
         "h": 4,
         "w": 2,
         "x": 2,
-        "y": 3
+        "y": 2
       },
       "id": 35,
       "options": {
@@ -639,7 +639,7 @@
         "h": 4,
         "w": 2,
         "x": 12,
-        "y": 3
+        "y": 2
       },
       "id": 36,
       "options": {
@@ -725,7 +725,7 @@
         "h": 16,
         "w": 8,
         "x": 16,
-        "y": 7
+        "y": 6
       },
       "id": 31,
       "options": {
@@ -2197,7 +2197,7 @@
         "h": 16,
         "w": 16,
         "x": 0,
-        "y": 7
+        "y": 6
       },
       "id": 5,
       "options": {
@@ -2554,7 +2554,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 23
+        "y": 22
       },
       "id": 12,
       "options": {
@@ -2756,7 +2756,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 23
+        "y": 22
       },
       "id": 13,
       "options": {
@@ -2858,7 +2858,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 31
+        "y": 30
       },
       "id": 7,
       "options": {
@@ -2934,7 +2934,7 @@
       "description": "All stations registered in stations.cfg",
       "gridPos": {
         "x": 16,
-        "y": 3,
+        "y": 2,
         "w": 4,
         "h": 4
       },
@@ -2995,7 +2995,7 @@
       "description": "Stations currently shown in overview table (with active filters)",
       "gridPos": {
         "x": 20,
-        "y": 3,
+        "y": 2,
         "w": 4,
         "h": 4
       },
