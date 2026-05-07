@@ -83,7 +83,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 1,
+        "h": 2,
         "w": 2,
         "x": 0,
         "y": 0
@@ -159,7 +159,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 1,
+        "h": 2,
         "w": 2,
         "x": 2,
         "y": 0
@@ -235,7 +235,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 1,
+        "h": 2,
         "w": 2,
         "x": 4,
         "y": 0
@@ -307,7 +307,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 1,
+        "h": 2,
         "w": 2,
         "x": 6,
         "y": 0
@@ -379,7 +379,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 1,
+        "h": 2,
         "w": 2,
         "x": 8,
         "y": 0
@@ -447,7 +447,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 1,
+        "h": 2,
         "w": 2,
         "x": 10,
         "y": 0
@@ -523,7 +523,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 1,
+        "h": 2,
         "w": 2,
         "x": 12,
         "y": 0
@@ -595,7 +595,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 1,
+        "h": 2,
         "w": 2,
         "x": 14,
         "y": 0
@@ -647,8 +647,7 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "fixedColor": "text",
-            "mode": "fixed"
+            "mode": "thresholds"
           },
           "thresholds": {
             "mode": "absolute",
@@ -1043,10 +1042,10 @@
         ]
       },
       "gridPos": {
-        "h": 31,
+        "h": 30,
         "w": 24,
         "x": 0,
-        "y": 1
+        "y": 2
       },
       "id": 1,
       "options": {
