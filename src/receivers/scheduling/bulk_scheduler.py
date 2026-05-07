@@ -104,17 +104,26 @@ def _log_batch_summary_job(session_type: str) -> None:
     )
 
 
+_RETRY_MAX_WORKERS = 8  # parallel workers for the second-chance window
+
+
 def _retry_failed_daily_job(session_type: str) -> None:
-    """Second-chance retry for stations that failed in today's primary download window.
+    """Second-chance parallel retry for stations that failed in today's primary window.
 
-    Queries download_log for today's failures that still have no successful entry in
-    file_tracking, then re-runs the download for each.  Skips permanently-unreachable
-    stations (ping fails) to avoid wasting FTP sessions.
+    Queries download_log for stations whose only outcomes today are failures and who
+    still have no archived file in file_tracking.  Runs all retries in parallel (up to
+    _RETRY_MAX_WORKERS threads) so the entire retry window completes in ~10 minutes
+    rather than the hours a sequential run would take.
 
-    Designed to run once ~45 minutes after the primary window closes.
+    Results flow into _BATCH_STATS via _download_station_data_job → _record_batch_result,
+    so the batch summary (which fires ~15 min later) captures recovered stations.
+
+    Designed to fire ~30 min after the primary distribution window closes.
     """
     _log = logging.getLogger("receivers.scheduler")
     try:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         from ..health.database_factory import DatabaseConnectionFactory
 
         today_midnight = datetime.now(timezone.utc).replace(
@@ -123,15 +132,16 @@ def _retry_failed_daily_job(session_type: str) -> None:
 
         with DatabaseConnectionFactory.connection() as conn:
             with conn.cursor() as cur:
-                # Find stations that only have failures today (no success in file_tracking)
+                # Pull last failure reason per station for context in log messages.
                 cur.execute(
                     """
                     WITH today_failures AS (
-                        SELECT DISTINCT sid
+                        SELECT DISTINCT ON (sid) sid, outcome, message
                         FROM download_log
                         WHERE session_type = %s
                           AND ts >= %s
                           AND outcome NOT IN ('completed', 'up_to_date')
+                        ORDER BY sid, ts DESC
                     ),
                     today_successes AS (
                         SELECT DISTINCT sid
@@ -140,7 +150,7 @@ def _retry_failed_daily_job(session_type: str) -> None:
                           AND file_date = CURRENT_DATE - 1
                           AND status IN ('downloaded', 'archived')
                     )
-                    SELECT f.sid
+                    SELECT f.sid, f.outcome, f.message
                     FROM today_failures f
                     LEFT JOIN today_successes s ON s.sid = f.sid
                     WHERE s.sid IS NULL
@@ -154,13 +164,26 @@ def _retry_failed_daily_job(session_type: str) -> None:
             _log.info(f"🔁 Second-chance {session_type}: no failures to retry")
             return
 
-        station_ids = [row[0] for row in rows]
+        # Build per-station context: sid → (original_category)
+        station_cats: Dict[str, str] = {
+            sid: _categorize_failure(str(msg or outcome))
+            for sid, outcome, msg in rows
+        }
+        station_ids = sorted(station_cats.keys())
+
+        cat_counts: Dict[str, int] = {}
+        for cat in station_cats.values():
+            cat_counts[cat] = cat_counts.get(cat, 0) + 1
+        cat_str = " ".join(f"{c}:{n}" for c, n in sorted(cat_counts.items()))
+        sid_preview = ", ".join(station_ids[:10]) + (
+            f" [+{len(station_ids) - 10} more]" if len(station_ids) > 10 else ""
+        )
         _log.info(
-            f"🔁 Second-chance {session_type}: retrying {len(station_ids)} station(s) — "
-            + (", ".join(station_ids[:10]) + (f" [+{len(station_ids)-10} more]" if len(station_ids) > 10 else ""))
+            f"🔁 Second-chance {session_type}: {len(station_ids)} queued"
+            f" [{cat_str}] — {sid_preview}"
         )
 
-        # Resolve scheduler context for correct production_mode / rinex / timeout settings
+        # Resolve scheduler context for correct production_mode / rinex / timeout
         production_mode = False
         run_rinex = False
         timeout_minutes = 45
@@ -171,14 +194,57 @@ def _retry_failed_daily_job(session_type: str) -> None:
                 run_rinex = cfg.rinex
                 timeout_minutes = cfg.timeout_minutes
 
-        for station_id in station_ids:
+        recovered: List[str] = []
+        still_failing: List[str] = []
+        _results_lock = _threading.Lock()
+
+        def _retry_one(sid: str) -> Tuple[str, bool]:
             try:
                 _download_station_data_job(
-                    station_id, session_type, production_mode,
-                    timeout_minutes=timeout_minutes, run_rinex=run_rinex
+                    sid,
+                    session_type,
+                    production_mode,
+                    timeout_minutes=timeout_minutes,
+                    run_rinex=run_rinex,
                 )
+                # Confirm success via file_tracking (download_station_data_job logs
+                # per-station success/failure; we just need the aggregate for summary)
+                with DatabaseConnectionFactory.connection() as _conn:
+                    with _conn.cursor() as _cur:
+                        _cur.execute(
+                            """
+                            SELECT 1 FROM file_tracking
+                            WHERE sid = %s AND session_type = %s
+                              AND file_date = CURRENT_DATE - 1
+                              AND status IN ('downloaded', 'archived')
+                            LIMIT 1
+                            """,
+                            (sid, session_type),
+                        )
+                        return sid, _cur.fetchone() is not None
             except Exception as exc:
-                _log.warning(f"Second-chance {session_type} {station_id}: {exc}")
+                _log.warning(f"Second-chance {session_type} {sid}: {exc}")
+                return sid, False
+
+        workers = min(_RETRY_MAX_WORKERS, len(station_ids))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="sc_retry") as pool:
+            futures = {pool.submit(_retry_one, sid): sid for sid in station_ids}
+            for future in as_completed(futures):
+                sid, success = future.result()
+                with _results_lock:
+                    (recovered if success else still_failing).append(sid)
+
+        recovered.sort()
+        still_failing.sort()
+        fail_preview = ", ".join(still_failing[:10]) + (
+            f" [+{len(still_failing) - 10} more]" if len(still_failing) > 10 else ""
+        )
+        _log.info(
+            f"🔁 Second-chance {session_type} complete:"
+            f" {len(recovered)}/{len(station_ids)} recovered"
+            + (f" — {', '.join(recovered)}" if recovered else "")
+            + (f" | still failing: {fail_preview}" if still_failing else "")
+        )
 
     except ImportError:
         _log.debug("psycopg2 not available — second-chance retry disabled")
@@ -1748,14 +1814,21 @@ class BulkDownloadScheduler:
                 f"Scheduled {len(stations)} stations for {session_type} "
                 f"(window={config.distribution_window}m, {base_trigger.description}{extra})"
             )
-            # Register a batch-summary job for daily sessions (cron with explicit hour+minute).
-            # Fires distribution_window + 45 minutes after the session start so all station
-            # slots have had time to complete before the summary is logged.
+            # Register batch-summary and second-chance jobs for daily sessions
+            # (cron triggers that carry an explicit hour+minute).
+            #
+            # Timeline for 15s_24hr at 00:01, distribution_window=10:
+            #   00:01-00:11  primary downloads
+            #   00:41        second-chance parallel retry starts (window + 30 min)
+            #   00:49        second-chance done (~8 min for 42 stations × 8 workers)
+            #   01:01        batch summary fires (window + 50 min), captures all results
             tkw = base_trigger.trigger_kwargs
             if base_trigger.trigger_type == "cron" and "hour" in tkw and "minute" in tkw:
                 sched_hour = int(str(tkw["hour"]).split(",")[0])
                 sched_minute = int(tkw["minute"])
-                total_offset = config.distribution_window + 45
+
+                # Batch summary: fires after second-chance has had time to finish.
+                total_offset = config.distribution_window + 50
                 summary_minute = (sched_minute + total_offset) % 60
                 summary_hour = (sched_hour + (sched_minute + total_offset) // 60) % 24
                 self.scheduler.add_job(
@@ -1773,12 +1846,11 @@ class BulkDownloadScheduler:
                     f"{summary_hour:02d}:{summary_minute:02d} UTC"
                 )
 
-                # Second-chance retry job: fires 35 min after session start.
-                # Catches stations that failed timing-sensitive errors (404/size mismatch/
-                # connection refused) and retries them once more before the batch summary.
-                # Only scheduled for daily sessions (has explicit hour in trigger).
-                # Example: session at 00:01, window=5 → second-chance at 00:41.
-                retry_total = config.distribution_window + 35
+                # Second-chance retry: parallel, fires 30 min after session start.
+                # Runs up to _RETRY_MAX_WORKERS concurrent downloads (~8-10 min total).
+                # Results flow into _BATCH_STATS so the batch summary is complete.
+                # Example: session at 00:01, window=10 → second-chance at 00:41.
+                retry_total = config.distribution_window + 30
                 retry_minute = (sched_minute + retry_total) % 60
                 retry_hour = (sched_hour + (sched_minute + retry_total) // 60) % 24
                 self.scheduler.add_job(

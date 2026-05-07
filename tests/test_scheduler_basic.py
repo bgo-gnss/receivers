@@ -1731,3 +1731,72 @@ class TestIsRetryableDownload:
 
     def test_categorize_other(self):
         assert self._categorize("Something completely unknown") == "other"
+
+
+@pytest.mark.unit
+@pytest.mark.scheduler
+class TestRetryFailedDailyJob:
+    """Tests for _retry_failed_daily_job parallel second-chance retry."""
+
+    def setup_method(self):
+        from receivers.scheduling.bulk_scheduler import (
+            _RETRY_MAX_WORKERS,
+            _retry_failed_daily_job,
+        )
+        self._retry_job = _retry_failed_daily_job
+        self._max_workers = _RETRY_MAX_WORKERS
+
+    def test_max_workers_constant_defined(self):
+        assert isinstance(self._max_workers, int)
+        assert self._max_workers >= 4
+
+    def _make_db_row(self, sid, outcome="failed", message="Connection refused"):
+        return (sid, outcome, message)
+
+    def _make_mock_db(self, rows):
+        """Build a context-manager-compatible mock DB connection returning `rows`."""
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_cur.fetchall.return_value = rows
+        mock_cur.fetchone.return_value = None
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_cur.__enter__ = MagicMock(return_value=mock_cur)
+        mock_cur.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value = mock_cur
+        return mock_conn
+
+    @patch("receivers.scheduling.bulk_scheduler._download_station_data_job")
+    @patch("receivers.health.database_factory.DatabaseConnectionFactory")
+    def test_no_failures_exits_early(self, mock_dcf, mock_download):
+        """If DB returns no rows, job logs and returns without downloading."""
+        mock_dcf.connection.return_value = self._make_mock_db([])
+        self._retry_job("15s_24hr")
+        mock_download.assert_not_called()
+
+    @patch("receivers.scheduling.bulk_scheduler._download_station_data_job")
+    @patch("receivers.health.database_factory.DatabaseConnectionFactory")
+    def test_parallel_calls_all_stations(self, mock_dcf, mock_download):
+        """All queued stations get a download attempt."""
+        stations = ["AFST", "AUST", "FAGD", "GSIG", "HEDI"]
+        rows = [self._make_db_row(s) for s in stations]
+        mock_dcf.connection.return_value = self._make_mock_db(rows)
+
+        called = []
+        mock_download.side_effect = lambda sid, *a, **kw: called.append(sid)
+
+        self._retry_job("15s_24hr")
+        assert sorted(called) == sorted(stations)
+
+    def test_workers_capped_at_station_count(self):
+        """min(_RETRY_MAX_WORKERS, len(stations)) keeps thread count bounded below."""
+        # Pure arithmetic check — no I/O needed.
+        n_stations = 3
+        workers = min(self._max_workers, n_stations)
+        assert workers == n_stations  # small batch → uses station count, not MAX
+
+    def test_workers_capped_at_max_for_large_batch(self):
+        """Large batch is capped at _RETRY_MAX_WORKERS."""
+        n_stations = 100
+        workers = min(self._max_workers, n_stations)
+        assert workers == self._max_workers

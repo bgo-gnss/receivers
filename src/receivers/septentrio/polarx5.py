@@ -2027,6 +2027,8 @@ class PolaRX5(BaseReceiver):
             except Exception:
                 _loss_factor = 1.0
 
+            import sys as _sys
+
             with tqdm(
                 total=remote_file_size,
                 initial=offset,
@@ -2034,6 +2036,7 @@ class PolaRX5(BaseReceiver):
                 unit_scale=True,
                 unit_divisor=1024,
                 desc=desc,
+                disable=not _sys.stderr.isatty(),
             ) as pbar:
                 file_mode = "ab" if offset > 0 else "wb"
                 with open(local_file, file_mode) as f:
