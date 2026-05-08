@@ -110,8 +110,7 @@ class NetR9HTTPDownloader:
         """
         self.station_id = station_id.upper()
 
-        # Set up logging (matching PolaRX5 pattern)
-        self.logger = self._get_logger()
+        self.logger = logging.getLogger(f"{__name__}.{self.station_id}")
 
         # Initialize HTTP client
         self.http_client = TrimbleHTTPClient(station_id, station_config)
@@ -153,23 +152,6 @@ class NetR9HTTPDownloader:
             self.logger.debug("Base path will be auto-discovered on first request")
 
         self.logger.info(f"Initialized NetR9 HTTP downloader for {self.station_id}")
-
-    def _get_logger(self, level: int = logging.INFO) -> logging.Logger:
-        """Set up logger for this receiver instance."""
-        logger_name = f"{__name__}.{self.station_id}"
-        logger = logging.getLogger(logger_name)
-
-        if not logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-            )
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-            logger.setLevel(level)
-            logger.propagate = False
-
-        return logger
 
     def _discover_base_path(self) -> str:
         """Auto-discover base path for NetR5 CACHEDIR prefix.
@@ -388,7 +370,7 @@ class NetR9HTTPDownloader:
                     full_url,
                     auth=self.http_client.auth,  # Include authentication credentials
                     stream=True,
-                    timeout=(self.connect_timeout, None),  # No read timeout
+                    timeout=(self.connect_timeout, self.stall_timeout),
                 )
                 response.raise_for_status()
 
