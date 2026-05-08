@@ -12,9 +12,70 @@ import logging
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("receivers.scheduler.backfill")
+
+# Partial downloads older than this are dead (connection died, job was killed).
+# FTP REST resume won't help — delete so the next attempt starts clean.
+_STALE_TMP_HOURS = 4
+
+
+def clean_stale_tmp(
+    session_type: str,
+    stale_hours: float = _STALE_TMP_HOURS,
+) -> Tuple[int, List[str]]:
+    """Delete partial tmp files that are too old to resume.
+
+    Scans {tmp_dir}/*/{session_type}/ for files older than ``stale_hours``
+    and removes them so the next backfill / live-download attempt starts a
+    fresh FTP session instead of trying to resume a dead one.
+
+    Returns:
+        (count_deleted, list_of_station_ids_affected)
+    """
+    try:
+        from ..config.receivers_config import ReceiversConfig
+
+        tmp_root = Path(ReceiversConfig().get_tmp_dir())
+    except Exception as e:
+        logger.warning(f"clean_stale_tmp: cannot resolve tmp_dir: {e}")
+        return 0, []
+
+    deleted = 0
+    affected: List[str] = []
+
+    # Glob: tmp_root/{STATION}/{session_type}/*
+    for station_dir in tmp_root.iterdir():
+        if not station_dir.is_dir():
+            continue
+        sess_dir = station_dir / session_type
+        if not sess_dir.is_dir():
+            continue
+        for f in sess_dir.iterdir():
+            if not f.is_file():
+                continue
+            try:
+                age_h = (datetime.now().timestamp() - f.stat().st_mtime) / 3600
+                if age_h >= stale_hours:
+                    station_id = station_dir.name
+                    logger.info(
+                        f"Removing stale tmp: {station_id}/{session_type}/{f.name} "
+                        f"({age_h:.1f}h old)"
+                    )
+                    f.unlink()
+                    deleted += 1
+                    if station_id not in affected:
+                        affected.append(station_id)
+            except OSError:
+                pass  # file may have been removed by a concurrent job
+
+    if deleted:
+        logger.info(
+            f"Stale tmp cleanup ({session_type}): removed {deleted} file(s) "
+            f"from {len(affected)} station(s): {' '.join(sorted(affected))}"
+        )
+    return deleted, sorted(affected)
 
 
 def _backfill_next_station_for_session(
@@ -46,6 +107,11 @@ def _backfill_next_station_for_session(
             f"(:{now_minute:02d} not in :{window_start:02d}-:{window_end:02d})"
         )
         return
+
+    # Remove stale partial downloads before picking the next station.
+    # Files left from a killed/timed-out job can't be resumed — cleaning them
+    # lets the next attempt start fresh instead of trying a dead FTP resume.
+    clean_stale_tmp(session_type)
 
     try:
         from ..health.database_factory import DatabaseConnectionFactory

@@ -438,6 +438,51 @@ def cmd_scheduler_backfill(args) -> int:
         return 1
 
 
+def cmd_scheduler_clean_stale_tmp(args) -> int:
+    """Delete stale partial downloads from the tmp directory."""
+    session = getattr(args, "session", "15s_24hr")
+    hours = getattr(args, "hours", 4.0)
+    dry_run = getattr(args, "dry_run", False)
+
+    try:
+        from ..scheduling.backfill import clean_stale_tmp
+        from ..config.receivers_config import ReceiversConfig
+        from pathlib import Path
+
+        if dry_run:
+            tmp_root = Path(ReceiversConfig().get_tmp_dir())
+            print(f"[DRY RUN] Would scan {tmp_root}/*/{session}/ for files older than {hours}h")
+            count = 0
+            affected = []
+            now_ts = __import__("time").time()
+            for station_dir in tmp_root.iterdir():
+                if not station_dir.is_dir():
+                    continue
+                sess_dir = station_dir / session
+                if not sess_dir.is_dir():
+                    continue
+                for f in sess_dir.iterdir():
+                    if not f.is_file():
+                        continue
+                    age_h = (now_ts - f.stat().st_mtime) / 3600
+                    if age_h >= hours:
+                        print(f"  Would remove: {station_dir.name}/{session}/{f.name} ({age_h:.1f}h old)")
+                        count += 1
+                        if station_dir.name not in affected:
+                            affected.append(station_dir.name)
+            print(f"Would remove {count} file(s) from {len(affected)} station(s)")
+            return 0
+
+        count, affected = clean_stale_tmp(session, stale_hours=hours)
+        print(f"Removed {count} stale tmp file(s) from {len(affected)} station(s)")
+        if affected:
+            print(f"Affected stations: {' '.join(affected)}")
+        return 0
+    except Exception as e:
+        print(f"Error: {e}", file=__import__("sys").stderr)
+        return 1
+
+
 def cmd_scheduler_reconcile(args) -> int:
     """Manually trigger raw->RINEX archive reconciliation."""
 
@@ -1318,6 +1363,28 @@ def create_scheduler_parser(subparsers):
         help="Size deviation tolerance percentage (default: 50.0)",
     )
     integrity_parser.set_defaults(func=cmd_scheduler_integrity)
+
+    clean_stale_parser = scheduler_subparsers.add_parser(
+        "clean-stale-tmp",
+        help="Delete stale partial downloads from tmp (older than --hours)",
+    )
+    clean_stale_parser.add_argument(
+        "--session",
+        default="15s_24hr",
+        help="Session type to clean (default: 15s_24hr)",
+    )
+    clean_stale_parser.add_argument(
+        "--hours",
+        type=float,
+        default=4.0,
+        help="Files older than this many hours are considered stale (default: 4)",
+    )
+    clean_stale_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be deleted without removing anything",
+    )
+    clean_stale_parser.set_defaults(func=cmd_scheduler_clean_stale_tmp)
 
     return scheduler_parser
 
