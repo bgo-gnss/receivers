@@ -692,6 +692,35 @@ def _remove_cfg_field(cfg_path: Path, station_id: str, key: str) -> bool:
     return True
 
 
+def create_station_section(
+    cfg_path: Path,
+    sid: str,
+    fields: Dict[str, str],
+    header_comment: Optional[str] = None,
+) -> None:
+    """Append a new [SID] section to stations.cfg in one atomic write.
+
+    Raises ValueError if the section already exists.
+    header_comment, if given, is prepended as ``# …`` lines before the section.
+    """
+    import re
+
+    text = cfg_path.read_text()
+    if re.search(r"^\[" + re.escape(sid) + r"\]", text, re.MULTILINE):
+        raise ValueError(f"Section [{sid}] already exists in {cfg_path}")
+
+    lines: list[str] = [""]
+    if header_comment:
+        for part in header_comment.splitlines():
+            lines.append(f"# {part}")
+    lines.append(f"[{sid}]")
+    for key, val in fields.items():
+        lines.append(f"{key} = {val}")
+    lines.append("")
+
+    cfg_path.write_text(text + "\n".join(lines) + "\n")
+
+
 def update_station_identity_in_cfg(
     station_id: str,
     firmware_version: Optional[str] = None,
