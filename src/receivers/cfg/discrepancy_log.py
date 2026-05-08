@@ -35,6 +35,11 @@ logger = logging.getLogger(__name__)
 DETECTED_BY_HEALTH = "health_probe"
 DETECTED_BY_RECONCILE = "cfg_reconcile"
 DETECTED_BY_SCHEDULER = "scheduler"
+# Recorded when the download path observes that the FTP mode in stations.cfg
+# differs from the mode that actually works (typically passive→active fallback
+# succeeds where the cfg-declared mode failed). receiver_value carries the
+# observed working mode; cfg_value carries the originally-configured mode.
+DETECTED_BY_FTP_HANDSHAKE = "ftp_handshake"
 
 # resolved_action values
 ACTION_CFG_UPDATED = "cfg_updated"

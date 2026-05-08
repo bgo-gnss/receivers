@@ -523,6 +523,18 @@ FIELDS: List[FieldSpec] = [
         tos_attribute_code="name",
         tos_target_entity="station",
     ),
+    # Runtime-observed: no receiver health probe or TOS source. The download
+    # path records the observed value into cfg_discrepancy when the live FTP
+    # behavior differs from cfg (e.g. cfg says 'passive' but only 'active'
+    # mode succeeds). The config loader applies any open observation as a
+    # runtime override so subsequent downloads start in the right mode.
+    # Operator promotes the observation to upstream cfg via cfg reconcile.
+    FieldSpec(
+        cfg_key="ftp_mode",
+        label="FTP Mode",
+        receiver_authoritative=True,
+        description="Active vs passive FTP. Inferred from runtime handshake, not a probe.",
+    ),
 ]
 
 
