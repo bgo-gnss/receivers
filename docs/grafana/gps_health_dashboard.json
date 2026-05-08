@@ -107,7 +107,14 @@
                 "value": null
               }
             ]
-          }
+          },
+          "links": [
+            {
+              "title": "Cycle filter",
+              "url": "/d/gps-health-voltage/gps-receiver-health-overview?var-status_filter=${__data.fields.next_filter}&var-area=${area:raw}&var-owner=${owner:raw}&var-station=${station:raw}&var-receiver=${receiver:raw}&var-antenna=${antenna:raw}&${__url_time_range}",
+              "targetBlank": false
+            }
+          ]
         },
         "overrides": []
       },
@@ -132,13 +139,7 @@
         },
         "textMode": "auto"
       },
-      "links": [
-        {
-          "title": "Filter: Online",
-          "url": "/d/gps-health-voltage?var-status_filter=online&${area:queryparam}&${station:queryparam}&${receiver:queryparam}&${antenna:queryparam}&${owner:queryparam}&${__url_time_range}",
-          "targetBlank": false
-        }
-      ],
+      "links": [],
       "pluginVersion": "10.0.0",
       "targets": [
         {
@@ -149,7 +150,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(*) as \"Online\" FROM station_connectivity sc WHERE sc.is_online = true AND sc.sid NOT IN (SELECT sid FROM stations WHERE station_status IS NOT NULL OR health_check IS NOT NULL)",
+          "rawSql": "SELECT COUNT(*) as \"Online\",\n  CASE\n    WHEN '$status_filter' = 'online' THEN 'not_online'\n    WHEN '$status_filter' = 'not_online' THEN 'all'\n    ELSE 'online'\n  END AS \"next_filter\" FROM station_connectivity sc WHERE sc.is_online = true AND sc.sid NOT IN (SELECT sid FROM stations WHERE station_status IS NOT NULL OR health_check IS NOT NULL)",
           "refId": "A"
         }
       ],
@@ -183,7 +184,14 @@
                 "value": 5
               }
             ]
-          }
+          },
+          "links": [
+            {
+              "title": "Cycle filter",
+              "url": "/d/gps-health-voltage/gps-receiver-health-overview?var-status_filter=${__data.fields.next_filter}&var-area=${area:raw}&var-owner=${owner:raw}&var-station=${station:raw}&var-receiver=${receiver:raw}&var-antenna=${antenna:raw}&${__url_time_range}",
+              "targetBlank": false
+            }
+          ]
         },
         "overrides": []
       },
@@ -208,13 +216,7 @@
         },
         "textMode": "auto"
       },
-      "links": [
-        {
-          "title": "Filter: Offline",
-          "url": "/d/gps-health-voltage?var-status_filter=offline&${area:queryparam}&${station:queryparam}&${receiver:queryparam}&${antenna:queryparam}&${owner:queryparam}&${__url_time_range}",
-          "targetBlank": false
-        }
-      ],
+      "links": [],
       "pluginVersion": "10.0.0",
       "targets": [
         {
@@ -225,7 +227,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(*) as \"Offline\" FROM station_dashboard_data WHERE connection_state = 'offline' AND station_status IS NULL AND health_check IS NULL",
+          "rawSql": "SELECT COUNT(*) as \"Offline\",\n  CASE\n    WHEN '$status_filter' = 'offline' THEN 'not_offline'\n    WHEN '$status_filter' = 'not_offline' THEN 'all'\n    ELSE 'offline'\n  END AS \"next_filter\" FROM station_dashboard_data WHERE connection_state = 'offline' AND station_status IS NULL AND health_check IS NULL",
           "refId": "A"
         }
       ],
@@ -259,7 +261,14 @@
                 "value": 3
               }
             ]
-          }
+          },
+          "links": [
+            {
+              "title": "Cycle filter",
+              "url": "/d/gps-health-voltage/gps-receiver-health-overview?var-status_filter=${__data.fields.next_filter}&var-area=${area:raw}&var-owner=${owner:raw}&var-station=${station:raw}&var-receiver=${receiver:raw}&var-antenna=${antenna:raw}&${__url_time_range}",
+              "targetBlank": false
+            }
+          ]
         },
         "overrides": []
       },
@@ -284,13 +293,7 @@
         },
         "textMode": "auto"
       },
-      "links": [
-        {
-          "title": "Filter: Critical",
-          "url": "/d/gps-health-voltage?var-status_filter=critical&${area:queryparam}&${station:queryparam}&${receiver:queryparam}&${antenna:queryparam}&${owner:queryparam}&${__url_time_range}",
-          "targetBlank": false
-        }
-      ],
+      "links": [],
       "pluginVersion": "10.0.0",
       "targets": [
         {
@@ -301,7 +304,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(*) as \"Critical\" FROM station_data_flow_status WHERE health_status = 2",
+          "rawSql": "SELECT COUNT(*) as \"Critical\",\n  CASE\n    WHEN '$status_filter' = 'critical' THEN 'not_critical'\n    WHEN '$status_filter' = 'not_critical' THEN 'all'\n    ELSE 'critical'\n  END AS \"next_filter\" FROM station_data_flow_status WHERE health_status = 2",
           "refId": "A"
         }
       ],
@@ -331,7 +334,14 @@
                 "value": 1
               }
             ]
-          }
+          },
+          "links": [
+            {
+              "title": "Cycle filter",
+              "url": "/d/gps-health-voltage/gps-receiver-health-overview?var-status_filter=${__data.fields.next_filter}&var-area=${area:raw}&var-owner=${owner:raw}&var-station=${station:raw}&var-receiver=${receiver:raw}&var-antenna=${antenna:raw}&${__url_time_range}",
+              "targetBlank": false
+            }
+          ]
         },
         "overrides": []
       },
@@ -356,13 +366,7 @@
         },
         "textMode": "auto"
       },
-      "links": [
-        {
-          "title": "Filter: Control Down",
-          "url": "/d/gps-health-voltage?var-status_filter=ctrl_refused&${area:queryparam}&${station:queryparam}&${receiver:queryparam}&${antenna:queryparam}&${owner:queryparam}&${__url_time_range}",
-          "targetBlank": false
-        }
-      ],
+      "links": [],
       "pluginVersion": "10.0.0",
       "targets": [
         {
@@ -373,7 +377,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(*) as \"Control Down\" FROM station_dashboard_data WHERE control_open = false AND is_online = true AND station_status IS NULL AND health_check IS NULL",
+          "rawSql": "SELECT COUNT(*) as \"Control Down\",\n  CASE\n    WHEN '$status_filter' = 'ctrl_refused' THEN 'not_ctrl_refused'\n    WHEN '$status_filter' = 'not_ctrl_refused' THEN 'all'\n    ELSE 'ctrl_refused'\n  END AS \"next_filter\" FROM station_dashboard_data WHERE control_open = false AND is_online = true AND station_status IS NULL AND health_check IS NULL",
           "refId": "A"
         }
       ],
@@ -407,7 +411,14 @@
                 "value": 5
               }
             ]
-          }
+          },
+          "links": [
+            {
+              "title": "Cycle filter",
+              "url": "/d/gps-health-voltage/gps-receiver-health-overview?var-status_filter=${__data.fields.next_filter}&var-area=${area:raw}&var-owner=${owner:raw}&var-station=${station:raw}&var-receiver=${receiver:raw}&var-antenna=${antenna:raw}&${__url_time_range}",
+              "targetBlank": false
+            }
+          ]
         },
         "overrides": []
       },
@@ -432,13 +443,7 @@
         },
         "textMode": "auto"
       },
-      "links": [
-        {
-          "title": "Filter: Missing Raw",
-          "url": "/d/gps-health-voltage?var-status_filter=24hr_raw_missing&${area:queryparam}&${station:queryparam}&${receiver:queryparam}&${antenna:queryparam}&${owner:queryparam}&${__url_time_range}",
-          "targetBlank": false
-        }
-      ],
+      "links": [],
       "pluginVersion": "10.0.0",
       "targets": [
         {
@@ -449,7 +454,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(*) AS \"Missing Raw\"\nFROM station_dashboard_data d\nJOIN station_data_flow_status f ON f.sid = d.station_id\nWHERE d.is_online = true\n  AND d.station_status IS NULL\n  AND d.health_check IS NULL\n  AND f.status_24h = 2",
+          "rawSql": "SELECT COUNT(*) AS \"Missing Raw\",\n  CASE\n    WHEN '$status_filter' = '24hr_raw_missing' THEN 'not_24hr_raw_missing'\n    WHEN '$status_filter' = 'not_24hr_raw_missing' THEN 'all'\n    ELSE '24hr_raw_missing'\n  END AS \"next_filter\"\nFROM station_dashboard_data d\nJOIN station_data_flow_status f ON f.sid = d.station_id\nWHERE d.is_online = true\n  AND d.station_status IS NULL\n  AND d.health_check IS NULL\n  AND f.status_24h = 2",
           "refId": "A"
         }
       ],
@@ -483,7 +488,14 @@
                 "value": 3
               }
             ]
-          }
+          },
+          "links": [
+            {
+              "title": "Cycle filter",
+              "url": "/d/gps-health-voltage/gps-receiver-health-overview?var-status_filter=${__data.fields.next_filter}&var-area=${area:raw}&var-owner=${owner:raw}&var-station=${station:raw}&var-receiver=${receiver:raw}&var-antenna=${antenna:raw}&${__url_time_range}",
+              "targetBlank": false
+            }
+          ]
         },
         "overrides": []
       },
@@ -508,13 +520,7 @@
         },
         "textMode": "auto"
       },
-      "links": [
-        {
-          "title": "Filter: 24h RNX Missing",
-          "url": "/d/gps-health-voltage?var-status_filter=24hr_rinex_missing&${area:queryparam}&${station:queryparam}&${receiver:queryparam}&${antenna:queryparam}&${owner:queryparam}&${__url_time_range}",
-          "targetBlank": false
-        }
-      ],
+      "links": [],
       "pluginVersion": "10.0.0",
       "targets": [
         {
@@ -525,7 +531,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(*) AS \"Missing RINEX\"\nFROM station_dashboard_data d\nJOIN station_data_flow_status f ON f.sid = d.station_id\nWHERE d.is_online = true\n  AND d.station_status IS NULL\n  AND d.health_check IS NULL\n  AND f.status_24h = 1",
+          "rawSql": "SELECT COUNT(*) AS \"Missing RINEX\",\n  CASE\n    WHEN '$status_filter' = '24hr_rinex_missing' THEN 'not_24hr_rinex_missing'\n    WHEN '$status_filter' = 'not_24hr_rinex_missing' THEN 'all'\n    ELSE '24hr_rinex_missing'\n  END AS \"next_filter\"\nFROM station_dashboard_data d\nJOIN station_data_flow_status f ON f.sid = d.station_id\nWHERE d.is_online = true\n  AND d.station_status IS NULL\n  AND d.health_check IS NULL\n  AND f.status_24h = 1",
           "refId": "A"
         }
       ],
@@ -555,7 +561,14 @@
                 "value": 1
               }
             ]
-          }
+          },
+          "links": [
+            {
+              "title": "Cycle filter",
+              "url": "/d/gps-health-voltage/gps-receiver-health-overview?var-status_filter=${__data.fields.next_filter}&var-area=${area:raw}&var-owner=${owner:raw}&var-station=${station:raw}&var-receiver=${receiver:raw}&var-antenna=${antenna:raw}&${__url_time_range}",
+              "targetBlank": false
+            }
+          ]
         },
         "overrides": []
       },
@@ -580,13 +593,7 @@
         },
         "textMode": "auto"
       },
-      "links": [
-        {
-          "title": "Filter: Voltage Warnings",
-          "url": "/d/gps-health-voltage?var-status_filter=voltage_warning&${area:queryparam}&${station:queryparam}&${receiver:queryparam}&${antenna:queryparam}&${owner:queryparam}&${__url_time_range}",
-          "targetBlank": false
-        }
-      ],
+      "links": [],
       "pluginVersion": "10.0.0",
       "targets": [
         {
@@ -597,7 +604,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(*) AS \"Volt Warn\" FROM station_dashboard_data d JOIN stations s ON s.sid = d.station_id WHERE d.station_status IS NULL AND d.health_check IS NULL AND d.voltage IS NOT NULL AND (d.status_details LIKE '%Voltage%' OR (d.is_online = false AND ((COALESCE(s.power_type, 'battery') = 'battery' AND (d.voltage < 11.8 OR d.voltage > 15.0)) OR (s.power_type = 'dcdc' AND (d.voltage < 12.0 OR d.voltage > 16.5)) OR (s.power_type = 'dcdc24' AND (d.voltage < 20.0 OR d.voltage > 28.0)) OR (s.power_type = 'mains' AND (d.voltage < 15.0 OR d.voltage > 25.0)))))",
+          "rawSql": "SELECT COUNT(*) AS \"Volt Warn\",\n  CASE\n    WHEN '$status_filter' = 'voltage_warning' THEN 'not_voltage_warning'\n    WHEN '$status_filter' = 'not_voltage_warning' THEN 'all'\n    ELSE 'voltage_warning'\n  END AS \"next_filter\" FROM station_dashboard_data d JOIN stations s ON s.sid = d.station_id WHERE d.station_status IS NULL AND d.health_check IS NULL AND d.voltage IS NOT NULL AND (d.status_details LIKE '%Voltage%' OR (d.is_online = false AND ((COALESCE(s.power_type, 'battery') = 'battery' AND (d.voltage < 11.8 OR d.voltage > 15.0)) OR (s.power_type = 'dcdc' AND (d.voltage < 12.0 OR d.voltage > 16.5)) OR (s.power_type = 'dcdc24' AND (d.voltage < 20.0 OR d.voltage > 28.0)) OR (s.power_type = 'mains' AND (d.voltage < 15.0 OR d.voltage > 25.0)))))",
           "refId": "A"
         }
       ],
@@ -631,7 +638,14 @@
                 "value": 3
               }
             ]
-          }
+          },
+          "links": [
+            {
+              "title": "Cycle filter",
+              "url": "/d/gps-health-voltage/gps-receiver-health-overview?var-status_filter=${__data.fields.next_filter}&var-area=${area:raw}&var-owner=${owner:raw}&var-station=${station:raw}&var-receiver=${receiver:raw}&var-antenna=${antenna:raw}&${__url_time_range}",
+              "targetBlank": false
+            }
+          ]
         },
         "overrides": []
       },
@@ -666,195 +680,28 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT COUNT(DISTINCT s.sid) AS \"Low Sats\"\nFROM block_satellite_tracking s\nINNER JOIN (\n  SELECT sid, MAX(ts) AS max_ts\n  FROM block_satellite_tracking\n  WHERE ts > NOW() - INTERVAL '1 hour'\n  GROUP BY sid\n) latest ON s.sid = latest.sid AND s.ts = latest.max_ts\nWHERE s.total < 4",
+          "rawSql": "SELECT COUNT(DISTINCT s.sid) AS \"Low Sats\",\n  CASE\n    WHEN '$status_filter' = 'low_sats' THEN 'not_low_sats'\n    WHEN '$status_filter' = 'not_low_sats' THEN 'all'\n    ELSE 'low_sats'\n  END AS \"next_filter\"\nFROM block_satellite_tracking s\nINNER JOIN (\n  SELECT sid, MAX(ts) AS max_ts\n  FROM block_satellite_tracking\n  WHERE ts > NOW() - INTERVAL '1 hour'\n  GROUP BY sid\n) latest ON s.sid = latest.sid AND s.ts = latest.max_ts\nWHERE s.total < 4",
           "refId": "A"
         }
       ],
       "title": "Low Sats",
       "type": "stat",
-      "links": [
-        {
-          "title": "Filter: Low Satellites",
-          "url": "/d/gps-health-voltage?var-status_filter=low_sats&${area:queryparam}&${station:queryparam}&${receiver:queryparam}&${antenna:queryparam}&${owner:queryparam}&${__url_time_range}",
-          "targetBlank": false
-        }
-      ]
+      "links": []
     },
     {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "gps_health"
-      },
-      "description": "Click station to view details. Click \"Full Map\" link above for larger view.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "#888888",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 1
-              },
-              {
-                "color": "yellow",
-                "value": 2
-              },
-              {
-                "color": "green",
-                "value": 3
-              }
-            ]
-          },
-          "links": [
-            {
-              "title": "View ${__data.fields.sid} details",
-              "url": "/d/gps-station-detail/gps-station-detail?var-station=${__data.fields.sid}&var-area=$area&var-owner=$owner&var-receiver=$receiver&var-antenna=$antenna&${__url_time_range}"
-            }
-          ]
-        },
-        "overrides": []
-      },
+      "id": 31,
       "gridPos": {
         "h": 16,
         "w": 8,
         "x": 16,
         "y": 6
       },
-      "id": 31,
-      "options": {
-        "basemap": {
-          "config": {},
-          "name": "Layer 0",
-          "type": "osm-standard"
-        },
-        "controls": {
-          "mouseWheelZoom": true,
-          "showAttribution": false,
-          "showDebug": false,
-          "showMeasure": false,
-          "showScale": false,
-          "showZoom": true
-        },
-        "layers": [
-          {
-            "config": {
-              "showLegend": false,
-              "style": {
-                "color": {
-                  "field": "status_code",
-                  "fixed": "dark-green"
-                },
-                "opacity": 0.9,
-                "rotation": {
-                  "fixed": 0,
-                  "max": 360,
-                  "min": -360,
-                  "mode": "mod"
-                },
-                "size": {
-                  "fixed": 10,
-                  "max": 12,
-                  "min": 4
-                },
-                "symbol": {
-                  "fixed": "img/icons/marker/circle.svg",
-                  "mode": "fixed"
-                },
-                "textConfig": {
-                  "fontSize": 10,
-                  "offsetX": 0,
-                  "offsetY": 0,
-                  "textAlign": "center",
-                  "textBaseline": "middle"
-                }
-              }
-            },
-            "location": {
-              "latitude": "latitude",
-              "longitude": "longitude",
-              "mode": "coords"
-            },
-            "name": "Health (outer)",
-            "tooltip": true,
-            "type": "markers"
-          },
-          {
-            "config": {
-              "showLegend": false,
-              "style": {
-                "color": {
-                  "field": "data_status_code",
-                  "fixed": "dark-green"
-                },
-                "opacity": 0.9,
-                "rotation": {
-                  "fixed": 0,
-                  "max": 360,
-                  "min": -360,
-                  "mode": "mod"
-                },
-                "size": {
-                  "fixed": 5,
-                  "max": 7,
-                  "min": 2
-                },
-                "symbol": {
-                  "fixed": "img/icons/marker/circle.svg",
-                  "mode": "fixed"
-                },
-                "textConfig": {
-                  "fontSize": 10,
-                  "offsetX": 0,
-                  "offsetY": 0,
-                  "textAlign": "center",
-                  "textBaseline": "middle"
-                }
-              }
-            },
-            "location": {
-              "latitude": "latitude",
-              "longitude": "longitude",
-              "mode": "coords"
-            },
-            "name": "Data (inner)",
-            "tooltip": true,
-            "type": "markers"
-          }
-        ],
-        "tooltip": {
-          "mode": "none"
-        },
-        "view": {
-          "id": "coords",
-          "lat": 65.1,
-          "lon": -18.8,
-          "zoom": 6.5,
-          "allLayers": true
-        }
-      },
-      "pluginVersion": "10.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "gps_health"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT\n  d.station_id AS sid,\n  d.latitude,\n  d.longitude,\n  d.overall_status,\n  CASE\n    WHEN d.station_status IS NOT NULL THEN 0\n    WHEN f.disk_status = 2 THEN 1\n    WHEN d.overall_status = 'healthy' AND COALESCE(f.download_status, 0) >= 2 THEN 2\n    WHEN d.overall_status = 'healthy' THEN 3\n    WHEN d.overall_status = 'warning' THEN 2\n    WHEN d.overall_status = 'critical' THEN 1\n    ELSE 0\n  END AS status_code,\n  d.receiver_type,\n  d.connection_status,\n  CASE\n    WHEN d.station_status IS NOT NULL THEN d.station_status\n    WHEN d.health_check = 'passive' THEN 'passive'\n    WHEN d.connection_state IS NULL THEN 'unknown'\n    WHEN d.connection_state = 'online' THEN 'online ' || format_duration(d.state_duration)\n    WHEN d.connection_state = 'degraded' THEN 'degraded ' || format_duration(d.state_duration)\n    ELSE 'offline ' || format_duration(d.state_duration)\n  END AS conn,\n  d.voltage,\n  d.temperature,\n  d.satellites_tracked,\n  d.disk_usage_pct,\n  d.ntrip_status,\n  d.seconds_since_update,\n  d.status_details,\n  CASE\n    WHEN f.status_24h = 0 THEN 3\n    WHEN f.status_24h = 1 THEN 2\n    WHEN f.status_24h = 2 THEN 0\n    ELSE 0\n  END AS data_status_code\nFROM station_dashboard_data d\nLEFT JOIN station_data_flow_status f ON f.sid = d.station_id\nLEFT JOIN stations s ON s.sid = d.station_id\nWHERE d.latitude IS NOT NULL\n  AND d.longitude IS NOT NULL\n  AND ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = d.station_id AND sam.area_id = '$area'))\n  AND (${station:singlequote} = 'all' OR d.station_id = ${station:singlequote})\n  AND (${receiver:singlequote} = 'all' OR (${receiver:singlequote} = 'NONE' AND d.receiver_type IS NULL) OR d.receiver_type = ${receiver:singlequote})\n  AND (${antenna:singlequote} = 'all' OR (${antenna:singlequote} = 'NONE' AND d.antenna_type IS NULL) OR d.antenna_type = ${antenna:singlequote})\n  AND (${owner:singlequote} = 'all' OR s.station_owner = ${owner:singlequote})\n  AND ('$status_filter' = 'all'\n    OR ('$status_filter' = 'online' AND d.is_online = true AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'offline' AND d.connection_state = 'offline' AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'degraded' AND d.connection_state = 'degraded' AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'critical' AND d.overall_status = 'critical' AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'warning' AND d.overall_status = 'warning' AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'ping_failed' AND d.status_details LIKE '%Ping%' AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'ftp_down' AND d.ftp_open = false AND d.is_online = true AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'ctrl_refused' AND d.control_open = false AND d.is_online = true)\n    OR ('$status_filter' = 'disk_warning' AND d.status_details LIKE '%Disk%' AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'discontinued' AND d.station_status = 'discontinued')\n    OR ('$status_filter' = 'passive' AND d.health_check = 'passive')\n    OR ('$status_filter' = 'inactive' AND d.station_status = 'inactive')\n    OR ('$status_filter' = 'suppressed' AND d.station_status = 'suppressed')\n    OR ('$status_filter' = '24hr_rinex_missing' AND d.is_online = true AND d.station_status IS NULL AND d.health_check IS NULL\n        AND f.status_24h = 1)\n    OR ('$status_filter' = '1hr_rinex_missing' AND f.status_1hz = 2 AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = '24hr_raw_missing' AND d.is_online = true AND d.station_status IS NULL AND d.health_check IS NULL\n        AND f.status_24h = 2)\n    OR ('$status_filter' = 'voltage_warning' AND d.voltage IS NOT NULL AND (d.status_details LIKE '%Voltage%' OR (d.is_online = false AND ((COALESCE(s.power_type, 'battery') = 'battery' AND (d.voltage < 11.8 OR d.voltage > 15.0)) OR (s.power_type = 'dcdc' AND (d.voltage < 12.0 OR d.voltage > 16.5)) OR (s.power_type = 'dcdc24' AND (d.voltage < 20.0 OR d.voltage > 28.0)) OR (s.power_type = 'mains' AND (d.voltage < 15.0 OR d.voltage > 25.0))))))\n    OR ('$status_filter' = 'stall' AND d.station_id IN (SELECT sid FROM download_log WHERE outcome = 'stall_timeout' AND ts BETWEEN $__timeFrom() AND $__timeTo()))\n    OR ('$status_filter' = 'low_sats' AND d.satellites_tracked IS NOT NULL AND d.satellites_tracked < 4 AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'download_warning' AND f.download_status >= 1 AND d.station_status IS NULL AND d.health_check IS NULL)\n    OR ('$status_filter' = 'disk_error' AND f.disk_status = 2 AND d.station_status IS NULL AND d.health_check IS NULL)\n  )\n  AND ('$status_filter' IN ('discontinued', 'inactive', 'suppressed') OR d.station_status IS NULL)\nORDER BY d.station_id",
-          "refId": "A"
-        }
-      ],
-      "title": "Station Map - $area",
-      "type": "geomap"
+      "type": "geomap",
+      "title": "Station Map",
+      "libraryPanel": {
+        "uid": "cflea3a8nbwg0b",
+        "name": "GPS Station Map"
+      }
     },
     {
       "datasource": {
@@ -3072,9 +2919,54 @@
             "selected": false,
             "text": "Disk Error",
             "value": "disk_error"
+          },
+          {
+            "selected": false,
+            "text": "Excl. Online",
+            "value": "not_online"
+          },
+          {
+            "selected": false,
+            "text": "Excl. Offline",
+            "value": "not_offline"
+          },
+          {
+            "selected": false,
+            "text": "Excl. Critical",
+            "value": "not_critical"
+          },
+          {
+            "selected": false,
+            "text": "Excl. Warning",
+            "value": "not_warning"
+          },
+          {
+            "selected": false,
+            "text": "Excl. Ctrl Down",
+            "value": "not_ctrl_refused"
+          },
+          {
+            "selected": false,
+            "text": "Excl. Inactive",
+            "value": "not_inactive"
+          },
+          {
+            "selected": false,
+            "text": "Excl. 24h RNX Missing",
+            "value": "not_24hr_rinex_missing"
+          },
+          {
+            "selected": false,
+            "text": "Excl. Volt Warn",
+            "value": "not_voltage_warning"
+          },
+          {
+            "selected": false,
+            "text": "All incl. inactive",
+            "value": "all_special"
           }
         ],
-        "query": "all,online,offline,degraded,critical,warning,ping_failed,ftp_down,ctrl_refused,disk_warning,discontinued,passive,inactive,24hr_raw_missing,24hr_rinex_missing,1hr_rinex_missing,voltage_warning,stall,low_sats,download_warning,disk_error",
+        "query": "all,online,offline,degraded,24hr_raw_missing,critical,warning,ping_failed,ftp_down,ctrl_refused,disk_warning,discontinued,passive,inactive,suppressed,24hr_rinex_missing,1hr_rinex_missing,voltage_warning,stall,low_sats,download_warning,disk_error,not_online,not_offline,not_critical,not_warning,not_ctrl_refused,not_inactive,not_24hr_rinex_missing,not_voltage_warning,all_special",
         "skipUrlSync": false,
         "type": "custom"
       }
