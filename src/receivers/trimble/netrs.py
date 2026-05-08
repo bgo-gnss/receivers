@@ -425,14 +425,19 @@ class NetRS(BaseReceiver):
                 )
 
             # Log validation results (matching NetR9 pattern)
+            archive_dir = (
+                Path(next(iter(archive_files_dict.values()))).parent
+                if archive_files_dict
+                else None
+            )
             self.logger.info(f"Validated {validated_files} existing files")
             if files_found_in_archive > 0:
                 self.logger.info(
-                    f"Found {files_found_in_archive} files already archived, skipping re-download"
+                    f"Found {files_found_in_archive} files already archived in {archive_dir}, skipping re-download"
                 )
 
             if not missing_files_dict:
-                self.logger.info("Archive is up to date")
+                self.logger.info(f"Archive is up to date ({archive_dir})")
                 self._track_validated_files(files_dict, session)
                 return {
                     "station_id": self.station_id,
@@ -523,7 +528,9 @@ class NetRS(BaseReceiver):
                         session_type=session,
                     )
                 else:
-                    self.logger.info("Archive is up to date - no files to download")
+                    self.logger.info(
+                        f"Archive is up to date ({archive_dir}) - no files to download"
+                    )
             else:
                 self.logger.info("Sync disabled - skipping actual download")
 

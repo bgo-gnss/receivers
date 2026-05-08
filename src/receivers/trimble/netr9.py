@@ -394,8 +394,13 @@ class NetR9(BaseReceiver):
                     f"Archived {files_archived_from_tmp} files from tmp directory"
                 )
 
+            archive_dir = (
+                Path(next(iter(archive_files_dict.values()))).parent
+                if archive_files_dict
+                else None
+            )
             if not missing_files_dict:
-                self.logger.info("Archive is up to date")
+                self.logger.info(f"Archive is up to date ({archive_dir})")
                 # Track validated files as downloaded so dashboard reflects current state
                 self._track_validated_files(files_dict, session)
                 return {
@@ -488,7 +493,9 @@ class NetR9(BaseReceiver):
                         session_type=session,
                     )
                 else:
-                    self.logger.info("Archive is up to date - no files to download")
+                    self.logger.info(
+                        f"Archive is up to date ({archive_dir}) - no files to download"
+                    )
             else:
                 self.logger.info("Sync disabled - skipping actual download")
 

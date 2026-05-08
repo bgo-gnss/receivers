@@ -604,6 +604,25 @@ bgo is in the gpsops group — can read/write gpsops-owned dirs without owning t
 Any provisioning changes made on the laptop must be committed to gps-config-data or they will be
 lost on the next `install.sh` run.
 
+## Local Development vs Production Grafana
+
+The local Grafana container (`gps-grafana-dev` on `localhost:3001`) reads the laptop's
+**local** `gps_health` Postgres. That DB only contains data the laptop has produced —
+manually triggered `receivers download …` runs, occasional `receivers scheduler test …`,
+ad-hoc backfills. It does **not** mirror rek-d01.
+
+So dashboard counts on the laptop are expected to look alarming. "Missing Raw 23 / Missing
+RINEX 62" means "23 stations the laptop hasn't recently downloaded raw data for", not
+"23 stations are broken in production". For the real picture, check rek-d01:
+- `ssh gpsops@rek-d01.vedur.is 'receivers health <SID>'` (CLI)
+- `https://grafana.vedur.is/` (production dashboards, backed by pgdev)
+
+**Laptop config is independent of `gps-config-data`.** The `~/.config/gpsconfig/`
+files on the laptop come from the user's dotfiles repo (with credentials encrypted
+locally), not from the IMO server config repo. `data_prepath` in particular should
+point somewhere reboot-persistent (e.g. `~/tmp/gpsdata/`) — `/tmp/...` is tmpfs.
+See "Configuration → Source of truth" above for the production sync flow.
+
 ## Troubleshooting
 
 ### Common Issues
