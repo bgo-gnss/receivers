@@ -44,10 +44,14 @@ _BATCH_STATS: dict = {}  # {session_type: {"ok": [station_id, ...], "fail": {sta
 _BATCH_LOCK = _threading.Lock()
 
 
-def _record_batch_result(session_type: str, station_id: str, outcome: str, error: str = "") -> None:
+def _record_batch_result(
+    session_type: str, station_id: str, outcome: str, error: str = ""
+) -> None:
     """Accumulate per-job result for the batch summary (non-blocking, fire-and-forget)."""
     with _BATCH_LOCK:
-        bucket = _BATCH_STATS.setdefault(session_type, {"ok": [], "fail": {}, "expected": []})
+        bucket = _BATCH_STATS.setdefault(
+            session_type, {"ok": [], "fail": {}, "expected": []}
+        )
         if outcome == "ok":
             bucket["ok"].append(station_id)
         elif outcome == "expected":
@@ -73,7 +77,9 @@ def _categorize_failure(error_msg: str) -> str:
         return "unreachable"
     if any(p in msg for p in ("connection refused", "errno 111")):
         return "conn_refused"
-    if any(p in msg for p in ("timed out", "timeout", "stall", "watchdog", "no progress")):
+    if any(
+        p in msg for p in ("timed out", "timeout", "stall", "watchdog", "no progress")
+    ):
         return "timeout"
     if any(p in msg for p in ("not found", "404", "550")):
         return "file_not_ready"
@@ -114,7 +120,11 @@ def _log_batch_summary_job(session_type: str) -> None:
     _log.info(
         f"📋 {session_type} batch: {len(ok)} ✅  {len(fail)} ❌  ({total} total)"
         + (f" — {cat_str} — {fail_str}" if fail else "")
-        + (f" — ⏭️  {len(expected)} expected: {', '.join(sorted(expected))}" if expected else "")
+        + (
+            f" — ⏭️  {len(expected)} expected: {', '.join(sorted(expected))}"
+            if expected
+            else ""
+        )
     )
 
 
@@ -180,8 +190,7 @@ def _retry_failed_daily_job(session_type: str) -> None:
 
         # Build per-station context: sid → (original_category)
         station_cats: Dict[str, str] = {
-            sid: _categorize_failure(str(msg or outcome))
-            for sid, outcome, msg in rows
+            sid: _categorize_failure(str(msg or outcome)) for sid, outcome, msg in rows
         }
         station_ids = sorted(station_cats.keys())
 
@@ -241,7 +250,9 @@ def _retry_failed_daily_job(session_type: str) -> None:
                 return sid, False
 
         workers = min(_RETRY_MAX_WORKERS, len(station_ids))
-        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="sc_retry") as pool:
+        with ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix="sc_retry"
+        ) as pool:
             futures = {pool.submit(_retry_one, sid): sid for sid in station_ids}
             for future in as_completed(futures):
                 sid, success = future.result()
@@ -263,7 +274,9 @@ def _retry_failed_daily_job(session_type: str) -> None:
     except ImportError:
         _log.debug("psycopg2 not available — second-chance retry disabled")
     except Exception as exc:
-        _log.error(f"Second-chance {session_type} job error: {type(exc).__name__}: {exc}")
+        _log.error(
+            f"Second-chance {session_type} job error: {type(exc).__name__}: {exc}"
+        )
 
 
 def _get_pipeline_store() -> Optional["PipelineStateStore"]:
@@ -325,7 +338,7 @@ def _is_retryable_download(result: Dict[str, Any]) -> bool:
     # Hard permanent errors — no point retrying
     permanent_patterns = [
         "401",
-        "530",       # FTP auth failed
+        "530",  # FTP auth failed
         "configuration",
         "invalid ip",
     ]
@@ -403,7 +416,9 @@ def _download_station_data_job(
             )
             from ..utils.stall_timeout import record_download
 
-            record_download(station_id, session_type, outcome="skipped", message=load_msg)
+            record_download(
+                station_id, session_type, outcome="skipped", message=load_msg
+            )
             return
 
     # Health gate: skip stations with known hardware issues (no satellites, broken disk).
@@ -418,7 +433,9 @@ def _download_station_data_job(
             logger.info(
                 f"⏭️  {station_id} ({session_type}) [{health_skip}] — expected, not retried"
             )
-            _rd_health(station_id, session_type, outcome="expected", message=health_skip)
+            _rd_health(
+                station_id, session_type, outcome="expected", message=health_skip
+            )
             _record_batch_result(session_type, station_id, "expected", health_skip)
             return
     except Exception:
@@ -628,7 +645,9 @@ def _download_station_data_job(
             )
             from ..utils.stall_timeout import record_download
 
-            record_download(station_id, session_type, outcome=status, message=str(error_msg))
+            record_download(
+                station_id, session_type, outcome=status, message=str(error_msg)
+            )
         elif status == "up_to_date":
             # All files already in archive - verified on disk
             logger.info(
@@ -656,7 +675,9 @@ def _download_station_data_job(
             session_type,
             station_id,
             "ok" if status in success_statuses else "fail",
-            result.get("error_message", status) if status not in success_statuses else "",
+            result.get("error_message", status)
+            if status not in success_statuses
+            else "",
         )
 
         # Run RINEX conversion if enabled and download was successful
@@ -1870,7 +1891,11 @@ class BulkDownloadScheduler:
             #   00:49        second-chance done (~8 min for 42 stations × 8 workers)
             #   01:01        batch summary fires (window + 50 min), captures all results
             tkw = base_trigger.trigger_kwargs
-            if base_trigger.trigger_type == "cron" and "hour" in tkw and "minute" in tkw:
+            if (
+                base_trigger.trigger_type == "cron"
+                and "hour" in tkw
+                and "minute" in tkw
+            ):
                 sched_hour = int(str(tkw["hour"]).split(",")[0])
                 sched_minute = int(tkw["minute"])
 

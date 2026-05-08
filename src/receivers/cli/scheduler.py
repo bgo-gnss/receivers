@@ -452,7 +452,9 @@ def cmd_scheduler_clean_stale_tmp(args) -> int:
 
         if dry_run:
             tmp_root = Path(ReceiversConfig().get_tmp_dir())
-            print(f"[DRY RUN] Would scan {tmp_root}/*/{session}/ for files older than {hours}h")
+            print(
+                f"[DRY RUN] Would scan {tmp_root}/*/{session}/ for files older than {hours}h"
+            )
             count = 0
             affected = []
             now_ts = __import__("time").time()
@@ -467,7 +469,9 @@ def cmd_scheduler_clean_stale_tmp(args) -> int:
                         continue
                     age_h = (now_ts - f.stat().st_mtime) / 3600
                     if age_h >= hours:
-                        print(f"  Would remove: {station_dir.name}/{session}/{f.name} ({age_h:.1f}h old)")
+                        print(
+                            f"  Would remove: {station_dir.name}/{session}/{f.name} ({age_h:.1f}h old)"
+                        )
                         count += 1
                         if station_dir.name not in affected:
                             affected.append(station_dir.name)

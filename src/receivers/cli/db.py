@@ -459,7 +459,9 @@ def cmd_db_list_suppressed(args: argparse.Namespace) -> int:
             ts_str = ts.strftime("%Y-%m-%d %H:%M") if ts else ""
             print(f"{sid:<6}  {name_str:<30}  {rtype_str:<12}  {ts_str}")
 
-        print(f"\n{len(rows)} suppressed station(s). Use 'receivers db drop-station SID' to remove permanently.")
+        print(
+            f"\n{len(rows)} suppressed station(s). Use 'receivers db drop-station SID' to remove permanently."
+        )
         return 0
 
     except Exception as e:
@@ -546,7 +548,9 @@ def create_db_parser(subparsers) -> None:
         "list-suppressed",
         help="List stations suppressed because they were removed from stations.cfg",
     )
-    list_sup_parser.add_argument("--host", help="PostgreSQL host (default: from config)")
+    list_sup_parser.add_argument(
+        "--host", help="PostgreSQL host (default: from config)"
+    )
     list_sup_parser.set_defaults(func=cmd_db_list_suppressed)
 
     # drop-station

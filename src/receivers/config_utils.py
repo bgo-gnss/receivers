@@ -53,9 +53,7 @@ def _learned_ftp_mode_override(station_id: str) -> Optional[str]:
         return None
 
     try:
-        records = _dlog.list_open(
-            station_ids=[station_id], cfg_keys=["ftp_mode"]
-        )
+        records = _dlog.list_open(station_ids=[station_id], cfg_keys=["ftp_mode"])
     except Exception:
         return None
 

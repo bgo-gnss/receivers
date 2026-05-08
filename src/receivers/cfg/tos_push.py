@@ -56,7 +56,9 @@ def resolve_entity_id(
 
     history = writer.get_entity_history(station_entity_id)
     if not history:
-        logger.warning("resolve_entity_id: no history for station %d", station_entity_id)
+        logger.warning(
+            "resolve_entity_id: no history for station %d", station_entity_id
+        )
         return None
 
     for conn in history.get("children_connections", []):

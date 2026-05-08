@@ -356,9 +356,19 @@ def _print_diff_table(
     print(f"   {'-' * 24} {'-' * 22} {'-' * 22} {'-' * 22}")
     for d in diffs:
         # Always show format_mismatch, cfg_placeholder, and tos_fillable rows
-        if not show_ok and d.verdict == Verdict.OK and not d.format_mismatch and not _is_tos_fillable(d):
+        if (
+            not show_ok
+            and d.verdict == Verdict.OK
+            and not d.format_mismatch
+            and not _is_tos_fillable(d)
+        ):
             continue
-        if not show_ok and d.verdict == Verdict.NO_DATA and not d.cfg_placeholder and not _is_tos_fillable(d):
+        if (
+            not show_ok
+            and d.verdict == Verdict.NO_DATA
+            and not d.cfg_placeholder
+            and not _is_tos_fillable(d)
+        ):
             continue
         if d.cfg_placeholder:
             glyph = "~"
@@ -444,7 +454,11 @@ def _interactive_prompt(
     TOS discrepancy is a data-entry error (fix with T) or an unlogged
     instrument change (requires manual TOS period management).
     """
-    is_primary = receiver_primary_active and diff.spec.receiver_primary and diff.receiver_value is not None
+    is_primary = (
+        receiver_primary_active
+        and diff.spec.receiver_primary
+        and diff.receiver_value is not None
+    )
 
     options: List[str] = []
     if diff.suggestion is not None:
@@ -493,7 +507,9 @@ def _interactive_prompt(
         # lowercase fallbacks that share the same letter (r/R, t/T, c/C).
         if raw == "R":  # uppercase R = set cfg to receiver value AND push to TOS
             if not diff.spec.tos_writable:
-                print(f"     (field {diff.cfg_key!r} is not TOS-writable — use r for cfg only)")
+                print(
+                    f"     (field {diff.cfg_key!r} is not TOS-writable — use r for cfg only)"
+                )
                 continue
             if diff.receiver_value is None:
                 print("     (no receiver value available)")
@@ -536,7 +552,9 @@ def _interactive_prompt(
                     from ..cfg import tos_adapter as _ta
 
                     current = (
-                        _ta.current_component_value(tos_data, comp.entity, comp.current_value_key)
+                        _ta.current_component_value(
+                            tos_data, comp.entity, comp.current_value_key
+                        )
                         if tos_data is not None
                         else None
                     )
@@ -550,7 +568,11 @@ def _interactive_prompt(
                         break
                     return (
                         "push_component",
-                        {"entity": comp.entity, "attribute_code": comp.attribute_code, "value": new_val},
+                        {
+                            "entity": comp.entity,
+                            "attribute_code": comp.attribute_code,
+                            "value": new_val,
+                        },
                     )
         if choice in ("e", "edit"):
             try:
@@ -749,18 +771,29 @@ def _reconcile_one(
     # tos_fillable: cfg has a value but TOS has none — offered after the main loop.
     # Computed here so the early-return guard can include them.
     tos_fillable_list = [d for d in diffs if _is_tos_fillable(d)] if not silent else []
-    if not actionable and not fmt_mismatches and not cfg_placeholders and not tos_fillable_list:
+    if (
+        not actionable
+        and not fmt_mismatches
+        and not cfg_placeholders
+        and not tos_fillable_list
+    ):
         return diffs, 0, 0
 
     if args.dry_run:
         if not silent and actionable:
-            print(f"\n   {len(actionable)} field(s) need attention (dry-run, no writes)")
+            print(
+                f"\n   {len(actionable)} field(s) need attention (dry-run, no writes)"
+            )
         if not silent and cfg_placeholders:
             keys = ", ".join(d.cfg_key for d in cfg_placeholders)
-            print(f"\n   {len(cfg_placeholders)} placeholder value(s) to remove: {keys} (dry-run)")
+            print(
+                f"\n   {len(cfg_placeholders)} placeholder value(s) to remove: {keys} (dry-run)"
+            )
         if not silent and tos_fillable_list:
             keys = ", ".join(d.cfg_key for d in tos_fillable_list)
-            print(f"\n   {len(tos_fillable_list)} field(s) with cfg value but TOS empty: {keys} (use C to populate)")
+            print(
+                f"\n   {len(tos_fillable_list)} field(s) with cfg value but TOS empty: {keys} (use C to populate)"
+            )
         # canonicalize dry-run section handled below; fall through
         if not canonicalize_on:
             return diffs, 0, len(actionable)
@@ -776,7 +809,8 @@ def _reconcile_one(
     if push_to_tos_on and "tos" in sources and tos_data is not None:
         if not silent:
             writable = [
-                d for d in actionable
+                d
+                for d in actionable
                 if d.spec.tos_writable and d.receiver_value is not None
             ]
             if writable:
@@ -813,9 +847,7 @@ def _reconcile_one(
                 header += "  [receiver-primary]"
             print(header)
             cfg_disp = d.cfg_raw if d.cfg_raw is not None else d.cfg_value
-            print(
-                f"     cfg:      {cfg_disp if cfg_disp is not None else '[missing]'}"
-            )
+            print(f"     cfg:      {cfg_disp if cfg_disp is not None else '[missing]'}")
             if "receiver" in sources:
                 rx = d.receiver_value if d.receiver_value is not None else "[N/A]"
                 print(f"     receiver: {rx}")
@@ -837,25 +869,35 @@ def _reconcile_one(
             if is_primary and d.suggestion_source in ("receiver", "agree"):
                 action, new_value = "set_and_push_tos", d.suggestion
                 if not silent:
-                    print(f"     → auto-fill from {d.suggestion_source}: {d.suggestion!r} (cfg + TOS)")
+                    print(
+                        f"     → auto-fill from {d.suggestion_source}: {d.suggestion!r} (cfg + TOS)"
+                    )
             else:
                 action, new_value = "set", d.suggestion
                 if not silent:
-                    print(f"     → auto-fill from {d.suggestion_source}: {d.suggestion!r}")
+                    print(
+                        f"     → auto-fill from {d.suggestion_source}: {d.suggestion!r}"
+                    )
         elif args.yes and d.suggestion is not None:
             if is_primary and d.suggestion_source in ("receiver", "agree"):
                 action, new_value = "set_and_push_tos", d.suggestion
                 if not silent:
-                    print(f"     → accept suggestion ({d.suggestion_source}): {d.suggestion!r} (cfg + TOS)")
+                    print(
+                        f"     → accept suggestion ({d.suggestion_source}): {d.suggestion!r} (cfg + TOS)"
+                    )
             else:
                 action, new_value = "set", d.suggestion
                 if not silent:
-                    print(f"     → accept suggestion ({d.suggestion_source}): {d.suggestion!r}")
+                    print(
+                        f"     → accept suggestion ({d.suggestion_source}): {d.suggestion!r}"
+                    )
         elif args.yes and is_primary and d.receiver_value is not None:
             # --yes with receiver_primary but no agreed suggestion: still take receiver
             action, new_value = "set_and_push_tos", d.receiver_value
             if not silent:
-                print(f"     → accept receiver (primary): {d.receiver_value!r} (cfg + TOS)")
+                print(
+                    f"     → accept receiver (primary): {d.receiver_value!r} (cfg + TOS)"
+                )
         elif silent:
             # JSON mode without an applicable auto-rule: cannot prompt; skip.
             action, new_value = "skip", None
@@ -900,7 +942,9 @@ def _reconcile_one(
             value = component_info["value"]
             if not silent:
                 mode = "[DRY-RUN] " if getattr(args, "dry_run", True) else ""
-                print(f"     {mode}→ push component to TOS: {entity}.{attribute_code} = {value!r}")
+                print(
+                    f"     {mode}→ push component to TOS: {entity}.{attribute_code} = {value!r}"
+                )
             if tos_data is None:
                 if not silent:
                     print("     ❌ no TOS data — cannot push component")
@@ -921,13 +965,23 @@ def _reconcile_one(
                 )
                 if not silent:
                     if hasattr(result, "method"):
-                        print(f"     ✅ [dry-run] would {result.method} {result.endpoint}")
+                        print(
+                            f"     ✅ [dry-run] would {result.method} {result.endpoint}"
+                        )
                     else:
-                        print(f"     ✅ TOS updated: {entity}.{attribute_code} = {value!r}")
+                        print(
+                            f"     ✅ TOS updated: {entity}.{attribute_code} = {value!r}"
+                        )
             except Exception as exc:  # noqa: BLE001
                 if not silent:
                     print(f"     ❌ component push failed: {exc}")
-                logger.warning("[%s] component push failed for %s.%s: %s", station_id, entity, attribute_code, exc)
+                logger.warning(
+                    "[%s] component push failed for %s.%s: %s",
+                    station_id,
+                    entity,
+                    attribute_code,
+                    exc,
+                )
             continue
         if action == "set_and_push_tos" and new_value is not None:
             # Apply cfg vocabulary mapping first (same as "set")
@@ -957,7 +1011,9 @@ def _reconcile_one(
                     if not silent:
                         print(f"     ✅ wrote {d.cfg_key} = {new_value!r} to cfg")
                 elif not silent:
-                    print(f"     ⏭  cfg unchanged ({d.cfg_key} already = {new_value!r})")
+                    print(
+                        f"     ⏭  cfg unchanged ({d.cfg_key} already = {new_value!r})"
+                    )
             except SourceUnavailableError as exc:
                 if not silent:
                     print(f"     ❌ could not write cfg: {exc}")
@@ -1054,9 +1110,7 @@ def _reconcile_one(
                         print(f"     ~ {d.cfg_key}: remove {d.cfg_raw!r} (dry-run)")
                 else:
                     try:
-                        changed = remove_diff(
-                            station_id, d, resolved_by="canonicalize"
-                        )
+                        changed = remove_diff(station_id, d, resolved_by="canonicalize")
                         if changed:
                             n_written += 1
                             if not silent:
@@ -1073,7 +1127,9 @@ def _reconcile_one(
             # Interactive: prompt for each placeholder
             print(f"\n   {len(cfg_placeholders)} placeholder value(s) in cfg:")
             for d in cfg_placeholders:
-                print(f"\n     ~ {d.cfg_key} = {d.cfg_raw!r}  (placeholder — no real value)")
+                print(
+                    f"\n     ~ {d.cfg_key} = {d.cfg_raw!r}  (placeholder — no real value)"
+                )
                 print("       [d]elete · [k]eep · [q]uit")
                 try:
                     choice = input("       > ").strip().lower()
@@ -1099,7 +1155,9 @@ def _reconcile_one(
     # may want to fill. Show them separately so `C` is available without cluttering
     # the main diff flow.
     if not silent and not args.dry_run and tos_fillable_list:
-        print(f"\n   {len(tos_fillable_list)} field(s) where cfg has a value but TOS has none:")
+        print(
+            f"\n   {len(tos_fillable_list)} field(s) where cfg has a value but TOS has none:"
+        )
         for d in tos_fillable_list:
             print(f"\n     ↑ {d.label} ({d.cfg_key})")
             print(f"       cfg: {d.cfg_value!r}")
@@ -1152,6 +1210,7 @@ def cmd_cfg_reconcile(args) -> int:
     if open_mode:
         try:
             from ..cfg import discrepancy_log as _dlog
+
             station_ids = _dlog.open_station_ids()
         except Exception as exc:  # noqa: BLE001
             _progress(f"❌ could not read discrepancy log: {exc}", json_mode=args.json)
@@ -1212,6 +1271,7 @@ def cmd_cfg_reconcile(args) -> int:
         # Auto-derive fields that have open conflicts — no point probing unaffected fields.
         try:
             from ..cfg import discrepancy_log as _dlog
+
             fields = _dlog.open_field_keys(station_ids=station_ids) or None
         except Exception:  # noqa: BLE001
             fields = None  # fall back to all fields
@@ -1224,8 +1284,11 @@ def cmd_cfg_reconcile(args) -> int:
     # Skip discontinued / inactive stations — probing them is pointless and,
     # in some cases, harmful (e.g. BLAL shares an IP with SODU).
     _SKIP_STATUSES = frozenset({"discontinued", "inactive"})
-    skipped_status = {sid: cfg.get("station_status") for sid, cfg in configs.items()
-                      if cfg.get("station_status") in _SKIP_STATUSES}
+    skipped_status = {
+        sid: cfg.get("station_status")
+        for sid, cfg in configs.items()
+        if cfg.get("station_status") in _SKIP_STATUSES
+    }
     skipped = list(skipped_status)
     for sid in skipped:
         del configs[sid]
@@ -1237,6 +1300,7 @@ def cmd_cfg_reconcile(args) -> int:
         # Auto-close any stale log entries so they don't resurface on the next --open run.
         try:
             from ..cfg import discrepancy_log as _dlog
+
             open_rows = _dlog.list_open(station_ids=skipped)
             for row in open_rows:
                 _dlog.record_resolution(
@@ -1252,7 +1316,9 @@ def cmd_cfg_reconcile(args) -> int:
                     json_mode=args.json,
                 )
         except Exception as exc:  # noqa: BLE001
-            _progress(f"⚠️  could not close stale log entries: {exc}", json_mode=args.json)
+            _progress(
+                f"⚠️  could not close stale log entries: {exc}", json_mode=args.json
+            )
     if not configs:
         _progress("✅ no active stations with open discrepancies", json_mode=args.json)
         return 0
@@ -1277,7 +1343,9 @@ def cmd_cfg_reconcile(args) -> int:
     parallel = workers > 1 and len(configs) > 1
 
     # --- Probe phase (parallel-safe I/O) ------------------------------------
-    probe_results: Dict[str, Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]] = {}
+    probe_results: Dict[
+        str, Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]
+    ] = {}
 
     if parallel:
         _progress(
@@ -1627,7 +1695,11 @@ def cmd_cfg_extract(args) -> int:
     # Display extracted fields
     print(f"\nFields extracted for [{sid}]:")
     for k, v in fields.items():
-        note = "  ← bench/probe IP — update to deployment IP before use" if k == "router_ip" else ""
+        note = (
+            "  ← bench/probe IP — update to deployment IP before use"
+            if k == "router_ip"
+            else ""
+        )
         print(f"  {k} = {v}{note}")
     print(f"\nFill in manually: {', '.join(_EXTRACT_TODO_FIELDS)}")
 
@@ -1651,7 +1723,9 @@ def cmd_cfg_extract(args) -> int:
         return 1
 
     print(f"\n✅ [{sid}] added to {cfg_path}")
-    print("   Next: fill in manual fields, then run 'receivers seed stations' to sync to DB")
+    print(
+        "   Next: fill in manual fields, then run 'receivers seed stations' to sync to DB"
+    )
     return 0
 
 
@@ -1919,9 +1993,7 @@ Examples:
         ],
         help="Restrict to specific verdicts (default: all open)",
     )
-    lst.add_argument(
-        "--json", action="store_true", help="Emit JSON instead of a table"
-    )
+    lst.add_argument("--json", action="store_true", help="Emit JSON instead of a table")
     lst.set_defaults(func=cmd_cfg_list)
 
     # ----- cfg history ----------------------------------------------------

@@ -538,7 +538,9 @@ class NetR9HTTPDownloader:
                         self.logger.error(
                             f"❌ Download validation failed for {filename}: {validation['error']}"
                         )
-                        _err_msg = f"Validation failed: {validation.get('error', 'unknown')}"
+                        _err_msg = (
+                            f"Validation failed: {validation.get('error', 'unknown')}"
+                        )
                         self.last_file_error = _err_msg
                         record_download(
                             self.station_id,

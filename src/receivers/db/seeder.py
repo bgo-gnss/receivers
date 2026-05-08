@@ -240,8 +240,15 @@ class Seeder:
         finally:
             conn.close()
 
-        counts = {"inserted": inserted, "updated": updated, "skipped": skipped, "suppressed": suppressed}
-        print(f"Stations: {inserted} inserted, {updated} updated, {skipped} skipped, {suppressed} suppressed")
+        counts = {
+            "inserted": inserted,
+            "updated": updated,
+            "skipped": skipped,
+            "suppressed": suppressed,
+        }
+        print(
+            f"Stations: {inserted} inserted, {updated} updated, {skipped} skipped, {suppressed} suppressed"
+        )
         return counts
 
     def seed_coordinates(self, dry_run: bool = False) -> dict[str, int]:

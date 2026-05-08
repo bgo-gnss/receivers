@@ -125,8 +125,11 @@ def test_retry_station_returns_recovered_tuple_on_success(mock_dl, mock_confirm)
     )
     assert (sid, recovered) == ("AFST", True)
     mock_dl.assert_called_once_with(
-        "AFST", "15s_24hr",
-        production_mode=True, timeout_minutes=8, run_rinex=True,
+        "AFST",
+        "15s_24hr",
+        production_mode=True,
+        timeout_minutes=8,
+        run_rinex=True,
     )
 
 
