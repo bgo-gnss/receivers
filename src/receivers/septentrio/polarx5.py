@@ -735,11 +735,17 @@ class PolaRX5(BaseReceiver):
             }
 
         # If sync was requested and there were missing files but none downloaded,
-        # all individual file downloads failed (e.g., watchdog timeouts)
+        # all individual file downloads failed (e.g., watchdog timeouts).
+        # Surface the dominant per-file error and connection target so the DB
+        # log entry is self-explanatory (no need to grep stations/{SID}.log).
         if sync and all_missing_files and not downloaded_files_dict:
+            _last_err = getattr(self, "_last_file_error", None)
+            _msg = f"All file downloads failed (0 of {len(all_missing_files)}) @ {self.ip_number}:{self.ip_port}"
+            if _last_err:
+                _msg += f" — last: {_last_err}"
             return {
                 "status": "failed",
-                "error_message": f"All file downloads failed (0 of {len(all_missing_files)} succeeded)",
+                "error_message": _msg,
                 "files_checked": len(file_date_dict),
                 "files_missing": len(all_missing_files),
                 "files_downloaded": 0,
@@ -1254,6 +1260,9 @@ class PolaRX5(BaseReceiver):
             session: Session type for file tracking (e.g., '15s_24hr', '1Hz_1hr')
         """
         downloaded_files = []
+        # Reset before each sync so the wrapper at sync_data() shows the
+        # dominant per-file error (Connection refused / Broken pipe / 404 / ...).
+        self._last_file_error: Optional[str] = None
 
         # Initialize file tracker for download tracking
         file_tracker = None
@@ -1581,10 +1590,14 @@ class PolaRX5(BaseReceiver):
                                 self.logger.error(
                                     f"❌ Clean retry failed for {file_name}: {retry_e}"
                                 )
+                                _file_dt = get_file_datetime(file_name)
+                                _err_msg = f"Size mismatch clean retry failed: {retry_e}"
+                                self._last_file_error = _err_msg
                                 record_download(
                                     self.station_id,
                                     session or "unknown",
                                     "failed",
+                                    file_date=_file_dt.date() if _file_dt else None,
                                     filename=file_name,
                                     duration_seconds=time.time() - _dl_start,
                                     file_size=remote_file_size,
@@ -1593,7 +1606,7 @@ class PolaRX5(BaseReceiver):
                                         "_last_effective_timeout",
                                         self.progress_timeout,
                                     ),
-                                    message=f"Size mismatch clean retry failed: {retry_e}",
+                                    message=_err_msg,
                                 )
                                 continue
 
@@ -1620,10 +1633,14 @@ class PolaRX5(BaseReceiver):
                                     get_file_datetime=get_file_datetime,
                                 )
                             else:
+                                _file_dt = get_file_datetime(file_name)
+                                _err_msg = f"Size mismatch after clean retry: got {local_file_size}, expected {remote_file_size}"
+                                self._last_file_error = _err_msg
                                 record_download(
                                     self.station_id,
                                     session or "unknown",
                                     "failed",
+                                    file_date=_file_dt.date() if _file_dt else None,
                                     filename=file_name,
                                     duration_seconds=_dl_duration,
                                     bytes_downloaded=local_file_size,
@@ -1633,13 +1650,17 @@ class PolaRX5(BaseReceiver):
                                         "_last_effective_timeout",
                                         self.progress_timeout,
                                     ),
-                                    message=f"Size mismatch after clean retry: got {local_file_size}, expected {remote_file_size}",
+                                    message=_err_msg,
                                 )
                         else:
+                            _file_dt = get_file_datetime(file_name)
+                            _err_msg = f"Size mismatch: got {local_file_size}, expected {remote_file_size}"
+                            self._last_file_error = _err_msg
                             record_download(
                                 self.station_id,
                                 session or "unknown",
                                 "failed",
+                                file_date=_file_dt.date() if _file_dt else None,
                                 filename=file_name,
                                 duration_seconds=_dl_duration,
                                 bytes_downloaded=local_file_size,
@@ -1649,7 +1670,7 @@ class PolaRX5(BaseReceiver):
                                     "_last_effective_timeout",
                                     self.progress_timeout,
                                 ),
-                                message=f"Size mismatch: got {local_file_size}, expected {remote_file_size}",
+                                message=_err_msg,
                             )
 
                 else:
@@ -1785,17 +1806,21 @@ class PolaRX5(BaseReceiver):
                 )
                 from ..utils.stall_timeout import record_download as _rec_dl
 
+                _file_dt = get_file_datetime(file_name)
+                _err_msg = str(e)[:500]
+                self._last_file_error = _err_msg
                 _rec_dl(
                     self.station_id,
                     session or "unknown",
                     "stall_timeout" if is_stall else "failed",
+                    file_date=_file_dt.date() if _file_dt else None,
                     filename=file_name,
                     duration_seconds=_exc_duration,
                     file_size=remote_file_size,
                     stall_timeout_used=getattr(
                         self, "_last_effective_timeout", self.progress_timeout
                     ),
-                    message=str(e)[:500],
+                    message=_err_msg,
                 )
                 # Guard: reconnect if the exception killed the FTP connection.
                 # Without this, the next file's ftp.size() crashes with
@@ -1851,6 +1876,10 @@ class PolaRX5(BaseReceiver):
             f"✅ Successfully downloaded {file_name} ({local_file_size:,} bytes)"
         )
 
+        # Resolve file_date once for both code paths so download_log carries it.
+        _file_dt = get_file_datetime(file_name) if get_file_datetime else None
+        _file_date = _file_dt.date() if _file_dt and hasattr(_file_dt, "date") else None
+
         # Validate downloaded file integrity
         validation_result = self.file_validator.validate_file(str(local_file))
         if not validation_result["valid"]:
@@ -1858,10 +1887,13 @@ class PolaRX5(BaseReceiver):
                 f"Downloaded file failed validation: {validation_result['error']}"
             )
             self.logger.info(f"Removing invalid downloaded file: {local_file}")
+            _err_msg = f"Validation failed: {validation_result.get('error', 'unknown')}"
+            self._last_file_error = _err_msg
             record_download(
                 self.station_id,
                 session or "unknown",
                 "failed",
+                file_date=_file_date,
                 filename=file_name,
                 duration_seconds=_dl_duration,
                 bytes_downloaded=local_file_size,
@@ -1869,7 +1901,7 @@ class PolaRX5(BaseReceiver):
                 stall_timeout_used=getattr(
                     self, "_last_effective_timeout", self.progress_timeout
                 ),
-                message=f"Validation failed: {validation_result.get('error', 'unknown')}",
+                message=_err_msg,
             )
             try:
                 os.unlink(local_file)
@@ -1884,6 +1916,7 @@ class PolaRX5(BaseReceiver):
             self.station_id,
             session or "unknown",
             "completed",
+            file_date=_file_date,
             filename=file_name,
             duration_seconds=_dl_duration,
             bytes_downloaded=local_file_size,

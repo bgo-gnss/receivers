@@ -134,6 +134,10 @@ class LeicaFTPDownloader:
         # Initialize file validator for resume capability
         self.file_validator = FileValidator(self.logger)
 
+        # Last per-file error during a download_files() call. Read by the G10
+        # wrapper so "All file downloads failed" surfaces the actual cause.
+        self.last_file_error: Optional[str] = None
+
         # Get timeout settings from configuration
         from ..config.receivers_config import get_receivers_config
         from ..utils.stall_timeout import get_stall_timeout
@@ -479,6 +483,8 @@ class LeicaFTPDownloader:
                     )
                     return True
                 elif attempt < retry_count:
+                    _err_msg = "Download returned failure"
+                    self.last_file_error = _err_msg
                     record_download(
                         self.station_id,
                         session_type,
@@ -489,13 +495,15 @@ class LeicaFTPDownloader:
                         file_size=self.remote_sizes.get(remote_filename),
                         stall_timeout_used=self.data_timeout,
                         attempt=attempt + 1,
-                        message="Download returned failure",
+                        message=_err_msg,
                     )
                     self.logger.warning(
                         f"⚠️ Download attempt {attempt + 1} failed, retrying {remote_filename}..."
                     )
                     continue
                 else:
+                    _err_msg = f"Failed after {retry_count + 1} attempts"
+                    self.last_file_error = _err_msg
                     record_download(
                         self.station_id,
                         session_type,
@@ -506,7 +514,7 @@ class LeicaFTPDownloader:
                         file_size=self.remote_sizes.get(remote_filename),
                         stall_timeout_used=self.data_timeout,
                         attempt=attempt + 1,
-                        message=f"Failed after {retry_count + 1} attempts",
+                        message=_err_msg,
                     )
                     self.logger.error(
                         f"❌ Download failed after {retry_count + 1} attempts: {remote_filename}"
@@ -517,6 +525,8 @@ class LeicaFTPDownloader:
                 error_msg = str(e).lower()
                 duration = time.time() - start_time
                 is_stall = isinstance(e, TimeoutError) or "stall" in error_msg
+                _err_msg = str(e)[:500]
+                self.last_file_error = _err_msg
                 record_download(
                     self.station_id,
                     session_type,
@@ -526,7 +536,7 @@ class LeicaFTPDownloader:
                     file_size=self.remote_sizes.get(remote_filename),
                     stall_timeout_used=self.data_timeout,
                     attempt=attempt + 1,
-                    message=str(e)[:500],
+                    message=_err_msg,
                 )
 
                 # If this was the last attempt, give up
@@ -548,6 +558,8 @@ class LeicaFTPDownloader:
             except Exception as e:
                 error_msg = str(e).lower()
                 duration = time.time() - start_time
+                _err_msg = str(e)[:500]
+                self.last_file_error = _err_msg
                 record_download(
                     self.station_id,
                     session_type,
@@ -557,7 +569,7 @@ class LeicaFTPDownloader:
                     file_size=self.remote_sizes.get(remote_filename),
                     stall_timeout_used=self.data_timeout,
                     attempt=attempt + 1,
-                    message=str(e)[:500],
+                    message=_err_msg,
                 )
 
                 # If this was the last attempt, give up
@@ -605,6 +617,9 @@ class LeicaFTPDownloader:
 
         # Ensure tmp directory exists
         tmp_dir.mkdir(parents=True, exist_ok=True)
+
+        # Reset before each batch so the wrapper surfaces this run's last error.
+        self.last_file_error = None
 
         downloaded_files = []
         total_files = len(files_dict)
