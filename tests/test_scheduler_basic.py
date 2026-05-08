@@ -1822,20 +1822,14 @@ class TestRetryFailedDailyJob:
 class TestExpectedFailureGates:
     """Unit tests for health gate and known_issue gate in _download_station_data_job."""
 
-    def _run_job(self, station_id, **patches):
-        """Run _download_station_data_job with given mock patches applied."""
-        from receivers.scheduling.bulk_scheduler import _download_station_data_job
-
-        with patches.get("gate_ctx", _noop_ctx()):
-            _download_station_data_job(station_id, "15s_24hr", production_mode=False)
-
     @patch("receivers.scheduling.bulk_scheduler._record_batch_result")
     @patch("receivers.scheduling.bulk_scheduler.check_station_health_gate", return_value="no_satellites",
            create=True)
     @patch("receivers.scheduling.bulk_scheduler._get_load_monitor", return_value=None)
     def test_health_gate_no_satellites_skips(self, mock_load, mock_gate, mock_batch):
         """Health gate: no_satellites → early return, outcome='expected', no download attempt."""
-        from unittest.mock import patch as _patch, MagicMock
+        from unittest.mock import MagicMock
+        from unittest.mock import patch as _patch
 
         with _patch("receivers.utils.stall_timeout.check_station_health_gate",
                     return_value="no_satellites"):
@@ -1845,7 +1839,9 @@ class TestExpectedFailureGates:
                     with _patch("receivers.scheduling.bulk_scheduler._get_pipeline_store",
                                 return_value=None):
                         with _patch("receivers.scheduling.bulk_scheduler._record_batch_result") as mock_rb:
-                            from receivers.scheduling.bulk_scheduler import _download_station_data_job
+                            from receivers.scheduling.bulk_scheduler import (
+                                _download_station_data_job,
+                            )
 
                             _download_station_data_job("GSIG", "15s_24hr")
 
@@ -1868,9 +1864,13 @@ class TestExpectedFailureGates:
 
     def test_record_batch_result_expected_bucket(self):
         """outcome='expected' accumulates in 'expected' bucket, not 'fail'."""
-        from receivers.scheduling.bulk_scheduler import _record_batch_result, _BATCH_STATS, _BATCH_LOCK
-
         import threading
+
+        from receivers.scheduling.bulk_scheduler import (
+            _BATCH_LOCK,
+            _BATCH_STATS,
+            _record_batch_result,
+        )
         with _BATCH_LOCK:
             _BATCH_STATS.pop("test_session", None)
 

@@ -23,12 +23,13 @@ import re
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, List, Optional
 
-from . import tos_adapter
 from tostools.standards.igs_equipment import (
     to_igs_antenna,
     to_igs_radome,
     to_igs_receiver,
 )
+
+from . import tos_adapter
 
 # ---------------------------------------------------------------------------
 # Helpers

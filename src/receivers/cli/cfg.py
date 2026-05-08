@@ -1569,7 +1569,7 @@ def cmd_cfg_extract(args) -> int:
     station_config = resolve_receiver_endpoint(args, sid)
     if station_config is None:
         print(f"❌ {sid}: not found in stations.cfg and no --host given")
-        print(f"   Provide --host <IP> to connect to the receiver directly.")
+        print("   Provide --host <IP> to connect to the receiver directly.")
         return 1
 
     try:
@@ -1651,7 +1651,7 @@ def cmd_cfg_extract(args) -> int:
         return 1
 
     print(f"\n✅ [{sid}] added to {cfg_path}")
-    print(f"   Next: fill in manual fields, then run 'receivers seed stations' to sync to DB")
+    print("   Next: fill in manual fields, then run 'receivers seed stations' to sync to DB")
     return 0
 
 

@@ -15,7 +15,6 @@ from receivers.cfg import discrepancy_log as dlog
 from receivers.cfg.field_manifest import all_keys, fields_by_key
 from receivers.config_utils import _learned_ftp_mode_override
 
-
 # ─── manifest registration ────────────────────────────────────────────────
 
 

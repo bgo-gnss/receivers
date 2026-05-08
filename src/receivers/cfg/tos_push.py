@@ -152,13 +152,13 @@ def push_field_to_tos(
 
 
 def push_component_to_tos(
-    writer: "TOSWriter",
+    writer: TOSWriter,
     entity: str,
     attribute_code: str,
     value: str,
     tos_data: Dict[str, Any],
     date_from: str,
-) -> "DryRunResult | Any":
+) -> DryRunResult | Any:
     """Push one component of a composite field to TOS.
 
     Used for antenna_height/east/north where the cfg value is the sum of

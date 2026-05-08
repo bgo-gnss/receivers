@@ -445,9 +445,10 @@ def cmd_scheduler_clean_stale_tmp(args) -> int:
     dry_run = getattr(args, "dry_run", False)
 
     try:
-        from ..scheduling.backfill import clean_stale_tmp
-        from ..config.receivers_config import ReceiversConfig
         from pathlib import Path
+
+        from ..config.receivers_config import ReceiversConfig
+        from ..scheduling.backfill import clean_stale_tmp
 
         if dry_run:
             tmp_root = Path(ReceiversConfig().get_tmp_dir())
