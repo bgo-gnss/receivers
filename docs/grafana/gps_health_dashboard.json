@@ -27,7 +27,7 @@
       "keepTime": false,
       "tags": [],
       "targetBlank": false,
-      "title": "⚡ Reset Filters",
+      "title": "\u26a1 Reset Filters",
       "tooltip": "Clear all filters",
       "type": "link",
       "url": "/d/gps-health-voltage/gps-receiver-health-overview?var-area=all&var-owner=all&var-station=all&var-receiver=all&var-antenna=all&var-status_filter=all"
@@ -65,7 +65,7 @@
       "title": "",
       "options": {
         "mode": "html",
-        "content": "<div style=\"display:flex;align-items:center;justify-content:center;height:100%;gap:14px;letter-spacing:0.3px;\"><span style=\"color:#555;font-size:11px;\">filter:</span><span style=\"color:#e87327;font-size:12px;font-weight:700;text-transform:uppercase;\">${status_filter}</span><span style=\"color:#444;font-size:12px;\">·</span><span style=\"color:#555;font-size:11px;\">region:</span><span style=\"color:#7eb8d4;font-size:12px;font-weight:600;\">${area:text}</span><span style=\"color:#444;font-size:12px;\">·</span><span style=\"color:#555;font-size:11px;\">range end:</span><span style=\"color:#888;font-size:11px;\">${__to:date:HH:mm}</span></div>"
+        "content": "<div style=\"display:flex;align-items:center;justify-content:center;height:100%;gap:14px;letter-spacing:0.3px;\"><span style=\"color:#555;font-size:11px;\">filter:</span><span style=\"color:#e87327;font-size:12px;font-weight:700;text-transform:uppercase;\">${status_filter}</span><span style=\"color:#444;font-size:12px;\">\u00b7</span><span style=\"color:#555;font-size:11px;\">region:</span><span style=\"color:#7eb8d4;font-size:12px;font-weight:600;\">${area:text}</span><span style=\"color:#444;font-size:12px;\">\u00b7</span><span style=\"color:#555;font-size:11px;\">range end:</span><span style=\"color:#888;font-size:11px;\">${__to:date:HH:mm}</span></div>"
       },
       "transparent": true,
       "gridPos": {
@@ -2653,7 +2653,7 @@
       "gridPos": {
         "x": 20,
         "y": 2,
-        "w": 4,
+        "w": 2,
         "h": 4
       },
       "targets": [
@@ -2668,6 +2668,78 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health"
+      },
+      "description": "Hours since last download_log entry. Production stays green while scheduler runs. On laptop, red after a few hours of inactivity is expected \u2014 see receivers/CLAUDE.md 'Local Development vs Production Grafana'.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 6
+              }
+            ]
+          },
+          "unit": "h",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 2,
+        "x": 22,
+        "y": 2
+      },
+      "id": 42,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT EXTRACT(EPOCH FROM (NOW() - MAX(ts))) / 3600.0 AS \"Last DL\" FROM download_log",
+          "refId": "A"
+        }
+      ],
+      "title": "Last DL",
+      "type": "stat"
     }
   ],
   "refresh": "5m",
