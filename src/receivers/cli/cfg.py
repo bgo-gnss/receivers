@@ -166,12 +166,17 @@ def _query_antenna_info(
             return None
         from ..health.polarx5_tcp_extractor import PolaRX5TCPExtractor
 
-        host = station_config.get("router_ip") or station_config.get("ip_number")
+        host = (
+            station_config.get("router_ip")
+            or station_config.get("ip_number")
+            or (station_config.get("router") or {}).get("ip")
+        )
         if not host:
             return None
         control_port = int(
             station_config.get("receiver_controlport")
             or station_config.get("control_port")
+            or (station_config.get("receiver") or {}).get("controlport")
             or 28784
         )
         extractor = PolaRX5TCPExtractor(host, station_id, port=control_port)
@@ -1527,6 +1532,124 @@ def cmd_cfg_history(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# cfg extract
+# ---------------------------------------------------------------------------
+
+_EXTRACT_TODO_FIELDS = [
+    "station_name",
+    "router_type",
+    "connection_type",
+    "station_owner",
+    "rinex_observer",
+    "rinex_agency",
+    "rinex_run_by",
+    "rinex_config_valid_from",
+]
+
+
+def cmd_cfg_extract(args) -> int:
+    """``cfg extract`` — probe a receiver and add a new station section to stations.cfg."""
+    import re
+    from datetime import date
+    from pathlib import Path
+
+    from ..cfg.field_manifest import FIELDS
+    from ..config.receivers_config import create_station_section
+    from ..config_utils import resolve_receiver_endpoint
+
+    sid = args.station_id.upper()
+    host = getattr(args, "host", None)
+
+    station_config = resolve_receiver_endpoint(args, sid)
+    if station_config is None:
+        print(f"❌ {sid}: not found in stations.cfg and no --host given")
+        print(f"   Provide --host <IP> to connect to the receiver directly.")
+        return 1
+
+    try:
+        import gps_parser  # type: ignore
+
+        cfg_path = Path(gps_parser.ConfigParser().get_stations_config_path())
+    except Exception as exc:
+        print(f"❌ Cannot locate stations.cfg: {exc}")
+        return 1
+
+    cfg_text = cfg_path.read_text()
+    if re.search(r"^\[" + re.escape(sid) + r"\]", cfg_text, re.MULTILINE):
+        print(f"❌ [{sid}] already exists in stations.cfg")
+        print(f"   Use: receivers cfg reconcile {sid}  to update individual fields")
+        return 1
+
+    print(f"↳ {sid}: probing receiver…", flush=True)
+    identity = _query_receiver_identity(sid, station_config)
+    if identity is None:
+        print(f"❌ {sid}: receiver unreachable or returned no identity data")
+        return 1
+
+    # Extract fields via field manifest (reuses receiver_extract lambdas + cfg_format)
+    manifest_fields: Dict[str, str] = {}
+    for spec in FIELDS:
+        if spec.receiver_extract is None:
+            continue
+        raw_val = spec.receiver_extract(identity)
+        if raw_val is None:
+            continue
+        formatted = spec.cfg_format(raw_val) if spec.cfg_format else str(raw_val)
+        if formatted is not None and str(formatted).strip():
+            manifest_fields[spec.cfg_key] = str(formatted)
+
+    # Build ordered fields dict
+    fields: Dict[str, str] = {}
+    fields["station_id"] = sid
+
+    if host:
+        fields["router_ip"] = host
+
+    if "receiver_type" in manifest_fields:
+        fields["receiver_type"] = manifest_fields.pop("receiver_type")
+
+    fields["receiver_ftpport"] = "2160"
+    fields["receiver_httpport"] = "8060"
+    fields["receiver_controlport"] = "28784"
+
+    fields["rinex_marker_name"] = sid
+    fields["rinex_marker_number"] = sid
+
+    # Remaining manifest fields (antenna, position, serial, firmware)
+    fields.update(manifest_fields)
+
+    # Display extracted fields
+    print(f"\nFields extracted for [{sid}]:")
+    for k, v in fields.items():
+        note = "  ← bench/probe IP — update to deployment IP before use" if k == "router_ip" else ""
+        print(f"  {k} = {v}{note}")
+    print(f"\nFill in manually: {', '.join(_EXTRACT_TODO_FIELDS)}")
+
+    if args.dry_run:
+        print("\n(dry run — nothing written)")
+        return 0
+
+    source = f"receiver on {date.today().isoformat()}"
+    if host:
+        source += f" (bench/probe IP: {host})"
+    header = (
+        f"Extracted from {source}\n"
+        f"Review all fields — router_ip is the probe IP, not the deployment IP.\n"
+        f"Fill in manually: {', '.join(_EXTRACT_TODO_FIELDS)}"
+    )
+
+    try:
+        create_station_section(cfg_path, sid, fields, header_comment=header)
+    except ValueError as exc:
+        print(f"❌ {exc}")
+        return 1
+
+    print(f"\n✅ [{sid}] added to {cfg_path}")
+    print(f"   Next: fill in manual fields, then run 'receivers seed stations' to sync to DB")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # argparse wiring
 # ---------------------------------------------------------------------------
 
@@ -1844,12 +1967,48 @@ Examples:
     )
     hist.set_defaults(func=cmd_cfg_history)
 
+    ext = cfg_subparsers.add_parser(
+        "extract",
+        help="Probe a receiver and add a new station section to stations.cfg",
+        description=(
+            "Connect to a physical receiver, read its identity (model, serial, firmware), "
+            "antenna configuration, and PVT position, then append a new [STATIONID] section "
+            "to stations.cfg. Use --host for bench/direct connections when the station does "
+            "not yet exist in stations.cfg."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  receivers cfg extract HEKR --host 192.168.20.1          # bench (WiFi AP)
+  receivers cfg extract HEKR --host 192.168.3.1           # bench (USB)
+  receivers cfg extract HEKR --host 192.168.20.1 --dry-run
+""",
+    )
+    ext.add_argument("station_id", help="4-letter station ID (e.g. HEKR)")
+    ext.add_argument(
+        "--host",
+        metavar="IP",
+        help="Direct IP address to connect to (required for new stations not in stations.cfg)",
+    )
+    ext.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show extracted fields without writing to stations.cfg",
+    )
+    ext.add_argument(
+        "--receiver-type",
+        default="PolaRX5",
+        metavar="TYPE",
+        help="Receiver type hint for --host mode (default: PolaRX5)",
+    )
+    ext.set_defaults(func=cmd_cfg_extract)
+
 
 def handle_cfg_command(args) -> int:
     """Handle cfg subcommands; called from main()."""
     if not getattr(args, "cfg_command", None):
         print("❌ No cfg subcommand specified")
-        print("Available: reconcile, list, history")
+        print("Available: reconcile, extract, list, history")
         print("\nTry: receivers cfg reconcile --help")
         return 2
     return args.func(args)
