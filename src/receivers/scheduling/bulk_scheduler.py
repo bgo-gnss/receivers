@@ -1935,6 +1935,7 @@ class BulkDownloadScheduler:
         self._schedule_gap_detection()
         self._schedule_archive_reconciler()
         self._schedule_integrity_checker()
+        self._schedule_morning_recovery()
 
         # Catch up any missed daily downloads (e.g., 15s_24hr if scheduler started after midnight)
         self._schedule_daily_catchup(session_stations)
@@ -2171,6 +2172,62 @@ class BulkDownloadScheduler:
             f"Scheduled integrity checker ({base_trigger.description}, "
             f"{days_back} days back, tolerance={size_tolerance_pct}%, "
             f"receiver_check={'on' if check_receiver else 'off'}, immediate first run)"
+        )
+
+    def _schedule_morning_recovery(self) -> None:
+        """Schedule the daily morning recovery pass.
+
+        Runs once per day (default 01:30 UTC) on the 'backfill' executor.
+        Targets stations whose previous-day 15s_24hr file is still missing
+        after the primary 00:01 window and the 00:36 second-chance retry —
+        typically PolaRX5 receivers that need ~30-90 min after midnight to
+        finish file rotation. Must complete before GAMIT processing starts
+        at 03:00-04:00 UTC.
+
+        Disabled by default in package; enabled in operational deployment
+        via gps-config-data scheduler.yaml.
+
+        See `docs/design/morning-recovery.md` for the full rationale.
+        """
+        cfg = self.yaml_config.get("morning_recovery", {})
+        if not cfg.get("enabled", False):
+            self.logger.info("Morning recovery disabled in config")
+            return
+
+        from .morning_recovery import _run_morning_recovery_job
+
+        schedule = cfg.get("schedule", "01:30")
+        sessions = cfg.get("sessions", ["15s_24hr"])
+        days_back = cfg.get("days_back", 1)
+        max_workers = cfg.get("max_workers", 4)
+        station_timeout_minutes = cfg.get("station_timeout_minutes", 8)
+        bypass_known_missing = cfg.get("bypass_known_missing", False)
+
+        base_trigger = parse_schedule(schedule)
+
+        self.scheduler.add_job(
+            func=_run_morning_recovery_job,
+            trigger=base_trigger.trigger_type,
+            args=[
+                sessions,
+                days_back,
+                max_workers,
+                station_timeout_minutes,
+                bypass_known_missing,
+            ],
+            id="morning_recovery",
+            replace_existing=True,
+            max_instances=1,
+            executor="backfill",
+            misfire_grace_time=900,  # 15 min — fire late if scheduler restarted around 01:30
+            **base_trigger.trigger_kwargs,
+        )
+
+        self.logger.info(
+            f"🌅 Scheduled morning recovery ({base_trigger.description}, "
+            f"sessions={sessions}, days_back={days_back}, "
+            f"workers={max_workers}, "
+            f"bypass_known_missing={bypass_known_missing})"
         )
 
     def _detect_outage_gap(self, session_type: str = "15s_24hr") -> int:

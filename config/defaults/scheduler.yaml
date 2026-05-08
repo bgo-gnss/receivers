@@ -77,6 +77,24 @@ integrity_checker:
   check_receiver: true
   size_tolerance_pct: 50.0
 
+# Morning recovery — daily catch-up for stations whose previous-day file is
+# still missing after the primary 00:01 window and 00:36 second-chance retry.
+# Targets PolaRX5 receivers that need 30-90 min after midnight before reliably
+# serving the daily 24h file via FTP. Must complete before downstream
+# processing starts (typically 03:00-04:00 UTC for GAMIT).
+#
+# Disabled by default — enable in operational deployment via gps-config-data.
+# See docs/design/morning-recovery.md for the full design.
+morning_recovery:
+  enabled: false
+  schedule: "01:30"            # Daily at 01:30 UTC
+  sessions:
+    - 15s_24hr
+  days_back: 1                 # 1 = yesterday only
+  max_workers: 4               # Parallel station downloads
+  station_timeout_minutes: 8   # Hard ceiling per station
+  bypass_known_missing: false  # Trust file_tracking 'missing' state (see is_file_missing TTL)
+
 bootstrap:
   enabled: false
 
