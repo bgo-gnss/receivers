@@ -67,6 +67,8 @@ def clean_stale_tmp(
                     deleted += 1
                     if station_id not in affected:
                         affected.append(station_id)
+            except PermissionError as e:
+                logger.warning(f"Cannot remove {f}: {e}")
             except OSError:
                 pass  # file may have been removed by a concurrent job
 
