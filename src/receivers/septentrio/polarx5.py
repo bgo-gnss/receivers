@@ -243,10 +243,9 @@ class PolaRX5(BaseReceiver):
 
                     # Allow operators to force anonymous on a 5.7.0+ receiver
                     # via `ftp_anonymous_login = force` (rare).
-                    anon_force = (
-                        str(rec_cfg.get("ftp_anonymous_login", "")).lower()
-                        in ("force", "always")
-                    )
+                    anon_force = str(
+                        rec_cfg.get("ftp_anonymous_login", "")
+                    ).lower() in ("force", "always")
 
                     if fw_needs_auth and not anon_force:
                         self.ftp_anonymous = False
@@ -425,7 +424,9 @@ class PolaRX5(BaseReceiver):
         tcp_result = self._quick_tcp_check(self.ip_port, return_details=True)
         if isinstance(tcp_result, dict):
             tcp_ok = bool(tcp_result.get("success"))
-            tcp_msg: str = tcp_result.get("message") or f"FTP port {self.ip_port} not responding"
+            tcp_msg: str = (
+                tcp_result.get("message") or f"FTP port {self.ip_port} not responding"
+            )
         else:
             tcp_ok = bool(tcp_result)
             tcp_msg = f"FTP port {self.ip_port} not responding"
@@ -1594,7 +1595,9 @@ class PolaRX5(BaseReceiver):
                                     f"❌ Clean retry failed for {file_name}: {retry_e}"
                                 )
                                 _file_dt = get_file_datetime(file_name)
-                                _err_msg = f"Size mismatch clean retry failed: {retry_e}"
+                                _err_msg = (
+                                    f"Size mismatch clean retry failed: {retry_e}"
+                                )
                                 self._last_file_error = _err_msg
                                 record_download(
                                     self.station_id,
@@ -2495,10 +2498,9 @@ class PolaRX5(BaseReceiver):
                     try:
                         new_mode = "active" if not new_pasv else "passive"
                         station_info = getattr(self, "station_info", {}) or {}
-                        cfg_mode = (
-                            station_info.get("router", {}).get("ftp_mode")
-                            or station_info.get("receiver", {}).get("ftp_mode")
-                        )
+                        cfg_mode = station_info.get("router", {}).get(
+                            "ftp_mode"
+                        ) or station_info.get("receiver", {}).get("ftp_mode")
                         if cfg_mode != new_mode:
                             from ..cfg import discrepancy_log as _dlog
 

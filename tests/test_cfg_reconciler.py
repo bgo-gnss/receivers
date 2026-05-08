@@ -447,7 +447,6 @@ class TestPositionTolerance:
         assert not eq("102.55", "106.00")
 
     def test_position_equality_for_unsupported_field(self):
-
         with pytest.raises(ValueError):
             position_equality_for("antenna_height", 2.0)
 
@@ -700,7 +699,9 @@ class TestProbeStation:
     def test_returns_none_when_both_sources_fail(self, monkeypatch):
         from receivers.cli.cfg import _probe_station
 
-        monkeypatch.setattr("receivers.cli.cfg._query_receiver_identity", lambda *_: None)
+        monkeypatch.setattr(
+            "receivers.cli.cfg._query_receiver_identity", lambda *_: None
+        )
         monkeypatch.setattr("receivers.cli.cfg._query_tos", lambda *_: None)
 
         rx, tos = _probe_station("ELDC", {}, ["receiver", "tos"], json_mode=True)
@@ -712,7 +713,9 @@ class TestProbeStation:
 
         rx_data = {"receiver_model": "PolaRX5", "serial_number": "12345"}
         tos_data = {"name": "Eldey", "device_history": []}
-        monkeypatch.setattr("receivers.cli.cfg._query_receiver_identity", lambda *_: rx_data)
+        monkeypatch.setattr(
+            "receivers.cli.cfg._query_receiver_identity", lambda *_: rx_data
+        )
         monkeypatch.setattr("receivers.cli.cfg._query_tos", lambda *_: tos_data)
 
         rx, tos = _probe_station("ELDC", {}, ["receiver", "tos"], json_mode=True)
@@ -724,7 +727,8 @@ class TestProbeStation:
 
         called: list = []
         monkeypatch.setattr(
-            "receivers.cli.cfg._query_receiver_identity", lambda *_: called.append("rx") or {}
+            "receivers.cli.cfg._query_receiver_identity",
+            lambda *_: called.append("rx") or {},
         )
         tos_data = {"name": "Eldey"}
         monkeypatch.setattr("receivers.cli.cfg._query_tos", lambda *_: tos_data)
@@ -737,9 +741,13 @@ class TestProbeStation:
         from receivers.cli.cfg import _probe_station
 
         called: list = []
-        monkeypatch.setattr("receivers.cli.cfg._query_tos", lambda *_: called.append("tos") or {})
+        monkeypatch.setattr(
+            "receivers.cli.cfg._query_tos", lambda *_: called.append("tos") or {}
+        )
         rx_data = {"receiver_model": "PolaRX5"}
-        monkeypatch.setattr("receivers.cli.cfg._query_receiver_identity", lambda *_: rx_data)
+        monkeypatch.setattr(
+            "receivers.cli.cfg._query_receiver_identity", lambda *_: rx_data
+        )
 
         rx, _ = _probe_station("ELDC", {}, ["receiver"], json_mode=True)
         assert called == []
@@ -750,7 +758,8 @@ class TestProbeStation:
 
         called = []
         monkeypatch.setattr(
-            "receivers.cli.cfg._query_receiver_identity", lambda *_: called.append("rx") or {}
+            "receivers.cli.cfg._query_receiver_identity",
+            lambda *_: called.append("rx") or {},
         )
         monkeypatch.setattr("receivers.cli.cfg._query_tos", lambda *_: None)
 

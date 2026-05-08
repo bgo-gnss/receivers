@@ -15,7 +15,6 @@ from receivers.cfg import discrepancy_log as dlog
 from receivers.cfg.field_manifest import all_keys, fields_by_key
 from receivers.config_utils import _learned_ftp_mode_override
 
-
 # ─── manifest registration ────────────────────────────────────────────────
 
 
@@ -46,9 +45,7 @@ def test_override_returns_observed_value_when_open(mock_list):
     rec.receiver_value = "active"
     mock_list.return_value = [rec]
     assert _learned_ftp_mode_override("ENTC") == "active"
-    mock_list.assert_called_once_with(
-        station_ids=["ENTC"], cfg_keys=["ftp_mode"]
-    )
+    mock_list.assert_called_once_with(station_ids=["ENTC"], cfg_keys=["ftp_mode"])
 
 
 @patch("receivers.cfg.discrepancy_log.list_open")

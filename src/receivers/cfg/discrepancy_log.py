@@ -416,7 +416,11 @@ def open_station_ids(
     """Unique station IDs that have at least one open discrepancy."""
     records = list_open(cfg_keys=cfg_keys, verdicts=verdicts)
     seen: set = set()
-    return [r.station_id for r in records if not (r.station_id in seen or seen.add(r.station_id))]
+    return [
+        r.station_id
+        for r in records
+        if not (r.station_id in seen or seen.add(r.station_id))
+    ]
 
 
 def open_field_keys(
@@ -426,4 +430,6 @@ def open_field_keys(
     """Unique cfg_key values that have at least one open discrepancy."""
     records = list_open(station_ids=station_ids, verdicts=verdicts)
     seen: set = set()
-    return [r.cfg_key for r in records if not (r.cfg_key in seen or seen.add(r.cfg_key))]
+    return [
+        r.cfg_key for r in records if not (r.cfg_key in seen or seen.add(r.cfg_key))
+    ]

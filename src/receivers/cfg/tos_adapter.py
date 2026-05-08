@@ -138,7 +138,9 @@ def _antenna_breakdown(
     return f"TOS breakdown: antenna.{label}={av_s} + monument.{monument_key}={mv_s}"
 
 
-def current_component_value(station: Dict[str, Any], entity: str, key: str) -> Optional[str]:
+def current_component_value(
+    station: Dict[str, Any], entity: str, key: str
+) -> Optional[str]:
     """Return the raw value for one component of a composite field from TOS session data."""
     session = current_session(station)
     if not session:
@@ -153,15 +155,21 @@ def current_component_value(station: Dict[str, Any], entity: str, key: str) -> O
 
 
 def antenna_height_breakdown(station: Dict[str, Any]) -> Optional[str]:
-    return _antenna_breakdown(station, "antenna_height", "monument_height", "antenna_height")
+    return _antenna_breakdown(
+        station, "antenna_height", "monument_height", "antenna_height"
+    )
 
 
 def antenna_east_breakdown(station: Dict[str, Any]) -> Optional[str]:
-    return _antenna_breakdown(station, "antenna_offset_east", "monument_offset_east", "antenna_offset_east")
+    return _antenna_breakdown(
+        station, "antenna_offset_east", "monument_offset_east", "antenna_offset_east"
+    )
 
 
 def antenna_north_breakdown(station: Dict[str, Any]) -> Optional[str]:
-    return _antenna_breakdown(station, "antenna_offset_north", "monument_offset_north", "antenna_offset_north")
+    return _antenna_breakdown(
+        station, "antenna_offset_north", "monument_offset_north", "antenna_offset_north"
+    )
 
 
 def station_latitude(station: Dict[str, Any]) -> Optional[str]:

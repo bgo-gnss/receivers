@@ -1661,6 +1661,7 @@ class TestIsRetryableDownload:
             _categorize_failure,
             _is_retryable_download,
         )
+
         self._is_retryable = _is_retryable_download
         self._categorize = _categorize_failure
 
@@ -1673,36 +1674,55 @@ class TestIsRetryableDownload:
         assert not self._is_retryable({"status": "configuration_error"})
 
     def test_auth_401_not_retryable(self):
-        assert not self._is_retryable({"status": "failed", "error_message": "401 Unauthorized"})
+        assert not self._is_retryable(
+            {"status": "failed", "error_message": "401 Unauthorized"}
+        )
 
     def test_auth_530_not_retryable(self):
-        assert not self._is_retryable({"status": "failed", "error_message": "530 Login incorrect"})
+        assert not self._is_retryable(
+            {"status": "failed", "error_message": "530 Login incorrect"}
+        )
 
     def test_timeout_retryable(self):
-        assert self._is_retryable({"status": "failed", "error_message": "Connection timed out"})
+        assert self._is_retryable(
+            {"status": "failed", "error_message": "Connection timed out"}
+        )
 
     def test_connection_refused_retryable(self):
-        assert self._is_retryable({"status": "failed", "error_message": "[Errno 111] Connection refused"})
+        assert self._is_retryable(
+            {"status": "failed", "error_message": "[Errno 111] Connection refused"}
+        )
 
     def test_404_retryable(self):
         # File not ready at midnight — must be retryable now
-        assert self._is_retryable({"status": "failed", "error_message": "HTTP 404 Not Found"})
+        assert self._is_retryable(
+            {"status": "failed", "error_message": "HTTP 404 Not Found"}
+        )
 
     def test_not_found_retryable(self):
         # FTP 550 file not found at midnight
-        assert self._is_retryable({"status": "failed", "error_message": "File not found on server"})
+        assert self._is_retryable(
+            {"status": "failed", "error_message": "File not found on server"}
+        )
 
     def test_ftp_550_retryable(self):
-        assert self._is_retryable({"status": "failed", "error_message": "550 No such file"})
+        assert self._is_retryable(
+            {"status": "failed", "error_message": "550 No such file"}
+        )
 
     def test_size_mismatch_retryable(self):
         # File was still growing when downloaded
         assert self._is_retryable(
-            {"status": "failed", "error_message": "Size mismatch after clean retry: got 22249690, expected 20519110"}
+            {
+                "status": "failed",
+                "error_message": "Size mismatch after clean retry: got 22249690, expected 20519110",
+            }
         )
 
     def test_watchdog_retryable(self):
-        assert self._is_retryable({"status": "failed", "error_message": "Watchdog triggered: no progress"})
+        assert self._is_retryable(
+            {"status": "failed", "error_message": "Watchdog triggered: no progress"}
+        )
 
     def test_empty_error_not_retryable(self):
         # No recognized pattern → False
@@ -1743,6 +1763,7 @@ class TestRetryFailedDailyJob:
             _RETRY_MAX_WORKERS,
             _retry_failed_daily_job,
         )
+
         self._retry_job = _retry_failed_daily_job
         self._max_workers = _RETRY_MAX_WORKERS
 
@@ -1822,37 +1843,46 @@ class TestRetryFailedDailyJob:
 class TestExpectedFailureGates:
     """Unit tests for health gate and known_issue gate in _download_station_data_job."""
 
-    def _run_job(self, station_id, **patches):
-        """Run _download_station_data_job with given mock patches applied."""
-        from receivers.scheduling.bulk_scheduler import _download_station_data_job
-
-        with patches.get("gate_ctx", _noop_ctx()):
-            _download_station_data_job(station_id, "15s_24hr", production_mode=False)
-
     @patch("receivers.scheduling.bulk_scheduler._record_batch_result")
-    @patch("receivers.scheduling.bulk_scheduler.check_station_health_gate", return_value="no_satellites",
-           create=True)
+    @patch(
+        "receivers.scheduling.bulk_scheduler.check_station_health_gate",
+        return_value="no_satellites",
+        create=True,
+    )
     @patch("receivers.scheduling.bulk_scheduler._get_load_monitor", return_value=None)
     def test_health_gate_no_satellites_skips(self, mock_load, mock_gate, mock_batch):
         """Health gate: no_satellites → early return, outcome='expected', no download attempt."""
-        from unittest.mock import patch as _patch, MagicMock
+        from unittest.mock import MagicMock
+        from unittest.mock import patch as _patch
 
-        with _patch("receivers.utils.stall_timeout.check_station_health_gate",
-                    return_value="no_satellites"):
+        with _patch(
+            "receivers.utils.stall_timeout.check_station_health_gate",
+            return_value="no_satellites",
+        ):
             with _patch("receivers.utils.stall_timeout.record_download") as mock_rd:
-                with _patch("receivers.scheduling.bulk_scheduler._get_load_monitor",
-                            return_value=None):
-                    with _patch("receivers.scheduling.bulk_scheduler._get_pipeline_store",
-                                return_value=None):
-                        with _patch("receivers.scheduling.bulk_scheduler._record_batch_result") as mock_rb:
-                            from receivers.scheduling.bulk_scheduler import _download_station_data_job
+                with _patch(
+                    "receivers.scheduling.bulk_scheduler._get_load_monitor",
+                    return_value=None,
+                ):
+                    with _patch(
+                        "receivers.scheduling.bulk_scheduler._get_pipeline_store",
+                        return_value=None,
+                    ):
+                        with _patch(
+                            "receivers.scheduling.bulk_scheduler._record_batch_result"
+                        ) as mock_rb:
+                            from receivers.scheduling.bulk_scheduler import (
+                                _download_station_data_job,
+                            )
 
                             _download_station_data_job("GSIG", "15s_24hr")
 
                             mock_rd.assert_called_once()
                             call_kwargs = mock_rd.call_args
-                            assert call_kwargs[1].get("outcome") == "expected" or \
-                                (len(call_kwargs[0]) >= 3 and call_kwargs[0][2] == "expected")
+                            assert call_kwargs[1].get("outcome") == "expected" or (
+                                len(call_kwargs[0]) >= 3
+                                and call_kwargs[0][2] == "expected"
+                            )
                             mock_rb.assert_called_once()
                             rb_args = mock_rb.call_args[0]
                             assert rb_args[2] == "expected"
@@ -1868,9 +1898,14 @@ class TestExpectedFailureGates:
 
     def test_record_batch_result_expected_bucket(self):
         """outcome='expected' accumulates in 'expected' bucket, not 'fail'."""
-        from receivers.scheduling.bulk_scheduler import _record_batch_result, _BATCH_STATS, _BATCH_LOCK
-
         import threading
+
+        from receivers.scheduling.bulk_scheduler import (
+            _BATCH_LOCK,
+            _BATCH_STATS,
+            _record_batch_result,
+        )
+
         with _BATCH_LOCK:
             _BATCH_STATS.pop("test_session", None)
 

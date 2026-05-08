@@ -172,7 +172,9 @@ def test_push_raises_on_non_writable_field():
     spec = _spec_for("antenna_height")  # not writable
     writer = _mock_writer()
     with pytest.raises(ValueError, match="not writable"):
-        push_field_to_tos(writer, spec, "1.5000", {"id_entity": 100}, "2025-01-01T00:00:00")
+        push_field_to_tos(
+            writer, spec, "1.5000", {"id_entity": 100}, "2025-01-01T00:00:00"
+        )
 
 
 def test_push_raises_when_no_id_entity():
@@ -196,8 +198,8 @@ def test_push_firmware_version_calls_upsert():
     history = {"children_connections": [{"time_to": None, "id_entity_child": 200}]}
     child = {"code_entity_subtype": "gnss_receiver"}
     writer = _mock_writer()
-    writer.get_entity_history.side_effect = (
-        lambda eid: history if eid == 100 else child if eid == 200 else None
+    writer.get_entity_history.side_effect = lambda eid: (
+        history if eid == 100 else child if eid == 200 else None
     )
     tos_data = {"id_entity": 100}
     result = push_field_to_tos(writer, spec, "5.5.0", tos_data, "2025-03-01T00:00:00")

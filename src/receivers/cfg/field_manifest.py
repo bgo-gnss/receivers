@@ -23,12 +23,13 @@ import re
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, List, Optional
 
-from . import tos_adapter
 from tostools.standards.igs_equipment import (
     to_igs_antenna,
     to_igs_radome,
     to_igs_receiver,
 )
+
+from . import tos_adapter
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -227,7 +228,9 @@ def _meters_to_lon_deg(meters: float, latitude_deg: float = 64.0) -> float:
     return meters / (111111.0 * max(math.cos(math.radians(latitude_deg)), 0.01))
 
 
-def position_equality_for(field_key: str, tolerance_m: float) -> Callable[[Optional[str], Optional[str]], bool]:
+def position_equality_for(
+    field_key: str, tolerance_m: float
+) -> Callable[[Optional[str], Optional[str]], bool]:
     """Build an equality predicate for a position field at the given tolerance.
 
     The CLI passes a meters value; lat/lon are converted to degree tolerances
@@ -257,10 +260,10 @@ def _identity(value: Optional[str]) -> Optional[str]:
 class TOSComponent:
     """One component of a composite TOS field (e.g. antenna.antenna_height)."""
 
-    label: str           # display label, e.g. "antenna.antenna_height"
-    entity: str          # TOS entity subtype, e.g. "antenna" or "monument"
+    label: str  # display label, e.g. "antenna.antenna_height"
+    entity: str  # TOS entity subtype, e.g. "antenna" or "monument"
     attribute_code: str  # TOS attribute code, e.g. "antenna_height"
-    key: str             # single letter for interactive prompt, e.g. "a" or "m"
+    key: str  # single letter for interactive prompt, e.g. "a" or "m"
     current_value_key: str  # key to read current value from tos_adapter session dict
 
 
@@ -314,7 +317,9 @@ class FieldSpec:
     @property
     def tos_writable(self) -> bool:
         """True if this field can be pushed to TOS via ``--push-tos``."""
-        return self.tos_attribute_code is not None and self.tos_target_entity is not None
+        return (
+            self.tos_attribute_code is not None and self.tos_target_entity is not None
+        )
 
     def values_equal(self, a: Optional[str], b: Optional[str]) -> bool:
         a_n = self.normalize(a)
@@ -418,8 +423,20 @@ FIELDS: List[FieldSpec] = [
         description="Antenna height above mark including monument offset (m)",
         tos_breakdown=tos_adapter.antenna_height_breakdown,
         tos_components=[
-            TOSComponent("antenna.antenna_height", "antenna", "antenna_height", "a", "antenna_height"),
-            TOSComponent("monument.monument_height", "monument", "monument_height", "m", "monument_height"),
+            TOSComponent(
+                "antenna.antenna_height",
+                "antenna",
+                "antenna_height",
+                "a",
+                "antenna_height",
+            ),
+            TOSComponent(
+                "monument.monument_height",
+                "monument",
+                "monument_height",
+                "m",
+                "monument_height",
+            ),
         ],
         # Composite of antenna.antenna_height + monument.monument_height — cannot
         # be written back without knowing the split; tos_attribute_code stays None.
@@ -439,8 +456,20 @@ FIELDS: List[FieldSpec] = [
         description="Marker-to-ARP East offset (m); absent from cfg = 0.0000",
         tos_breakdown=tos_adapter.antenna_east_breakdown,
         tos_components=[
-            TOSComponent("antenna.antenna_offset_east", "antenna", "antenna_offset_east", "a", "antenna_offset_east"),
-            TOSComponent("monument.monument_offset_east", "monument", "monument_offset_east", "m", "monument_offset_east"),
+            TOSComponent(
+                "antenna.antenna_offset_east",
+                "antenna",
+                "antenna_offset_east",
+                "a",
+                "antenna_offset_east",
+            ),
+            TOSComponent(
+                "monument.monument_offset_east",
+                "monument",
+                "monument_offset_east",
+                "m",
+                "monument_offset_east",
+            ),
         ],
         # Composite of antenna + monument offsets — not directly writable.
     ),
@@ -459,8 +488,20 @@ FIELDS: List[FieldSpec] = [
         description="Marker-to-ARP North offset (m); absent from cfg = 0.0000",
         tos_breakdown=tos_adapter.antenna_north_breakdown,
         tos_components=[
-            TOSComponent("antenna.antenna_offset_north", "antenna", "antenna_offset_north", "a", "antenna_offset_north"),
-            TOSComponent("monument.monument_offset_north", "monument", "monument_offset_north", "m", "monument_offset_north"),
+            TOSComponent(
+                "antenna.antenna_offset_north",
+                "antenna",
+                "antenna_offset_north",
+                "a",
+                "antenna_offset_north",
+            ),
+            TOSComponent(
+                "monument.monument_offset_north",
+                "monument",
+                "monument_offset_north",
+                "m",
+                "monument_offset_north",
+            ),
         ],
         # Composite of antenna + monument offsets — not directly writable.
     ),
@@ -552,7 +593,9 @@ def with_position_tolerance(tolerance_m: float) -> List[FieldSpec]:
         "height": position_equality_for("height", tolerance_m),
     }
     return [
-        replace(spec, equal=overrides[spec.cfg_key]) if spec.cfg_key in overrides else spec
+        replace(spec, equal=overrides[spec.cfg_key])
+        if spec.cfg_key in overrides
+        else spec
         for spec in FIELDS
     ]
 
