@@ -38,6 +38,33 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _learned_ftp_mode_override(station_id: str) -> Optional[str]:
+    """Look up an open ftp_mode discrepancy for this station, return its observed value.
+
+    Returns None when no observation exists, when the cfg_discrepancy table
+    is unavailable (fresh install / migration not applied), or when the
+    discrepancy_log machinery isn't importable. All failure modes fall
+    through silently — station-config loading must never break because of
+    this lookup.
+    """
+    try:
+        from .cfg import discrepancy_log as _dlog  # type: ignore
+    except Exception:
+        return None
+
+    try:
+        records = _dlog.list_open(
+            station_ids=[station_id], cfg_keys=["ftp_mode"]
+        )
+    except Exception:
+        return None
+
+    if not records:
+        return None
+    # The receiver_value column carries the observed working mode (active/passive).
+    return records[0].receiver_value
+
+
 def get_station_config(
     station_id: str, *, silent: bool = False
 ) -> Optional[Dict[str, Any]]:
@@ -93,6 +120,17 @@ def get_station_config(
 
         # Get FTP mode
         ftp_mode = config_parser.getStationFtpMode(station_id, router_ip)
+
+        # Apply runtime-observed override from cfg_discrepancy. The download
+        # path records ftp_mode there with detected_by='ftp_handshake' when
+        # the live handshake reveals cfg disagrees with what actually works.
+        # Honoring the open observation here means subsequent runs start in
+        # the working mode without repeating the passive→active dance.
+        # Failures (DB unavailable, etc.) silently fall through to the cfg-
+        # derived value — never blocks station-config loading.
+        observed_ftp_mode = _learned_ftp_mode_override(station_id)
+        if observed_ftp_mode and observed_ftp_mode != ftp_mode:
+            ftp_mode = observed_ftp_mode
 
         # Get system paths - USE RECEIVERS.CFG AS SINGLE SOURCE OF TRUTH
         # Import ReceiversConfig to read from receivers.cfg (not postprocess.cfg!)

@@ -2476,12 +2476,51 @@ class PolaRX5(BaseReceiver):
                         offset=0,
                         session_type=session_type,
                     )
-                    self.logger.info(
-                        f"✅ Success with {self._get_ftp_mode_description(new_pasv)} mode - updating station config"
-                    )
 
-                    # Update our internal mode preference for this station
+                    # Update our internal mode preference for this station so
+                    # remaining files in this batch don't repeat the dance.
                     self.pasv = new_pasv
+
+                    # Persist the observation so the NEXT scheduler run starts
+                    # in the working mode. Recorded into cfg_discrepancy with
+                    # detected_by='ftp_handshake' — operator can review via
+                    # `receivers cfg list --field ftp_mode` and promote to
+                    # stations.cfg when ready. The whole block is best-effort:
+                    # any failure (no station_info on a unit-test fixture, DB
+                    # unavailable, missing migration) is logged at debug and
+                    # never blocks the download.
+                    try:
+                        new_mode = "active" if not new_pasv else "passive"
+                        station_info = getattr(self, "station_info", {}) or {}
+                        cfg_mode = (
+                            station_info.get("router", {}).get("ftp_mode")
+                            or station_info.get("receiver", {}).get("ftp_mode")
+                        )
+                        if cfg_mode != new_mode:
+                            from ..cfg import discrepancy_log as _dlog
+
+                            _dlog.record_detection(
+                                self.station_id,
+                                "ftp_mode",
+                                cfg_value=cfg_mode,
+                                receiver_value=new_mode,
+                                tos_value=None,
+                                verdict="conflict",
+                                detected_by=_dlog.DETECTED_BY_FTP_HANDSHAKE,
+                            )
+                            self.logger.info(
+                                f"✅ Success with {self._get_ftp_mode_description(new_pasv)} mode "
+                                f"(cfg_mode={cfg_mode!r} → observed={new_mode!r}, "
+                                f"recorded to cfg_discrepancy)"
+                            )
+                        else:
+                            self.logger.info(
+                                f"✅ Success with {self._get_ftp_mode_description(new_pasv)} mode"
+                            )
+                    except Exception as _exc:
+                        self.logger.debug(
+                            f"Could not record ftp_mode observation: {_exc}"
+                        )
 
                     # Return the NEW working connection so the caller can
                     # use it for subsequent files
