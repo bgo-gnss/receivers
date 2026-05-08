@@ -531,7 +531,10 @@ class PolaRX5(BaseReceiver):
         self.logger.info(f"Validated {validated_files} existing files")
 
         if not all_missing_files:
-            self.logger.info("Archive is up to date")
+            archive_dir = (
+                Path(archive_file_list[0]).parent if archive_file_list else None
+            )
+            self.logger.info(f"Archive is up to date ({archive_dir})")
 
             # Register validated archived files in file_tracking
             # (ensures files found on disk appear in the dashboard)
