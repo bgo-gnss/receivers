@@ -1207,9 +1207,9 @@
         "view": {
           "allLayers": true,
           "id": "coords",
-          "lat": 65.1,
-          "lon": -18.8,
-          "zoom": 7.0
+          "lat": 65.0,
+          "lon": -18.7,
+          "zoom": 7.4
         }
       },
       "pluginVersion": "10.0.0",
