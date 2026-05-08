@@ -135,6 +135,11 @@ class NetR9HTTPDownloader:
         # Track remote file sizes from HTTP directory listing (filename -> size in bytes)
         self.remote_sizes: Dict[str, int] = {}
 
+        # Last per-file error during a download_files() call. Read by the
+        # NetR9/NetRS wrapper so "All file downloads failed" surfaces the
+        # actual cause (404, broken pipe, connection refused, ...).
+        self.last_file_error: Optional[str] = None
+
         # Base path handling for NetR5 CACHEDIR prefix (hybrid approach)
         # Check if explicit base_path is configured in stations.cfg
         receiver_config = station_config.get("receiver", {})
@@ -447,6 +452,8 @@ class NetR9HTTPDownloader:
                             self.logger.info(
                                 f"Removing invalid downloaded file: {local_path}"
                             )
+                            _err_msg = f"Validation failed: {validation.get('error', 'unknown')}"
+                            self.last_file_error = _err_msg
                             record_download(
                                 self.station_id,
                                 session_type,
@@ -457,7 +464,7 @@ class NetR9HTTPDownloader:
                                 file_size=expected_size,
                                 stall_timeout_used=self.stall_timeout,
                                 attempt=attempt + 1,
-                                message=f"Validation failed: {validation.get('error', 'unknown')}",
+                                message=_err_msg,
                             )
                             try:
                                 local_path.unlink()
@@ -494,6 +501,8 @@ class NetR9HTTPDownloader:
                         self.logger.info(
                             f"   Partial file kept for resume: {local_path}"
                         )
+                        _err_msg = f"Size mismatch: got {local_file_size}, expected {expected_size}"
+                        self.last_file_error = _err_msg
                         record_download(
                             self.station_id,
                             session_type,
@@ -504,7 +513,7 @@ class NetR9HTTPDownloader:
                             file_size=expected_size,
                             stall_timeout_used=self.stall_timeout,
                             attempt=attempt + 1,
-                            message=f"Size mismatch: got {local_file_size}, expected {expected_size}",
+                            message=_err_msg,
                         )
                         return False
                 else:
@@ -529,6 +538,8 @@ class NetR9HTTPDownloader:
                         self.logger.error(
                             f"❌ Download validation failed for {filename}: {validation['error']}"
                         )
+                        _err_msg = f"Validation failed: {validation.get('error', 'unknown')}"
+                        self.last_file_error = _err_msg
                         record_download(
                             self.station_id,
                             session_type,
@@ -538,7 +549,7 @@ class NetR9HTTPDownloader:
                             bytes_downloaded=local_file_size,
                             stall_timeout_used=self.stall_timeout,
                             attempt=attempt + 1,
-                            message=f"Validation failed: {validation.get('error', 'unknown')}",
+                            message=_err_msg,
                         )
                         try:
                             local_path.unlink()
@@ -552,6 +563,8 @@ class NetR9HTTPDownloader:
                 is_stall = isinstance(e, TimeoutError) or "stall" in error_msg
                 outcome = "stall_timeout" if is_stall else "failed"
 
+                _err_msg = str(e)[:500]
+                self.last_file_error = _err_msg
                 record_download(
                     self.station_id,
                     session_type,
@@ -562,7 +575,7 @@ class NetR9HTTPDownloader:
                     file_size=expected_size,
                     stall_timeout_used=self.stall_timeout,
                     attempt=attempt + 1,
-                    message=str(e)[:500],
+                    message=_err_msg,
                 )
 
                 # If this was the last attempt, give up
@@ -635,6 +648,9 @@ class NetR9HTTPDownloader:
 
         # Ensure tmp directory exists
         tmp_dir.mkdir(parents=True, exist_ok=True)
+
+        # Reset before each batch so the wrapper surfaces this run's last error.
+        self.last_file_error = None
 
         downloaded_files = []
         total_files = len(files_dict)
