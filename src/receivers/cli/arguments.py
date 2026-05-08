@@ -18,7 +18,7 @@ Date Flags (download, health):
 
 import argparse
 import logging
-from typing import Optional
+from typing import Iterable, List, Optional
 
 # Try to get defaults from gps_parser
 try:
@@ -28,6 +28,27 @@ try:
 except ImportError:
     HAS_GPS_PARSER = False
     gps_parser = None
+
+
+def normalize_station_tokens(tokens: Optional[Iterable[str]]) -> List[str]:
+    """Normalize a list of station tokens from positional CLI args.
+
+    Splits each token on commas, strips whitespace and stray punctuation,
+    filters empty strings, and uppercases. Tolerates the common shell mishaps
+    of pasting comma-separated lists where args are expected to be space-separated:
+
+        ['AFST', 'ENTC']            -> ['AFST', 'ENTC']
+        ['AFST,', 'ENTC,', 'FAGD']  -> ['AFST', 'ENTC', 'FAGD']
+        ['AFST,ENTC,FAGD']          -> ['AFST', 'ENTC', 'FAGD']
+        ['afst', ',', '']           -> ['AFST']
+    """
+    out: List[str] = []
+    for tok in tokens or []:
+        for piece in tok.split(","):
+            sid = piece.strip().strip(";").strip()
+            if sid:
+                out.append(sid.upper())
+    return out
 
 
 def get_default_values():

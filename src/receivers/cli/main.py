@@ -265,6 +265,14 @@ def cmd_download(args) -> int:
         logger = setup_logging(args.loglevel)
         audit_logger = None
 
+    # Normalize station tokens — strips stray commas/whitespace so
+    # `receivers download AFST, ENTC, FAGD` works the same as
+    # `receivers download AFST ENTC FAGD`. Without this, argparse passes
+    # the literal trailing-comma tokens through and lookups silently fail.
+    from .arguments import normalize_station_tokens
+
+    args.stations = normalize_station_tokens(args.stations)
+
     # Expand --all to all configured stations
     if getattr(args, "all_stations", False):
         all_configs = get_all_station_configs()
@@ -1915,6 +1923,11 @@ def cmd_health(args) -> int:
     # Initialize results collector for compact/icinga modes
     args._health_results = []
 
+    # Normalize station tokens (strip stray commas, split comma-separated lists).
+    from .arguments import normalize_station_tokens
+
+    args.stations = normalize_station_tokens(args.stations)
+
     # Expand --all to all configured stations
     if getattr(args, "all_stations", False):
         all_configs = get_all_station_configs()
@@ -2121,8 +2134,10 @@ def cmd_validate_web_accuracy(args) -> int:
         validator = ConfigAccuracyValidator()
 
         # Get stations to validate
+        from .arguments import normalize_station_tokens
+
         if args.stations:
-            station_ids = [s.upper() for s in args.stations]
+            station_ids = normalize_station_tokens(args.stations)
         else:
             # Get all configured stations
             station_configs = get_all_station_configs()
@@ -2214,7 +2229,9 @@ def cmd_validate(args) -> int:
         # Get stations to validate
         if args.stations:
             # Validate specific stations
-            station_ids = [s.upper() for s in args.stations]
+            from .arguments import normalize_station_tokens
+
+            station_ids = normalize_station_tokens(args.stations)
             station_configs = {}
             for station_id in station_ids:
                 config = get_station_config(station_id)
