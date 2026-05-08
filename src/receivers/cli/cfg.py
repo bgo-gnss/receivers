@@ -1162,7 +1162,9 @@ def cmd_cfg_reconcile(args) -> int:
     elif args.all:
         station_ids = _all_station_ids()
     elif args.station:
-        station_ids = [s.upper() for s in args.station]
+        from .arguments import normalize_station_tokens
+
+        station_ids = normalize_station_tokens(args.station)
     else:
         print("❌ specify station IDs, --all, or --open")
         print("   try: receivers cfg reconcile --help")
@@ -1428,8 +1430,9 @@ def _print_records_table(records, *, show_resolution: bool) -> None:
 def cmd_cfg_list(args) -> int:
     """``cfg list`` — open discrepancies, optionally filtered."""
     from ..cfg import discrepancy_log as _dlog  # type: ignore[attr-defined]
+    from .arguments import normalize_station_tokens
 
-    station_ids = [s.upper() for s in args.station] if args.station else None
+    station_ids = normalize_station_tokens(args.station) if args.station else None
     fields: Optional[List[str]] = None
     if args.field:
         valid = set(all_keys())
@@ -1470,7 +1473,10 @@ def cmd_cfg_history(args) -> int:
         print("❌ specify a station ID, --field KEY, or both")
         return 2
 
-    station_id = args.station[0].upper() if args.station else None
+    from .arguments import normalize_station_tokens
+
+    _normalized_station = normalize_station_tokens(args.station) if args.station else []
+    station_id = _normalized_station[0] if _normalized_station else None
     if args.field:
         valid = set(all_keys())
         invalid = [f for f in args.field if f not in valid]
