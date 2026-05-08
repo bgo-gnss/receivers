@@ -11,6 +11,15 @@
 BEGIN;
 
 -- ============================================================================
+-- ROLES (create if missing — harmless on production where they already exist)
+-- ============================================================================
+
+DO $$ BEGIN
+    CREATE ROLE grafana_read;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+-- ============================================================================
 -- SCHEMA MIGRATION TRACKING
 -- ============================================================================
 

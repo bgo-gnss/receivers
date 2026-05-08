@@ -124,14 +124,25 @@ cmd_migrate() {
     header "Applying migrations to ${DB_NAME}@${host}"
 
     local count=0
+    local skipped=0
     for f in "$MIGRATIONS_DIR"/[0-9]*.sql; do
         [[ ! -f "$f" ]] && continue
         # Skip rollback files
         [[ "$f" == *_rollback.sql ]] && continue
 
-        local basename
-        basename="$(basename "$f")"
-        info "Applying: $basename"
+        local migration_name
+        migration_name="$(basename "$f" .sql)"
+
+        # Skip migrations already recorded in schema_migrations
+        local already_applied
+        already_applied=$(psql -h "$host" -U "$DB_USER" -d "$DB_NAME" --no-align --tuples-only \
+            -c "SELECT 1 FROM schema_migrations WHERE migration_name = '$migration_name' LIMIT 1;" 2>/dev/null)
+        if [[ "$already_applied" == "1" ]]; then
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        info "Applying: $(basename "$f")"
 
         psql -h "$host" -U "$DB_USER" -d "$DB_NAME" \
             -f "$f" \
@@ -142,7 +153,7 @@ cmd_migrate() {
         count=$((count + 1))
     done
 
-    info "Applied $count migrations"
+    info "Applied $count migrations, skipped $skipped already-applied"
 }
 
 cmd_drop() {
