@@ -87,6 +87,34 @@ warn() { echo -e "  ${YELLOW}⚠${NC} $*"; }
 err()  { echo -e "  ${RED}✗${NC} $*"; }
 phase(){ echo -e "\n${BLUE}━━━ Phase $1: $2 ━━━${NC}"; }
 
+# ── User-level systemctl helper ────────────────────────────────────────────
+# Run `systemctl --user` as $SERVICE_USER from a root install context.
+# Requires linger enabled (Phase 10 sets that up) so /run/user/<uid> exists.
+# Errors are tolerated by callers via `|| true` where appropriate.
+gpsops_systemctl() {
+    local uid
+    uid=$(id -u "$SERVICE_USER" 2>/dev/null) || return 1
+    sudo -u "$SERVICE_USER" \
+        XDG_RUNTIME_DIR="/run/user/$uid" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+        systemctl --user "$@"
+}
+
+# Stop the scheduler regardless of whether it's running as a user unit
+# (current) or a legacy system unit (pre-migration). Used by --wipe* flags
+# and by Phase 10 before the unit is reinstalled.
+stop_scheduler() {
+    local svc="gps-receivers-scheduler"
+    # User-unit attempt — runs only if linger is set up and runtime dir exists.
+    local uid
+    uid=$(id -u "$SERVICE_USER" 2>/dev/null || echo "")
+    if [[ -n "$uid" ]] && [[ -d "/run/user/$uid" ]]; then
+        gpsops_systemctl stop "$svc" 2>/dev/null || true
+    fi
+    # Legacy system unit — safe no-op if absent.
+    systemctl stop "$svc" 2>/dev/null || true
+}
+
 # ── Parse arguments ───────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -180,7 +208,7 @@ if $FLAG_WIPE_ALL; then
     echo -e "${RED}WARNING: --wipe-all will DROP the database and delete $DATA_DIR/*${NC}"
     read -p "  Type 'yes' to confirm: " confirm
     if [[ "$confirm" != "yes" ]]; then echo "Aborted."; exit 1; fi
-    systemctl stop gps-receivers-scheduler 2>/dev/null || true
+    stop_scheduler
     sudo -u postgres dropdb --if-exists "$DB_NAME"
     rm -rf "$VENV_DIR"
     rm -rf "$DATA_DIR"/*
@@ -190,11 +218,11 @@ elif $FLAG_WIPE_DB; then
     echo -e "${RED}WARNING: --wipe-db will DROP and recreate the $DB_NAME database${NC}"
     read -p "  Type 'yes' to confirm: " confirm
     if [[ "$confirm" != "yes" ]]; then echo "Aborted."; exit 1; fi
-    systemctl stop gps-receivers-scheduler 2>/dev/null || true
+    stop_scheduler
     sudo -u postgres dropdb --if-exists "$DB_NAME"
     ok "Database dropped, will be recreated in Phase 6"
 elif $FLAG_WIPE; then
-    systemctl stop gps-receivers-scheduler 2>/dev/null || true
+    stop_scheduler
     rm -rf "$VENV_DIR"
     ok "Venv wiped, will be recreated in Phase 4"
 fi
@@ -823,17 +851,99 @@ fi
 # ===========================================================================
 phase 10 "systemd + logrotate"
 
-# Install service file (patch paths for this installation)
+# ── Scheduler runs as a USER-LEVEL systemd unit owned by gpsops ──
+# Rationale: gpsops is the operator account; the operator should not need sudo
+# to restart their own service. Operator workflow becomes (no sudo):
+#   ssh gpsops@host 'systemctl --user restart gps-receivers-scheduler'
+#   ssh gpsops@host 'journalctl --user-unit gps-receivers-scheduler -f'
+# bgo continues to own code + venv + install.sh; gpsops owns runtime.
+
+# Step 1 — enable linger so the user unit runs without an active gpsops session.
+# Without this, `systemctl --user start` only works while gpsops has a TTY.
+SERVICE_UID=$(id -u "$SERVICE_USER")
+SERVICE_RUNDIR="/run/user/$SERVICE_UID"
+
+if loginctl show-user "$SERVICE_USER" -p Linger 2>/dev/null | grep -q "Linger=yes"; then
+    ok "Linger already enabled for $SERVICE_USER"
+else
+    loginctl enable-linger "$SERVICE_USER"
+    ok "Enabled linger for $SERVICE_USER (user manager auto-starts on boot)"
+fi
+
+# Wait for the user manager to come up (LDAP-backed accounts can take longer
+# than a hard-coded sleep). Guards against a race where daemon-reload runs
+# before /run/user/<uid> is ready.
+for _ in {1..30}; do
+    [[ -d "$SERVICE_RUNDIR" ]] && break
+    sleep 1
+done
+if [[ ! -d "$SERVICE_RUNDIR" ]]; then
+    err "User runtime dir $SERVICE_RUNDIR did not appear after 30s"
+    err "Check: loginctl user-status $SERVICE_USER"
+    exit 1
+fi
+ok "User manager ready ($SERVICE_RUNDIR)"
+
+# Step 1b — enable cgroup delegation so MemoryMax / CPUQuota in the user unit
+# actually enforce. Without this, those directives in a user unit are accepted
+# but silently ignored. The drop-in applies to the user@.service template, so
+# all user services for any user get delegation. Idempotent: only writes the
+# drop-in if missing or different.
+DELEGATE_DROPIN_DIR=/etc/systemd/system/user@.service.d
+DELEGATE_DROPIN_FILE="$DELEGATE_DROPIN_DIR/delegate.conf"
+DELEGATE_CONTENT='[Service]
+Delegate=yes
+'
+if [[ ! -f "$DELEGATE_DROPIN_FILE" ]] || ! diff -q <(printf '%s' "$DELEGATE_CONTENT") "$DELEGATE_DROPIN_FILE" >/dev/null 2>&1; then
+    mkdir -p "$DELEGATE_DROPIN_DIR"
+    printf '%s' "$DELEGATE_CONTENT" > "$DELEGATE_DROPIN_FILE"
+    chmod 644 "$DELEGATE_DROPIN_FILE"
+    systemctl daemon-reload
+    ok "Installed user@.service Delegate=yes drop-in (enables MemoryMax/CPUQuota for user units)"
+else
+    ok "user@.service cgroup delegation already enabled"
+fi
+
+# Step 2 — remove legacy system-level unit if present (one-way migration).
+LEGACY_UNIT=/etc/systemd/system/gps-receivers-scheduler.service
+if [[ -f "$LEGACY_UNIT" ]]; then
+    systemctl stop gps-receivers-scheduler 2>/dev/null || true
+    systemctl disable gps-receivers-scheduler 2>/dev/null || true
+    rm -f "$LEGACY_UNIT"
+    systemctl daemon-reload
+    ok "Removed legacy system-level unit ($LEGACY_UNIT)"
+fi
+
+# Step 3 — install the user unit owned by gpsops.
+USER_UNIT_DIR="$GPSOPS_HOME/.config/systemd/user"
+USER_UNIT_FILE="$USER_UNIT_DIR/gps-receivers-scheduler.service"
+sudo -u "$SERVICE_USER" mkdir -p "$USER_UNIT_DIR"
+
+# Patch paths for this installation. Same sed pattern as before.
 sed -e "s|WorkingDirectory=.*|WorkingDirectory=$INSTALL_DIR|" \
     -e "s|ExecStart=.*/receivers |ExecStart=$VENV_DIR/bin/receivers |" \
     -e "s|ExecStop=.*/receivers |ExecStop=$VENV_DIR/bin/receivers |" \
     -e "s|ReadWritePaths=.*|ReadWritePaths=$CACHE_DIR $DATA_DIR /tmp|" \
     "$INSTALL_DIR/deployment/systemd/gps-receivers-scheduler.service" \
-    > /etc/systemd/system/gps-receivers-scheduler.service
+    > "$USER_UNIT_FILE"
+chown "$SERVICE_USER:$SERVICE_GROUP" "$USER_UNIT_FILE"
+chmod 644 "$USER_UNIT_FILE"
+ok "User unit installed: $USER_UNIT_FILE"
 
-systemctl daemon-reload
-systemctl enable --now gps-receivers-scheduler
-ok "systemd service installed, enabled, and started"
+# Step 4 — reload + enable + start as gpsops via systemctl --user.
+gpsops_systemctl daemon-reload
+gpsops_systemctl enable gps-receivers-scheduler.service >/dev/null
+gpsops_systemctl restart gps-receivers-scheduler.service
+
+# Verify it's actually running. is-active returns 0 when active, 3 otherwise —
+# so gate on the exit code rather than scraping output.
+if gpsops_systemctl is-active gps-receivers-scheduler.service >/dev/null 2>&1; then
+    ok "User-level scheduler service active (managed as $SERVICE_USER, no sudo)"
+else
+    err "Scheduler failed to start as user unit"
+    gpsops_systemctl status gps-receivers-scheduler.service --no-pager 2>&1 | head -25
+    exit 1
+fi
 
 # Config sync timer — pulls gps-config-data every 10 min and copies safe files
 # (stations.cfg, receivers.cfg, scheduler.yaml, icinga.cfg) to CONFIG_DIR.
@@ -969,23 +1079,26 @@ fi
 echo ""
 echo "Day-to-day operations:"
 echo ""
-echo "  # Update code + reinstall (as bgo, no sudo needed):"
+echo "  # bgo owns code + venv. gpsops owns the runtime service."
+echo ""
+echo "  # Update code (as bgo, no sudo for the service restart):"
 echo "  cd ~/git/receivers && git pull"
 echo "  ~/git/receivers/venv/bin/pip install -e ."
-echo "  sudo systemctl restart gps-receivers-scheduler"
+echo "  ssh $SERVICE_USER@\$(hostname) 'systemctl --user restart gps-receivers-scheduler'"
 if $FLAG_DEV; then
     echo ""
     echo "  # Update sibling package (editable — git pull is live, no reinstall):"
     echo "  cd ~/git/gtimes && git pull"
-    echo "  sudo systemctl restart gps-receivers-scheduler"
+    echo "  ssh $SERVICE_USER@\$(hostname) 'systemctl --user restart gps-receivers-scheduler'"
 fi
 echo ""
-echo "  # Manual download:"
-echo "  sudo -u $SERVICE_USER receivers download ELDC --sync --archive"
+echo "  # Manual download (as gpsops directly, no sudo):"
+echo "  ssh $SERVICE_USER@\$(hostname) 'receivers download ELDC --sync --archive'"
 echo ""
-echo "  # Service management:"
-echo "  sudo systemctl restart gps-receivers-scheduler"
-echo "  journalctl -u gps-receivers-scheduler -f"
+echo "  # Service management (as gpsops, no sudo):"
+echo "  ssh $SERVICE_USER@\$(hostname) 'systemctl --user status  gps-receivers-scheduler'"
+echo "  ssh $SERVICE_USER@\$(hostname) 'systemctl --user restart gps-receivers-scheduler'"
+echo "  ssh $SERVICE_USER@\$(hostname) 'journalctl --user-unit gps-receivers-scheduler -f'"
 echo ""
 echo "  # Grafana: http://${IP_ADDR:-<server-ip>}:3000"
 echo ""

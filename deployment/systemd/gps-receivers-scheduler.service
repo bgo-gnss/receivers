@@ -1,20 +1,28 @@
 [Unit]
+# This is a USER-LEVEL systemd unit, installed at
+#   ~gpsops/.config/systemd/user/gps-receivers-scheduler.service
+# Operator manages it as gpsops (no sudo):
+#   systemctl --user restart gps-receivers-scheduler
+#   journalctl --user-unit gps-receivers-scheduler -f
+# Linger must be enabled so the unit runs without an active gpsops session:
+#   loginctl enable-linger gpsops
+# install.sh handles all of the above.
+
 Description=GPS Receivers Pipeline Scheduler - Automated GNSS Data Processing
 Documentation=https://github.com/bennigo/receivers
-After=network-online.target postgresql.service
+# Note: user units cannot Require= system units (postgresql, network-online).
+# After= still gives ordering on boot when linger triggers user-manager startup.
+After=network-online.target
 Wants=network-online.target
-Requires=postgresql.service
 
 [Service]
 Type=simple
-User=gpsops
-Group=gpsops
 WorkingDirectory=/home/bgo/git/receivers
 
 Environment="LANG=en_US.UTF-8"
 Environment="GPS_CONFIG_PATH=/home/gpsops/.config/gpsconfig"
 
-# Command to run - Pipeline scheduler schedules ALL stations from stations.cfg.
+# Pipeline scheduler schedules ALL stations from stations.cfg.
 # Worker count is controlled via `scheduler.max_workers` in scheduler.yaml —
 # no --max-workers CLI flag here, so a single knob governs it.
 # Use --stations flag on manual CLI runs to test subsets.
@@ -30,7 +38,11 @@ RestartSec=30s
 StartLimitInterval=10min
 StartLimitBurst=5
 
-# Resource limits
+# Resource limits — for user units these only enforce when cgroup delegation
+# is enabled on user@.service. install.sh installs the
+# /etc/systemd/system/user@.service.d/delegate.conf drop-in for that.
+# If you ever copy this unit to a host without that drop-in, MemoryMax and
+# CPUQuota will be silently ignored.
 LimitNOFILE=65536
 MemoryMax=4G
 MemoryHigh=3G
@@ -59,4 +71,5 @@ ReadWritePaths=/home/gpsops/.cache/gps_receivers /mnt/data/gpsdata /tmp
 #NotifyAccess=main
 
 [Install]
-WantedBy=multi-user.target
+# default.target is the user-unit equivalent of multi-user.target.
+WantedBy=default.target
