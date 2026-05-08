@@ -1,7 +1,10 @@
 {
-  "uid": "cflea3a8nbwg0b",
   "name": "GPS Station Map",
+  "uid": "cflea3a8nbwg0b",
   "kind": 1,
+  "type": "geomap",
+  "description": "Exported library panel model for re-seeding Grafana on fresh deployments.",
+  "version": 5,
   "model": {
     "datasource": {
       "type": "grafana-postgresql-datasource",
@@ -553,9 +556,9 @@
       "view": {
         "allLayers": true,
         "id": "coords",
-        "lat": 65.28,
+        "lat": 65.1,
         "lon": -18.8,
-        "zoom": 7.3
+        "zoom": 6.5
       }
     },
     "pluginVersion": "10.0.0",
