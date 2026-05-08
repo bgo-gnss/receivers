@@ -118,8 +118,7 @@ class LeicaFTPDownloader:
         """
         self.station_id = station_id.upper()
 
-        # Set up logging
-        self.logger = self._get_logger(loglevel)
+        self.logger = logging.getLogger(f"{__name__}.{self.station_id}")
 
         # Extract connection info from station config
         # Handle both new format and legacy gps_parser format
@@ -161,23 +160,6 @@ class LeicaFTPDownloader:
         self.remote_sizes: Dict[str, int] = {}
 
         self.logger.info(f"Initialized Leica FTP downloader for {self.station_id}")
-
-    def _get_logger(self, level: int = logging.INFO) -> logging.Logger:
-        """Set up logger for this receiver instance."""
-        logger_name = f"{__name__}.{self.station_id}"
-        logger = logging.getLogger(logger_name)
-
-        if not logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-            )
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-            logger.setLevel(level)
-            logger.propagate = False
-
-        return logger
 
     def _is_ftp_mode_error(self, error: Exception) -> bool:
         """Check if error is related to FTP passive/active mode issues.

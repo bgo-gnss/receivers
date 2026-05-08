@@ -297,6 +297,8 @@ class SeptentrioDownloadManager(BaseDownloadManager):
         filename = Path(remote_file_path).name
         desc = f"Downloading {filename}"
 
+        import sys as _sys
+
         with tqdm(
             total=remote_size,
             initial=resume_offset,
@@ -304,6 +306,7 @@ class SeptentrioDownloadManager(BaseDownloadManager):
             unit_scale=True,
             unit_divisor=1024,
             desc=desc,
+            disable=not _sys.stderr.isatty(),
         ) as pbar:
             with open(local_file_path, "ab") as f:
 

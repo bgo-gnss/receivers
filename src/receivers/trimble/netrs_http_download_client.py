@@ -115,8 +115,7 @@ class NetRSHTTPDownloader:
         self.station_id = station_id.upper()
         self._station_config = station_config
 
-        # Set up logging (matching NetR9 pattern)
-        self.logger = self._get_logger()
+        self.logger = logging.getLogger(f"{__name__}.{self.station_id}")
 
         # Initialize HTTP client
         self.http_client = TrimbleHTTPClient(station_id, station_config)
@@ -142,23 +141,6 @@ class NetRSHTTPDownloader:
         self.remote_sizes: Dict[str, int] = {}
 
         self.logger.info(f"Initialized NetRS HTTP downloader for {self.station_id}")
-
-    def _get_logger(self, level: int = logging.INFO) -> logging.Logger:
-        """Set up logger for this receiver instance."""
-        logger_name = f"{__name__}.{self.station_id}"
-        logger = logging.getLogger(logger_name)
-
-        if not logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-            )
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-            logger.setLevel(level)
-            logger.propagate = False
-
-        return logger
 
     def download_file(
         self,
