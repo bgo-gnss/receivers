@@ -218,6 +218,23 @@ def api_get(
         raise
 
 
+def _handle_cookie_rotation(resp: Any, headers: dict[str, str]) -> None:
+    """Update headers in-place if Grafana rotated the session cookie."""
+    if "Cookie" not in headers:
+        return
+    new_parts = {}
+    for raw in resp.headers.get_all("Set-Cookie") or []:
+        first = raw.split(";", 1)[0].strip()
+        if "=" in first:
+            k, v = first.split("=", 1)
+            if k.strip().startswith("grafana_session"):
+                new_parts[k.strip()] = v.strip()
+    if new_parts:
+        new_cookie = "; ".join(f"{k}={v}" for k, v in new_parts.items())
+        headers["Cookie"] = new_cookie
+        _save_rotated_cookie(new_cookie)
+
+
 def api_post(
     url: str, headers: dict[str, str], payload: dict[str, Any]
 ) -> dict[str, Any]:
@@ -236,29 +253,35 @@ def api_post(
     )
     try:
         with urlopen(req, timeout=60) as resp:
-            # Handle cookie rotation: capture all Set-Cookie headers
-            # (Grafana sends separate headers for grafana_session and
-            # grafana_session_expiry)
-            if "Cookie" in headers:
-                new_parts = {}
-                for raw in resp.headers.get_all("Set-Cookie") or []:
-                    # Each Set-Cookie value: "key=val; Path=/; ..."
-                    first = raw.split(";", 1)[0].strip()
-                    if "=" in first:
-                        k, v = first.split("=", 1)
-                        if k.strip().startswith("grafana_session"):
-                            new_parts[k.strip()] = v.strip()
-                if new_parts:
-                    new_cookie = "; ".join(
-                        f"{k}={v}" for k, v in new_parts.items()
-                    )
-                    headers["Cookie"] = new_cookie
-                    # Persist rotated cookie to disk for subsequent runs
-                    _save_rotated_cookie(new_cookie)
+            _handle_cookie_rotation(resp, headers)
             return json.loads(resp.read())
     except HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
         error(f"HTTP {e.code} from POST {url}: {body[:500]}")
+        raise
+    except URLError as e:
+        error(f"Connection error to {url}: {e.reason}")
+        raise
+
+
+def api_patch(
+    url: str, headers: dict[str, str], payload: dict[str, Any]
+) -> dict[str, Any]:
+    """PATCH JSON to a Grafana API endpoint, return parsed JSON."""
+    data = json.dumps(payload).encode("utf-8")
+    req = Request(
+        url,
+        data=data,
+        headers={**headers, "Content-Type": "application/json"},
+        method="PATCH",
+    )
+    try:
+        with urlopen(req, timeout=60) as resp:
+            _handle_cookie_rotation(resp, headers)
+            return json.loads(resp.read())
+    except HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        error(f"HTTP {e.code} from PATCH {url}: {body[:500]}")
         raise
     except URLError as e:
         error(f"Connection error to {url}: {e.reason}")
@@ -561,6 +584,93 @@ def cmd_status(args: argparse.Namespace) -> None:
             print(f"  {RED}{name}{NC}\n    UID: {uid}\n    Status: NOT FOUND")
 
 
+def cmd_seed_library(args: argparse.Namespace) -> None:
+    """Create or update library panels on a Grafana target.
+
+    Reads all library_panel_*.json files from docs/grafana/ and pushes them
+    via the Library Elements API.  Grafana does not support file-provisioned
+    library panels, so this is the only way to seed them on a fresh instance.
+    """
+    global _active_target
+    target_name = args.target
+    _active_target = target_name
+    config = load_targets()
+    target = get_target(config, target_name)
+    headers = get_auth_headers(target, target_name)
+    base_url = target["url"].rstrip("/")
+
+    panel_files = sorted(DASHBOARDS_DIR.glob("library_panel_*.json"))
+    if not panel_files:
+        warn("No library panel files found (expected library_panel_*.json in docs/grafana/)")
+        return
+
+    header(f"Seeding library panels to {target_name} ({target['url']})")
+
+    for panel_file in panel_files:
+        with open(panel_file) as f:
+            panel_data = json.load(f)
+
+        uid = panel_data.get("uid")
+        name = panel_data.get("name", "?")
+        kind = panel_data.get("kind", 1)
+        model = panel_data.get("model", {})
+        version = panel_data.get("version", 1)
+
+        if not uid:
+            warn(f"No uid in {panel_file.name} — skipping")
+            continue
+
+        info(f"Processing library panel '{name}' (uid={uid})")
+
+        # Check existence
+        exists = False
+        existing_version = 1
+        try:
+            existing = api_get(f"{base_url}/api/library-elements/{uid}", headers)
+            exists = True
+            existing_version = existing.get("result", {}).get("version", version)
+            info(f"  Exists at version {existing_version}")
+        except HTTPError as e:
+            if e.code == 404:
+                info("  Does not exist — will create")
+            else:
+                error(f"  Failed to check existence: HTTP {e.code}")
+                continue
+        except Exception:
+            error("  Failed to check existence")
+            continue
+
+        if args.dry_run:
+            action = "PATCH" if exists else "POST"
+            info(f"  [DRY RUN] Would {action} to {base_url}/api/library-elements")
+            continue
+
+        try:
+            if exists:
+                payload: dict[str, Any] = {
+                    "name": name,
+                    "kind": kind,
+                    "model": model,
+                    "version": existing_version,
+                }
+                result = api_patch(
+                    f"{base_url}/api/library-elements/{uid}", headers, payload
+                )
+                new_ver = result.get("result", {}).get("version", "?")
+                info(f"  {GREEN}UPDATED{NC} — version={new_ver}")
+            else:
+                payload = {"name": name, "uid": uid, "kind": kind, "model": model}
+                result = api_post(
+                    f"{base_url}/api/library-elements", headers, payload
+                )
+                new_ver = result.get("result", {}).get("version", "?")
+                info(f"  {GREEN}CREATED{NC} — version={new_ver}")
+        except Exception:
+            error(f"  Failed to seed '{name}'")
+
+    info("Library panel seeding complete")
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 
@@ -570,12 +680,14 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  %(prog)s export                    Export local dashboards\n"
-            "  %(prog)s push --target vedur        Push to grafana.vedur.is\n"
-            "  %(prog)s push --target vedur --dry-run  Preview without pushing\n"
-            "  %(prog)s diff --target vedur        Compare local vs remote\n"
-            "  %(prog)s diff --target vedur -v     Show detailed diff\n"
-            "  %(prog)s status --target vedur      Show remote dashboard info\n"
+            "  %(prog)s export                         Export local dashboards\n"
+            "  %(prog)s push --target vedur             Push dashboards to grafana.vedur.is\n"
+            "  %(prog)s push --target vedur --dry-run   Preview without pushing\n"
+            "  %(prog)s diff --target vedur             Compare local vs remote\n"
+            "  %(prog)s diff --target vedur -v          Show detailed diff\n"
+            "  %(prog)s status --target vedur           Show remote dashboard info\n"
+            "  %(prog)s seed-library --target vedur     Create/update library panels\n"
+            "  %(prog)s seed-library --target local     Seed library panels on local\n"
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -607,6 +719,17 @@ def main() -> None:
         "--target", "-t", default="vedur", help="Target name (default: vedur)"
     )
 
+    # seed-library
+    p_seed = sub.add_parser(
+        "seed-library", help="Create/update library panels on a target"
+    )
+    p_seed.add_argument(
+        "--target", "-t", default="vedur", help="Target name (default: vedur)"
+    )
+    p_seed.add_argument(
+        "--dry-run", "-n", action="store_true", help="Preview without pushing"
+    )
+
     args = parser.parse_args()
 
     commands = {
@@ -614,6 +737,7 @@ def main() -> None:
         "push": cmd_push,
         "diff": cmd_diff,
         "status": cmd_status,
+        "seed-library": cmd_seed_library,
     }
     commands[args.command](args)
 
