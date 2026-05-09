@@ -215,3 +215,121 @@ def test_run_morning_recovery_handles_mixed_outcomes(mock_query, mock_retry):
     )
 
     assert mock_retry.call_count == 2
+
+
+# ─── Multi-day catchup (days_back > 1) ─────────────────────────────────────
+
+
+@patch("receivers.scheduling.morning_recovery._retry_station")
+@patch("receivers.scheduling.morning_recovery._query_stations_missing_yesterday")
+def test_multi_day_iterates_dates_descending(mock_query, mock_retry):
+    """days_back=3 must query each of the 3 most-recent dates, newest first."""
+    from datetime import datetime, timezone
+
+    # Empty result so we don't actually try to download
+    mock_query.return_value = []
+
+    today = datetime.now(timezone.utc).date()
+
+    _run_morning_recovery_job(
+        sessions=["15s_24hr"],
+        days_back=3,
+        max_workers=2,
+        station_timeout_minutes=8,
+        bypass_known_missing=False,
+    )
+
+    # Three queries, one per date, newest first
+    assert mock_query.call_count == 3
+    queried_dates = [call.args[1] for call in mock_query.call_args_list]
+    expected_dates = [today - __import__("datetime").timedelta(days=n) for n in (1, 2, 3)]
+    assert queried_dates == expected_dates
+    # No stations to retry, so _retry_station is never called
+    mock_retry.assert_not_called()
+
+
+@patch("receivers.scheduling.morning_recovery._retry_station")
+@patch("receivers.scheduling.morning_recovery._query_stations_missing_yesterday")
+def test_multi_day_runs_retry_per_date(mock_query, mock_retry):
+    """Each missing station is retried once per date it's missing."""
+    # Yesterday has AFST missing; 2-days-ago has FAGD; 3-days-ago has nothing
+    def fake_query(session, target_date, _bypass):
+        from datetime import datetime, timezone, timedelta
+
+        today = datetime.now(timezone.utc).date()
+        if target_date == today - timedelta(days=1):
+            return ["AFST"]
+        if target_date == today - timedelta(days=2):
+            return ["FAGD"]
+        return []
+
+    mock_query.side_effect = fake_query
+    mock_retry.side_effect = lambda sid, *a, **kw: (sid, True)
+
+    _run_morning_recovery_job(
+        sessions=["15s_24hr"],
+        days_back=3,
+        max_workers=2,
+        station_timeout_minutes=8,
+        bypass_known_missing=False,
+    )
+
+    assert mock_retry.call_count == 2
+    called_sids = sorted(call.args[0] for call in mock_retry.call_args_list)
+    assert called_sids == ["AFST", "FAGD"]
+
+
+@patch("receivers.scheduling.morning_recovery.datetime")
+@patch("receivers.scheduling.morning_recovery._retry_station")
+@patch("receivers.scheduling.morning_recovery._query_stations_missing_yesterday")
+def test_deadline_guard_stops_loop_within_15min_of_cutoff(
+    mock_query, mock_retry, mock_dt
+):
+    """When `now` is within 15 min of _DEADLINE_HOUR_UTC, the loop must abort."""
+    from datetime import datetime, timezone
+
+    # First call resolves today; subsequent calls resolve "now" inside the loop
+    # at 02:50 UTC — within 15 min of 03:00. Loop should exit before any query.
+    fake_now = datetime(2026, 5, 9, 2, 50, 0, tzinfo=timezone.utc)
+    mock_dt.now.return_value = fake_now
+    # Pass through datetime constructor / timedelta so the rest of the module works
+    mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+
+    mock_query.return_value = ["AFST"]  # would be queried if loop ran
+
+    _run_morning_recovery_job(
+        sessions=["15s_24hr"],
+        days_back=3,
+        max_workers=2,
+        station_timeout_minutes=8,
+        bypass_known_missing=False,
+    )
+
+    # Loop bailed before any DB query or retry
+    mock_query.assert_not_called()
+    mock_retry.assert_not_called()
+
+
+@patch("receivers.scheduling.morning_recovery.datetime")
+@patch("receivers.scheduling.morning_recovery._retry_station")
+@patch("receivers.scheduling.morning_recovery._query_stations_missing_yesterday")
+def test_deadline_guard_allows_safe_window(mock_query, mock_retry, mock_dt):
+    """When `now` is well before deadline, all dates must be processed."""
+    from datetime import datetime, timezone
+
+    fake_now = datetime(2026, 5, 9, 1, 35, 0, tzinfo=timezone.utc)
+    mock_dt.now.return_value = fake_now
+    mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+
+    mock_query.return_value = []
+
+    _run_morning_recovery_job(
+        sessions=["15s_24hr"],
+        days_back=3,
+        max_workers=2,
+        station_timeout_minutes=8,
+        bypass_known_missing=False,
+    )
+
+    # All three dates queried
+    assert mock_query.call_count == 3
