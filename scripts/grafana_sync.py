@@ -128,9 +128,10 @@ def get_auth_headers(target: dict[str, Any], target_name: str) -> dict[str, str]
             return {"Authorization": f"Bearer {token}"}
 
         # Fallback: check config file
-        token_file = Path(
-            os.environ.get("GPS_CONFIG_PATH", "~/.config/gpsconfig")
-        ).expanduser() / "grafana_tokens.yaml"
+        token_file = (
+            Path(os.environ.get("GPS_CONFIG_PATH", "~/.config/gpsconfig")).expanduser()
+            / "grafana_tokens.yaml"
+        )
         if token_file.exists():
             with open(token_file) as f:
                 tokens = yaml.safe_load(f) or {}
@@ -201,9 +202,7 @@ def _save_rotated_cookie(new_cookie: str) -> None:
 # ── HTTP helpers ─────────────────────────────────────────────────────────────
 
 
-def api_get(
-    url: str, headers: dict[str, str]
-) -> dict[str, Any]:
+def api_get(url: str, headers: dict[str, str]) -> dict[str, Any]:
     """GET a Grafana API endpoint, return parsed JSON."""
     req = Request(url, headers={**headers, "Content-Type": "application/json"})
     try:
@@ -400,6 +399,39 @@ def cmd_export(_args: argparse.Namespace) -> None:
     info("Export complete")
 
 
+def _collect_library_panel_uids(dashboard: dict[str, Any]) -> set[str]:
+    """Return the set of libraryPanel.uid references in a dashboard.
+
+    Walks top-level panels and nested panels (inside row panels). Library
+    panels referenced here must exist on the target before the dashboard
+    is pushed; otherwise Grafana renders a "Library panel not found"
+    placeholder with no API error returned at push time.
+    """
+    uids: set[str] = set()
+    for p in dashboard.get("panels", []) or []:
+        lp = p.get("libraryPanel") or {}
+        if isinstance(lp, dict) and lp.get("uid"):
+            uids.add(lp["uid"])
+        for child in p.get("panels", []) or []:
+            lp = child.get("libraryPanel") or {}
+            if isinstance(lp, dict) and lp.get("uid"):
+                uids.add(lp["uid"])
+    return uids
+
+
+def _missing_library_panels(
+    base_url: str, headers: dict[str, str], uids: set[str]
+) -> set[str]:
+    """Return the subset of *uids* that aren't defined on the target."""
+    missing: set[str] = set()
+    for uid in uids:
+        try:
+            api_get(f"{base_url}/api/library-elements/{uid}", headers)
+        except Exception:
+            missing.add(uid)
+    return missing
+
+
 def cmd_push(args: argparse.Namespace) -> None:
     """Push local dashboards to a remote Grafana target."""
     global _active_target
@@ -440,6 +472,22 @@ def cmd_push(args: argparse.Namespace) -> None:
         set_dashboard_uid(dashboard, target_uid)
         info(f"  Target UID: {target_uid}")
 
+        # Verify all referenced library panels exist on the target.
+        # Without this guard the push succeeds at the API layer but
+        # Grafana renders "Library panel not found" placeholders.
+        library_uids = _collect_library_panel_uids(dashboard)
+        if library_uids and not args.dry_run:
+            missing = _missing_library_panels(base_url, headers, library_uids)
+            if missing:
+                error(
+                    f"  Library panels missing on target: {', '.join(sorted(missing))}"
+                )
+                info(
+                    f"  Run `grafana_sync.py seed-library --target "
+                    f"{target_name}` first, then retry. Skipping {name}."
+                )
+                continue
+
         # Build API payload
         payload: dict[str, Any] = {
             "dashboard": dashboard,
@@ -464,9 +512,7 @@ def cmd_push(args: argparse.Namespace) -> None:
             status = result.get("status", "unknown")
             version = result.get("version", "?")
             url = result.get("url", "")
-            info(
-                f"  {GREEN}OK{NC} — status={status}, version={version}, url={url}"
-            )
+            info(f"  {GREEN}OK{NC} — status={status}, version={version}, url={url}")
         except Exception:
             error(f"  Failed to push {name}")
 
@@ -601,7 +647,9 @@ def cmd_seed_library(args: argparse.Namespace) -> None:
 
     panel_files = sorted(DASHBOARDS_DIR.glob("library_panel_*.json"))
     if not panel_files:
-        warn("No library panel files found (expected library_panel_*.json in docs/grafana/)")
+        warn(
+            "No library panel files found (expected library_panel_*.json in docs/grafana/)"
+        )
         return
 
     header(f"Seeding library panels to {target_name} ({target['url']})")
@@ -660,9 +708,7 @@ def cmd_seed_library(args: argparse.Namespace) -> None:
                 info(f"  {GREEN}UPDATED{NC} — version={new_ver}")
             else:
                 payload = {"name": name, "uid": uid, "kind": kind, "model": model}
-                result = api_post(
-                    f"{base_url}/api/library-elements", headers, payload
-                )
+                result = api_post(f"{base_url}/api/library-elements", headers, payload)
                 new_ver = result.get("result", {}).get("version", "?")
                 info(f"  {GREEN}CREATED{NC} — version={new_ver}")
         except Exception:
