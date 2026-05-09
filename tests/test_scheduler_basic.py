@@ -1919,3 +1919,103 @@ class TestExpectedFailureGates:
         assert sorted(bucket.get("expected", [])) == ["GSIG", "HEDI"]
         assert bucket.get("fail", {}) == {}
         assert "AFST" in bucket.get("ok", [])
+
+    def test_record_batch_result_skipped_bucket(self):
+        """outcome='skipped' accumulates in 'skipped' bucket (self-clearing gates)."""
+        from receivers.scheduling.bulk_scheduler import (
+            _BATCH_LOCK,
+            _BATCH_STATS,
+            _record_batch_result,
+        )
+
+        with _BATCH_LOCK:
+            _BATCH_STATS.pop("test_session_sk", None)
+
+        _record_batch_result("test_session_sk", "FULLA", "skipped", "disk_full")
+        _record_batch_result("test_session_sk", "FULLB", "skipped", "disk_full")
+        _record_batch_result("test_session_sk", "STUCK", "expected", "disk_broken")
+        _record_batch_result("test_session_sk", "GOOD", "ok")
+
+        with _BATCH_LOCK:
+            bucket = _BATCH_STATS.pop("test_session_sk", {})
+
+        assert sorted(bucket.get("skipped", [])) == ["FULLA", "FULLB"]
+        assert bucket.get("expected", []) == ["STUCK"]
+        assert bucket.get("fail", {}) == {}
+        assert "GOOD" in bucket.get("ok", [])
+
+    @patch(
+        "receivers.scheduling.bulk_scheduler.check_station_health_gate",
+        create=True,
+    )
+    @patch("receivers.scheduling.bulk_scheduler._get_load_monitor", return_value=None)
+    def test_health_gate_disk_full_uses_skipped_outcome(self, mock_load, mock_gate):
+        """disk_full is self-clearing → outcome='skipped' so retry queue picks it up."""
+        from unittest.mock import patch as _patch
+
+        with _patch(
+            "receivers.utils.stall_timeout.check_station_health_gate",
+            return_value="disk_full",
+        ):
+            with _patch("receivers.utils.stall_timeout.record_download") as mock_rd:
+                with _patch(
+                    "receivers.scheduling.bulk_scheduler._get_load_monitor",
+                    return_value=None,
+                ):
+                    with _patch(
+                        "receivers.scheduling.bulk_scheduler._get_pipeline_store",
+                        return_value=None,
+                    ):
+                        with _patch(
+                            "receivers.scheduling.bulk_scheduler._record_batch_result"
+                        ) as mock_rb:
+                            from receivers.scheduling.bulk_scheduler import (
+                                _download_station_data_job,
+                            )
+
+                            _download_station_data_job("FULLA", "15s_24hr")
+
+                            mock_rd.assert_called_once()
+                            kw = mock_rd.call_args[1]
+                            assert kw.get("outcome") == "skipped"
+                            assert kw.get("message") == "disk_full"
+                            mock_rb.assert_called_once()
+                            assert mock_rb.call_args[0][2] == "skipped"
+
+    @patch(
+        "receivers.scheduling.bulk_scheduler.check_station_health_gate",
+        create=True,
+    )
+    @patch("receivers.scheduling.bulk_scheduler._get_load_monitor", return_value=None)
+    def test_health_gate_disk_broken_stays_expected(self, mock_load, mock_gate):
+        """disk_broken is sticky → outcome='expected', retry queue skips it."""
+        from unittest.mock import patch as _patch
+
+        with _patch(
+            "receivers.utils.stall_timeout.check_station_health_gate",
+            return_value="disk_broken",
+        ):
+            with _patch("receivers.utils.stall_timeout.record_download") as mock_rd:
+                with _patch(
+                    "receivers.scheduling.bulk_scheduler._get_load_monitor",
+                    return_value=None,
+                ):
+                    with _patch(
+                        "receivers.scheduling.bulk_scheduler._get_pipeline_store",
+                        return_value=None,
+                    ):
+                        with _patch(
+                            "receivers.scheduling.bulk_scheduler._record_batch_result"
+                        ) as mock_rb:
+                            from receivers.scheduling.bulk_scheduler import (
+                                _download_station_data_job,
+                            )
+
+                            _download_station_data_job("BROK", "15s_24hr")
+
+                            mock_rd.assert_called_once()
+                            kw = mock_rd.call_args[1]
+                            assert kw.get("outcome") == "expected"
+                            assert kw.get("message") == "disk_broken"
+                            mock_rb.assert_called_once()
+                            assert mock_rb.call_args[0][2] == "expected"
