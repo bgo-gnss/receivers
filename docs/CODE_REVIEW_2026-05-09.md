@@ -113,6 +113,13 @@ Mirror the prior round: one PR per pass, ordered by impact-density. Each PR fixe
 
 Each fix PR closes the relevant rows here by editing this file. Critical/High move to a "Fixed in PR #N" subsection at the bottom of their pass. Suspects get verdicts written in-place (`✓ verified`, `✗ confirmed bug → moved to High`, etc.).
 
+### Fixed in PR #33 (`fix/code-review-pass5-dashboards`)
+
+- **C10** `gps_health_dashboard.json` panel 12 (Critical & Offline) — added `AND ts > NOW() - INTERVAL '7 days'` to the `last_voltage` CTE. The unbounded `block_power_status` scan running every 10 s now hits the (sid, ts) index instead of doing a full sequential scan.
+- **H16** `gps_map_dashboard.json` panels 4 (Critical) and 5 (Warnings) — replaced direct `DISTINCT ON (sid) FROM block_health_summary WHERE $__timeFilter(ts)` with `SELECT COUNT(*) FROM station_data_flow_status WHERE health_status = 2 / = 1`. Same migration 030 pattern that the health dashboard already used.
+- **H17** `gps_map_dashboard.json` panel 2 (Online) — aligned exclusion logic with the health dashboard. Both now exclude any station with non-NULL `station_status` OR `health_check`. Operators see the same Online count regardless of which dashboard they're on.
+- **H18** `scripts/grafana_sync.py:cmd_push` — added `_collect_library_panel_uids()` + `_missing_library_panels()` helpers; `cmd_push` now checks all referenced library panel UIDs exist on the target before pushing the dashboard. Missing panels print a clear error with a hint to run `seed-library` first; affected dashboards are skipped instead of silently deploying broken placeholders.
+
 ### Fixed in PR #32 (`fix/code-review-pass1-migrations`)
 
 - **C1** `migrations/033_satellite_status_coalesce.sql` — wrapped in `BEGIN`/`COMMIT`. Was the only forward migration without a transaction.
