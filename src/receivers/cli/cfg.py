@@ -807,6 +807,11 @@ def _reconcile_one(
     # --push-tos batch mode: push receiver values to TOS for all writable fields
     # that have a receiver value, independent of the cfg reconciliation loop below.
     if push_to_tos_on and "tos" in sources and tos_data is not None:
+        # Live writes require either explicit --yes or --dry-run. Interactive
+        # mode without either is treated as "show me the table, ask again" —
+        # not as implicit consent to write to TOS for every actionable field.
+        dry_run_flag: bool = getattr(args, "dry_run", False)
+        consent_given: bool = bool(args.yes) or dry_run_flag
         if not silent:
             writable = [
                 d
@@ -814,11 +819,18 @@ def _reconcile_one(
                 if d.spec.tos_writable and d.receiver_value is not None
             ]
             if writable:
-                print(f"\n   Pushing {len(writable)} field(s) to TOS…")
-        for d in actionable:
-            if not d.spec.tos_writable or d.receiver_value is None:
-                continue
-            if args.yes or not silent:
+                if consent_given:
+                    print(f"\n   Pushing {len(writable)} field(s) to TOS…")
+                else:
+                    print(
+                        f"\n   ⚠️  --push-tos batch mode would write {len(writable)} "
+                        f"field(s) to TOS. Re-run with --yes to confirm or "
+                        f"--dry-run to preview."
+                    )
+        if consent_given:
+            for d in actionable:
+                if not d.spec.tos_writable or d.receiver_value is None:
+                    continue
                 _do_push_tos(
                     station_id=station_id,
                     diff=d,
