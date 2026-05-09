@@ -267,19 +267,33 @@ class HealthDatabaseWriter:
                     cur.execute("ROLLBACK TO SAVEPOINT identity_update")
                     raise
 
-            # Check for mismatch
+            # Check for mismatch — wrapped in its own SAVEPOINT so a failure
+            # here doesn't roll back the block_receiver_setup write above.
+            # Also bumped to WARNING so the failure isn't silently swallowed
+            # at DEBUG (operators need to see this when troubleshooting).
             from .receiver_fingerprint import check_identity_mismatch
 
             configured_type = None
-            # Look up configured type from cache or query
-            with self._conn.cursor() as cur:
-                cur.execute(
-                    "SELECT receiver_type FROM stations WHERE sid = %s",
-                    (station_id,),
+            try:
+                with self._conn.cursor() as cur:
+                    cur.execute("SAVEPOINT identity_lookup")
+                    try:
+                        cur.execute(
+                            "SELECT receiver_type FROM stations WHERE sid = %s",
+                            (station_id,),
+                        )
+                        row = cur.fetchone()
+                        if row:
+                            configured_type = row[0]
+                        cur.execute("RELEASE SAVEPOINT identity_lookup")
+                    except Exception:
+                        cur.execute("ROLLBACK TO SAVEPOINT identity_lookup")
+                        raise
+            except Exception as e:
+                self.logger.warning(
+                    f"[{station_id}] receiver_type lookup failed: "
+                    f"{type(e).__name__}: {e}"
                 )
-                row = cur.fetchone()
-                if row:
-                    configured_type = row[0]
 
             model_mismatch = False
             if configured_type:
@@ -288,14 +302,32 @@ class HealthDatabaseWriter:
                     self.logger.warning(f"[{station_id}] {mismatch}")
                     model_mismatch = True
 
-            with self._conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE stations SET model_mismatch = %s WHERE sid = %s",
-                    (model_mismatch, station_id),
+            # model_mismatch UPDATE in its own SAVEPOINT — without this,
+            # any later write in the parent transaction that rolls back
+            # silently undoes this status update too.
+            try:
+                with self._conn.cursor() as cur:
+                    cur.execute("SAVEPOINT identity_mismatch")
+                    try:
+                        cur.execute(
+                            "UPDATE stations SET model_mismatch = %s WHERE sid = %s",
+                            (model_mismatch, station_id),
+                        )
+                        cur.execute("RELEASE SAVEPOINT identity_mismatch")
+                    except Exception:
+                        cur.execute("ROLLBACK TO SAVEPOINT identity_mismatch")
+                        raise
+            except Exception as e:
+                self.logger.warning(
+                    f"[{station_id}] model_mismatch UPDATE failed: "
+                    f"{type(e).__name__}: {e}"
                 )
 
         except Exception as e:
-            self.logger.debug(f"Station identity update failed for {station_id}: {e}")
+            self.logger.warning(
+                f"[{station_id}] station identity update failed: "
+                f"{type(e).__name__}: {e}"
+            )
 
     def _parse_timestamp(self, timestamp: Any) -> datetime:
         """Parse timestamp from various formats to datetime.

@@ -57,6 +57,6 @@ COMMENT ON FUNCTION normalize_firmware_version(text) IS
     'Strips Trimble NP/SP prefix and expands two-digit minor+patch notation. '
     'Mirrors Python _normalize_firmware_version() in cfg/field_manifest.py.';
 
-INSERT INTO schema_migrations (migration_name) VALUES ('040_normalize_firmware_function');
+INSERT INTO schema_migrations (migration_name) VALUES ('040_normalize_firmware_function') ON CONFLICT DO NOTHING;
 
 COMMIT;

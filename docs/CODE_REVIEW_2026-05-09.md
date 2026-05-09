@@ -113,6 +113,15 @@ Mirror the prior round: one PR per pass, ordered by impact-density. Each PR fixe
 
 Each fix PR closes the relevant rows here by editing this file. Critical/High move to a "Fixed in PR #N" subsection at the bottom of their pass. Suspects get verdicts written in-place (`✓ verified`, `✗ confirmed bug → moved to High`, etc.).
 
+### Fixed in PR #32 (`fix/code-review-pass1-migrations`)
+
+- **C1** `migrations/033_satellite_status_coalesce.sql` — wrapped in `BEGIN`/`COMMIT`. Was the only forward migration without a transaction.
+- **C2 + H3** — added `INSERT INTO schema_migrations` to migrations 027, 028, 046; added `ON CONFLICT DO NOTHING` to migrations 029, 033, 039, 040, 042-046. Manual `psql -f` re-runs are now safe across the entire 027-046 range.
+- **H1** `db_writer.py` — `model_mismatch` UPDATE wrapped in its own `SAVEPOINT identity_mismatch`. A later block-table write rolling back no longer silently undoes the mismatch flag.
+- **H4** `db_writer.py:_update_station_identity` — bumped log level from DEBUG to WARNING for both the receiver_type lookup failure and the model_mismatch UPDATE failure; each runs in its own SAVEPOINT for isolation. Operators can now see when these silently fail in production logs.
+
+Verified locally: `receivers db setup` (drop + migrate + seed) applies all 47 migrations cleanly, and a follow-up `receivers db migrate` is a no-op (idempotent).
+
 ### Fixed in PR #31 (`fix/code-review-pass3-leica-wallclock`)
 
 - **C6** `leica/leica_ftp_download_client.py` — ported the PolaRX5 zombie-socket fix to G10. Both the primary and the mode-switch fallback now `ftp = None` before `try`; the new `_safe_ftp_close()` static helper is called from every `except` path. Closes the leak that fired any time `connect()` succeeded but `login()`/`cwd()`/`retrbinary()` raised.

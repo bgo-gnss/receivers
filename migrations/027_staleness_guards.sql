@@ -428,4 +428,8 @@ SELECT base.*,
     END AS combined_status
 FROM base;
 
+INSERT INTO schema_migrations (migration_name)
+VALUES ('027_staleness_guards')
+ON CONFLICT DO NOTHING;
+
 COMMIT;
