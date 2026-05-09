@@ -42,6 +42,13 @@ _SESSION_BOOTSTRAP_TIMEOUTS: Dict[str, int] = {
     "15s_24hr": 900,  # Daily SBF (3-5 MB) on slow 3G can take 600-1500s
 }
 
+# Sessions where current satellite tracking predicts download viability.
+# Daily backfill sessions (15s_24hr) pull yesterday's archived file from
+# the receiver's disk — current sats=0 says nothing about whether yesterday's
+# file is there, so the no_satellites gate is over-aggressive for those.
+# Live/recent sessions still benefit from the gate.
+_SESSIONS_REQUIRING_LIVE_SATS = {"1Hz_1hr", "status_1hr"}
+
 
 def _load_overrides() -> Dict[str, int]:
     """Load per-station stall_timeout_override values from the database.
@@ -342,8 +349,11 @@ def record_download(
 # Health gate: skip stations with known hardware/config issues
 # ---------------------------------------------------------------------------
 
-# Cache: {station_id: (skip_reason_or_None, monotonic_timestamp)}
-_health_gate_cache: Dict[str, Tuple[Optional[str], float]] = {}
+# Cache: {(station_id, session_type): (skip_reason_or_None, monotonic_timestamp)}
+# Keyed on (station_id, session_type) because the gate is now session-aware:
+# the same station can legitimately yield different answers for 1Hz_1hr
+# (live data — sats=0 → skip) vs 15s_24hr (yesterday's file — sats=0 → proceed).
+_health_gate_cache: Dict[Tuple[str, Optional[str]], Tuple[Optional[str], float]] = {}
 _HEALTH_GATE_TTL = 300.0  # 5 minutes
 
 
@@ -353,27 +363,37 @@ def check_station_health_gate(
 ) -> Optional[str]:
     """Check if a station should be skipped based on its last health data.
 
-    Queries station_latest_metrics and station_logging_status views.
+    Queries station_latest_metrics and block_disk_status.
     Returns a skip reason string, or None if the station is OK to download.
 
-    Skip conditions (any one triggers skip):
-    - satellites_tracked = 0 → "no_satellites"
-    - disk_usage_pct > 98 → "disk_full"
-    - All health checks require data fresher than 30 minutes (stale → proceed)
+    Skip conditions:
+    - satellites_tracked == 0 → "no_satellites" — only for sessions in
+      ``_SESSIONS_REQUIRING_LIVE_SATS`` (currently 1Hz_1hr, status_1hr).
+      Daily backfill sessions (15s_24hr) pull yesterday's archived file and
+      are not gated on current sats. ``session_type=None`` keeps the legacy
+      behaviour (always gate) for safety.
+    - disk_usage_pct > 98 → "disk_full" (all sessions)
+    - block_disk_status.total_mb == 0 → "disk_broken" (all sessions)
+    - All checks require live metrics fresher than 30 minutes (stale → proceed)
+
+    Cache is keyed on ``(station_id, session_type)`` so the same station can
+    yield different answers for different sessions.
 
     Args:
         station_id: Station identifier.
-        session_type: Session type (e.g. '15s_24hr') for logging status check.
+        session_type: Session type (e.g. '15s_24hr'). When None, the
+            no_satellites gate applies to keep callers without context safe.
 
     Returns:
         Skip reason string, or None if station should proceed.
     """
     station_id = station_id.upper()
+    cache_key = (station_id, session_type)
 
     # Check cache
     now = time.monotonic()
-    if station_id in _health_gate_cache:
-        cached_reason, cached_at = _health_gate_cache[station_id]
+    if cache_key in _health_gate_cache:
+        cached_reason, cached_at = _health_gate_cache[cache_key]
         if (now - cached_at) < _HEALTH_GATE_TTL:
             return cached_reason
 
@@ -382,7 +402,7 @@ def check_station_health_gate(
     except Exception as e:
         logger.debug("Health gate query failed for %s: %s", station_id, e)
         reason = None
-    _health_gate_cache[station_id] = (reason, now)
+    _health_gate_cache[cache_key] = (reason, now)
     return reason
 
 
@@ -418,7 +438,14 @@ def _query_health_gate(
                         ).total_seconds()
 
                         if age_seconds < 1800:
-                            if sats is not None and sats == 0:
+                            if (
+                                sats is not None
+                                and sats == 0
+                                and (
+                                    session_type is None
+                                    or session_type in _SESSIONS_REQUIRING_LIVE_SATS
+                                )
+                            ):
                                 return "no_satellites"
                             if disk_pct is not None and disk_pct > 98:
                                 return "disk_full"
