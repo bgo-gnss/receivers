@@ -113,6 +113,13 @@ Mirror the prior round: one PR per pass, ordered by impact-density. Each PR fixe
 
 Each fix PR closes the relevant rows here by editing this file. Critical/High move to a "Fixed in PR #N" subsection at the bottom of their pass. Suspects get verdicts written in-place (`✓ verified`, `✗ confirmed bug → moved to High`, etc.).
 
+### Fixed in PR #30 (`fix/code-review-pass4-extractors`)
+
+- **C8** `monitoring/icinga_client.py:1196` — disk read changed from `data_quality["disk"]` (always empty for PolaRX5/Trimble/G10) to `metrics["disk"]`. Every PolaRX5 station now reports real disk status to Icinga instead of permanent UNKNOWN.
+- **C9** `health/polarx5_tcp_extractor.py:_parse_disk_header_only` — removed misleading dead `_DISK_STATUS_MAP`; documented explicitly that the header-only fallback can't detect full/error states; added `limited_check=True` flag so downstream knows the result isn't authoritative; logs a WARNING when the fallback fires.
+- **H13** `monitoring/icinga_client.py` — added `_is_metric_available()` helper that recognises the `{"available": False}` sentinel from G10/Trimble extractors. Temp, CPU, and disk checks now skip cleanly instead of emitting permanent UNKNOWN to Icinga for receiver types that don't expose the metric. Removed unused `data_quality` local variable.
+- **H14** `health/polarx5_tcp_extractor.py:_svid_to_constellation` — docstring corrected to match the non-overlapping SVID ranges actually used (QZSS 181-187, IRNSS 191-197); the prior docstring's "QZSS 181-202" was misleading. SVIDs 188-190/198-200 are reserved/unused on real receivers, correctly returning `Unknown_X`.
+
 ### Fixed in PR #29 (`fix/code-review-pass2-scheduler`)
 
 - **C3** `bulk_scheduler.py:_download_station_data_job` — outer except now records `_record_batch_result(..., "fail", ...)` so hard exceptions appear in the periodic batch report.
