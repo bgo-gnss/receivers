@@ -71,8 +71,7 @@ receivers download ELDC --test-connection # Test station connectivity
 which python3                             # Check Python location
 pip list | grep receivers                 # Check installed packages
 
-# The gpsops user has sudo privileges if needed:
-sudo systemctl status something
+# The gpsops user has sudo privileges if needed (rare in the dev container):
 sudo apt update
 ```
 
