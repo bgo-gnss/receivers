@@ -40,22 +40,32 @@ _load_monitor: Optional["LoadMonitor"] = None
 # Per-session batch result accumulator (thread-safe, reset after each daily summary)
 import threading as _threading
 
-_BATCH_STATS: dict = {}  # {session_type: {"ok": [station_id, ...], "fail": {station_id: error_msg}}}
+_BATCH_STATS: dict = {}  # {session_type: {"ok": [...], "fail": {...}, "expected": [...], "skipped": [...]}}
 _BATCH_LOCK = _threading.Lock()
 
 
 def _record_batch_result(
     session_type: str, station_id: str, outcome: str, error: str = ""
 ) -> None:
-    """Accumulate per-job result for the batch summary (non-blocking, fire-and-forget)."""
+    """Accumulate per-job result for the batch summary (non-blocking, fire-and-forget).
+
+    Outcome buckets:
+      - "ok"       — download succeeded
+      - "expected" — gate skip that will not retry today (sticky, e.g. disk_broken)
+      - "skipped"  — gate skip that may be retried (self-clearing, e.g. disk_full)
+      - anything else — counted as a failure
+    """
     with _BATCH_LOCK:
         bucket = _BATCH_STATS.setdefault(
-            session_type, {"ok": [], "fail": {}, "expected": []}
+            session_type,
+            {"ok": [], "fail": {}, "expected": [], "skipped": []},
         )
         if outcome == "ok":
             bucket["ok"].append(station_id)
         elif outcome == "expected":
             bucket.setdefault("expected", []).append(station_id)
+        elif outcome == "skipped":
+            bucket.setdefault("skipped", []).append(station_id)
         else:
             bucket["fail"][station_id] = error or outcome
 
@@ -100,7 +110,8 @@ def _log_batch_summary_job(session_type: str) -> None:
     ok = stats.get("ok", [])
     fail = stats.get("fail", {})
     expected = stats.get("expected", [])
-    total = len(ok) + len(fail) + len(expected)
+    skipped = stats.get("skipped", [])
+    total = len(ok) + len(fail) + len(expected) + len(skipped)
     if total == 0:
         _log.debug(f"📋 {session_type} batch summary: no results accumulated yet")
         return
@@ -123,6 +134,11 @@ def _log_batch_summary_job(session_type: str) -> None:
         + (
             f" — ⏭️  {len(expected)} expected: {', '.join(sorted(expected))}"
             if expected
+            else ""
+        )
+        + (
+            f" — 🔁 {len(skipped)} skipped (will retry): {', '.join(sorted(skipped))}"
+            if skipped
             else ""
         )
     )
@@ -426,20 +442,29 @@ def _download_station_data_job(
 
     # Health gate: skip stations with known hardware issues (no satellites, broken disk).
     # Uses cached station_latest_metrics — cheap DB read. Only fires on fresh data (<30 min).
-    # outcome='expected' excludes these from the second-chance retry queue.
+    #
+    # Outcome semantics:
+    #   - "skipped" — self-clearing condition (e.g. disk_full may free up via
+    #     file rotation). Second-chance retry includes these.
+    #   - "expected" — sticky condition (no_satellites for live sessions,
+    #     disk_broken). Second-chance retry excludes these (bulk_scheduler.py:171).
     try:
         from ..utils.stall_timeout import check_station_health_gate
         from ..utils.stall_timeout import record_download as _rd_health
 
+        # Gate reasons that may self-clear within a day, so retry is worth attempting.
+        _RETRYABLE_GATES = {"disk_full"}
+
         health_skip = check_station_health_gate(station_id, session_type)
         if health_skip:
+            outcome = "skipped" if health_skip in _RETRYABLE_GATES else "expected"
             logger.info(
-                f"⏭️  {station_id} ({session_type}) [{health_skip}] — expected, not retried"
+                f"⏭️  {station_id} ({session_type}) [{health_skip}] — outcome={outcome}"
             )
             _rd_health(
-                station_id, session_type, outcome="expected", message=health_skip
+                station_id, session_type, outcome=outcome, message=health_skip
             )
-            _record_batch_result(session_type, station_id, "expected", health_skip)
+            _record_batch_result(session_type, station_id, outcome, health_skip)
             return
     except Exception as exc:
         # Gate failure is non-fatal — proceed with download attempt.
