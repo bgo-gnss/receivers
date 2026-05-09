@@ -130,6 +130,6 @@ CREATE OR REPLACE VIEW station_connectivity AS
      LEFT JOIN latest_ntrip nt ON nt.sid::text = lp.sid::text
      LEFT JOIN debounced_state_start dss ON dss.sid::text = lp.sid::text;
 
-INSERT INTO schema_migrations (migration_name) VALUES ('044_connectivity_window_and_counts');
+INSERT INTO schema_migrations (migration_name) VALUES ('044_connectivity_window_and_counts') ON CONFLICT DO NOTHING;
 
 COMMIT;

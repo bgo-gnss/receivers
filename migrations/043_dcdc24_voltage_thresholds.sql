@@ -248,6 +248,6 @@ CREATE OR REPLACE VIEW station_dashboard_data AS
      LEFT JOIN station_port_status sp ON sp.sid::text = m.station_id::text
      LEFT JOIN station_download_summary ds ON ds.sid::text = m.station_id::text;
 
-INSERT INTO schema_migrations (migration_name) VALUES ('043_dcdc24_voltage_thresholds');
+INSERT INTO schema_migrations (migration_name) VALUES ('043_dcdc24_voltage_thresholds') ON CONFLICT DO NOTHING;
 
 COMMIT;

@@ -61,4 +61,8 @@ COMMENT ON FUNCTION is_file_missing IS
     'after that, re-attempt the download in case the receiver caught up '
     'or the previous 404/550 was transient.';
 
+INSERT INTO schema_migrations (migration_name)
+VALUES ('046_is_file_missing_ttl_24h')
+ON CONFLICT DO NOTHING;
+
 COMMIT;
