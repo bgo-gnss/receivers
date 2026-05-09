@@ -165,6 +165,21 @@ class LeicaFTPDownloader:
 
         self.logger.info(f"Initialized Leica FTP downloader for {self.station_id}")
 
+    @staticmethod
+    def _safe_ftp_close(ftp: Optional[FTP]) -> None:
+        """Close an FTP connection without raising.
+
+        Used in except / finally paths to prevent zombie sockets when an
+        exception fires after ftp.connect() succeeded but before quit().
+        Calling close() on a stale or already-closed FTP is harmless.
+        """
+        if ftp is None:
+            return
+        try:
+            ftp.close()
+        except Exception:
+            pass
+
     def _is_ftp_mode_error(self, error: Exception) -> bool:
         """Check if error is related to FTP passive/active mode issues.
 
@@ -209,6 +224,11 @@ class LeicaFTPDownloader:
             f"⚙️  Connection settings: timeout={self.connect_timeout}s, passive={self.use_passive}"
         )
 
+        # ftp = None ensures the finally cleanup is safe even if FTP() raises
+        # before assignment, and prevents the zombie-socket leak that fired on
+        # any exception after connect() succeeded but before quit() ran.
+        # Same pattern PolaRX5 uses (polarx5.py:_ftp_open_connection).
+        ftp: Optional[FTP] = None
         try:
             # Connect to FTP server
             ftp = FTP()
@@ -325,10 +345,16 @@ class LeicaFTPDownloader:
             if "progress_bar" in locals() and progress_bar:
                 progress_bar.finish()
             self.logger.error(f"FTP download stalled for {remote_filename}: {e}")
+            self._safe_ftp_close(ftp)
             return False
         except Exception as e:
             if "progress_bar" in locals() and progress_bar:
                 progress_bar.finish()
+
+            # Close the failed primary connection before opening the fallback —
+            # otherwise we leak a TCP socket on every mode-switch retry.
+            self._safe_ftp_close(ftp)
+            ftp = None
 
             # Check if this is an FTP mode error and we should try fallback
             if self._is_ftp_mode_error(e):
@@ -399,9 +425,11 @@ class LeicaFTPDownloader:
                     self.use_passive = original_mode
                     self.logger.error(f"❌ Both FTP modes failed. Original error: {e}")
                     self.logger.error(f"❌ Fallback error: {fallback_error}")
+                    self._safe_ftp_close(ftp)
                     return False
             else:
-                # Not an FTP mode issue
+                # Not an FTP mode issue — connection was already closed above,
+                # nothing more to clean up here.
                 self.logger.error(f"FTP error downloading {remote_filename}: {e}")
                 return False
 

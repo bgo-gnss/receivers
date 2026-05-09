@@ -113,6 +113,13 @@ Mirror the prior round: one PR per pass, ordered by impact-density. Each PR fixe
 
 Each fix PR closes the relevant rows here by editing this file. Critical/High move to a "Fixed in PR #N" subsection at the bottom of their pass. Suspects get verdicts written in-place (`✓ verified`, `✗ confirmed bug → moved to High`, etc.).
 
+### Fixed in PR #31 (`fix/code-review-pass3-leica-wallclock`)
+
+- **C6** `leica/leica_ftp_download_client.py` — ported the PolaRX5 zombie-socket fix to G10. Both the primary and the mode-switch fallback now `ftp = None` before `try`; the new `_safe_ftp_close()` static helper is called from every `except` path. Closes the leak that fired any time `connect()` succeeded but `login()`/`cwd()`/`retrbinary()` raised.
+- **C7** `cli/parallel.py` — added `_record_abandoned_thread()` + `_abandoned_threads_count` module-level counter. Wall-clock-timeout abandonments now bump the counter, and once `≥10` threads are abandoned in the run we log a WARNING with the running total and a hint to restart the scheduler. `get_abandoned_thread_count()` exposes the count for future metric exporters / dashboards.
+- **H10** verified — `tostools.utils.archive.ArchiveValidator._validate_tmp_file_integrity` does a full gzip read; smoke-tested with a 500 KB random `.sbf.gz` truncated to 65,536 bytes — returns `False` correctly. The original bug is fixed; no further action needed. Note: a *complete* small gz padded with zeros up to 65 K bytes returns `True` (gzip ignores trailing bytes after EOF marker), which is correct behaviour.
+- **H11** verified — NetR9 (`http_download_client.py`) and NetRS (`netrs_http_download_client.py`) HTTP paths have stall timeout, size-mismatch detection, and post-download integrity validation. They lack PolaRX5's progress-aware 50% timeout extension because that's an FTP recv-watchdog concept; HTTP uses `requests` per-chunk timeouts with different mechanics. Cleanup applied: replaced misleading "Partial file kept for resume" log line with accurate "Partial kept on disk; next retry will start fresh" — HTTP doesn't support Range requests so the next call's `should_resume_download()` deletes the partial and starts over.
+
 ### Fixed in PR #30 (`fix/code-review-pass4-extractors`)
 
 - **C8** `monitoring/icinga_client.py:1196` — disk read changed from `data_quality["disk"]` (always empty for PolaRX5/Trimble/G10) to `metrics["disk"]`. Every PolaRX5 station now reports real disk status to Icinga instead of permanent UNKNOWN.
