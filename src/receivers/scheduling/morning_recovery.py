@@ -175,8 +175,12 @@ def _run_morning_recovery_job(
             )
             continue
 
-        # Resolve run_rinex from the session config when available
-        run_rinex = session == "15s_24hr"  # default for the typical case
+        # Resolve run_rinex from the live scheduler config. Silent
+        # fallback to a hardcoded value risks diverging from the
+        # operator's actual policy — if the scheduler instance isn't
+        # reachable, log a clear warning and use the documented default.
+        run_rinex = False
+        config_resolved = False
         try:
             from .bulk_scheduler import _scheduler_instance
 
@@ -184,8 +188,20 @@ def _run_morning_recovery_job(
                 cfg = _scheduler_instance.schedule_configs.get(session)
                 if cfg is not None:
                     run_rinex = cfg.rinex
-        except Exception:
-            pass
+                    config_resolved = True
+        except Exception as exc:
+            logger.warning(
+                f"Morning recovery: could not resolve schedule config for "
+                f"{session}: {exc}"
+            )
+
+        if not config_resolved:
+            run_rinex = session == "15s_24hr"
+            logger.warning(
+                f"Morning recovery: schedule_configs unavailable for "
+                f"{session} — falling back to default run_rinex={run_rinex}. "
+                f"Verify scheduler config if this is unexpected."
+            )
 
         sid_preview = ", ".join(sids[:10]) + (
             f" [+{len(sids) - 10} more]" if len(sids) > 10 else ""

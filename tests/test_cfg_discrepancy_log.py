@@ -83,11 +83,14 @@ class TestRecordDetection:
         )
 
         assert rid == 42
-        assert cursor.execute.call_count == 2
-        select_sql, select_params = cursor.execute.call_args_list[0].args
+        # Calls: pg_advisory_xact_lock, SELECT, INSERT
+        assert cursor.execute.call_count == 3
+        lock_sql, _ = cursor.execute.call_args_list[0].args
+        assert "pg_advisory_xact_lock" in lock_sql
+        select_sql, select_params = cursor.execute.call_args_list[1].args
         assert "SELECT id" in select_sql
         assert select_params == ("ELDC", "receiver_serial")
-        insert_sql, insert_params = cursor.execute.call_args_list[1].args
+        insert_sql, insert_params = cursor.execute.call_args_list[2].args
         assert "INSERT INTO cfg_discrepancy" in insert_sql
         assert insert_params == (
             "ELDC",
@@ -114,8 +117,8 @@ class TestRecordDetection:
         )
 
         assert rid == 7
-        # Only the SELECT runs — no UPDATE, no INSERT.
-        assert cursor.execute.call_count == 1
+        # Calls: pg_advisory_xact_lock, SELECT — no UPDATE, no INSERT.
+        assert cursor.execute.call_count == 2
 
     def test_supersedes_existing_when_values_changed(self, mocked_db):
         cursor = mocked_db
@@ -135,8 +138,9 @@ class TestRecordDetection:
         )
 
         assert rid == 8
-        assert cursor.execute.call_count == 3
-        update_sql, update_params = cursor.execute.call_args_list[1].args
+        # Calls: pg_advisory_xact_lock, SELECT, UPDATE, INSERT
+        assert cursor.execute.call_count == 4
+        update_sql, update_params = cursor.execute.call_args_list[2].args
         assert "UPDATE cfg_discrepancy" in update_sql
         assert ACTION_SUPERSEDED in update_params
 

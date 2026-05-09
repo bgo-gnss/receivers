@@ -158,17 +158,11 @@ def record_detection(
 
     Returns the row id, or ``None`` if the database is unavailable.
 
-    .. note::
-       The SELECT-then-INSERT here is not race-free: two concurrent
-       callers can both observe no open row and both INSERT. The second
-       hits the partial unique index and raises, which is currently
-       swallowed as "DB unavailable". With our load profile (single
-       operator + 5-minute health probe interval × 173 stations × ~3
-       reconcilable receiver fields) this collision is negligible, but
-       a future fix would either take a session-level advisory lock on
-       ``hashtext(station_id || cfg_key)`` or use ``ON CONFLICT
-       (station_id, cfg_key) WHERE resolved_at IS NULL DO NOTHING``
-       (PostgreSQL infers the partial unique index) and re-SELECT.
+    Concurrency: serialized per (station_id, cfg_key) by a transaction-
+    scoped advisory lock. Two callers (e.g. health probe + interactive
+    CLI) racing on the same key will queue rather than collide on the
+    partial unique index. Lock is released automatically at COMMIT or
+    ROLLBACK.
     """
     try:
         from ..health.database_factory import DatabaseConnectionFactory
@@ -179,6 +173,13 @@ def record_detection(
     try:
         with DatabaseConnectionFactory.connection() as conn:
             with conn.cursor() as cur:
+                # Serialize concurrent writers for the same (station, key).
+                # hashtext() can collide across distinct strings, but that
+                # only causes spurious serialization — never wrong rows.
+                cur.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+                    (station_id, cfg_key),
+                )
                 cur.execute(
                     """
                     SELECT id, cfg_value, receiver_value, tos_value, verdict

@@ -153,6 +153,10 @@ def _retry_failed_daily_job(session_type: str) -> None:
         today_midnight = datetime.now(timezone.utc).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
+        # Pass yesterday's date explicitly in UTC. Using SQL's
+        # CURRENT_DATE inside the query is session-timezone dependent —
+        # if the PG session tz isn't UTC, the date filter would slip.
+        yesterday_utc = (today_midnight - timedelta(days=1)).date()
 
         with DatabaseConnectionFactory.connection() as conn:
             with conn.cursor() as cur:
@@ -171,7 +175,7 @@ def _retry_failed_daily_job(session_type: str) -> None:
                         SELECT DISTINCT sid
                         FROM file_tracking
                         WHERE session_type = %s
-                          AND file_date = CURRENT_DATE - 1
+                          AND file_date = %s
                           AND status IN ('downloaded', 'archived')
                     )
                     SELECT f.sid, f.outcome, f.message
@@ -180,7 +184,7 @@ def _retry_failed_daily_job(session_type: str) -> None:
                     WHERE s.sid IS NULL
                     ORDER BY f.sid
                     """,
-                    (session_type, today_midnight, session_type),
+                    (session_type, today_midnight, session_type, yesterday_utc),
                 )
                 rows = cur.fetchall()
 
@@ -390,7 +394,6 @@ def _download_station_data_job(
         timeout_minutes: Maximum job duration in minutes (for monitoring and eventual enforcement)
         run_rinex: Whether to run RINEX conversion after download
     """
-    job_id = f"{session_type}_{station_id}"
     exec_start_time = datetime.now(timezone.utc)
 
     # Set up logging
@@ -438,8 +441,14 @@ def _download_station_data_job(
             )
             _record_batch_result(session_type, station_id, "expected", health_skip)
             return
-    except Exception:
-        pass  # Gate failure is non-fatal — proceed with download attempt
+    except Exception as exc:
+        # Gate failure is non-fatal — proceed with download attempt.
+        # Log at DEBUG so the failure is visible when diagnosing
+        # unexpected downloads on broken stations.
+        logger.debug(
+            f"Health gate check failed for {station_id} ({session_type}): "
+            f"{type(exc).__name__}: {exc}"
+        )
 
     # Pipeline tracking (lightweight observability)
     pipeline_job = None
@@ -468,6 +477,10 @@ def _download_station_data_job(
         except Exception:
             pipeline_job = None  # Non-critical — proceed without tracking
 
+    # Initialise outside try so the outer except can safely reference it even
+    # if the imports or setup_production_logging() raises before assignment.
+    audit_logger = None
+
     try:
         # Track job start time for duration monitoring
         job_start_time = time.time()
@@ -478,14 +491,15 @@ def _download_station_data_job(
         from ..base.production_logging import setup_production_logging
         from ..cli.main import create_receiver, get_station_config
 
-        # Set up production logging
+        # Set up production logging. The create_station_logger / getLogger
+        # calls are kept for their side effects (logger registration); the
+        # returned objects aren't directly used in this scope.
         if production_mode:
             prod_config = setup_production_logging(json_output=False, verbose=False)
-            recv_logger = prod_config.create_station_logger(station_id)
+            prod_config.create_station_logger(station_id)
             audit_logger = prod_config.get_audit_logger()
         else:
-            recv_logger = logging.getLogger(f"receivers.download.{station_id}")
-            audit_logger = None
+            logging.getLogger(f"receivers.download.{station_id}")
 
         # Get station configuration
         station_config = get_station_config(station_id)
@@ -759,6 +773,12 @@ def _download_station_data_job(
         error_type = type(e).__name__
         logger.error(f"❌ Exception: {station_id} ({session_type}) - {error_type}: {e}")
 
+        # Record in batch summary so the station shows up in the periodic
+        # batch report — without this, a hard exception leaves the station
+        # invisible (not in ok, not in fail, not in expected) and totals
+        # silently under-count.
+        _record_batch_result(session_type, station_id, "fail", f"{error_type}: {e}")
+
         # Mark pipeline as failed
         if pipeline_job is not None and pipeline_store is not None:
             try:
@@ -775,7 +795,7 @@ def _download_station_data_job(
                 pass
 
         # Log failure to audit trail
-        if "audit_logger" in locals() and audit_logger:
+        if audit_logger:
             audit_logger.log_failure_event(
                 station_id,
                 {
@@ -1883,7 +1903,12 @@ class BulkDownloadScheduler:
                 f"(window={config.distribution_window}m, {base_trigger.description}{extra})"
             )
             # Register batch-summary and second-chance jobs for daily sessions
-            # (cron triggers that carry an explicit hour+minute).
+            # only — sessions that fire once per day with an explicit hour+minute.
+            #
+            # Hourly sessions (":15", interval triggers) skip this on purpose:
+            # the next primary cycle is at most 60 min later, so a 30-min
+            # second-chance retry would just race the next cycle, and a
+            # 50-min batch summary would mix windows.
             #
             # Timeline for 15s_24hr at 00:01, distribution_window=10:
             #   00:01-00:11  primary downloads
@@ -1891,11 +1916,12 @@ class BulkDownloadScheduler:
             #   00:49        second-chance done (~8 min for 42 stations × 8 workers)
             #   01:01        batch summary fires (window + 50 min), captures all results
             tkw = base_trigger.trigger_kwargs
-            if (
+            is_daily_cron = (
                 base_trigger.trigger_type == "cron"
                 and "hour" in tkw
                 and "minute" in tkw
-            ):
+            )
+            if is_daily_cron:
                 sched_hour = int(str(tkw["hour"]).split(",")[0])
                 sched_minute = int(tkw["minute"])
 
@@ -1940,6 +1966,15 @@ class BulkDownloadScheduler:
                 self.logger.debug(
                     f"Second-chance retry for {session_type} scheduled at "
                     f"{retry_hour:02d}:{retry_minute:02d} UTC"
+                )
+            else:
+                # Non-daily-cron schedule (interval, hourly with no explicit
+                # `hour` key, etc.) — skipped intentionally. Log so future
+                # debugging makes the absence visible instead of silent.
+                self.logger.debug(
+                    f"{session_type}: trigger {base_trigger.trigger_type} "
+                    f"({tkw}) is not a daily cron — skipping batch summary "
+                    f"and second-chance retry registration."
                 )
 
         if midnight_jobs:
