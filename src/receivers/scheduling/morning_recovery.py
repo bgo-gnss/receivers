@@ -30,6 +30,13 @@ from typing import List, Tuple
 
 logger = logging.getLogger("receivers.scheduler.morning_recovery")
 
+# Hard cutoff hour (UTC) — stop iterating new dates once we're within 15 min
+# of this hour, so morning recovery cannot run into downstream GAMIT processing.
+# When the loop hits this guard, remaining dates are reported as deferred so an
+# operator can see what was skipped.
+_DEADLINE_HOUR_UTC = 3
+_DEADLINE_GUARD_MINUTES = 15
+
 
 def _query_stations_missing_yesterday(
     session: str,
@@ -151,7 +158,9 @@ def _run_morning_recovery_job(
         bypass_known_missing: If True, retry even stations that file_tracking
             has marked status='missing'.
     """
-    target_date = (datetime.now(timezone.utc) - timedelta(days=days_back)).date()
+    today = datetime.now(timezone.utc).date()
+    # Most-recent-first so newest gaps get retried before the deadline if time runs out.
+    target_dates = [today - timedelta(days=n) for n in range(1, days_back + 1)]
 
     # Resolve scheduler context to mirror the regular daily job. Falls back to
     # safe defaults when this is invoked outside a running scheduler (e.g. tests).
@@ -164,87 +173,127 @@ def _run_morning_recovery_job(
     except Exception:
         pass
 
-    for session in sessions:
-        sids = _query_stations_missing_yesterday(
-            session, target_date, bypass_known_missing
+    if days_back > 1:
+        logger.info(
+            f"🌅 Morning recovery starting: sessions={sessions} "
+            f"days_back={days_back} dates={[d.isoformat() for d in target_dates]}"
         )
-        if not sids:
+
+    deferred_dates: List[date] = []
+
+    for target_date in target_dates:
+        # Deadline guard: stop the loop if there's less than _DEADLINE_GUARD_MINUTES
+        # until the next _DEADLINE_HOUR_UTC. Any unprocessed dates are surfaced in
+        # the final log line so an operator can see what was deferred.
+        # When invoked outside the 01:30 UTC window (e.g. manual dry-run at 14:00),
+        # the "next" deadline is tomorrow, so the loop proceeds normally.
+        now = datetime.now(timezone.utc)
+        deadline_today = now.replace(
+            hour=_DEADLINE_HOUR_UTC, minute=0, second=0, microsecond=0
+        )
+        next_deadline = (
+            deadline_today
+            if now < deadline_today
+            else deadline_today + timedelta(days=1)
+        )
+        if (next_deadline - now) < timedelta(minutes=_DEADLINE_GUARD_MINUTES):
+            remaining = target_dates[target_dates.index(target_date):]
+            deferred_dates.extend(remaining)
+            logger.warning(
+                f"🌅 Morning recovery deadline guard hit at {now.strftime('%H:%M:%S')} UTC "
+                f"(< {_DEADLINE_GUARD_MINUTES}min before {_DEADLINE_HOUR_UTC:02d}:00) "
+                f"— deferring dates: {[d.isoformat() for d in remaining]}"
+            )
+            break
+
+        for session in sessions:
+            sids = _query_stations_missing_yesterday(
+                session, target_date, bypass_known_missing
+            )
+            if not sids:
+                logger.info(
+                    f"🌅 Morning recovery {session} ({target_date}): "
+                    "nothing to retry — all stations have this date's file"
+                )
+                continue
+
+            # Resolve run_rinex from the live scheduler config. Silent
+            # fallback to a hardcoded value risks diverging from the
+            # operator's actual policy — if the scheduler instance isn't
+            # reachable, log a clear warning and use the documented default.
+            run_rinex = False
+            config_resolved = False
+            try:
+                from .bulk_scheduler import _scheduler_instance
+
+                if _scheduler_instance is not None:
+                    cfg = _scheduler_instance.schedule_configs.get(session)
+                    if cfg is not None:
+                        run_rinex = cfg.rinex
+                        config_resolved = True
+            except Exception as exc:
+                logger.warning(
+                    f"Morning recovery: could not resolve schedule config for "
+                    f"{session}: {exc}"
+                )
+
+            if not config_resolved:
+                run_rinex = session == "15s_24hr"
+                logger.warning(
+                    f"Morning recovery: schedule_configs unavailable for "
+                    f"{session} — falling back to default run_rinex={run_rinex}. "
+                    f"Verify scheduler config if this is unexpected."
+                )
+
+            sid_preview = ", ".join(sids[:10]) + (
+                f" [+{len(sids) - 10} more]" if len(sids) > 10 else ""
+            )
             logger.info(
                 f"🌅 Morning recovery {session} ({target_date}): "
-                "nothing to retry — all stations have yesterday's file"
-            )
-            continue
-
-        # Resolve run_rinex from the live scheduler config. Silent
-        # fallback to a hardcoded value risks diverging from the
-        # operator's actual policy — if the scheduler instance isn't
-        # reachable, log a clear warning and use the documented default.
-        run_rinex = False
-        config_resolved = False
-        try:
-            from .bulk_scheduler import _scheduler_instance
-
-            if _scheduler_instance is not None:
-                cfg = _scheduler_instance.schedule_configs.get(session)
-                if cfg is not None:
-                    run_rinex = cfg.rinex
-                    config_resolved = True
-        except Exception as exc:
-            logger.warning(
-                f"Morning recovery: could not resolve schedule config for "
-                f"{session}: {exc}"
+                f"{len(sids)} stations queued — {sid_preview}"
             )
 
-        if not config_resolved:
-            run_rinex = session == "15s_24hr"
-            logger.warning(
-                f"Morning recovery: schedule_configs unavailable for "
-                f"{session} — falling back to default run_rinex={run_rinex}. "
-                f"Verify scheduler config if this is unexpected."
+            recovered: List[str] = []
+            still_failing: List[str] = []
+            workers = min(max_workers, len(sids))
+
+            with ThreadPoolExecutor(
+                max_workers=workers, thread_name_prefix="morn_rec"
+            ) as pool:
+                futures = {
+                    pool.submit(
+                        _retry_station,
+                        sid,
+                        session,
+                        target_date,
+                        station_timeout_minutes,
+                        run_rinex,
+                        production_mode,
+                    ): sid
+                    for sid in sids
+                }
+                for fut in as_completed(futures):
+                    sid, success = fut.result()
+                    (recovered if success else still_failing).append(sid)
+
+            recovered.sort()
+            still_failing.sort()
+            recovered_preview = ", ".join(recovered[:15]) + (
+                f" [+{len(recovered) - 15} more]" if len(recovered) > 15 else ""
+            )
+            failing_preview = ", ".join(still_failing[:15]) + (
+                f" [+{len(still_failing) - 15} more]" if len(still_failing) > 15 else ""
+            )
+            logger.info(
+                f"🌅 Morning recovery {session} ({target_date}) complete: "
+                f"{len(recovered)}/{len(sids)} recovered"
+                + (f" — {recovered_preview}" if recovered else "")
+                + (f" | still failing: {failing_preview}" if still_failing else "")
             )
 
-        sid_preview = ", ".join(sids[:10]) + (
-            f" [+{len(sids) - 10} more]" if len(sids) > 10 else ""
-        )
+    if deferred_dates and days_back > 1:
         logger.info(
-            f"🌅 Morning recovery {session} ({target_date}): "
-            f"{len(sids)} stations queued — {sid_preview}"
-        )
-
-        recovered: List[str] = []
-        still_failing: List[str] = []
-        workers = min(max_workers, len(sids))
-
-        with ThreadPoolExecutor(
-            max_workers=workers, thread_name_prefix="morn_rec"
-        ) as pool:
-            futures = {
-                pool.submit(
-                    _retry_station,
-                    sid,
-                    session,
-                    target_date,
-                    station_timeout_minutes,
-                    run_rinex,
-                    production_mode,
-                ): sid
-                for sid in sids
-            }
-            for fut in as_completed(futures):
-                sid, success = fut.result()
-                (recovered if success else still_failing).append(sid)
-
-        recovered.sort()
-        still_failing.sort()
-        recovered_preview = ", ".join(recovered[:15]) + (
-            f" [+{len(recovered) - 15} more]" if len(recovered) > 15 else ""
-        )
-        failing_preview = ", ".join(still_failing[:15]) + (
-            f" [+{len(still_failing) - 15} more]" if len(still_failing) > 15 else ""
-        )
-        logger.info(
-            f"🌅 Morning recovery {session} complete: "
-            f"{len(recovered)}/{len(sids)} recovered"
-            + (f" — {recovered_preview}" if recovered else "")
-            + (f" | still failing: {failing_preview}" if still_failing else "")
+            f"🌅 Morning recovery summary: {len(target_dates) - len(deferred_dates)}/"
+            f"{len(target_dates)} dates processed, "
+            f"deferred={[d.isoformat() for d in deferred_dates]}"
         )
