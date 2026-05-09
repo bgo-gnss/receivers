@@ -10,11 +10,15 @@
 
 set -e
 
-CACHE_DIR="${GPS_CACHE_DIR:-/var/cache/gps_receivers}"
+CACHE_DIR="${GPS_CACHE_DIR:-/home/gpsops/.cache/gps_receivers}"
 LOG_DIR="$CACHE_DIR/logs"
 AUDIT_LOG="$LOG_DIR/download_audit.jsonl"
 PIPELINE_DB="$LOG_DIR/pipeline.db"
 SCHEDULER_DB="$CACHE_DIR/scheduler.db"
+
+# Service is a user-level systemd unit owned by gpsops. Run this script as
+# gpsops, or override via SCHEDULER_SERVICE_USER (the script will sudo to it).
+SCHEDULER_SERVICE_USER="${SCHEDULER_SERVICE_USER:-gpsops}"
 
 VERBOSE=false
 [ "$1" == "--verbose" ] && VERBOSE=true
@@ -31,15 +35,38 @@ add_msg() {
 # -----------------------------------------------------------------------------
 # Check 1: Service Status
 # -----------------------------------------------------------------------------
+# Helper: run systemctl/journalctl against the user instance owned by
+# $SCHEDULER_SERVICE_USER. When the script already runs as that user
+# we use --user directly; otherwise we sudo into them.
+sched_systemctl() {
+    if [ "$(id -un)" = "$SCHEDULER_SERVICE_USER" ]; then
+        systemctl --user "$@"
+    else
+        sudo -u "$SCHEDULER_SERVICE_USER" \
+            XDG_RUNTIME_DIR=/run/user/$(id -u "$SCHEDULER_SERVICE_USER") \
+            systemctl --user "$@"
+    fi
+}
+
+sched_journalctl() {
+    if [ "$(id -un)" = "$SCHEDULER_SERVICE_USER" ]; then
+        journalctl --user-unit "$@"
+    else
+        sudo -u "$SCHEDULER_SERVICE_USER" \
+            XDG_RUNTIME_DIR=/run/user/$(id -u "$SCHEDULER_SERVICE_USER") \
+            journalctl --user-unit "$@"
+    fi
+}
+
 check_service() {
-    if ! systemctl is-active --quiet gps-receivers-scheduler 2>/dev/null; then
+    if ! sched_systemctl is-active --quiet gps-receivers-scheduler 2>/dev/null; then
         add_msg "CRITICAL: Scheduler service is not running"
         CRITICALS=$((CRITICALS + 1))
         return
     fi
 
     # Check for restart loop
-    RESTARTS=$(journalctl -u gps-receivers-scheduler --since "10 minutes ago" 2>/dev/null | grep -c "Started\|Stopped" || echo 0)
+    RESTARTS=$(sched_journalctl gps-receivers-scheduler --since "10 minutes ago" 2>/dev/null | grep -c "Started\|Stopped" || echo 0)
     if [ "$RESTARTS" -gt 4 ]; then
         add_msg "WARNING: Service restarted $RESTARTS times in last 10 minutes"
         WARNINGS=$((WARNINGS + 1))

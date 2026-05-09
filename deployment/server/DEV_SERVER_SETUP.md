@@ -125,33 +125,41 @@ Checks CLI, config files, database, tools, Grafana. Prints summary.
 ### Updating Code
 
 ```bash
-# As bgo — no sudo needed for code updates:
+# As bgo (owns code/venv) — no sudo needed:
 cd ~/git/receivers && git pull
 ~/git/receivers/venv/bin/pip install -e .
-sudo systemctl restart gps-receivers-scheduler
+
+# As gpsops (owns the user systemd unit) — restart to pick up the new code:
+ssh gpsops@host 'systemctl --user restart gps-receivers-scheduler'
 ```
 
 ### Updating Configuration
 
-```bash
-cd ~/git/gps-config-data && git pull
-cp stations.cfg receivers.cfg database.cfg scheduler.yaml /home/gpsops/.config/gpsconfig/
+`scheduler.yaml`, `stations.cfg`, `receivers.cfg` and friends are propagated to
+`/home/gpsops/.config/gpsconfig/` automatically by `gps-config-sync.timer`
+(runs every 10 min — see `deployment/server/sync-config.sh`). After a push to
+`gps-config-data`, allow up to ~10 min for the file to land on the host, then:
 
+```bash
 # Station config changes are auto-detected (no restart needed)
 # For scheduler.yaml changes:
-sudo systemctl restart gps-receivers-scheduler
+ssh gpsops@host 'systemctl --user restart gps-receivers-scheduler'
 ```
 
 ### Running Migrations
 
 ```bash
+# As bgo:
 cd ~/git/receivers
 psql -d gps_health -f migrations/NNN_whatever.sql
 psql -d gps_health -c "GRANT ALL ON ALL TABLES IN SCHEMA public TO gpsops"
-sudo systemctl restart gps-receivers-scheduler
+
+# As gpsops:
+ssh gpsops@host 'systemctl --user restart gps-receivers-scheduler'
 ```
 
-Or re-run the install script (auto-detects pending migrations):
+Or re-run the install script (auto-detects pending migrations and restarts the
+user unit via `gpsops_systemctl` wrapper):
 ```bash
 sudo bash ~/git/receivers/deployment/server/install.sh
 ```
@@ -159,23 +167,23 @@ sudo bash ~/git/receivers/deployment/server/install.sh
 ### Manual Downloads
 
 ```bash
-# Run as gpsops:
-sudo -u gpsops receivers download ELDC --sync --archive
+# Run as gpsops directly (no sudo needed when SSH'd in as gpsops):
+ssh gpsops@host 'receivers download ELDC --sync --archive'
 
 # Test connection:
-sudo -u gpsops receivers download ELDC --test-connection
+ssh gpsops@host 'receivers download ELDC --test-connection'
 
 # Health check:
-sudo -u gpsops receivers health THOB --verbose
+ssh gpsops@host 'receivers health THOB --verbose'
 ```
 
 ### Viewing Logs
 
 ```bash
-# Systemd journal (live)
-journalctl -u gps-receivers-scheduler -f
+# Systemd journal (live) — note --user-unit, no sudo
+ssh gpsops@host 'journalctl --user-unit gps-receivers-scheduler -f'
 
-# JSON log file
+# JSON log file (gpsops owns the cache dir; bgo can read via gpsops group)
 tail -f /home/gpsops/.cache/gps_receivers/logs/receivers.log | jq .
 
 # Audit trail
@@ -184,14 +192,17 @@ tail -f /home/gpsops/.cache/gps_receivers/logs/download_audit.jsonl | jq .
 
 ### Service Management
 
+The scheduler is a **user-level systemd unit owned by `gpsops`** — never
+`sudo systemctl ...`. Run as gpsops:
+
 ```bash
-sudo systemctl start gps-receivers-scheduler
-sudo systemctl stop gps-receivers-scheduler
-sudo systemctl restart gps-receivers-scheduler
-sudo systemctl status gps-receivers-scheduler
+systemctl --user start   gps-receivers-scheduler
+systemctl --user stop    gps-receivers-scheduler
+systemctl --user restart gps-receivers-scheduler
+systemctl --user status  gps-receivers-scheduler
 
 # Check scheduler state
-sudo -u gpsops receivers scheduler status --show-jobs
+receivers scheduler status --show-jobs
 ```
 
 ### Grafana
@@ -273,12 +284,14 @@ Mirror failures are logged but don't affect the primary.
 ### Service won't start
 
 ```bash
-journalctl -u gps-receivers-scheduler -n 50 --no-pager
+# As gpsops (user unit logs are not visible to bgo without --user):
+journalctl --user-unit gps-receivers-scheduler -n 50 --no-pager
 
 # Common causes:
 # - PostgreSQL not running: sudo systemctl start postgresql
 # - Config missing: ls -la /home/gpsops/.config/gpsconfig/
 # - Permission denied: check gpsops can read venv and config
+# - Linger not enabled: loginctl enable-linger gpsops
 ```
 
 ### Database connection fails
