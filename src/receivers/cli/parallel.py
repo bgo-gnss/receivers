@@ -33,6 +33,45 @@ _STATION_WALL_TIMEOUT = 2400  # 40 minutes
 logger = logging.getLogger("receivers.parallel")
 
 
+# Counter for abandoned wall-clock-timeout threads.  Each abandoned thread
+# holds whatever resources it was using at the moment of timeout: typically
+# an FTP socket and a tmp file handle, occasionally a DB connection slot
+# from BoundedSemaphore(20).  In a long-running scheduler these accumulate
+# across days and can deplete the DB pool — so we surface the count for
+# observability.  Reset is the operator's job (process restart).
+_abandoned_threads_count = 0
+_abandoned_threads_lock = threading.Lock()
+# Threshold above which we log a WARNING each time the counter grows.  Below
+# this we just bump the counter quietly — single-digit abandons per day are
+# normal under sustained 3G/4G flakiness.
+_ABANDONED_WARN_THRESHOLD = 10
+
+
+def _record_abandoned_thread(station_id: str, timeout_s: int) -> int:
+    """Bump the abandoned-thread counter and log when above threshold.
+
+    Returns the new total so callers can include it in their own log lines.
+    """
+    global _abandoned_threads_count
+    with _abandoned_threads_lock:
+        _abandoned_threads_count += 1
+        total = _abandoned_threads_count
+    if total >= _ABANDONED_WARN_THRESHOLD:
+        logger.warning(
+            f"⚠️  Abandoned thread count: {total} (latest: {station_id}, "
+            f"{timeout_s}s timeout). These threads still hold FTP sockets "
+            f"and may hold DB connection slots. Restart the scheduler when "
+            f"convenient to reclaim resources."
+        )
+    return total
+
+
+def get_abandoned_thread_count() -> int:
+    """Return current count of abandoned wall-clock-timeout threads."""
+    with _abandoned_threads_lock:
+        return _abandoned_threads_count
+
+
 class RouterFailureCache:
     """Thread-safe cache of recently-failed router IPs.
 
@@ -405,8 +444,14 @@ def _download_one_station(
     dl_thread.join(timeout=_STATION_WALL_TIMEOUT)
 
     if dl_thread.is_alive():
-        # Thread hung — abandon it (daemon=True means it dies with the process)
-        msg = f"Station download timed out after {_STATION_WALL_TIMEOUT}s (zombie connection)"
+        # Thread hung — abandon it (daemon=True means it dies with the process).
+        # Record so the operator can see accumulating zombie-thread leaks
+        # before they deplete the DB connection pool.
+        total_abandoned = _record_abandoned_thread(station_id, _STATION_WALL_TIMEOUT)
+        msg = (
+            f"Station download timed out after {_STATION_WALL_TIMEOUT}s "
+            f"(zombie connection; {total_abandoned} abandoned in this run)"
+        )
         worker_logger.error(f"⏰ {station_id}: {msg}")
         return _bail(
             station_id,

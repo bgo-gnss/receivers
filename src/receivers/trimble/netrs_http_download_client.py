@@ -349,8 +349,11 @@ class NetRSHTTPDownloader:
                         self.logger.error(
                             f"   Expected: {expected_size:,} bytes, Got: {local_file_size:,} bytes"
                         )
+                        # NetRS HTTP doesn't support Range requests; the next
+                        # attempt's should_resume_download() will detect the
+                        # partial and delete it for a fresh re-download.
                         self.logger.info(
-                            f"   Partial file kept for resume: {local_path}"
+                            f"   Partial kept on disk; next retry will start fresh: {local_path}"
                         )
                         record_download(
                             self.station_id,
