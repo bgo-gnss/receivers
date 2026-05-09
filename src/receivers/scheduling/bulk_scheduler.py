@@ -137,7 +137,7 @@ def _log_batch_summary_job(session_type: str) -> None:
             else ""
         )
         + (
-            f" — 🔁 {len(skipped)} skipped (will retry): {', '.join(sorted(skipped))}"
+            f" — ⏳ {len(skipped)} skipped (will retry): {', '.join(sorted(skipped))}"
             if skipped
             else ""
         )
