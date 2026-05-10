@@ -644,6 +644,7 @@ def cmd_seed_library(args: argparse.Namespace) -> None:
     target = get_target(config, target_name)
     headers = get_auth_headers(target, target_name)
     base_url = target["url"].rstrip("/")
+    folder_uid = target.get("folder_uid")
 
     panel_files = sorted(DASHBOARDS_DIR.glob("library_panel_*.json"))
     if not panel_files:
@@ -708,6 +709,8 @@ def cmd_seed_library(args: argparse.Namespace) -> None:
                 info(f"  {GREEN}UPDATED{NC} — version={new_ver}")
             else:
                 payload = {"name": name, "uid": uid, "kind": kind, "model": model}
+                if folder_uid:
+                    payload["folderUid"] = folder_uid
                 result = api_post(f"{base_url}/api/library-elements", headers, payload)
                 new_ver = result.get("result", {}).get("version", "?")
                 info(f"  {GREEN}CREATED{NC} — version={new_ver}")
