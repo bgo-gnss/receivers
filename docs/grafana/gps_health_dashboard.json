@@ -2540,8 +2540,30 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "WITH bucketed AS (\n  SELECT\n    date_bin('5 minutes', p.ts, TIMESTAMP '2000-01-01') AS bucket,\n    MIN(p.voltage)::float8 AS min_v,\n    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY p.voltage)::float8 AS median_v,\n    MAX(p.voltage)::float8 AS max_v\n  FROM block_power_status p\n  JOIN stations s ON s.sid = p.sid\n  WHERE p.ts BETWEEN $__timeFrom() AND $__timeTo()\n    AND ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = p.sid AND sam.area_id = '$area'))\n    AND (${owner:singlequote} = 'all' OR s.station_owner = ${owner:singlequote})\n    AND COALESCE(s.power_type, 'battery') = 'battery'\n    AND p.voltage BETWEEN 8 AND 20\n  GROUP BY 1\n)\nSELECT bucket AS time, 'Min (worst battery)' AS metric, min_v AS value FROM bucketed\nUNION ALL\nSELECT bucket AS time, 'Median' AS metric, median_v AS value FROM bucketed\nUNION ALL\nSELECT bucket AS time, 'Max' AS metric, max_v AS value FROM bucketed\nORDER BY time",
+          "rawSql": "SELECT\n  date_bin('5 minutes', p.ts, TIMESTAMP '2000-01-01') AS time,\n  MIN(p.voltage)::float8 AS \"Min (worst battery)\"\nFROM block_power_status p\nJOIN stations s ON s.sid = p.sid\nWHERE $__timeFilter(p.ts)\n  AND ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = p.sid AND sam.area_id = '$area'))\n  AND (${owner:singlequote} = 'all' OR s.station_owner = ${owner:singlequote})\n  AND COALESCE(s.power_type, 'battery') = 'battery'\n  AND p.voltage BETWEEN 8 AND 20\nGROUP BY 1\nORDER BY 1",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  date_bin('5 minutes', p.ts, TIMESTAMP '2000-01-01') AS time,\n  PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY p.voltage)::float8 AS \"Median\"\nFROM block_power_status p\nJOIN stations s ON s.sid = p.sid\nWHERE $__timeFilter(p.ts)\n  AND ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = p.sid AND sam.area_id = '$area'))\n  AND (${owner:singlequote} = 'all' OR s.station_owner = ${owner:singlequote})\n  AND COALESCE(s.power_type, 'battery') = 'battery'\n  AND p.voltage BETWEEN 8 AND 20\nGROUP BY 1\nORDER BY 1",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  date_bin('5 minutes', p.ts, TIMESTAMP '2000-01-01') AS time,\n  MAX(p.voltage)::float8 AS \"Max\"\nFROM block_power_status p\nJOIN stations s ON s.sid = p.sid\nWHERE $__timeFilter(p.ts)\n  AND ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = p.sid AND sam.area_id = '$area'))\n  AND (${owner:singlequote} = 'all' OR s.station_owner = ${owner:singlequote})\n  AND COALESCE(s.power_type, 'battery') = 'battery'\n  AND p.voltage BETWEEN 8 AND 20\nGROUP BY 1\nORDER BY 1",
+          "refId": "C"
         }
       ],
       "title": "Battery Voltage (fleet min/median/max) - $area",
