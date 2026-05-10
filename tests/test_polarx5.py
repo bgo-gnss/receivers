@@ -100,6 +100,57 @@ class TestPolaRX5:
         assert repr(self.receiver) == "PolaRX5(station_id='REYK')"
 
 
+class TestPolaRX5FtpModeFromStationConfig:
+    """Verify _setup_connection_info reads ftp_mode from the same dict where
+    config_utils.get_station_config writes it (router.ftp_mode), so the
+    cfg_discrepancy override actually reaches self.pasv.
+    """
+
+    def _make(self, ftp_mode_value=None):
+        info = {
+            "router": {"ip": "10.4.1.100"},
+            "receiver": {"ftpport": "21"},
+        }
+        if ftp_mode_value is not None:
+            info["router"]["ftp_mode"] = ftp_mode_value
+        return PolaRX5("TEST", info)
+
+    def test_router_ftp_mode_active_sets_pasv_false(self):
+        """router.ftp_mode='active' (the override target) → self.pasv = False."""
+        r = self._make("active")
+        assert r.pasv is False
+
+    def test_router_ftp_mode_passive_sets_pasv_true(self):
+        """router.ftp_mode='passive' → self.pasv = True."""
+        r = self._make("passive")
+        assert r.pasv is True
+
+    def test_router_ftp_mode_auto_defaults_to_passive(self):
+        """router.ftp_mode='auto' → defaults to passive (NAT-friendly)."""
+        r = self._make("auto")
+        assert r.pasv is True
+
+    def test_router_ftp_mode_missing_defaults_to_passive(self):
+        """No ftp_mode anywhere → defaults to passive (NAT-friendly)."""
+        r = self._make(None)
+        assert r.pasv is True
+
+    def test_receiver_ftp_mode_is_ignored(self):
+        """Regression guard: ftp_mode under 'receiver' must NOT be read.
+
+        config_utils.get_station_config writes the cfg_discrepancy override
+        to router.ftp_mode (line 159), not receiver.ftp_mode. Reading from
+        receiver.ftp_mode silently ignored the override on every run.
+        """
+        info = {
+            "router": {"ip": "10.4.1.100"},  # no ftp_mode → defaults
+            "receiver": {"ftpport": "21", "ftp_mode": "active"},  # decoy
+        }
+        r = PolaRX5("TEST", info)
+        # ftp_mode under receiver is ignored, falls through to default passive
+        assert r.pasv is True
+
+
 @pytest.mark.integration
 class TestPolaRX5Integration:
     """Integration tests for PolaRX5 (require actual configuration)."""
