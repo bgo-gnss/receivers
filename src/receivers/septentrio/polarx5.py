@@ -187,8 +187,16 @@ class PolaRX5(BaseReceiver):
             # Default to 2160 for PolaRX5 if not specified (standard Septentrio FTP port)
             self.ip_port = int(self.station_info["receiver"].get("ftpport") or 2160)
 
-            # Use gps_parser for FTP mode determination
-            ftp_mode = self.station_info.get("receiver", {}).get("ftp_mode", "auto")
+            # Use gps_parser for FTP mode determination.
+            # Read from station_info["router"]["ftp_mode"] — that's where
+            # config_utils.get_station_config() writes the value (cfg_utils:159),
+            # which already includes the cfg_discrepancy override applied at
+            # cfg_utils:129-131. Reading from "receiver" instead (the previous
+            # behaviour) silently ignored the learned override on every run —
+            # the recording side wrote to cfg_discrepancy but the application
+            # side never saw it, so the passive→active mode-flip dance repeated
+            # on every download even after the working mode was identified.
+            ftp_mode = self.station_info.get("router", {}).get("ftp_mode", "auto")
             if ftp_mode == "active":
                 self.pasv = False
             elif ftp_mode == "passive":
