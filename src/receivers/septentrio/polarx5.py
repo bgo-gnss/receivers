@@ -2081,14 +2081,19 @@ class PolaRX5(BaseReceiver):
                 with open(local_file, file_mode) as f:
 
                     def watchdog():
-                        """Kill connection if stuck at 0% for too long."""
-                        # When resuming (offset > 0) the server needs time to seek
-                        # to the REST position, especially under concurrent load.
-                        base_timeout = (
-                            max(self.data_transfer_timeout, 30)
-                            if offset > 0
-                            else self.data_transfer_timeout
-                        )
+                        """Kill connection if stuck at 0% for too long.
+
+                        Floor of 60 s for first byte: the receiver needs time
+                        to open the file and (on resume) seek to the REST
+                        position. Active-mode-after-passive-failure burns
+                        ~5-10 s on the dance itself, leaving little margin
+                        before any data arrives. Calibrated empirically on
+                        2026-05-10 — THOB and ENTC succeed at 60 s, fail at
+                        10-30 s for the 5 MB daily file when active mode is
+                        the working path. Resume case kept compatible (was
+                        already 30 s minimum).
+                        """
+                        base_timeout = max(self.data_transfer_timeout, 60)
                         # Scale by packet loss factor (1.0x–2.0x)
                         timeout = base_timeout * _loss_factor
                         check_interval = 0.5  # Check every 500ms
@@ -2466,20 +2471,40 @@ class PolaRX5(BaseReceiver):
 
                     ftp_new.set_pasv(new_pasv)
 
-                    # Delete partial file — passive data may be corrupt after
-                    # mode switch; appending with stale offset produces oversized files
-                    try:
-                        os.unlink(local_file)
-                    except OSError:
-                        pass
+                    # Preserve any bytes already on disk and resume from there.
+                    # Original code deleted the file with the rationale that
+                    # "passive data may be corrupt after mode switch". In
+                    # practice TCP guarantees in-order delivery, so received
+                    # bytes are correct as far as they go. The integrity
+                    # checker validates the final file size + gzip; truly
+                    # corrupt downloads still get caught and re-fetched.
+                    #
+                    # Why this matters: when the network forces a passive→
+                    # active dance on every attempt (current 2026-05-08
+                    # outage shape), deleting on every switch nukes accumulated
+                    # progress every time. Several hundreds of MBs already
+                    # transferred get re-downloaded for no reason, and a slow
+                    # link that could complete in 4 retries (2 MB each) never
+                    # does because each retry restarts from 0.
+                    resume_offset = (
+                        os.path.getsize(local_file)
+                        if os.path.isfile(local_file)
+                        else 0
+                    )
+                    if resume_offset > 0:
+                        self.logger.info(
+                            f"📦 Mode-switch resume: keeping {resume_offset} "
+                            f"bytes on disk, will RETR with REST {resume_offset}"
+                        )
 
-                    # Retry download from scratch on fresh connection
+                    # Retry download on the fresh connection, resuming from
+                    # whatever's already on disk.
                     result = self._download_with_progressbar(
                         ftp_new,
                         remote_file,
                         local_file,
                         remote_file_size,
-                        offset=0,
+                        offset=resume_offset,
                         session_type=session_type,
                     )
 
