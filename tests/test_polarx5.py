@@ -113,7 +113,7 @@ class TestPolaRX5FtpModeFromStationConfig:
         }
         if ftp_mode_value is not None:
             info["router"]["ftp_mode"] = ftp_mode_value
-        return PolaRX5("REYK", info)
+        return PolaRX5("TEST", info)
 
     def test_router_ftp_mode_active_sets_pasv_false(self):
         """router.ftp_mode='active' (the override target) → self.pasv = False."""
@@ -146,7 +146,7 @@ class TestPolaRX5FtpModeFromStationConfig:
             "router": {"ip": "10.4.1.100"},  # no ftp_mode → defaults
             "receiver": {"ftpport": "21", "ftp_mode": "active"},  # decoy
         }
-        r = PolaRX5("REYK", info)
+        r = PolaRX5("TEST", info)
         # ftp_mode under receiver is ignored, falls through to default passive
         assert r.pasv is True
 
