@@ -8,8 +8,59 @@ import gzip
 import logging
 import os
 import zipfile
+import zlib
 from pathlib import Path
 from typing import Dict, Optional, Tuple
+
+
+def classify_partial_gzip(file_path: str) -> str:
+    """Classify a (possibly partial) gzip file as complete / truncated / corrupt.
+
+    Used to decide what to do with a local partial before attempting REST
+    resume against the remote server.
+
+    Distinguishes "truncated" (bytes received so far are valid prefix of a
+    longer stream — safe to resume) from "corrupt" (bytes don't form a
+    valid DEFLATE stream — appending more bytes won't fix it; the
+    resulting file will fail integrity check anyway). The HVEH 2026-05-10
+    incident produced a 5,513,920-byte file (correct size) that failed
+    integrity with `Error -3 ... invalid stored block lengths` — bytes
+    accumulated across attempts ended up inconsistent. Detecting that BEFORE
+    spending bandwidth on the remaining bytes saves effort.
+
+    Returns:
+      'complete'  — partial decompresses fully, no need to download more
+      'truncated' — partial cuts mid-stream cleanly (resume OK)
+      'corrupt'   — partial bytes are inconsistent (delete + start fresh)
+      'missing'   — file doesn't exist or is empty (start from 0)
+    """
+    if not os.path.isfile(file_path):
+        return "missing"
+    if os.path.getsize(file_path) == 0:
+        return "missing"
+    try:
+        # Read entire stream. If it completes without error → complete.
+        # If it errors, the error type tells us truncated vs corrupt.
+        with gzip.open(file_path, "rb") as gz:
+            chunk_size = 64 * 1024
+            while gz.read(chunk_size):
+                pass
+        return "complete"
+    except EOFError:
+        # Cleanly truncated mid-stream — a partial download in progress
+        return "truncated"
+    except (zlib.error, gzip.BadGzipFile, OSError) as exc:
+        msg = str(exc).lower()
+        # Truncation flavours produced by the gzip / zlib stack:
+        #   "compressed file ended before the end-of-stream marker was reached"
+        #   "unexpected end of file"
+        #   "unexpected end of stream"
+        if "ended before" in msg or "unexpected end" in msg:
+            return "truncated"
+        # Anything else (Z_DATA_ERROR -3 "invalid stored block lengths",
+        # "incorrect data check", "invalid block type", BadGzipFile header
+        # mismatch, etc.) means the bytes don't form a valid prefix.
+        return "corrupt"
 
 
 class FileValidator:
@@ -308,18 +359,48 @@ class FileValidator:
                         f"File already complete: {file_path} ({file_size} bytes)"
                     )
                     return False, 0
-                else:
-                    # Local file smaller than remote - can resume
-                    self.logger.info(
-                        f"Resuming download from byte {file_size} (local: {file_size}, remote: {remote_size})"
+                # else: file_size < remote_size — fall through to gzip-state check
+
+            # Gzip-state check on the partial. Catches the "right size, wrong
+            # bytes" case where a partial accumulated under inconsistent
+            # writes (mode-switches, multiple sessions) — appending more
+            # bytes won't fix it. HVEH 2026-05-10 incident: 5,513,920-byte
+            # partial that completed download but failed integrity with
+            # `Error -3 ... invalid stored block lengths`. Detecting that
+            # before downloading the remaining bytes saves bandwidth and a
+            # round trip.
+            if str(file_path).endswith(".gz"):
+                state = classify_partial_gzip(str(file_path))
+                if state == "corrupt":
+                    self.logger.warning(
+                        f"⚠️  Partial gzip is corrupt (not just truncated) — "
+                        f"deleting and starting fresh: {file_path}"
                     )
-                    return True, file_size
+                    try:
+                        os.unlink(file_path)
+                    except OSError as e:
+                        self.logger.warning(
+                            f"Could not remove corrupt partial {file_path}: {e}"
+                        )
+                    return False, 0
+                if state == "complete":
+                    # Partial decompresses fully — nothing more to download
+                    self.logger.info(
+                        f"Partial gzip is complete: {file_path} ({file_size} bytes)"
+                    )
+                    return False, 0
+                # state in ('truncated', 'missing') falls through to resume
+
+            # Local file smaller than remote (or no remote info) — can resume
+            if remote_size is not None:
+                self.logger.info(
+                    f"Resuming download from byte {file_size} (local: {file_size}, remote: {remote_size})"
+                )
             else:
-                # No remote size info - assume we can resume any non-zero file
                 self.logger.info(
                     f"Resuming download from byte {file_size} (no remote size check)"
                 )
-                return True, file_size
+            return True, file_size
 
         except Exception as e:
             self.logger.warning(f"Error checking file {file_path}: {e}")
