@@ -151,6 +151,65 @@ class TestPolaRX5FtpModeFromStationConfig:
         assert r.pasv is True
 
 
+class TestSafeResumeOffset:
+    """Verify _safe_resume_offset enforces partial_size <= remote_file_size."""
+
+    def test_returns_zero_when_no_partial(self, tmp_path):
+        from receivers.septentrio.polarx5 import _safe_resume_offset
+        import logging
+
+        logger = logging.getLogger("test")
+        local = tmp_path / "no_such_file.gz"
+        assert _safe_resume_offset(str(local), 1000, logger) == 0
+
+    def test_returns_zero_when_empty_partial(self, tmp_path):
+        from receivers.septentrio.polarx5 import _safe_resume_offset
+        import logging
+
+        logger = logging.getLogger("test")
+        local = tmp_path / "empty.gz"
+        local.write_bytes(b"")
+        assert _safe_resume_offset(str(local), 1000, logger) == 0
+
+    def test_returns_partial_size_when_within_remote(self, tmp_path):
+        """Normal case: partial < remote → resume from partial size."""
+        from receivers.septentrio.polarx5 import _safe_resume_offset
+        import logging
+
+        logger = logging.getLogger("test")
+        local = tmp_path / "partial.gz"
+        local.write_bytes(b"x" * 500)
+        # remote is 1000 bytes, we have 500 → resume from 500
+        assert _safe_resume_offset(str(local), 1000, logger) == 500
+
+    def test_returns_zero_and_deletes_oversized_partial(self, tmp_path):
+        """Critical: partial > remote → delete partial, return 0.
+
+        Prevents the 554 deadlock observed 2026-05-10 with FAGC where the
+        local partial was 24,904,440 bytes but the server's current file
+        was 22,292,412 bytes.
+        """
+        from receivers.septentrio.polarx5 import _safe_resume_offset
+        import logging
+
+        logger = logging.getLogger("test")
+        local = tmp_path / "oversized.gz"
+        local.write_bytes(b"x" * 24_904_440)  # mimic FAGC scenario
+        offset = _safe_resume_offset(str(local), 22_292_412, logger)
+        assert offset == 0
+        assert not local.exists(), "oversized partial should be deleted"
+
+    def test_returns_partial_size_when_equal_to_remote(self, tmp_path):
+        """Edge case: partial == remote → resume from end (download is done)."""
+        from receivers.septentrio.polarx5 import _safe_resume_offset
+        import logging
+
+        logger = logging.getLogger("test")
+        local = tmp_path / "complete.gz"
+        local.write_bytes(b"x" * 1000)
+        assert _safe_resume_offset(str(local), 1000, logger) == 1000
+
+
 @pytest.mark.integration
 class TestPolaRX5Integration:
     """Integration tests for PolaRX5 (require actual configuration)."""
