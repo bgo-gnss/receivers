@@ -51,6 +51,10 @@ def _query_stations_missing_yesterday(
       - Stations marked `status='missing'` in `file_tracking` for this
         (sid, session, date) tuple — UNLESS `bypass_known_missing=True`.
 
+    Logs a per-exclusion-reason count so the operator can tell *why* a
+    station isn't in the retry queue. Without this, "BAUG didn't show up in
+    morning_recovery" is opaque — the queue logic is invisible.
+
     Args:
         session: Session type (e.g. '15s_24hr').
         target_date: Date to check (typically yesterday).
@@ -61,38 +65,84 @@ def _query_stations_missing_yesterday(
     """
     from ..health.database_factory import DatabaseConnectionFactory
 
-    where_known_missing = (
-        ""
-        if bypass_known_missing
-        else (
-            "AND NOT EXISTS ("
-            "  SELECT 1 FROM file_tracking ft2"
-            "  WHERE ft2.sid = s.sid"
-            "    AND ft2.session_type = %(sess)s"
-            "    AND ft2.file_date = %(date)s"
-            "    AND ft2.status = 'missing'"
-            ")"
-        )
-    )
-
-    sql = f"""
-      SELECT s.sid
-      FROM station_data_flow_status s
-      LEFT JOIN file_tracking ft
-             ON ft.sid = s.sid
-            AND ft.session_type = %(sess)s
-            AND ft.file_date = %(date)s
-            AND ft.status IN ('downloaded', 'archived')
-      WHERE s.health_status >= 0
-        AND s.status_24h = 2
-        AND ft.sid IS NULL
-        {where_known_missing}
-      ORDER BY s.sid
+    # Single diagnostic query that reports each row's bucket:
+    #   queued     — will be retried
+    #   passive    — health_status < 0
+    #   already_ok — file_tracking has 'downloaded'/'archived' row
+    #   marked_missing — file_tracking has 'missing' status (locks out unless bypass)
+    #   not_targeted — status_24h != 2 (e.g. file actually present, dashboard view says so)
+    sql = """
+      WITH categorized AS (
+        SELECT
+          s.sid,
+          CASE
+            WHEN s.health_status < 0 THEN 'passive'
+            WHEN ft.sid IS NOT NULL THEN 'already_ok'
+            WHEN s.status_24h <> 2 THEN 'not_targeted'
+            WHEN EXISTS (
+              SELECT 1 FROM file_tracking ft2
+              WHERE ft2.sid = s.sid
+                AND ft2.session_type = %(sess)s
+                AND ft2.file_date = %(date)s
+                AND ft2.status = 'missing'
+            ) THEN 'marked_missing'
+            ELSE 'queued'
+          END AS bucket
+        FROM station_data_flow_status s
+        LEFT JOIN file_tracking ft
+               ON ft.sid = s.sid
+              AND ft.session_type = %(sess)s
+              AND ft.file_date = %(date)s
+              AND ft.status IN ('downloaded', 'archived')
+      )
+      SELECT bucket, array_agg(sid ORDER BY sid) AS sids, count(*) AS n
+      FROM categorized
+      GROUP BY bucket
     """
+    buckets: dict[str, tuple[list[str], int]] = {}
     with DatabaseConnectionFactory.connection() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, {"sess": session, "date": target_date})
-            return [row[0] for row in cur.fetchall()]
+            for bucket, sids, n in cur.fetchall():
+                buckets[bucket] = (list(sids), int(n))
+
+    queued, queued_n = buckets.get("queued", ([], 0))
+    if bypass_known_missing and "marked_missing" in buckets:
+        # Promote stations locked out by the 'missing' TTL into the retry
+        # queue when the operator opts in. Keeps the bucket counts honest
+        # in the log line below (they reflect the promotion).
+        promoted_sids, promoted_n = buckets["marked_missing"]
+        queued = sorted(queued + promoted_sids)
+        queued_n += promoted_n
+        buckets["marked_missing"] = ([], 0)
+
+    # Compact summary so the operator can scan it at a glance. Hide buckets
+    # with zero stations to keep the line readable in the common case.
+    summary_parts = [f"queued={queued_n}"]
+    for label in ("passive", "already_ok", "not_targeted", "marked_missing"):
+        _sids, n = buckets.get(label, ([], 0))
+        if n:
+            summary_parts.append(f"{label}={n}")
+    logger.info(
+        f"🌅 Morning recovery {session} ({target_date}) filter summary: "
+        + ", ".join(summary_parts)
+    )
+
+    # If any non-trivial bucket exists, surface the SIDs so post-hoc audit
+    # is possible without re-querying the DB. Capped at 15 per line to
+    # avoid swamping the log when most of the fleet is up to date.
+    for label in ("marked_missing", "not_targeted"):
+        sids, n = buckets.get(label, ([], 0))
+        if n:
+            preview = ", ".join(sids[:15]) + (
+                f" [+{n - 15} more]" if n > 15 else ""
+            )
+            logger.info(
+                f"   ↪ {label}: {preview}"
+                + (" (use bypass_known_missing=True to override)" if label == "marked_missing" else "")
+            )
+
+    return queued
 
 
 def _confirm_recovered(sid: str, session: str, target_date: date) -> bool:
