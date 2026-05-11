@@ -190,6 +190,9 @@ class LeicaG10(BaseReceiver):
         Returns:
             Dictionary with download results and file information
         """
+        # Per-file download retry budget (propagated from CLI --max-retries)
+        max_retries = kwargs.get("max_retries", 3)
+
         start_time = time.time()
 
         # Quick reachability check to skip offline stations fast
@@ -429,7 +432,11 @@ class LeicaG10(BaseReceiver):
                         process_callback = immediate_process_callback
 
                     downloaded_files = self.ftp_downloader.download_files(
-                        missing_files_dict, tmp_dir_path, clean_tmp, process_callback
+                        missing_files_dict,
+                        tmp_dir_path,
+                        clean_tmp,
+                        process_callback,
+                        max_retries=max_retries,
                     )
                 else:
                     self.logger.info(

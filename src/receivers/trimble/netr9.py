@@ -282,6 +282,8 @@ class NetR9(BaseReceiver):
         loglevel = kwargs.get(
             "loglevel", logging.INFO
         )  # Default to INFO for detailed logging
+        # Per-file download retry budget (propagated from CLI --max-retries)
+        max_retries = kwargs.get("max_retries", 3)
 
         # Set logger level
         self.logger.setLevel(loglevel)
@@ -491,6 +493,7 @@ class NetR9(BaseReceiver):
                         archive_files_dict=archive_files_dict if archive else None,
                         use_phase1_utilities=archive,  # Always use Phase 1 when archiving
                         session_type=session,
+                        max_retries=max_retries,
                     )
                 else:
                     self.logger.info(

@@ -624,6 +624,7 @@ class LeicaFTPDownloader:
         tmp_dir: Path,
         clean_tmp: bool = True,
         process_callback: Optional[callable] = None,
+        max_retries: int = 3,
     ) -> List[str]:
         """Download multiple files from Leica receiver.
 
@@ -682,6 +683,7 @@ class LeicaFTPDownloader:
                 local_file_path,
                 remote_dir=remote_directory,
                 expected_size=None,
+                retry_count=max_retries,
             )
 
             if success:
