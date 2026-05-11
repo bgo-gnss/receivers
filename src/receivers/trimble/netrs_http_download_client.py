@@ -219,7 +219,7 @@ class NetRSHTTPDownloader:
                 response = self.http_client.session.get(
                     full_url,
                     stream=True,
-                    timeout=(self.connect_timeout, None),
+                    timeout=(self.connect_timeout, self.stall_timeout),
                     auth=self.http_client.auth,
                 )
                 response.raise_for_status()
@@ -467,6 +467,7 @@ class NetRSHTTPDownloader:
         archive_files_dict: Optional[Dict[str, str]] = None,
         use_phase1_utilities: bool = False,
         session_type: str = "unknown",
+        max_retries: int = 3,
     ) -> List[str]:
         """Download multiple files from NetRS receiver.
 
@@ -531,6 +532,7 @@ class NetRSHTTPDownloader:
                 filename,
                 local_file_path,
                 expected_size=None,
+                max_retries=max_retries,
                 session_type=session_type,
             )
 

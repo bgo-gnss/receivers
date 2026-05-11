@@ -166,6 +166,7 @@ def _download_station_period(
             archive=args.archive,
             reverse_chronological=reverse_chronological,
             loglevel=args.loglevel,
+            max_retries=getattr(args, "max_retries", 3),
         )
 
         # Report results

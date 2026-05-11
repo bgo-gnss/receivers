@@ -632,6 +632,7 @@ class NetR9HTTPDownloader:
         archive_files_dict: Optional[Dict[str, str]] = None,
         use_phase1_utilities: bool = False,
         session_type: str = "unknown",
+        max_retries: int = 3,
     ) -> List[str]:
         """Download multiple files from NetR9 receiver.
 
@@ -708,6 +709,7 @@ class NetR9HTTPDownloader:
                 filename,
                 local_file_path,
                 expected_size,
+                max_retries=max_retries,
                 session_type=session_type,
             )
 
