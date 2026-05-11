@@ -268,14 +268,17 @@ class LeicaG10(BaseReceiver):
                     "duration": time.time() - start_time,
                 }
 
-            # Use Phase 1 batch validation - checks archive AND tmp directory
+            # See netrs.py for the rationale: pass None for tmp_dir so a
+            # partial .m00.zip doesn't get auto-flushed as complete. Same
+            # class of bug as the Trimble .T00/.T02 case; the gzip-only
+            # truncation check added in PR #41 doesn't apply to .m00 archives.
             (
                 missing_files_dict,
                 files_found_in_archive,
                 validated_files,
                 files_in_tmp_dict,
             ) = self.archive_validator.batch_validate_archives(
-                files_dict, archive_files_dict, tmp_dir_path
+                files_dict, archive_files_dict, None
             )
 
             # Archive files from tmp if found and archive flag is set

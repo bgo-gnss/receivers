@@ -386,14 +386,23 @@ class NetRS(BaseReceiver):
                     "duration": time.time() - start_time,
                 }
 
-            # Use Phase 1 batch validation - checks archive AND tmp directory
+            # Use Phase 1 batch validation — archive only, NOT tmp.
+            #
+            # NetRS files are Trimble .T00 binary. A partial download has a
+            # valid Trimble header, so ArchiveValidator._validate_tmp_file_integrity
+            # falls back to a size+magic check that lets through 65 KB chunks
+            # (one iter_content block written before a hung connection).
+            # Auto-flushing such a partial would archive it as the complete
+            # daily file. By passing None we skip tmp discovery entirely;
+            # partials sit in tmp until clean_tmp removes them or the next
+            # download_file() unlinks them via the resume path.
             (
                 missing_files_dict,
                 files_found_in_archive,
                 validated_files,
                 files_in_tmp_dict,
             ) = self.archive_validator.batch_validate_archives(
-                files_dict, archive_files_dict, tmp_dir_path
+                files_dict, archive_files_dict, None
             )
 
             # Archive files from tmp if found and archive flag is set

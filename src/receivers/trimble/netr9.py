@@ -354,13 +354,18 @@ class NetR9(BaseReceiver):
                 }
 
             # Use Phase 1 batch validation - checks archive AND tmp (Fix #1)
+            # See netrs.py for the rationale: pass None for tmp_dir so a
+            # partial .T02 doesn't get auto-flushed as complete. The Trimble
+            # binary format has no embedded length we can cheaply verify in
+            # _validate_tmp_file_integrity, so any partial with a valid
+            # header would slip through.
             (
                 missing_files_dict,
                 files_found_in_archive,
                 validated_files,
                 files_in_tmp_dict,
             ) = self.archive_validator.batch_validate_archives(
-                files_dict, archive_files_dict, tmp_dir_path
+                files_dict, archive_files_dict, None
             )
 
             # Archive files from tmp if found and archive flag is set (Fix #1)
