@@ -2281,39 +2281,55 @@ class BulkDownloadScheduler:
 
         from .morning_recovery import _run_morning_recovery_job
 
-        schedule = cfg.get("schedule", "01:30")
+        # `schedule` may be a single string (legacy) or a list of strings
+        # (multi-fire). Each entry is independently routed through
+        # parse_schedule(), so any supported format works in either form —
+        # daily times ("01:30"), intervals ("6h"), or full cron expressions
+        # ("cron: 30 1,6 * * *").
+        schedule_raw = cfg.get("schedule", "01:30")
+        schedules: List[str] = (
+            schedule_raw if isinstance(schedule_raw, list) else [schedule_raw]
+        )
         sessions = cfg.get("sessions", ["15s_24hr"])
         days_back = cfg.get("days_back", 1)
         max_workers = cfg.get("max_workers", 4)
         station_timeout_minutes = cfg.get("station_timeout_minutes", 8)
         bypass_known_missing = cfg.get("bypass_known_missing", False)
 
-        base_trigger = parse_schedule(schedule)
+        for idx, sched in enumerate(schedules):
+            base_trigger = parse_schedule(sched)
+            # Keep id stable for single-fire (legacy) so operators can
+            # locate the job by name. Multi-fire uses an indexed suffix.
+            job_id = (
+                "morning_recovery"
+                if len(schedules) == 1
+                else f"morning_recovery_{idx}"
+            )
 
-        self.scheduler.add_job(
-            func=_run_morning_recovery_job,
-            trigger=base_trigger.trigger_type,
-            args=[
-                sessions,
-                days_back,
-                max_workers,
-                station_timeout_minutes,
-                bypass_known_missing,
-            ],
-            id="morning_recovery",
-            replace_existing=True,
-            max_instances=1,
-            executor="backfill",
-            misfire_grace_time=900,  # 15 min — fire late if scheduler restarted around 01:30
-            **base_trigger.trigger_kwargs,
-        )
+            self.scheduler.add_job(
+                func=_run_morning_recovery_job,
+                trigger=base_trigger.trigger_type,
+                args=[
+                    sessions,
+                    days_back,
+                    max_workers,
+                    station_timeout_minutes,
+                    bypass_known_missing,
+                ],
+                id=job_id,
+                replace_existing=True,
+                max_instances=1,
+                executor="backfill",
+                misfire_grace_time=900,  # 15 min grace if scheduler restarted near fire time
+                **base_trigger.trigger_kwargs,
+            )
 
-        self.logger.info(
-            f"🌅 Scheduled morning recovery ({base_trigger.description}, "
-            f"sessions={sessions}, days_back={days_back}, "
-            f"workers={max_workers}, "
-            f"bypass_known_missing={bypass_known_missing})"
-        )
+            self.logger.info(
+                f"🌅 Scheduled morning recovery [{job_id}] "
+                f"({base_trigger.description}, sessions={sessions}, "
+                f"days_back={days_back}, workers={max_workers}, "
+                f"bypass_known_missing={bypass_known_missing})"
+            )
 
     def _detect_outage_gap(self, session_type: str = "15s_24hr") -> int:
         """Detect how many days of data are missing since the last successful download.

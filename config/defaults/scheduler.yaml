@@ -90,7 +90,14 @@ integrity_checker:
 # See docs/design/morning-recovery.md for the full design.
 morning_recovery:
   enabled: true
-  schedule: "01:30"            # Daily at 01:30 UTC
+  # `schedule` accepts either a single string (legacy) or a list of strings
+  # for multi-fire. Each list entry is independently parsed and can be any
+  # supported format — daily time ("01:30"), interval ("6h"), or full cron
+  # ("cron: 30 1,6 * * *"). Multi-fire example:
+  #   schedule:
+  #     - "01:30"                # before GAMIT
+  #     - "06:00"                # mid-morning catch-up
+  schedule: "01:30"            # Daily at 01:30 UTC (before GAMIT)
   sessions:
     - 15s_24hr
   days_back: 3                 # Cover 1-3 day outages; 1 = yesterday only
