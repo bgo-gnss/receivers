@@ -700,45 +700,14 @@ All receivers use Phase 1 utilities by default:
 
 ## TODO / Known Issues
 
-A systematic review is needed to address recurring patterns of issues found during dashboard and health monitoring development. See **`docs/CODE_REVIEW_TRACKER.md`** for the full tracking document with details, priorities, and status.
+**Canonical todo list lives in the vault**, not in this file:
+[[1778505454-receivers-todos|Receivers Todos]] in `1.Projects/Work_GPS_Receivers/`.
+Add new items with `/project-todo Work_GPS_Receivers <task>`. This section keeps
+only design context needed to interpret todos (the *why*, not the *what to do*).
 
-### High Priority
-- ~~**Trimble health check**: BRIK false CRITICAL~~ ✅ Fixed — `build_health_status()` already caps non-HTTP ports at WARNING for NetR*/NetRS/NetR5. BRIK shows `healthy` in production.
-- ~~**Protocol-agnostic data model**~~ ✅ Resolved — `ftp_open=NULL`/`control_open=NULL` for Trimble is semantically correct (N/A). Dashboard handles NULL gracefully.
-- ~~**Status value vocabulary**~~ ✅ Fixed (migration 034 + `connectivity_writer.py`) — `connectivity_writer` Path 2 fallback now writes `'ok'` instead of `'open'`. Both accepted downstream.
-- ~~**Receiver capability awareness**~~ ✅ Fixed (migration 034) — `health_good` CTE NULL bug: `(NOT dp.X OR h.X)` evaluated to NULL for Trimble, disabling debouncing. Fixed to `(dp.X IS NOT TRUE OR h.X IS TRUE)`. All Trimble stations now debounced correctly.
-
-### Medium Priority
-- **systemd watchdog (sd_notify)**: The scheduler doesn't send sd_notify keepalives, so `WatchdogSec=300s` in the service file kills the process after 5 minutes. Currently disabled via commenting out `WatchdogSec`. Proper fix: integrate `sd_notify` (via `systemd.daemon` or `sdnotify` package) into the scheduler main loop — send `WATCHDOG=1` periodically and `READY=1` on startup. Also fix `.cache/` dir perms (`0700` → `0750`) so bgo can read gpsops logs.
-- **Codebase review**: Full audit of db_writer.py, connectivity_writer.py, and all extractors for protocol assumptions
-- **Test coverage**: Integration tests for Trimble health flow end-to-end (extractor → db_writer → dashboard views)
-- **Error handling patterns**: Standardize SAVEPOINT usage, transaction management, and value truncation across all DB writers
-
-### Disk Status Detection — TODO
-- **PolaRX5 disk-not-mounted detection**: Currently 88 PolaRX5 stations report `total_mb = 0, usage_percent = 0` in `block_disk_status` because the SBF DiskStatus block (4059) is either absent or not parsed. The `disk_status` view flags all of them as `2` (critical) — over-flagging. Need to investigate:
-  1. Does the PolaRX5 DiskStatus SBF block (4059) distinguish "no disk" vs "disk unmounted" vs "disk present, 0% used"? Check the Septentrio SBF reference manual for DiskStatus fields (disk state, mount status).
-  2. Does `rxtools_extractor.extract_disk_status()` return any data beyond `DiskUsagePercent [%]`? The RxTools CSV output may include total/free columns that we're not parsing.
-  3. The `timeseries_extractor.py` (line 195) explicitly writes `total_mb: None, used_mb: None` — should it omit the disk dict entirely when only `usage_percent` is available?
-  4. If the SBF block IS present but reports 0/0 for a mounted disk, that's a broken disk (GJAC pattern). If the block is absent or reports "not mounted", that's "no data" and should be `-1`.
-  5. Consider: `db_writer._write_disk_status()` should skip the INSERT when all fields are NULL/0, so `block_disk_status` only contains meaningful data.
-- **Affected stations**: GJAC (confirmed broken disk, 0% since install). All 88 stations with `total_mb = 0` need audit once detection is improved.
-- **Temporary workaround**: `usage_percent = 0 → disk_status = 2` in migration 032. Remove once extractor properly distinguishes the cases.
-
-### Integrity Checker — Future Work
-- **Suspect files dashboard indicator**: Add a count box or column to the Grafana overview dashboard showing files with `status = 'suspect'`, so operators can monitor integrity check results without querying the DB directly.
-
-### Archive Format System — Future Work
-- **RINEX format converter tool**: Read any stored RINEX → output in any desired format (R2/R3/R4, short/long naming, .YYd/.YYo, .Z/.gz/none). R2→R3 is lossy, all other conversions feasible. The `archive_format` table provides the metadata needed to drive this.
-- **Cold storage archival**: rsync to production server. `storage_location` with `location_type='server'` + rsync integration. Track what's been synced via `file_locations`.
-- **Trimble/Leica format definitions**: Add `netr9_15s_24hr_raw` (.T02), `netrs_15s_24hr_raw` (.T00), `g10_15s_24hr_raw` (.m00) when those receivers get RINEX conversion support.
-- **Navigation RINEX**: Add format definitions for nav files when needed.
-- **Apply migration to production**: Run `021_archive_format.sql` on the production database (10.170.110.80) when ready.
-
-### Cfg Reconciliation — TOS Write Mechanics
+### Cfg Reconciliation — TOS Write Mechanics (reference)
 
 `receivers cfg reconcile STATION --push-tos` writes corrected values back to TOS via `tostools.api.tos_writer.TOSWriter`. This is built on TOS's temporal attribute store model:
-
-**Three write patterns** (see `tostools/docs/architecture/tos-write-api.md` for full reference):
 
 | Pattern | Use case | Mechanism |
 |---------|---------|-----------|
@@ -747,55 +716,26 @@ A systematic review is needed to address recurring patterns of issues found duri
 | **3 — New attribute** | Attribute never set | `POST /attribute_values` with date_from = station install date |
 | **4 — Historical fix** | Correct a closed period | Same PATCH as Pattern 1 but targeting a specific historical `id_attribute_value` |
 
-**`--push-tos` currently implements Pattern 1 only** — correct the open (currently active) value in-place. Interactive prompt `T` (uppercase) triggers the push; the corrected value is taken from the receiver or cfg side, passed through `to_igs_*()` for IGS name conversion, then PATCHed on TOS.
+`--push-tos` currently implements Pattern 1 only — correct the open (currently active) value in-place. Interactive prompt `T` (uppercase) triggers the push; corrected value passes through `to_igs_*()` for IGS name conversion, then PATCHed on TOS.
 
 Key facts:
 - `TOSWriter` is dry-run by default — `--dry-run` is safe, `--push-tos` without `--dry-run` sends live writes
 - Date format: `"YYYY-MM-DDTHH:MM:SS"` only — no timezone (handled internally by `_tos_date()`)
 - TOS stores IGS equipment names; health system reports abbreviated names — conversion via `tostools.standards.igs_equipment`
 - Credentials: configure `[tos]` section in `database.cfg` to avoid interactive prompts
+- Full reference: `tostools/docs/architecture/tos-write-api.md`
 
-### Cfg Reconciliation — Future Work
-The `receivers cfg reconcile` command (introduced 2026-05) currently
-covers TOS → cfg and receiver → cfg with interactive review, auto-fill,
-JSON output, and field-scoped batch mode. Open follow-ups:
-- **Pattern 2 (instrument change) — separate workflow needed**: when receiver/antenna/firmware discrepancy reflects an actual swap or upgrade (not a data-entry error), the fix is to close the old TOS period (`date_to`) and open a new one (`date_from` = install date). This is distinct from Pattern 1 (PATCH open value for typos). Currently the interactive prompt warns the operator to check which case applies and handle Pattern 2 manually in TOS. A future `receivers tos add-instrument` (or tostools) command should automate this — interface not yet designed.
-- **Source visibility hint**: when a source is excluded (e.g.
-  `--source tos`), surface "receiver skipped — re-run with
-  `--source both`" in the output header so it's obvious from the dump
-  alone.
-- **Parallel `--all`**: today the loop is sequential per station. With
-  173 stations × ~30s receiver probe worst case, a sweep can take
-  ~90 min. Add a `--workers N` knob using the same parallel pattern
-  as `download_parallel`.
-- **Batch writes per station**: each accepted prompt currently rewrites
-  `stations.cfg`. Stage all accepted changes per station and write once.
-- **Resume / checkpoint**: a long `--all` run that's interrupted starts
-  over. Persist visited stations to a state file.
-- **Field expansion**: receiver-side extraction now covers antenna
-  type/serial/radome/height (flag-only) and position lat/lon/height
-  (flag-only, default ±2 m via `--position-tolerance-m`). Still pending:
-  DOMES number, install date, owner, in_network_epos. Validate antenna
-  codes against `igs_antenna.dat`.
-- **Position group QC**: per-field tolerance is a sanity check, not a
-  haversine 3D-distance check. Fine for "right station / wrong station"
-  detection; consider a dedicated 3D distance verdict if survey-grade
-  drift detection becomes a use case.
-- **`cfg audit --all`**: read-only summary mode (count of stations
-  with issues per field) to drive a Grafana panel.
-- **One-time inventory**: run
-  `receivers cfg reconcile --all --source tos --dry-run --json --only-diffs > tos_audit.json`
-  on rek-d01 to size the bulk-fix scope before any writes.
-- **Auto-fill policy**: decide which fields are "safe to auto-fill from
-  TOS" (coordinates, station_name) versus which always require manual
-  review (antenna_serial, receiver_serial, antenna_height).
-- **Pattern 4 — historical fixes**: `upsert_attribute_value` targets the most recent open value. For correcting a closed historical period, need a `date_hint` parameter to select the record by `date_from`. Useful for bulk-fixing old data entry errors without overwriting current values.
-- **Device entity writes**: `--push-tos` currently writes to the station entity only. Receiver model/serial/firmware live on the `gnss_receiver` child entity (`children_connections[].id_entity_child`). Needs a second history fetch + entity resolution step.
-- **Join record updates**: Device session start/end dates live in the join record (not the device entity). `TOSWriter.patch_entity_connection()` is implemented; needs wiring to reconcile workflow.
-- **Scheduled TOS consistency sweep** (post-TOS cleanup): add `receivers cfg reconcile --all --source tos --dry-run --json --only-diffs` as a nightly scheduler job once TOS data is reliable. Output feeds a Grafana discrepancy panel (`cfg_discrepancy` table). Prereqs: TOS bulk cleanup complete, Grafana panel built, `--workers N` parallelism implemented. Long-term: once TOS is authoritative, flip to generating stations.cfg FROM TOS (`receivers cfg generate`).
+Pattern 2 (instrument change), Pattern 4 (historical fixes), device entity writes, and the scheduled TOS consistency sweep are all tracked as todos — see [[1778505454-receivers-todos#Cfg reconciliation / TOS|todos file]].
 
-### Tracking
-- Full issue tracker: `docs/CODE_REVIEW_TRACKER.md`
-- Updated: 2026-05-05
+### Resolved items (historical reference)
+
+The following high-priority issues were resolved during dashboard/health monitoring development; kept here as context for future AI sessions:
+
+- **Trimble health check (BRIK false CRITICAL)** — `build_health_status()` caps non-HTTP ports at WARNING for NetR*/NetRS/NetR5
+- **Protocol-agnostic data model** — `ftp_open=NULL`/`control_open=NULL` for Trimble is semantically correct (N/A)
+- **Status value vocabulary** — migration 034 + `connectivity_writer.py` Path 2 fallback now writes `'ok'` (both `'ok'` and `'open'` accepted downstream)
+- **Receiver capability awareness** — migration 034 fixed `health_good` CTE NULL bug `(NOT dp.X OR h.X)` → `(dp.X IS NOT TRUE OR h.X IS TRUE)`
+
+Full code-review history (50+ resolved items): `docs/CODE_REVIEW_TRACKER.md`.
 
 **Maintainer**: Veðurstofa Íslands GPS Team

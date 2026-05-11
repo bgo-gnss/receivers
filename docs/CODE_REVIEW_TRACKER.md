@@ -1,5 +1,16 @@
 # Code Review Tracker - Receivers Package
 
+**This file is now a historical audit log of code-review findings.** Actionable todos
+(including the open tracker IDs previously listed in this file) have been migrated to
+the canonical vault todo list:
+
+- `1.Projects/Work_GPS_Receivers/1778505454-receivers-todos.md` — see "Code review" section for open `*-NNN` IDs
+
+Add new items via `/project-todo Work_GPS_Receivers <task>`. The Resolved Issues below
+stay here for reference (what was changed, why, and in which migration).
+
+---
+
 Tracking document for code weaknesses, recurring issues, and optimization opportunities discovered during dashboard and health monitoring development.
 
 ## Issue Categories
@@ -205,7 +216,11 @@ Tracking document for code weaknesses, recurring issues, and optimization opport
 
 ---
 
-## Open Issues / Future Work
+## Tracker entries — resolved and open
+
+Entries below are kept as code-review audit log. Entries with `**Status**: Open` are
+also tracked in the vault todos file (see "Code review" section there). When marking
+an entry as resolved, leave it here; remove the corresponding line from the vault.
 
 ### PROTOCOL-010: Standardize port status value vocabulary
 - **Category**: DATA-MODEL
@@ -576,5 +591,5 @@ When reviewing a file, check for these patterns:
 ---
 
 **Created**: 2026-02-09
-**Last updated**: 2026-04-29 (SCHEDULER-021: gap detector → backfill feed)
-**Purpose**: Track code quality issues for systematic review and optimization
+**Last updated**: 2026-05-11 (migrated open issues to vault todos file `1778505454-receivers-todos.md`; this file is now a historical audit log)
+**Purpose**: Code review audit log — what was changed and why. Actionable open work lives in the vault.
