@@ -219,7 +219,7 @@ class NetRSHTTPDownloader:
                 response = self.http_client.session.get(
                     full_url,
                     stream=True,
-                    timeout=(self.connect_timeout, None),
+                    timeout=(self.connect_timeout, self.stall_timeout),
                     auth=self.http_client.auth,
                 )
                 response.raise_for_status()
