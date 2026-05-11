@@ -1,0 +1,12 @@
+[Unit]
+Description=Run morning recovery report daily after the 01:30 UTC recovery job
+
+[Timer]
+# Fires at 02:00 UTC daily — gives the 01:30 recovery job up to 30 min to
+# finish (deadline guard cuts off at 02:45 anyway). Persistent=true catches
+# up if the server was down at firing time.
+OnCalendar=*-*-* 02:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

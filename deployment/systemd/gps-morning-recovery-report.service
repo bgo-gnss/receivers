@@ -1,0 +1,12 @@
+[Unit]
+Description=GPS morning recovery report — summarize the 01:30 UTC recovery job
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=gpsops
+Group=gpsops
+ExecStart=/home/bgo/git/receivers/deployment/scripts/morning_recovery_report.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gps-morning-recovery-report
