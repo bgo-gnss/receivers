@@ -1742,6 +1742,195 @@ def cmd_cfg_extract(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# add-receiver — warehouse intake (step 6 of device-warehouse interface)
+# ---------------------------------------------------------------------------
+
+
+def cmd_cfg_add_receiver(args) -> int:
+    """``cfg add-receiver`` — probe a receiver and register it in TOS.
+
+    Flow: parse ``--probe``, run :func:`receivers.cfg.device_probe.probe_receiver`,
+    apply CLI overrides, validate against the tostools OwnersCache, IGS-normalise
+    the model via :func:`tostools.device.validate_model`, then call
+    :meth:`tostools.api.tos_writer.TOSWriter.create_device` + a per-optional-attr
+    ``upsert_attribute_value``. Exit 0 on success, 1 on TOS write failure / probe
+    failure, 2 on input-validation failure.
+    """
+    import json as _json
+    import sys
+
+    from tostools.api.tos_writer import TOSWriter
+    from tostools.device import (
+        build_required_attributes,
+        iter_optional_attributes,
+        normalize_date_start,
+        validate_model,
+    )
+    from tostools.owners import OwnersCache
+
+    from ..cfg.device_probe import (
+        ProbeError,
+        ProbeIncompleteError,
+        ProbeNotIdentifiedError,
+        ProbeUnreachableError,
+        parse_host_port,
+        probe_receiver,
+        to_subtype_attrs,
+    )
+
+    # ---- Cheap validation first (so the user doesn't wait through a
+    # ---- 20-second probe timeout to learn the owner string is wrong).
+    try:
+        host, port = parse_host_port(args.probe)
+    except ValueError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        return 2
+
+    try:
+        date_start = normalize_date_start(args.date_start)
+    except ValueError as e:
+        print(f"❌ Invalid --date-start: {e}", file=sys.stderr)
+        return 2
+
+    owners_cache = (
+        OwnersCache(args.owners_cache) if args.owners_cache else OwnersCache()
+    )
+    if args.owner not in owners_cache.load():
+        print(
+            f"❌ Unknown owner: {args.owner!r}. "
+            f"Run 'tos owners list' to see allowed values, or "
+            f"'tos owners list --refresh' if you recently added one in TOS.",
+            file=sys.stderr,
+        )
+        return 2
+
+    # ---- Probe (network) -------------------------------------------------
+    try:
+        identity = probe_receiver(
+            host,
+            port,
+            probe_type=args.probe_type,
+            station_id_hint=args.station_hint,
+        )
+    except ProbeUnreachableError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        return 1
+    except ProbeNotIdentifiedError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        return 1
+    except ProbeError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        return 1
+
+    # ---- Overrides + completeness ----------------------------------------
+    try:
+        merged = to_subtype_attrs(
+            identity,
+            serial_override=args.serial,
+            model_override=args.model,
+            firmware_override=args.firmware,
+        )
+    except ProbeIncompleteError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        return 2
+
+    # ---- IGS model normalisation ----------------------------------------
+    try:
+        igs_model = validate_model(merged["subtype"], merged["model_raw"])
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+
+    # The probed firmware lives in merged; CLI --firmware already won inside
+    # to_subtype_attrs. Carry it into the optional-attr list when present so
+    # the warehouse record reflects what was on the box at intake time.
+    firmware_attr = merged.get("firmware_version")
+
+    required = build_required_attributes(
+        serial=merged["serial"],
+        model=igs_model,
+        owner=args.owner,
+        location=args.location,
+        date_start=date_start,
+    )
+    optional = iter_optional_attributes(
+        firmware=firmware_attr,
+        comment=args.comment,
+        galvos=args.galvos,
+    )
+
+    # ---- Writer setup ---------------------------------------------------
+    scheme = "https" if args.port == 443 else "http"
+    base_url = f"{scheme}://{args.server}:{args.port}/tos/v1"
+    dry_run = not args.no_dry_run
+    writer = TOSWriter(base_url=base_url, dry_run=dry_run)
+
+    # ---- Create entity --------------------------------------------------
+    try:
+        response = writer.create_device(merged["subtype"], required, force=args.force)
+    except ValueError as e:
+        msg = str(e)
+        if "already exists" in msg and not args.force:
+            print(
+                f"❌ {msg}\nPass --force to add the duplicate anyway.",
+                file=sys.stderr,
+            )
+        else:
+            print(f"❌ {msg}", file=sys.stderr)
+        return 1
+
+    id_entity = None
+    if isinstance(response, dict):
+        id_entity = response.get("id_entity")
+
+    # ---- Optional attribute upserts -------------------------------------
+    upsert_results = []
+    for code, value in optional:
+        if dry_run or id_entity is None:
+            print(
+                f"DRY RUN: would upsert {code}={value!r} from {date_start} "
+                f"on id_entity="
+                f"{id_entity if id_entity is not None else '<new entity>'}"
+            )
+            upsert_results.append({"code": code, "value": value, "dry_run": True})
+        else:
+            r = writer.upsert_attribute_value(
+                id_entity, code=code, value=value, date_from=date_start
+            )
+            upsert_results.append({"code": code, "value": value, "response": r})
+
+    # ---- Summary --------------------------------------------------------
+    probe_origin = f"{host}:{port}" if port else host
+    if args.json:
+        payload = {
+            "subtype": merged["subtype"],
+            "serial": merged["serial"],
+            "model": igs_model,
+            "model_raw_from_probe": identity.model_raw,
+            "owner": args.owner,
+            "location": args.location,
+            "date_start": date_start,
+            "id_entity": id_entity,
+            "dry_run": dry_run,
+            "probe_type": identity.probe_type,
+            "probe_origin": probe_origin,
+            "required_attributes": required,
+            "optional_attributes": [{"code": c, "value": v} for c, v in optional],
+            "upsert_results": upsert_results,
+        }
+        print(_json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        suffix = " (dry-run)" if dry_run else ""
+        id_str = id_entity if id_entity is not None else "<would be assigned>"
+        print(
+            f"Created {merged['subtype']} via probe={identity.probe_type} "
+            f"@ {probe_origin}: serial={merged['serial']} model={igs_model} "
+            f"id_entity={id_str}{suffix}"
+        )
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # argparse wiring
 # ---------------------------------------------------------------------------
 
@@ -2093,12 +2282,124 @@ Examples:
     )
     ext.set_defaults(func=cmd_cfg_extract)
 
+    # ------------------------------------------------------------------
+    # add-receiver — warehouse intake via tostools.device (step 6)
+    # ------------------------------------------------------------------
+    from ..cfg.device_probe import PROBE_TYPE_CHOICES
+
+    add_rx = cfg_subparsers.add_parser(
+        "add-receiver",
+        help="Probe a receiver and register it as a new device in TOS",
+        description=(
+            "Connect to a receiver at the given IP, auto-extract identity "
+            "(serial/model/firmware) from SBF block 5902 (PolaRX5) or the "
+            "vendor HTTP interface, IGS-normalise the model, and call "
+            "tostools.device.create_device. Defaults to dry-run."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # PolaRX5 on the bench (WiFi AP), dry-run by default:
+  receivers cfg add-receiver --probe 192.168.20.1 \\
+      --owner "Veðurstofa Íslands" --location "Bench A" \\
+      --date-start 2026-05-12
+
+  # Trimble NetR9 at a deployed station:
+  receivers cfg add-receiver --probe 10.20.30.40 --probe-type netr9 \\
+      --owner "Veðurstofa Íslands" --location "Reykjavík warehouse" \\
+      --date-start 2026-05-12
+
+  # Leica G10 — probe only confirms reachability, serial must be supplied:
+  receivers cfg add-receiver --probe 10.20.30.41 --probe-type g10 \\
+      --serial G10-12345 --owner "Veðurstofa Íslands" \\
+      --location "Bench B" --date-start 2026-05-12
+
+  # Commit live (overrides the dry-run default):
+  receivers cfg add-receiver --probe 192.168.20.1 ... --no-dry-run
+""",
+    )
+    add_rx.add_argument(
+        "--probe",
+        required=True,
+        metavar="HOST[:PORT]",
+        help="Receiver host/IP, optionally with explicit port.",
+    )
+    add_rx.add_argument(
+        "--probe-type",
+        choices=PROBE_TYPE_CHOICES,
+        default="auto",
+        help="Receiver protocol; 'auto' tries PolaRX5 only (default).",
+    )
+    add_rx.add_argument(
+        "--station-hint",
+        metavar="STID",
+        help="Optional 4-char marker hint for logging (e.g. BENCH).",
+    )
+    add_rx.add_argument(
+        "--owner",
+        required=True,
+        help="Owner label; must match the tostools OwnersCache.",
+    )
+    add_rx.add_argument(
+        "--location",
+        required=True,
+        help="Physical warehouse / bench location.",
+    )
+    add_rx.add_argument(
+        "--date-start",
+        required=True,
+        metavar="YYYY-MM-DD",
+        help="Start date for all attribute values.",
+    )
+    add_rx.add_argument(
+        "--firmware",
+        help="Override the probed firmware_version (optional attribute).",
+    )
+    add_rx.add_argument("--comment", help="Optional free-form comment attribute.")
+    add_rx.add_argument(
+        "--galvos", help="Optional galvos (inventory/registration) number."
+    )
+    add_rx.add_argument(
+        "--serial",
+        help="Override the probed serial (required for G10).",
+    )
+    add_rx.add_argument(
+        "--model",
+        help="Override the probed model (required for G10).",
+    )
+    add_rx.add_argument(
+        "--force",
+        action="store_true",
+        help="Bypass the tostools duplicate-serial guard.",
+    )
+    add_rx.add_argument(
+        "--no-dry-run",
+        action="store_true",
+        help="Commit the writes; without this flag, payloads are logged only.",
+    )
+    add_rx.add_argument(
+        "--owners-cache",
+        help="Override the tostools owners.yaml path.",
+    )
+    add_rx.add_argument(
+        "--server",
+        default="vi-api.vedur.is",
+        help="TOS API host (default: vi-api.vedur.is).",
+    )
+    add_rx.add_argument("--port", type=int, default=443)
+    add_rx.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a structured JSON summary instead of plain text.",
+    )
+    add_rx.set_defaults(func=cmd_cfg_add_receiver)
+
 
 def handle_cfg_command(args) -> int:
     """Handle cfg subcommands; called from main()."""
     if not getattr(args, "cfg_command", None):
         print("❌ No cfg subcommand specified")
-        print("Available: reconcile, extract, list, history")
-        print("\nTry: receivers cfg reconcile --help")
+        print("Available: reconcile, extract, list, history, add-receiver")
+        print("\nTry: receivers cfg add-receiver --help")
         return 2
     return args.func(args)
