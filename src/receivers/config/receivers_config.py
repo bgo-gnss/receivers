@@ -126,6 +126,50 @@ class ReceiversConfig:
         """
         return self.get_data_prepath()
 
+    def get_cold_archive_prepath(self) -> str:
+        """Get the read-only base path for the long-term raw/RINEX archive.
+
+        Distinct from :meth:`get_data_prepath`, which is the online working
+        cache that receivers writes to. The cold archive is the long-term
+        store consumed by historical-lookup tooling (e.g. tostools'
+        RINEX-header-based device-history reconstruction, gap-fill for the
+        device-warehouse work).
+
+        Read-only. Callers must not write into this path.
+
+        Returns:
+            Cold-storage base path (e.g. ``/mnt/rawgpsdata`` on production,
+            ``/mnt_data/rawgpsdata`` on developer laptops). When the entry
+            is absent from cfg, probes known mount points and returns the
+            first one that exists; falls back to the production default
+            with a warning if no mount is detected.
+        """
+        try:
+            cold = self.config.get("archive_paths", "cold_archive_prepath")
+            if cold.startswith("./"):
+                project_root = os.getcwd()
+                cold = os.path.join(project_root, cold[2:])
+                cold = os.path.abspath(cold)
+            return cold
+        except (configparser.NoSectionError, configparser.NoOptionError):
+            # Probe well-known mount points before giving up. Order is
+            # production-first so a misconfigured prod host still resolves
+            # to /mnt/rawgpsdata rather than silently picking the laptop
+            # default.
+            for cand in ("/mnt/rawgpsdata", "/mnt_data/rawgpsdata"):
+                if os.path.isdir(cand):
+                    self.logger.warning(
+                        "cold_archive_prepath not set in cfg; "
+                        f"using detected mount {cand}"
+                    )
+                    return cand
+            fallback = "/mnt/rawgpsdata"
+            self.logger.warning(
+                "cold_archive_prepath not set in cfg and no mount detected; "
+                f"using fallback {fallback}"
+            )
+            return fallback
+
     def get_tmp_dir(self) -> str:
         """Get temporary download directory path.
 
@@ -175,9 +219,9 @@ class ReceiversConfig:
                             "frequency": parts[0].strip(),
                             "acquisition": parts[1].strip(),
                             "description": parts[2].strip(),
-                            "file_frequency": parts[3].strip()
-                            if len(parts) > 3
-                            else "24hr",
+                            "file_frequency": (
+                                parts[3].strip() if len(parts) > 3 else "24hr"
+                            ),
                         }
                         session_types[session_name] = session_data
                     else:

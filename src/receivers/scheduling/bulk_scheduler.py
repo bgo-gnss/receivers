@@ -461,9 +461,7 @@ def _download_station_data_job(
             logger.info(
                 f"⏭️  {station_id} ({session_type}) [{health_skip}] — outcome={outcome}"
             )
-            _rd_health(
-                station_id, session_type, outcome=outcome, message=health_skip
-            )
+            _rd_health(station_id, session_type, outcome=outcome, message=health_skip)
             _record_batch_result(session_type, station_id, outcome, health_skip)
             return
     except Exception as exc:
@@ -2301,9 +2299,7 @@ class BulkDownloadScheduler:
             # Keep id stable for single-fire (legacy) so operators can
             # locate the job by name. Multi-fire uses an indexed suffix.
             job_id = (
-                "morning_recovery"
-                if len(schedules) == 1
-                else f"morning_recovery_{idx}"
+                "morning_recovery" if len(schedules) == 1 else f"morning_recovery_{idx}"
             )
 
             self.scheduler.add_job(

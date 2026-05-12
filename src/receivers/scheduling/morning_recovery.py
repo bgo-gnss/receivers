@@ -134,12 +134,14 @@ def _query_stations_missing_yesterday(
     for label in ("marked_missing", "not_targeted"):
         sids, n = buckets.get(label, ([], 0))
         if n:
-            preview = ", ".join(sids[:15]) + (
-                f" [+{n - 15} more]" if n > 15 else ""
-            )
+            preview = ", ".join(sids[:15]) + (f" [+{n - 15} more]" if n > 15 else "")
             logger.info(
                 f"   ↪ {label}: {preview}"
-                + (" (use bypass_known_missing=True to override)" if label == "marked_missing" else "")
+                + (
+                    " (use bypass_known_missing=True to override)"
+                    if label == "marked_missing"
+                    else ""
+                )
             )
 
     return queued
@@ -247,7 +249,7 @@ def _run_morning_recovery_job(
             else deadline_today + timedelta(days=1)
         )
         if (next_deadline - now) < timedelta(minutes=_DEADLINE_GUARD_MINUTES):
-            remaining = target_dates[target_dates.index(target_date):]
+            remaining = target_dates[target_dates.index(target_date) :]
             deferred_dates.extend(remaining)
             logger.warning(
                 f"🌅 Morning recovery deadline guard hit at {now.strftime('%H:%M:%S')} UTC "
