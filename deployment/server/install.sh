@@ -964,6 +964,21 @@ else
     ok "Config sync timer installed and enabled (pulls every 10 min)"
 fi
 
+# Morning recovery report timer — runs daily at 02:00 UTC, summarizes the
+# 01:30 UTC morning_recovery job and writes a plaintext report to
+# /home/gpsops/morning-recovery-reports/. Operator reviews next morning.
+install -m 644 "$INSTALL_DIR/deployment/systemd/gps-morning-recovery-report.service" \
+    /etc/systemd/system/gps-morning-recovery-report.service
+install -m 644 "$INSTALL_DIR/deployment/systemd/gps-morning-recovery-report.timer" \
+    /etc/systemd/system/gps-morning-recovery-report.timer
+chmod +x "$INSTALL_DIR/deployment/scripts/morning_recovery_report.sh"
+# Pre-create the report dir so the first run doesn't race on mkdir.
+install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 755 \
+    "/home/$SERVICE_USER/morning-recovery-reports"
+systemctl daemon-reload
+systemctl enable --now gps-morning-recovery-report.timer
+ok "Morning recovery report timer installed and enabled (daily 02:00 UTC)"
+
 # Logrotate
 if [[ -f "$INSTALL_DIR/deployment/logrotate.d/gps-receivers" ]]; then
     # Patch log path to match this installation
