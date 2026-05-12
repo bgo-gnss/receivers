@@ -1098,6 +1098,110 @@ class TestModeSwitchFtpReturn:
         assert ftp_out is ftp_new
 
 
+class TestWatchdogKillTriggersModeSwitch:
+    """Watchdog zero-byte stalls share the root cause of explicit FTP NAT
+    errors (broken nf_conntrack_ftp helper on non-standard ports → data
+    channel silently dead). Before this fix, the mode-switch trigger only
+    matched explicit FTP errors like "500 I won't open"; watchdog kills
+    propagated unchanged and every retry stayed in the same broken passive
+    mode. 30+ stations seen on 2026-05-12 with 2-4 zero-byte stalls each.
+    """
+
+    def _make_receiver(self):
+        from receivers.septentrio.polarx5 import PolaRX5
+
+        rx = PolaRX5.__new__(PolaRX5)
+        rx.station_id = "TEST"
+        rx.logger = MagicMock()
+        rx.pasv = True
+        rx.progress_timeout = 600
+        rx.data_transfer_timeout = 10
+        rx.inactivity_timeout = 30
+        return rx
+
+    def test_watchdog_kill_triggers_mode_switch(self):
+        """Full watchdog error string (as written by the production code path)
+        must trigger a passive→active mode-switch reconnect."""
+        rx = self._make_receiver()
+        ftp_orig = MagicMock()
+        ftp_new = MagicMock()
+        call_count = [0]
+
+        def side_effect(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise TimeoutError(
+                    "No data received within 60s - connection killed by watchdog"
+                )
+            return 0
+
+        with (
+            patch.object(rx, "_download_with_progressbar", side_effect=side_effect),
+            patch.object(rx, "_ftp_open_connection", return_value=ftp_new),
+            patch.object(rx, "_get_ftp_mode_description", return_value="active"),
+        ):
+            result, ftp_out = rx._download_with_progressbar_and_retry(
+                ftp_orig,
+                "/remote/file",
+                "/local/file",
+                1000,
+                0,
+            )
+
+        assert result == 0
+        assert ftp_out is ftp_new
+        assert call_count[0] == 2, "Expected one retry on the new connection"
+
+    def test_killed_by_watchdog_substring_alone_triggers_switch(self):
+        """The shorter `killed by watchdog` phrase still triggers — guards
+        against future error-message refactors that drop "no data received"."""
+        rx = self._make_receiver()
+        ftp_orig = MagicMock()
+        ftp_new = MagicMock()
+        call_count = [0]
+
+        def side_effect(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise TimeoutError("transfer aborted - killed by watchdog at 0%")
+            return 0
+
+        with (
+            patch.object(rx, "_download_with_progressbar", side_effect=side_effect),
+            patch.object(rx, "_ftp_open_connection", return_value=ftp_new),
+            patch.object(rx, "_get_ftp_mode_description", return_value="active"),
+        ):
+            result, ftp_out = rx._download_with_progressbar_and_retry(
+                ftp_orig, "/remote/file", "/local/file", 1000, 0
+            )
+
+        assert result == 0
+        assert ftp_out is ftp_new
+
+    def test_unrelated_timeout_does_not_trigger_switch(self):
+        """Regression guard: a generic socket timeout (not the watchdog phrase)
+        must propagate — these are read errors, not data-channel-dead errors,
+        and mode-switching them masks real issues."""
+        rx = self._make_receiver()
+        ftp_orig = MagicMock()
+
+        with (
+            patch.object(
+                rx,
+                "_download_with_progressbar",
+                side_effect=TimeoutError("socket recv timed out"),
+            ),
+            patch.object(rx, "_ftp_open_connection") as open_mock,
+            patch.object(rx, "_get_ftp_mode_description", return_value="passive"),
+        ):
+            with pytest.raises(TimeoutError, match="socket recv timed out"):
+                rx._download_with_progressbar_and_retry(
+                    ftp_orig, "/remote/file", "/local/file", 1000, 0
+                )
+
+        open_mock.assert_not_called()
+
+
 # ── Fix 2: Ping-override for backoff ──────────────────────────────────────
 
 

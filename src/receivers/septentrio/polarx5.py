@@ -2115,6 +2115,15 @@ class PolaRX5(BaseReceiver):
             except Exception:
                 _loss_factor = 1.0
 
+            # Effective zero-progress watchdog timeout. The 60 s floor was
+            # calibrated 2026-05-10 (THOB/ENTC) — the receiver needs time
+            # to open the file and (on resume) seek to REST. Computed once
+            # here so the error messages below report the value actually
+            # used, not the raw `data_transfer_timeout` (10 s default).
+            watchdog_effective_timeout = (
+                max(self.data_transfer_timeout, 60) * _loss_factor
+            )
+
             import sys as _sys
 
             with tqdm(
@@ -2142,9 +2151,10 @@ class PolaRX5(BaseReceiver):
                         the working path. Resume case kept compatible (was
                         already 30 s minimum).
                         """
-                        base_timeout = max(self.data_transfer_timeout, 60)
-                        # Scale by packet loss factor (1.0x–2.0x)
-                        timeout = base_timeout * _loss_factor
+                        # Use the pre-computed effective timeout (floor + loss factor)
+                        # so the watchdog and the TimeoutError messages report the
+                        # same value.
+                        timeout = watchdog_effective_timeout
                         check_interval = 0.5  # Check every 500ms
                         elapsed = 0
 
@@ -2197,7 +2207,7 @@ class PolaRX5(BaseReceiver):
                             # Check if watchdog killed us
                             if watchdog_killed[0]:
                                 raise TimeoutError(
-                                    f"No data received within {self.data_transfer_timeout}s - connection killed by watchdog"
+                                    f"No data received within {watchdog_effective_timeout:.0f}s - connection killed by watchdog"
                                 )
 
                             # Use select with short timeout to poll socket
@@ -2210,7 +2220,7 @@ class PolaRX5(BaseReceiver):
                                     # Socket was closed by watchdog
                                     if watchdog_killed[0]:
                                         raise TimeoutError(
-                                            f"No data received within {self.data_transfer_timeout}s - connection killed by watchdog"
+                                            f"No data received within {watchdog_effective_timeout:.0f}s - connection killed by watchdog"
                                         )
                                     raise
 
@@ -2296,7 +2306,7 @@ class PolaRX5(BaseReceiver):
                         # If watchdog killed the connection, raise TimeoutError instead
                         if watchdog_killed[0]:
                             raise TimeoutError(
-                                f"No data received within {self.data_transfer_timeout}s - connection killed by watchdog"
+                                f"No data received within {watchdog_effective_timeout:.0f}s - connection killed by watchdog"
                             ) from None
                         raise  # Re-raise original error if not watchdog-related
                     else:
@@ -2524,6 +2534,17 @@ class PolaRX5(BaseReceiver):
                 "won't open a connection",  # FTP passive mode NAT mismatch
                 "i won't open",  # Variation of NAT mismatch error
                 "500 i won't",  # FTP 500 error from passive mode
+                # Watchdog-killed zero-byte stall: the FTP control channel
+                # established and we know the file size, but the data channel
+                # never delivered a single byte before the watchdog timed out.
+                # Same root cause as the explicit FTP errors above (data
+                # channel dead — typically broken nf_conntrack_ftp helper on
+                # the station's NAT router for non-standard ports). Without
+                # this trigger every retry stays in passive mode and stalls
+                # the same way, dragging the live-window tail by 30+ minutes
+                # across the fleet of NAT'd stations.
+                "killed by watchdog",
+                "no data received within",
             ]
             if any(err in error_msg for err in connection_errors):
                 self.logger.warning(
