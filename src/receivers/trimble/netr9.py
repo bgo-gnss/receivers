@@ -282,6 +282,8 @@ class NetR9(BaseReceiver):
         loglevel = kwargs.get(
             "loglevel", logging.INFO
         )  # Default to INFO for detailed logging
+        # Per-file download retry budget (propagated from CLI --max-retries)
+        max_retries = kwargs.get("max_retries", 3)
 
         # Set logger level
         self.logger.setLevel(loglevel)
@@ -352,13 +354,18 @@ class NetR9(BaseReceiver):
                 }
 
             # Use Phase 1 batch validation - checks archive AND tmp (Fix #1)
+            # See netrs.py for the rationale: pass None for tmp_dir so a
+            # partial .T02 doesn't get auto-flushed as complete. The Trimble
+            # binary format has no embedded length we can cheaply verify in
+            # _validate_tmp_file_integrity, so any partial with a valid
+            # header would slip through.
             (
                 missing_files_dict,
                 files_found_in_archive,
                 validated_files,
                 files_in_tmp_dict,
             ) = self.archive_validator.batch_validate_archives(
-                files_dict, archive_files_dict, tmp_dir_path
+                files_dict, archive_files_dict, None
             )
 
             # Archive files from tmp if found and archive flag is set (Fix #1)
@@ -491,6 +498,7 @@ class NetR9(BaseReceiver):
                         archive_files_dict=archive_files_dict if archive else None,
                         use_phase1_utilities=archive,  # Always use Phase 1 when archiving
                         session_type=session,
+                        max_retries=max_retries,
                     )
                 else:
                     self.logger.info(

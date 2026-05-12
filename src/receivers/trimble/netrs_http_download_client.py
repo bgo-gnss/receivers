@@ -219,7 +219,7 @@ class NetRSHTTPDownloader:
                 response = self.http_client.session.get(
                     full_url,
                     stream=True,
-                    timeout=(self.connect_timeout, None),
+                    timeout=(self.connect_timeout, self.stall_timeout),
                     auth=self.http_client.auth,
                 )
                 response.raise_for_status()
@@ -349,8 +349,11 @@ class NetRSHTTPDownloader:
                         self.logger.error(
                             f"   Expected: {expected_size:,} bytes, Got: {local_file_size:,} bytes"
                         )
+                        # NetRS HTTP doesn't support Range requests; the next
+                        # attempt's should_resume_download() will detect the
+                        # partial and delete it for a fresh re-download.
                         self.logger.info(
-                            f"   Partial file kept for resume: {local_path}"
+                            f"   Partial kept on disk; next retry will start fresh: {local_path}"
                         )
                         record_download(
                             self.station_id,
@@ -464,6 +467,7 @@ class NetRSHTTPDownloader:
         archive_files_dict: Optional[Dict[str, str]] = None,
         use_phase1_utilities: bool = False,
         session_type: str = "unknown",
+        max_retries: int = 3,
     ) -> List[str]:
         """Download multiple files from NetRS receiver.
 
@@ -528,6 +532,7 @@ class NetRSHTTPDownloader:
                 filename,
                 local_file_path,
                 expected_size=None,
+                max_retries=max_retries,
                 session_type=session_type,
             )
 

@@ -498,8 +498,11 @@ class NetR9HTTPDownloader:
                         self.logger.error(
                             f"   Expected: {expected_size:,} bytes, Got: {local_file_size:,} bytes"
                         )
+                        # NetR9 HTTP doesn't support Range requests; the next
+                        # attempt's should_resume_download() will detect the
+                        # partial and delete it for a fresh re-download.
                         self.logger.info(
-                            f"   Partial file kept for resume: {local_path}"
+                            f"   Partial kept on disk; next retry will start fresh: {local_path}"
                         )
                         _err_msg = f"Size mismatch: got {local_file_size}, expected {expected_size}"
                         self.last_file_error = _err_msg
@@ -629,6 +632,7 @@ class NetR9HTTPDownloader:
         archive_files_dict: Optional[Dict[str, str]] = None,
         use_phase1_utilities: bool = False,
         session_type: str = "unknown",
+        max_retries: int = 3,
     ) -> List[str]:
         """Download multiple files from NetR9 receiver.
 
@@ -705,6 +709,7 @@ class NetR9HTTPDownloader:
                 filename,
                 local_file_path,
                 expected_size,
+                max_retries=max_retries,
                 session_type=session_type,
             )
 

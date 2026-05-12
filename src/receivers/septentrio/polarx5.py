@@ -40,6 +40,47 @@ from ..utils.session_parser import parse_session_parameters
 from ..utils.time_processor import TimeParameterProcessor
 
 
+def _safe_resume_offset(local_file, remote_file_size, logger):
+    """Return a REST offset that is safe to use against the current remote file.
+
+    PolaRX5 FTP supports resume via REST + RETR, but rejects REST > current
+    file size with `554 Restart offset … is too large for file size …`.
+    Once that error fires, retries with the same partial keep failing — a
+    permanent deadlock until something deletes the local file.
+
+    This helper enforces the invariant: partial_size <= remote_file_size.
+    If the local file is larger than what the server now serves (e.g. the
+    file rotated to a smaller version, or the partial accumulated extra
+    bytes from an earlier code revision / multi-mode-switch run), we
+    delete it and return 0 so the caller restarts from byte 0.
+
+    Args:
+        local_file: Path to the partial file on disk (may not exist).
+        remote_file_size: Current size of the file on the server (bytes).
+        logger: Logger to record the oversize-detect/delete decision.
+
+    Returns:
+        Resume offset in bytes (0 if no partial or partial was oversized).
+    """
+    if not os.path.isfile(local_file):
+        return 0
+    partial_size = os.path.getsize(local_file)
+    if partial_size == 0:
+        return 0
+    if partial_size > remote_file_size:
+        logger.warning(
+            f"⚠️  Oversized partial: local {partial_size} bytes > "
+            f"remote {remote_file_size} bytes for {Path(local_file).name}. "
+            f"Deleting partial and restarting from 0 (server would 554)."
+        )
+        try:
+            os.unlink(local_file)
+        except OSError as exc:
+            logger.warning(f"Could not delete oversized partial: {exc}")
+        return 0
+    return partial_size
+
+
 class PolaRX5(BaseReceiver):
     """Septentrio PolaRX5 receiver implementation.
 
@@ -187,8 +228,16 @@ class PolaRX5(BaseReceiver):
             # Default to 2160 for PolaRX5 if not specified (standard Septentrio FTP port)
             self.ip_port = int(self.station_info["receiver"].get("ftpport") or 2160)
 
-            # Use gps_parser for FTP mode determination
-            ftp_mode = self.station_info.get("receiver", {}).get("ftp_mode", "auto")
+            # Use gps_parser for FTP mode determination.
+            # Read from station_info["router"]["ftp_mode"] — that's where
+            # config_utils.get_station_config() writes the value (cfg_utils:159),
+            # which already includes the cfg_discrepancy override applied at
+            # cfg_utils:129-131. Reading from "receiver" instead (the previous
+            # behaviour) silently ignored the learned override on every run —
+            # the recording side wrote to cfg_discrepancy but the application
+            # side never saw it, so the passive→active mode-flip dance repeated
+            # on every download even after the working mode was identified.
+            ftp_mode = self.station_info.get("router", {}).get("ftp_mode", "auto")
             if ftp_mode == "active":
                 self.pasv = False
             elif ftp_mode == "passive":
@@ -2081,14 +2130,19 @@ class PolaRX5(BaseReceiver):
                 with open(local_file, file_mode) as f:
 
                     def watchdog():
-                        """Kill connection if stuck at 0% for too long."""
-                        # When resuming (offset > 0) the server needs time to seek
-                        # to the REST position, especially under concurrent load.
-                        base_timeout = (
-                            max(self.data_transfer_timeout, 30)
-                            if offset > 0
-                            else self.data_transfer_timeout
-                        )
+                        """Kill connection if stuck at 0% for too long.
+
+                        Floor of 60 s for first byte: the receiver needs time
+                        to open the file and (on resume) seek to the REST
+                        position. Active-mode-after-passive-failure burns
+                        ~5-10 s on the dance itself, leaving little margin
+                        before any data arrives. Calibrated empirically on
+                        2026-05-10 — THOB and ENTC succeed at 60 s, fail at
+                        10-30 s for the 5 MB daily file when active mode is
+                        the working path. Resume case kept compatible (was
+                        already 30 s minimum).
+                        """
+                        base_timeout = max(self.data_transfer_timeout, 60)
                         # Scale by packet loss factor (1.0x–2.0x)
                         timeout = base_timeout * _loss_factor
                         check_interval = 0.5  # Check every 500ms
@@ -2339,6 +2393,29 @@ class PolaRX5(BaseReceiver):
                 error_msg = str(e).lower()
                 last_exception = e
 
+                # FTP 554 "Restart offset … is too large for file size …":
+                # the partial on disk overshoots the current remote file,
+                # most likely because we're resuming against a freshly-rotated
+                # smaller version. Server even tells us "Restart offset reset
+                # to 0" — but we ignore that and keep using the same partial.
+                # Self-heal: drop the oversized partial, force offset=0 so the
+                # next attempt starts fresh. Without this, the failure is
+                # permanent — every attempt RESTs to the same too-large value.
+                if "554" in error_msg and "too large" in error_msg:
+                    if os.path.isfile(local_file):
+                        try:
+                            os.unlink(local_file)
+                            self.logger.warning(
+                                "⚠️  Server returned 554 (REST > remote size). "
+                                "Deleted oversized partial to break the loop; "
+                                "next attempt starts from 0."
+                            )
+                        except OSError as exc:
+                            self.logger.warning(
+                                f"Could not delete oversized partial: {exc}"
+                            )
+                    offset = 0
+
                 # Check if this is a non-retryable error
                 if any(pattern in error_msg for pattern in non_retryable_patterns):
                     # File not found or authentication - don't retry
@@ -2354,14 +2431,21 @@ class PolaRX5(BaseReceiver):
 
                     # Update offset to resume from where we left off.
                     # PolaRX5 FTP supports REST (resume), so partial data is not wasted.
-                    if os.path.isfile(local_file):
-                        new_offset = os.path.getsize(local_file)
-                        if new_offset > offset:
-                            self.logger.info(
-                                f"📦 Partial download: {new_offset} bytes on disk, "
-                                f"will resume from byte {new_offset}"
-                            )
-                            offset = new_offset
+                    # _safe_resume_offset checks the partial isn't oversized vs.
+                    # the current remote file (otherwise REST > size yields 554
+                    # and locks us into a permanent failure loop).
+                    new_offset = _safe_resume_offset(
+                        local_file, remote_file_size, self.logger
+                    )
+                    if new_offset > offset:
+                        self.logger.info(
+                            f"📦 Partial download: {new_offset} bytes on disk, "
+                            f"will resume from byte {new_offset}"
+                        )
+                        offset = new_offset
+                    elif new_offset == 0 and os.path.isfile(local_file) is False:
+                        # Helper deleted an oversized partial — start fresh
+                        offset = 0
 
                     # Check if we need to reconnect.  Two triggers:
                     # 1. Error pattern matches known timeout/connection issues
@@ -2466,20 +2550,39 @@ class PolaRX5(BaseReceiver):
 
                     ftp_new.set_pasv(new_pasv)
 
-                    # Delete partial file — passive data may be corrupt after
-                    # mode switch; appending with stale offset produces oversized files
-                    try:
-                        os.unlink(local_file)
-                    except OSError:
-                        pass
+                    # Preserve any bytes already on disk and resume from there.
+                    # Original code deleted the file with the rationale that
+                    # "passive data may be corrupt after mode switch". In
+                    # practice TCP guarantees in-order delivery, so received
+                    # bytes are correct as far as they go.
+                    #
+                    # Why preserve: when the network forces a passive→active
+                    # dance on every attempt (2026-05-08 outage shape), deleting
+                    # on every switch nukes accumulated progress every time.
+                    #
+                    # Safety guard: the partial may be larger than the current
+                    # remote file (e.g. accumulated under a previous code
+                    # revision, or the receiver rotated to a smaller file
+                    # version). Resuming with REST > remote size yields a 554
+                    # error from the server and locks us into a permanent
+                    # failure loop. Detect and reset to fresh in that case.
+                    resume_offset = _safe_resume_offset(
+                        local_file, remote_file_size, self.logger
+                    )
+                    if resume_offset > 0:
+                        self.logger.info(
+                            f"📦 Mode-switch resume: keeping {resume_offset} "
+                            f"bytes on disk, will RETR with REST {resume_offset}"
+                        )
 
-                    # Retry download from scratch on fresh connection
+                    # Retry download on the fresh connection, resuming from
+                    # whatever's already on disk.
                     result = self._download_with_progressbar(
                         ftp_new,
                         remote_file,
                         local_file,
                         remote_file_size,
-                        offset=0,
+                        offset=resume_offset,
                         session_type=session_type,
                     )
 

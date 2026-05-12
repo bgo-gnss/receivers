@@ -28,16 +28,19 @@ docker-compose up -d
 **Best for**: Production servers, systemd integration, IMO infrastructure
 
 ```bash
-sudo git clone https://github.com/bennigo/receivers.git /opt/receivers
-cd /opt/receivers
-sudo ./deployment/server/install.sh
-sudo systemctl start gps-receivers-scheduler
+# As bgo (owns repo + venv):
+git clone https://github.com/bennigo/receivers.git ~/git/receivers
+cd ~/git/receivers
+sudo bash deployment/server/install.sh
+
+# As gpsops (owns service + data):
+ssh gpsops@host 'systemctl --user start gps-receivers-scheduler'
 ```
 
 ✅ **Advantages**:
-- Systemd service integration
-- Automatic startup on boot
-- System-level logging (journalctl)
+- User-level systemd service (no system-wide daemon, runs as `gpsops`)
+- Automatic startup on boot via user-linger
+- Per-user logging (`journalctl --user-unit`)
 - Native performance
 
 📖 **Full guide**: [deployment/server/README.md](server/README.md)
@@ -49,12 +52,12 @@ sudo systemctl start gps-receivers-scheduler
 | Feature | Docker | Server |
 |---------|--------|--------|
 | **Installation** | docker-compose up | Run install.sh |
-| **Service Management** | docker-compose | systemd |
-| **Logs** | docker logs | journalctl |
-| **Auto-start** | restart: unless-stopped | systemctl enable |
+| **Service Management** | docker-compose | systemd (user unit) |
+| **Logs** | docker logs | `journalctl --user-unit` |
+| **Auto-start** | restart: unless-stopped | `loginctl enable-linger gpsops` + `systemctl --user enable` |
 | **Updates** | Rebuild image | git pull + restart |
-| **Isolation** | ✅ Containerized | ❌ System-wide |
-| **Resource Limits** | ✅ Built-in | Manual (systemd) |
+| **Isolation** | ✅ Containerized | Per-user (runs as `gpsops`, no root daemon) |
+| **Resource Limits** | ✅ Built-in | Manual (systemd, requires user@.service delegation) |
 | **Portability** | ✅ Very portable | ⚠️ OS-dependent |
 
 ## 🧪 Testing Deployment
@@ -150,17 +153,26 @@ docker exec gps-receivers-scheduler receivers <command>
 
 ### Server
 
+The scheduler runs as a **user systemd unit owned by `gpsops`** — no `sudo` needed.
+Run these as `gpsops` (e.g. `ssh gpsops@host '...'`):
+
 ```bash
 # Start
-sudo systemctl start gps-receivers-scheduler
+systemctl --user start gps-receivers-scheduler
 
 # Logs
-sudo journalctl -u gps-receivers-scheduler -f
+journalctl --user-unit gps-receivers-scheduler -f
 
 # Stop
-sudo systemctl stop gps-receivers-scheduler
+systemctl --user stop gps-receivers-scheduler
 
-# Execute command
+# Restart (most common after a config change or git pull)
+systemctl --user restart gps-receivers-scheduler
+
+# Status
+systemctl --user status gps-receivers-scheduler
+
+# Execute one-off CLI command
 receivers <command>
 ```
 

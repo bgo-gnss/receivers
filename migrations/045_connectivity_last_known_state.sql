@@ -154,6 +154,6 @@ CREATE OR REPLACE VIEW station_connectivity AS
      LEFT JOIN latest_ntrip nt ON nt.sid::text = lkp.sid::text
      LEFT JOIN debounced_state_start dss ON dss.sid::text = lkp.sid::text;
 
-INSERT INTO schema_migrations (migration_name) VALUES ('045_connectivity_last_known_state');
+INSERT INTO schema_migrations (migration_name) VALUES ('045_connectivity_last_known_state') ON CONFLICT DO NOTHING;
 
 COMMIT;

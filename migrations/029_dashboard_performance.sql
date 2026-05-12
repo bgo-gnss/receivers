@@ -775,6 +775,6 @@ FROM base;
 -- ============================================================================
 -- 7. Record this migration
 -- ============================================================================
-INSERT INTO schema_migrations (migration_name) VALUES ('029_dashboard_performance');
+INSERT INTO schema_migrations (migration_name) VALUES ('029_dashboard_performance') ON CONFLICT DO NOTHING;
 
 COMMIT;

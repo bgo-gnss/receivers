@@ -49,6 +49,19 @@ EXIT_CRITICAL = 2
 EXIT_UNKNOWN = 3
 
 
+def _is_metric_available(metric: Any) -> bool:
+    """True if a metric dict isn't the ``{"available": False}`` sentinel.
+
+    Trimble and G10 extractors set ``{"available": False}`` for metrics
+    the receiver doesn't expose (CPU load, internal temperature, etc.).
+    Without this guard those checks emit UNKNOWN to Icinga forever,
+    creating permanent false alerts.
+    """
+    if not isinstance(metric, dict):
+        return False
+    return metric.get("available") is not False
+
+
 @dataclass
 class CheckResult:
     """Represents a check result to send to Icinga.
@@ -1109,7 +1122,6 @@ class IcingaClient:
         """
         station = health_data.get("station_id", "UNKNOWN")
         metrics = health_data.get("metrics", {})
-        data_quality = health_data.get("data_quality", {})
 
         available_checks = checks or [
             "ping",
@@ -1133,11 +1145,16 @@ class IcingaClient:
 
         if "temp" in available_checks:
             temp_data = metrics.get("temperature", {})
-            results["Station temp"] = self.send_temperature_check(
-                station=station,
-                temperature=temp_data.get("value"),
-                unit=temp_data.get("unit", "C"),
-            )
+            # Skip the check entirely if the receiver flagged the metric
+            # unavailable ({"available": False}) — emitting UNKNOWN to
+            # Icinga creates permanent false alerts for receiver types
+            # that simply don't expose this metric (Trimble, G10).
+            if _is_metric_available(temp_data):
+                results["Station temp"] = self.send_temperature_check(
+                    station=station,
+                    temperature=temp_data.get("value"),
+                    unit=temp_data.get("unit", "C"),
+                )
 
         if "volt" in available_checks:
             # Voltage is in metrics.power.voltage (from PowerStatus SBF block)
@@ -1150,12 +1167,13 @@ class IcingaClient:
 
         if "cpu" in available_checks:
             cpu_data = metrics.get("cpu_load", {})
-            cpu_percent = (
-                cpu_data.get("percent") if isinstance(cpu_data, dict) else None
-            )
-            results["CPU load"] = self.send_cpu_check(
-                station=station, cpu_load=cpu_percent
-            )
+            if _is_metric_available(cpu_data):
+                cpu_percent = (
+                    cpu_data.get("percent") if isinstance(cpu_data, dict) else None
+                )
+                results["CPU load"] = self.send_cpu_check(
+                    station=station, cpu_load=cpu_percent
+                )
 
         if "uptime" in available_checks:
             uptime_seconds = metrics.get("uptime_seconds")
@@ -1193,12 +1211,17 @@ class IcingaClient:
             )
 
         if "logging" in available_checks:
-            disk_data = data_quality.get("disk", {})
-            results["Logging status"] = self.send_logging_check(
-                station=station,
-                disk_status=disk_data.get("status"),
-                logging_active=True,  # Assume active if we got health data
-            )
+            # Disk lives under metrics["disk"] for both PolaRX5 (TCP and
+            # rxtools paths) and Trimble/G10 — there's no consumer that
+            # writes to data_quality["disk"], so the prior read silently
+            # produced UNKNOWN for every PolaRX5 station in Icinga.
+            disk_data = metrics.get("disk", {})
+            if _is_metric_available(disk_data):
+                results["Logging status"] = self.send_logging_check(
+                    station=station,
+                    disk_status=disk_data.get("status"),
+                    logging_active=True,  # Assume active if we got health data
+                )
 
         if "receiver_status" in available_checks:
             ports_data = metrics.get("ports", {})

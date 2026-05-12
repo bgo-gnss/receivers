@@ -277,7 +277,12 @@ Examples:
         default=3,
         metavar="N",
         dest="max_retries",
-        help="Maximum retry passes for failed stations (default: 3)",
+        help=(
+            "Maximum retry attempts per file (default: 3). In parallel mode "
+            "also controls the number of station-level retry passes. For "
+            "slow/large files (e.g. AUST), increase this so chip-away "
+            "progress can complete in one run."
+        ),
     )
 
     # Post-download processing

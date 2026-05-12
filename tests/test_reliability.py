@@ -559,6 +559,159 @@ class TestQueryHealthGateIntegration:
         assert result is None
 
 
+# ── Session-aware health gate tests (#4 follow-up) ─────────────────────────
+
+
+class TestHealthGateSessionAware:
+    """Session-aware no_satellites gate.
+
+    The no_satellites gate skips daily backfill (15s_24hr) entirely — yesterday's
+    archived file does not depend on current sats — but still applies to live/recent
+    sessions (1Hz_1hr, status_1hr). disk_full and disk_broken stay session-agnostic.
+    """
+
+    def setup_method(self):
+        from receivers.utils.stall_timeout import invalidate_cache
+
+        invalidate_cache()
+
+    @patch("receivers.health.database_factory.DatabaseConnectionFactory")
+    def test_no_sats_proceeds_for_15s_24hr(self, mock_dbf):
+        """sats=0 should NOT skip 15s_24hr — daily backfill is independent of live sats."""
+        from receivers.utils.stall_timeout import _query_health_gate
+
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_dbf.connection.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_dbf.connection.return_value.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cur)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        # sats=0, disk OK, fresh — gate would fire for 1Hz_1hr but not for 15s_24hr
+        mock_cur.fetchone.side_effect = [
+            (0, 50.0, datetime.now(timezone.utc)),
+        ]
+
+        assert _query_health_gate("GSIG", "15s_24hr") is None
+
+    @patch("receivers.health.database_factory.DatabaseConnectionFactory")
+    def test_no_sats_skips_for_1Hz_1hr(self, mock_dbf):
+        from receivers.utils.stall_timeout import _query_health_gate
+
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_dbf.connection.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_dbf.connection.return_value.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cur)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_cur.fetchone.side_effect = [
+            (0, 50.0, datetime.now(timezone.utc)),
+        ]
+
+        assert _query_health_gate("GSIG", "1Hz_1hr") == "no_satellites"
+
+    @patch("receivers.health.database_factory.DatabaseConnectionFactory")
+    def test_no_sats_skips_for_status_1hr(self, mock_dbf):
+        from receivers.utils.stall_timeout import _query_health_gate
+
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_dbf.connection.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_dbf.connection.return_value.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cur)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_cur.fetchone.side_effect = [
+            (0, 50.0, datetime.now(timezone.utc)),
+        ]
+
+        assert _query_health_gate("GSIG", "status_1hr") == "no_satellites"
+
+    @patch("receivers.health.database_factory.DatabaseConnectionFactory")
+    def test_no_sats_skips_when_session_type_none(self, mock_dbf):
+        """session_type=None must keep legacy behaviour (always gate) for safety."""
+        from receivers.utils.stall_timeout import _query_health_gate
+
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_dbf.connection.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_dbf.connection.return_value.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cur)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_cur.fetchone.side_effect = [
+            (0, 50.0, datetime.now(timezone.utc)),
+        ]
+
+        assert _query_health_gate("GSIG", None) == "no_satellites"
+
+    @patch("receivers.health.database_factory.DatabaseConnectionFactory")
+    def test_disk_full_still_skips_15s_24hr(self, mock_dbf):
+        """disk_full is session-agnostic — daily backfill still skips on full disk."""
+        from receivers.utils.stall_timeout import _query_health_gate
+
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_dbf.connection.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_dbf.connection.return_value.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cur)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        # sats=15 (OK), disk=99% (>98) — gate fires for any session
+        mock_cur.fetchone.side_effect = [
+            (15, 99.5, datetime.now(timezone.utc)),
+        ]
+
+        assert _query_health_gate("ANY", "15s_24hr") == "disk_full"
+
+    @patch("receivers.health.database_factory.DatabaseConnectionFactory")
+    def test_disk_broken_still_skips_15s_24hr(self, mock_dbf):
+        """disk_broken (total_mb=0) is session-agnostic."""
+        from receivers.utils.stall_timeout import _query_health_gate
+
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_dbf.connection.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_dbf.connection.return_value.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cur)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        # disk_pct=0 → triggers block_disk_status query → total_mb=0 → broken
+        mock_cur.fetchone.side_effect = [
+            (15, 0.0, datetime.now(timezone.utc)),
+            (0,),
+        ]
+
+        assert _query_health_gate("ANY", "15s_24hr") == "disk_broken"
+
+    def test_cache_key_isolates_session_types(self):
+        """Same station with different session_types must not collide in cache."""
+        from receivers.utils.stall_timeout import (
+            check_station_health_gate,
+            invalidate_cache,
+        )
+
+        invalidate_cache()
+
+        # First call gates (sats=0, 1Hz_1hr) → cached as "no_satellites"
+        # Second call (sats=0, 15s_24hr) must NOT inherit that cache entry
+        with patch(
+            "receivers.utils.stall_timeout._query_health_gate",
+            side_effect=lambda sid, st: (
+                "no_satellites" if st in ("1Hz_1hr", "status_1hr") else None
+            ),
+        ) as mock_q:
+            assert check_station_health_gate("GSIG", "1Hz_1hr") == "no_satellites"
+            assert check_station_health_gate("GSIG", "15s_24hr") is None
+            # Both keys queried independently
+            assert mock_q.call_count == 2
+            # Cache hit for repeats per key
+            assert check_station_health_gate("GSIG", "1Hz_1hr") == "no_satellites"
+            assert check_station_health_gate("GSIG", "15s_24hr") is None
+            assert mock_q.call_count == 2  # no new queries
+
+
 # ── Consecutive failure backoff tests (#3) ─────────────────────────────────
 
 

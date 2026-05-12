@@ -84,6 +84,6 @@ SELECT
     last_update
 FROM station_latest_metrics;
 
-INSERT INTO schema_migrations (migration_name) VALUES ('039_position_status_fix_types');
+INSERT INTO schema_migrations (migration_name) VALUES ('039_position_status_fix_types') ON CONFLICT DO NOTHING;
 
 COMMIT;

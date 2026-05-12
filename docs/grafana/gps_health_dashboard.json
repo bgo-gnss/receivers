@@ -2256,7 +2256,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH last_voltage AS (\n  SELECT DISTINCT ON (sid) sid, voltage\n  FROM block_power_status\n  WHERE voltage IS NOT NULL\n  ORDER BY sid, ts DESC\n)\nSELECT\n  d.station_id AS \"Station\",\n  CASE\n    WHEN f.health_status = 2 THEN d.status_details\n    WHEN lv.voltage IS NOT NULL AND lv.voltage < 5.0 THEN 'power failure (' || round(lv.voltage::numeric, 1) || 'V)'\n    WHEN lv.voltage IS NOT NULL AND lv.voltage < 11.0 THEN 'low voltage (' || round(lv.voltage::numeric, 1) || 'V)'\n    WHEN lv.voltage IS NOT NULL AND lv.voltage < 11.8 THEN 'battery low (' || round(lv.voltage::numeric, 1) || 'V)'\n    WHEN lv.voltage IS NOT NULL THEN 'connection lost'\n    ELSE 'unreachable'\n  END AS \"Cause\",\n  d.packet_loss AS \"Loss\",\n  COALESCE(d.voltage, lv.voltage) AS \"Voltage\",\n  CASE\n    WHEN f.health_status = 2 THEN 'critical'\n    WHEN d.connection_state = 'degraded' THEN 'degraded'\n    ELSE 'offline'\n  END AS \"State\",\n  EXTRACT(EPOCH FROM d.state_duration)::integer AS \"Duration\",\n  d.last_check AS \"Last Update\"\nFROM station_dashboard_data d\nLEFT JOIN station_data_flow_status f ON f.sid = d.station_id\nLEFT JOIN last_voltage lv ON lv.sid = d.station_id\nWHERE (f.health_status = 2 OR (d.is_online = false AND d.station_status IS NULL AND d.health_check IS NULL))\nORDER BY\n  CASE WHEN f.health_status = 2 THEN 0 ELSE 1 END,\n  d.station_id",
+          "rawSql": "WITH last_voltage AS (\n  -- Time-bound to 7 days. block_power_status grows unbounded; without this\n  -- guard the dashboard does a full sequential scan every 10s.\n  SELECT DISTINCT ON (sid) sid, voltage\n  FROM block_power_status\n  WHERE voltage IS NOT NULL\n    AND ts > NOW() - INTERVAL '7 days'\n  ORDER BY sid, ts DESC\n)\nSELECT\n  d.station_id AS \"Station\",\n  CASE\n    WHEN f.health_status = 2 THEN d.status_details\n    WHEN lv.voltage IS NOT NULL AND lv.voltage < 5.0 THEN 'power failure (' || round(lv.voltage::numeric, 1) || 'V)'\n    WHEN lv.voltage IS NOT NULL AND lv.voltage < 11.0 THEN 'low voltage (' || round(lv.voltage::numeric, 1) || 'V)'\n    WHEN lv.voltage IS NOT NULL AND lv.voltage < 11.8 THEN 'battery low (' || round(lv.voltage::numeric, 1) || 'V)'\n    WHEN lv.voltage IS NOT NULL THEN 'connection lost'\n    ELSE 'unreachable'\n  END AS \"Cause\",\n  d.packet_loss AS \"Loss\",\n  COALESCE(d.voltage, lv.voltage) AS \"Voltage\",\n  CASE\n    WHEN f.health_status = 2 THEN 'critical'\n    WHEN d.connection_state = 'degraded' THEN 'degraded'\n    ELSE 'offline'\n  END AS \"State\",\n  EXTRACT(EPOCH FROM d.state_duration)::integer AS \"Duration\",\n  d.last_check AS \"Last Update\"\nFROM station_dashboard_data d\nLEFT JOIN station_data_flow_status f ON f.sid = d.station_id\nLEFT JOIN last_voltage lv ON lv.sid = d.station_id\nWHERE (f.health_status = 2 OR (d.is_online = false AND d.station_status IS NULL AND d.health_check IS NULL))\nORDER BY\n  CASE WHEN f.health_status = 2 THEN 0 ELSE 1 END,\n  d.station_id",
           "refId": "A"
         }
       ],
@@ -2540,11 +2540,33 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  p.ts AS time,\n  p.sid AS metric,\n  p.voltage AS value\nFROM block_power_status p\nJOIN stations s ON s.sid = p.sid\nWHERE $__timeFilter(p.ts)\n  AND ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = p.sid AND sam.area_id = '$area'))\n  AND (${owner:singlequote} = 'all' OR s.station_owner = ${owner:singlequote})\n  AND COALESCE(s.power_type, 'battery') = 'battery'\nORDER BY p.ts",
+          "rawSql": "SELECT\n  date_bin('5 minutes', p.ts, TIMESTAMP '2000-01-01') AS time,\n  MIN(p.voltage)::float8 AS \"Min (worst battery)\"\nFROM block_power_status p\nJOIN stations s ON s.sid = p.sid\nWHERE $__timeFilter(p.ts)\n  AND ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = p.sid AND sam.area_id = '$area'))\n  AND (${owner:singlequote} = 'all' OR s.station_owner = ${owner:singlequote})\n  AND COALESCE(s.power_type, 'battery') = 'battery'\n  AND p.voltage BETWEEN 8 AND 20\nGROUP BY 1\nORDER BY 1",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  date_bin('5 minutes', p.ts, TIMESTAMP '2000-01-01') AS time,\n  PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY p.voltage)::float8 AS \"Median\"\nFROM block_power_status p\nJOIN stations s ON s.sid = p.sid\nWHERE $__timeFilter(p.ts)\n  AND ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = p.sid AND sam.area_id = '$area'))\n  AND (${owner:singlequote} = 'all' OR s.station_owner = ${owner:singlequote})\n  AND COALESCE(s.power_type, 'battery') = 'battery'\n  AND p.voltage BETWEEN 8 AND 20\nGROUP BY 1\nORDER BY 1",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  date_bin('5 minutes', p.ts, TIMESTAMP '2000-01-01') AS time,\n  MAX(p.voltage)::float8 AS \"Max\"\nFROM block_power_status p\nJOIN stations s ON s.sid = p.sid\nWHERE $__timeFilter(p.ts)\n  AND ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = p.sid AND sam.area_id = '$area'))\n  AND (${owner:singlequote} = 'all' OR s.station_owner = ${owner:singlequote})\n  AND COALESCE(s.power_type, 'battery') = 'battery'\n  AND p.voltage BETWEEN 8 AND 20\nGROUP BY 1\nORDER BY 1",
+          "refId": "C"
         }
       ],
-      "title": "Battery Voltage - $area",
+      "title": "Battery Voltage (fleet min/median/max) - $area",
       "type": "timeseries"
     },
     {

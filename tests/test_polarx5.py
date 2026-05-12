@@ -100,6 +100,121 @@ class TestPolaRX5:
         assert repr(self.receiver) == "PolaRX5(station_id='REYK')"
 
 
+class TestPolaRX5FtpModeFromStationConfig:
+    """Verify _setup_connection_info reads ftp_mode from the same dict where
+    config_utils.get_station_config writes it (router.ftp_mode), so the
+    cfg_discrepancy override actually reaches self.pasv.
+    """
+
+    def _make(self, ftp_mode_value=None):
+        info = {
+            "router": {"ip": "10.4.1.100"},
+            "receiver": {"ftpport": "21"},
+        }
+        if ftp_mode_value is not None:
+            info["router"]["ftp_mode"] = ftp_mode_value
+        return PolaRX5("TEST", info)
+
+    def test_router_ftp_mode_active_sets_pasv_false(self):
+        """router.ftp_mode='active' (the override target) → self.pasv = False."""
+        r = self._make("active")
+        assert r.pasv is False
+
+    def test_router_ftp_mode_passive_sets_pasv_true(self):
+        """router.ftp_mode='passive' → self.pasv = True."""
+        r = self._make("passive")
+        assert r.pasv is True
+
+    def test_router_ftp_mode_auto_defaults_to_passive(self):
+        """router.ftp_mode='auto' → defaults to passive (NAT-friendly)."""
+        r = self._make("auto")
+        assert r.pasv is True
+
+    def test_router_ftp_mode_missing_defaults_to_passive(self):
+        """No ftp_mode anywhere → defaults to passive (NAT-friendly)."""
+        r = self._make(None)
+        assert r.pasv is True
+
+    def test_receiver_ftp_mode_is_ignored(self):
+        """Regression guard: ftp_mode under 'receiver' must NOT be read.
+
+        config_utils.get_station_config writes the cfg_discrepancy override
+        to router.ftp_mode (line 159), not receiver.ftp_mode. Reading from
+        receiver.ftp_mode silently ignored the override on every run.
+        """
+        info = {
+            "router": {"ip": "10.4.1.100"},  # no ftp_mode → defaults
+            "receiver": {"ftpport": "21", "ftp_mode": "active"},  # decoy
+        }
+        r = PolaRX5("TEST", info)
+        # ftp_mode under receiver is ignored, falls through to default passive
+        assert r.pasv is True
+
+
+class TestSafeResumeOffset:
+    """Verify _safe_resume_offset enforces partial_size <= remote_file_size."""
+
+    def test_returns_zero_when_no_partial(self, tmp_path):
+        import logging
+
+        from receivers.septentrio.polarx5 import _safe_resume_offset
+
+        logger = logging.getLogger("test")
+        local = tmp_path / "no_such_file.gz"
+        assert _safe_resume_offset(str(local), 1000, logger) == 0
+
+    def test_returns_zero_when_empty_partial(self, tmp_path):
+        import logging
+
+        from receivers.septentrio.polarx5 import _safe_resume_offset
+
+        logger = logging.getLogger("test")
+        local = tmp_path / "empty.gz"
+        local.write_bytes(b"")
+        assert _safe_resume_offset(str(local), 1000, logger) == 0
+
+    def test_returns_partial_size_when_within_remote(self, tmp_path):
+        """Normal case: partial < remote → resume from partial size."""
+        import logging
+
+        from receivers.septentrio.polarx5 import _safe_resume_offset
+
+        logger = logging.getLogger("test")
+        local = tmp_path / "partial.gz"
+        local.write_bytes(b"x" * 500)
+        # remote is 1000 bytes, we have 500 → resume from 500
+        assert _safe_resume_offset(str(local), 1000, logger) == 500
+
+    def test_returns_zero_and_deletes_oversized_partial(self, tmp_path):
+        """Critical: partial > remote → delete partial, return 0.
+
+        Prevents the 554 deadlock observed 2026-05-10 with FAGC where the
+        local partial was 24,904,440 bytes but the server's current file
+        was 22,292,412 bytes.
+        """
+        import logging
+
+        from receivers.septentrio.polarx5 import _safe_resume_offset
+
+        logger = logging.getLogger("test")
+        local = tmp_path / "oversized.gz"
+        local.write_bytes(b"x" * 24_904_440)  # mimic FAGC scenario
+        offset = _safe_resume_offset(str(local), 22_292_412, logger)
+        assert offset == 0
+        assert not local.exists(), "oversized partial should be deleted"
+
+    def test_returns_partial_size_when_equal_to_remote(self, tmp_path):
+        """Edge case: partial == remote → resume from end (download is done)."""
+        import logging
+
+        from receivers.septentrio.polarx5 import _safe_resume_offset
+
+        logger = logging.getLogger("test")
+        local = tmp_path / "complete.gz"
+        local.write_bytes(b"x" * 1000)
+        assert _safe_resume_offset(str(local), 1000, logger) == 1000
+
+
 @pytest.mark.integration
 class TestPolaRX5Integration:
     """Integration tests for PolaRX5 (require actual configuration)."""

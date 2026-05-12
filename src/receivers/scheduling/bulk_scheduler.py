@@ -40,22 +40,32 @@ _load_monitor: Optional["LoadMonitor"] = None
 # Per-session batch result accumulator (thread-safe, reset after each daily summary)
 import threading as _threading
 
-_BATCH_STATS: dict = {}  # {session_type: {"ok": [station_id, ...], "fail": {station_id: error_msg}}}
+_BATCH_STATS: dict = {}  # {session_type: {"ok": [...], "fail": {...}, "expected": [...], "skipped": [...]}}
 _BATCH_LOCK = _threading.Lock()
 
 
 def _record_batch_result(
     session_type: str, station_id: str, outcome: str, error: str = ""
 ) -> None:
-    """Accumulate per-job result for the batch summary (non-blocking, fire-and-forget)."""
+    """Accumulate per-job result for the batch summary (non-blocking, fire-and-forget).
+
+    Outcome buckets:
+      - "ok"       — download succeeded
+      - "expected" — gate skip that will not retry today (sticky, e.g. disk_broken)
+      - "skipped"  — gate skip that may be retried (self-clearing, e.g. disk_full)
+      - anything else — counted as a failure
+    """
     with _BATCH_LOCK:
         bucket = _BATCH_STATS.setdefault(
-            session_type, {"ok": [], "fail": {}, "expected": []}
+            session_type,
+            {"ok": [], "fail": {}, "expected": [], "skipped": []},
         )
         if outcome == "ok":
             bucket["ok"].append(station_id)
         elif outcome == "expected":
             bucket.setdefault("expected", []).append(station_id)
+        elif outcome == "skipped":
+            bucket.setdefault("skipped", []).append(station_id)
         else:
             bucket["fail"][station_id] = error or outcome
 
@@ -100,7 +110,8 @@ def _log_batch_summary_job(session_type: str) -> None:
     ok = stats.get("ok", [])
     fail = stats.get("fail", {})
     expected = stats.get("expected", [])
-    total = len(ok) + len(fail) + len(expected)
+    skipped = stats.get("skipped", [])
+    total = len(ok) + len(fail) + len(expected) + len(skipped)
     if total == 0:
         _log.debug(f"📋 {session_type} batch summary: no results accumulated yet")
         return
@@ -123,6 +134,11 @@ def _log_batch_summary_job(session_type: str) -> None:
         + (
             f" — ⏭️  {len(expected)} expected: {', '.join(sorted(expected))}"
             if expected
+            else ""
+        )
+        + (
+            f" — ⏳ {len(skipped)} skipped (will retry): {', '.join(sorted(skipped))}"
+            if skipped
             else ""
         )
     )
@@ -153,6 +169,10 @@ def _retry_failed_daily_job(session_type: str) -> None:
         today_midnight = datetime.now(timezone.utc).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
+        # Pass yesterday's date explicitly in UTC. Using SQL's
+        # CURRENT_DATE inside the query is session-timezone dependent —
+        # if the PG session tz isn't UTC, the date filter would slip.
+        yesterday_utc = (today_midnight - timedelta(days=1)).date()
 
         with DatabaseConnectionFactory.connection() as conn:
             with conn.cursor() as cur:
@@ -171,7 +191,7 @@ def _retry_failed_daily_job(session_type: str) -> None:
                         SELECT DISTINCT sid
                         FROM file_tracking
                         WHERE session_type = %s
-                          AND file_date = CURRENT_DATE - 1
+                          AND file_date = %s
                           AND status IN ('downloaded', 'archived')
                     )
                     SELECT f.sid, f.outcome, f.message
@@ -180,7 +200,7 @@ def _retry_failed_daily_job(session_type: str) -> None:
                     WHERE s.sid IS NULL
                     ORDER BY f.sid
                     """,
-                    (session_type, today_midnight, session_type),
+                    (session_type, today_midnight, session_type, yesterday_utc),
                 )
                 rows = cur.fetchall()
 
@@ -390,7 +410,6 @@ def _download_station_data_job(
         timeout_minutes: Maximum job duration in minutes (for monitoring and eventual enforcement)
         run_rinex: Whether to run RINEX conversion after download
     """
-    job_id = f"{session_type}_{station_id}"
     exec_start_time = datetime.now(timezone.utc)
 
     # Set up logging
@@ -423,23 +442,36 @@ def _download_station_data_job(
 
     # Health gate: skip stations with known hardware issues (no satellites, broken disk).
     # Uses cached station_latest_metrics — cheap DB read. Only fires on fresh data (<30 min).
-    # outcome='expected' excludes these from the second-chance retry queue.
+    #
+    # Outcome semantics:
+    #   - "skipped" — self-clearing condition (e.g. disk_full may free up via
+    #     file rotation). Second-chance retry includes these.
+    #   - "expected" — sticky condition (no_satellites for live sessions,
+    #     disk_broken). Second-chance retry excludes these (bulk_scheduler.py:171).
     try:
         from ..utils.stall_timeout import check_station_health_gate
         from ..utils.stall_timeout import record_download as _rd_health
 
+        # Gate reasons that may self-clear within a day, so retry is worth attempting.
+        _RETRYABLE_GATES = {"disk_full"}
+
         health_skip = check_station_health_gate(station_id, session_type)
         if health_skip:
+            outcome = "skipped" if health_skip in _RETRYABLE_GATES else "expected"
             logger.info(
-                f"⏭️  {station_id} ({session_type}) [{health_skip}] — expected, not retried"
+                f"⏭️  {station_id} ({session_type}) [{health_skip}] — outcome={outcome}"
             )
-            _rd_health(
-                station_id, session_type, outcome="expected", message=health_skip
-            )
-            _record_batch_result(session_type, station_id, "expected", health_skip)
+            _rd_health(station_id, session_type, outcome=outcome, message=health_skip)
+            _record_batch_result(session_type, station_id, outcome, health_skip)
             return
-    except Exception:
-        pass  # Gate failure is non-fatal — proceed with download attempt
+    except Exception as exc:
+        # Gate failure is non-fatal — proceed with download attempt.
+        # Log at DEBUG so the failure is visible when diagnosing
+        # unexpected downloads on broken stations.
+        logger.debug(
+            f"Health gate check failed for {station_id} ({session_type}): "
+            f"{type(exc).__name__}: {exc}"
+        )
 
     # Pipeline tracking (lightweight observability)
     pipeline_job = None
@@ -468,6 +500,10 @@ def _download_station_data_job(
         except Exception:
             pipeline_job = None  # Non-critical — proceed without tracking
 
+    # Initialise outside try so the outer except can safely reference it even
+    # if the imports or setup_production_logging() raises before assignment.
+    audit_logger = None
+
     try:
         # Track job start time for duration monitoring
         job_start_time = time.time()
@@ -478,14 +514,15 @@ def _download_station_data_job(
         from ..base.production_logging import setup_production_logging
         from ..cli.main import create_receiver, get_station_config
 
-        # Set up production logging
+        # Set up production logging. The create_station_logger / getLogger
+        # calls are kept for their side effects (logger registration); the
+        # returned objects aren't directly used in this scope.
         if production_mode:
             prod_config = setup_production_logging(json_output=False, verbose=False)
-            recv_logger = prod_config.create_station_logger(station_id)
+            prod_config.create_station_logger(station_id)
             audit_logger = prod_config.get_audit_logger()
         else:
-            recv_logger = logging.getLogger(f"receivers.download.{station_id}")
-            audit_logger = None
+            logging.getLogger(f"receivers.download.{station_id}")
 
         # Get station configuration
         station_config = get_station_config(station_id)
@@ -759,6 +796,12 @@ def _download_station_data_job(
         error_type = type(e).__name__
         logger.error(f"❌ Exception: {station_id} ({session_type}) - {error_type}: {e}")
 
+        # Record in batch summary so the station shows up in the periodic
+        # batch report — without this, a hard exception leaves the station
+        # invisible (not in ok, not in fail, not in expected) and totals
+        # silently under-count.
+        _record_batch_result(session_type, station_id, "fail", f"{error_type}: {e}")
+
         # Mark pipeline as failed
         if pipeline_job is not None and pipeline_store is not None:
             try:
@@ -775,7 +818,7 @@ def _download_station_data_job(
                 pass
 
         # Log failure to audit trail
-        if "audit_logger" in locals() and audit_logger:
+        if audit_logger:
             audit_logger.log_failure_event(
                 station_id,
                 {
@@ -1883,7 +1926,12 @@ class BulkDownloadScheduler:
                 f"(window={config.distribution_window}m, {base_trigger.description}{extra})"
             )
             # Register batch-summary and second-chance jobs for daily sessions
-            # (cron triggers that carry an explicit hour+minute).
+            # only — sessions that fire once per day with an explicit hour+minute.
+            #
+            # Hourly sessions (":15", interval triggers) skip this on purpose:
+            # the next primary cycle is at most 60 min later, so a 30-min
+            # second-chance retry would just race the next cycle, and a
+            # 50-min batch summary would mix windows.
             #
             # Timeline for 15s_24hr at 00:01, distribution_window=10:
             #   00:01-00:11  primary downloads
@@ -1891,11 +1939,12 @@ class BulkDownloadScheduler:
             #   00:49        second-chance done (~8 min for 42 stations × 8 workers)
             #   01:01        batch summary fires (window + 50 min), captures all results
             tkw = base_trigger.trigger_kwargs
-            if (
+            is_daily_cron = (
                 base_trigger.trigger_type == "cron"
                 and "hour" in tkw
                 and "minute" in tkw
-            ):
+            )
+            if is_daily_cron:
                 sched_hour = int(str(tkw["hour"]).split(",")[0])
                 sched_minute = int(tkw["minute"])
 
@@ -1940,6 +1989,15 @@ class BulkDownloadScheduler:
                 self.logger.debug(
                     f"Second-chance retry for {session_type} scheduled at "
                     f"{retry_hour:02d}:{retry_minute:02d} UTC"
+                )
+            else:
+                # Non-daily-cron schedule (interval, hourly with no explicit
+                # `hour` key, etc.) — skipped intentionally. Log so future
+                # debugging makes the absence visible instead of silent.
+                self.logger.debug(
+                    f"{session_type}: trigger {base_trigger.trigger_type} "
+                    f"({tkw}) is not a daily cron — skipping batch summary "
+                    f"and second-chance retry registration."
                 )
 
         if midnight_jobs:
@@ -2221,39 +2279,53 @@ class BulkDownloadScheduler:
 
         from .morning_recovery import _run_morning_recovery_job
 
-        schedule = cfg.get("schedule", "01:30")
+        # `schedule` may be a single string (legacy) or a list of strings
+        # (multi-fire). Each entry is independently routed through
+        # parse_schedule(), so any supported format works in either form —
+        # daily times ("01:30"), intervals ("6h"), or full cron expressions
+        # ("cron: 30 1,6 * * *").
+        schedule_raw = cfg.get("schedule", "01:30")
+        schedules: List[str] = (
+            schedule_raw if isinstance(schedule_raw, list) else [schedule_raw]
+        )
         sessions = cfg.get("sessions", ["15s_24hr"])
         days_back = cfg.get("days_back", 1)
         max_workers = cfg.get("max_workers", 4)
         station_timeout_minutes = cfg.get("station_timeout_minutes", 8)
         bypass_known_missing = cfg.get("bypass_known_missing", False)
 
-        base_trigger = parse_schedule(schedule)
+        for idx, sched in enumerate(schedules):
+            base_trigger = parse_schedule(sched)
+            # Keep id stable for single-fire (legacy) so operators can
+            # locate the job by name. Multi-fire uses an indexed suffix.
+            job_id = (
+                "morning_recovery" if len(schedules) == 1 else f"morning_recovery_{idx}"
+            )
 
-        self.scheduler.add_job(
-            func=_run_morning_recovery_job,
-            trigger=base_trigger.trigger_type,
-            args=[
-                sessions,
-                days_back,
-                max_workers,
-                station_timeout_minutes,
-                bypass_known_missing,
-            ],
-            id="morning_recovery",
-            replace_existing=True,
-            max_instances=1,
-            executor="backfill",
-            misfire_grace_time=900,  # 15 min — fire late if scheduler restarted around 01:30
-            **base_trigger.trigger_kwargs,
-        )
+            self.scheduler.add_job(
+                func=_run_morning_recovery_job,
+                trigger=base_trigger.trigger_type,
+                args=[
+                    sessions,
+                    days_back,
+                    max_workers,
+                    station_timeout_minutes,
+                    bypass_known_missing,
+                ],
+                id=job_id,
+                replace_existing=True,
+                max_instances=1,
+                executor="backfill",
+                misfire_grace_time=900,  # 15 min grace if scheduler restarted near fire time
+                **base_trigger.trigger_kwargs,
+            )
 
-        self.logger.info(
-            f"🌅 Scheduled morning recovery ({base_trigger.description}, "
-            f"sessions={sessions}, days_back={days_back}, "
-            f"workers={max_workers}, "
-            f"bypass_known_missing={bypass_known_missing})"
-        )
+            self.logger.info(
+                f"🌅 Scheduled morning recovery [{job_id}] "
+                f"({base_trigger.description}, sessions={sessions}, "
+                f"days_back={days_back}, workers={max_workers}, "
+                f"bypass_known_missing={bypass_known_missing})"
+            )
 
     def _detect_outage_gap(self, session_type: str = "15s_24hr") -> int:
         """Detect how many days of data are missing since the last successful download.

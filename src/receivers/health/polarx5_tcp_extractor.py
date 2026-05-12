@@ -893,15 +893,6 @@ class PolaRX5TCPExtractor:
             if sock:
                 sock.close()
 
-    # DiskStatus disk status codes (from SBF reference)
-    _DISK_STATUS_MAP = {
-        0: "unavailable",
-        1: "mounted",
-        2: "full",
-        3: "error",
-        4: "unmounted",
-    }
-
     def _query_disk_status(self) -> Optional[Dict[str, Any]]:
         """Query DiskStatus SBF block (4059) for disk usage.
 
@@ -1017,6 +1008,13 @@ class PolaRX5TCPExtractor:
 
         DiskUsagePercent requires bin2asc (it is computed from a 64-bit
         usage-in-bytes field whose offset varies by firmware).
+
+        **Limitation — full/error states are not detectable from header
+        bytes alone.** bin2asc derives ``DISK_FULL`` from the usage
+        computation and ``Error`` from internal fields whose layout
+        varies. Callers consuming this fallback should treat ``mounted``
+        as best-effort and surface ``limited_check=True`` so downstream
+        (Icinga, dashboards) can flag the limitation if appropriate.
         """
         try:
             _, length = self._parse_sbf_header(sbf_data)
@@ -1026,7 +1024,7 @@ class PolaRX5TCPExtractor:
             n_disks = sbf_data[14]
             sb_length = sbf_data[15]
             if n_disks == 0 or sb_length < 16:
-                return {"status": "unavailable", "disks": []}
+                return {"status": "unavailable", "disks": [], "limited_check": True}
 
             disks: List[Dict[str, Any]] = []
             total_mb_sum = 0.0
@@ -1049,7 +1047,12 @@ class PolaRX5TCPExtractor:
                 disks.append(disk_info)
 
             if not disks:
-                return {"status": "unavailable", "disks": []}
+                return {"status": "unavailable", "disks": [], "limited_check": True}
+
+            self.logger.warning(
+                "DiskStatus parsed via header-only fallback (no bin2asc) — "
+                "full/error states cannot be detected; status is best-effort."
+            )
 
             result: Dict[str, Any] = {
                 "status": (
@@ -1059,6 +1062,9 @@ class PolaRX5TCPExtractor:
                 ),
                 "disks": disks,
                 "total_mb": round(total_mb_sum, 1),
+                # Flag for downstream consumers: this status didn't go
+                # through bin2asc, so full/error states may be missed.
+                "limited_check": True,
             }
             return result
 
@@ -1621,14 +1627,18 @@ class PolaRX5TCPExtractor:
     def _svid_to_constellation(svid: int) -> Optional[str]:
         """Convert Septentrio SVID to constellation name.
 
-        SVID ranges from Septentrio SBF Reference Guide (v3.6+):
+        SVID ranges per Septentrio SBF Reference Guide v4.x — chosen to be
+        non-overlapping (IRNSS 191-197 takes priority over the legacy
+        wider QZSS range, since modern firmware uses these allocations):
+
         - GPS: 1-37 (PRN 1-32 + reserved)
         - GLONASS: 38-62 (slot 1-24 + reserved)
         - Galileo: 63-106 (E01-E36, some firmware uses 63-68 for E33-E36)
-        - SBAS: 120-158
-        - BeiDou: 141-180 (legacy) or 201-263 (newer firmware C01-C63)
-        - QZSS: 181-202
-        - IRNSS/NavIC: 191-197
+        - SBAS: 120-140
+        - BeiDou: 141-180 (legacy) and 201-263 (newer firmware C01-C63)
+        - QZSS: 181-187 (J01-J07; the only operational QZSS satellites)
+        - IRNSS/NavIC: 191-197 (I01-I07)
+        - SVIDs 188-190 and 198-200 are reserved/unused — return Unknown
         - Invalid: 0, 255
 
         Args:
@@ -1640,7 +1650,6 @@ class PolaRX5TCPExtractor:
         # Invalid SVIDs
         if svid == 0 or svid == 255:
             return None
-        # Ranges per Septentrio SBF Reference Guide v4.x (non-overlapping)
         elif 1 <= svid <= 37:
             return "GPS"
         elif 38 <= svid <= 62:

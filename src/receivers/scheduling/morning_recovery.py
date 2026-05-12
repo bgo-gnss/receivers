@@ -30,6 +30,13 @@ from typing import List, Tuple
 
 logger = logging.getLogger("receivers.scheduler.morning_recovery")
 
+# Hard cutoff hour (UTC) — stop iterating new dates once we're within 15 min
+# of this hour, so morning recovery cannot run into downstream GAMIT processing.
+# When the loop hits this guard, remaining dates are reported as deferred so an
+# operator can see what was skipped.
+_DEADLINE_HOUR_UTC = 3
+_DEADLINE_GUARD_MINUTES = 15
+
 
 def _query_stations_missing_yesterday(
     session: str,
@@ -44,6 +51,10 @@ def _query_stations_missing_yesterday(
       - Stations marked `status='missing'` in `file_tracking` for this
         (sid, session, date) tuple — UNLESS `bypass_known_missing=True`.
 
+    Logs a per-exclusion-reason count so the operator can tell *why* a
+    station isn't in the retry queue. Without this, "BAUG didn't show up in
+    morning_recovery" is opaque — the queue logic is invisible.
+
     Args:
         session: Session type (e.g. '15s_24hr').
         target_date: Date to check (typically yesterday).
@@ -54,38 +65,86 @@ def _query_stations_missing_yesterday(
     """
     from ..health.database_factory import DatabaseConnectionFactory
 
-    where_known_missing = (
-        ""
-        if bypass_known_missing
-        else (
-            "AND NOT EXISTS ("
-            "  SELECT 1 FROM file_tracking ft2"
-            "  WHERE ft2.sid = s.sid"
-            "    AND ft2.session_type = %(sess)s"
-            "    AND ft2.file_date = %(date)s"
-            "    AND ft2.status = 'missing'"
-            ")"
-        )
-    )
-
-    sql = f"""
-      SELECT s.sid
-      FROM station_data_flow_status s
-      LEFT JOIN file_tracking ft
-             ON ft.sid = s.sid
-            AND ft.session_type = %(sess)s
-            AND ft.file_date = %(date)s
-            AND ft.status IN ('downloaded', 'archived')
-      WHERE s.health_status >= 0
-        AND s.status_24h = 2
-        AND ft.sid IS NULL
-        {where_known_missing}
-      ORDER BY s.sid
+    # Single diagnostic query that reports each row's bucket:
+    #   queued     — will be retried
+    #   passive    — health_status < 0
+    #   already_ok — file_tracking has 'downloaded'/'archived' row
+    #   marked_missing — file_tracking has 'missing' status (locks out unless bypass)
+    #   not_targeted — status_24h != 2 (e.g. file actually present, dashboard view says so)
+    sql = """
+      WITH categorized AS (
+        SELECT
+          s.sid,
+          CASE
+            WHEN s.health_status < 0 THEN 'passive'
+            WHEN ft.sid IS NOT NULL THEN 'already_ok'
+            WHEN s.status_24h <> 2 THEN 'not_targeted'
+            WHEN EXISTS (
+              SELECT 1 FROM file_tracking ft2
+              WHERE ft2.sid = s.sid
+                AND ft2.session_type = %(sess)s
+                AND ft2.file_date = %(date)s
+                AND ft2.status = 'missing'
+            ) THEN 'marked_missing'
+            ELSE 'queued'
+          END AS bucket
+        FROM station_data_flow_status s
+        LEFT JOIN file_tracking ft
+               ON ft.sid = s.sid
+              AND ft.session_type = %(sess)s
+              AND ft.file_date = %(date)s
+              AND ft.status IN ('downloaded', 'archived')
+      )
+      SELECT bucket, array_agg(sid ORDER BY sid) AS sids, count(*) AS n
+      FROM categorized
+      GROUP BY bucket
     """
+    buckets: dict[str, tuple[list[str], int]] = {}
     with DatabaseConnectionFactory.connection() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, {"sess": session, "date": target_date})
-            return [row[0] for row in cur.fetchall()]
+            for bucket, sids, n in cur.fetchall():
+                buckets[bucket] = (list(sids), int(n))
+
+    queued, queued_n = buckets.get("queued", ([], 0))
+    if bypass_known_missing and "marked_missing" in buckets:
+        # Promote stations locked out by the 'missing' TTL into the retry
+        # queue when the operator opts in. Keeps the bucket counts honest
+        # in the log line below (they reflect the promotion).
+        promoted_sids, promoted_n = buckets["marked_missing"]
+        queued = sorted(queued + promoted_sids)
+        queued_n += promoted_n
+        buckets["marked_missing"] = ([], 0)
+
+    # Compact summary so the operator can scan it at a glance. Hide buckets
+    # with zero stations to keep the line readable in the common case.
+    summary_parts = [f"queued={queued_n}"]
+    for label in ("passive", "already_ok", "not_targeted", "marked_missing"):
+        _sids, n = buckets.get(label, ([], 0))
+        if n:
+            summary_parts.append(f"{label}={n}")
+    logger.info(
+        f"🌅 Morning recovery {session} ({target_date}) filter summary: "
+        + ", ".join(summary_parts)
+    )
+
+    # If any non-trivial bucket exists, surface the SIDs so post-hoc audit
+    # is possible without re-querying the DB. Capped at 15 per line to
+    # avoid swamping the log when most of the fleet is up to date.
+    for label in ("marked_missing", "not_targeted"):
+        sids, n = buckets.get(label, ([], 0))
+        if n:
+            preview = ", ".join(sids[:15]) + (f" [+{n - 15} more]" if n > 15 else "")
+            logger.info(
+                f"   ↪ {label}: {preview}"
+                + (
+                    " (use bypass_known_missing=True to override)"
+                    if label == "marked_missing"
+                    else ""
+                )
+            )
+
+    return queued
 
 
 def _confirm_recovered(sid: str, session: str, target_date: date) -> bool:
@@ -151,7 +210,9 @@ def _run_morning_recovery_job(
         bypass_known_missing: If True, retry even stations that file_tracking
             has marked status='missing'.
     """
-    target_date = (datetime.now(timezone.utc) - timedelta(days=days_back)).date()
+    today = datetime.now(timezone.utc).date()
+    # Most-recent-first so newest gaps get retried before the deadline if time runs out.
+    target_dates = [today - timedelta(days=n) for n in range(1, days_back + 1)]
 
     # Resolve scheduler context to mirror the regular daily job. Falls back to
     # safe defaults when this is invoked outside a running scheduler (e.g. tests).
@@ -164,71 +225,127 @@ def _run_morning_recovery_job(
     except Exception:
         pass
 
-    for session in sessions:
-        sids = _query_stations_missing_yesterday(
-            session, target_date, bypass_known_missing
+    if days_back > 1:
+        logger.info(
+            f"🌅 Morning recovery starting: sessions={sessions} "
+            f"days_back={days_back} dates={[d.isoformat() for d in target_dates]}"
         )
-        if not sids:
+
+    deferred_dates: List[date] = []
+
+    for target_date in target_dates:
+        # Deadline guard: stop the loop if there's less than _DEADLINE_GUARD_MINUTES
+        # until the next _DEADLINE_HOUR_UTC. Any unprocessed dates are surfaced in
+        # the final log line so an operator can see what was deferred.
+        # When invoked outside the 01:30 UTC window (e.g. manual dry-run at 14:00),
+        # the "next" deadline is tomorrow, so the loop proceeds normally.
+        now = datetime.now(timezone.utc)
+        deadline_today = now.replace(
+            hour=_DEADLINE_HOUR_UTC, minute=0, second=0, microsecond=0
+        )
+        next_deadline = (
+            deadline_today
+            if now < deadline_today
+            else deadline_today + timedelta(days=1)
+        )
+        if (next_deadline - now) < timedelta(minutes=_DEADLINE_GUARD_MINUTES):
+            remaining = target_dates[target_dates.index(target_date) :]
+            deferred_dates.extend(remaining)
+            logger.warning(
+                f"🌅 Morning recovery deadline guard hit at {now.strftime('%H:%M:%S')} UTC "
+                f"(< {_DEADLINE_GUARD_MINUTES}min before {_DEADLINE_HOUR_UTC:02d}:00) "
+                f"— deferring dates: {[d.isoformat() for d in remaining]}"
+            )
+            break
+
+        for session in sessions:
+            sids = _query_stations_missing_yesterday(
+                session, target_date, bypass_known_missing
+            )
+            if not sids:
+                logger.info(
+                    f"🌅 Morning recovery {session} ({target_date}): "
+                    "nothing to retry — all stations have this date's file"
+                )
+                continue
+
+            # Resolve run_rinex from the live scheduler config. Silent
+            # fallback to a hardcoded value risks diverging from the
+            # operator's actual policy — if the scheduler instance isn't
+            # reachable, log a clear warning and use the documented default.
+            run_rinex = False
+            config_resolved = False
+            try:
+                from .bulk_scheduler import _scheduler_instance
+
+                if _scheduler_instance is not None:
+                    cfg = _scheduler_instance.schedule_configs.get(session)
+                    if cfg is not None:
+                        run_rinex = cfg.rinex
+                        config_resolved = True
+            except Exception as exc:
+                logger.warning(
+                    f"Morning recovery: could not resolve schedule config for "
+                    f"{session}: {exc}"
+                )
+
+            if not config_resolved:
+                run_rinex = session == "15s_24hr"
+                logger.warning(
+                    f"Morning recovery: schedule_configs unavailable for "
+                    f"{session} — falling back to default run_rinex={run_rinex}. "
+                    f"Verify scheduler config if this is unexpected."
+                )
+
+            sid_preview = ", ".join(sids[:10]) + (
+                f" [+{len(sids) - 10} more]" if len(sids) > 10 else ""
+            )
             logger.info(
                 f"🌅 Morning recovery {session} ({target_date}): "
-                "nothing to retry — all stations have yesterday's file"
+                f"{len(sids)} stations queued — {sid_preview}"
             )
-            continue
 
-        # Resolve run_rinex from the session config when available
-        run_rinex = session == "15s_24hr"  # default for the typical case
-        try:
-            from .bulk_scheduler import _scheduler_instance
+            recovered: List[str] = []
+            still_failing: List[str] = []
+            workers = min(max_workers, len(sids))
 
-            if _scheduler_instance is not None:
-                cfg = _scheduler_instance.schedule_configs.get(session)
-                if cfg is not None:
-                    run_rinex = cfg.rinex
-        except Exception:
-            pass
+            with ThreadPoolExecutor(
+                max_workers=workers, thread_name_prefix="morn_rec"
+            ) as pool:
+                futures = {
+                    pool.submit(
+                        _retry_station,
+                        sid,
+                        session,
+                        target_date,
+                        station_timeout_minutes,
+                        run_rinex,
+                        production_mode,
+                    ): sid
+                    for sid in sids
+                }
+                for fut in as_completed(futures):
+                    sid, success = fut.result()
+                    (recovered if success else still_failing).append(sid)
 
-        sid_preview = ", ".join(sids[:10]) + (
-            f" [+{len(sids) - 10} more]" if len(sids) > 10 else ""
-        )
+            recovered.sort()
+            still_failing.sort()
+            recovered_preview = ", ".join(recovered[:15]) + (
+                f" [+{len(recovered) - 15} more]" if len(recovered) > 15 else ""
+            )
+            failing_preview = ", ".join(still_failing[:15]) + (
+                f" [+{len(still_failing) - 15} more]" if len(still_failing) > 15 else ""
+            )
+            logger.info(
+                f"🌅 Morning recovery {session} ({target_date}) complete: "
+                f"{len(recovered)}/{len(sids)} recovered"
+                + (f" — {recovered_preview}" if recovered else "")
+                + (f" | still failing: {failing_preview}" if still_failing else "")
+            )
+
+    if deferred_dates and days_back > 1:
         logger.info(
-            f"🌅 Morning recovery {session} ({target_date}): "
-            f"{len(sids)} stations queued — {sid_preview}"
-        )
-
-        recovered: List[str] = []
-        still_failing: List[str] = []
-        workers = min(max_workers, len(sids))
-
-        with ThreadPoolExecutor(
-            max_workers=workers, thread_name_prefix="morn_rec"
-        ) as pool:
-            futures = {
-                pool.submit(
-                    _retry_station,
-                    sid,
-                    session,
-                    target_date,
-                    station_timeout_minutes,
-                    run_rinex,
-                    production_mode,
-                ): sid
-                for sid in sids
-            }
-            for fut in as_completed(futures):
-                sid, success = fut.result()
-                (recovered if success else still_failing).append(sid)
-
-        recovered.sort()
-        still_failing.sort()
-        recovered_preview = ", ".join(recovered[:15]) + (
-            f" [+{len(recovered) - 15} more]" if len(recovered) > 15 else ""
-        )
-        failing_preview = ", ".join(still_failing[:15]) + (
-            f" [+{len(still_failing) - 15} more]" if len(still_failing) > 15 else ""
-        )
-        logger.info(
-            f"🌅 Morning recovery {session} complete: "
-            f"{len(recovered)}/{len(sids)} recovered"
-            + (f" — {recovered_preview}" if recovered else "")
-            + (f" | still failing: {failing_preview}" if still_failing else "")
+            f"🌅 Morning recovery summary: {len(target_dates) - len(deferred_dates)}/"
+            f"{len(target_dates)} dates processed, "
+            f"deferred={[d.isoformat() for d in deferred_dates]}"
         )

@@ -11,7 +11,11 @@
 --
 -- Affected stations: GSIG (0 satellites for 40+ days, showing 'unknown').
 
-INSERT INTO schema_migrations (migration_name) VALUES ('033_satellite_status_coalesce');
+BEGIN;
+
+INSERT INTO schema_migrations (migration_name)
+VALUES ('033_satellite_status_coalesce')
+ON CONFLICT DO NOTHING;
 
 CREATE OR REPLACE VIEW station_status_summary AS
 SELECT
@@ -62,3 +66,5 @@ SELECT
     seconds_since_update,
     last_update
 FROM station_latest_metrics;
+
+COMMIT;
