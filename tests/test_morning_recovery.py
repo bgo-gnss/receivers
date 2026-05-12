@@ -134,9 +134,7 @@ def test_query_logs_filter_summary(mock_conn, caplog):
     )
     mock_conn.return_value = conn
 
-    with caplog.at_level(
-        logging.INFO, logger="receivers.scheduler.morning_recovery"
-    ):
+    with caplog.at_level(logging.INFO, logger="receivers.scheduler.morning_recovery"):
         _query_stations_missing_yesterday(
             "15s_24hr", date(2026, 5, 7), bypass_known_missing=False
         )
@@ -302,9 +300,7 @@ def test_schedule_morning_recovery_list_creates_one_job_per_entry():
     inst._schedule_morning_recovery()
 
     assert inst.scheduler.add_job.call_count == 2
-    ids = [
-        call.kwargs["id"] for call in inst.scheduler.add_job.call_args_list
-    ]
+    ids = [call.kwargs["id"] for call in inst.scheduler.add_job.call_args_list]
     assert ids == ["morning_recovery_0", "morning_recovery_1"]
 
 
