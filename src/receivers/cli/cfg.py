@@ -1867,9 +1867,7 @@ def cmd_cfg_add_receiver(args) -> int:
 
     # ---- Create entity --------------------------------------------------
     try:
-        response = writer.create_device(
-            merged["subtype"], required, force=args.force
-        )
+        response = writer.create_device(merged["subtype"], required, force=args.force)
     except ValueError as e:
         msg = str(e)
         if "already exists" in msg and not args.force:
@@ -1894,9 +1892,7 @@ def cmd_cfg_add_receiver(args) -> int:
                 f"on id_entity="
                 f"{id_entity if id_entity is not None else '<new entity>'}"
             )
-            upsert_results.append(
-                {"code": code, "value": value, "dry_run": True}
-            )
+            upsert_results.append({"code": code, "value": value, "dry_run": True})
         else:
             r = writer.upsert_attribute_value(
                 id_entity, code=code, value=value, date_from=date_start

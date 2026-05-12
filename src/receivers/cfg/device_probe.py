@@ -99,7 +99,7 @@ def parse_host_port(probe_arg: str) -> Tuple[str, Optional[int]]:
     host, _, port_str = probe_arg.rpartition(":")
     if not host or not port_str:
         raise ValueError(
-            f"--probe must be host[:port], got {probe_arg!r} " "(strip any scheme/path)"
+            f"--probe must be host[:port], got {probe_arg!r} (strip any scheme/path)"
         )
     try:
         return host, int(port_str)
