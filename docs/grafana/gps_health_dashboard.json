@@ -2675,7 +2675,7 @@
       "gridPos": {
         "x": 20,
         "y": 2,
-        "w": 4,
+        "w": 2,
         "h": 4
       },
       "targets": [
@@ -2690,6 +2690,78 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health"
+      },
+      "description": "Hours since last download_log entry. Production stays green while scheduler runs. On laptop, red after a few hours of inactivity is expected \u2014 see receivers/CLAUDE.md 'Local Development vs Production Grafana'.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 6
+              }
+            ]
+          },
+          "unit": "h",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 2,
+        "x": 22,
+        "y": 2
+      },
+      "id": 42,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT EXTRACT(EPOCH FROM (NOW() - MAX(ts))) / 3600.0 AS \"Last DL\" FROM download_log",
+          "refId": "A"
+        }
+      ],
+      "title": "Last DL",
+      "type": "stat"
     }
   ],
   "refresh": "5m",
