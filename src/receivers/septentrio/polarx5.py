@@ -2406,9 +2406,9 @@ class PolaRX5(BaseReceiver):
                         try:
                             os.unlink(local_file)
                             self.logger.warning(
-                                f"⚠️  Server returned 554 (REST > remote size). "
-                                f"Deleted oversized partial to break the loop; "
-                                f"next attempt starts from 0."
+                                "⚠️  Server returned 554 (REST > remote size). "
+                                "Deleted oversized partial to break the loop; "
+                                "next attempt starts from 0."
                             )
                         except OSError as exc:
                             self.logger.warning(
