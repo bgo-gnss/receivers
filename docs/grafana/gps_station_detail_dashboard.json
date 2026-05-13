@@ -1971,7 +1971,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  p.ts AS time,\n  CASE\n    WHEN p.is_online IS FALSE THEN NULL\n    WHEN COALESCE(po.download_status, 'ok') = 'ok' THEN 1.0\n    ELSE 0.5\n  END AS \"Ping\"\nFROM block_ping_status p\nLEFT JOIN LATERAL (\n  SELECT download_status\n  FROM block_port_status\n  WHERE sid = p.sid\n    AND ts <= p.ts\n    AND ts > p.ts - interval '15 minutes'\n  ORDER BY ts DESC\n  LIMIT 1\n) po ON TRUE\nWHERE p.sid = '$station'\n  AND $__timeFilter(p.ts)\nORDER BY p.ts",
+          "rawSql": "SELECT\n  p.ts AS time,\n  CASE\n    WHEN p.is_online IS FALSE THEN NULL\n    WHEN COALESCE(po.health_status, 'ok') = 'ok' THEN 1.0\n    ELSE 0.5\n  END AS \"Ping\"\nFROM block_ping_status p\nLEFT JOIN LATERAL (\n  SELECT health_status\n  FROM block_port_status\n  WHERE sid = p.sid\n    AND ts <= p.ts\n    AND ts > p.ts - interval '15 minutes'\n  ORDER BY ts DESC\n  LIMIT 1\n) po ON TRUE\nWHERE p.sid = '$station'\n  AND $__timeFilter(p.ts)\nORDER BY p.ts",
           "refId": "E"
         }
       ],
