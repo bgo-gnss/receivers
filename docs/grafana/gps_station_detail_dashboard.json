@@ -1909,28 +1909,24 @@
                 "value": "right"
               },
               {
+                "id": "custom.axisLabel",
+                "value": "Ping"
+              },
+              {
                 "id": "custom.axisSoftMin",
                 "value": 0
               },
               {
                 "id": "custom.axisSoftMax",
-                "value": 2.2
+                "value": 2
               },
               {
-                "id": "custom.drawStyle",
-                "value": "points"
+                "id": "custom.lineInterpolation",
+                "value": "linear"
               },
               {
                 "id": "custom.lineWidth",
-                "value": 0
-              },
-              {
-                "id": "custom.pointSize",
-                "value": 7
-              },
-              {
-                "id": "custom.showPoints",
-                "value": "always"
+                "value": 1
               },
               {
                 "id": "custom.fillOpacity",
@@ -1941,26 +1937,18 @@
                 "value": "none"
               },
               {
+                "id": "custom.showPoints",
+                "value": "always"
+              },
+              {
+                "id": "custom.pointSize",
+                "value": 8
+              },
+              {
                 "id": "custom.thresholdsStyle",
                 "value": {
                   "mode": "off"
                 }
-              },
-              {
-                "id": "custom.spanNulls",
-                "value": false
-              },
-              {
-                "id": "custom.insertNulls",
-                "value": false
-              },
-              {
-                "id": "unit",
-                "value": "short"
-              },
-              {
-                "id": "decimals",
-                "value": 0
               }
             ]
           }
@@ -2050,7 +2038,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  last_checked AS time,\n  2.0 AS \"Status File\"\nFROM file_tracking\nWHERE sid = '$station'\n  AND session_type = 'status_1hr'\n  AND status = 'archived'\n  AND $__timeFilter(last_checked)\nORDER BY last_checked",
+          "rawSql": "SELECT\n  last_checked AS time,\n  1.8 AS \"Status File\"\nFROM file_tracking\nWHERE sid = '$station'\n  AND session_type = 'status_1hr'\n  AND status = 'archived'\n  AND $__timeFilter(last_checked)\nORDER BY last_checked",
           "refId": "F"
         }
       ],
