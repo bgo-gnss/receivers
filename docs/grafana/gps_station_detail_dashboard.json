@@ -1890,6 +1890,79 @@
                 }
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Status File"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "custom.axisSoftMin",
+                "value": 0
+              },
+              {
+                "id": "custom.axisSoftMax",
+                "value": 2.2
+              },
+              {
+                "id": "custom.drawStyle",
+                "value": "points"
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              },
+              {
+                "id": "custom.pointSize",
+                "value": 7
+              },
+              {
+                "id": "custom.showPoints",
+                "value": "always"
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.gradientMode",
+                "value": "none"
+              },
+              {
+                "id": "custom.thresholdsStyle",
+                "value": {
+                  "mode": "off"
+                }
+              },
+              {
+                "id": "custom.spanNulls",
+                "value": false
+              },
+              {
+                "id": "custom.insertNulls",
+                "value": false
+              },
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
           }
         ]
       },
@@ -1902,13 +1975,8 @@
       "id": 10,
       "options": {
         "legend": {
-          "calcs": [
-            "mean",
-            "min",
-            "max",
-            "lastNotNull"
-          ],
-          "displayMode": "table",
+          "calcs": [],
+          "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
@@ -1973,6 +2041,17 @@
           "rawQuery": true,
           "rawSql": "SELECT\n  p.ts AS time,\n  CASE\n    WHEN p.is_online IS FALSE THEN NULL\n    WHEN COALESCE(po.health_status, 'ok') = 'ok' THEN 1.0\n    ELSE 0.5\n  END AS \"Ping\"\nFROM block_ping_status p\nLEFT JOIN LATERAL (\n  SELECT health_status\n  FROM block_port_status\n  WHERE sid = p.sid\n    AND ts <= p.ts\n    AND ts > p.ts - interval '15 minutes'\n  ORDER BY ts DESC\n  LIMIT 1\n) po ON TRUE\nWHERE p.sid = '$station'\n  AND $__timeFilter(p.ts)\nORDER BY p.ts",
           "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  last_checked AS time,\n  2.0 AS \"Status File\"\nFROM file_tracking\nWHERE sid = '$station'\n  AND session_type = 'status_1hr'\n  AND status = 'archived'\n  AND $__timeFilter(last_checked)\nORDER BY last_checked",
+          "refId": "F"
         }
       ],
       "title": "Voltage History - $station",
