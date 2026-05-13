@@ -1688,7 +1688,7 @@
               "type": "linear"
             },
             "showPoints": "never",
-            "spanNulls": 3600000,
+            "spanNulls": 1800000,
             "stacking": {
               "group": "A",
               "mode": "none"
@@ -1727,6 +1727,75 @@
           "unit": "volt"
         },
         "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ping"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "yellow"
+                }
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "custom.axisLabel",
+                "value": "Ping (online=1)"
+              },
+              {
+                "id": "custom.axisSoftMin",
+                "value": 0
+              },
+              {
+                "id": "custom.axisSoftMax",
+                "value": 1
+              },
+              {
+                "id": "custom.lineInterpolation",
+                "value": "stepAfter"
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.thresholdsStyle",
+                "value": {
+                  "mode": "off"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "yellow",
+                      "value": null
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
           {
             "matcher": {
               "id": "byName",
@@ -1882,6 +1951,17 @@
           "rawQuery": true,
           "rawSql": "SELECT\n  ts AS time,\n  voltage AS \"DC/DC 24V\"\nFROM block_power_status\nWHERE sid = '$station'\n  AND '$power_type' = 'dcdc24'\n  AND $__timeFilter(ts)\nORDER BY ts",
           "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  ts AS time,\n  is_online::int AS \"Ping\"\nFROM block_ping_status\nWHERE sid = '$station'\n  AND $__timeFilter(ts)\nORDER BY ts",
+          "refId": "E"
         }
       ],
       "title": "Voltage History - $station",
