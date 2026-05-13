@@ -1680,7 +1680,7 @@
               "tooltip": false,
               "viz": false
             },
-            "insertNulls": false,
+            "insertNulls": 1800000,
             "lineInterpolation": "smooth",
             "lineWidth": 2,
             "pointSize": 5,
@@ -1737,7 +1737,7 @@
                 "id": "color",
                 "value": {
                   "mode": "fixed",
-                  "fixedColor": "yellow"
+                  "fixedColor": "blue"
                 }
               },
               {
@@ -1746,7 +1746,7 @@
               },
               {
                 "id": "custom.axisLabel",
-                "value": "Ping (online=1)"
+                "value": "Ping"
               },
               {
                 "id": "custom.axisSoftMin",
@@ -1754,19 +1754,23 @@
               },
               {
                 "id": "custom.axisSoftMax",
-                "value": 1
+                "value": 2
               },
               {
                 "id": "custom.lineInterpolation",
-                "value": "stepAfter"
+                "value": "linear"
               },
               {
                 "id": "custom.lineWidth",
-                "value": 1
+                "value": 2
               },
               {
                 "id": "custom.fillOpacity",
                 "value": 0
+              },
+              {
+                "id": "custom.showPoints",
+                "value": "auto"
               },
               {
                 "id": "custom.thresholdsStyle",
@@ -1780,7 +1784,7 @@
                   "mode": "absolute",
                   "steps": [
                     {
-                      "color": "yellow",
+                      "color": "blue",
                       "value": null
                     }
                   ]
@@ -1960,7 +1964,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT\n  ts AS time,\n  is_online::int AS \"Ping\"\nFROM block_ping_status\nWHERE sid = '$station'\n  AND $__timeFilter(ts)\nORDER BY ts",
+          "rawSql": "SELECT\n  ts AS time,\n  CASE WHEN is_online THEN 1 ELSE NULL END AS \"Ping\"\nFROM block_ping_status\nWHERE sid = '$station'\n  AND $__timeFilter(ts)\nORDER BY ts",
           "refId": "E"
         }
       ],
