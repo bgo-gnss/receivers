@@ -18,6 +18,18 @@
       "tooltip": "Return to main dashboard with map",
       "type": "link",
       "url": "/d/gps-health-voltage/gps-receiver-health-voltage?var-area=${area}&var-station=all&var-receiver=${receiver}&var-antenna=${antenna}"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external-link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Data Delivery",
+      "tooltip": "Per-station file delivery & download history",
+      "type": "link",
+      "url": "/d/gps-data-delivery/gps-data-delivery"
     }
   ],
   "liveNow": false,

@@ -1,0 +1,771 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {"type": "grafana", "uid": "-- Grafana --"},
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    {
+      "asDropdown": false,
+      "icon": "bolt",
+      "includeVars": false,
+      "keepTime": false,
+      "tags": [],
+      "targetBlank": false,
+      "title": "⚡ Reset Filters",
+      "tooltip": "Clear all filters",
+      "type": "link",
+      "url": "/d/gps-data-delivery/gps-data-delivery?var-area=all&var-owner=all&var-station=all&var-receiver=all&var-antenna=all&var-data_filter=all"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external-link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Health Overview",
+      "tooltip": "Receiver health dashboard",
+      "type": "link",
+      "url": "/d/gps-health-voltage/gps-receiver-health-overview"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external-link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Map",
+      "tooltip": "Full-screen station map",
+      "type": "link",
+      "url": "/d/gps-map/gps-station-map"
+    },
+    {
+      "asDropdown": false,
+      "icon": "info-circle",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Station Detail",
+      "tooltip": "Per-station deep dive",
+      "type": "link",
+      "url": "/d/gps-station-detail/gps-station-detail"
+    }
+  ],
+  "liveNow": false,
+  "panels": [
+    {
+      "id": 41,
+      "type": "text",
+      "title": "",
+      "options": {
+        "mode": "html",
+        "content": "<div style=\"display:flex;align-items:center;justify-content:center;height:100%;gap:14px;letter-spacing:0.3px;\"><span style=\"color:#555;font-size:11px;\">filter:</span><span style=\"color:#e87327;font-size:12px;font-weight:700;text-transform:uppercase;\">${data_filter}</span><span style=\"color:#444;font-size:12px;\">·</span><span style=\"color:#555;font-size:11px;\">region:</span><span style=\"color:#7eb8d4;font-size:12px;font-weight:600;\">${area:text}</span><span style=\"color:#444;font-size:12px;\">·</span><span style=\"color:#555;font-size:11px;\">range end:</span><span style=\"color:#888;font-size:11px;\">${__to:date:HH:mm}</span></div>"
+      },
+      "transparent": true,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 1},
+      "id": 1,
+      "panels": [],
+      "title": "Today's Delivery (calendar-based · denominator: active stations)",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "gps_health"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 4, "w": 3, "x": 0, "y": 2},
+      "id": 2,
+      "options": {
+        "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [{
+        "datasource": {"type": "grafana-postgresql-datasource", "uid": "gps_health"},
+        "editorMode": "code",
+        "format": "table",
+        "rawQuery": true,
+        "rawSql": "SELECT COUNT(*) AS \"Active\"\nFROM stations\nWHERE station_status IS NULL AND health_check IS NULL",
+        "refId": "A"
+      }],
+      "title": "Active",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "gps_health"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "links": [{
+            "title": "Toggle filter",
+            "url": "/d/gps-data-delivery/gps-data-delivery?var-data_filter=${__data.fields.next_filter}&var-area=${area:raw}&var-owner=${owner:raw}&var-station=${station:raw}&var-receiver=${receiver:raw}&var-antenna=${antenna:raw}&${__url_time_range}",
+            "targetBlank": false
+          }]
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 4, "w": 3, "x": 3, "y": 2},
+      "id": 3,
+      "options": {
+        "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [{
+        "datasource": {"type": "grafana-postgresql-datasource", "uid": "gps_health"},
+        "editorMode": "code", "format": "table", "rawQuery": true,
+        "rawSql": "SELECT COUNT(*) AS \"24h OK\",\n  CASE WHEN '$data_filter' = '24h_raw_ok' THEN 'all' ELSE '24h_raw_ok' END AS \"next_filter\"\nFROM station_data_flow_status\nWHERE status_24h = 0",
+        "refId": "A"
+      }],
+      "title": "24h OK",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "gps_health"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "yellow", "value": 1}
+          ]},
+          "links": [{
+            "title": "Toggle filter",
+            "url": "/d/gps-data-delivery/gps-data-delivery?var-data_filter=${__data.fields.next_filter}&var-area=${area:raw}&var-owner=${owner:raw}&var-station=${station:raw}&var-receiver=${receiver:raw}&var-antenna=${antenna:raw}&${__url_time_range}",
+            "targetBlank": false
+          }]
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 4, "w": 3, "x": 6, "y": 2},
+      "id": 4,
+      "options": {
+        "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [{
+        "datasource": {"type": "grafana-postgresql-datasource", "uid": "gps_health"},
+        "editorMode": "code", "format": "table", "rawQuery": true,
+        "rawSql": "SELECT COUNT(*) AS \"24h Late\",\n  CASE WHEN '$data_filter' = '24h_raw_late' THEN 'all' ELSE '24h_raw_late' END AS \"next_filter\"\nFROM station_data_flow_status\nWHERE status_24h = 1",
+        "refId": "A"
+      }],
+      "title": "24h Late",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "gps_health"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "yellow", "value": 1},
+            {"color": "red", "value": 5}
+          ]},
+          "links": [{
+            "title": "Toggle filter",
+            "url": "/d/gps-data-delivery/gps-data-delivery?var-data_filter=${__data.fields.next_filter}&var-area=${area:raw}&var-owner=${owner:raw}&var-station=${station:raw}&var-receiver=${receiver:raw}&var-antenna=${antenna:raw}&${__url_time_range}",
+            "targetBlank": false
+          }]
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 4, "w": 3, "x": 9, "y": 2},
+      "id": 5,
+      "options": {
+        "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [{
+        "datasource": {"type": "grafana-postgresql-datasource", "uid": "gps_health"},
+        "editorMode": "code", "format": "table", "rawQuery": true,
+        "rawSql": "SELECT COUNT(*) AS \"24h Miss\",\n  CASE WHEN '$data_filter' = '24h_raw_missing' THEN 'all' ELSE '24h_raw_missing' END AS \"next_filter\"\nFROM station_data_flow_status\nWHERE status_24h = 2",
+        "refId": "A"
+      }],
+      "title": "24h Miss",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "gps_health"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "links": [{
+            "title": "Toggle filter",
+            "url": "/d/gps-data-delivery/gps-data-delivery?var-data_filter=${__data.fields.next_filter}&var-area=${area:raw}&var-owner=${owner:raw}&var-station=${station:raw}&var-receiver=${receiver:raw}&var-antenna=${antenna:raw}&${__url_time_range}",
+            "targetBlank": false
+          }]
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 4, "w": 3, "x": 12, "y": 2},
+      "id": 6,
+      "options": {
+        "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [{
+        "datasource": {"type": "grafana-postgresql-datasource", "uid": "gps_health"},
+        "editorMode": "code", "format": "table", "rawQuery": true,
+        "rawSql": "SELECT COUNT(*) AS \"RNX OK\",\n  CASE WHEN '$data_filter' = '24h_rnx_ok' THEN 'all' ELSE '24h_rnx_ok' END AS \"next_filter\"\nFROM station_data_flow_status\nWHERE rinex_24h_status = 0",
+        "refId": "A"
+      }],
+      "title": "RNX OK",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "gps_health"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "yellow", "value": 1},
+            {"color": "red", "value": 5}
+          ]},
+          "links": [{
+            "title": "Toggle filter",
+            "url": "/d/gps-data-delivery/gps-data-delivery?var-data_filter=${__data.fields.next_filter}&var-area=${area:raw}&var-owner=${owner:raw}&var-station=${station:raw}&var-receiver=${receiver:raw}&var-antenna=${antenna:raw}&${__url_time_range}",
+            "targetBlank": false
+          }]
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 4, "w": 3, "x": 15, "y": 2},
+      "id": 7,
+      "options": {
+        "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [{
+        "datasource": {"type": "grafana-postgresql-datasource", "uid": "gps_health"},
+        "editorMode": "code", "format": "table", "rawQuery": true,
+        "rawSql": "SELECT COUNT(*) AS \"RNX Miss\",\n  CASE WHEN '$data_filter' = '24h_rnx_missing' THEN 'all' ELSE '24h_rnx_missing' END AS \"next_filter\"\nFROM station_data_flow_status\nWHERE rinex_24h_status >= 1",
+        "refId": "A"
+      }],
+      "title": "RNX Miss",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "gps_health"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "yellow", "value": 1}
+          ]},
+          "links": [{
+            "title": "Toggle filter",
+            "url": "/d/gps-data-delivery/gps-data-delivery?var-data_filter=${__data.fields.next_filter}&var-area=${area:raw}&var-owner=${owner:raw}&var-station=${station:raw}&var-receiver=${receiver:raw}&var-antenna=${antenna:raw}&${__url_time_range}",
+            "targetBlank": false
+          }]
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 4, "w": 3, "x": 18, "y": 2},
+      "id": 8,
+      "options": {
+        "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [{
+        "datasource": {"type": "grafana-postgresql-datasource", "uid": "gps_health"},
+        "editorMode": "code", "format": "table", "rawQuery": true,
+        "rawSql": "SELECT COUNT(*) AS \"Raw→RNX\",\n  CASE WHEN '$data_filter' = 'rnx_gap' THEN 'all' ELSE 'rnx_gap' END AS \"next_filter\"\nFROM station_data_flow_status\nWHERE status_24h = 0 AND rinex_24h_status >= 1",
+        "refId": "A"
+      }],
+      "title": "Raw→RNX gap",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "gps_health"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "purple", "value": null}]}
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 4, "w": 3, "x": 21, "y": 2},
+      "id": 9,
+      "options": {
+        "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [{
+        "datasource": {"type": "grafana-postgresql-datasource", "uid": "gps_health"},
+        "editorMode": "code", "format": "table", "rawQuery": true,
+        "rawSql": "SELECT COUNT(*) AS \"Total NG\"\nFROM file_tracking\nWHERE status = 'missing'\n  AND session_type = '15s_24hr'\n  AND file_date >= CURRENT_DATE - 7",
+        "refId": "A"
+      }],
+      "title": "Total NG (7d)",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 6},
+      "id": 10,
+      "panels": [],
+      "title": "Main Delivery Table (one row per active station)",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "gps_health"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"fixedColor": "text", "mode": "fixed"},
+          "custom": {"align": "auto", "cellOptions": {"type": "auto"}, "inspect": false},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "SID"},
+            "properties": [{
+              "id": "links",
+              "value": [{
+                "title": "View station detail",
+                "url": "/d/gps-station-detail/gps-station-detail?var-station=${__data.fields.SID}&var-area=$area&var-owner=$owner&var-receiver=$receiver&var-antenna=$antenna&${__url_time_range}",
+                "targetBlank": false
+              }]
+            }, {"id": "custom.width", "value": 80}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Receiver"},
+            "properties": [{"id": "custom.width", "value": 95}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Area"},
+            "properties": [{"id": "custom.width", "value": 130}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "24hR"},
+            "properties": [
+              {"id": "custom.width", "value": 60},
+              {"id": "custom.cellOptions", "value": {"mode": "basic", "type": "color-background"}},
+              {"id": "color", "value": {"mode": "thresholds"}},
+              {"id": "thresholds", "value": {"mode": "absolute", "steps": [
+                {"color": "green", "value": null},
+                {"color": "yellow", "value": 1},
+                {"color": "red", "value": 2}
+              ]}},
+              {"id": "mappings", "value": [{"type": "value", "options": {
+                "-2": {"color": "dark-purple", "index": 0, "text": "N/A"},
+                "-1": {"color": "text", "index": 1, "text": "?"},
+                "0":  {"color": "green",  "index": 2, "text": "OK"},
+                "1":  {"color": "yellow", "index": 3, "text": "Late"},
+                "2":  {"color": "red",    "index": 4, "text": "Miss"}
+              }}]}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "24h Date"},
+            "properties": [{"id": "custom.width", "value": 90}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "RNX"},
+            "properties": [
+              {"id": "custom.width", "value": 60},
+              {"id": "custom.cellOptions", "value": {"mode": "basic", "type": "color-background"}},
+              {"id": "color", "value": {"mode": "thresholds"}},
+              {"id": "thresholds", "value": {"mode": "absolute", "steps": [
+                {"color": "green", "value": null},
+                {"color": "yellow", "value": 1},
+                {"color": "red", "value": 2}
+              ]}},
+              {"id": "mappings", "value": [{"type": "value", "options": {
+                "-2": {"color": "dark-purple", "index": 0, "text": "N/A"},
+                "-1": {"color": "text", "index": 1, "text": "?"},
+                "0":  {"color": "green",  "index": 2, "text": "OK"},
+                "1":  {"color": "yellow", "index": 3, "text": "Late"},
+                "2":  {"color": "red",    "index": 4, "text": "Miss"}
+              }}]}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "DL"},
+            "properties": [
+              {"id": "custom.width", "value": 60},
+              {"id": "custom.cellOptions", "value": {"mode": "basic", "type": "color-background"}},
+              {"id": "color", "value": {"mode": "thresholds"}},
+              {"id": "thresholds", "value": {"mode": "absolute", "steps": [
+                {"color": "green", "value": null},
+                {"color": "yellow", "value": 1},
+                {"color": "red", "value": 2}
+              ]}},
+              {"id": "mappings", "value": [{"type": "value", "options": {
+                "-2": {"color": "dark-purple", "index": 0, "text": "N/A"},
+                "-1": {"color": "text", "index": 1, "text": "?"},
+                "0":  {"color": "green",  "index": 2, "text": "OK"},
+                "1":  {"color": "yellow", "index": 3, "text": "Warn"},
+                "2":  {"color": "red",    "index": 4, "text": "Crit"}
+              }}]}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Last DL"},
+            "properties": [{"id": "custom.width", "value": 115}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "KB/s"},
+            "properties": [
+              {"id": "custom.width", "value": 70},
+              {"id": "unit", "value": "KBs"},
+              {"id": "decimals", "value": 1},
+              {"id": "custom.cellOptions", "value": {"mode": "basic", "type": "color-background"}},
+              {"id": "color", "value": {"mode": "thresholds"}},
+              {"id": "thresholds", "value": {"mode": "absolute", "steps": [
+                {"color": "red",    "value": null},
+                {"color": "yellow", "value": 10},
+                {"color": "green",  "value": 30}
+              ]}}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Stalls"},
+            "properties": [
+              {"id": "custom.width", "value": 60},
+              {"id": "thresholds", "value": {"mode": "absolute", "steps": [
+                {"color": "green", "value": null},
+                {"color": "yellow", "value": 1},
+                {"color": "red", "value": 5}
+              ]}},
+              {"id": "color", "value": {"mode": "thresholds"}}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Fails"},
+            "properties": [
+              {"id": "custom.width", "value": 60},
+              {"id": "thresholds", "value": {"mode": "absolute", "steps": [
+                {"color": "green", "value": null},
+                {"color": "yellow", "value": 1},
+                {"color": "red", "value": 5}
+              ]}},
+              {"id": "color", "value": {"mode": "thresholds"}}
+            ]
+          }
+        ]
+      },
+      "gridPos": {"h": 14, "w": 24, "x": 0, "y": 7},
+      "id": 11,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {"countRows": false, "fields": "", "reducer": ["sum"], "show": false},
+        "showHeader": true,
+        "sortBy": [{"desc": true, "displayName": "24hR"}]
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [{
+        "datasource": {"type": "grafana-postgresql-datasource", "uid": "gps_health"},
+        "editorMode": "code", "format": "table", "rawQuery": true,
+        "rawSql": "WITH areas AS (\n  SELECT sam.sid, string_agg(sa.area_name, ', ' ORDER BY sa.area_name) AS area_list\n  FROM station_area_members sam\n  JOIN station_areas sa ON sa.area_id = sam.area_id\n  GROUP BY sam.sid\n)\nSELECT\n  d.station_id AS \"SID\",\n  d.receiver_type AS \"Receiver\",\n  a.area_list AS \"Area\",\n  f.status_24h AS \"24hR\",\n  f.raw_24h_date::text AS \"24h Date\",\n  f.rinex_24h_status AS \"RNX\",\n  f.download_status AS \"DL\",\n  d.last_download_at AS \"Last DL\",\n  ROUND(d.avg_speed_bps / 1024.0, 1) AS \"KB/s\",\n  d.stalls AS \"Stalls\",\n  d.download_failures AS \"Fails\"\nFROM station_dashboard_data d\nLEFT JOIN station_data_flow_status f ON f.sid = d.station_id\nLEFT JOIN areas a ON a.sid = d.station_id\nLEFT JOIN stations s ON s.sid = d.station_id\nWHERE ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = d.station_id AND sam.area_id = '$area'))\n  AND (${station:singlequote} = 'all' OR d.station_id = ${station:singlequote})\n  AND (${receiver:singlequote} = 'all' OR (${receiver:singlequote} = 'NONE' AND d.receiver_type IS NULL) OR d.receiver_type = ${receiver:singlequote})\n  AND (${antenna:singlequote} = 'all' OR (${antenna:singlequote} = 'NONE' AND d.antenna_type IS NULL) OR d.antenna_type = ${antenna:singlequote})\n  AND (${owner:singlequote} = 'all' OR s.station_owner = ${owner:singlequote})\n  AND ('$data_filter' = 'all'\n    OR ('$data_filter' = '24h_raw_ok'      AND f.status_24h = 0)\n    OR ('$data_filter' = '24h_raw_late'    AND f.status_24h = 1)\n    OR ('$data_filter' = '24h_raw_missing' AND f.status_24h = 2)\n    OR ('$data_filter' = '24h_rnx_ok'      AND f.rinex_24h_status = 0)\n    OR ('$data_filter' = '24h_rnx_missing' AND f.rinex_24h_status >= 1)\n    OR ('$data_filter' = 'rnx_gap'         AND f.status_24h = 0 AND f.rinex_24h_status >= 1)\n    OR ('$data_filter' = 'dl_warning'      AND f.download_status = 1)\n    OR ('$data_filter' = 'dl_critical'     AND f.download_status = 2)\n    OR ('$data_filter' = 'stalling'        AND d.stalls >= 1)\n    OR ('$data_filter' = 'slow_speed'      AND d.avg_speed_bps IS NOT NULL AND d.avg_speed_bps < 10240)\n    OR ('$data_filter' = 'passive'         AND d.health_check = 'passive')\n    OR ('$data_filter' = 'inactive'        AND d.station_status IS NOT NULL)\n  )\n  AND ('$data_filter' IN ('passive','inactive') OR (d.station_status IS NULL AND d.health_check IS NULL))\nORDER BY f.status_24h DESC NULLS LAST, f.rinex_24h_status DESC NULLS LAST, d.station_id",
+        "refId": "A"
+      }],
+      "title": "All stations · data delivery",
+      "type": "table"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 21},
+      "id": 12,
+      "panels": [],
+      "title": "Trends (range-based · honors time picker)",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "gps_health"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "% of active",
+            "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10,
+            "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false},
+            "lineInterpolation": "linear", "lineWidth": 2, "pointSize": 5,
+            "scaleDistribution": {"type": "linear"}, "showPoints": "auto", "spanNulls": false,
+            "stacking": {"group": "A", "mode": "none"},
+            "thresholdsStyle": {"mode": "off"}
+          },
+          "mappings": [], "min": 0, "max": 100, "unit": "percent",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 22},
+      "id": 13,
+      "options": {
+        "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [{
+        "datasource": {"type": "grafana-postgresql-datasource", "uid": "gps_health"},
+        "editorMode": "code", "format": "time_series", "rawQuery": true,
+        "rawSql": "WITH active AS (\n  SELECT COUNT(*)::float AS n\n  FROM stations\n  WHERE station_status IS NULL AND health_check IS NULL\n), days AS (\n  SELECT generate_series(\n    GREATEST(($__timeFrom())::date, CURRENT_DATE - 30),\n    LEAST(($__timeTo())::date, CURRENT_DATE),\n    '1 day'::interval\n  )::date AS d\n)\nSELECT\n  days.d AS time,\n  100.0 * COUNT(DISTINCT ft.sid) FILTER (\n    WHERE ft.session_type = '15s_24hr'\n      AND ft.status IN ('downloaded', 'archived')\n  ) / NULLIF((SELECT n FROM active), 0) AS \"24h raw\",\n  100.0 * COUNT(DISTINCT ft.sid) FILTER (\n    WHERE ft.session_type = '15s_24hr_rinex'\n      AND ft.status IN ('downloaded', 'archived')\n  ) / NULLIF((SELECT n FROM active), 0) AS \"24h RINEX\"\nFROM days\nLEFT JOIN file_tracking ft ON ft.file_date = days.d\nGROUP BY days.d\nORDER BY days.d",
+        "refId": "A"
+      }],
+      "title": "Daily completeness · % of active stations delivering per day",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 30},
+      "id": 14,
+      "panels": [],
+      "title": "Audit Log (download_log · last 200 events in time range)",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "gps_health"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"fixedColor": "text", "mode": "fixed"},
+          "custom": {"align": "auto", "cellOptions": {"type": "auto"}, "inspect": false},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "Time"},
+            "properties": [{"id": "custom.width", "value": 175}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Station"},
+            "properties": [
+              {"id": "custom.width", "value": 65},
+              {"id": "links", "value": [{
+                "title": "View station detail",
+                "url": "/d/gps-station-detail/gps-station-detail?var-station=${__data.fields.Station}&${__url_time_range}",
+                "targetBlank": false
+              }]}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Session"},
+            "properties": [{"id": "custom.width", "value": 95}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Outcome"},
+            "properties": [
+              {"id": "custom.width", "value": 105},
+              {"id": "custom.cellOptions", "value": {"mode": "basic", "type": "color-background"}},
+              {"id": "mappings", "value": [{"type": "value", "options": {
+                "completed":     {"color": "green",       "index": 0, "text": "completed"},
+                "expected":      {"color": "blue",        "index": 1, "text": "expected"},
+                "stall_timeout": {"color": "orange",      "index": 2, "text": "stall"},
+                "failed":        {"color": "red",         "index": 3, "text": "failed"},
+                "unreachable":   {"color": "dark-purple", "index": 4, "text": "unreach"}
+              }}]}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Dur (s)"},
+            "properties": [{"id": "custom.width", "value": 65}, {"id": "decimals", "value": 1}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "KB/s"},
+            "properties": [{"id": "custom.width", "value": 70}, {"id": "unit", "value": "KBs"}, {"id": "decimals", "value": 1}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Bytes"},
+            "properties": [{"id": "custom.width", "value": 90}, {"id": "unit", "value": "bytes"}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Att"},
+            "properties": [{"id": "custom.width", "value": 45}]
+          }
+        ]
+      },
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 31},
+      "id": 15,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {"countRows": false, "fields": "", "reducer": ["sum"], "show": false},
+        "showHeader": true,
+        "sortBy": [{"desc": true, "displayName": "Time"}]
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [{
+        "datasource": {"type": "grafana-postgresql-datasource", "uid": "gps_health"},
+        "editorMode": "code", "format": "table", "rawQuery": true,
+        "rawSql": "SELECT\n  ts AS \"Time\",\n  sid AS \"Station\",\n  session_type AS \"Session\",\n  outcome AS \"Outcome\",\n  duration_seconds AS \"Dur (s)\",\n  bytes_downloaded AS \"Bytes\",\n  ROUND((avg_speed_bps / 1024.0)::numeric, 1) AS \"KB/s\",\n  attempt AS \"Att\",\n  message AS \"Message\"\nFROM download_log\nWHERE ts BETWEEN $__timeFrom() AND $__timeTo()\n  AND (${station:singlequote} = 'all' OR sid = ${station:singlequote})\nORDER BY ts DESC\nLIMIT 200",
+        "refId": "A"
+      }],
+      "title": "Download log · last 200 events",
+      "type": "table"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["gps", "data-delivery", "receivers"],
+  "templating": {
+    "list": [
+      {
+        "current": {"selected": true, "text": "All Stations", "value": "all"},
+        "datasource": {"type": "grafana-postgresql-datasource", "uid": "gps_health"},
+        "definition": "SELECT 'all' AS __value, 'All Stations' AS __text UNION ALL SELECT area_id AS __value, area_name || ' (' || area_type || ')' AS __text FROM station_areas ORDER BY __text",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Area",
+        "multi": false,
+        "name": "area",
+        "options": [],
+        "query": "SELECT 'all' AS __value, 'All Stations' AS __text UNION ALL SELECT area_id AS __value, area_name || ' (' || area_type || ')' AS __text FROM station_areas ORDER BY __text",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {"selected": true, "text": "all", "value": "all"},
+        "datasource": {"type": "grafana-postgresql-datasource", "uid": "gps_health"},
+        "definition": "SELECT 'all' AS station_owner UNION ALL SELECT DISTINCT station_owner FROM stations WHERE station_owner IS NOT NULL ORDER BY station_owner",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Agency",
+        "multi": false,
+        "name": "owner",
+        "options": [],
+        "query": "SELECT 'all' AS station_owner UNION ALL SELECT DISTINCT station_owner FROM stations WHERE station_owner IS NOT NULL ORDER BY station_owner",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {"selected": true, "text": "all", "value": "all"},
+        "datasource": {"type": "grafana-postgresql-datasource", "uid": "gps_health"},
+        "definition": "SELECT 'all' AS sid UNION ALL SELECT sid FROM stations ORDER BY sid",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Station",
+        "multi": false,
+        "name": "station",
+        "options": [],
+        "query": "SELECT 'all' AS sid UNION ALL SELECT sid FROM stations ORDER BY sid",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {"selected": true, "text": "all", "value": "all"},
+        "datasource": {"type": "grafana-postgresql-datasource", "uid": "gps_health"},
+        "definition": "SELECT 'all' AS receiver_type UNION ALL SELECT 'NONE' AS receiver_type UNION ALL SELECT DISTINCT receiver_type FROM stations WHERE receiver_type IS NOT NULL ORDER BY receiver_type",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Receiver",
+        "multi": false,
+        "name": "receiver",
+        "options": [],
+        "query": "SELECT 'all' AS receiver_type UNION ALL SELECT 'NONE' AS receiver_type UNION ALL SELECT DISTINCT receiver_type FROM stations WHERE receiver_type IS NOT NULL ORDER BY receiver_type",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {"selected": true, "text": "all", "value": "all"},
+        "datasource": {"type": "grafana-postgresql-datasource", "uid": "gps_health"},
+        "definition": "SELECT 'all' AS antenna_type UNION ALL SELECT 'NONE' AS antenna_type UNION ALL SELECT DISTINCT antenna_type FROM stations WHERE antenna_type IS NOT NULL ORDER BY antenna_type",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Antenna",
+        "multi": false,
+        "name": "antenna",
+        "options": [],
+        "query": "SELECT 'all' AS antenna_type UNION ALL SELECT 'NONE' AS antenna_type UNION ALL SELECT DISTINCT antenna_type FROM stations WHERE antenna_type IS NOT NULL ORDER BY antenna_type",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {"selected": true, "text": "All", "value": "all"},
+        "hide": 0,
+        "label": "Data Filter",
+        "name": "data_filter",
+        "options": [
+          {"selected": true,  "text": "All",          "value": "all"},
+          {"selected": false, "text": "24h Raw OK",   "value": "24h_raw_ok"},
+          {"selected": false, "text": "24h Raw Late", "value": "24h_raw_late"},
+          {"selected": false, "text": "24h Raw Miss", "value": "24h_raw_missing"},
+          {"selected": false, "text": "24h RNX OK",   "value": "24h_rnx_ok"},
+          {"selected": false, "text": "24h RNX Miss", "value": "24h_rnx_missing"},
+          {"selected": false, "text": "Raw→RNX gap", "value": "rnx_gap"},
+          {"selected": false, "text": "DL Warning",   "value": "dl_warning"},
+          {"selected": false, "text": "DL Critical",  "value": "dl_critical"},
+          {"selected": false, "text": "Stalling",     "value": "stalling"},
+          {"selected": false, "text": "Slow Speed",   "value": "slow_speed"},
+          {"selected": false, "text": "Passive",      "value": "passive"},
+          {"selected": false, "text": "Inactive",     "value": "inactive"}
+        ],
+        "query": "all,24h_raw_ok,24h_raw_late,24h_raw_missing,24h_rnx_ok,24h_rnx_missing,rnx_gap,dl_warning,dl_critical,stalling,slow_speed,passive,inactive",
+        "skipUrlSync": false,
+        "type": "custom"
+      }
+    ]
+  },
+  "time": {"from": "now-7d", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "GPS Data Delivery",
+  "uid": "gps-data-delivery",
+  "version": 1,
+  "weekStart": ""
+}
