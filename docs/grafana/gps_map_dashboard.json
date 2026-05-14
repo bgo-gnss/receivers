@@ -55,6 +55,18 @@
       "tooltip": "View detailed station information",
       "type": "link",
       "url": "/d/gps-station-detail/gps-station-detail"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external-link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Data Delivery",
+      "tooltip": "Per-station file delivery & download history",
+      "type": "link",
+      "url": "/d/gps-data-delivery/gps-data-delivery"
     }
   ],
   "liveNow": false,
