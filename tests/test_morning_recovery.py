@@ -105,7 +105,48 @@ def test_query_passes_session_and_date_params(mock_conn):
     )
 
     params = cur.execute.call_args[0][1]
-    assert params == {"sess": "15s_24hr", "date": date(2026, 5, 7)}
+    assert params == {
+        "sess": "15s_24hr",
+        "date": date(2026, 5, 7),
+        "stale_minutes": 120,
+    }
+
+
+@patch("receivers.health.database_factory.DatabaseConnectionFactory.connection")
+def test_query_passes_custom_stale_window(mock_conn):
+    """stale_missing_window_minutes flows through to the SQL parameters."""
+    conn, cur = _mock_db([])
+    mock_conn.return_value = conn
+
+    _query_stations_missing_yesterday(
+        "15s_24hr",
+        date(2026, 5, 7),
+        bypass_known_missing=False,
+        stale_missing_window_minutes=30,
+    )
+
+    params = cur.execute.call_args[0][1]
+    assert params["stale_minutes"] == 30
+
+
+@patch("receivers.health.database_factory.DatabaseConnectionFactory.connection")
+def test_query_log_summary_includes_stale_window(mock_conn, caplog):
+    """The filter summary surfaces the active window so operators see the policy."""
+    import logging
+
+    conn, _ = _mock_db([("queued", ["AFST"], 1)])
+    mock_conn.return_value = conn
+
+    with caplog.at_level(logging.INFO, logger="receivers.scheduler.morning_recovery"):
+        _query_stations_missing_yesterday(
+            "15s_24hr",
+            date(2026, 5, 7),
+            bypass_known_missing=False,
+            stale_missing_window_minutes=45,
+        )
+
+    text = " ".join(r.getMessage() for r in caplog.records)
+    assert "stale_missing_window=45m" in text
 
 
 @patch("receivers.health.database_factory.DatabaseConnectionFactory.connection")

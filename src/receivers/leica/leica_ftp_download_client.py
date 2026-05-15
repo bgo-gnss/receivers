@@ -138,6 +138,12 @@ class LeicaFTPDownloader:
         # wrapper so "All file downloads failed" surfaces the actual cause.
         self.last_file_error: Optional[str] = None
 
+        # Per-file outcome of the most recent download_files() call. Read by
+        # the G10 wrapper to decide whether to write file_tracking
+        # status='missing'. Only "not_found" (FTP 550) is verified-absent;
+        # transport errors must NOT promote to "operator-known-bad" state.
+        self.file_outcomes: Dict[str, str] = {}  # filename -> outcome
+
         # Get timeout settings from configuration
         from ..config.receivers_config import get_receivers_config
         from ..utils.stall_timeout import get_stall_timeout
@@ -509,6 +515,7 @@ class LeicaFTPDownloader:
                         stall_timeout_used=self.data_timeout,
                         attempt=attempt + 1,
                     )
+                    self.file_outcomes[remote_filename] = "downloaded"
                     return True
                 elif attempt < retry_count:
                     _err_msg = "Download returned failure"
@@ -547,6 +554,10 @@ class LeicaFTPDownloader:
                     self.logger.error(
                         f"❌ Download failed after {retry_count + 1} attempts: {remote_filename}"
                     )
+                    # Single-attempt returned False without surfacing a
+                    # specific error. Default to transport_error — safer
+                    # than presuming "not_found".
+                    self.file_outcomes.setdefault(remote_filename, "transport_error")
                     return False
 
             except (TimeoutError, ConnectionError) as e:
@@ -555,6 +566,9 @@ class LeicaFTPDownloader:
                 is_stall = isinstance(e, TimeoutError) or "stall" in error_msg
                 _err_msg = str(e)[:500]
                 self.last_file_error = _err_msg
+                # Timeout/ConnectionError is never "not_found" — receiver
+                # never got the chance to report the file's status.
+                self.file_outcomes[remote_filename] = "transport_error"
                 record_download(
                     self.station_id,
                     session_type,
@@ -588,6 +602,17 @@ class LeicaFTPDownloader:
                 duration = time.time() - start_time
                 _err_msg = str(e)[:500]
                 self.last_file_error = _err_msg
+                # FTP "550" / "no such file" / "not found" is the receiver
+                # explicitly reporting absence — analogous to HTTP 404.
+                # Anything else is unknown / transport.
+                is_not_found = (
+                    "550" in error_msg
+                    or "no such file" in error_msg
+                    or "not found" in error_msg
+                )
+                self.file_outcomes[remote_filename] = (
+                    "not_found" if is_not_found else "transport_error"
+                )
                 record_download(
                     self.station_id,
                     session_type,
@@ -599,6 +624,13 @@ class LeicaFTPDownloader:
                     attempt=attempt + 1,
                     message=_err_msg,
                 )
+
+                # 550 is authoritative — don't burn retries re-asking.
+                if is_not_found:
+                    self.logger.info(
+                        f"📄 Receiver reports {remote_filename} not present (FTP 550)"
+                    )
+                    return False
 
                 # If this was the last attempt, give up
                 if attempt >= retry_count:
@@ -649,6 +681,7 @@ class LeicaFTPDownloader:
 
         # Reset before each batch so the wrapper surfaces this run's last error.
         self.last_file_error = None
+        self.file_outcomes = {}
 
         downloaded_files = []
         total_files = len(files_dict)

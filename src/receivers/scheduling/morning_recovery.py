@@ -42,6 +42,7 @@ def _query_stations_missing_yesterday(
     session: str,
     target_date: date,
     bypass_known_missing: bool,
+    stale_missing_window_minutes: int = 120,
 ) -> List[str]:
     """Return station IDs whose `session` file for `target_date` is missing.
 
@@ -49,7 +50,15 @@ def _query_stations_missing_yesterday(
       - Passive stations (`station_data_flow_status.health_status < 0`)
       - Stations that already have the file in `file_tracking` (downloaded/archived)
       - Stations marked `status='missing'` in `file_tracking` for this
-        (sid, session, date) tuple — UNLESS `bypass_known_missing=True`.
+        (sid, session, date) tuple AND whose last_attempt is older than
+        `stale_missing_window_minutes` ago — UNLESS `bypass_known_missing=True`.
+
+    The age guard exists because a `missing` row can be written by a
+    transient connection failure during the primary 00:01 window; if morning
+    recovery skipped any station with such a row, those transient failures
+    would never get a second attempt before the GAMIT deadline. Fresh rows
+    (within the window) stay queued so morning_recovery can confirm or
+    refute the marker.
 
     Logs a per-exclusion-reason count so the operator can tell *why* a
     station isn't in the retry queue. Without this, "BAUG didn't show up in
@@ -58,7 +67,12 @@ def _query_stations_missing_yesterday(
     Args:
         session: Session type (e.g. '15s_24hr').
         target_date: Date to check (typically yesterday).
-        bypass_known_missing: If True, retry even stations marked 'missing'.
+        bypass_known_missing: If True, retry even stations marked 'missing'
+            regardless of how stale the marker is.
+        stale_missing_window_minutes: A `missing` row counts as
+            'marked_missing' only when its last_attempt is older than this
+            many minutes. Default 120 (2 h). Set to 0 to revert to the
+            old "any missing row excludes" semantics.
 
     Returns:
         List of station IDs to retry, sorted alphabetically.
@@ -85,6 +99,7 @@ def _query_stations_missing_yesterday(
                 AND ft2.session_type = %(sess)s
                 AND ft2.file_date = %(date)s
                 AND ft2.status = 'missing'
+                AND ft2.last_attempt < NOW() - (%(stale_minutes)s * INTERVAL '1 minute')
             ) THEN 'marked_missing'
             ELSE 'queued'
           END AS bucket
@@ -102,7 +117,14 @@ def _query_stations_missing_yesterday(
     buckets: dict[str, tuple[list[str], int]] = {}
     with DatabaseConnectionFactory.connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, {"sess": session, "date": target_date})
+            cur.execute(
+                sql,
+                {
+                    "sess": session,
+                    "date": target_date,
+                    "stale_minutes": stale_missing_window_minutes,
+                },
+            )
             for bucket, sids, n in cur.fetchall():
                 buckets[bucket] = (list(sids), int(n))
 
@@ -126,6 +148,7 @@ def _query_stations_missing_yesterday(
     logger.info(
         f"🌅 Morning recovery {session} ({target_date}) filter summary: "
         + ", ".join(summary_parts)
+        + f" (stale_missing_window={stale_missing_window_minutes}m)"
     )
 
     # If any non-trivial bucket exists, surface the SIDs so post-hoc audit
@@ -198,6 +221,7 @@ def _run_morning_recovery_job(
     max_workers: int = 4,
     station_timeout_minutes: int = 8,
     bypass_known_missing: bool = False,
+    stale_missing_window_minutes: int = 120,
 ) -> None:
     """APScheduler job: re-download yesterday's missing files for missing stations.
 
@@ -209,6 +233,10 @@ def _run_morning_recovery_job(
             doesn't block the whole job.
         bypass_known_missing: If True, retry even stations that file_tracking
             has marked status='missing'.
+        stale_missing_window_minutes: A `missing` row counts as
+            'marked_missing' (skip) only when its last_attempt is older than
+            this many minutes. Default 120 (2 h) — fresh transient-failure
+            marks stay queued; long-stale marks remain skipped.
     """
     today = datetime.now(timezone.utc).date()
     # Most-recent-first so newest gaps get retried before the deadline if time runs out.
@@ -260,7 +288,10 @@ def _run_morning_recovery_job(
 
         for session in sessions:
             sids = _query_stations_missing_yesterday(
-                session, target_date, bypass_known_missing
+                session,
+                target_date,
+                bypass_known_missing,
+                stale_missing_window_minutes=stale_missing_window_minutes,
             )
             if not sids:
                 logger.info(

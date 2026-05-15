@@ -2293,6 +2293,10 @@ class BulkDownloadScheduler:
         max_workers = cfg.get("max_workers", 4)
         station_timeout_minutes = cfg.get("station_timeout_minutes", 8)
         bypass_known_missing = cfg.get("bypass_known_missing", False)
+        # Defense-in-depth: a `missing` row younger than this counts as
+        # potentially-transient and stays in the retry queue. Older rows
+        # are trusted as "verified absent". 0 disables the age guard.
+        stale_missing_window_minutes = cfg.get("stale_missing_window_minutes", 120)
 
         for idx, sched in enumerate(schedules):
             base_trigger = parse_schedule(sched)
@@ -2311,6 +2315,7 @@ class BulkDownloadScheduler:
                     max_workers,
                     station_timeout_minutes,
                     bypass_known_missing,
+                    stale_missing_window_minutes,
                 ],
                 id=job_id,
                 replace_existing=True,
@@ -2324,7 +2329,8 @@ class BulkDownloadScheduler:
                 f"🌅 Scheduled morning recovery [{job_id}] "
                 f"({base_trigger.description}, sessions={sessions}, "
                 f"days_back={days_back}, workers={max_workers}, "
-                f"bypass_known_missing={bypass_known_missing})"
+                f"bypass_known_missing={bypass_known_missing}, "
+                f"stale_missing_window={stale_missing_window_minutes}m)"
             )
 
     def _detect_outage_gap(self, session_type: str = "15s_24hr") -> int:

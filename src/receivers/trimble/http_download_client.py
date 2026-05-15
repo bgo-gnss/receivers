@@ -17,8 +17,26 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, urljoin
 
+import requests
+
 from ..utils.file_validator import FileValidator
 from .http_client import TrimbleHTTPClient
+
+
+def classify_download_exception(exc: BaseException) -> str:
+    """Map a download-time exception to a `file_outcomes` value.
+
+    Returns ``"not_found"`` only when the receiver explicitly responded
+    HTTP 404 — the analogue of FTP "550 / file not found". Every other
+    exception (timeout, connection refused, 5xx, other 4xx, …) is
+    classified as ``"transport_error"``: the file's state on the
+    receiver is unknown and must NOT be promoted to a `file_tracking`
+    `status='missing'` row.
+    """
+    http_status = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(exc, requests.exceptions.HTTPError) and http_status == 404:
+        return "not_found"
+    return "transport_error"
 
 
 class ProgressBar:
@@ -139,6 +157,14 @@ class NetR9HTTPDownloader:
         # NetR9/NetRS wrapper so "All file downloads failed" surfaces the
         # actual cause (404, broken pipe, connection refused, ...).
         self.last_file_error: Optional[str] = None
+
+        # Per-file outcome of the most recent download_files() call. Read by
+        # the receiver wrapper to decide whether to write file_tracking
+        # status='missing'. Only "not_found" is a verified-absent signal;
+        # everything else (transport_error, downloaded) means we should NOT
+        # mark the file missing on the receiver — connection failures must
+        # not be promoted to "operator-known-bad" state.
+        self.file_outcomes: Dict[str, str] = {}  # filename -> outcome
 
         # Base path handling for NetR5 CACHEDIR prefix (hybrid approach)
         # Check if explicit base_path is configured in stations.cfg
@@ -363,9 +389,6 @@ class NetR9HTTPDownloader:
                 )
 
             try:
-                # Use authenticated session from http_client
-                import requests
-
                 full_url = f"http://{self.http_client.ip}:{self.http_client.http_port}{endpoint}"
                 self.logger.debug(f"Downloading from: {full_url}")
 
@@ -490,6 +513,7 @@ class NetR9HTTPDownloader:
                             stall_timeout_used=self.stall_timeout,
                             attempt=attempt + 1,
                         )
+                        self.file_outcomes[filename] = "downloaded"
                         return True
                     else:
                         self.logger.error(
@@ -518,6 +542,9 @@ class NetR9HTTPDownloader:
                             attempt=attempt + 1,
                             message=_err_msg,
                         )
+                        # Size mismatch means the file IS on the receiver but
+                        # the transfer was incomplete — never a "not_found".
+                        self.file_outcomes[filename] = "transport_error"
                         return False
                 else:
                     # No expected size - just validate what we can
@@ -536,6 +563,7 @@ class NetR9HTTPDownloader:
                             stall_timeout_used=self.stall_timeout,
                             attempt=attempt + 1,
                         )
+                        self.file_outcomes[filename] = "downloaded"
                         return True
                     else:
                         self.logger.error(
@@ -560,6 +588,9 @@ class NetR9HTTPDownloader:
                             local_path.unlink()
                         except OSError:
                             pass
+                        # Bytes arrived but content was invalid — file IS on
+                        # receiver, transfer is what failed.
+                        self.file_outcomes[filename] = "transport_error"
                         return False
 
             except (TimeoutError, requests.exceptions.RequestException, Exception) as e:
@@ -567,6 +598,13 @@ class NetR9HTTPDownloader:
                 duration = time.time() - start_time
                 is_stall = isinstance(e, TimeoutError) or "stall" in error_msg
                 outcome = "stall_timeout" if is_stall else "failed"
+
+                # Classify for file_outcomes: only HTTP 404 counts as
+                # verified-absent. Everything else is "unknown receiver
+                # state" — see classify_download_exception() for details.
+                outcome_class = classify_download_exception(e)
+                self.file_outcomes[filename] = outcome_class
+                is_not_found = outcome_class == "not_found"
 
                 _err_msg = str(e)[:500]
                 self.last_file_error = _err_msg
@@ -582,6 +620,15 @@ class NetR9HTTPDownloader:
                     attempt=attempt + 1,
                     message=_err_msg,
                 )
+
+                # 404 is authoritative — receiver explicitly said the file
+                # isn't on disk. Don't burn additional attempts re-asking.
+                # (Mirrors PolaRX5's behavior on FTP "550 / not found".)
+                if is_not_found:
+                    self.logger.info(
+                        f"📄 Receiver reports {filename} not present (HTTP 404)"
+                    )
+                    return False
 
                 # If this was the last attempt, give up
                 if attempt >= max_retries:
@@ -657,6 +704,7 @@ class NetR9HTTPDownloader:
 
         # Reset before each batch so the wrapper surfaces this run's last error.
         self.last_file_error = None
+        self.file_outcomes = {}
 
         downloaded_files = []
         total_files = len(files_dict)
