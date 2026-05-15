@@ -208,6 +208,17 @@ Examples:
         "--test-connection", action="store_true", help="Test connection before download"
     )
 
+    parser.add_argument(
+        "--respect-known-missing",
+        action="store_true",
+        help=(
+            "Honor file_tracking 'missing' markers (skip files previously "
+            "marked as not on receiver). Default: ignore them — operator-issued "
+            "downloads always retry, since 'missing' may have been written by "
+            "a transient connection failure."
+        ),
+    )
+
     # Production/logging options
     parser.add_argument(
         "--production",

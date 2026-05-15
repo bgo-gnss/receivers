@@ -574,8 +574,16 @@ class LeicaG10(BaseReceiver):
                                         )
                                         downloaded_dates.add((file_date, file_hour))
 
-                            # Track missing files (requested but not downloaded) - compare by date/hour
+                            # Track missing files: only mark file_tracking
+                            # 'missing' when the receiver explicitly said the
+                            # file isn't on disk (FTP 550). Connection /
+                            # transport errors leave the row absent.
+                            file_outcomes = getattr(
+                                self.ftp_downloader, "file_outcomes", {}
+                            )
                             for req_filename in missing_files_dict.keys():
+                                if file_outcomes.get(req_filename) != "not_found":
+                                    continue
                                 # Parse date from original Leica format: SKFC016a.m00
                                 match = re.match(
                                     rf"^{self.station_id}(\d{{3}})([a-x])",

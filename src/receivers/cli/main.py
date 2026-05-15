@@ -153,7 +153,12 @@ def _download_station_period(
                 return 0, 1, 0
             logger.info(f"Connection test successful for {station_id}")
 
-        # Download data
+        # Download data. Default to retry_missing=True for operator-issued
+        # downloads — "known missing" markers may have been written by a
+        # transient failure and should not block an explicit retry. Use
+        # --respect-known-missing to opt back into the historical behavior
+        # (e.g. for fleet-wide scripts that want to skip known-bad stations).
+        retry_missing = not getattr(args, "respect_known_missing", False)
         result = receiver.download_data(
             start=start,
             end=end,
@@ -167,6 +172,7 @@ def _download_station_period(
             reverse_chronological=reverse_chronological,
             loglevel=args.loglevel,
             max_retries=getattr(args, "max_retries", 3),
+            retry_missing=retry_missing,
         )
 
         # Report results
