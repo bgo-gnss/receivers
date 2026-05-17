@@ -1727,7 +1727,7 @@ class BulkDownloadScheduler:
             config.read(config_path)
 
             # Check each receiver type section
-            for receiver_type in ["polarx5", "netr9", "netrs", "g10"]:
+            for receiver_type in ["polarx5", "netr5", "netr9", "netrs", "g10"]:
                 if receiver_type not in config:
                     continue
 
