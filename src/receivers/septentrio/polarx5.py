@@ -2164,8 +2164,24 @@ class PolaRX5(BaseReceiver):
 
                             elapsed += check_interval
 
-                            # Only kill if stuck at initial offset (0% progress)
-                            if bytes_received[0] <= offset and elapsed >= timeout:
+                            # Only kill if stuck at initial offset (0% progress).
+                            # Use BOTH the in-loop counter (pbar.n) AND on-disk
+                            # file size: bursts of bytes may flush to disk via
+                            # f.write before pbar.update reflects them on the
+                            # watchdog poll, and on-disk size is the ground
+                            # truth of useful work done (AUST 2026-05-17 TTFB:
+                            # local file grew ~140 KB/attempt while pbar.n
+                            # stayed at offset, root cause not yet nailed).
+                            on_disk = offset
+                            try:
+                                on_disk = local_file.stat().st_size
+                            except Exception:
+                                pass
+                            if (
+                                bytes_received[0] <= offset
+                                and on_disk <= offset
+                                and elapsed >= timeout
+                            ):
                                 self.logger.warning(
                                     f"⚠️  Watchdog: No data received in {elapsed:.1f}s, killing connection"
                                 )
