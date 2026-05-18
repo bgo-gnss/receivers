@@ -8,8 +8,9 @@
 -- watch the slow tail compress (or not) over the coming days.
 --
 -- This view returns one row per (day_utc, sid) for 15s_24hr, with the
--- time-to-complete and an arrival bucket. Grafana panels aggregate from
--- there (histogram by bucket, trend by day, slow-tail table).
+-- time-to-complete, an arrival bucket, and the live-window failure
+-- kind for triage. Grafana panels aggregate from there (histogram by
+-- bucket, trend by day, slow-tail table).
 --
 -- Bucket boundaries match the analysis-time query in
 -- ~/.claude/plans/ok-can-we-take-toasty-simon.md so the panel reproduces
@@ -29,65 +30,70 @@ WITH per_station_day AS (
         MIN(ts)                                                                    AS first_attempt,
         MAX(CASE WHEN outcome = 'completed' THEN ts END)                           AS completed_at,
         SUM(CASE WHEN outcome IN ('failed', 'stall_timeout', 'unreachable')
-                 THEN 1 ELSE 0 END)                                                AS n_failed_attempts,
-        -- The DOMINANT failure cause on the live (00:01-00:25) window — useful
-        -- for triage. If the station's live attempts all stall_timeout, that's
-        -- the watchdog story; if they're 'unreachable', it's network.
-        (
-            SELECT CASE
-                WHEN dl2.message ILIKE '%550%'
-                  OR dl2.message ILIKE '%not found%'
-                  OR dl2.message ILIKE '%no such%'           THEN 'file_not_ready'
-                WHEN dl2.message ILIKE '%timed out%'
-                  OR dl2.message ILIKE '%watchdog%'
-                  OR dl2.outcome = 'stall_timeout'           THEN 'stall_timeout'
-                WHEN dl2.message ILIKE '%connection refused%'
-                  OR dl2.outcome = 'unreachable'             THEN 'unreachable'
-                WHEN dl2.message ILIKE '%size mismatch%'     THEN 'size_mismatch'
-                ELSE                                              'other'
-            END
-            FROM download_log dl2
-            WHERE dl2.sid = download_log.sid
-              AND dl2.session_type = '15s_24hr'
-              AND dl2.outcome IN ('failed', 'stall_timeout', 'unreachable')
-              AND DATE(dl2.ts AT TIME ZONE 'UTC') = DATE(download_log.ts AT TIME ZONE 'UTC')
-              AND dl2.ts < DATE(download_log.ts AT TIME ZONE 'UTC') + INTERVAL '25 minutes'
-            ORDER BY dl2.ts ASC
-            LIMIT 1
-        )                                                                          AS live_failure_kind
+                 THEN 1 ELSE 0 END)                                                AS n_failed_attempts
     FROM download_log
     WHERE session_type = '15s_24hr'
       AND ts >= NOW() - INTERVAL '30 days'
     GROUP BY sid, DATE(ts AT TIME ZONE 'UTC')
+),
+-- Live-window (midnight UTC, minutes 0-24) first observed failure per
+-- (sid, day). This labels the FIRST live-fire attempt's failure kind so
+-- triage can immediately see "stall_timeout" (PR #60 target) vs
+-- "unreachable" (network) vs "file_not_ready" (receiver clock / file
+-- rollover) vs "other". DISTINCT ON keeps only the earliest failure row.
+live_failure AS (
+    SELECT DISTINCT ON (sid, DATE(ts AT TIME ZONE 'UTC'))
+        sid,
+        DATE(ts AT TIME ZONE 'UTC')                                                AS day_utc,
+        CASE
+            WHEN message ILIKE '%550%'
+              OR message ILIKE '%not found%'
+              OR message ILIKE '%no such%'              THEN 'file_not_ready'
+            WHEN message ILIKE '%timed out%'
+              OR message ILIKE '%watchdog%'
+              OR outcome = 'stall_timeout'              THEN 'stall_timeout'
+            WHEN message ILIKE '%connection refused%'
+              OR outcome = 'unreachable'                THEN 'unreachable'
+            WHEN message ILIKE '%size mismatch%'        THEN 'size_mismatch'
+            ELSE                                             'other'
+        END                                                                        AS live_failure_kind
+    FROM download_log
+    WHERE session_type = '15s_24hr'
+      AND outcome IN ('failed', 'stall_timeout', 'unreachable')
+      AND ts >= NOW() - INTERVAL '30 days'
+      AND EXTRACT(HOUR FROM ts AT TIME ZONE 'UTC') = 0
+      AND EXTRACT(MINUTE FROM ts AT TIME ZONE 'UTC') < 25
+    ORDER BY sid, DATE(ts AT TIME ZONE 'UTC'), ts ASC
 )
 SELECT
-    day_utc,
-    sid,
-    first_attempt,
-    completed_at,
-    n_failed_attempts,
-    live_failure_kind,
+    psd.day_utc,
+    psd.sid,
+    psd.first_attempt,
+    psd.completed_at,
+    psd.n_failed_attempts,
+    lf.live_failure_kind,
     CASE
-        WHEN completed_at IS NULL THEN NULL
-        ELSE ROUND((EXTRACT(EPOCH FROM (completed_at - first_attempt))/60)::numeric, 1)
+        WHEN psd.completed_at IS NULL THEN NULL
+        ELSE ROUND((EXTRACT(EPOCH FROM (psd.completed_at - psd.first_attempt))/60)::numeric, 1)
     END                                                                            AS time_to_complete_min,
     CASE
-        WHEN completed_at IS NULL                                              THEN '99-never_completed'
-        WHEN EXTRACT(EPOCH FROM (completed_at - first_attempt))/60 < 1         THEN '00-under_1min'
-        WHEN EXTRACT(EPOCH FROM (completed_at - first_attempt))/60 < 5         THEN '01-1-5min'
-        WHEN EXTRACT(EPOCH FROM (completed_at - first_attempt))/60 < 15        THEN '02-5-15min'
-        WHEN EXTRACT(EPOCH FROM (completed_at - first_attempt))/60 < 30        THEN '03-15-30min'
-        WHEN EXTRACT(EPOCH FROM (completed_at - first_attempt))/60 < 60        THEN '04-30-60min'
-        WHEN EXTRACT(EPOCH FROM (completed_at - first_attempt))/60 < 180       THEN '05-1-3hr'
-        ELSE                                                                        '06-over_3hr'
+        WHEN psd.completed_at IS NULL                                              THEN '99-never_completed'
+        WHEN EXTRACT(EPOCH FROM (psd.completed_at - psd.first_attempt))/60 < 1     THEN '00-under_1min'
+        WHEN EXTRACT(EPOCH FROM (psd.completed_at - psd.first_attempt))/60 < 5     THEN '01-1-5min'
+        WHEN EXTRACT(EPOCH FROM (psd.completed_at - psd.first_attempt))/60 < 15    THEN '02-5-15min'
+        WHEN EXTRACT(EPOCH FROM (psd.completed_at - psd.first_attempt))/60 < 30    THEN '03-15-30min'
+        WHEN EXTRACT(EPOCH FROM (psd.completed_at - psd.first_attempt))/60 < 60    THEN '04-30-60min'
+        WHEN EXTRACT(EPOCH FROM (psd.completed_at - psd.first_attempt))/60 < 180   THEN '05-1-3hr'
+        ELSE                                                                            '06-over_3hr'
     END                                                                            AS arrival_bucket
-FROM per_station_day;
+FROM per_station_day psd
+LEFT JOIN live_failure lf USING (sid, day_utc);
 
 COMMENT ON VIEW daily_arrival_15s_24hr IS
     '15s_24hr daily arrival distribution: one row per (day_utc, sid). '
     'arrival_bucket buckets time-to-complete from first attempt; '
     'live_failure_kind labels the FIRST observed failure in the live window '
-    '(00:00-00:25 UTC) which is most useful for triage. '
+    '(midnight UTC, minutes 0-24) which is most useful for triage. '
     'Driving question: PR #60 watchdog fix should reduce stall_timeout '
     'failures in the live window — track the 33-station tail moving '
     'from 30-60min bucket to <5min bucket over coming days.';
