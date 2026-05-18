@@ -2097,6 +2097,7 @@ class PolaRX5(BaseReceiver):
             timeout_extended = (
                 False  # One-time extension flag for near-complete downloads
             )
+            _first_chunk_logged = False  # Diagnostic: confirm recv path is firing
 
             # Shared state for watchdog thread
             import threading
@@ -2183,7 +2184,8 @@ class PolaRX5(BaseReceiver):
                                 and elapsed >= timeout
                             ):
                                 self.logger.warning(
-                                    f"⚠️  Watchdog: No data received in {elapsed:.1f}s, killing connection"
+                                    f"⚠️  Watchdog: No data received in {elapsed:.1f}s, killing connection "
+                                    f"(bytes_received={bytes_received[0]}, on_disk={on_disk}, offset={offset})"
                                 )
                                 watchdog_killed[0] = True
                                 # Close DATA socket (this is what actually unblocks recv)
@@ -2247,6 +2249,21 @@ class PolaRX5(BaseReceiver):
                                 f.write(chunk)
                                 pbar.update(len(chunk))
                                 bytes_received[0] = pbar.n
+
+                                # Diagnostic: log the FIRST chunk per attempt so
+                                # we can prove whether recv is delivering bytes
+                                # during the watchdog window vs only on close.
+                                if not _first_chunk_logged:
+                                    try:
+                                        _disk_now = local_file.stat().st_size
+                                    except Exception:
+                                        _disk_now = -1
+                                    self.logger.info(
+                                        f"📥 First chunk: {len(chunk)} bytes "
+                                        f"(pbar.n={pbar.n}, on_disk={_disk_now}, "
+                                        f"offset={offset}, elapsed={time.time()-start_time:.1f}s)"
+                                    )
+                                    _first_chunk_logged = True
 
                                 # Reset progress timer when we receive data
                                 last_progress_time = time.time()
