@@ -2424,11 +2424,35 @@ def cmd_rec_config(args) -> int:
     if getattr(args, "check_session", None):
         return _check_session(args, targets, logger, tcp_username, tcp_password)
 
-    # Handle session enable
+    # Handle session enable (idempotent — skips already-enabled stations)
     if getattr(args, "enable_session", None):
         return _enable_session(
-            args, targets, logger, tcp_username, tcp_password, rec_config_dir
+            args,
+            targets,
+            logger,
+            tcp_username,
+            tcp_password,
+            rec_config_dir,
+            session_name=args.enable_session,
+            force=False,
         )
+
+    # Handle session update (force re-push, no skip)
+    if getattr(args, "update_session", None):
+        return _enable_session(
+            args,
+            targets,
+            logger,
+            tcp_username,
+            tcp_password,
+            rec_config_dir,
+            session_name=args.update_session,
+            force=True,
+        )
+
+    # Handle session audit (compare receiver state to canonical template)
+    if getattr(args, "audit_session", None):
+        return _audit_session(args, targets, logger, tcp_username, tcp_password)
 
     return 0
 
@@ -2795,18 +2819,39 @@ def _load_session_template(session_name: str) -> List[str]:
 
 
 def _enable_session(
-    args, targets, logger, tcp_username=None, tcp_password=None, rec_config_dir=None
+    args,
+    targets,
+    logger,
+    tcp_username=None,
+    tcp_password=None,
+    rec_config_dir=None,
+    session_name: Optional[str] = None,
+    force: bool = False,
 ) -> int:
-    """Enable a logging session on each target by pushing canonical template."""
+    """Push canonical session template to each target.
+
+    When ``force=False`` (default — used by ``--enable-session``) the per-station
+    pre-check skips targets where the session is already enabled, making bulk
+    rollouts idempotent.
+
+    When ``force=True`` (used by ``--update-session``) the pre-check still runs
+    for reporting purposes but the template is pushed regardless — useful for
+    propagating template edits across the fleet.
+    """
     import datetime
     from pathlib import Path
 
     from ..septentrio.tcp_client import PolaRX5TCPClient
 
-    session_name = args.enable_session.strip()
+    # session_name passed by dispatcher; legacy fall-through for direct callers.
+    if session_name is None:
+        session_name = getattr(args, "enable_session", "")
+    session_name = (session_name or "").strip()
+    mode_label = "update" if force else "enable"
+
     if session_name not in _ENABLABLE_SESSIONS:
         logger.error(
-            f"--enable-session does not support '{session_name}'. "
+            f"--{mode_label}-session does not support '{session_name}'. "
             f"Supported: {sorted(_ENABLABLE_SESSIONS)}"
         )
         return 2
@@ -2836,19 +2881,26 @@ def _enable_session(
         for cmd in commands:
             print(f"  {cmd}")
         print("--- End of commands ---")
-        print(
-            "Will pre-check getLogSession and skip targets where "
-            f"{session_name} is already enabled.\n"
-        )
+        if force:
+            print(
+                f"Will push template to every target — {session_name} state is "
+                "ignored (--update-session forces re-push).\n"
+            )
+        else:
+            print(
+                "Will pre-check getLogSession and skip targets where "
+                f"{session_name} is already enabled.\n"
+            )
         for station_id, ip, port in targets:
             print(f"  [DRY RUN] {station_id} ({ip}:{port})")
         return 0
 
     success_count = 0
     skip_count = 0
+    verb = "Updating" if force else "Enabling"
     for station_id, ip, port in targets:
         print(f"\n{'=' * 50}")
-        print(f"Enabling {session_name} on {station_id} ({ip}:{port})")
+        print(f"{verb} {session_name} on {station_id} ({ip}:{port})")
         print(f"{'=' * 50}")
 
         try:
@@ -2864,17 +2916,20 @@ def _enable_session(
                 print("  ✗ Connect failed")
                 continue
 
-            # Pre-check: skip if already enabled (idempotent bulk runs).
+            # Pre-check reports current state; with force=True we push regardless.
             response = client.send_command("getLogSession", wait_time=0.5)
             state = parse_log_session_state(response, session_name)
-            if state == "enabled":
+            if state == "enabled" and not force:
                 print(f"  ↷ {session_name} already enabled — skipping")
                 client.disconnect()
                 skip_count += 1
                 success_count += 1
                 continue
 
-            print(f"  Current state: {session_name}={state}; pushing template")
+            if force and state == "enabled":
+                print(f"  Current state: {session_name}=enabled; forcing re-push")
+            else:
+                print(f"  Current state: {session_name}={state}; pushing template")
             success, errors = client.push_config(
                 commands, save_to_boot=not args.no_save
             )
@@ -2897,16 +2952,17 @@ def _enable_session(
             client.disconnect()
 
             if success:
-                print("  ✓ Session enabled")
+                print(f"  ✓ Session {'re-pushed' if force else 'enabled'}")
                 if not args.no_save:
                     print("  ✓ Saved to Boot config")
                 success_count += 1
                 if archive_dir:
                     date_str = datetime.date.today().strftime("%Y%m%d")
                     serial_part = serial or "UNKNOWN"
+                    archive_tag = "UpdateSession" if force else "AddSession"
                     dest = (
                         archive_dir
-                        / f"{station_id}_{serial_part}_AddSession_{session_name}_{date_str}.txt"
+                        / f"{station_id}_{serial_part}_{archive_tag}_{session_name}_{date_str}.txt"
                     )
                     dest.write_text("\n".join(commands) + "\n")
                     print(f"  ✓ Pushed template archived → {dest.name}")
@@ -2915,14 +2971,116 @@ def _enable_session(
                 for err in errors:
                     print(f"    - {err}")
         except Exception as e:
-            logger.error(f"  Error enabling on {station_id}: {e}")
+            logger.error(f"  Error {mode_label}ing on {station_id}: {e}")
+
+    print(f"\n{'=' * 50}")
+    action_past = "re-pushed" if force else "enabled"
+    skip_note = "" if force else f" ({skip_count} already enabled)"
+    print(
+        f"Successfully {action_past} {session_name} on "
+        f"{success_count}/{len(targets)} receivers{skip_note}"
+    )
+    return 0 if success_count == len(targets) else 1
+
+
+def _audit_session(args, targets, logger, tcp_username=None, tcp_password=None) -> int:
+    """Compare receiver session config to canonical template; report drift.
+
+    For each target, extracts the current `lstConfigFile` dump, parses out
+    the named session's state (block list, interval, retention, priority,
+    file naming), and diffs against the template shipped with the package.
+
+    Exit code 0 only when every target matches the template. Non-zero if any
+    target shows drift / missing / connect error — suitable for nightly
+    compliance sweeps in cron.
+    """
+    from ..septentrio.session_state import diff_session_state, parse_session_state
+    from ..septentrio.tcp_client import PolaRX5TCPClient
+
+    session_name = args.audit_session.strip()
+    if not session_name:
+        logger.error("--audit-session requires a session name (e.g. status_1hr)")
+        return 2
+
+    try:
+        template_cmds = _load_session_template(session_name)
+    except FileNotFoundError as e:
+        logger.error(str(e))
+        return 2
+
+    template = parse_session_state(template_cmds, session_name)
+    if template is None:
+        logger.error(
+            f"Canonical template for '{session_name}' does not define the session"
+        )
+        return 2
+
+    logger.info(
+        f"Loaded canonical {session_name} template "
+        f"({len(template.sbf_blocks)} SBF blocks, interval={template.interval})"
+    )
+
+    if args.dry_run:
+        for station_id, ip, port in targets:
+            print(f"{station_id}: [DRY RUN] would extract Current config from {ip}:{port}")
+        return 0
+
+    drift_count = 0
+    missing_count = 0
+    error_count = 0
+    ok_count = 0
+
+    for station_id, ip, port in targets:
+        try:
+            client = PolaRX5TCPClient(
+                ip,
+                station_id,
+                port,
+                timeout=args.timeout,
+                username=tcp_username,
+                password=tcp_password,
+            )
+            if not client.connect():
+                print(f"{station_id}: ERROR connect-failed")
+                error_count += 1
+                continue
+            config_text = client.extract_config("Current")
+            client.disconnect()
+        except Exception as e:
+            print(f"{station_id}: ERROR {e}")
+            error_count += 1
+            continue
+
+        receiver_state = parse_session_state(config_text.splitlines(), session_name)
+        if receiver_state is None:
+            print(f"{station_id}: MISSING — no LOG slot has session '{session_name}'")
+            missing_count += 1
+            continue
+
+        diffs = diff_session_state(receiver_state, template)
+        if not diffs:
+            print(
+                f"{station_id}: OK ({receiver_state.log_slot}/"
+                f"{receiver_state.stream_slot or '?'})"
+            )
+            ok_count += 1
+        else:
+            print(
+                f"{station_id}: DRIFT ({receiver_state.log_slot}/"
+                f"{receiver_state.stream_slot or '?'})"
+            )
+            for d in diffs:
+                print(f"  - {d}")
+            drift_count += 1
 
     print(f"\n{'=' * 50}")
     print(
-        f"Successfully enabled {session_name} on {success_count}/{len(targets)} "
-        f"receivers ({skip_count} already enabled)"
+        f"Audit summary: ok={ok_count} drift={drift_count} "
+        f"missing={missing_count} error={error_count} (of {len(targets)})"
     )
-    return 0 if success_count == len(targets) else 1
+    if error_count:
+        return 2
+    return 0 if (drift_count == 0 and missing_count == 0) else 1
 
 
 def cmd_rec_provision(args) -> int:

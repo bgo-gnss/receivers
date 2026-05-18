@@ -611,6 +611,14 @@ Examples:
   # Enable status_1hr logging session (pushes canonical SBF stream + LogSession)
   receivers rec-config THOB --enable-session status_1hr --dry-run
   receivers rec-config THOB --enable-session status_1hr
+
+  # Force re-push of session template (after editing canonical block list)
+  receivers rec-config THOB,ELDC --update-session status_1hr --dry-run
+  receivers rec-config THOB,ELDC --update-session status_1hr
+
+  # Audit drift between receiver state and canonical template
+  receivers rec-config THOB --audit-session status_1hr
+  receivers rec-config THOB,ELDC,OLKE --audit-session status_1hr
         """,
     )
 
@@ -641,6 +649,20 @@ Examples:
         metavar="SESSION",
         help="Enable a logging session on receiver (currently supports: status_1hr). "
         "Pre-checks each station and skips if already enabled.",
+    )
+    mode_group.add_argument(
+        "--update-session",
+        metavar="SESSION",
+        help="Force re-push of a session template, overwriting receiver state. "
+        "Use after editing the canonical template to propagate changes. "
+        "Currently supports: status_1hr.",
+    )
+    mode_group.add_argument(
+        "--audit-session",
+        metavar="SESSION",
+        help="Compare receiver session config to canonical template; report drift "
+        "(SBF block list, interval, retention, priority, file naming). "
+        "Exit code 0 only when all targets match the template.",
     )
 
     parser.add_argument(

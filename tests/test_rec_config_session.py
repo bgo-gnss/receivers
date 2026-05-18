@@ -18,6 +18,11 @@ from receivers.cli.main import (
     _load_session_template,
     parse_log_session_state,
 )
+from receivers.septentrio.session_state import (
+    SessionState,
+    diff_session_state,
+    parse_session_state,
+)
 
 
 # Authentic-shape getLogSession response. Slots LOG1 and LOG5 enabled,
@@ -181,3 +186,220 @@ def test_one_mode_required():
     p = _build_parser()
     with pytest.raises(SystemExit):
         p.parse_args(["rec-config", "THOB"])
+
+
+def test_update_session_flag_parses():
+    p = _build_parser()
+    ns = p.parse_args(["rec-config", "THOB", "--update-session", "status_1hr"])
+    assert ns.update_session == "status_1hr"
+
+
+def test_audit_session_flag_parses():
+    p = _build_parser()
+    ns = p.parse_args(["rec-config", "THOB", "--audit-session", "status_1hr"])
+    assert ns.audit_session == "status_1hr"
+
+
+def test_audit_and_update_mutually_exclusive():
+    p = _build_parser()
+    with pytest.raises(SystemExit):
+        p.parse_args(
+            [
+                "rec-config",
+                "THOB",
+                "--audit-session",
+                "status_1hr",
+                "--update-session",
+                "status_1hr",
+            ]
+        )
+
+
+# --- parse_session_state -------------------------------------------------
+
+
+# Authentic shape: a slice of `lstConfigFile, Current` covering one full
+# canonical status_1hr session on LOG5 fed by Stream7. Mirrors the output
+# format observed on real THOB.
+THOB_LIKE_CONFIG = """\
+setSBFOutput, Stream7, LOG5
+setSBFOutput, Stream7, , PVTGeodetic+PosCovGeodetic+ReceiverTime+SatVisibility+ChannelStatus+ReceiverStatus+ReceiverSetup+IPStatus+PosLocal+QualityInd+NTRIPClientStatus+WiFiAPStatus+DiskStatus+NTRIPServerStatus+PowerStatus+LogStatus+SystemInfo
+setSBFOutput, Stream7, , , sec60
+setLogSession, LOG5, Enabled
+setLogSession, LOG5, , , "status_1hr"
+setLogSession, LOG5, , , , After1Year
+setLogSession, LOG5, , , , , High
+setFileNaming, LOG5, IGS1H
+setFileNaming, LOG5, , , on
+""".splitlines()
+
+
+def test_parse_session_state_full_match():
+    """Canonical config parses into a complete SessionState."""
+    state = parse_session_state(THOB_LIKE_CONFIG, "status_1hr")
+    assert state is not None
+    assert state.log_slot == "LOG5"
+    assert state.stream_slot == "Stream7"
+    assert state.state == "Enabled"
+    assert state.interval == "sec60"
+    assert state.retention == "After1Year"
+    assert state.priority == "High"
+    assert state.file_naming_format == "IGS1H"
+    assert state.file_naming_enabled is True
+    assert "PVTGeodetic" in state.sbf_blocks
+    assert "SystemInfo" in state.sbf_blocks
+    assert len(state.sbf_blocks) == 17
+
+
+def test_parse_session_state_missing():
+    """No LOG slot with the target name → returns None."""
+    assert parse_session_state(THOB_LIKE_CONFIG, "geod_15m") is None
+
+
+def test_parse_session_state_single_quoted_name():
+    """Template uses single quotes; parser must accept them."""
+    config = THOB_LIKE_CONFIG[:]
+    config[4] = "setLogSession, LOG5, , , 'status_1hr'"
+    state = parse_session_state(config, "status_1hr")
+    assert state is not None
+    assert state.log_slot == "LOG5"
+
+
+def test_parse_session_state_finds_alternative_slot():
+    """status_1hr in LOG3/Stream4 (non-canonical slot) is still discovered."""
+    config = """\
+setSBFOutput, Stream4, LOG3
+setSBFOutput, Stream4, , PVTGeodetic+ReceiverStatus
+setSBFOutput, Stream4, , , sec60
+setLogSession, LOG3, Enabled
+setLogSession, LOG3, , , "status_1hr"
+""".splitlines()
+    state = parse_session_state(config, "status_1hr")
+    assert state is not None
+    assert state.log_slot == "LOG3"
+    assert state.stream_slot == "Stream4"
+
+
+def test_parse_session_state_template_round_trip():
+    """The shipped template must parse into the same SessionState as a real receiver."""
+    commands = _load_session_template("status_1hr")
+    state = parse_session_state(commands, "status_1hr")
+    assert state is not None
+    assert state.log_slot == "LOG5"
+    assert state.stream_slot == "Stream7"
+    assert state.state == "Enabled"
+    assert state.interval == "sec60"
+    assert state.retention == "After1Year"
+    assert state.priority == "High"
+    assert state.file_naming_format == "IGS1H"
+    assert state.file_naming_enabled is True
+    assert len(state.sbf_blocks) == 17
+
+
+# --- diff_session_state --------------------------------------------------
+
+
+def _template_state() -> SessionState:
+    return parse_session_state(_load_session_template("status_1hr"), "status_1hr")
+
+
+def test_diff_no_drift():
+    """Identical states produce no diff."""
+    state = _template_state()
+    assert diff_session_state(state, state) == []
+
+
+def test_diff_missing_sbf_block():
+    """Receiver missing a block from the template surfaces in diff."""
+    template = _template_state()
+    receiver = SessionState(
+        name=template.name,
+        log_slot=template.log_slot,
+        state=template.state,
+        stream_slot=template.stream_slot,
+        sbf_blocks=template.sbf_blocks - {"PowerStatus"},
+        interval=template.interval,
+        retention=template.retention,
+        priority=template.priority,
+        file_naming_format=template.file_naming_format,
+        file_naming_enabled=template.file_naming_enabled,
+    )
+    diffs = diff_session_state(receiver, template)
+    assert len(diffs) == 1
+    assert "sbf_blocks" in diffs[0]
+    assert "PowerStatus" in diffs[0]
+
+
+def test_diff_extra_sbf_block():
+    """Receiver with an unexpected block also flagged."""
+    template = _template_state()
+    receiver = SessionState(
+        name=template.name,
+        log_slot=template.log_slot,
+        state=template.state,
+        stream_slot=template.stream_slot,
+        sbf_blocks=template.sbf_blocks | {"Commands"},
+        interval=template.interval,
+        retention=template.retention,
+        priority=template.priority,
+        file_naming_format=template.file_naming_format,
+        file_naming_enabled=template.file_naming_enabled,
+    )
+    diffs = diff_session_state(receiver, template)
+    assert len(diffs) == 1
+    assert "Commands" in diffs[0]
+
+
+def test_diff_interval_drift():
+    template = _template_state()
+    receiver = SessionState(
+        name=template.name,
+        log_slot=template.log_slot,
+        state=template.state,
+        stream_slot=template.stream_slot,
+        sbf_blocks=template.sbf_blocks,
+        interval="sec30",  # wrong
+        retention=template.retention,
+        priority=template.priority,
+        file_naming_format=template.file_naming_format,
+        file_naming_enabled=template.file_naming_enabled,
+    )
+    diffs = diff_session_state(receiver, template)
+    assert any("interval" in d for d in diffs)
+
+
+def test_diff_state_disabled():
+    """Receiver has matching template but session is Disabled — should flag."""
+    template = _template_state()
+    receiver = SessionState(
+        name=template.name,
+        log_slot=template.log_slot,
+        state="Disabled",  # wrong
+        stream_slot=template.stream_slot,
+        sbf_blocks=template.sbf_blocks,
+        interval=template.interval,
+        retention=template.retention,
+        priority=template.priority,
+        file_naming_format=template.file_naming_format,
+        file_naming_enabled=template.file_naming_enabled,
+    )
+    diffs = diff_session_state(receiver, template)
+    assert any("state" in d for d in diffs)
+
+
+def test_diff_ignores_slot_identifier():
+    """Same content on different LOG/Stream slot → no drift (slot is informational)."""
+    template = _template_state()
+    receiver = SessionState(
+        name=template.name,
+        log_slot="LOG3",  # different
+        state=template.state,
+        stream_slot="Stream4",  # different
+        sbf_blocks=template.sbf_blocks,
+        interval=template.interval,
+        retention=template.retention,
+        priority=template.priority,
+        file_naming_format=template.file_naming_format,
+        file_naming_enabled=template.file_naming_enabled,
+    )
+    assert diff_session_state(receiver, template) == []
