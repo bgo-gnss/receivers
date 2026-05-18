@@ -13,6 +13,7 @@ Usage:
 
 import argparse
 import logging
+import re
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -2419,6 +2420,16 @@ def cmd_rec_config(args) -> int:
             args, targets, logger, tcp_username, tcp_password, rec_config_dir
         )
 
+    # Handle session check
+    if getattr(args, "check_session", None):
+        return _check_session(args, targets, logger, tcp_username, tcp_password)
+
+    # Handle session enable
+    if getattr(args, "enable_session", None):
+        return _enable_session(
+            args, targets, logger, tcp_username, tcp_password, rec_config_dir
+        )
+
     return 0
 
 
@@ -2666,6 +2677,251 @@ def _push_configs(
 
     print(f"\n{'=' * 50}")
     print(f"Successfully configured {success_count}/{len(targets)} receivers")
+    return 0 if success_count == len(targets) else 1
+
+
+# Sessions we know how to enable from the receivers package (canonical templates
+# shipped at src/receivers/data/sessions/<name>.txt).
+_ENABLABLE_SESSIONS = {"status_1hr"}
+
+
+def parse_log_session_state(response: str, session_name: str) -> str:
+    """Return enabled state of a named logging session in a getLogSession response.
+
+    Recognises the Septentrio `LogSession, LOGn, <State>, DSKn, "<name>", ...`
+    format (single or double quotes around name). Comparison is case-insensitive
+    on the session name.
+
+    Returns:
+        "enabled", "disabled", "unused", or "missing" (not present in any slot).
+    """
+    target = session_name.strip().lower()
+    state_for_target: Optional[str] = None
+    for raw in response.split("\n"):
+        line = raw.strip()
+        if "LogSession" not in line:
+            continue
+        if line.startswith("$R:") and "getLogSession" in line:
+            continue
+        name_match = re.search(r"""['"]([^'"]*)['"]""", line)
+        if not name_match:
+            continue
+        if name_match.group(1).strip().lower() != target:
+            continue
+        # Tokens are comma-separated: LogSession, LOGn, <State>, DSKn, "<name>", ...
+        tokens = [t.strip() for t in line.split(",")]
+        if len(tokens) >= 3:
+            state = tokens[2].lower()
+            if state in {"enabled", "disabled", "unused"}:
+                # Prefer Enabled if duplicated across slots (defensive).
+                if state == "enabled":
+                    return "enabled"
+                state_for_target = state
+    return state_for_target if state_for_target else "missing"
+
+
+def _check_session(args, targets, logger, tcp_username=None, tcp_password=None) -> int:
+    """Check whether a named logging session is enabled on each target."""
+    from ..septentrio.tcp_client import PolaRX5TCPClient
+
+    session_name = args.check_session.strip()
+    if not session_name:
+        logger.error("--check-session requires a session name (e.g. status_1hr)")
+        return 2
+
+    if args.dry_run:
+        for station_id, ip, port in targets:
+            print(f"{station_id}: [DRY RUN] would query getLogSession on {ip}:{port}")
+        return 0
+
+    fail_count = 0
+    error_count = 0
+    for station_id, ip, port in targets:
+        try:
+            client = PolaRX5TCPClient(
+                ip,
+                station_id,
+                port,
+                timeout=args.timeout,
+                username=tcp_username,
+                password=tcp_password,
+            )
+            if not client.connect():
+                print(f"{station_id}: ERROR connect-failed")
+                error_count += 1
+                continue
+            response = client.send_command("getLogSession", wait_time=0.5)
+            client.disconnect()
+        except Exception as e:
+            print(f"{station_id}: ERROR {e}")
+            error_count += 1
+            continue
+
+        state = parse_log_session_state(response, session_name)
+        print(f"{station_id}: {session_name}={state}")
+        if state != "enabled":
+            fail_count += 1
+
+    # Exit 0 only when every target is enabled. Otherwise non-zero so the
+    # invocation is usable in shell pipelines (`|| echo missing`).
+    if error_count:
+        return 2
+    return 0 if fail_count == 0 else 1
+
+
+def _load_session_template(session_name: str) -> List[str]:
+    """Load the canonical command list for a session from package data."""
+    from importlib import resources
+
+    try:
+        text = (
+            resources.files("receivers.data.sessions")
+            .joinpath(f"{session_name}.txt")
+            .read_text(encoding="utf-8")
+        )
+    except (FileNotFoundError, ModuleNotFoundError) as e:
+        raise FileNotFoundError(
+            f"No canonical template for session '{session_name}' "
+            f"(expected src/receivers/data/sessions/{session_name}.txt): {e}"
+        ) from e
+
+    commands: List[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        commands.append(stripped)
+    return commands
+
+
+def _enable_session(
+    args, targets, logger, tcp_username=None, tcp_password=None, rec_config_dir=None
+) -> int:
+    """Enable a logging session on each target by pushing canonical template."""
+    import datetime
+    from pathlib import Path
+
+    from ..septentrio.tcp_client import PolaRX5TCPClient
+
+    session_name = args.enable_session.strip()
+    if session_name not in _ENABLABLE_SESSIONS:
+        logger.error(
+            f"--enable-session does not support '{session_name}'. "
+            f"Supported: {sorted(_ENABLABLE_SESSIONS)}"
+        )
+        return 2
+
+    try:
+        commands = _load_session_template(session_name)
+    except FileNotFoundError as e:
+        logger.error(str(e))
+        return 2
+
+    logger.info(
+        f"Loaded {len(commands)} commands from canonical {session_name} template"
+    )
+
+    # Resolve archive directory (mirrors _push_configs behaviour).
+    archive_dir: Optional[Path] = None
+    if rec_config_dir:
+        archive_dir = Path(rec_config_dir).expanduser().resolve()
+        if not archive_dir.exists():
+            logger.warning(
+                f"rec_config_dir not found: {archive_dir} — skipping auto-archive"
+            )
+            archive_dir = None
+
+    if args.dry_run:
+        print("\n--- DRY RUN - Commands that would be sent ---")
+        for cmd in commands:
+            print(f"  {cmd}")
+        print("--- End of commands ---")
+        print(
+            "Will pre-check getLogSession and skip targets where "
+            f"{session_name} is already enabled.\n"
+        )
+        for station_id, ip, port in targets:
+            print(f"  [DRY RUN] {station_id} ({ip}:{port})")
+        return 0
+
+    success_count = 0
+    skip_count = 0
+    for station_id, ip, port in targets:
+        print(f"\n{'=' * 50}")
+        print(f"Enabling {session_name} on {station_id} ({ip}:{port})")
+        print(f"{'=' * 50}")
+
+        try:
+            client = PolaRX5TCPClient(
+                ip,
+                station_id,
+                port,
+                timeout=args.timeout,
+                username=tcp_username,
+                password=tcp_password,
+            )
+            if not client.connect():
+                print("  ✗ Connect failed")
+                continue
+
+            # Pre-check: skip if already enabled (idempotent bulk runs).
+            response = client.send_command("getLogSession", wait_time=0.5)
+            state = parse_log_session_state(response, session_name)
+            if state == "enabled":
+                print(f"  ↷ {session_name} already enabled — skipping")
+                client.disconnect()
+                skip_count += 1
+                success_count += 1
+                continue
+
+            print(f"  Current state: {session_name}={state}; pushing template")
+            success, errors = client.push_config(
+                commands, save_to_boot=not args.no_save
+            )
+
+            serial = None
+            if success and archive_dir:
+                try:
+                    sbf = client.request_sbf_block("ReceiverSetup", 5902)
+                    if sbf and len(sbf) >= 176:
+                        raw = sbf[156:176]
+                        serial = (
+                            raw.split(b"\x00")[0]
+                            .decode("ascii", errors="ignore")
+                            .strip()
+                            or None
+                        )
+                except Exception:
+                    pass
+
+            client.disconnect()
+
+            if success:
+                print("  ✓ Session enabled")
+                if not args.no_save:
+                    print("  ✓ Saved to Boot config")
+                success_count += 1
+                if archive_dir:
+                    date_str = datetime.date.today().strftime("%Y%m%d")
+                    serial_part = serial or "UNKNOWN"
+                    dest = (
+                        archive_dir
+                        / f"{station_id}_{serial_part}_AddSession_{session_name}_{date_str}.txt"
+                    )
+                    dest.write_text("\n".join(commands) + "\n")
+                    print(f"  ✓ Pushed template archived → {dest.name}")
+            else:
+                print("  ✗ Errors occurred:")
+                for err in errors:
+                    print(f"    - {err}")
+        except Exception as e:
+            logger.error(f"  Error enabling on {station_id}: {e}")
+
+    print(f"\n{'=' * 50}")
+    print(
+        f"Successfully enabled {session_name} on {success_count}/{len(targets)} "
+        f"receivers ({skip_count} already enabled)"
+    )
     return 0 if success_count == len(targets) else 1
 
 

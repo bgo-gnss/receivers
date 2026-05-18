@@ -1,0 +1,9 @@
+setSBFOutput, Stream7, LOG5
+setSBFOutput, Stream7, , PVTGeodetic+PosCovGeodetic+ReceiverTime+SatVisibility+ChannelStatus+ReceiverStatus+ReceiverSetup+IPStatus+PosLocal+QualityInd+NTRIPClientStatus+WiFiAPStatus+DiskStatus+NTRIPServerStatus+PowerStatus+LogStatus+SystemInfo
+setSBFOutput, Stream7, , , sec60
+setLogSession, LOG5, Enabled
+setLogSession, LOG5, , , 'status_1hr'
+setLogSession, LOG5, , , , After1Year
+setLogSession, LOG5, , , , , High
+setFileNaming, LOG5, IGS1H
+setFileNaming, LOG5, , , on

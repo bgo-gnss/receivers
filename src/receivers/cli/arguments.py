@@ -603,6 +603,14 @@ Examples:
 
   # Compare configs
   receivers rec-config THOB --extract --diff-with ~/configs/old_config.txt
+
+  # Check whether a logging session is enabled
+  receivers rec-config THOB --check-session status_1hr
+  receivers rec-config THOB,ISFS,ELDC --check-session status_1hr
+
+  # Enable status_1hr logging session (pushes canonical SBF stream + LogSession)
+  receivers rec-config THOB --enable-session status_1hr --dry-run
+  receivers rec-config THOB --enable-session status_1hr
         """,
     )
 
@@ -621,6 +629,18 @@ Examples:
     )
     mode_group.add_argument(
         "--push", metavar="CONFIG_FILE", help="Push configuration file to receiver"
+    )
+    mode_group.add_argument(
+        "--check-session",
+        metavar="SESSION",
+        help="Check whether a logging session is enabled (e.g. status_1hr). "
+        "Exit code 0 if enabled on all targets, non-zero otherwise.",
+    )
+    mode_group.add_argument(
+        "--enable-session",
+        metavar="SESSION",
+        help="Enable a logging session on receiver (currently supports: status_1hr). "
+        "Pre-checks each station and skips if already enabled.",
     )
 
     parser.add_argument(
