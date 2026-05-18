@@ -2102,7 +2102,13 @@ class PolaRX5(BaseReceiver):
             # Shared state for watchdog thread
             import threading
 
-            bytes_received = [0]  # Mutable container for thread communication
+            # Initialise at `offset` so the value reflects the absolute byte
+            # position in the file (matching how the watchdog compares to
+            # `offset`). Tracked independently of pbar.n — pbar.update() is a
+            # no-op when tqdm has disable=True (which is the case in the
+            # scheduler context, stderr is not a TTY), so pbar.n never advances
+            # past `initial=offset` there.
+            bytes_received = [offset]  # Mutable container for thread communication
             download_done = threading.Event()
             watchdog_killed = [False]
             data_socket = [None]  # Store data socket so watchdog can close it
@@ -2166,16 +2172,16 @@ class PolaRX5(BaseReceiver):
                             elapsed += check_interval
 
                             # Only kill if stuck at initial offset (0% progress).
-                            # Use BOTH the in-loop counter (pbar.n) AND on-disk
-                            # file size: bursts of bytes may flush to disk via
-                            # f.write before pbar.update reflects them on the
-                            # watchdog poll, and on-disk size is the ground
-                            # truth of useful work done (AUST 2026-05-17 TTFB:
-                            # local file grew ~140 KB/attempt while pbar.n
-                            # stayed at offset, root cause not yet nailed).
+                            # bytes_received is now an independent counter
+                            # (advances per chunk in the recv loop regardless
+                            # of pbar disabled state), and on_disk is a
+                            # belt-and-suspenders check via os.path.getsize
+                            # which works for both str and Path (callers
+                            # convert local_file to str before passing — see
+                            # _download_with_immediate_retry call site).
                             on_disk = offset
                             try:
-                                on_disk = local_file.stat().st_size
+                                on_disk = os.path.getsize(local_file)
                             except Exception:
                                 pass
                             if (
@@ -2245,23 +2251,28 @@ class PolaRX5(BaseReceiver):
                                 if not chunk:
                                     break
 
-                                # Write chunk and update progress
+                                # Write chunk and update progress.
+                                # pbar.update is a no-op when tqdm.disable=True
+                                # (scheduler context has no TTY), so do not
+                                # source bytes_received from pbar.n — track
+                                # independently.
                                 f.write(chunk)
                                 pbar.update(len(chunk))
-                                bytes_received[0] = pbar.n
+                                bytes_received[0] += len(chunk)
 
                                 # Diagnostic: log the FIRST chunk per attempt so
-                                # we can prove whether recv is delivering bytes
-                                # during the watchdog window vs only on close.
+                                # we can confirm the recv path is delivering
+                                # bytes during the watchdog window.
                                 if not _first_chunk_logged:
                                     try:
-                                        _disk_now = local_file.stat().st_size
+                                        _disk_now = os.path.getsize(local_file)
                                     except Exception:
                                         _disk_now = -1
                                     self.logger.info(
                                         f"📥 First chunk: {len(chunk)} bytes "
-                                        f"(pbar.n={pbar.n}, on_disk={_disk_now}, "
-                                        f"offset={offset}, elapsed={time.time()-start_time:.1f}s)"
+                                        f"(bytes_received={bytes_received[0]}, "
+                                        f"on_disk={_disk_now}, offset={offset}, "
+                                        f"elapsed={time.time()-start_time:.1f}s)"
                                     )
                                     _first_chunk_logged = True
 
