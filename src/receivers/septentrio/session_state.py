@@ -35,9 +35,10 @@ class SessionState:
     name: str
     log_slot: str  # e.g. "LOG5"
     state: str  # Enabled / Disabled / Unused
-    stream_slot: Optional[str] = None  # e.g. "Stream7"
+    stream_slot: Optional[str] = None  # primary stream feeding the log
     sbf_blocks: frozenset = field(default_factory=frozenset)
     interval: Optional[str] = None  # e.g. "sec60"
+    extra_stream_slots: tuple = ()  # legacy/alternate bindings to the same log
     retention: Optional[str] = None  # e.g. "After1Year"
     priority: Optional[str] = None  # e.g. "High"
     file_naming_format: Optional[str] = None  # e.g. "IGS1H"
@@ -140,12 +141,26 @@ def parse_session_state(
     if matched_slot is None:
         return None
 
-    # Find stream feeding the matched LOG slot.
+    # Find ALL streams feeding the matched LOG slot. Some stations carry a
+    # legacy binding (e.g. Stream2 → LOG5) alongside our canonical push
+    # (Stream7 → LOG5). Prefer the stream with the most non-empty SBF
+    # blocks — that's the one actually producing data into the log.
+    candidate_streams = [
+        s for s, tgt in stream_target.items() if tgt == matched_slot
+    ]
+    extra_streams: List[str] = []
     matched_stream: Optional[str] = None
-    for stream, tgt in stream_target.items():
-        if tgt == matched_slot:
-            matched_stream = stream
-            break
+    if candidate_streams:
+        # Sort: most blocks first, then prefer canonical Stream7, then alpha.
+        candidate_streams.sort(
+            key=lambda s: (
+                -len(stream_blocks.get(s, frozenset())),
+                0 if s == "Stream7" else 1,
+                s,
+            )
+        )
+        matched_stream = candidate_streams[0]
+        extra_streams = candidate_streams[1:]
 
     return SessionState(
         name=log_name[matched_slot],
@@ -156,6 +171,7 @@ def parse_session_state(
         if matched_stream
         else frozenset(),
         interval=stream_interval.get(matched_stream) if matched_stream else None,
+        extra_stream_slots=tuple(extra_streams),
         retention=log_retention.get(matched_slot),
         priority=log_priority.get(matched_slot),
         file_naming_format=log_filename_format.get(matched_slot),
@@ -220,6 +236,14 @@ def diff_session_state(
         diffs.append(
             f"file_naming_enabled: receiver={receiver.file_naming_enabled} "
             f"template={template.file_naming_enabled}"
+        )
+
+    # Surface leftover bindings — separate Streams pointing at the same LOG
+    # are usually legacy cruft, not active data flows, but worth flagging.
+    if receiver.extra_stream_slots:
+        diffs.append(
+            f"extra_stream_bindings: {list(receiver.extra_stream_slots)} also "
+            f"target {receiver.log_slot} (only {receiver.stream_slot} is in use)"
         )
 
     return diffs

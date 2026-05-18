@@ -403,3 +403,71 @@ def test_diff_ignores_slot_identifier():
         file_naming_enabled=template.file_naming_enabled,
     )
     assert diff_session_state(receiver, template) == []
+
+
+# --- multi-stream binding (FAGC-style legacy cruft) ----------------------
+
+
+# Mimics FAGC: Stream2 → LOG5 (legacy, no blocks, sec1) + Stream7 → LOG5
+# (our push, 17 blocks, sec60). Parser should prefer Stream7.
+FAGC_LIKE_CONFIG = """\
+setSBFOutput, Stream2, LOG5
+setSBFOutput, Stream7, LOG5
+setSBFOutput, Stream2, , , sec1
+setSBFOutput, Stream7, , PVTGeodetic+PosCovGeodetic+ReceiverTime+SatVisibility+ChannelStatus+ReceiverStatus+ReceiverSetup+IPStatus+PosLocal+QualityInd+NTRIPClientStatus+WiFiAPStatus+DiskStatus+NTRIPServerStatus+PowerStatus+LogStatus+SystemInfo
+setSBFOutput, Stream7, , , sec60
+setLogSession, LOG5, Enabled
+setLogSession, LOG5, , , "status_1hr"
+setLogSession, LOG5, , , , After1Year
+setLogSession, LOG5, , , , , High
+setFileNaming, LOG5, IGS1H
+setFileNaming, LOG5, , , on
+""".splitlines()
+
+
+def test_parse_prefers_stream_with_more_blocks():
+    """When multiple streams target the same LOG, pick the one with blocks."""
+    state = parse_session_state(FAGC_LIKE_CONFIG, "status_1hr")
+    assert state is not None
+    assert state.stream_slot == "Stream7"
+    assert len(state.sbf_blocks) == 17
+    assert state.interval == "sec60"
+    assert state.extra_stream_slots == ("Stream2",)
+
+
+def test_diff_flags_extra_bindings():
+    """Legacy multi-binding shows up as a drift entry."""
+    template = _template_state()
+    receiver = parse_session_state(FAGC_LIKE_CONFIG, "status_1hr")
+    assert receiver is not None
+    diffs = diff_session_state(receiver, template)
+    assert len(diffs) == 1
+    assert "extra_stream_bindings" in diffs[0]
+    assert "Stream2" in diffs[0]
+
+
+# Mimics OLKE post-push: Stream7 → LOG5 bound, interval sec60, but the
+# `setSBFOutput, Stream7, , <blocks>` line was silently rejected so blocks
+# are empty. LOG5 will produce no data.
+OLKE_LIKE_CONFIG = """\
+setSBFOutput, Stream7, LOG5
+setSBFOutput, Stream7, , , sec60
+setLogSession, LOG5, Enabled
+setLogSession, LOG5, , , "status_1hr"
+setLogSession, LOG5, , , , After1Year
+setLogSession, LOG5, , , , , High
+setFileNaming, LOG5, IGS1H
+setFileNaming, LOG5, , , on
+""".splitlines()
+
+
+def test_diff_catches_missing_blocks_partial_push():
+    """OLKE-style partial push (interval set, blocks empty) → DRIFT on blocks."""
+    template = _template_state()
+    receiver = parse_session_state(OLKE_LIKE_CONFIG, "status_1hr")
+    assert receiver is not None
+    assert receiver.stream_slot == "Stream7"
+    assert len(receiver.sbf_blocks) == 0
+    diffs = diff_session_state(receiver, template)
+    assert any("sbf_blocks" in d for d in diffs)
+    assert any("missing" in d for d in diffs if "sbf_blocks" in d)
