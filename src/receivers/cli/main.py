@@ -3022,7 +3022,9 @@ def _audit_session(args, targets, logger, tcp_username=None, tcp_password=None) 
 
     if args.dry_run:
         for station_id, ip, port in targets:
-            print(f"{station_id}: [DRY RUN] would extract Current config from {ip}:{port}")
+            print(
+                f"{station_id}: [DRY RUN] would extract Current config from {ip}:{port}"
+            )
         return 0
 
     drift_count = 0

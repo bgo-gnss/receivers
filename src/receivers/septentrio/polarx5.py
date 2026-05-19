@@ -2272,7 +2272,7 @@ class PolaRX5(BaseReceiver):
                                         f"📥 First chunk: {len(chunk)} bytes "
                                         f"(bytes_received={bytes_received[0]}, "
                                         f"on_disk={_disk_now}, offset={offset}, "
-                                        f"elapsed={time.time()-start_time:.1f}s)"
+                                        f"elapsed={time.time() - start_time:.1f}s)"
                                     )
                                     _first_chunk_logged = True
 
