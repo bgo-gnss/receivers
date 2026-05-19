@@ -111,9 +111,7 @@ def parse_session_state(
             if len(fields) > 2 and fields[2]:
                 stream_target[stream] = fields[2]
             if len(fields) > 3 and fields[3]:
-                blocks = frozenset(
-                    b.strip() for b in fields[3].split("+") if b.strip()
-                )
+                blocks = frozenset(b.strip() for b in fields[3].split("+") if b.strip())
                 stream_blocks[stream] = blocks
             if len(fields) > 4 and fields[4]:
                 stream_interval[stream] = fields[4]
@@ -145,9 +143,7 @@ def parse_session_state(
     # legacy binding (e.g. Stream2 → LOG5) alongside our canonical push
     # (Stream7 → LOG5). Prefer the stream with the most non-empty SBF
     # blocks — that's the one actually producing data into the log.
-    candidate_streams = [
-        s for s, tgt in stream_target.items() if tgt == matched_slot
-    ]
+    candidate_streams = [s for s, tgt in stream_target.items() if tgt == matched_slot]
     extra_streams: List[str] = []
     matched_stream: Optional[str] = None
     if candidate_streams:
@@ -179,9 +175,7 @@ def parse_session_state(
     )
 
 
-def diff_session_state(
-    receiver: SessionState, template: SessionState
-) -> List[str]:
+def diff_session_state(receiver: SessionState, template: SessionState) -> List[str]:
     """Compare receiver state to template; return list of drift descriptions.
 
     Slot identifiers (which LOG / which Stream) are NOT compared — a station
@@ -192,9 +186,7 @@ def diff_session_state(
     diffs: List[str] = []
 
     if receiver.state.lower() != template.state.lower():
-        diffs.append(
-            f"state: receiver={receiver.state!r} template={template.state!r}"
-        )
+        diffs.append(f"state: receiver={receiver.state!r} template={template.state!r}")
 
     if receiver.sbf_blocks != template.sbf_blocks:
         missing = template.sbf_blocks - receiver.sbf_blocks
@@ -222,8 +214,7 @@ def diff_session_state(
 
     if (receiver.priority or "") != (template.priority or ""):
         diffs.append(
-            f"priority: receiver={receiver.priority!r} "
-            f"template={template.priority!r}"
+            f"priority: receiver={receiver.priority!r} template={template.priority!r}"
         )
 
     if (receiver.file_naming_format or "") != (template.file_naming_format or ""):

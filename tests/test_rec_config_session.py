@@ -24,7 +24,6 @@ from receivers.septentrio.session_state import (
     parse_session_state,
 )
 
-
 # Authentic-shape getLogSession response. Slots LOG1 and LOG5 enabled,
 # LOG4 disabled, LOG6 unused (empty name).
 ENABLED_RESPONSE = """
@@ -124,6 +123,18 @@ def test_load_status_1hr_template():
     assert "setFileNaming, LOG5" in joined
 
 
+def test_load_15s_24hr_template():
+    """15s_24hr template ships with the package and must be loadable."""
+    commands = _load_session_template("15s_24hr")
+    assert len(commands) >= 5
+    joined = "\n".join(commands)
+    assert "setSBFOutput, Stream1, LOG1" in joined
+    assert "setLogSession, LOG1, Enabled" in joined
+    assert "'15s_24hr'" in joined
+    assert "setFileNaming, LOG1, IGS24H" in joined
+    assert "sec15" in joined
+
+
 def test_load_unknown_session_template():
     with pytest.raises(FileNotFoundError):
         _load_session_template("does_not_exist")
@@ -131,6 +142,12 @@ def test_load_unknown_session_template():
 
 def test_status_1hr_is_enablable():
     assert "status_1hr" in _ENABLABLE_SESSIONS
+
+
+def test_15s_24hr_not_yet_enablable():
+    """15s_24hr ships as audit-only; --enable/update-session blocked until
+    fleet review confirms the canonical block layout (MeasEpoch vs Meas3)."""
+    assert "15s_24hr" not in _ENABLABLE_SESSIONS
 
 
 # --- Argument parser wiring ----------------------------------------------
