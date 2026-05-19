@@ -24,7 +24,6 @@ from receivers.septentrio.session_state import (
     parse_session_state,
 )
 
-
 # Authentic-shape getLogSession response. Slots LOG1 and LOG5 enabled,
 # LOG4 disabled, LOG6 unused (empty name).
 ENABLED_RESPONSE = """
