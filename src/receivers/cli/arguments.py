@@ -647,7 +647,8 @@ Examples:
     mode_group.add_argument(
         "--enable-session",
         metavar="SESSION",
-        help="Enable a logging session on receiver (currently supports: status_1hr). "
+        help="Enable a logging session on receiver "
+        "(currently supports: status_1hr, 15s_24hr). "
         "Pre-checks each station and skips if already enabled.",
     )
     mode_group.add_argument(
@@ -655,7 +656,7 @@ Examples:
         metavar="SESSION",
         help="Force re-push of a session template, overwriting receiver state. "
         "Use after editing the canonical template to propagate changes. "
-        "Currently supports: status_1hr.",
+        "Currently supports: status_1hr, 15s_24hr.",
     )
     mode_group.add_argument(
         "--audit-session",

@@ -2706,7 +2706,7 @@ def _push_configs(
 
 # Sessions we know how to enable from the receivers package (canonical templates
 # shipped at src/receivers/data/sessions/<name>.txt).
-_ENABLABLE_SESSIONS = {"status_1hr"}
+_ENABLABLE_SESSIONS = {"status_1hr", "15s_24hr"}
 
 
 def parse_log_session_state(response: str, session_name: str) -> str:

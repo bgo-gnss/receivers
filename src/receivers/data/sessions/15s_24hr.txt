@@ -1,5 +1,5 @@
 setSBFOutput, Stream1, LOG1
-setSBFOutput, Stream1, , MeasEpoch+GPSNav+GPSIon+GPSUtc+GLONav+PVTGeodetic+ReceiverSetup
+setSBFOutput, Stream1, , Meas3Ranges+Meas3CN0HiRes+Meas3Doppler+Meas3PP+Meas3MP+GPSNav+GPSIon+GPSUtc+GLONav+PVTGeodetic+ReceiverSetup
 setSBFOutput, Stream1, , , sec15
 setLogSession, LOG1, Enabled
 setLogSession, LOG1, , , '15s_24hr'

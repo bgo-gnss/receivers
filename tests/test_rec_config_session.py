@@ -133,6 +133,11 @@ def test_load_15s_24hr_template():
     assert "'15s_24hr'" in joined
     assert "setFileNaming, LOG1, IGS24H" in joined
     assert "sec15" in joined
+    # Canonical block layout uses Meas3 (verified equivalent to MeasEpoch
+    # via sbf2rin v16.2.0 empirical test 2026-05-19 — 32% smaller SBF, no
+    # observable loss).
+    assert "Meas3Ranges" in joined
+    assert "MeasEpoch" not in joined
 
 
 def test_load_unknown_session_template():
@@ -144,10 +149,10 @@ def test_status_1hr_is_enablable():
     assert "status_1hr" in _ENABLABLE_SESSIONS
 
 
-def test_15s_24hr_not_yet_enablable():
-    """15s_24hr ships as audit-only; --enable/update-session blocked until
-    fleet review confirms the canonical block layout (MeasEpoch vs Meas3)."""
-    assert "15s_24hr" not in _ENABLABLE_SESSIONS
+def test_15s_24hr_is_enablable():
+    """15s_24hr enabled for --enable/update-session after the canonical
+    block layout choice was made (Meas3-modernized, 2026-05-19)."""
+    assert "15s_24hr" in _ENABLABLE_SESSIONS
 
 
 # --- Argument parser wiring ----------------------------------------------
