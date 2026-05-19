@@ -1,0 +1,18 @@
+# Extended signal-tracking profile for PolaRx5.
+#
+# Signals: Standard + Galileo (E1BC/E6BC/E5a/E5b/E5) + BeiDou (B1I/B2I/B3I/B1C/B2a/B2b)
+# Total: 22 signals across GPS + GLONASS + Galileo + BeiDou.
+#
+# This is the canonical profile for IGS-quality / multi-constellation sites
+# (e.g. FAGC, VMEY). NavIC L5 is intentionally omitted — NavIC satellites
+# are not visible from Icelandic latitudes (regional system over Indian
+# Ocean), so configuring tracking for it is cosmetic and produces no
+# observations.
+#
+# Apply via:  receivers rec-config <SIDS> --push tracking_profiles/extended.txt
+#
+# Firmware note: receivers on fw ≤5.5 may already use `GALL1BC` instead of
+# `GALE1BC` for the Galileo L1B/C signal — this is a Septentrio syntax
+# rename in fw 5.6+, NOT a different signal. If push to a fw 5.5 receiver
+# is rejected on this token, upgrade firmware to ≥5.6.
+setSignalTracking, GPSL1CA+GPSL1PY+GPSL2PY+GPSL2C+GPSL5+GPSL1C+GLOL1CA+GLOL1P+GLOL2P+GLOL2CA+GLOL3+GALE1BC+GALE6BC+GALE5a+GALE5b+GALE5+BDSB1I+BDSB2I+BDSB3I+BDSB1C+BDSB2a+BDSB2b
