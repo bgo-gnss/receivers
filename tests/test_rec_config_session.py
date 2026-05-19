@@ -155,6 +155,85 @@ def test_15s_24hr_is_enablable():
     assert "15s_24hr" in _ENABLABLE_SESSIONS
 
 
+# --- tracking_profiles/ data files ---------------------------------------
+
+
+def _read_tracking_profile(name: str) -> str:
+    """Return the setSignalTracking line from a tracking_profiles/<name>.txt template."""
+    from importlib import resources
+
+    text = (
+        resources.files("receivers.data.tracking_profiles")
+        .joinpath(f"{name}.txt")
+        .read_text(encoding="utf-8")
+    )
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("setSignalTracking"):
+            return stripped
+    raise AssertionError(f"No setSignalTracking line in tracking_profiles/{name}.txt")
+
+
+def _tracking_signals(name: str) -> frozenset:
+    line = _read_tracking_profile(name)
+    sigs = line.split(",", 1)[1].strip()
+    return frozenset(s.strip() for s in sigs.split("+") if s.strip())
+
+
+def test_tracking_profile_standard_signals():
+    """Standard = GPS L1CA/L1PY/L2PY/L2C/L5/L1C + GLONASS L1CA/L1P/L2P/L2CA/L3."""
+    signals = _tracking_signals("standard")
+    expected = frozenset(
+        {
+            "GPSL1CA",
+            "GPSL1PY",
+            "GPSL2PY",
+            "GPSL2C",
+            "GPSL5",
+            "GPSL1C",
+            "GLOL1CA",
+            "GLOL1P",
+            "GLOL2P",
+            "GLOL2CA",
+            "GLOL3",
+        }
+    )
+    assert signals == expected
+    assert len(signals) == 11
+
+
+def test_tracking_profile_extended_includes_standard():
+    """Extended is a strict superset of Standard."""
+    standard = _tracking_signals("standard")
+    extended = _tracking_signals("extended")
+    assert standard.issubset(extended)
+
+
+def test_tracking_profile_extended_has_galileo_and_beidou():
+    extended = _tracking_signals("extended")
+    galileo = {"GALE1BC", "GALE6BC", "GALE5a", "GALE5b", "GALE5"}
+    beidou = {"BDSB1I", "BDSB2I", "BDSB3I", "BDSB1C", "BDSB2a", "BDSB2b"}
+    assert galileo.issubset(extended)
+    assert beidou.issubset(extended)
+    assert len(extended) == 22
+
+
+def test_tracking_profile_extended_excludes_navic():
+    """NavIC is regional (Indian Ocean) — invisible from Icelandic latitudes.
+    Configuring tracking for it is cosmetic; the canonical Extended drops it."""
+    extended = _tracking_signals("extended")
+    assert "NAVICL5" not in extended
+
+
+def test_tracking_profile_extended_excludes_qzss_and_sbas():
+    """QZSS is Japanese, SBAS GEOL1/L5 are SBAS-specific — not part of the
+    canonical Extended tier (only ISAK currently tracks them, that's a
+    deliberate per-station outlier)."""
+    extended = _tracking_signals("extended")
+    qzss_or_sbas = {"QZSL1CA", "QZSL2C", "QZSL5", "QZSL1C", "GEOL1", "GEOL5"}
+    assert not (qzss_or_sbas & extended)
+
+
 # --- Argument parser wiring ----------------------------------------------
 
 

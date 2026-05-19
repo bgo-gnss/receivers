@@ -1,0 +1,14 @@
+# Standard signal-tracking profile for PolaRx5.
+#
+# Signals: GPS L1CA/L1PY/L2PY/L2C/L5/L1C + GLONASS L1CA/L1P/L2P/L2CA/L3 (11 signals)
+#
+# This is the canonical profile for the majority of stations in the fleet
+# (continuous-monitoring sites that only need dual-constellation GPS+GLO).
+# Includes the modern GPSL1C civilian signal (carried by Block IIF/III GPS
+# satellites) — empirically present at ELEY/ISFS and worth standardizing on
+# fleet-wide.
+#
+# Apply via:  receivers rec-config <SIDS> --push tracking_profiles/standard.txt
+# (the receivers package ships this file as data; resolve full path via
+#  `python -c "from importlib.resources import files; print(files('receivers.data.tracking_profiles')/'standard.txt')"`)
+setSignalTracking, GPSL1CA+GPSL1PY+GPSL2PY+GPSL2C+GPSL5+GPSL1C+GLOL1CA+GLOL1P+GLOL2P+GLOL2CA+GLOL3
