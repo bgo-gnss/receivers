@@ -153,6 +153,83 @@ def push_field_to_tos(
     )
 
 
+def push_field_transition_to_tos(
+    writer: TOSWriter,
+    spec: FieldSpec,
+    new_value: str,
+    old_value: str,
+    tos_data: Dict[str, Any],
+    transition_date: str,
+) -> DryRunResult | Any:
+    """Push a value *change* to TOS via Pattern 2 — close old period, open new.
+
+    Unlike :func:`push_field_to_tos` (which uses ``upsert_attribute_value`` — Pattern 1, history-destructive),
+    this function uses :meth:`TOSWriter.transition_attribute_value` to close the
+    currently-open period on ``transition_date`` and open a new one with ``new_value``.
+    The historical record is preserved.
+
+    Args:
+        writer: Authenticated :class:`TOSWriter` instance.
+        spec: The field specification — must have ``tos_writable == True``.
+        new_value: The new value to write (receiver-reported).
+        old_value: The current TOS value (the one being replaced). Used only
+            for logging — ``transition_attribute_value`` resolves the open
+            period internally.
+        tos_data: Processed station dict containing ``id_entity``.
+        transition_date: ISO-8601 date marking the close of the old period
+            and the start of the new one.
+
+    Returns:
+        ``{"closed": ..., "opened": ...}`` from
+        :meth:`TOSWriter.transition_attribute_value`, or :class:`DryRunResult`.
+
+    Raises:
+        ValueError: If ``spec`` is not TOS-writable or ``tos_data`` has no ``id_entity``.
+        RuntimeError: If the target entity ID cannot be resolved.
+    """
+    if not spec.tos_writable:
+        raise ValueError(
+            f"push_field_transition_to_tos: {spec.cfg_key!r} has no tos_attribute_code — not writable"
+        )
+    attribute_code: str = spec.tos_attribute_code  # type: ignore[assignment]
+    target_entity_type: str = spec.tos_target_entity  # type: ignore[assignment]
+
+    station_entity_id = tos_data.get("id_entity")
+    if station_entity_id is None:
+        raise ValueError(
+            "push_field_transition_to_tos: tos_data has no 'id_entity'"
+        )
+
+    target_entity_id = resolve_entity_id(writer, station_entity_id, target_entity_type)
+    if target_entity_id is None:
+        raise RuntimeError(
+            f"push_field_transition_to_tos: could not resolve entity ID for "
+            f"{target_entity_type!r} on station entity {station_entity_id}"
+        )
+
+    tos_value = spec.tos_format(new_value)
+    if tos_value is None:
+        raise ValueError(
+            f"push_field_transition_to_tos: tos_format returned None for {spec.cfg_key!r}={new_value!r}"
+        )
+
+    logger.info(
+        "push_field_transition_to_tos: %s transition %r → %r on %s (entity=%d)",
+        spec.cfg_key,
+        old_value,
+        tos_value,
+        transition_date,
+        target_entity_id,
+    )
+
+    return writer.transition_attribute_value(
+        id_entity=target_entity_id,
+        code=attribute_code,
+        new_value=tos_value,
+        transition_date=transition_date,
+    )
+
+
 def push_component_to_tos(
     writer: TOSWriter,
     entity: str,
