@@ -234,8 +234,9 @@ def test_push_station_name_uses_station_entity_directly():
 
 def test_push_transition_calls_transition_attribute_value():
     """Pattern 2: close old period + open new one."""
-    from receivers.cfg.tos_push import push_field_transition_to_tos
     from tostools.api.tos_writer import DryRunResult
+
+    from receivers.cfg.tos_push import push_field_transition_to_tos
 
     spec = _spec_for("receiver_firmware_version")
     history = {"children_connections": [{"time_to": None, "id_entity_child": 200}]}
