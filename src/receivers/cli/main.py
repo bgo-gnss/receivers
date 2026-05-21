@@ -3323,10 +3323,26 @@ def cmd_rec_provision(args) -> int:
                     )
                     bootstrapped = True
                 else:
-                    print(f"  ✗ Authentication failed: {resp[:120]!r}")
-                    print("    Check credentials in receivers.cfg [polarx5]")
-                    sock.close()
-                    continue
+                    # Last resort: fw 5.6.0 with no user accounts returns
+                    # "$R? LogIn: Wrong username or password!" for both 2-
+                    # and 4-arg login forms, but the receiver still accepts
+                    # unauthenticated commands. Probe with a benign read-only
+                    # call; if it works, bootstrap normally.
+                    probe = _send(sock, "getReceiverCapabilities")
+                    if "$R:" in probe or "$R!" in probe:
+                        print(
+                            f"  ✓ Connected (no user accounts — bootstrapping {tcp_username})"
+                        )
+                        _send(
+                            sock,
+                            f"sual, User1, {tcp_username}, {tcp_password}, User",
+                        )
+                        bootstrapped = True
+                    else:
+                        print(f"  ✗ Authentication failed: {resp[:120]!r}")
+                        print("    Check credentials in receivers.cfg [polarx5]")
+                        sock.close()
+                        continue
 
             # Extract connection ID from prompt (e.g. "IP10>") for SBF requests
             for line in reversed(resp.splitlines()):
@@ -3367,9 +3383,16 @@ def cmd_rec_provision(args) -> int:
                     )
                 else:
                     print(f"  ⚠  setIPSettings: {resp[:80]!r}")
-                time.sleep(
-                    1.5
-                )  # receiver briefly suspends I/O while applying IP change
+                # Receiver suspends I/O while applying IP/DNS change. The
+                # window has been observed >2s on fw 5.7.0; a fixed 1.5s
+                # sleep silently drops the next 1-3 commands. Poll with a
+                # benign read until the receiver answers, then continue.
+                time.sleep(2.0)
+                for _ in range(10):
+                    probe = _send(sock, "gecf, Current")
+                    if "$R:" in probe or "$R!" in probe:
+                        break
+                    time.sleep(0.5)
 
             # Step 3b: push SSH public key to gpsops account
             if ssh_key_body:
