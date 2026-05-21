@@ -563,3 +563,44 @@ def test_from_file_path_does_not_exist(parser, owners_yaml, capsys, tmp_path) ->
     rc = cmd_cfg_add_receiver(args)
     assert rc == 2
     assert "does not exist" in capsys.readouterr().err.lower()
+
+
+def test_default_owner_when_neither_cli_nor_file_supplies(parser, owners_yaml, tmp_path) -> None:
+    """Without --owner on CLI AND without `owner` in --from-file, the
+    intake defaults to Jarðeðlismælihópur (the IMO Geophysical
+    Measurements Group, which owns the GPS receiver fleet — matches the
+    owner attribute on every existing open child of B9 - Kjallari -
+    Jörð).
+    """
+    # Re-materialise owners.yaml to include the default owner
+    import yaml as _yaml
+
+    owners_yaml.write_text(
+        _yaml.safe_dump({"owners": ["Veðurstofa Íslands", "Jarðeðlismælihópur"]},
+                        allow_unicode=True)
+    )
+    intake = _write_intake_file(tmp_path)
+    # Strip owner from the file so the default has to kick in
+    body = _yaml.safe_load(intake.read_text())
+    body.pop("owner")
+    intake.write_text(_yaml.safe_dump(body, allow_unicode=True), encoding="utf-8")
+
+    args = parser.parse_args(
+        [
+            "cfg",
+            "add-receiver",
+            "--from-file",
+            str(intake),
+            "--owners-cache",
+            str(owners_yaml),
+        ]
+    )
+    writer = _make_writer_mock()
+    with (
+        patch("receivers.cfg.device_probe.probe_receiver"),
+        patch("tostools.api.tos_writer.TOSWriter", return_value=writer),
+    ):
+        rc = cmd_cfg_add_receiver(args)
+    assert rc == 0
+    attrs = {a["code"]: a["value"] for a in writer.create_device.call_args.args[1]}
+    assert attrs["owner"] == "Jarðeðlismælihópur"

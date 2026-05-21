@@ -2036,6 +2036,16 @@ def cmd_cfg_add_receiver(args) -> int:
             partial=bool(data.get("partial", False)),
         )
 
+    # ---- Apply default --owner if neither CLI nor file supplied one -----
+    # Jarðeðlismælihópur owns the GPS receiver fleet for IMO. Every
+    # existing open child of B9 - Kjallari - Jörð (id_entity=4) has this
+    # as its owner attribute, so it's the right default for any new
+    # warehouse intake of receivers/antennas/radomes/monuments. Operators
+    # add devices owned by another group with --owner Vatnamælihópur
+    # (etc.) or via the owner key in --from-file.
+    if not getattr(args, "owner", None):
+        args.owner = "Jarðeðlismælihópur"
+
     # ---- Required-field validation (CLI-or-file) ------------------------
     missing = [
         f for f in ("owner", "location", "date_start")
@@ -2702,9 +2712,14 @@ Examples:
     add_rx.add_argument(
         "--owner",
         help=(
-            "Owner label; must match the tostools OwnersCache. Required "
-            "via CLI when --from-file is not used (or when --from-file "
-            "does not include an `owner` key)."
+            "Owner label; must match the tostools OwnersCache. Defaults "
+            "to 'Jarðeðlismælihópur' (the IMO Geophysical Measurements "
+            "Group, which owns the GPS receiver fleet — matches the "
+            "owner attribute on every existing open child of B9 - "
+            "Kjallari - Jörð) when neither CLI nor --from-file supplies "
+            "a value. Override via CLI or via the `owner` key in "
+            "--from-file when the device belongs to a different group "
+            "(e.g. 'Vatnamælihópur', 'ÍSOR')."
         ),
     )
     add_rx.add_argument(
