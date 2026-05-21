@@ -1647,7 +1647,9 @@ def _parse_since(spec: str) -> datetime:
         delta = (
             timedelta(days=n)
             if unit == "d"
-            else timedelta(hours=n) if unit == "h" else timedelta(minutes=n)
+            else timedelta(hours=n)
+            if unit == "h"
+            else timedelta(minutes=n)
         )
         return datetime.now(timezone.utc) - delta
     try:
