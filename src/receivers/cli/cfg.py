@@ -2048,8 +2048,7 @@ def cmd_cfg_add_receiver(args) -> int:
 
     # ---- Required-field validation (CLI-or-file) ------------------------
     missing = [
-        f for f in ("owner", "location", "date_start")
-        if not getattr(args, f, None)
+        f for f in ("owner", "location", "date_start") if not getattr(args, f, None)
     ]
     if missing:
         print(
@@ -2222,9 +2221,7 @@ def cmd_cfg_add_receiver(args) -> int:
             upsert_results.append({"code": code, "value": value, "response": r})
 
     # ---- Summary --------------------------------------------------------
-    probe_origin = (
-        f"{host}:{port}" if port else host
-    ) or f"file:{from_file}"
+    probe_origin = (f"{host}:{port}" if port else host) or f"file:{from_file}"
     if args.json:
         payload = {
             "subtype": merged["subtype"],

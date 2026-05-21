@@ -478,7 +478,9 @@ def test_from_file_cli_arg_overrides_file_value(parser, owners_yaml, tmp_path) -
     assert attrs["owner"] == "Veðurstofa Íslands"
 
 
-def test_from_file_missing_required_field(parser, owners_yaml, tmp_path, capsys) -> None:
+def test_from_file_missing_required_field(
+    parser, owners_yaml, tmp_path, capsys
+) -> None:
     """File lacks `location` AND CLI doesn't supply → exit 2."""
     intake = _write_intake_file(tmp_path)
     # Remove location from the file
@@ -505,7 +507,9 @@ def test_from_file_missing_required_field(parser, owners_yaml, tmp_path, capsys)
     assert "required" in err.lower() or "missing" in err.lower()
 
 
-def test_probe_and_from_file_mutually_exclusive(parser, owners_yaml, tmp_path, capsys) -> None:
+def test_probe_and_from_file_mutually_exclusive(
+    parser, owners_yaml, tmp_path, capsys
+) -> None:
     """Supplying BOTH --probe and --from-file → exit 2."""
     intake = _write_intake_file(tmp_path)
     args = parser.parse_args(
@@ -565,7 +569,9 @@ def test_from_file_path_does_not_exist(parser, owners_yaml, capsys, tmp_path) ->
     assert "does not exist" in capsys.readouterr().err.lower()
 
 
-def test_default_owner_when_neither_cli_nor_file_supplies(parser, owners_yaml, tmp_path) -> None:
+def test_default_owner_when_neither_cli_nor_file_supplies(
+    parser, owners_yaml, tmp_path
+) -> None:
     """Without --owner on CLI AND without `owner` in --from-file, the
     intake defaults to Jarðeðlismælihópur (the IMO Geophysical
     Measurements Group, which owns the GPS receiver fleet — matches the
@@ -576,8 +582,9 @@ def test_default_owner_when_neither_cli_nor_file_supplies(parser, owners_yaml, t
     import yaml as _yaml
 
     owners_yaml.write_text(
-        _yaml.safe_dump({"owners": ["Veðurstofa Íslands", "Jarðeðlismælihópur"]},
-                        allow_unicode=True)
+        _yaml.safe_dump(
+            {"owners": ["Veðurstofa Íslands", "Jarðeðlismælihópur"]}, allow_unicode=True
+        )
     )
     intake = _write_intake_file(tmp_path)
     # Strip owner from the file so the default has to kick in
