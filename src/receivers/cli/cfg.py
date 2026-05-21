@@ -2156,8 +2156,7 @@ def cmd_cfg_add_receiver(args) -> int:
             conn_id = connection_result.get("id_connection")
             if conn_id is not None:
                 print(
-                    f"Connected to location {args.location!r} "
-                    f"(connection id={conn_id})"
+                    f"Connected to location {args.location!r} (connection id={conn_id})"
                 )
     return 0
 
