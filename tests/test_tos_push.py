@@ -225,3 +225,85 @@ def test_push_station_name_uses_station_entity_directly():
         value="Eldeyjardalur",
         date_from="2025-01-01T00:00:00",
     )
+
+
+# ---------------------------------------------------------------------------
+# push_field_transition_to_tos (Pattern 2)
+# ---------------------------------------------------------------------------
+
+
+def test_push_transition_calls_transition_attribute_value():
+    """Pattern 2: close old period + open new one."""
+    from tostools.api.tos_writer import DryRunResult
+
+    from receivers.cfg.tos_push import push_field_transition_to_tos
+
+    spec = _spec_for("receiver_firmware_version")
+    history = {"children_connections": [{"time_to": None, "id_entity_child": 200}]}
+    child = {"code_entity_subtype": "gnss_receiver"}
+
+    writer = MagicMock()
+    writer.dry_run = True
+    writer.transition_attribute_value.return_value = DryRunResult(
+        method="PATCH+POST",
+        endpoint="/transition",
+        payload={"code": "firmware_version", "new_value": "5.5.0"},
+    )
+    writer.get_entity_history.side_effect = lambda eid: (
+        history if eid == 100 else child if eid == 200 else None
+    )
+
+    tos_data = {"id_entity": 100}
+    result = push_field_transition_to_tos(
+        writer=writer,
+        spec=spec,
+        new_value="5.5.0",
+        old_value="5.4.0",
+        tos_data=tos_data,
+        transition_date="2025-06-01T00:00:00",
+    )
+
+    writer.transition_attribute_value.assert_called_once_with(
+        id_entity=200,
+        code="firmware_version",
+        new_value="5.5.0",
+        transition_date="2025-06-01T00:00:00",
+    )
+    assert result is not None
+
+
+def test_push_transition_raises_on_non_writable_field():
+    """Pattern 2 rejects non-writable specs same as Pattern 1."""
+    from receivers.cfg.tos_push import push_field_transition_to_tos
+
+    spec = _spec_for("antenna_height")  # not writable
+    writer = MagicMock()
+    with pytest.raises(ValueError, match="not writable"):
+        push_field_transition_to_tos(
+            writer=writer,
+            spec=spec,
+            new_value="0.0750",
+            old_value="0.0700",
+            tos_data={"id_entity": 100},
+            transition_date="2025-01-01T00:00:00",
+        )
+
+
+def test_push_transition_raises_on_missing_entity():
+    """Pattern 2 raises when target entity can't be resolved."""
+    from receivers.cfg.tos_push import push_field_transition_to_tos
+
+    spec = _spec_for("receiver_firmware_version")
+    writer = MagicMock()
+    writer.get_entity_history.return_value = {"children_connections": []}
+    tos_data = {"id_entity": 100}
+
+    with pytest.raises(RuntimeError, match="could not resolve entity ID"):
+        push_field_transition_to_tos(
+            writer=writer,
+            spec=spec,
+            new_value="5.5.0",
+            old_value="5.4.0",
+            tos_data=tos_data,
+            transition_date="2025-01-01T00:00:00",
+        )

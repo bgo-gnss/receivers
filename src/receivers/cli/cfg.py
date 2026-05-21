@@ -606,6 +606,149 @@ def _effective_date_for(args: argparse.Namespace) -> str:
     return now
 
 
+def _sync_devices_to_tos(
+    station_id: str,
+    station_config: Dict[str, Any],
+    receiver_identity: Optional[Dict[str, Any]],
+    tos_data: Optional[Dict[str, Any]],
+    args: argparse.Namespace,
+    silent: bool,
+) -> int:
+    """Create missing device entities in TOS for a station.
+
+    Checks whether the receiver/antenna/radome reported by health probe exist
+    in TOS as child entities of the station. For any that don't, creates the
+    device entity via ``TOSWriter.create_device()``.
+
+    Returns the number of devices created (0 in dry-run mode counts as a
+    "would create" tally).
+    """
+    if tos_data is None:
+        if not silent:
+            print(f"     ❌ cannot sync devices: no TOS data for {station_id}")
+        return 0
+    if receiver_identity is None:
+        if not silent:
+            print(
+                f"     ⚠️  no receiver identity for {station_id} — skipping device sync"
+            )
+        return 0
+
+    try:
+        from tostools.api.tos_writer import TOSWriter
+        from tostools.device import build_required_attributes, validate_model
+
+        from ..cfg.tos_push import resolve_entity_id
+    except ImportError as exc:
+        if not silent:
+            print(f"     ❌ tostools not available: {exc}")
+        return 0
+
+    dry_run: bool = getattr(args, "dry_run", True)
+    writer = TOSWriter(dry_run=dry_run)
+    date_from = _effective_date_for(args)
+    station_entity_id = tos_data.get("id_entity")
+    if station_entity_id is None:
+        return 0
+
+    # Device types to check: (health_key, entity_subtype, serial_field, model_field)
+    device_types = [
+        ("receiver_type", "gnss_receiver", "receiver_serial", "receiver_type"),
+        ("antenna_type", "antenna", "antenna_serial", "antenna_type"),
+        ("radome_type", "radome", None, "radome_type"),
+    ]
+
+    created = 0
+    for model_key, entity_subtype, serial_key, _model_key in device_types:
+        model_raw = receiver_identity.get(model_key) or station_config.get(model_key)
+        if not model_raw:
+            continue
+
+        serial_raw = None
+        if serial_key:
+            serial_raw = receiver_identity.get(serial_key) or station_config.get(
+                serial_key
+            )
+        if not serial_raw and serial_key:
+            # Radome doesn't require serial; receiver/antenna do.
+            if not silent:
+                print(
+                    f"     ⚠️  no serial for {entity_subtype} ({model_key}={model_raw}) — skipping"
+                )
+            continue
+
+        # Check if entity already exists in TOS
+        existing_id = resolve_entity_id(writer, station_entity_id, entity_subtype)
+        if existing_id is not None:
+            continue
+
+        # Also check by serial to catch devices that exist but aren't connected
+        if serial_raw:
+            existing = writer.find_device_by_serial(entity_subtype, str(serial_raw))
+            if existing is not None:
+                if not silent:
+                    print(
+                        f"     ℹ️  {entity_subtype} serial={serial_raw!r} exists in TOS "
+                        f"(id={existing.get('id_entity')}) but not connected to station "
+                        f"{station_id} — use 'receivers cfg add-receiver' to connect"
+                    )
+                continue
+
+        # Validate and normalise the model name
+        try:
+            model_igs = validate_model(entity_subtype, str(model_raw))
+        except ValueError as exc:
+            if not silent:
+                print(f"     ⚠️  {entity_subtype} model {model_raw!r}: {exc}")
+            continue
+
+        if not silent:
+            mode = "[DRY-RUN] " if dry_run else ""
+            serial_info = f", serial={serial_raw!r}" if serial_raw else ""
+            print(
+                f"     {mode}→ create {entity_subtype}: model={model_igs!r}{serial_info}"
+            )
+
+        try:
+            attributes = build_required_attributes(
+                serial=serial_raw or "",
+                model=model_igs,
+                owner=station_id,
+                location=station_id,
+                date_start=date_from,
+            )
+            result = writer.create_device(
+                entity_subtype=entity_subtype,
+                attributes=attributes,
+            )
+            if not silent:
+                if hasattr(result, "method"):  # DryRunResult
+                    print(
+                        f"     ✅ [dry-run] would create {entity_subtype} "
+                        f"(serial={serial_raw!r})"
+                    )
+                else:
+                    entity_id = (
+                        result.get("id_entity") if isinstance(result, dict) else "?"
+                    )
+                    print(
+                        f"     ✅ created {entity_subtype} "
+                        f"(id={entity_id}, serial={serial_raw!r})"
+                    )
+            created += 1
+        except Exception as exc:  # noqa: BLE001
+            if not silent:
+                print(f"     ❌ device creation failed ({entity_subtype}): {exc}")
+            logger.warning(
+                "[%s] device sync failed for %s: %s",
+                station_id,
+                entity_subtype,
+                exc,
+            )
+
+    return created
+
+
 def _do_push_tos(
     station_id: str,
     diff: FieldDiff,
@@ -614,7 +757,15 @@ def _do_push_tos(
     args: argparse.Namespace,
     silent: bool,
 ) -> None:
-    """Push *value* for *diff.spec* to TOS; handles errors and dry-run."""
+    """Push *value* for *diff.spec* to TOS; handles errors and dry-run.
+
+    Routes to Pattern 2 (transition_attribute_value) when:
+    - The TOS value differs from the new value (it's a change, not a new add)
+    - ``--no-transition`` is not set
+    - The field has a TOS value to compare against (diff.tos_value)
+
+    Otherwise uses Pattern 1 (upsert_attribute_value).
+    """
     if tos_data is None:
         if not silent:
             print(f"     ❌ cannot push to TOS: no TOS data for {station_id}")
@@ -623,37 +774,63 @@ def _do_push_tos(
     try:
         from tostools.api.tos_writer import TOSWriter
 
-        from ..cfg.tos_push import push_field_to_tos
+        from ..cfg.tos_push import push_field_to_tos, push_field_transition_to_tos
     except ImportError as exc:
         if not silent:
             print(f"     ❌ tostools not available: {exc}")
         return
 
     dry_run: bool = getattr(args, "dry_run", True)
+    no_transition: bool = getattr(args, "no_transition", False)
     writer = TOSWriter(dry_run=dry_run)
     date_from = _effective_date_for(args)
 
+    # Decide Pattern 1 vs Pattern 2
+    use_transition = (
+        not no_transition and diff.tos_value is not None and diff.tos_value != value
+    )
+
     if not silent:
         mode = "[DRY-RUN] " if dry_run else ""
+        pattern = "Pattern 2 (transition)" if use_transition else "Pattern 1 (upsert)"
         print(
-            f"     {mode}→ push to TOS: {diff.cfg_key} = {value!r} "
+            f"     {mode}→ push to TOS [{pattern}]: {diff.cfg_key} = {value!r} "
             f"(attr={diff.spec.tos_attribute_code!r}, "
             f"entity={diff.spec.tos_target_entity}, date_from={date_from})"
         )
 
     try:
-        result = push_field_to_tos(
-            writer=writer,
-            spec=diff.spec,
-            value=value,
-            tos_data=tos_data,
-            date_from=date_from,
-        )
-        if not silent:
-            if hasattr(result, "method"):  # DryRunResult
-                print(f"     ✅ [dry-run] would {result.method} {result.endpoint}")
-            else:
-                print(f"     ✅ TOS updated: {diff.cfg_key} = {value!r}")
+        if use_transition:
+            result = push_field_transition_to_tos(
+                writer=writer,
+                spec=diff.spec,
+                new_value=value,
+                old_value=str(diff.tos_value),
+                tos_data=tos_data,
+                transition_date=date_from,
+            )
+            if not silent:
+                if hasattr(result, "method"):  # DryRunResult
+                    print(f"     ✅ [dry-run] would transition {diff.cfg_key}")
+                elif isinstance(result, dict):
+                    closed = "closed" if result.get("closed") else "no prior period"
+                    print(
+                        f"     ✅ TOS transition: {diff.cfg_key} "
+                        f"({diff.tos_value!r} → {value!r}, {closed})"
+                    )
+        else:
+            result = push_field_to_tos(
+                writer=writer,
+                spec=diff.spec,
+                value=value,
+                tos_data=tos_data,
+                date_from=date_from,
+            )
+            if not silent:
+                if hasattr(result, "method"):  # DryRunResult
+                    print(f"     ✅ [dry-run] would {result.method} {result.endpoint}")
+                else:
+                    print(f"     ✅ TOS updated: {diff.cfg_key} = {value!r}")
     except Exception as exc:  # noqa: BLE001
         if not silent:
             print(f"     ❌ TOS push failed: {exc}")
@@ -842,6 +1019,24 @@ def _reconcile_one(
     elif push_to_tos_on and "tos" not in sources:
         if not silent:
             print("   ⚠️  --push-tos requires --source tos or --source both")
+
+    # --sync-devices: create missing device entities in TOS
+    sync_devices_on: bool = getattr(args, "sync_devices", False)
+    if sync_devices_on and push_to_tos_on and "tos" in sources:
+        consent_given: bool = bool(getattr(args, "yes", False)) or bool(
+            getattr(args, "dry_run", False)
+        )
+        if consent_given:
+            _sync_devices_to_tos(
+                station_id=station_id,
+                station_config=station_config,
+                receiver_identity=receiver_identity,
+                tos_data=tos_data,
+                args=args,
+                silent=silent,
+            )
+        elif not silent:
+            print("   ⚠️  --sync-devices requires --yes or --dry-run to proceed")
 
     field_specs_by_key = fields_by_key()
     no_receiver_primary: bool = getattr(args, "no_receiver_primary", False) or getattr(
@@ -2115,6 +2310,32 @@ Diagnosing TCP authentication failures:
             "to stations.cfg). Requires --source to include 'tos'. "
             "Combine with --field to target specific fields (e.g. "
             "--field receiver_firmware_version --push-tos --yes). "
+            "Honours --dry-run. "
+            "By default, value changes use Pattern 2 (close old period + open new) "
+            "to preserve history; use --no-transition to revert to Pattern 1 "
+            "(overwrite open value in place)."
+        ),
+    )
+    rec.add_argument(
+        "--no-transition",
+        action="store_true",
+        default=False,
+        help=(
+            "When used with --push-tos, overwrite the open TOS value in place "
+            "(Pattern 1) instead of closing the old period and opening a new one "
+            "(Pattern 2). Use when the value change is a correction (e.g. typo fix) "
+            "rather than a genuine instrument change."
+        ),
+    )
+    rec.add_argument(
+        "--sync-devices",
+        action="store_true",
+        default=False,
+        help=(
+            "When used with --push-tos, also create device entities in TOS "
+            "(gnss_receiver, antenna, radome) for any station whose health data "
+            "references a serial number not yet registered in TOS. "
+            "Requires --push-tos and --source to include 'tos'. "
             "Honours --dry-run."
         ),
     )
