@@ -196,9 +196,7 @@ def push_field_transition_to_tos(
 
     station_entity_id = tos_data.get("id_entity")
     if station_entity_id is None:
-        raise ValueError(
-            "push_field_transition_to_tos: tos_data has no 'id_entity'"
-        )
+        raise ValueError("push_field_transition_to_tos: tos_data has no 'id_entity'")
 
     target_entity_id = resolve_entity_id(writer, station_entity_id, target_entity_type)
     if target_entity_id is None:

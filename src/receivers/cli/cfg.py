@@ -629,7 +629,9 @@ def _sync_devices_to_tos(
         return 0
     if receiver_identity is None:
         if not silent:
-            print(f"     ⚠️  no receiver identity for {station_id} — skipping device sync")
+            print(
+                f"     ⚠️  no receiver identity for {station_id} — skipping device sync"
+            )
         return 0
 
     try:
@@ -726,7 +728,9 @@ def _sync_devices_to_tos(
                         f"(serial={serial_raw!r})"
                     )
                 else:
-                    entity_id = result.get("id_entity") if isinstance(result, dict) else "?"
+                    entity_id = (
+                        result.get("id_entity") if isinstance(result, dict) else "?"
+                    )
                     print(
                         f"     ✅ created {entity_subtype} "
                         f"(id={entity_id}, serial={serial_raw!r})"
@@ -783,9 +787,7 @@ def _do_push_tos(
 
     # Decide Pattern 1 vs Pattern 2
     use_transition = (
-        not no_transition
-        and diff.tos_value is not None
-        and diff.tos_value != value
+        not no_transition and diff.tos_value is not None and diff.tos_value != value
     )
 
     if not silent:
@@ -1034,9 +1036,7 @@ def _reconcile_one(
                 silent=silent,
             )
         elif not silent:
-            print(
-                "   ⚠️  --sync-devices requires --yes or --dry-run to proceed"
-            )
+            print("   ⚠️  --sync-devices requires --yes or --dry-run to proceed")
 
     field_specs_by_key = fields_by_key()
     no_receiver_primary: bool = getattr(args, "no_receiver_primary", False) or getattr(
@@ -1647,9 +1647,7 @@ def _parse_since(spec: str) -> datetime:
         delta = (
             timedelta(days=n)
             if unit == "d"
-            else timedelta(hours=n)
-            if unit == "h"
-            else timedelta(minutes=n)
+            else timedelta(hours=n) if unit == "h" else timedelta(minutes=n)
         )
         return datetime.now(timezone.utc) - delta
     try:
