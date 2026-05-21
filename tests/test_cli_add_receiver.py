@@ -387,3 +387,179 @@ def test_firmware_override_wins(base_args) -> None:
     # writer state when --no-dry-run is set. Here we just confirm exit 0
     # and that to_subtype_attrs picked up the override (covered in
     # test_device_probe.py); the merge logic is already tested there.
+
+
+# ---------------------------------------------------------------------------
+# --from-file (capture-then-write workflow: probe on bench while VPN is off,
+# save the result, push to TOS later when VPN is back and bench is unplugged)
+# ---------------------------------------------------------------------------
+
+
+def _write_intake_file(tmp_path: Path, **overrides) -> Path:
+    """Materialise a YAML intake file with sensible defaults; overrides win."""
+    import yaml as _yaml
+
+    body = dict(
+        subtype="gnss_receiver",
+        probe_type="polarx5",
+        serial="SN_FROMFILE",
+        model_raw="PolaRx5",
+        firmware_version="5.7.0",
+        marker_name="HRAC",
+        partial=False,
+        owner="Veðurstofa Íslands",
+        location="B9 - Kjallari - Jörð",
+        date_start="2026-05-21",
+        station_hint="HRAC",
+    )
+    body.update(overrides)
+    path = tmp_path / "intake.yaml"
+    path.write_text(_yaml.safe_dump(body, allow_unicode=True), encoding="utf-8")
+    return path
+
+
+def test_from_file_happy_path(parser, owners_yaml, tmp_path) -> None:
+    """--from-file loads identity and required fields from YAML; no probe."""
+    intake = _write_intake_file(tmp_path)
+    args = parser.parse_args(
+        [
+            "cfg",
+            "add-receiver",
+            "--from-file",
+            str(intake),
+            "--owners-cache",
+            str(owners_yaml),
+        ]
+    )
+    writer = _make_writer_mock()
+    with (
+        patch(
+            "receivers.cfg.device_probe.probe_receiver",
+            side_effect=AssertionError("probe must NOT be called when --from-file"),
+        ),
+        patch("tostools.api.tos_writer.TOSWriter", return_value=writer),
+    ):
+        rc = cmd_cfg_add_receiver(args)
+    assert rc == 0
+    # create_device was called with the file's serial/model
+    call = writer.create_device.call_args
+    assert call.args[0] == "gnss_receiver"
+    attrs = {a["code"]: a["value"] for a in call.args[1]}
+    assert attrs["serial_number"] == "SN_FROMFILE"
+    assert attrs["model"] == "SEPT POLARX5"  # IGS-normalised
+    assert attrs["owner"] == "Veðurstofa Íslands"
+    assert attrs["status"] == "virkt"
+    assert attrs["date_start"].startswith("2026-05-21")
+
+
+def test_from_file_cli_arg_overrides_file_value(parser, owners_yaml, tmp_path) -> None:
+    """When both file and CLI supply a field, CLI wins."""
+    intake = _write_intake_file(tmp_path, owner="OldOwner")
+    args = parser.parse_args(
+        [
+            "cfg",
+            "add-receiver",
+            "--from-file",
+            str(intake),
+            "--owner",
+            "Veðurstofa Íslands",  # CLI override
+            "--owners-cache",
+            str(owners_yaml),
+        ]
+    )
+    writer = _make_writer_mock()
+    with (
+        patch("receivers.cfg.device_probe.probe_receiver"),
+        patch("tostools.api.tos_writer.TOSWriter", return_value=writer),
+    ):
+        rc = cmd_cfg_add_receiver(args)
+    assert rc == 0
+    attrs = {a["code"]: a["value"] for a in writer.create_device.call_args.args[1]}
+    assert attrs["owner"] == "Veðurstofa Íslands"
+
+
+def test_from_file_missing_required_field(parser, owners_yaml, tmp_path, capsys) -> None:
+    """File lacks `location` AND CLI doesn't supply → exit 2."""
+    intake = _write_intake_file(tmp_path)
+    # Remove location from the file
+    import yaml as _yaml
+
+    body = _yaml.safe_load(intake.read_text())
+    body.pop("location")
+    intake.write_text(_yaml.safe_dump(body, allow_unicode=True), encoding="utf-8")
+
+    args = parser.parse_args(
+        [
+            "cfg",
+            "add-receiver",
+            "--from-file",
+            str(intake),
+            "--owners-cache",
+            str(owners_yaml),
+        ]
+    )
+    rc = cmd_cfg_add_receiver(args)
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "--location" in err
+    assert "required" in err.lower() or "missing" in err.lower()
+
+
+def test_probe_and_from_file_mutually_exclusive(parser, owners_yaml, tmp_path, capsys) -> None:
+    """Supplying BOTH --probe and --from-file → exit 2."""
+    intake = _write_intake_file(tmp_path)
+    args = parser.parse_args(
+        [
+            "cfg",
+            "add-receiver",
+            "--probe",
+            "192.168.3.1",
+            "--from-file",
+            str(intake),
+            "--owners-cache",
+            str(owners_yaml),
+        ]
+    )
+    rc = cmd_cfg_add_receiver(args)
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "exactly one" in err.lower()
+
+
+def test_neither_probe_nor_from_file(parser, owners_yaml, capsys) -> None:
+    """Supplying neither --probe nor --from-file → exit 2."""
+    args = parser.parse_args(
+        [
+            "cfg",
+            "add-receiver",
+            "--owner",
+            "Veðurstofa Íslands",
+            "--location",
+            "Bench A",
+            "--date-start",
+            "2026-05-12",
+            "--owners-cache",
+            str(owners_yaml),
+        ]
+    )
+    rc = cmd_cfg_add_receiver(args)
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "exactly one" in err.lower()
+
+
+def test_from_file_path_does_not_exist(parser, owners_yaml, capsys, tmp_path) -> None:
+    """Missing file → exit 2 with clear message."""
+    args = parser.parse_args(
+        [
+            "cfg",
+            "add-receiver",
+            "--from-file",
+            str(tmp_path / "nope.yaml"),
+            "--owners-cache",
+            str(owners_yaml),
+        ]
+    )
+    rc = cmd_cfg_add_receiver(args)
+    assert rc == 2
+    assert "does not exist" in capsys.readouterr().err.lower()
