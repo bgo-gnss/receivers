@@ -1968,18 +1968,107 @@ def cmd_cfg_add_receiver(args) -> int:
         ProbeIncompleteError,
         ProbeNotIdentifiedError,
         ProbeUnreachableError,
+        ReceiverIdentity,
         parse_host_port,
         probe_receiver,
         to_subtype_attrs,
     )
 
+    # ---- --probe / --from-file mutual exclusion -------------------------
+    from_file = getattr(args, "from_file", None)
+    if bool(args.probe) == bool(from_file):
+        print(
+            "❌ exactly one of --probe or --from-file is required",
+            file=sys.stderr,
+        )
+        return 2
+
+    # ---- --from-file: load identity + defaults from YAML ----------------
+    # CLI args take precedence; file fills in only what was not supplied
+    # via CLI. Required fields (owner/location/date_start) must come from
+    # either side. This decouples the probe step (needs USB) from the TOS
+    # write (needs VPN) — capture once, write later.
+    file_identity: Optional[ReceiverIdentity] = None
+    if from_file:
+        from pathlib import Path as _Path
+
+        import yaml as _yaml
+
+        path = _Path(from_file).expanduser()
+        if not path.exists():
+            print(f"❌ --from-file path does not exist: {path}", file=sys.stderr)
+            return 2
+        try:
+            data = _yaml.safe_load(path.read_text(encoding="utf-8"))
+        except Exception as e:  # noqa: BLE001 — surface YAML / IO errors equally
+            print(f"❌ failed to parse --from-file YAML: {e}", file=sys.stderr)
+            return 2
+        if not isinstance(data, dict):
+            print("❌ --from-file must contain a YAML mapping", file=sys.stderr)
+            return 2
+
+        # Fill in CLI args from file when not already supplied
+        for key in (
+            "owner",
+            "location",
+            "date_start",
+            "station_hint",
+            "firmware",
+            "comment",
+            "galvos",
+            "probe_type",
+        ):
+            if not getattr(args, key, None):
+                file_val = data.get(key)
+                if file_val not in (None, ""):
+                    setattr(args, key, file_val)
+
+        # Build a ReceiverIdentity from file fields — replaces probe call.
+        # Accept either 'model_raw' (probe-shaped) or 'model' as a
+        # convenience for hand-edited intake records.
+        file_identity = ReceiverIdentity(
+            subtype=data.get("subtype", "gnss_receiver"),
+            probe_type=data.get("probe_type") or args.probe_type or "polarx5",
+            serial=data.get("serial"),
+            model_raw=data.get("model_raw") or data.get("model"),
+            firmware_version=data.get("firmware_version"),
+            marker_name=data.get("marker_name"),
+            partial=bool(data.get("partial", False)),
+        )
+
+    # ---- Apply default --owner if neither CLI nor file supplied one -----
+    # Jarðeðlismælihópur owns the GPS receiver fleet for IMO. Every
+    # existing open child of B9 - Kjallari - Jörð (id_entity=4) has this
+    # as its owner attribute, so it's the right default for any new
+    # warehouse intake of receivers/antennas/radomes/monuments. Operators
+    # add devices owned by another group with --owner Vatnamælihópur
+    # (etc.) or via the owner key in --from-file.
+    if not getattr(args, "owner", None):
+        args.owner = "Jarðeðlismælihópur"
+
+    # ---- Required-field validation (CLI-or-file) ------------------------
+    missing = [
+        f for f in ("owner", "location", "date_start") if not getattr(args, f, None)
+    ]
+    if missing:
+        print(
+            "❌ missing required field(s): "
+            + ", ".join("--" + m.replace("_", "-") for m in missing)
+            + " (supply via CLI or via --from-file)",
+            file=sys.stderr,
+        )
+        return 2
+
     # ---- Cheap validation first (so the user doesn't wait through a
     # ---- 20-second probe timeout to learn the owner string is wrong).
-    try:
-        host, port = parse_host_port(args.probe)
-    except ValueError as e:
-        print(f"❌ {e}", file=sys.stderr)
-        return 2
+    host: Optional[str] = None
+    port: Optional[int] = None
+    if args.probe:
+        try:
+            host, port = parse_host_port(args.probe)
+        except ValueError as e:
+            print(f"❌ {e}", file=sys.stderr)
+            return 2
 
     try:
         date_start = normalize_date_start(args.date_start)
@@ -1999,23 +2088,31 @@ def cmd_cfg_add_receiver(args) -> int:
         )
         return 2
 
-    # ---- Probe (network) -------------------------------------------------
-    try:
-        identity = probe_receiver(
-            host,
-            port,
-            probe_type=args.probe_type,
-            station_id_hint=args.station_hint,
+    # ---- Probe (network) — or load identity from file -------------------
+    if file_identity is not None:
+        identity = file_identity
+        print(
+            f"  Loaded identity from {from_file}: "
+            f"serial={identity.serial!r} model={identity.model_raw!r} "
+            f"fw={identity.firmware_version!r} (no probe)"
         )
-    except ProbeUnreachableError as e:
-        print(f"❌ {e}", file=sys.stderr)
-        return 1
-    except ProbeNotIdentifiedError as e:
-        print(f"❌ {e}", file=sys.stderr)
-        return 1
-    except ProbeError as e:
-        print(f"❌ {e}", file=sys.stderr)
-        return 1
+    else:
+        try:
+            identity = probe_receiver(
+                host,
+                port,
+                probe_type=args.probe_type,
+                station_id_hint=args.station_hint,
+            )
+        except ProbeUnreachableError as e:
+            print(f"❌ {e}", file=sys.stderr)
+            return 1
+        except ProbeNotIdentifiedError as e:
+            print(f"❌ {e}", file=sys.stderr)
+            return 1
+        except ProbeError as e:
+            print(f"❌ {e}", file=sys.stderr)
+            return 1
 
     # ---- Overrides + completeness ----------------------------------------
     try:
@@ -2124,7 +2221,7 @@ def cmd_cfg_add_receiver(args) -> int:
             upsert_results.append({"code": code, "value": value, "response": r})
 
     # ---- Summary --------------------------------------------------------
-    probe_origin = f"{host}:{port}" if port else host
+    probe_origin = (f"{host}:{port}" if port else host) or f"file:{from_file}"
     if args.json:
         payload = {
             "subtype": merged["subtype"],
@@ -2577,9 +2674,26 @@ Examples:
     )
     add_rx.add_argument(
         "--probe",
-        required=True,
         metavar="HOST[:PORT]",
-        help="Receiver host/IP, optionally with explicit port.",
+        help=(
+            "Receiver host/IP, optionally with explicit port. Mutually "
+            "exclusive with --from-file; one of the two is required."
+        ),
+    )
+    add_rx.add_argument(
+        "--from-file",
+        dest="from_file",
+        metavar="PATH",
+        help=(
+            "Load receiver identity (serial, model, firmware_version, "
+            "probe_type, marker_name) from a YAML file instead of probing. "
+            "The file may also default owner/location/date_start/station_hint/"
+            "comment/galvos/firmware. CLI args override file values when "
+            "both are given. Mutually exclusive with --probe. See "
+            "~/.cache/gps_receivers/intake/<serial>.yaml for the canonical "
+            "shape — captured offline so the intake can be written later "
+            "without USB access to the receiver."
+        ),
     )
     add_rx.add_argument(
         "--probe-type",
@@ -2594,19 +2708,31 @@ Examples:
     )
     add_rx.add_argument(
         "--owner",
-        required=True,
-        help="Owner label; must match the tostools OwnersCache.",
+        help=(
+            "Owner label; must match the tostools OwnersCache. Defaults "
+            "to 'Jarðeðlismælihópur' (the IMO Geophysical Measurements "
+            "Group, which owns the GPS receiver fleet — matches the "
+            "owner attribute on every existing open child of B9 - "
+            "Kjallari - Jörð) when neither CLI nor --from-file supplies "
+            "a value. Override via CLI or via the `owner` key in "
+            "--from-file when the device belongs to a different group "
+            "(e.g. 'Vatnamælihópur', 'ÍSOR')."
+        ),
     )
     add_rx.add_argument(
         "--location",
-        required=True,
-        help="Physical warehouse / bench location.",
+        help=(
+            "Physical warehouse / bench location. Required via CLI when "
+            "--from-file is not used (or does not include `location`)."
+        ),
     )
     add_rx.add_argument(
         "--date-start",
-        required=True,
         metavar="YYYY-MM-DD",
-        help="Start date for all attribute values.",
+        help=(
+            "Start date for all attribute values. Required via CLI when "
+            "--from-file is not used (or does not include `date_start`)."
+        ),
     )
     add_rx.add_argument(
         "--firmware",
