@@ -116,7 +116,12 @@ def test_dry_run_happy_path(base_args, capsys) -> None:
     assert attrs["model"] == "SEPT POLARX5"
     assert attrs["serial_number"] == "SN_HAPPY"
     assert attrs["owner"] == "Veðurstofa Íslands"
-    assert attrs["location"] == "Bench A"
+    # location is NOT a device attribute — it is conveyed via the
+    # entity_connection join (parent=area, child=device) created
+    # by writer.connect_device_to_location after the device is created.
+    assert "location" not in attrs
+    assert attrs["status"] == "virkt"
+    assert attrs["date_start"].startswith("2026-05-12")
     assert call.kwargs["force"] is False
     # Firmware came through as an optional upsert (probed firmware → DRY RUN log)
     assert "firmware_version" in out.out

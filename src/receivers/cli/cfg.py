@@ -2045,7 +2045,6 @@ def cmd_cfg_add_receiver(args) -> int:
         serial=merged["serial"],
         model=igs_model,
         owner=args.owner,
-        location=args.location,
         date_start=date_start,
     )
     optional = iter_optional_attributes(
@@ -2077,6 +2076,36 @@ def cmd_cfg_add_receiver(args) -> int:
     id_entity = None
     if isinstance(response, dict):
         id_entity = response.get("id_entity")
+
+    # ---- Location join (parent area entity → child device) --------------
+    # Replaces the old "location as a free-text attribute on the device"
+    # path; TOS conveys physical placement via entity_connection rows
+    # (parent=area-entity, child=device). Without this join the device
+    # is invisible to web UI pages that list "devices at <warehouse>".
+    connection_result: Any
+    if dry_run or id_entity is None:
+        if not getattr(args, "json", False):
+            print(
+                f"DRY RUN: would resolve location {args.location!r} → "
+                f"entity_id and create entity_connection(parent=<area>, "
+                f"child={id_entity if id_entity is not None else '<new>'}, "
+                f"time_from={date_start})"
+            )
+        connection_result = {"location": args.location, "dry_run": True}
+    else:
+        try:
+            connection_result = writer.connect_device_to_location(
+                id_device=id_entity,
+                location_name=args.location,
+                date_start=date_start,
+            )
+        except ValueError as e:
+            print(
+                f"❌ Device created (id_entity={id_entity}) but location "
+                f"join failed: {e}",
+                file=sys.stderr,
+            )
+            return 1
 
     # ---- Optional attribute upserts -------------------------------------
     upsert_results = []
@@ -2112,6 +2141,7 @@ def cmd_cfg_add_receiver(args) -> int:
             "required_attributes": required,
             "optional_attributes": [{"code": c, "value": v} for c, v in optional],
             "upsert_results": upsert_results,
+            "location_connection": connection_result,
         }
         print(_json.dumps(payload, ensure_ascii=False, indent=2))
     else:
@@ -2122,6 +2152,13 @@ def cmd_cfg_add_receiver(args) -> int:
             f"@ {probe_origin}: serial={merged['serial']} model={igs_model} "
             f"id_entity={id_str}{suffix}"
         )
+        if not dry_run and isinstance(connection_result, dict):
+            conn_id = connection_result.get("id_connection")
+            if conn_id is not None:
+                print(
+                    f"Connected to location {args.location!r} "
+                    f"(connection id={conn_id})"
+                )
     return 0
 
 
