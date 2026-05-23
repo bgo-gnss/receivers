@@ -1,0 +1,1405 @@
+"""Tests for receivers.cfg.operations — install/move/visit orchestration.
+
+These tests mock :class:`tostools.api.tos_writer.TOSWriter` so no network
+calls happen, and use a tmp ``stations.cfg`` for the file-write paths.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
+
+from receivers.cfg.operations import (
+    DEFAULT_WAREHOUSE,
+    CfgOperationError,
+    OperationResult,
+    _canonical_receiver_type,
+    _default_rinex_valid_from,
+    _find_open_gnss_receiver_child,
+    _find_recently_left_receiver,
+    _resolve_station,
+    _validate_marker_match,
+    _visit_default_time,
+    add_visit,
+    delete_join,
+    list_visits,
+    move_device,
+    replace_receiver,
+    show_visit,
+    update_visit,
+)
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+def _writer_mock(**spec) -> MagicMock:
+    """Return a TOSWriter-shaped MagicMock with sensible defaults.
+
+    ``spec`` lets each test override return values per attribute.
+    """
+    w = MagicMock()
+    w.dry_run = True
+    # Sensible defaults — tests override per case
+    w.find_station_by_marker.return_value = None
+    w.find_device_by_serial.return_value = None
+    w.find_location_by_name.return_value = None
+    w.get_entity_history.return_value = None
+    w.get_open_parent_join.return_value = None
+    w.move_device.return_value = {"closed": "ok", "opened": "ok"}
+    w.add_maintenance_visit.return_value = {
+        "id_maintenance": 9999,
+        "created": {"id": 9999},
+        "updated": {"ok": True},
+    }
+    for k, v in spec.items():
+        getattr(w, k).return_value = v
+    return w
+
+
+def _device_with_attrs(
+    id_entity: int = 21501,
+    model: str = "SEPT POLARX5",
+    firmware: str = "5.6.0",
+) -> dict:
+    """Realistic find_device_by_serial / get_entity_history payload shape.
+
+    TOS returns ``attributes`` as a flat list — each item IS an
+    attribute_value row with ``code`` / ``value`` / ``date_from`` /
+    ``date_to`` directly on it (no nested ``attribute_values`` wrapper).
+    """
+    return {
+        "id_entity": id_entity,
+        "code_entity_subtype": "gnss_receiver",
+        "attributes": [
+            {
+                "code": "model",
+                "value": model,
+                "date_from": "2026-05-21T00:00:00",
+                "date_to": None,
+            },
+            {
+                "code": "firmware_version",
+                "value": firmware,
+                "date_from": "2026-05-21T00:00:00",
+                "date_to": None,
+            },
+            {
+                "code": "serial_number",
+                "value": "4101524",
+                "date_from": "2026-05-21T00:00:00",
+                "date_to": None,
+            },
+        ],
+    }
+
+
+@pytest.fixture
+def cfg_file(tmp_path: Path) -> Path:
+    """A minimal stations.cfg with HRAC, SAVI sections."""
+    p = tmp_path / "stations.cfg"
+    p.write_text(
+        """# top-of-file comment
+
+[HRAC]
+station_id = HRAC
+receiver_type = NetR9
+receiver_serial = 5545R50370
+receiver_firmware_version = 5.2.2
+rinex_config_valid_from = 2025-09-23
+# a trailing comment
+
+[SAVI]
+station_id = SAVI
+receiver_type = NetR9
+receiver_serial = 5039K70763
+receiver_firmware_version = 4.1.7
+rinex_config_valid_from = 2007-09-07
+"""
+    )
+    return p
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def test_canonical_receiver_type_polarx5():
+    assert _canonical_receiver_type("SEPT POLARX5") == "PolaRX5"
+
+
+def test_canonical_receiver_type_netr9():
+    assert _canonical_receiver_type("TRIMBLE NETR9") == "NetR9"
+
+
+def test_canonical_receiver_type_unknown_passthrough():
+    """Unknown models pass through unchanged — don't silently corrupt."""
+    assert _canonical_receiver_type("FUTUREVENDOR FOO9000") == (
+        "FUTUREVENDOR FOO9000"
+    )
+
+
+def test_canonical_receiver_type_none():
+    assert _canonical_receiver_type(None) is None
+
+
+def test_resolve_station_raises_on_unknown():
+    w = _writer_mock()
+    with pytest.raises(CfgOperationError, match="No TOS station matches"):
+        _resolve_station(w, "NONEXIST")
+
+
+def test_resolve_station_returns_eid():
+    w = _writer_mock(find_station_by_marker=16096)
+    assert _resolve_station(w, "HRAC") == 16096
+
+
+# ---------------------------------------------------------------------------
+# _find_open_gnss_receiver_child
+# ---------------------------------------------------------------------------
+
+
+def test_find_open_receiver_returns_id_when_present():
+    w = MagicMock()
+    w.get_entity_history.side_effect = [
+        # First call: station history with one open child
+        {
+            "children_connections": [
+                {"id_entity_child": 21197, "time_to": None},
+                {"id_entity_child": 99999, "time_to": "2020-01-01"},  # closed
+            ]
+        },
+        # Second call: that child's own history
+        {"code_entity_subtype": "gnss_receiver"},
+    ]
+    assert _find_open_gnss_receiver_child(w, 16096) == 21197
+
+
+def test_find_open_receiver_returns_none_when_none_open():
+    w = MagicMock()
+    w.get_entity_history.return_value = {
+        "children_connections": [
+            {"id_entity_child": 99999, "time_to": "2020-01-01"},
+        ]
+    }
+    assert _find_open_gnss_receiver_child(w, 16096) is None
+
+
+def test_find_open_receiver_skips_non_receiver_children():
+    """Antenna / radome / other open joins must not be confused for receivers."""
+    w = MagicMock()
+    w.get_entity_history.side_effect = [
+        {
+            "children_connections": [
+                {"id_entity_child": 50001, "time_to": None},  # antenna
+            ]
+        },
+        {"code_entity_subtype": "antenna"},
+    ]
+    assert _find_open_gnss_receiver_child(w, 16096) is None
+
+
+# ---------------------------------------------------------------------------
+# move_device — auto-detect target (station marker vs location name)
+# ---------------------------------------------------------------------------
+
+
+def _station_writer(station_eid: int = 16096):
+    """Writer mock pre-configured for a station-destination move."""
+    w = MagicMock()
+    w.find_station_by_marker.return_value = station_eid  # `to` is a station
+    w.find_location_by_name.return_value = None
+    w.get_entity_history.return_value = {"children_connections": []}
+    w.find_device_by_serial.return_value = _device_with_attrs()
+    w.move_device.return_value = {"closed": "ok", "opened": "ok"}
+    w.add_maintenance_visit.return_value = {
+        "id_maintenance": 12345,
+        "created": {},
+        "updated": {},
+    }
+    return w
+
+
+def _location_writer(location_eid: int = 4):
+    """Writer mock pre-configured for a warehouse-destination move."""
+    w = MagicMock()
+    w.find_station_by_marker.return_value = None  # `to` is not a station
+    w.find_location_by_name.return_value = location_eid
+    w.find_device_by_serial.return_value = _device_with_attrs()
+    w.get_open_parent_join.return_value = {
+        "id_entity_parent": 4440,
+        "time_to": None,
+    }
+    w.move_device.return_value = {"closed": "ok", "opened": "ok"}
+    w.add_maintenance_visit.return_value = {"id_maintenance": 99}
+    return w
+
+
+def test_move_device_raises_when_target_resolves_to_neither():
+    w = MagicMock()
+    w.find_station_by_marker.return_value = None
+    w.find_location_by_name.return_value = None
+    with pytest.raises(CfgOperationError, match="resolves to neither"):
+        move_device(
+            "4101524", to="Bogus Target", writer=w, dry_run=True
+        )
+
+
+# --- Station-destination path -----------------------------------------------
+
+
+def test_move_device_to_station_refuses_when_destination_has_open_receiver():
+    """Displacement constraint — move the old receiver out first."""
+    w = _station_writer()
+    w.get_entity_history.side_effect = [
+        {"children_connections": [{"id_entity_child": 21197, "time_to": None}]},
+        {"code_entity_subtype": "gnss_receiver"},
+    ]
+    with pytest.raises(CfgOperationError, match="already has an open"):
+        move_device(
+            "4101524", to="HRAC", date="2026-05-23", writer=w, dry_run=True
+        )
+    w.move_device.assert_not_called()
+    w.add_maintenance_visit.assert_not_called()
+
+
+def test_move_device_to_station_raises_on_unknown_serial():
+    w = _station_writer()
+    w.find_device_by_serial.return_value = None
+    with pytest.raises(CfgOperationError, match="No gnss_receiver"):
+        move_device(
+            "NOSUCH", to="HRAC", date="2026-05-23", writer=w, dry_run=True
+        )
+
+
+def test_move_device_to_station_dry_run_writes_no_cfg(cfg_file):
+    w = _station_writer()
+    w.add_maintenance_visit.return_value = {
+        "id_maintenance": "<dry-run>",
+        "created": "dr",
+        "updated": None,
+    }
+    original = cfg_file.read_text()
+    result = move_device(
+        "4101524",
+        to="HRAC",
+        date="2026-05-23",
+        writer=w,
+        dry_run=True,
+        cfg_path=cfg_file,
+    )
+    assert cfg_file.read_text() == original
+    assert result.dry_run is True
+    assert result.cfg_changes == {}
+    w.move_device.assert_called_once()
+    w.add_maintenance_visit.assert_called_once()
+
+
+def test_move_device_to_station_live_updates_cfg(cfg_file):
+    w = _station_writer()
+    w.find_device_by_serial.return_value = _device_with_attrs(
+        id_entity=21501, model="SEPT POLARX5", firmware="5.6.0"
+    )
+    result = move_device(
+        "4101524",
+        to="HRAC",
+        date="2026-05-23",
+        writer=w,
+        dry_run=False,
+        cfg_path=cfg_file,
+    )
+    assert result.vitjun_id == 12345
+    text = cfg_file.read_text()
+    assert "receiver_serial = 4101524" in text
+    assert "receiver_type = PolaRX5" in text
+    assert "receiver_firmware_version = 5.6.0" in text
+    # Bare date 2026-05-23 → noon-promoted (12:00) → first full day = next day
+    assert "rinex_config_valid_from = 2026-05-24" in text
+    assert "# top-of-file comment" in text
+    assert "# a trailing comment" in text
+
+
+def test_move_device_from_station_is_metadata_only():
+    """--from-station does NOT pass from_id_entity to TOSWriter.move_device.
+
+    TOSWriter's strict check would error in the in-transit case (receiver
+    is at B9, not at the source station anymore). At the high-level we
+    trust auto-detect — --from-station is for serial inference + vitjun
+    text only.
+    """
+    w = _station_writer(station_eid=4440)  # SAVI
+    move_device(
+        "5545R50370",
+        to="SAVI",
+        date="2026-05-23",
+        from_station="HRAC",  # plain metadata
+        writer=w,
+        dry_run=True,
+    )
+    call = w.move_device.call_args
+    # Three positional args, no from_id_entity kwarg.
+    # Bare date is noon-promoted at the operations layer.
+    assert call.kwargs.get("from_id_entity") is None
+    assert call.args == (21501, 4440, "2026-05-23T12:00:00")
+
+
+def test_move_device_infers_serial_from_from_station():
+    """Without --serial, infer the most recently closed receiver at --from-station."""
+    w = _station_writer(station_eid=4440)  # SAVI as target
+    # First find_station_by_marker call: destination (SAVI) → returns 4440.
+    # But we then need the inference path: find_station_by_marker(from_station)
+    # is called via _resolve_station. So set side_effect to return HRAC eid
+    # for the second call.
+    # _find_recently_left_receiver(HRAC) needs get_entity_history(HRAC) →
+    # children with time_to set; then get_entity_history(child_id) → subtype.
+    # Then get_entity_history(child_id) AGAIN to read serial_number.
+    # Then displacement check on SAVI: get_entity_history(SAVI) → empty children.
+    # Then auto-vitjun on SAVI: get_entity_history(SAVI) → no closed children,
+    # so it falls to "Settur upp" path. (Sufficient for this test.)
+    closed_child = {"id_entity_child": 21197, "time_to": "2026-05-21T23:00:00"}
+    receiver_hist = {
+        "code_entity_subtype": "gnss_receiver",
+        "attributes": [
+            {"code": "serial_number", "value": "5545R50370",
+             "date_from": "2025-09-23T00:00:00", "date_to": None},
+            {"code": "model", "value": "TRIMBLE NETR9",
+             "date_from": "2025-09-23T00:00:00", "date_to": None},
+        ],
+    }
+    w.get_entity_history.side_effect = [
+        # 1. _find_recently_left_receiver: HRAC children
+        {"children_connections": [closed_child]},
+        # 2. child subtype check
+        receiver_hist,
+        # 3. read serial_number from inferred device
+        receiver_hist,
+        # 4. SAVI displacement check (empty)
+        {"children_connections": []},
+        # 5. auto-vitjun lookup on SAVI (no recent closures)
+        {"children_connections": []},
+    ]
+    # find_station_by_marker: destination (SAVI), then from_station (HRAC)
+    w.find_station_by_marker.side_effect = [4440, 16096]
+    # find_device_by_serial(gnss_receiver, '5545R50370') after inference:
+    w.find_device_by_serial.return_value = _device_with_attrs(
+        id_entity=21197, model="TRIMBLE NETR9", firmware="5.22"
+    )
+    move_device(
+        # Note: no `serial` positional arg
+        to="SAVI",
+        from_station="HRAC",
+        date="2026-05-23",
+        writer=w,
+        dry_run=True,
+    )
+    # find_device_by_serial was called with the inferred serial
+    w.find_device_by_serial.assert_called_once_with(
+        "gnss_receiver", "5545R50370"
+    )
+
+
+def test_move_device_raises_when_neither_serial_nor_from_given():
+    w = MagicMock()
+    with pytest.raises(CfgOperationError, match="--serial or --from-station"):
+        move_device(to="HRAC", writer=w, dry_run=True)
+
+
+def test_move_device_infers_serial_prefers_open_over_closed():
+    """Currently-open receiver wins over old historical closed ones.
+
+    Real-world bug: SAVI's NetR9 5039K70763 is OPEN (never closed since
+    2007); a 2007-era device serial '320' is the only CLOSED gnss_receiver.
+    Old logic picked '320'; new logic must pick the open one.
+    """
+    w = MagicMock()
+    # First call: from_station "SAVI" → 4440. Second: target "B9..." → None
+    # (not a station marker; falls through to location lookup).
+    w.find_station_by_marker.side_effect = [4440, None]
+    closed_2007 = {"id_entity_child": 4840, "time_to": "2007-09-07T00:00:00"}
+    open_now = {"id_entity_child": 4830, "time_to": None}
+    open_receiver_hist = {
+        "code_entity_subtype": "gnss_receiver",
+        "attributes": [
+            {"code": "serial_number", "value": "5039K70763",
+             "date_from": "2014-10-17T00:00:00", "date_to": None},
+        ],
+    }
+    # _find_receiver_at_station: SAVI's children, then open child's subtype,
+    # then a final get_entity_history(child_id) reads the serial.
+    w.get_entity_history.side_effect = [
+        {"children_connections": [open_now, closed_2007]},  # SAVI children
+        open_receiver_hist,                                  # open child subtype
+        open_receiver_hist,                                  # read serial
+    ]
+    w.find_location_by_name.return_value = 4  # B9
+    w.get_open_parent_join.return_value = {
+        "id_entity_parent": 4440, "time_to": None,
+    }
+    w.find_device_by_serial.return_value = _device_with_attrs(
+        id_entity=4830, model="TRIMBLE NETR9", firmware="4.1.7"
+    )
+    w.move_device.return_value = {"closed": "ok", "opened": "ok"}
+    move_device(
+        from_station="SAVI",
+        date="2026-05-22",
+        writer=w,
+        dry_run=True,
+    )
+    w.find_device_by_serial.assert_called_once_with(
+        "gnss_receiver", "5039K70763"
+    )  # NOT '320'!
+
+
+def test_move_device_infers_serial_raises_if_no_history():
+    """--from-station with no open and no closed receivers → error."""
+    w = MagicMock()
+    w.find_station_by_marker.return_value = 16096
+    w.get_entity_history.return_value = {"children_connections": []}
+    with pytest.raises(CfgOperationError, match="no gnss_receiver is currently"):
+        move_device(
+            to="B9 - Kjallari - Jörð",
+            from_station="HRAC",
+            writer=w,
+            dry_run=True,
+        )
+
+
+def test_default_rinex_valid_from_midnight_install_same_day():
+    """Install at exact midnight → same date counts as first full day."""
+    assert _default_rinex_valid_from("2026-05-22T00:00:00") == "2026-05-22"
+
+
+def test_default_rinex_valid_from_non_midnight_rolls_to_next_day():
+    """Install at 23:00 → that day is split, next day is first full day."""
+    assert _default_rinex_valid_from("2026-05-21T23:00:00") == "2026-05-22"
+
+
+def test_default_rinex_valid_from_bare_date_treated_as_midnight():
+    """YYYY-MM-DD (no time) → treated as midnight → same date."""
+    assert _default_rinex_valid_from("2026-05-22") == "2026-05-22"
+
+
+def test_visit_default_time_promotes_bare_date_to_noon():
+    """Bare YYYY-MM-DD → noon (12:00) on that date."""
+    assert _visit_default_time("2026-05-22") == "2026-05-22T12:00:00"
+
+
+def test_visit_default_time_preserves_explicit_iso_datetime():
+    """When user provides time, leave it alone."""
+    assert _visit_default_time("2026-05-22T09:30:00") == "2026-05-22T09:30:00"
+    assert _visit_default_time("2026-05-22T23:45:00") == "2026-05-22T23:45:00"
+
+
+def test_visit_default_time_none_returns_current_timestamp():
+    """None → now (current timestamp, seconds precision) — operator did
+    not type --date at all, so "right now" is the most literal default.
+    """
+    from datetime import datetime as _dt
+    before = _dt.now().replace(microsecond=0)
+    result = _visit_default_time(None)
+    after = _dt.now().replace(microsecond=0)
+    parsed = _dt.fromisoformat(result)
+    # Within the call window, and definitely not noon (unless we
+    # happen to call at noon — accept that)
+    assert before <= parsed <= after
+    # microseconds stripped
+    assert parsed.microsecond == 0
+
+
+def test_add_visit_bare_date_starts_at_noon():
+    """add_visit with bare YYYY-MM-DD → start_time at noon."""
+    w = MagicMock()
+    w.find_station_by_marker.return_value = 4316  # HEDI
+    w.add_maintenance_visit.return_value = {"id_maintenance": 1}
+    add_visit(
+        "HEDI",
+        work="Lagaði loftnetskapal",
+        date="2026-05-22",
+        writer=w,
+        dry_run=True,
+    )
+    assert w.add_maintenance_visit.call_args.kwargs["start_time"] == (
+        "2026-05-22T12:00:00"
+    )
+
+
+def test_add_visit_respects_explicit_time_in_date():
+    w = MagicMock()
+    w.find_station_by_marker.return_value = 4316
+    w.add_maintenance_visit.return_value = {"id_maintenance": 1}
+    add_visit(
+        "HEDI",
+        work="x",
+        date="2026-05-22T08:30:00",
+        writer=w,
+        dry_run=True,
+    )
+    assert w.add_maintenance_visit.call_args.kwargs["start_time"] == (
+        "2026-05-22T08:30:00"
+    )
+
+
+def test_move_device_to_station_default_rinex_rolls_forward(cfg_file):
+    """Non-midnight install date → rinex_config_valid_from = next day."""
+    w = _station_writer()
+    move_device(
+        "4101524",
+        to="HRAC",
+        date="2026-05-21T23:00:00",
+        writer=w,
+        dry_run=False,
+        cfg_path=cfg_file,
+    )
+    assert "rinex_config_valid_from = 2026-05-22" in cfg_file.read_text()
+
+
+def test_move_device_to_station_explicit_rinex_wins(cfg_file):
+    """--rinex-valid-from overrides the auto-rolled default."""
+    w = _station_writer()
+    move_device(
+        "4101524",
+        to="HRAC",
+        date="2026-05-21T23:00:00",
+        rinex_valid_from="2026-06-01",
+        writer=w,
+        dry_run=False,
+        cfg_path=cfg_file,
+    )
+    assert "rinex_config_valid_from = 2026-06-01" in cfg_file.read_text()
+
+
+def test_move_device_to_station_uses_explicit_firmware(cfg_file):
+    """--firmware overrides the value read from TOS."""
+    w = _station_writer()
+    w.find_device_by_serial.return_value = _device_with_attrs(firmware="5.6.0")
+    move_device(
+        "4101524",
+        to="HRAC",
+        date="2026-05-23",
+        firmware="5.6.1",
+        writer=w,
+        dry_run=False,
+        cfg_path=cfg_file,
+    )
+    assert "receiver_firmware_version = 5.6.1" in cfg_file.read_text()
+
+
+def test_move_device_to_station_skip_flags(cfg_file):
+    """skip_vitjun / skip_cfg short-circuit those steps."""
+    w = _station_writer()
+    original = cfg_file.read_text()
+    result = move_device(
+        "4101524",
+        to="HRAC",
+        date="2026-05-23",
+        writer=w,
+        dry_run=False,
+        cfg_path=cfg_file,
+        skip_vitjun=True,
+        skip_cfg=True,
+    )
+    w.add_maintenance_visit.assert_not_called()
+    assert cfg_file.read_text() == original
+    assert result.cfg_changes == {}
+
+
+# --- Location-destination path ----------------------------------------------
+
+
+def test_move_device_to_location_raises_on_unknown_serial():
+    w = _location_writer()
+    w.find_device_by_serial.return_value = None
+    with pytest.raises(CfgOperationError, match="No gnss_receiver"):
+        move_device("NOSUCH", to="B9 - Kjallari - Jörð", writer=w, dry_run=True)
+
+
+def test_move_device_default_warehouse_is_b9():
+    """No `to` arg → defaults to the B9 warehouse string."""
+    w = _location_writer()
+    move_device("4101524", date="2026-05-23", writer=w, dry_run=True)
+    # Auto-detect tries station first (returns None), then location:
+    w.find_location_by_name.assert_called_once_with(
+        "B9 - Kjallari - Jörð", type_filter="vöruhús"
+    )
+
+
+def test_move_device_to_location_opts_in_to_vitjun_via_text():
+    """Location destinations only write vitjun when --vitjun is given."""
+    w = _location_writer()
+    result = move_device(
+        "5039K70763",
+        date="2026-05-23",
+        writer=w,
+        dry_run=False,
+        vitjun="Móttakari fjarlægður — sendi til verkstæðis",
+    )
+    w.add_maintenance_visit.assert_called_once()
+    # Vitjun on the source station (4440)
+    assert w.add_maintenance_visit.call_args.args[0] == 4440
+    assert result.vitjun_id == 99
+
+
+def test_move_device_to_location_no_vitjun_by_default():
+    """Without --vitjun text, the location-path does NOT write a vitjun."""
+    w = _location_writer()
+    move_device("5039K70763", date="2026-05-23", writer=w, dry_run=True)
+    w.add_maintenance_visit.assert_not_called()
+
+
+def test_move_device_to_location_skip_vitjun_overrides_text():
+    w = _location_writer()
+    move_device(
+        "5039K70763",
+        date="2026-05-23",
+        writer=w,
+        dry_run=True,
+        skip_vitjun=True,
+        vitjun="text here",
+    )
+    w.add_maintenance_visit.assert_not_called()
+
+
+# --- Auto-clear stations.cfg when device leaves a station for a warehouse
+
+
+def test_move_device_to_warehouse_clears_source_station_cfg(cfg_file):
+    """station → B9 (no replacement) auto-writes NONE to the cfg."""
+    w = _location_writer()
+    # Source is SAVI (4440); look up the station's marker via get_entity_history
+    w.get_entity_history.return_value = {
+        "attributes": [
+            {"code": "marker", "value": "savi",
+             "date_from": "2007-09-07T00:00:00", "date_to": None}
+        ]
+    }
+    move_device(
+        "5039K70763",
+        date="2026-05-23",
+        writer=w,
+        dry_run=False,
+        cfg_path=cfg_file,
+    )
+    text = cfg_file.read_text()
+    # Look at SAVI section specifically — find [SAVI] and check just its body
+    savi_section = text.split("[SAVI]")[1].split("\n[")[0]
+    assert "receiver_type = NONE" in savi_section
+    assert "receiver_serial = NONE" in savi_section
+    assert "receiver_firmware_version = NONE" in savi_section
+    assert "rinex_config_valid_from = 2026-05-23" in savi_section
+
+
+def test_move_device_to_warehouse_dry_run_no_clear(cfg_file):
+    """Dry-run never touches cfg, including the auto-clear path."""
+    w = _location_writer()
+    w.get_entity_history.return_value = {
+        "attributes": [{"code": "marker", "value": "savi",
+                        "date_from": "2007-09-07T00:00:00", "date_to": None}]
+    }
+    original = cfg_file.read_text()
+    move_device(
+        "5039K70763",
+        date="2026-05-23",
+        writer=w,
+        dry_run=True,
+        cfg_path=cfg_file,
+    )
+    assert cfg_file.read_text() == original
+
+
+def test_move_device_to_warehouse_no_cfg_flag_suppresses_clear(cfg_file):
+    """--no-cfg (skip_cfg=True) suppresses the auto-clear too."""
+    w = _location_writer()
+    w.get_entity_history.return_value = {
+        "attributes": [{"code": "marker", "value": "savi",
+                        "date_from": "2007-09-07T00:00:00", "date_to": None}]
+    }
+    original = cfg_file.read_text()
+    move_device(
+        "5039K70763",
+        date="2026-05-23",
+        writer=w,
+        dry_run=False,
+        cfg_path=cfg_file,
+        skip_cfg=True,
+    )
+    assert cfg_file.read_text() == original
+
+
+def test_move_device_chained_orchestration_skips_clear(cfg_file):
+    """_assume_cleared_device_id signal suppresses cfg-clear.
+
+    Models replace_receiver's first step: move OLD to warehouse, then
+    install NEW immediately after. The install-new step writes the new
+    cfg values, so the move-old step shouldn't temporarily NONE them.
+    """
+    w = _location_writer()
+    w.get_entity_history.return_value = {
+        "attributes": [{"code": "marker", "value": "savi"}]
+    }
+    original = cfg_file.read_text()
+    move_device(
+        "5039K70763",
+        date="2026-05-23",
+        writer=w,
+        dry_run=False,
+        cfg_path=cfg_file,
+        _assume_cleared_device_id=99,   # any non-None signal
+    )
+    assert cfg_file.read_text() == original
+
+
+def test_move_device_warehouse_to_warehouse_skips_clear(cfg_file):
+    """Source == location → no cfg-clear (it's not a station)."""
+    w = _location_writer()
+    # The current parent is the SAME location (warehouse → warehouse)
+    w.get_open_parent_join.return_value = {
+        "id_entity_parent": 4,   # same as B9 location_eid
+        "time_to": None,
+    }
+    original = cfg_file.read_text()
+    move_device(
+        "5039K70763",
+        date="2026-05-23",
+        writer=w,
+        dry_run=False,
+        cfg_path=cfg_file,
+    )
+    assert cfg_file.read_text() == original
+
+
+def test_move_device_device_status_triggers_pattern2_transition():
+    """--device-status calls transition_attribute_value with code='status'."""
+    w = _location_writer()
+    w.transition_attribute_value.return_value = {"closed": {}, "opened": {}}
+    result = move_device(
+        "5039K70763",
+        date="2026-05-23",
+        writer=w,
+        dry_run=False,
+        device_status="bilað",
+    )
+    w.transition_attribute_value.assert_called_once_with(
+        21501, "status", "bilað", "2026-05-23T12:00:00"  # bare date → noon
+    )
+    assert "device_status" in result.tos_changes
+
+
+def test_move_device_device_comment_triggers_pattern2_transition():
+    w = _location_writer()
+    w.transition_attribute_value.return_value = {"closed": {}, "opened": {}}
+    result = move_device(
+        "5039K70763",
+        date="2026-05-23",
+        writer=w,
+        dry_run=False,
+        device_comment="Sendi til verkstæðis: GPS lock óstöðugt",
+    )
+    w.transition_attribute_value.assert_called_once_with(
+        21501,
+        "comment",
+        "Sendi til verkstæðis: GPS lock óstöðugt",
+        "2026-05-23T12:00:00",
+    )
+    assert "device_comment" in result.tos_changes
+
+
+def test_move_device_status_and_comment_both_run():
+    """Both flags trigger two separate transition calls."""
+    w = _location_writer()
+    w.transition_attribute_value.return_value = {"closed": {}, "opened": {}}
+    move_device(
+        "5039K70763",
+        date="2026-05-23",
+        writer=w,
+        dry_run=False,
+        device_status="bilað",
+        device_comment="comment",
+    )
+    assert w.transition_attribute_value.call_count == 2
+    codes = [c.args[1] for c in w.transition_attribute_value.call_args_list]
+    assert codes == ["status", "comment"]
+
+
+def test_move_device_to_station_also_supports_device_attrs():
+    """Status/comment transitions also work when target is a station."""
+    w = _station_writer()
+    w.transition_attribute_value.return_value = {"closed": {}, "opened": {}}
+    move_device(
+        "4101524",
+        to="HRAC",
+        date="2026-05-23",
+        writer=w,
+        dry_run=False,
+        device_status="virkt",  # restoring active after warehouse repair
+        cfg_path=None,
+        skip_cfg=True,
+    )
+    w.transition_attribute_value.assert_called_once_with(
+        21501, "status", "virkt", "2026-05-23T12:00:00"
+    )
+
+
+# --- Auto-vitjun text generation --------------------------------------------
+
+
+def test_find_recently_left_receiver_returns_most_recent():
+    """The latest closed gnss_receiver child wins."""
+    w = MagicMock()
+    w.get_entity_history.side_effect = [
+        {
+            "children_connections": [
+                {"id_entity_child": 100, "time_to": "2024-01-01T00:00:00"},
+                {"id_entity_child": 200, "time_to": "2026-05-21T23:00:00"},
+                {"id_entity_child": 300, "time_to": None},  # still open
+            ]
+        },
+        {"code_entity_subtype": "gnss_receiver"},
+    ]
+    found = _find_recently_left_receiver(w, 16096, "2026-05-21T23:00:00")
+    assert found == 200
+
+
+def test_find_recently_left_receiver_skips_non_receiver_children():
+    w = MagicMock()
+    w.get_entity_history.side_effect = [
+        {
+            "children_connections": [
+                {"id_entity_child": 555, "time_to": "2026-05-21T23:00:00"},
+            ]
+        },
+        {"code_entity_subtype": "antenna"},
+    ]
+    assert _find_recently_left_receiver(w, 16096, "2026-05-21T23:00:00") is None
+
+
+def test_move_device_to_station_auto_vitjun_for_swap(cfg_file):
+    """When --vitjun absent, auto-derives text from old + new device context."""
+    w = _station_writer()
+    # First get_entity_history call: empty children (passes displacement check).
+    # Subsequent calls: for auto-vitjun, station's history with closed 21197,
+    # then 21197's own history (to confirm gnss_receiver subtype + read attrs).
+    w.get_entity_history.side_effect = [
+        # 1. displacement-check on dest
+        {"children_connections": []},
+        # 2. _find_recently_left_receiver: station children
+        {
+            "children_connections": [
+                {"id_entity_child": 21197, "time_to": "2026-05-21T23:00:00"},
+            ]
+        },
+        # 3. _find_recently_left_receiver: child subtype check
+        {"code_entity_subtype": "gnss_receiver"},
+        # 4. fetch the old device's attrs
+        _device_with_attrs(
+            id_entity=21197, model="TRIMBLE NETR9", firmware="5.22"
+        )
+        | {"attributes": [
+            {"code": "model", "value": "TRIMBLE NETR9",
+             "date_from": "2025-09-23T00:00:00", "date_to": None},
+            {"code": "serial_number", "value": "5545R50370",
+             "date_from": "2025-09-23T00:00:00", "date_to": None},
+        ]},
+    ]
+    w.find_device_by_serial.return_value = _device_with_attrs(
+        id_entity=21501, model="SEPT POLARX5", firmware="5.7.0"
+    )
+    move_device(
+        "4101524",
+        to="HRAC",
+        date="2026-05-21T23:00:00",
+        writer=w,
+        dry_run=False,
+        cfg_path=cfg_file,
+    )
+    work_arg = w.add_maintenance_visit.call_args.kwargs.get("work")
+    assert "Skipt um móttakara" in work_arg
+    assert "NetR9 5545R50370" in work_arg
+    assert "PolaRX5 4101524" in work_arg
+
+
+def test_move_device_to_station_auto_vitjun_for_new_deploy(cfg_file):
+    """Empty station with no prior closed receiver → 'Settur upp' default."""
+    w = _station_writer()
+    # First call: empty children (displacement passes); subsequent calls
+    # for auto-vitjun: no closed children at all.
+    w.get_entity_history.side_effect = [
+        {"children_connections": []},
+        {"children_connections": []},
+    ]
+    move_device(
+        "4101524",
+        to="HRAC",
+        date="2026-05-23",
+        writer=w,
+        dry_run=False,
+        cfg_path=cfg_file,
+    )
+    work = w.add_maintenance_visit.call_args.kwargs.get("work")
+    assert work.startswith("Settur upp móttakari")
+
+
+def test_move_device_to_station_explicit_vitjun_wins(cfg_file):
+    """--vitjun TEXT overrides the auto-derived default."""
+    w = _station_writer()
+    move_device(
+        "4101524",
+        to="HRAC",
+        date="2026-05-23",
+        vitjun="custom text — overrides auto",
+        writer=w,
+        dry_run=False,
+        cfg_path=cfg_file,
+    )
+    assert w.add_maintenance_visit.call_args.kwargs["work"] == (
+        "custom text — overrides auto"
+    )
+
+
+# ---------------------------------------------------------------------------
+# add_visit
+# ---------------------------------------------------------------------------
+
+
+def test_add_visit_resolves_station_and_calls_writer():
+    w = MagicMock()
+    w.find_station_by_marker.return_value = 4316  # HEDI
+    w.add_maintenance_visit.return_value = {"id_maintenance": 9999}
+    result = add_visit(
+        "HEDI",
+        work="Lagaði loftnetskapal",
+        reasons=["repairs"],
+        date="2026-05-23",
+        participants="bgo@vedur.is",
+        writer=w,
+        dry_run=True,
+    )
+    assert result.station_id == "HEDI"
+    assert result.vitjun_id == 9999
+    call = w.add_maintenance_visit.call_args
+    assert call.args[0] == 4316
+    assert call.kwargs["work"] == "Lagaði loftnetskapal"
+    assert call.kwargs["reasons"] == ["repairs"]
+    assert call.kwargs["participants"] == "bgo@vedur.is"
+
+
+def test_add_visit_default_reason_is_repairs():
+    w = MagicMock()
+    w.find_station_by_marker.return_value = 4316
+    w.add_maintenance_visit.return_value = {"id_maintenance": 1}
+    add_visit(
+        "HEDI", work="Lagaði loftnetskapal", writer=w, dry_run=True
+    )
+    assert w.add_maintenance_visit.call_args.kwargs["reasons"] == [
+        "repairs"
+    ]
+
+
+def test_add_visit_raises_when_station_unknown():
+    w = MagicMock()
+    w.find_station_by_marker.return_value = None
+    with pytest.raises(CfgOperationError, match="No TOS station matches"):
+        add_visit(
+            "XXXX", work="anything", writer=w, dry_run=True
+        )
+
+
+# ---------------------------------------------------------------------------
+# delete_join
+# ---------------------------------------------------------------------------
+
+
+def test_delete_join_passes_id_through_to_writer():
+    w = MagicMock()
+    w.delete_entity_connection.return_value = None
+    result = delete_join(27836, writer=w, dry_run=False)
+    w.delete_entity_connection.assert_called_once_with(27836)
+    assert result.operation == "delete-join"
+    assert result.tos_changes["id_connection"] == 27836
+    assert result.dry_run is False
+
+
+def test_delete_join_dry_run_default():
+    w = MagicMock()
+    w.delete_entity_connection.return_value = "fake-dry-run"
+    result = delete_join(27836, writer=w)  # dry_run defaults to True
+    assert result.dry_run is True
+    # The writer is still called (the writer's own dry_run flag handles
+    # the no-send semantics — operations just forwards).
+    w.delete_entity_connection.assert_called_once_with(27836)
+
+
+# ---------------------------------------------------------------------------
+# show_visit / list_visits / update_visit
+# ---------------------------------------------------------------------------
+
+
+def test_show_visit_returns_writer_payload():
+    w = MagicMock()
+    detail = {"id_maintenance": 5147, "maintenance_attribute_values": []}
+    w.get_maintenance_visit.return_value = detail
+    assert show_visit(5147, writer=w) is detail
+
+
+def test_show_visit_raises_when_not_found():
+    w = MagicMock()
+    w.get_maintenance_visit.return_value = None
+    with pytest.raises(CfgOperationError, match="No vitjun"):
+        show_visit(99999, writer=w)
+
+
+def test_list_visits_resolves_station_then_calls_writer():
+    w = MagicMock()
+    w.find_station_by_marker.return_value = 4316  # HEDI
+    sample = [{"id": 5146}, {"id": 5147}]
+    w.list_maintenance_visits.return_value = sample
+    assert list_visits("HEDI", writer=w) == sample
+    w.list_maintenance_visits.assert_called_once_with(4316)
+
+
+def test_list_visits_raises_on_unknown_station():
+    w = MagicMock()
+    w.find_station_by_marker.return_value = None
+    with pytest.raises(CfgOperationError, match="No TOS station"):
+        list_visits("XXXX", writer=w)
+
+
+def test_update_visit_forwards_kwargs_to_writer():
+    w = MagicMock()
+    w.update_maintenance_visit.return_value = {
+        "id_maintenance": 5147,
+        "updated": {"ok": True},
+        "before": {},
+        "after": {},
+    }
+    result = update_visit(
+        5147,
+        remaining="Þarf að mála",
+        reasons=["repairs"],
+        writer=w,
+        dry_run=False,
+    )
+    call = w.update_maintenance_visit.call_args
+    assert call.args[0] == 5147
+    assert call.kwargs["remaining"] == "Þarf að mála"
+    assert call.kwargs["reasons"] == ["repairs"]
+    # Unspecified fields are forwarded as None (preserve semantics)
+    assert call.kwargs["work"] is None
+    assert call.kwargs["comment"] is None
+    assert call.kwargs["participants"] is None
+    assert result.vitjun_id == 5147
+    assert result.operation == "visit-edit"
+
+
+# ---------------------------------------------------------------------------
+# replace_receiver — orchestration
+# ---------------------------------------------------------------------------
+
+
+def test_validate_marker_match_accepts_none():
+    """Probe couldn't read marker → no check fires."""
+    _validate_marker_match(None, "ARHO")  # no exception
+
+
+def test_validate_marker_match_accepts_test():
+    """Bench-default 'TEST' is acceptable (will be auto-corrected later)."""
+    _validate_marker_match("TEST", "ARHO")
+    _validate_marker_match("test", "ARHO")
+
+
+def test_validate_marker_match_accepts_station_marker():
+    _validate_marker_match("ARHO", "ARHO")
+    _validate_marker_match("arho", "ARHO")  # case-insensitive
+
+
+def test_validate_marker_match_rejects_other():
+    with pytest.raises(CfgOperationError, match="marker_name is 'HRAC'"):
+        _validate_marker_match("HRAC", "ARHO")
+
+
+def _replace_writer(*, with_b9_eid=4, station_eid=4233, station_marker="ARHO"):
+    """Pre-rigged writer for replace_receiver tests.
+
+    ``find_station_by_marker`` returns the station eid only for the
+    target marker; any other input (including "B9 - Kjallari - Jörð"
+    used by the move helpers) returns None so the auto-detect falls
+    through to location lookup.
+    """
+    w = MagicMock()
+    w.dry_run = False
+    w.find_station_by_marker.side_effect = (
+        lambda marker, **_kw:
+            station_eid if marker.upper() == station_marker.upper() else None
+    )
+    w.find_location_by_name.return_value = with_b9_eid
+    # Default: new serial NOT in TOS (warehouse intake required)
+    w.find_device_by_serial.return_value = None
+    w.move_device.return_value = {"closed": "ok", "opened": "ok"}
+    w.add_maintenance_visit.return_value = {
+        "id_maintenance": 9999,
+        "created": {},
+        "updated": {},
+    }
+    w.transition_attribute_value.return_value = {"closed": {}, "opened": {}}
+    w.create_device.return_value = {"id_entity": 21999}
+    w.connect_device_to_location.return_value = "connect_ok"
+    w.get_open_parent_join.return_value = None
+    return w
+
+
+@pytest.fixture
+def stub_move_device(monkeypatch):
+    """Replace operations.move_device with a recording stub.
+
+    Lets replace_receiver tests focus on its orchestration logic without
+    re-exercising the move_device displacement check / cfg-write path
+    (those are covered by their own tests). The stub returns an
+    OperationResult that mimics a successful move and records each call.
+    """
+    move_calls = []
+
+    def fake_move(serial, **kwargs):
+        move_calls.append((serial, kwargs))
+        return OperationResult(
+            operation="move",
+            serial=serial,
+            date=kwargs.get("date"),
+            tos_changes={"move": "stub", "to_location": kwargs.get("to")},
+            cfg_changes={},
+            vitjun_id=9999 if kwargs.get("to") != DEFAULT_WAREHOUSE else None,
+            dry_run=kwargs.get("dry_run", True),
+        )
+
+    from receivers.cfg import operations as _ops
+    monkeypatch.setattr(_ops, "move_device", fake_move)
+    return move_calls
+
+
+def _replace_station_with_old_receiver(w, old_id=21197, old_serial="5039K70766"):
+    """Wire up: station has open old gnss_receiver. Both serial lookup and
+    history lookup return consistent data."""
+    receiver_hist = {
+        "id_entity": old_id,
+        "code_entity_subtype": "gnss_receiver",
+        "attributes": [
+            {"code": "serial_number", "value": old_serial,
+             "date_from": "2012-08-28T00:00:00", "date_to": None},
+            {"code": "model", "value": "TRIMBLE NETR9",
+             "date_from": "2012-08-28T00:00:00", "date_to": None},
+        ],
+    }
+
+    def history_for(eid):
+        if eid == 4233:  # the station
+            return {"children_connections": [
+                {"id_entity_child": old_id, "time_to": None},
+            ]}
+        return receiver_hist
+    w.get_entity_history.side_effect = history_for
+
+    # find_device_by_serial: new serial → None (fresh); old serial → device
+    def find_by_serial(subtype, serial):
+        if serial == old_serial:
+            return receiver_hist
+        return None
+    w.find_device_by_serial.side_effect = find_by_serial
+
+
+def test_replace_receiver_manual_mode_skips_probe(
+    tmp_path, monkeypatch, stub_move_device
+):
+    """All three identity fields supplied → no probe is attempted."""
+    w = _replace_writer()
+    _replace_station_with_old_receiver(w)
+
+    def boom(*a, **kw):
+        raise AssertionError("probe_receiver should not be called in manual mode")
+
+    monkeypatch.setattr(
+        "receivers.cfg.device_probe.probe_receiver", boom
+    )
+
+    cfg = tmp_path / "stations.cfg"
+    cfg.write_text("[ARHO]\nreceiver_serial = 5039K70766\n")
+
+    result = replace_receiver(
+        "ARHO",
+        "polarx5",
+        date="2026-05-23",
+        new_serial="4101525",
+        new_model="SEPT POLARX5",
+        new_firmware="5.7.0",
+        new_marker="ARHO",
+        writer=w,
+        dry_run=False,
+        cfg_path=cfg,
+    )
+    assert result.operation == "replace"
+    assert result.serial == "4101525"
+    assert "warehouse_create" in result.tos_changes
+    assert "move_old" in result.tos_changes
+    assert "install_new" in result.tos_changes
+    # Two move_device calls — one to B9 for the old, one to ARHO for the new
+    assert len(stub_move_device) == 2
+    assert stub_move_device[0][0] == "5039K70766"   # old → B9
+    assert stub_move_device[0][1]["to"] == DEFAULT_WAREHOUSE
+    assert stub_move_device[1][0] == "4101525"      # new → ARHO
+    assert stub_move_device[1][1]["to"] == "ARHO"
+
+
+def test_replace_receiver_refuses_when_new_serial_equals_old():
+    """The same physical unit can't be its own replacement."""
+    w = _replace_writer()
+    _replace_station_with_old_receiver(w, old_serial="4101524")
+    with pytest.raises(CfgOperationError, match="matches the old receiver"):
+        replace_receiver(
+            "ARHO",
+            "polarx5",
+            new_serial="4101524",       # same as old
+            new_model="SEPT POLARX5",
+            new_firmware="5.7.0",
+            new_marker="ARHO",
+            writer=w,
+            dry_run=True,
+        )
+
+
+def test_replace_receiver_refuses_on_marker_mismatch():
+    w = _replace_writer()
+    _replace_station_with_old_receiver(w)
+    with pytest.raises(CfgOperationError, match="marker_name is 'HRAC'"):
+        replace_receiver(
+            "ARHO",
+            "polarx5",
+            new_serial="9999999",
+            new_model="SEPT POLARX5",
+            new_firmware="5.7.0",
+            new_marker="HRAC",   # configured for another station!
+            writer=w,
+            dry_run=True,
+        )
+
+
+def test_replace_receiver_skip_marker_check_overrides_rejection(stub_move_device):
+    w = _replace_writer()
+    _replace_station_with_old_receiver(w)
+    # Doesn't raise:
+    replace_receiver(
+        "ARHO",
+        "polarx5",
+        new_serial="9999999",
+        new_model="SEPT POLARX5",
+        new_firmware="5.7.0",
+        new_marker="HRAC",
+        skip_marker_check=True,
+        writer=w,
+        dry_run=True,
+    )
+
+
+def test_replace_receiver_refuses_existing_device_at_other_station():
+    """New serial already in TOS but joined to a station != B9 → red flag."""
+    w = _replace_writer()
+    _replace_station_with_old_receiver(w)
+    # Override the per-serial side_effect from the helper:
+    w.find_device_by_serial.side_effect = None
+    w.find_device_by_serial.return_value = {"id_entity": 22000}
+    # That device is currently joined to some OTHER station (not B9):
+    w.get_open_parent_join.return_value = {
+        "id_entity_parent": 16096,  # HRAC, not B9 (4)
+        "time_to": None,
+    }
+    with pytest.raises(CfgOperationError, match="already joined to TOS entity 16096"):
+        replace_receiver(
+            "ARHO",
+            "polarx5",
+            new_serial="4101525",
+            new_model="SEPT POLARX5",
+            new_firmware="5.7.0",
+            new_marker="ARHO",
+            writer=w,
+            dry_run=True,
+        )
+
+
+def test_replace_receiver_reuses_existing_device_at_b9(stub_move_device):
+    """New serial already in TOS at B9 → skip warehouse intake, reuse."""
+    w = _replace_writer()
+    _replace_station_with_old_receiver(w)
+    # Override find_device_by_serial to always return the existing device
+    w.find_device_by_serial.side_effect = None
+    w.find_device_by_serial.return_value = {"id_entity": 22000}
+    w.get_open_parent_join.return_value = {
+        "id_entity_parent": 4,  # B9
+        "time_to": None,
+    }
+    result = replace_receiver(
+        "ARHO",
+        "polarx5",
+        new_serial="4101525",
+        new_model="SEPT POLARX5",
+        new_firmware="5.7.0",
+        new_marker="ARHO",
+        writer=w,
+        dry_run=True,
+    )
+    assert result.tos_changes["warehouse_create"] == "skipped (already in TOS)"
+    # create_device should NOT have been called
+    w.create_device.assert_not_called()
+
+
+def test_replace_receiver_continue_from_install_new(stub_move_device):
+    """--continue-from install-new skips warehouse+move-old."""
+    w = _replace_writer()
+    _replace_station_with_old_receiver(w)
+    result = replace_receiver(
+        "ARHO",
+        "polarx5",
+        new_serial="4101525",
+        new_model="SEPT POLARX5",
+        new_firmware="5.7.0",
+        new_marker="ARHO",
+        continue_from="install-new",
+        writer=w,
+        dry_run=True,
+    )
+    assert "warehouse_create" not in result.tos_changes
+    assert "move_old" not in result.tos_changes
+    assert "install_new" in result.tos_changes
+
+
+def test_replace_receiver_refuses_when_station_has_no_open_receiver():
+    w = _replace_writer()
+    # Station has no open children:
+    w.get_entity_history.return_value = {"children_connections": []}
+    with pytest.raises(CfgOperationError, match="nothing to replace"):
+        replace_receiver(
+            "ARHO",
+            "polarx5",
+            new_serial="4101525",
+            new_model="SEPT POLARX5",
+            new_firmware="5.7.0",
+            new_marker="ARHO",
+            writer=w,
+            dry_run=True,
+        )
+
+
+def test_replace_receiver_continue_from_validates_step_name():
+    w = _replace_writer()
+    with pytest.raises(CfgOperationError, match="--continue-from must be one of"):
+        replace_receiver(
+            "ARHO",
+            "polarx5",
+            new_serial="X",
+            new_model="Y",
+            new_firmware="Z",
+            new_marker="ARHO",
+            continue_from="bogus",
+            writer=w,
+            dry_run=True,
+        )

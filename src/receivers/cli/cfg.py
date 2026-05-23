@@ -25,6 +25,7 @@ import logging
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 
 from ..cfg.field_manifest import (
@@ -2777,12 +2778,968 @@ Examples:
     )
     add_rx.set_defaults(func=cmd_cfg_add_receiver)
 
+    # ---- move-device (unified: station OR warehouse target) -------------
+    move = cfg_subparsers.add_parser(
+        "move-device",
+        help="Move a receiver to a station OR a warehouse — TOS Pattern 2",
+        description=(
+            "Move a receiver between parent entities in TOS. The "
+            "destination is auto-detected from --to: a 4-char station "
+            "marker triggers the full station-install workflow "
+            "(TOS join move + Breyting vitjun on the destination with "
+            "auto-derived 'Skipt um móttakara' text + stations.cfg "
+            "update); any other value is treated as a warehouse name "
+            "and runs the bookkeeping-only path (move + optional "
+            "vitjun on the source station, no stations.cfg). Refuses "
+            "to install onto a station that already has an open "
+            "gnss_receiver child — move the old receiver out first."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Move HRAC's old receiver back to B9 warehouse (default target):
+  receivers cfg move-device --serial 5545R50370 --date 2026-05-21T23:00:00
+
+  # Transfer HRAC's old receiver directly to SAVI (station→station):
+  receivers cfg move-device --serial 5545R50370 --to SAVI \\
+      --from-station HRAC --date 2026-05-23
+
+  # Install a warehoused receiver at HRAC:
+  receivers cfg move-device --serial 4101524 --to HRAC \\
+      --date 2026-05-21T23:00:00 --participants bgo@vedur.is
+
+  # Override the auto-generated vitjun text:
+  receivers cfg move-device --serial 4101524 --to HRAC --date 2026-05-23 \\
+      --vitjun "Skipt um móttakara og lagaði loftnetskapal"
+
+  # Move to a non-default warehouse:
+  receivers cfg move-device --serial XYZ --to "Reykjavík - tæknibílskúr"
+""",
+    )
+    move.add_argument(
+        "--serial",
+        help=(
+            "Device serial number (must already exist in TOS). "
+            "Optional when --from-station is given: the serial is "
+            "inferred from the receiver most recently closed off that "
+            "station (workflow case: 'the receiver that came off HRAC')."
+        ),
+    )
+    move.add_argument(
+        "--to",
+        default="B9 - Kjallari - Jörð",
+        metavar="MARKER_OR_LOCATION",
+        help=(
+            "Destination: a 4-char station marker (e.g. HRAC) → "
+            "station-install workflow, OR a location name as recorded "
+            "in TOS (e.g. 'B9 - Kjallari - Jörð'). Default: the B9 "
+            "warehouse."
+        ),
+    )
+    move.add_argument(
+        "--date",
+        metavar="YYYY-MM-DD[THH:MM:SS]",
+        help=(
+            "When the move happened. Three modes: "
+            "(1) flag omitted → right now (current timestamp), for "
+            "live entries; "
+            "(2) bare YYYY-MM-DD or 'today'/'yesterday' → promoted to "
+            "12:00 noon on that date, for backdated workday entries; "
+            "(3) full ISO datetime (YYYY-MM-DDTHH:MM:SS) → exact "
+            "moment preserved. The resolved timestamp is used for the "
+            "join transition, any device attribute transitions "
+            "(status, comment), and the vitjun's start_time."
+        ),
+    )
+    move.add_argument(
+        "--from-station",
+        metavar="MARKER",
+        help=(
+            "Source station marker — sanity-checks the device is "
+            "currently at this station. Default: auto-detect from the "
+            "open parent join."
+        ),
+    )
+    move.add_argument(
+        "--firmware",
+        help=(
+            "Station-destination only: override the firmware string "
+            "written to stations.cfg (does not touch the TOS "
+            "firmware_version attribute)."
+        ),
+    )
+    move.add_argument(
+        "--rinex-valid-from",
+        dest="rinex_valid_from",
+        metavar="YYYY-MM-DD",
+        help=(
+            "Station-destination only: override the stations.cfg "
+            "rinex_config_valid_from date. Default: install date if "
+            "install was at midnight, else install date + 1 day "
+            "(first full day of new config)."
+        ),
+    )
+    move.add_argument(
+        "--vitjun",
+        metavar="TEXT",
+        help=(
+            "Override the 'Framkvæmt' text. For station destinations, "
+            "default is auto-derived ('Skipt um móttakara: <old> → "
+            "<new>'). For location destinations, no vitjun is written "
+            "unless this is set."
+        ),
+    )
+    move.add_argument(
+        "--vitjun-remaining",
+        dest="vitjun_remaining",
+        metavar="TEXT",
+        help="Optional 'Útistandandi' text for the vitjun.",
+    )
+    move.add_argument(
+        "--participants",
+        metavar="EMAIL[,EMAIL...]",
+        help="Participant emails for the vitjun (e.g. bgo@vedur.is).",
+    )
+    move.add_argument(
+        "--device-status",
+        dest="device_status",
+        metavar="VALUE",
+        help=(
+            "Pattern-2 transition on the device's `status` attribute "
+            "on the move date. Closes the existing 'virkt' (or whatever) "
+            "period and opens a new period with VALUE — e.g. 'bilað' "
+            "when moving a broken unit to a workshop, or 'virkt' when "
+            "redeploying after repair. Devices with no existing status "
+            "get the value added (no close)."
+        ),
+    )
+    move.add_argument(
+        "--device-comment",
+        dest="device_comment",
+        metavar="TEXT",
+        help=(
+            "Pattern-2 transition on the device's `comment` attribute "
+            "on the move date — preserves the old comment in history. "
+            "Pass the FULL new comment text."
+        ),
+    )
+    move.add_argument(
+        "--no-vitjun",
+        action="store_true",
+        help="Skip the vitjun step entirely.",
+    )
+    move.add_argument(
+        "--no-cfg",
+        action="store_true",
+        help=(
+            "Skip the stations.cfg write entirely. For station "
+            "destinations: don't write the new receiver_* values. For "
+            "warehouse destinations: don't clear the source station's "
+            "receiver_* fields to NONE (the auto-clear that flags a "
+            "station as inactive when its receiver leaves with no "
+            "immediate replacement)."
+        ),
+    )
+    move.add_argument(
+        "--cfg-path",
+        dest="cfg_path",
+        help=(
+            "Override the stations.cfg location. Default: "
+            "$GPS_CONFIG_DATA_REPO/stations.cfg if set, else the "
+            "gps_parser-resolved deployed copy."
+        ),
+    )
+    move.add_argument(
+        "--no-dry-run",
+        action="store_true",
+        help="Commit the writes; without this flag, payloads are logged only.",
+    )
+    move.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a structured JSON summary instead of plain text.",
+    )
+    move.set_defaults(func=cmd_cfg_move_device)
+
+    # ---- visit (create / edit / show / list) ----------------------------
+    visit = cfg_subparsers.add_parser(
+        "visit",
+        help="Vitjun (maintenance record): list, show, create, or edit",
+        description=(
+            "One verb, four modes, picked from the args:\n\n"
+            "  • --station STAT --history {id|full}   → list the station's "
+            "vitjun records\n"
+            "  • --id N                                → show one vitjun "
+            "(read-only)\n"
+            "  • --id N --work TEXT [...]              → edit an existing "
+            "vitjun in place\n"
+            "  • --station STAT --work TEXT [...]      → create a new "
+            "vitjun on the station\n\n"
+            "Used for field visits that do NOT change equipment joins "
+            "(cable repairs, environment cleanup, remote SSH tweaks). "
+            "Receiver swaps via `cfg move-device --to STAT` already "
+            "write a vitjun automatically — use this verb to amend "
+            "that vitjun afterwards via --id."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # List a station's recent vitjun records (id mode = compact):
+  receivers cfg visit --station HRAC --history id
+
+  # Same, with all fields (full mode):
+  receivers cfg visit --station HRAC --history full
+
+  # Show one record by id:
+  receivers cfg visit --id 5146
+
+  # Create a new vitjun (cable repair, no equipment swap):
+  receivers cfg visit --station HEDI --reason repairs \\
+      --work "Lagaði loftnetskapal" --date 2026-05-22 \\
+      --participants bgo@vedur.is
+
+  # Edit an existing vitjun — append outstanding work:
+  receivers cfg visit --id 5147 --remaining "Þarf að mála trappan næst"
+
+  # Edit — replace the work text:
+  receivers cfg visit --id 5147 --work "Skipt um móttakara og lagaði kapal"
+
+  # Edit — re-open as not-yet-completed:
+  receivers cfg visit --id 5147 --incomplete
+""",
+    )
+    visit.add_argument(
+        "--station",
+        metavar="MARKER",
+        help="4-char RINEX marker (required for create / list modes).",
+    )
+    visit.add_argument(
+        "--id",
+        dest="vitjun_id",
+        type=int,
+        metavar="ID_MAINTENANCE",
+        help="Maintenance id (selects show or edit mode).",
+    )
+    visit.add_argument(
+        "--history",
+        choices=("id", "full"),
+        help=(
+            "List mode. 'id' (compact: id/date/type/reason/staff/work-preview) "
+            "or 'full' (every field per record). Requires --station."
+        ),
+    )
+    visit.add_argument(
+        "--work",
+        metavar="TEXT",
+        help=(
+            "Required for create. In edit mode, overwrites the work "
+            "('Framkvæmt') field."
+        ),
+    )
+    visit.add_argument(
+        "--date",
+        metavar="YYYY-MM-DD[THH:MM:SS]",
+        help=(
+            "When the visit started. Three modes: "
+            "(1) flag omitted → right now (current timestamp), for "
+            "live entries; "
+            "(2) bare YYYY-MM-DD or 'today'/'yesterday' → 12:00 noon "
+            "on that date, for backdated workday entries; "
+            "(3) full ISO datetime → exact moment preserved."
+        ),
+    )
+    visit.add_argument(
+        "--end-time",
+        dest="end_time",
+        metavar="ISO_DATETIME",
+        help="When the visit ended. Default: same as --date.",
+    )
+    visit.add_argument(
+        "--type",
+        choices=("onsite", "remote"),
+        default="onsite",
+        help=(
+            "Visit type — 'onsite' (Staðarvitjun, default) or 'remote' "
+            "(Fjarvitjun). Create mode only."
+        ),
+    )
+    visit.add_argument(
+        "--reason",
+        action="append",
+        choices=("change", "repairs", "inspection", "improvements", "other"),
+        help=(
+            "Reason for the visit; repeatable (multi-select). Maps to "
+            "the reason_* booleans. In create mode default is 'repairs'; "
+            "in edit mode the reason set is REPLACED only when given."
+        ),
+    )
+    visit.add_argument(
+        "--comment",
+        metavar="TEXT",
+        help="'Athugasemdir' text.",
+    )
+    visit.add_argument(
+        "--remaining",
+        metavar="TEXT",
+        help="'Útistandandi' (outstanding work) text.",
+    )
+    visit.add_argument(
+        "--participants",
+        metavar="EMAIL[,EMAIL...]",
+        help="Participant emails (e.g. bgo@vedur.is,bhb@vedur.is).",
+    )
+    visit.add_argument(
+        "--incomplete",
+        action="store_true",
+        help=(
+            "Mark the visit as not completed (completed=false in TOS). "
+            "In create mode applies to the new record; in edit mode "
+            "explicitly flips the existing record's completed flag."
+        ),
+    )
+    visit.add_argument(
+        "--no-dry-run",
+        action="store_true",
+        help="Commit the writes (irrelevant for read modes).",
+    )
+    visit.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a structured JSON output instead of plain text.",
+    )
+    visit.set_defaults(func=cmd_cfg_visit)
+
+    # ---- replace-receiver ----------------------------------------------
+    rr = cfg_subparsers.add_parser(
+        "replace-receiver",
+        help="One-shot warehouse + retire + install for a receiver swap",
+        description=(
+            "Encodes the canonical 3-step receiver replacement workflow as "
+            "a single verb. Probes the new receiver at the station's "
+            "router_ip (or --host), warehouses it in TOS (skipped if "
+            "already registered), moves the OLD receiver to B9 marked "
+            "'bilað' with a comment, and installs the new one at the "
+            "station with auto-vitjun + stations.cfg update. All three "
+            "steps share the same timestamp."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Probe-driven (most common — new receiver reachable on network):
+  receivers cfg replace-receiver --station ARHO --new-type polarx5
+
+  # Manual mode (offline entry days after the field visit):
+  receivers cfg replace-receiver --station ARHO --new-type polarx5 \\
+      --new-serial 4101525 --new-model "SEPT POLARX5" --new-firmware 5.7.0 \\
+      --date 2026-05-23
+
+  # Continue from a partially-failed run:
+  receivers cfg replace-receiver --station ARHO --new-type polarx5 \\
+      --continue-from install-new --no-dry-run
+
+Note: --dry-run validates inputs and the warehouse-intake step but
+cannot fully preview later steps (move-old + install-new depend on
+TOS state that only changes when the prior step actually writes).
+For full preview, use --dry-run + --continue-from to preview each
+step in isolation, or just --no-dry-run after eyeballing the args.
+""",
+    )
+    rr.add_argument(
+        "--station",
+        required=True,
+        metavar="MARKER",
+        help="4-char RINEX marker of the destination station.",
+    )
+    rr.add_argument(
+        "--new-type",
+        dest="new_type",
+        required=True,
+        choices=("polarx5", "netr9", "netrs", "netr5", "g10"),
+        help="Probe protocol for the new receiver.",
+    )
+    rr.add_argument(
+        "--date",
+        metavar="YYYY-MM-DD[THH:MM:SS]",
+        help=(
+            "Single timestamp used for all three transitions. Default: "
+            "now. Bare date → noon. Use this when entering days after "
+            "the field visit."
+        ),
+    )
+    rr.add_argument(
+        "--host",
+        metavar="IP[:PORT]",
+        help=(
+            "Override the probe target. Default: stations.cfg[STATION]."
+            "router_ip + probe-type's default port."
+        ),
+    )
+    rr.add_argument(
+        "--new-serial",
+        dest="new_serial",
+        help="Manual override (skips probe when --new-model and --new-firmware also given).",
+    )
+    rr.add_argument(
+        "--new-model",
+        dest="new_model",
+        help="Manual model override (e.g. 'SEPT POLARX5').",
+    )
+    rr.add_argument(
+        "--new-firmware",
+        dest="new_firmware",
+        help="Manual firmware override (e.g. '5.7.0').",
+    )
+    rr.add_argument(
+        "--new-marker",
+        dest="new_marker",
+        help="Override the probed marker_name (use when probe can't read it).",
+    )
+    rr.add_argument(
+        "--owner",
+        default="Jarðeðlismælihópur",
+        help="Owner attribute on the new device. Default: Jarðeðlismælihópur.",
+    )
+    rr.add_argument(
+        "--old-status",
+        dest="old_status",
+        default="bilað",
+        help=(
+            "status attribute applied to the OLD device when it moves "
+            "to B9. Default: 'bilað'. Pass empty string to skip."
+        ),
+    )
+    rr.add_argument(
+        "--old-comment",
+        dest="old_comment",
+        default="can't connect to the receiver",
+        help=(
+            "comment attribute applied to the OLD device. Default: "
+            "\"can't connect to the receiver\". Pass empty string to skip."
+        ),
+    )
+    rr.add_argument(
+        "--vitjun",
+        metavar="TEXT",
+        help="Override the auto-derived 'Skipt um móttakara' vitjun text.",
+    )
+    rr.add_argument(
+        "--participants",
+        metavar="EMAIL[,EMAIL...]",
+        help="Participant emails for the vitjun.",
+    )
+    rr.add_argument(
+        "--continue-from",
+        dest="continue_from",
+        choices=("warehouse", "move-old", "install-new"),
+        help=(
+            "Skip to a later step for recovery from partial failure. "
+            "Re-runs that step and the ones after, assumes earlier "
+            "steps already landed."
+        ),
+    )
+    rr.add_argument(
+        "--skip-marker-check",
+        dest="skip_marker_check",
+        action="store_true",
+        help=(
+            "Don't refuse on marker_name mismatch (use when the "
+            "receiver's marker is intentionally non-standard)."
+        ),
+    )
+    rr.add_argument(
+        "--cfg-path",
+        dest="cfg_path",
+        help="Override the stations.cfg location.",
+    )
+    rr.add_argument(
+        "--no-dry-run",
+        action="store_true",
+        help="Commit the writes.",
+    )
+    rr.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a structured JSON summary.",
+    )
+    rr.set_defaults(func=cmd_cfg_replace_receiver)
+
+    # ---- delete-join ----------------------------------------------------
+    dj = cfg_subparsers.add_parser(
+        "delete-join",
+        help="Permanently delete a TOS entity_connection (join) row by id",
+        description=(
+            "Admin-level destructive operation. Removes a join row "
+            "via DELETE /admin_entity_connection_row/{id}. No undo on "
+            "TOS — always inspect the row first via "
+            "`/entity/parent_history/{id_child}` and confirm with a "
+            "dry-run before committing. Intended for cleaning up "
+            "known-bad rows: zero-duration orphans from historical "
+            "add-receiver workflows, duplicates, etc."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Inspect the device's joins, identify the stale id:
+  curl -s https://vi-api.vedur.is/tos/v1/entity/parent_history/21197 | jq
+
+  # Dry-run the delete (default — no writes):
+  receivers cfg delete-join --id 27836
+
+  # Commit the delete:
+  receivers cfg delete-join --id 27836 --no-dry-run
+""",
+    )
+    dj.add_argument(
+        "--id",
+        type=int,
+        required=True,
+        metavar="ID_CONNECTION",
+        help="entity_connection id (the `id` field in parent_history rows).",
+    )
+    dj.add_argument(
+        "--no-dry-run",
+        action="store_true",
+        help="Commit the delete (irreversible).",
+    )
+    dj.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a structured JSON summary.",
+    )
+    dj.set_defaults(func=cmd_cfg_delete_join)
+
+
+def _normalise_date_arg(value: Optional[str]) -> Optional[str]:
+    """Resolve --date input to a date string for the operations layer.
+
+    Pass *bare dates* (YYYY-MM-DD) through unchanged so the operations
+    layer's :func:`_visit_default_time` can apply the noon-promotion
+    convention. Only return a full ISO datetime when the caller
+    explicitly typed one (then noon is suppressed and their time wins).
+
+    Accepts:
+        * None — caller's default applies (operations module → today noon)
+        * "today" / "yesterday" → bare YYYY-MM-DD (noon-promoted downstream)
+        * YYYY-MM-DD → unchanged (noon-promoted downstream)
+        * YYYY-MM-DDTHH:MM:SS → unchanged (explicit time preserved)
+    """
+    if value is None:
+        return None
+    import re as _re
+    from datetime import date as _date, timedelta as _td
+
+    v = value.strip().lower()
+    today = _date.today()
+    if v == "today":
+        return today.isoformat()
+    if v == "yesterday":
+        return (today - _td(days=1)).isoformat()
+    if _re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        return value  # bare date → operations.py noon-promotes
+    if _re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?", value):
+        return value  # explicit time preserved
+    raise argparse.ArgumentTypeError(
+        f"--date {value!r}: use YYYY-MM-DD, "
+        f"YYYY-MM-DDTHH:MM:SS, 'today', or 'yesterday'."
+    )
+
+
+def _print_result_summary(result, *, json_output: bool, dry_run: bool) -> None:
+    """Format an OperationResult to stdout (text or JSON)."""
+    import json as _json
+    import sys
+
+    from ..cfg.operations import OperationResult
+
+    if not isinstance(result, OperationResult):
+        return
+    # Compute a visit-edit diff so users can spot what would change in
+    # dry-run mode before they commit.
+    edit_diff = None
+    if result.operation == "visit-edit":
+        inner = result.tos_changes.get("update") or {}
+        before = inner.get("before") or {}
+        after = inner.get("after") or {}
+        edit_diff = _compute_visit_edit_diff(before, after)
+
+    if json_output:
+        payload = {
+            "operation": result.operation,
+            "station_id": result.station_id,
+            "serial": result.serial,
+            "date": result.date,
+            "vitjun_id": result.vitjun_id,
+            "cfg_changes": result.cfg_changes,
+            "dry_run": result.dry_run,
+            "tos_changes_summary": {
+                k: type(v).__name__ for k, v in result.tos_changes.items()
+            },
+        }
+        if edit_diff is not None:
+            payload["edit_diff"] = edit_diff
+        _json.dump(payload, sys.stdout, ensure_ascii=False, indent=2)
+        sys.stdout.write("\n")
+        return
+
+    prefix = "🌵 DRY-RUN" if dry_run else "✅ APPLIED"
+    op = result.operation.upper()
+    bits = [prefix, op]
+    if result.station_id:
+        bits.append(f"station={result.station_id}")
+    if result.serial:
+        bits.append(f"serial={result.serial}")
+    if result.date:
+        bits.append(f"date={result.date.split('T', 1)[0]}")
+    if result.vitjun_id is not None:
+        bits.append(f"vitjun_id={result.vitjun_id}")
+    if result.operation == "delete-join":
+        bits.append(f"id_connection={result.tos_changes.get('id_connection')}")
+    print(" ".join(bits))
+    if result.cfg_changes:
+        print(f"   stations.cfg updates: {result.cfg_changes}")
+    elif not dry_run and result.operation == "install":
+        print("   stations.cfg: no changes (values already matched)")
+    if edit_diff:
+        print("   field changes:")
+        for k, (old, new) in edit_diff.items():
+            print(f"     {k}: {old!r} → {new!r}")
+    elif edit_diff == {}:
+        print("   (no field changes — payload identical to current state)")
+
+
+def _compute_visit_edit_diff(before: dict, after: dict) -> dict:
+    """Return a {field: (old, new)} dict for changed fields on a visit edit.
+
+    Compares top-level start_time / end_time / participants / completed,
+    plus each maintenance_attribute_value row (keyed by code).
+    """
+    diff: dict = {}
+    for key in ("start_time", "end_time", "participants", "completed"):
+        if key in after and before.get(key) != after.get(key):
+            diff[key] = (before.get(key), after.get(key))
+
+    before_attrs = {
+        av.get("code"): av.get("value")
+        for av in (before.get("maintenance_attribute_values") or [])
+    }
+    # `after` has attribute_values as a list of {id_maintenance_attribute_value,
+    # value} only — to label them we need to map id_av → code via `before`.
+    id_to_code = {
+        av.get("id_maintenance_attribute_value"): av.get("code")
+        for av in (before.get("maintenance_attribute_values") or [])
+    }
+    for row in after.get("maintenance_attribute_values") or []:
+        av_id = row.get("id_maintenance_attribute_value")
+        code = id_to_code.get(av_id, f"id_av={av_id}")
+        new_val = row.get("value")
+        old_val = before_attrs.get(code)
+        if old_val != new_val:
+            diff[code] = (old_val, new_val)
+    return diff
+
+
+def cmd_cfg_move_device(args) -> int:
+    """``cfg move-device`` — move a receiver to a station OR a warehouse.
+
+    Auto-detects target by looking up ``--to`` first as a station marker
+    then as a location name. See :func:`receivers.cfg.operations.move_device`.
+    """
+    import sys
+
+    from ..cfg.operations import (
+        CfgOperationError,
+        move_device,
+    )
+
+    dry_run = not args.no_dry_run
+    try:
+        result = move_device(
+            args.serial,
+            to=args.to,
+            date=_normalise_date_arg(args.date),
+            from_station=args.from_station,
+            firmware=args.firmware,
+            rinex_valid_from=args.rinex_valid_from,
+            vitjun=args.vitjun,
+            vitjun_remaining=args.vitjun_remaining,
+            participants=args.participants or "",
+            device_status=args.device_status,
+            device_comment=args.device_comment,
+            dry_run=dry_run,
+            cfg_path=Path(args.cfg_path) if args.cfg_path else None,
+            skip_vitjun=args.no_vitjun,
+            skip_cfg=args.no_cfg,
+        )
+    except CfgOperationError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        return 1
+    _print_result_summary(result, json_output=args.json, dry_run=dry_run)
+    return 0
+
+
+def cmd_cfg_replace_receiver(args) -> int:
+    """``cfg replace-receiver`` — one-shot warehouse + retire + install."""
+    import sys
+
+    from ..cfg.operations import (
+        CfgOperationError,
+        replace_receiver,
+    )
+
+    dry_run = not args.no_dry_run
+    try:
+        result = replace_receiver(
+            args.station,
+            args.new_type,
+            date=_normalise_date_arg(args.date),
+            host=args.host,
+            new_serial=args.new_serial,
+            new_model=args.new_model,
+            new_firmware=args.new_firmware,
+            new_marker=args.new_marker,
+            owner=args.owner or "Jarðeðlismælihópur",
+            old_status=args.old_status,
+            old_comment=args.old_comment,
+            vitjun=args.vitjun,
+            participants=args.participants or "",
+            continue_from=args.continue_from,
+            skip_marker_check=args.skip_marker_check,
+            dry_run=dry_run,
+            cfg_path=Path(args.cfg_path) if args.cfg_path else None,
+        )
+    except CfgOperationError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        return 1
+    _print_result_summary(result, json_output=args.json, dry_run=dry_run)
+    return 0
+
+
+def cmd_cfg_delete_join(args) -> int:
+    """``cfg delete-join`` — delete a stale entity_connection row by id."""
+    from ..cfg.operations import delete_join
+
+    dry_run = not args.no_dry_run
+    result = delete_join(args.id, dry_run=dry_run)
+    _print_result_summary(result, json_output=args.json, dry_run=dry_run)
+    return 0
+
+
+# Edit-mode flags on `cfg visit`. Used by `cmd_cfg_visit` to decide
+# whether `--id N` means "show" (no edit flags) or "edit" (some present).
+_VISIT_EDIT_FIELDS = (
+    "work", "comment", "remaining", "reason",
+    "participants", "date", "end_time", "incomplete",
+)
+
+
+def _has_any_edit_flag(args) -> bool:
+    for name in _VISIT_EDIT_FIELDS:
+        val = getattr(args, name, None)
+        # `incomplete` is a flag (default False); only treat as edit if explicitly set.
+        if name == "incomplete" and val:
+            return True
+        if name != "incomplete" and val is not None:
+            return True
+    return False
+
+
+def cmd_cfg_visit(args) -> int:
+    """``cfg visit`` — list / show / create / edit vitjun.
+
+    Mode is picked from args:
+      * ``--station S --history {id|full}`` → list
+      * ``--id N`` alone → show one
+      * ``--id N`` + edit flags → edit existing
+      * ``--station S --work TEXT`` → create new
+    """
+    import sys
+
+    from ..cfg.operations import (
+        CfgOperationError,
+        add_visit,
+        list_visits,
+        show_visit,
+        update_visit,
+    )
+
+    # --- List mode ---------------------------------------------------------
+    if args.history is not None:
+        if not args.station:
+            print(
+                "❌ --history requires --station MARKER", file=sys.stderr
+            )
+            return 2
+        try:
+            visits = list_visits(args.station)
+        except CfgOperationError as exc:
+            print(f"❌ {exc}", file=sys.stderr)
+            return 1
+        _print_visit_list(args.station, visits, mode=args.history, as_json=args.json)
+        return 0
+
+    # --- Show mode ---------------------------------------------------------
+    if args.vitjun_id is not None and not _has_any_edit_flag(args):
+        try:
+            detail = show_visit(args.vitjun_id)
+        except CfgOperationError as exc:
+            print(f"❌ {exc}", file=sys.stderr)
+            return 1
+        _print_visit_detail(detail, as_json=args.json)
+        return 0
+
+    # --- Edit mode ---------------------------------------------------------
+    if args.vitjun_id is not None:
+        dry_run = not args.no_dry_run
+        try:
+            result = update_visit(
+                args.vitjun_id,
+                start_time=_normalise_date_arg(args.date),
+                end_time=_normalise_date_arg(args.end_time),
+                participants=args.participants,  # None preserves
+                completed=(False if args.incomplete else None),
+                reasons=args.reason,  # None preserves
+                work=args.work,
+                comment=args.comment,
+                remaining=args.remaining,
+                dry_run=dry_run,
+            )
+        except (CfgOperationError, RuntimeError, ValueError) as exc:
+            print(f"❌ {exc}", file=sys.stderr)
+            return 1
+        _print_result_summary(result, json_output=args.json, dry_run=dry_run)
+        return 0
+
+    # --- Create mode -------------------------------------------------------
+    if not args.station:
+        print(
+            "❌ create mode requires --station MARKER (or use --id N to "
+            "show/edit an existing vitjun, or --station S --history "
+            "{id|full} to list)",
+            file=sys.stderr,
+        )
+        return 2
+    if not args.work:
+        print(
+            "❌ create mode requires --work TEXT", file=sys.stderr
+        )
+        return 2
+    dry_run = not args.no_dry_run
+    maintenance_type = "remote" if args.type == "remote" else "on_site"
+    try:
+        result = add_visit(
+            args.station,
+            work=args.work,
+            date=_normalise_date_arg(args.date),
+            end_time=_normalise_date_arg(args.end_time),
+            maintenance_type=maintenance_type,
+            reasons=args.reason or None,
+            comment=args.comment,
+            remaining=args.remaining,
+            participants=args.participants or "",
+            completed=not args.incomplete,
+            dry_run=dry_run,
+        )
+    except CfgOperationError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        return 1
+    _print_result_summary(result, json_output=args.json, dry_run=dry_run)
+    return 0
+
+
+def _print_visit_list(
+    station_id: str,
+    visits: list,
+    *,
+    mode: str,
+    as_json: bool,
+) -> None:
+    """Format a list of vitjun records for stdout."""
+    import json as _json
+    import sys
+
+    if as_json:
+        _json.dump(visits, sys.stdout, ensure_ascii=False, indent=2, default=str)
+        sys.stdout.write("\n")
+        return
+
+    if not visits:
+        print(f"{station_id} — no vitjun records.")
+        return
+
+    if mode == "id":
+        print(f"{station_id} — {len(visits)} vitjun records")
+        print(
+            f"{'id':>6}  {'date':<19}  {'type':<12}  "
+            f"{'reason':<10}  {'starfsmenn':<28}  framkvæmt"
+        )
+        print("─" * 110)
+        for v in visits:
+            vid = v.get("id") or v.get("id_maintenance") or "?"
+            date = (v.get("start_time") or "")[:19]
+            mt_is = v.get("maintenance_type_is") or v.get("maintenance_type") or ""
+            reason = v.get("reason") or ""
+            names = v.get("participants_names") or v.get("participants") or "(none)"
+            work = (v.get("work") or "").replace("\n", " ")
+            if len(work) > 60:
+                work = work[:57] + "..."
+            print(
+                f"{vid:>6}  {date:<19}  {mt_is:<12}  "
+                f"{reason:<10}  {names[:28]:<28}  {work}"
+            )
+        return
+
+    # mode == "full"
+    print(f"{station_id} — {len(visits)} vitjun records (full)")
+    for i, v in enumerate(visits, 1):
+        vid = v.get("id") or v.get("id_maintenance") or "?"
+        print(f"\n[{i}] id_maintenance={vid}")
+        for key in (
+            "maintenance_type_is", "reason", "start_time", "end_time",
+            "participants", "participants_names", "completed", "work",
+            "remaining", "creation_time",
+        ):
+            if key in v and v[key] not in (None, ""):
+                print(f"     {key}: {v[key]}")
+
+
+def _print_visit_detail(detail: dict, *, as_json: bool) -> None:
+    """Format one vitjun's full detail for stdout."""
+    import json as _json
+    import sys
+
+    if as_json:
+        # Drop the noisy employees list from text/JSON unless asked
+        compact = {k: v for k, v in detail.items() if k != "employees"}
+        _json.dump(compact, sys.stdout, ensure_ascii=False, indent=2, default=str)
+        sys.stdout.write("\n")
+        return
+
+    vid = detail.get("id_maintenance")
+    print(f"vitjun id_maintenance={vid}")
+    for key in (
+        "maintenance_type", "start_time", "end_time", "completed",
+        "participants",
+    ):
+        if key in detail:
+            print(f"   {key}: {detail[key]}")
+    avs = detail.get("maintenance_attribute_values") or []
+    if avs:
+        print("   attributes:")
+        for av in avs:
+            code = av.get("code")
+            value = av.get("value")
+            av_id = av.get("id_maintenance_attribute_value")
+            print(f"     [id_av={av_id}] {code} = {value!r}")
+
 
 def handle_cfg_command(args) -> int:
     """Handle cfg subcommands; called from main()."""
     if not getattr(args, "cfg_command", None):
         print("❌ No cfg subcommand specified")
-        print("Available: reconcile, extract, list, history, add-receiver")
-        print("\nTry: receivers cfg add-receiver --help")
+        print(
+            "Available: reconcile, extract, list, history, add-receiver, "
+            "move-device, replace-receiver, visit, delete-join"
+        )
+        print("\nTry: receivers cfg move-device --help")
         return 2
     return args.func(args)
