@@ -23,8 +23,6 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: GIS",
@@ -34,7 +32,7 @@ classifiers = [
     "Environment :: Console",
     "Natural Language :: English",
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "python-dateutil>=2.9.0",
     "pathlib2>=2.3.7; python_version<'3.4'",
@@ -103,8 +101,20 @@ allow-direct-references = true
 [tool.hatch.build.targets.wheel]
 packages = ["src/receivers"]
 
+# Dev-only sibling overrides: when these paths exist locally, `uv sync`
+# installs them as editable instead of pulling the git+https pins above.
+# [tool.uv.sources] is ignored by built wheels and by consumers without
+# local sibling checkouts, so production deploys still resolve git+https.
+# Avoids the symlink-vs-git+https collision that wiped tostools/src/
+# during a `uv lock` on 2026-05-24 (the venv had a manually-created
+# editable symlink that uv unlinked along with its target).
+[tool.uv.sources]
+gtimes = { path = "../gtimes", editable = true }
+tostools = { path = "../tostools", editable = true }
+gps-parser = { path = "../gps_parser", editable = true }
+
 [tool.ruff]
-target-version = "py310"
+target-version = "py312"
 line-length = 88
 
 [tool.ruff.lint]
@@ -160,7 +170,7 @@ skips = [
 
 [tool.black]
 line-length = 88
-target-version = ['py310', 'py311', 'py312', 'py313']
+target-version = ['py312', 'py313']
 include = '\.pyi?$'
 
 [tool.mypy]
