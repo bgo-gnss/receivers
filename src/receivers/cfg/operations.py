@@ -53,6 +53,7 @@ def _resolve_default_warehouse() -> str:
     """
     try:
         from ..config.receivers_config import ReceiversConfig
+
         cfg = ReceiversConfig()
         if cfg.config.has_section("tos"):
             value = cfg.config.get("tos", "default_warehouse", fallback=None)
@@ -251,8 +252,7 @@ def _device_attribute(device_hist: Dict[str, Any], code: str) -> Optional[str]:
     is open.
     """
     candidates = [
-        a for a in (device_hist.get("attributes") or [])
-        if a.get("code") == code
+        a for a in (device_hist.get("attributes") or []) if a.get("code") == code
     ]
     if not candidates:
         return None
@@ -383,9 +383,9 @@ def _find_recently_left_receiver(
         return None
     cap = on_or_before
     candidates = [
-        c for c in (history.get("children_connections") or [])
-        if c.get("time_to") is not None
-        and (cap is None or c.get("time_to") <= cap)
+        c
+        for c in (history.get("children_connections") or [])
+        if c.get("time_to") is not None and (cap is None or c.get("time_to") <= cap)
     ]
     candidates.sort(key=lambda c: c.get("time_to") or "", reverse=True)
     for c in candidates:
@@ -420,14 +420,10 @@ def _auto_vitjun_text(
       - ``"Settur upp móttakari: <new>"`` for a fresh deploy
     """
     new_serial = _device_attribute(new_device, "serial_number") or "?"
-    new_model = _canonical_receiver_type(
-        _device_attribute(new_device, "model")
-    ) or "?"
+    new_model = _canonical_receiver_type(_device_attribute(new_device, "model")) or "?"
     new_label = f"{new_model} {new_serial}".strip()
 
-    old_id = _find_recently_left_receiver(
-        writer, station_eid, transition_date
-    )
+    old_id = _find_recently_left_receiver(writer, station_eid, transition_date)
     if old_id is None:
         if from_station:
             return f"Móttekinn móttakari frá {from_station}: {new_label}"
@@ -438,15 +434,12 @@ def _auto_vitjun_text(
         return f"Settur upp móttakari: {new_label}"
 
     old_serial = _device_attribute(old_device, "serial_number") or "?"
-    old_model = _canonical_receiver_type(
-        _device_attribute(old_device, "model")
-    ) or "?"
+    old_model = _canonical_receiver_type(_device_attribute(old_device, "model")) or "?"
     old_label = f"{old_model} {old_serial}".strip()
 
     if from_station:
         return (
-            f"Móttakari fluttur frá {from_station}: {new_label} "
-            f"(skipt um {old_label})"
+            f"Móttakari fluttur frá {from_station}: {new_label} (skipt um {old_label})"
         )
     return f"Skipt um móttakara: {old_label} → {new_label}"
 
@@ -474,6 +467,7 @@ def _default_rinex_valid_from(install_iso: str) -> str:
     """
     from datetime import datetime as _dt
     from datetime import timedelta as _td
+
     try:
         dt = _dt.fromisoformat(install_iso)
     except ValueError:
@@ -668,10 +662,7 @@ def move_device(
         # Suppress the source-station cfg-clear when chained from
         # replace_receiver (its install-new step writes the new cfg).
         # Also suppress when the caller passed --no-cfg (umbrella).
-        skip_clear = (
-            skip_cfg
-            or _assume_cleared_device_id is not None
-        )
+        skip_clear = skip_cfg or _assume_cleared_device_id is not None
         return _move_to_location(
             w,
             serial=serial,
@@ -811,9 +802,7 @@ def _move_to_station(
                 rinex_valid_from or _default_rinex_valid_from(eff_date)
             ),
         }
-        result.cfg_changes = _apply_cfg_updates(
-            target_cfg, station_id, cfg_updates
-        )
+        result.cfg_changes = _apply_cfg_updates(target_cfg, station_id, cfg_updates)
     return result
 
 
@@ -837,9 +826,7 @@ def _move_to_location(
     """Location-destination (bookkeeping) path of :func:`move_device`."""
     device = w.find_device_by_serial("gnss_receiver", serial)
     if device is None:
-        raise CfgOperationError(
-            f"No gnss_receiver in TOS with serial {serial!r}."
-        )
+        raise CfgOperationError(f"No gnss_receiver in TOS with serial {serial!r}.")
     device_id = int(device["id_entity"])
 
     open_join = w.get_open_parent_join(device_id)
@@ -891,9 +878,7 @@ def _move_to_location(
         source_marker = _marker_for_entity(w, int(source_eid))
         if source_marker:
             target_cfg = _resolve_cfg_path(cfg_path)
-            cleared = _clear_station_receiver_cfg(
-                target_cfg, source_marker, eff_date
-            )
+            cleared = _clear_station_receiver_cfg(target_cfg, source_marker, eff_date)
             if cleared:
                 result.cfg_changes = cleared
 
@@ -1183,9 +1168,7 @@ def update_visit(
     # Promote bare YYYY-MM-DD dates: start → noon (workday convention),
     # end → end-of-day (so a same-day edit with an afternoon start
     # doesn't land an end-time before start).
-    norm_start = (
-        _visit_default_time(start_time) if start_time is not None else None
-    )
+    norm_start = _visit_default_time(start_time) if start_time is not None else None
     norm_end = _visit_default_end_time(end_time)
     resp = w.update_maintenance_visit(
         id_maintenance,
@@ -1388,8 +1371,7 @@ def replace_receiver(
 
     if continue_from is not None and continue_from not in REPLACE_STEPS:
         raise CfgOperationError(
-            f"--continue-from must be one of {REPLACE_STEPS}, "
-            f"got {continue_from!r}"
+            f"--continue-from must be one of {REPLACE_STEPS}, got {continue_from!r}"
         )
 
     w = _resolve_writer(writer, dry_run)
@@ -1511,12 +1493,14 @@ def replace_receiver(
                 date_start=eff_date,
             )
             if new_firmware:
-                attrs.append({
-                    "code": "firmware_version",
-                    "value": new_firmware,
-                    "date_from": eff_date,
-                    "date_to": None,
-                })
+                attrs.append(
+                    {
+                        "code": "firmware_version",
+                        "value": new_firmware,
+                        "date_from": eff_date,
+                        "date_to": None,
+                    }
+                )
             created = w.create_device(
                 entity_subtype="gnss_receiver",
                 attributes=attrs,

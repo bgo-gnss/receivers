@@ -702,9 +702,7 @@ class _CfgLock:
     def __enter__(self) -> "_CfgLock":
         import fcntl
 
-        self._fd = os.open(
-            str(self.lock_path), os.O_CREAT | os.O_RDWR, 0o644
-        )
+        self._fd = os.open(str(self.lock_path), os.O_CREAT | os.O_RDWR, 0o644)
         fcntl.flock(self._fd, fcntl.LOCK_EX)
         return self
 

@@ -3214,7 +3214,7 @@ step in isolation, or just --no-dry-run after eyeballing the args.
         default="can't connect to the receiver",
         help=(
             "comment attribute applied to the OLD device. Default: "
-            "\"can't connect to the receiver\". Pass empty string to skip."
+            '"can\'t connect to the receiver". Pass empty string to skip.'
         ),
     )
     rr.add_argument(
@@ -3539,8 +3539,14 @@ def cmd_cfg_delete_join(args) -> int:
 # Edit-mode flags on `cfg visit`. Used by `cmd_cfg_visit` to decide
 # whether `--id N` means "show" (no edit flags) or "edit" (some present).
 _VISIT_EDIT_FIELDS = (
-    "work", "comment", "remaining", "reason",
-    "participants", "date", "end_time", "incomplete",
+    "work",
+    "comment",
+    "remaining",
+    "reason",
+    "participants",
+    "date",
+    "end_time",
+    "incomplete",
 )
 
 
@@ -3577,9 +3583,7 @@ def cmd_cfg_visit(args) -> int:
     # --- List mode ---------------------------------------------------------
     if args.history is not None:
         if not args.station:
-            print(
-                "❌ --history requires --station MARKER", file=sys.stderr
-            )
+            print("❌ --history requires --station MARKER", file=sys.stderr)
             return 2
         try:
             visits = list_visits(args.station)
@@ -3631,9 +3635,7 @@ def cmd_cfg_visit(args) -> int:
         )
         return 2
     if not args.work:
-        print(
-            "❌ create mode requires --work TEXT", file=sys.stderr
-        )
+        print("❌ create mode requires --work TEXT", file=sys.stderr)
         return 2
     dry_run = not args.no_dry_run
     maintenance_type = "remote" if args.type == "remote" else "on_site"
@@ -3706,9 +3708,16 @@ def _print_visit_list(
         vid = v.get("id") or v.get("id_maintenance") or "?"
         print(f"\n[{i}] id_maintenance={vid}")
         for key in (
-            "maintenance_type_is", "reason", "start_time", "end_time",
-            "participants", "participants_names", "completed", "work",
-            "remaining", "creation_time",
+            "maintenance_type_is",
+            "reason",
+            "start_time",
+            "end_time",
+            "participants",
+            "participants_names",
+            "completed",
+            "work",
+            "remaining",
+            "creation_time",
         ):
             if key in v and v[key] not in (None, ""):
                 print(f"     {key}: {v[key]}")
@@ -3729,7 +3738,10 @@ def _print_visit_detail(detail: dict, *, as_json: bool) -> None:
     vid = detail.get("id_maintenance")
     print(f"vitjun id_maintenance={vid}")
     for key in (
-        "maintenance_type", "start_time", "end_time", "completed",
+        "maintenance_type",
+        "start_time",
+        "end_time",
+        "completed",
         "participants",
     ):
         if key in detail:

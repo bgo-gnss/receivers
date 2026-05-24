@@ -138,9 +138,7 @@ def test_canonical_receiver_type_netr9():
 
 def test_canonical_receiver_type_unknown_passthrough():
     """Unknown models pass through unchanged — don't silently corrupt."""
-    assert _canonical_receiver_type("FUTUREVENDOR FOO9000") == (
-        "FUTUREVENDOR FOO9000"
-    )
+    assert _canonical_receiver_type("FUTUREVENDOR FOO9000") == ("FUTUREVENDOR FOO9000")
 
 
 def test_canonical_receiver_type_none():
@@ -244,9 +242,7 @@ def test_move_device_raises_when_target_resolves_to_neither():
     w.find_station_by_marker.return_value = None
     w.find_location_by_name.return_value = None
     with pytest.raises(CfgOperationError, match="resolves to neither"):
-        move_device(
-            "4101524", to="Bogus Target", writer=w, dry_run=True
-        )
+        move_device("4101524", to="Bogus Target", writer=w, dry_run=True)
 
 
 # --- Station-destination path -----------------------------------------------
@@ -260,9 +256,7 @@ def test_move_device_to_station_refuses_when_destination_has_open_receiver():
         {"code_entity_subtype": "gnss_receiver"},
     ]
     with pytest.raises(CfgOperationError, match="already has an open"):
-        move_device(
-            "4101524", to="HRAC", date="2026-05-23", writer=w, dry_run=True
-        )
+        move_device("4101524", to="HRAC", date="2026-05-23", writer=w, dry_run=True)
     w.move_device.assert_not_called()
     w.add_maintenance_visit.assert_not_called()
 
@@ -271,9 +265,7 @@ def test_move_device_to_station_raises_on_unknown_serial():
     w = _station_writer()
     w.find_device_by_serial.return_value = None
     with pytest.raises(CfgOperationError, match="No gnss_receiver"):
-        move_device(
-            "NOSUCH", to="HRAC", date="2026-05-23", writer=w, dry_run=True
-        )
+        move_device("NOSUCH", to="HRAC", date="2026-05-23", writer=w, dry_run=True)
 
 
 def test_move_device_to_station_dry_run_writes_no_cfg(cfg_file):
@@ -364,10 +356,18 @@ def test_move_device_infers_serial_from_from_station():
     receiver_hist = {
         "code_entity_subtype": "gnss_receiver",
         "attributes": [
-            {"code": "serial_number", "value": "5545R50370",
-             "date_from": "2025-09-23T00:00:00", "date_to": None},
-            {"code": "model", "value": "TRIMBLE NETR9",
-             "date_from": "2025-09-23T00:00:00", "date_to": None},
+            {
+                "code": "serial_number",
+                "value": "5545R50370",
+                "date_from": "2025-09-23T00:00:00",
+                "date_to": None,
+            },
+            {
+                "code": "model",
+                "value": "TRIMBLE NETR9",
+                "date_from": "2025-09-23T00:00:00",
+                "date_to": None,
+            },
         ],
     }
     w.get_entity_history.side_effect = [
@@ -397,9 +397,7 @@ def test_move_device_infers_serial_from_from_station():
         dry_run=True,
     )
     # find_device_by_serial was called with the inferred serial
-    w.find_device_by_serial.assert_called_once_with(
-        "gnss_receiver", "5545R50370"
-    )
+    w.find_device_by_serial.assert_called_once_with("gnss_receiver", "5545R50370")
 
 
 def test_move_device_raises_when_neither_serial_nor_from_given():
@@ -424,20 +422,25 @@ def test_move_device_infers_serial_prefers_open_over_closed():
     open_receiver_hist = {
         "code_entity_subtype": "gnss_receiver",
         "attributes": [
-            {"code": "serial_number", "value": "5039K70763",
-             "date_from": "2014-10-17T00:00:00", "date_to": None},
+            {
+                "code": "serial_number",
+                "value": "5039K70763",
+                "date_from": "2014-10-17T00:00:00",
+                "date_to": None,
+            },
         ],
     }
     # _find_receiver_at_station: SAVI's children, then open child's subtype,
     # then a final get_entity_history(child_id) reads the serial.
     w.get_entity_history.side_effect = [
         {"children_connections": [open_now, closed_2007]},  # SAVI children
-        open_receiver_hist,                                  # open child subtype
-        open_receiver_hist,                                  # read serial
+        open_receiver_hist,  # open child subtype
+        open_receiver_hist,  # read serial
     ]
     w.find_location_by_name.return_value = 4  # B9
     w.get_open_parent_join.return_value = {
-        "id_entity_parent": 4440, "time_to": None,
+        "id_entity_parent": 4440,
+        "time_to": None,
     }
     w.find_device_by_serial.return_value = _device_with_attrs(
         id_entity=4830, model="TRIMBLE NETR9", firmware="4.1.7"
@@ -499,6 +502,7 @@ def test_visit_default_time_none_returns_current_timestamp():
     not type --date at all, so "right now" is the most literal default.
     """
     from datetime import datetime as _dt
+
     before = _dt.now().replace(microsecond=0)
     result = _visit_default_time(None)
     after = _dt.now().replace(microsecond=0)
@@ -673,9 +677,13 @@ def test_move_device_to_warehouse_clears_source_station_cfg(cfg_file):
     w.get_entity_history.return_value = {
         "code_entity_subtype": "stöð",
         "attributes": [
-            {"code": "marker", "value": "savi",
-             "date_from": "2007-09-07T00:00:00", "date_to": None}
-        ]
+            {
+                "code": "marker",
+                "value": "savi",
+                "date_from": "2007-09-07T00:00:00",
+                "date_to": None,
+            }
+        ],
     }
     move_device(
         "5039K70763",
@@ -700,8 +708,14 @@ def test_move_device_to_warehouse_dry_run_no_clear(cfg_file):
     w = _location_writer()
     w.get_entity_history.return_value = {
         "code_entity_subtype": "stöð",
-        "attributes": [{"code": "marker", "value": "savi",
-                        "date_from": "2007-09-07T00:00:00", "date_to": None}]
+        "attributes": [
+            {
+                "code": "marker",
+                "value": "savi",
+                "date_from": "2007-09-07T00:00:00",
+                "date_to": None,
+            }
+        ],
     }
     original = cfg_file.read_text()
     move_device(
@@ -719,8 +733,14 @@ def test_move_device_to_warehouse_no_cfg_flag_suppresses_clear(cfg_file):
     w = _location_writer()
     w.get_entity_history.return_value = {
         "code_entity_subtype": "stöð",
-        "attributes": [{"code": "marker", "value": "savi",
-                        "date_from": "2007-09-07T00:00:00", "date_to": None}]
+        "attributes": [
+            {
+                "code": "marker",
+                "value": "savi",
+                "date_from": "2007-09-07T00:00:00",
+                "date_to": None,
+            }
+        ],
     }
     original = cfg_file.read_text()
     move_device(
@@ -744,7 +764,7 @@ def test_move_device_chained_orchestration_skips_clear(cfg_file):
     w = _location_writer()
     w.get_entity_history.return_value = {
         "code_entity_subtype": "stöð",
-        "attributes": [{"code": "marker", "value": "savi"}]
+        "attributes": [{"code": "marker", "value": "savi"}],
     }
     original = cfg_file.read_text()
     move_device(
@@ -753,7 +773,7 @@ def test_move_device_chained_orchestration_skips_clear(cfg_file):
         writer=w,
         dry_run=False,
         cfg_path=cfg_file,
-        _assume_cleared_device_id=99,   # any non-None signal
+        _assume_cleared_device_id=99,  # any non-None signal
     )
     assert cfg_file.read_text() == original
 
@@ -763,7 +783,7 @@ def test_move_device_warehouse_to_warehouse_skips_clear(cfg_file):
     w = _location_writer()
     # The current parent is the SAME location (warehouse → warehouse)
     w.get_open_parent_join.return_value = {
-        "id_entity_parent": 4,   # same as B9 location_eid
+        "id_entity_parent": 4,  # same as B9 location_eid
         "time_to": None,
     }
     original = cfg_file.read_text()
@@ -789,7 +809,10 @@ def test_move_device_device_status_triggers_pattern2_transition():
         device_status="bilað",
     )
     w.transition_attribute_value.assert_called_once_with(
-        21501, "status", "bilað", "2026-05-23T12:00:00"  # bare date → noon
+        21501,
+        "status",
+        "bilað",
+        "2026-05-23T12:00:00",  # bare date → noon
     )
     assert "device_status" in result.tos_changes
 
@@ -952,15 +975,23 @@ def test_move_device_to_station_auto_vitjun_for_swap(cfg_file):
         # 3. _find_recently_left_receiver: child subtype check
         {"code_entity_subtype": "gnss_receiver"},
         # 4. fetch the old device's attrs
-        _device_with_attrs(
-            id_entity=21197, model="TRIMBLE NETR9", firmware="5.22"
-        )
-        | {"attributes": [
-            {"code": "model", "value": "TRIMBLE NETR9",
-             "date_from": "2025-09-23T00:00:00", "date_to": None},
-            {"code": "serial_number", "value": "5545R50370",
-             "date_from": "2025-09-23T00:00:00", "date_to": None},
-        ]},
+        _device_with_attrs(id_entity=21197, model="TRIMBLE NETR9", firmware="5.22")
+        | {
+            "attributes": [
+                {
+                    "code": "model",
+                    "value": "TRIMBLE NETR9",
+                    "date_from": "2025-09-23T00:00:00",
+                    "date_to": None,
+                },
+                {
+                    "code": "serial_number",
+                    "value": "5545R50370",
+                    "date_from": "2025-09-23T00:00:00",
+                    "date_to": None,
+                },
+            ]
+        },
     ]
     w.find_device_by_serial.return_value = _device_with_attrs(
         id_entity=21501, model="SEPT POLARX5", firmware="5.7.0"
@@ -1048,21 +1079,15 @@ def test_add_visit_default_reason_is_repairs():
     w = MagicMock()
     w.find_station_by_marker.return_value = 4316
     w.add_maintenance_visit.return_value = {"id_maintenance": 1}
-    add_visit(
-        "HEDI", work="Lagaði loftnetskapal", writer=w, dry_run=True
-    )
-    assert w.add_maintenance_visit.call_args.kwargs["reasons"] == [
-        "repairs"
-    ]
+    add_visit("HEDI", work="Lagaði loftnetskapal", writer=w, dry_run=True)
+    assert w.add_maintenance_visit.call_args.kwargs["reasons"] == ["repairs"]
 
 
 def test_add_visit_raises_when_station_unknown():
     w = MagicMock()
     w.find_station_by_marker.return_value = None
     with pytest.raises(CfgOperationError, match="No TOS station matches"):
-        add_visit(
-            "XXXX", work="anything", writer=w, dry_run=True
-        )
+        add_visit("XXXX", work="anything", writer=w, dry_run=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1189,8 +1214,9 @@ def _replace_writer(*, with_b9_eid=4, station_eid=4233, station_marker="ARHO"):
     w = MagicMock()
     w.dry_run = False
     w.find_station_by_marker.side_effect = (
-        lambda marker, **_kw:
-            station_eid if marker.upper() == station_marker.upper() else None
+        lambda marker, **_kw: station_eid
+        if marker.upper() == station_marker.upper()
+        else None
     )
     w.find_location_by_name.return_value = with_b9_eid
     # Default: new serial NOT in TOS (warehouse intake required)
@@ -1232,6 +1258,7 @@ def stub_move_device(monkeypatch):
         )
 
     from receivers.cfg import operations as _ops
+
     monkeypatch.setattr(_ops, "move_device", fake_move)
     return move_calls
 
@@ -1243,19 +1270,30 @@ def _replace_station_with_old_receiver(w, old_id=21197, old_serial="5039K70766")
         "id_entity": old_id,
         "code_entity_subtype": "gnss_receiver",
         "attributes": [
-            {"code": "serial_number", "value": old_serial,
-             "date_from": "2012-08-28T00:00:00", "date_to": None},
-            {"code": "model", "value": "TRIMBLE NETR9",
-             "date_from": "2012-08-28T00:00:00", "date_to": None},
+            {
+                "code": "serial_number",
+                "value": old_serial,
+                "date_from": "2012-08-28T00:00:00",
+                "date_to": None,
+            },
+            {
+                "code": "model",
+                "value": "TRIMBLE NETR9",
+                "date_from": "2012-08-28T00:00:00",
+                "date_to": None,
+            },
         ],
     }
 
     def history_for(eid):
         if eid == 4233:  # the station
-            return {"children_connections": [
-                {"id_entity_child": old_id, "time_to": None},
-            ]}
+            return {
+                "children_connections": [
+                    {"id_entity_child": old_id, "time_to": None},
+                ]
+            }
         return receiver_hist
+
     w.get_entity_history.side_effect = history_for
 
     # find_device_by_serial: new serial → None (fresh); old serial → device
@@ -1263,6 +1301,7 @@ def _replace_station_with_old_receiver(w, old_id=21197, old_serial="5039K70766")
         if serial == old_serial:
             return receiver_hist
         return None
+
     w.find_device_by_serial.side_effect = find_by_serial
 
 
@@ -1276,9 +1315,7 @@ def test_replace_receiver_manual_mode_skips_probe(
     def boom(*a, **kw):
         raise AssertionError("probe_receiver should not be called in manual mode")
 
-    monkeypatch.setattr(
-        "receivers.cfg.device_probe.probe_receiver", boom
-    )
+    monkeypatch.setattr("receivers.cfg.device_probe.probe_receiver", boom)
 
     cfg = tmp_path / "stations.cfg"
     cfg.write_text("[ARHO]\nreceiver_serial = 5039K70766\n")
@@ -1302,9 +1339,9 @@ def test_replace_receiver_manual_mode_skips_probe(
     assert "install_new" in result.tos_changes
     # Two move_device calls — one to B9 for the old, one to ARHO for the new
     assert len(stub_move_device) == 2
-    assert stub_move_device[0][0] == "5039K70766"   # old → B9
+    assert stub_move_device[0][0] == "5039K70766"  # old → B9
     assert stub_move_device[0][1]["to"] == DEFAULT_WAREHOUSE
-    assert stub_move_device[1][0] == "4101525"      # new → ARHO
+    assert stub_move_device[1][0] == "4101525"  # new → ARHO
     assert stub_move_device[1][1]["to"] == "ARHO"
 
 
@@ -1316,7 +1353,7 @@ def test_replace_receiver_refuses_when_new_serial_equals_old():
         replace_receiver(
             "ARHO",
             "polarx5",
-            new_serial="4101524",       # same as old
+            new_serial="4101524",  # same as old
             new_model="SEPT POLARX5",
             new_firmware="5.7.0",
             new_marker="ARHO",
@@ -1335,7 +1372,7 @@ def test_replace_receiver_refuses_on_marker_mismatch():
             new_serial="9999999",
             new_model="SEPT POLARX5",
             new_firmware="5.7.0",
-            new_marker="HRAC",   # configured for another station!
+            new_marker="HRAC",  # configured for another station!
             writer=w,
             dry_run=True,
         )
