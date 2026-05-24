@@ -658,82 +658,148 @@ def reload_config() -> None:
         _global_config = ReceiversConfig()
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` atomically via tempfile + ``os.replace``.
+
+    Prevents the truncate-on-crash window in which a SIGKILL between
+    ``write_text``'s open(W) and the actual write leaves the file at
+    zero bytes (the scheduler's mtime watcher would then auto-inactive
+    every station in the next tick).
+    """
+    import tempfile
+
+    parent = path.parent
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=path.name + ".", suffix=".tmp", dir=str(parent)
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
+class _CfgLock:
+    """``fcntl.flock`` context manager on a sidecar ``<path>.lock`` file.
+
+    Serialises concurrent writers (multiple CLI invocations, scheduler
+    reconciler vs. interactive ``move-device``) against the same
+    stations.cfg. Non-recursive — callers must not nest the lock.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.lock_path = path.with_suffix(path.suffix + ".lock")
+        self._fd: Optional[int] = None
+
+    def __enter__(self) -> "_CfgLock":
+        import fcntl
+
+        self._fd = os.open(
+            str(self.lock_path), os.O_CREAT | os.O_RDWR, 0o644
+        )
+        fcntl.flock(self._fd, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        import fcntl
+
+        if self._fd is not None:
+            fcntl.flock(self._fd, fcntl.LOCK_UN)
+            os.close(self._fd)
+            self._fd = None
+
+
 def _update_cfg_field(cfg_path: Path, station_id: str, key: str, value: str) -> bool:
     """In-place update of one key=value line in a configparser-format file.
 
     Preserves comments, ordering, and formatting.  Returns True if modified.
+
+    The read + compute + write cycle is held under ``_CfgLock`` and the
+    write is atomic via tempfile + ``os.replace`` — concurrent writers
+    are serialised, and a crash mid-write cannot truncate the file.
     """
-    lines = cfg_path.read_text().splitlines(keepends=True)
+    with _CfgLock(cfg_path):
+        lines = cfg_path.read_text().splitlines(keepends=True)
 
-    section_header = f"[{station_id}]"
-    in_section = False
-    key_line_idx = -1
-    next_section_idx = len(lines)
+        section_header = f"[{station_id}]"
+        in_section = False
+        key_line_idx = -1
+        next_section_idx = len(lines)
 
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped == section_header:
-            in_section = True
-            continue
-        if in_section:
-            if stripped.startswith("["):
-                next_section_idx = i
-                break
-            parts = stripped.split("=", 1)
-            if len(parts) == 2 and parts[0].strip().lower() == key.lower():
-                key_line_idx = i
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped == section_header:
+                in_section = True
+                continue
+            if in_section:
+                if stripped.startswith("["):
+                    next_section_idx = i
+                    break
+                parts = stripped.split("=", 1)
+                if len(parts) == 2 and parts[0].strip().lower() == key.lower():
+                    key_line_idx = i
 
-    if not in_section:
-        return False
-
-    target_line = f"{key} = {value}\n"
-
-    if key_line_idx >= 0:
-        existing = lines[key_line_idx].split("=", 1)[1].strip().rstrip("\n\r")
-        if existing == value:
+        if not in_section:
             return False
-        lines[key_line_idx] = target_line
-    else:
-        # Insert before next section, after last non-blank line in this section
-        insert_idx = next_section_idx
-        while insert_idx > 0 and not lines[insert_idx - 1].strip():
-            insert_idx -= 1
-        lines.insert(insert_idx, target_line)
 
-    cfg_path.write_text("".join(lines))
-    return True
+        target_line = f"{key} = {value}\n"
+
+        if key_line_idx >= 0:
+            existing = lines[key_line_idx].split("=", 1)[1].strip().rstrip("\n\r")
+            if existing == value:
+                return False
+            lines[key_line_idx] = target_line
+        else:
+            # Insert before next section, after last non-blank line in this section
+            insert_idx = next_section_idx
+            while insert_idx > 0 and not lines[insert_idx - 1].strip():
+                insert_idx -= 1
+            lines.insert(insert_idx, target_line)
+
+        _atomic_write_text(cfg_path, "".join(lines))
+        return True
 
 
 def _remove_cfg_field(cfg_path: Path, station_id: str, key: str) -> bool:
     """Remove a key line from a station section in a configparser-format file.
 
     Preserves comments, ordering, and formatting.  Returns True if a line was
-    removed, False if the key was not found.
+    removed, False if the key was not found. Lock + atomic-write semantics
+    match :func:`_update_cfg_field`.
     """
-    lines = cfg_path.read_text().splitlines(keepends=True)
+    with _CfgLock(cfg_path):
+        lines = cfg_path.read_text().splitlines(keepends=True)
 
-    section_header = f"[{station_id}]"
-    in_section = False
-    key_line_idx = -1
+        section_header = f"[{station_id}]"
+        in_section = False
+        key_line_idx = -1
 
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped == section_header:
-            in_section = True
-            continue
-        if in_section:
-            if stripped.startswith("["):
-                break
-            parts = stripped.split("=", 1)
-            if len(parts) == 2 and parts[0].strip().lower() == key.lower():
-                key_line_idx = i
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped == section_header:
+                in_section = True
+                continue
+            if in_section:
+                if stripped.startswith("["):
+                    break
+                parts = stripped.split("=", 1)
+                if len(parts) == 2 and parts[0].strip().lower() == key.lower():
+                    key_line_idx = i
 
-    if key_line_idx < 0:
-        return False
+        if key_line_idx < 0:
+            return False
 
-    del lines[key_line_idx]
-    cfg_path.write_text("".join(lines))
-    return True
+        del lines[key_line_idx]
+        _atomic_write_text(cfg_path, "".join(lines))
+        return True
 
 
 def create_station_section(
@@ -749,20 +815,21 @@ def create_station_section(
     """
     import re
 
-    text = cfg_path.read_text()
-    if re.search(r"^\[" + re.escape(sid) + r"\]", text, re.MULTILINE):
-        raise ValueError(f"Section [{sid}] already exists in {cfg_path}")
+    with _CfgLock(cfg_path):
+        text = cfg_path.read_text()
+        if re.search(r"^\[" + re.escape(sid) + r"\]", text, re.MULTILINE):
+            raise ValueError(f"Section [{sid}] already exists in {cfg_path}")
 
-    lines: list[str] = [""]
-    if header_comment:
-        for part in header_comment.splitlines():
-            lines.append(f"# {part}")
-    lines.append(f"[{sid}]")
-    for key, val in fields.items():
-        lines.append(f"{key} = {val}")
-    lines.append("")
+        lines: list[str] = [""]
+        if header_comment:
+            for part in header_comment.splitlines():
+                lines.append(f"# {part}")
+        lines.append(f"[{sid}]")
+        for key, val in fields.items():
+            lines.append(f"{key} = {val}")
+        lines.append("")
 
-    cfg_path.write_text(text + "\n".join(lines) + "\n")
+        _atomic_write_text(cfg_path, text + "\n".join(lines) + "\n")
 
 
 def update_station_identity_in_cfg(

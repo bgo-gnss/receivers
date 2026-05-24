@@ -3252,6 +3252,16 @@ step in isolation, or just --no-dry-run after eyeballing the args.
         help="Override the stations.cfg location.",
     )
     rr.add_argument(
+        "--warehouse",
+        dest="warehouse",
+        metavar="LOCATION_NAME",
+        help=(
+            "Override the warehouse used for the intake (step 1) + "
+            "old-device retire (step 2). Default: receivers.cfg "
+            "[tos] default_warehouse, else 'B9 - Kjallari - Jörð'."
+        ),
+    )
+    rr.add_argument(
         "--no-dry-run",
         action="store_true",
         help="Commit the writes.",
@@ -3504,6 +3514,7 @@ def cmd_cfg_replace_receiver(args) -> int:
             participants=args.participants or "",
             continue_from=args.continue_from,
             skip_marker_check=args.skip_marker_check,
+            warehouse=args.warehouse,
             dry_run=dry_run,
             cfg_path=Path(args.cfg_path) if args.cfg_path else None,
         )

@@ -33,9 +33,39 @@ from tostools.api.tos_writer import TOSWriter
 
 logger = logging.getLogger(__name__)
 
-# Default warehouse for retired devices — matches TOS station name + the
-# memory note `reference_tos_warehouse_locations`.
-DEFAULT_WAREHOUSE = "B9 - Kjallari - Jörð"
+# Fallback default warehouse for retired devices — matches the TOS
+# station name + the memory note `reference_tos_warehouse_locations`.
+# Operators / sites can override via the ``[tos] default_warehouse``
+# key in receivers.cfg (read by :func:`_resolve_default_warehouse`)
+# without editing source, so a TOS rename of B9 does not silently
+# break ``move-device`` / ``replace-receiver``.
+_FALLBACK_DEFAULT_WAREHOUSE = "B9 - Kjallari - Jörð"
+
+
+def _resolve_default_warehouse() -> str:
+    """Read ``[tos] default_warehouse`` from receivers.cfg if set.
+
+    Falls back to :data:`_FALLBACK_DEFAULT_WAREHOUSE` when the section
+    or key is absent. Read once at module import time via
+    :data:`DEFAULT_WAREHOUSE` so CLI ``--to`` defaults can reference it
+    statically; runtime callers that want the live value should call
+    this function directly.
+    """
+    try:
+        from ..config.receivers_config import ReceiversConfig
+        cfg = ReceiversConfig()
+        if cfg.config.has_section("tos"):
+            value = cfg.config.get("tos", "default_warehouse", fallback=None)
+            if value:
+                return value
+    except Exception:
+        # Config absent / corrupt / gps_parser missing — fall through
+        # to the hardcoded fallback rather than crashing.
+        pass
+    return _FALLBACK_DEFAULT_WAREHOUSE
+
+
+DEFAULT_WAREHOUSE = _resolve_default_warehouse()
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +136,26 @@ def _visit_default_time(date_arg: Optional[str]) -> str:
         return datetime.now().replace(microsecond=0).isoformat()
     if "T" not in date_arg:
         return f"{date_arg}T12:00:00"
+    return date_arg
+
+
+def _visit_default_end_time(date_arg: Optional[str]) -> Optional[str]:
+    """Resolve an *end-time* arg to an ISO datetime.
+
+    Mirrors :func:`_visit_default_time` but promotes a bare
+    ``YYYY-MM-DD`` to **end-of-day** (``T23:59:59``) rather than noon.
+    The operator intent for ``--end-time YYYY-MM-DD`` is "ended some
+    time that day", not "ended at noon" — noon-promotion can produce
+    an end-time *before* the start-time when ``--date`` carries an
+    explicit afternoon time, which TOS will store as a
+    negative-duration vitjun.
+
+    ``None`` and full ISO datetimes pass through unchanged.
+    """
+    if date_arg is None:
+        return None
+    if "T" not in date_arg:
+        return f"{date_arg}T23:59:59"
     return date_arg
 
 
@@ -604,7 +654,15 @@ def move_device(
             assume_cleared_device_id=_assume_cleared_device_id,
         )
 
+    # Locations: try the warehouse subtype first (the common case), then
+    # fall back to any non-station location so legitimate non-warehouse
+    # entities (calibration labs, external storage, future subtypes) are
+    # reachable without forcing the operator to learn the type system.
     location_eid = w.find_location_by_name(to, type_filter="vöruhús")
+    if location_eid is None:
+        # Empty string disables the filter per find_location_by_name's
+        # documented contract (any location_eid subtype).
+        location_eid = w.find_location_by_name(to, type_filter="")
     if location_eid is not None:
         # Suppress the source-station cfg-clear when chained from
         # replace_receiver (its install-new step writes the new cfg).
@@ -632,8 +690,8 @@ def move_device(
 
     raise CfgOperationError(
         f"--to {to!r} resolves to neither a station marker (type 'stöð') "
-        f"nor a warehouse (type 'vöruhús'). Check spelling, or use the "
-        f"full TOS-recorded name for warehouses."
+        f"nor any TOS location entity. Check spelling, or use the "
+        f"full TOS-recorded name."
     )
 
 
@@ -664,14 +722,26 @@ def _move_to_station(
     chained orchestration (:func:`replace_receiver`): when the caller
     has just (or is about to) close an open receiver join at this
     station, pass the device id so the displacement check treats it
-    as already-resolved. Lets dry-run mode preview the install step
-    without falsely reporting a conflict.
+    as already-resolved. **Honored in dry-run only** — in live mode
+    the real TOS state must already reflect the close (step 2 must
+    have actually landed); a still-open join is treated as a hard
+    error to avoid creating two simultaneously-open receiver children
+    on the station when ``--continue-from install-new`` is used after
+    a partial step-2 failure.
     """
     open_existing = _find_open_gnss_receiver_child(w, station_eid)
-    if open_existing is not None and open_existing != assume_cleared_device_id:
+    # The dry-run-only escape hatch: when replace_receiver previews
+    # step 3 before step 2 has written, accept the assume-cleared id
+    # so the preview is not blocked by its own simulated state.
+    effective_open = (
+        None
+        if (dry_run and open_existing == assume_cleared_device_id)
+        else open_existing
+    )
+    if effective_open is not None:
         raise CfgOperationError(
             f"{station_id} already has an open gnss_receiver child "
-            f"(id_entity={open_existing}). Move the old receiver out "
+            f"(id_entity={effective_open}). Move the old receiver out "
             f"first: `receivers cfg move-device --serial <SERIAL>` "
             f"(defaults to B9 warehouse) or "
             f"`receivers cfg move-device --serial <SERIAL> --to <ELSE>`."
@@ -830,13 +900,19 @@ def _move_to_location(
 
 
 def _marker_for_entity(w: TOSWriter, eid: int) -> Optional[str]:
-    """Look up the ``marker`` attribute value on a station entity.
+    """Look up the ``marker`` attribute value on a *station* entity.
 
-    Returns the 4-char RINEX marker if present, else None (the entity
-    isn't a station, or has no marker).
+    Returns the 4-char RINEX marker iff the entity is a station
+    (``code_entity_subtype == "stöð"``) and has a marker attribute,
+    else None. The subtype guard prevents the cfg auto-clear path
+    from NONE-ing an unrelated station section when the source entity
+    is some non-station container that happens to carry a ``marker``
+    attribute (admin-tagged grouping, future TOS schema).
     """
     hist = w.get_entity_history(eid)
     if not isinstance(hist, dict):
+        return None
+    if hist.get("code_entity_subtype") != "stöð":
         return None
     marker = _device_attribute(hist, "marker")
     return marker.upper() if marker else None
@@ -855,6 +931,13 @@ def _clear_station_receiver_cfg(
     NONE`` convention. The receivers scheduler's "None/empty/unknown"
     auto-inactive check (per receivers CLAUDE.md) accepts this.
 
+    ``rinex_config_valid_from`` uses the same "first full day of new
+    config" rule as :func:`_default_rinex_valid_from` so an install
+    immediately afterwards (with the same ``eff_date``) lands on the
+    same day — preventing a one-day ambiguity window where the cfg
+    claims the OLD config ends one day and the NEW config starts the
+    next.
+
     Returns the subset of fields that actually changed (skipping no-ops
     where the value was already NONE).
     """
@@ -862,7 +945,7 @@ def _clear_station_receiver_cfg(
         "receiver_type": "NONE",
         "receiver_serial": "NONE",
         "receiver_firmware_version": "NONE",
-        "rinex_config_valid_from": eff_date.split("T", 1)[0],
+        "rinex_config_valid_from": _default_rinex_valid_from(eff_date),
     }
     return _apply_cfg_updates(cfg_path, station_id, cfg_updates)
 
@@ -889,12 +972,16 @@ def _apply_device_attribute_transitions(
     Writes the responses into ``result.tos_changes[...]`` keys
     ``device_status`` / ``device_comment`` so the caller's
     OperationResult reflects the work.
+
+    Empty strings (``""``) are treated as "skip" — matching the CLI
+    help text for ``--old-status ""`` / ``--old-comment ""``. Pass
+    ``None`` or ``""`` to leave the attribute untouched.
     """
-    if device_status is not None:
+    if device_status:
         result.tos_changes["device_status"] = w.transition_attribute_value(
             device_id, "status", device_status, eff_date
         )
-    if device_comment is not None:
+    if device_comment:
         result.tos_changes["device_comment"] = w.transition_attribute_value(
             device_id, "comment", device_comment, eff_date
         )
@@ -981,7 +1068,7 @@ def add_visit(
     """
     w = _resolve_writer(writer, dry_run)
     eff_date = _visit_default_time(date)
-    eff_end = _visit_default_time(end_time) if end_time is not None else None
+    eff_end = _visit_default_end_time(end_time)
 
     station_eid = _resolve_station(w, station_id)
 
@@ -1092,14 +1179,13 @@ def update_visit(
         ``tos_changes={'update': <writer_response>}``.
     """
     w = _resolve_writer(writer, dry_run)
-    # Promote bare YYYY-MM-DD dates to noon to match the create-mode
-    # convention (a visit happens during the workday, not at midnight).
+    # Promote bare YYYY-MM-DD dates: start → noon (workday convention),
+    # end → end-of-day (so a same-day edit with an afternoon start
+    # doesn't land an end-time before start).
     norm_start = (
         _visit_default_time(start_time) if start_time is not None else None
     )
-    norm_end = (
-        _visit_default_time(end_time) if end_time is not None else None
-    )
+    norm_end = _visit_default_end_time(end_time)
     resp = w.update_maintenance_visit(
         id_maintenance,
         start_time=norm_start,
@@ -1128,14 +1214,27 @@ def update_visit(
 REPLACE_STEPS = ("warehouse", "move-old", "install-new")
 
 
-def _b9_eid(w: TOSWriter) -> int:
-    """Resolve the B9 warehouse id_entity once per replace operation."""
-    eid = w.find_location_by_name(DEFAULT_WAREHOUSE, type_filter="vöruhús")
+def _b9_eid(w: TOSWriter, warehouse: Optional[str] = None) -> int:
+    """Resolve the transit-warehouse ``id_entity`` once per replace operation.
+
+    ``warehouse`` overrides :data:`DEFAULT_WAREHOUSE` (which itself is
+    read from ``[tos] default_warehouse`` in receivers.cfg or falls
+    back to the hardcoded B9 name). Allows operators to point
+    ``replace-receiver`` at a different transit location without
+    editing the config file (e.g. for a one-off swap routed through
+    a calibration lab).
+    """
+    name = warehouse or DEFAULT_WAREHOUSE
+    eid = w.find_location_by_name(name, type_filter="vöruhús")
+    if eid is None:
+        # Fall back to any location subtype so non-vöruhús transit
+        # locations are reachable via --warehouse.
+        eid = w.find_location_by_name(name, type_filter="")
     if eid is None:
         raise CfgOperationError(
-            f"Could not resolve the B9 warehouse ({DEFAULT_WAREHOUSE!r}) "
-            "in TOS — replace-receiver assumes B9 exists as the default "
-            "transit location."
+            f"Could not resolve warehouse {name!r} in TOS — pass "
+            f"--warehouse with the exact TOS-recorded location name, "
+            f"or set [tos] default_warehouse in receivers.cfg."
         )
     return int(eid)
 
@@ -1212,6 +1311,7 @@ def replace_receiver(
     participants: str = "",
     continue_from: Optional[str] = None,
     skip_marker_check: bool = False,
+    warehouse: Optional[str] = None,
     dry_run: bool = True,
     writer: Optional[TOSWriter] = None,
     cfg_path: Optional[Path] = None,
@@ -1356,21 +1456,24 @@ def replace_receiver(
     existing_new = w.find_device_by_serial("gnss_receiver", new_serial)
     new_device_id: Optional[int] = None
     needs_warehouse_intake = True
+    # Resolve the transit warehouse once — re-used by steps 1 + 2.
+    warehouse_name = warehouse or DEFAULT_WAREHOUSE
+
     if existing_new is not None:
         new_device_id = int(existing_new["id_entity"])
         open_join = w.get_open_parent_join(new_device_id)
         current_parent = open_join.get("id_entity_parent") if open_join else None
-        b9_eid = _b9_eid(w)
+        b9_eid = _b9_eid(w, warehouse=warehouse_name)
         if current_parent is None or current_parent == b9_eid:
             needs_warehouse_intake = False  # already warehoused or floating — reuse
         else:
             raise CfgOperationError(
                 f"Device with serial {new_serial!r} (id_entity="
                 f"{new_device_id}) is already joined to TOS entity "
-                f"{current_parent}, not B9. Either it's still deployed "
-                f"on a station, or someone moved it manually. Use the "
-                f"atomic verbs (cfg move-device --serial {new_serial} "
-                f"...) instead of replace-receiver."
+                f"{current_parent}, not {warehouse_name!r}. Either it's "
+                f"still deployed on a station, or someone moved it "
+                f"manually. Use the atomic verbs (cfg move-device "
+                f"--serial {new_serial} ...) instead of replace-receiver."
             )
 
     # Build a unified result aggregating the three steps
@@ -1428,7 +1531,7 @@ def replace_receiver(
                 )
             connect = w.connect_device_to_location(
                 int(new_device_id) if new_device_id else 0,
-                location_name=DEFAULT_WAREHOUSE,
+                location_name=warehouse_name,
                 date_start=eff_date,
                 type_filter="vöruhús",
             )
@@ -1437,11 +1540,11 @@ def replace_receiver(
             result.tos_changes["warehouse_create"] = "skipped (already in TOS)"
         start_step = "move-old"
 
-    # --- Step 2: Move OLD station → B9 with status/comment ---------------
+    # --- Step 2: Move OLD station → warehouse with status/comment --------
     if start_step == "move-old":
         move_old = move_device(
             old_serial,
-            to=DEFAULT_WAREHOUSE,
+            to=warehouse_name,
             date=eff_date,
             device_status=old_status,
             device_comment=old_comment,

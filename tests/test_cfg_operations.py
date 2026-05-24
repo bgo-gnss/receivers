@@ -672,6 +672,7 @@ def test_move_device_to_warehouse_clears_source_station_cfg(cfg_file):
     w = _location_writer()
     # Source is SAVI (4440); look up the station's marker via get_entity_history
     w.get_entity_history.return_value = {
+        "code_entity_subtype": "stöð",
         "attributes": [
             {"code": "marker", "value": "savi",
              "date_from": "2007-09-07T00:00:00", "date_to": None}
@@ -690,13 +691,16 @@ def test_move_device_to_warehouse_clears_source_station_cfg(cfg_file):
     assert "receiver_type = NONE" in savi_section
     assert "receiver_serial = NONE" in savi_section
     assert "receiver_firmware_version = NONE" in savi_section
-    assert "rinex_config_valid_from = 2026-05-23" in savi_section
+    # rinex_config_valid_from now follows _default_rinex_valid_from:
+    # noon-promoted 2026-05-23 → next full day = 2026-05-24
+    assert "rinex_config_valid_from = 2026-05-24" in savi_section
 
 
 def test_move_device_to_warehouse_dry_run_no_clear(cfg_file):
     """Dry-run never touches cfg, including the auto-clear path."""
     w = _location_writer()
     w.get_entity_history.return_value = {
+        "code_entity_subtype": "stöð",
         "attributes": [{"code": "marker", "value": "savi",
                         "date_from": "2007-09-07T00:00:00", "date_to": None}]
     }
@@ -715,6 +719,7 @@ def test_move_device_to_warehouse_no_cfg_flag_suppresses_clear(cfg_file):
     """--no-cfg (skip_cfg=True) suppresses the auto-clear too."""
     w = _location_writer()
     w.get_entity_history.return_value = {
+        "code_entity_subtype": "stöð",
         "attributes": [{"code": "marker", "value": "savi",
                         "date_from": "2007-09-07T00:00:00", "date_to": None}]
     }
@@ -739,6 +744,7 @@ def test_move_device_chained_orchestration_skips_clear(cfg_file):
     """
     w = _location_writer()
     w.get_entity_history.return_value = {
+        "code_entity_subtype": "stöð",
         "attributes": [{"code": "marker", "value": "savi"}]
     }
     original = cfg_file.read_text()
@@ -842,6 +848,58 @@ def test_move_device_to_station_also_supports_device_attrs():
     w.transition_attribute_value.assert_called_once_with(
         21501, "status", "virkt", "2026-05-23T12:00:00"
     )
+
+
+def test_move_device_empty_string_status_skips_transition():
+    """``device_status=""`` is treated as 'skip', matching the CLI
+    --old-status "" "pass empty string to skip" contract."""
+    w = _location_writer()
+    move_device(
+        "5039K70763",
+        date="2026-05-23",
+        writer=w,
+        dry_run=False,
+        device_status="",
+        skip_cfg=True,
+    )
+    w.transition_attribute_value.assert_not_called()
+
+
+def test_move_device_empty_string_comment_skips_transition():
+    """``device_comment=""`` is treated as 'skip' — same as status."""
+    w = _location_writer()
+    move_device(
+        "5039K70763",
+        date="2026-05-23",
+        writer=w,
+        dry_run=False,
+        device_comment="",
+        skip_cfg=True,
+    )
+    w.transition_attribute_value.assert_not_called()
+
+
+def test_marker_for_entity_rejects_non_station_subtype(cfg_file):
+    """The marker-for-entity helper guards against clearing an
+    unrelated station's cfg when the source entity carries a
+    ``marker`` attribute but is not subtype ``stöð``."""
+    w = _location_writer()
+    # Source has a 'marker' attribute but is NOT a station — e.g.
+    # an admin-tagged container, a future TOS subtype.
+    w.get_entity_history.return_value = {
+        "code_entity_subtype": "annað",  # something other than 'stöð'
+        "attributes": [{"code": "marker", "value": "savi"}],
+    }
+    original = cfg_file.read_text()
+    move_device(
+        "5039K70763",
+        date="2026-05-23",
+        writer=w,
+        dry_run=False,
+        cfg_path=cfg_file,
+    )
+    # SAVI section must not be touched.
+    assert cfg_file.read_text() == original
 
 
 # --- Auto-vitjun text generation --------------------------------------------
