@@ -1213,10 +1213,8 @@ def _replace_writer(*, with_b9_eid=4, station_eid=4233, station_marker="ARHO"):
     """
     w = MagicMock()
     w.dry_run = False
-    w.find_station_by_marker.side_effect = (
-        lambda marker, **_kw: station_eid
-        if marker.upper() == station_marker.upper()
-        else None
+    w.find_station_by_marker.side_effect = lambda marker, **_kw: (
+        station_eid if marker.upper() == station_marker.upper() else None
     )
     w.find_location_by_name.return_value = with_b9_eid
     # Default: new serial NOT in TOS (warehouse intake required)
