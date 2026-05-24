@@ -472,7 +472,8 @@ def _default_rinex_valid_from(install_iso: str) -> str:
     Returns:
         ``YYYY-MM-DD`` date string for ``rinex_config_valid_from``.
     """
-    from datetime import datetime as _dt, timedelta as _td
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
     try:
         dt = _dt.fromisoformat(install_iso)
     except ValueError:

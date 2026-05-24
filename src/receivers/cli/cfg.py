@@ -3336,7 +3336,8 @@ def _normalise_date_arg(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
     import re as _re
-    from datetime import date as _date, timedelta as _td
+    from datetime import date as _date
+    from datetime import timedelta as _td
 
     v = value.strip().lower()
     today = _date.today()
