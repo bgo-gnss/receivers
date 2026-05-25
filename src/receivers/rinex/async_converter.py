@@ -259,7 +259,8 @@ def _rinex_worker(
 
         # Create converter and determine raw extension
         converter, raw_extension = _create_converter(
-            station_id, receiver_type, rinex_config, worker_logger
+            station_id, receiver_type, rinex_config, worker_logger,
+            session_type=session_type,
         )
         if converter is None or raw_extension is None:
             return {
@@ -389,7 +390,8 @@ def _single_file_worker(
         receiver_type = station_config.get("receiver", {}).get("type", "").lower()
 
         converter, _ext = _create_converter(
-            station_id, receiver_type, rinex_config, worker_logger
+            station_id, receiver_type, rinex_config, worker_logger,
+            session_type=session_type,
         )
         if converter is None:
             duration = _time.monotonic() - t0
@@ -460,8 +462,13 @@ def _create_converter(
     receiver_type: str,
     rinex_config: dict[str, Any],
     worker_logger: logging.Logger,
+    session_type: str | None = None,
 ) -> tuple[Any, str | None]:
     """Create the appropriate RINEX converter for a receiver type.
+
+    session_type plumbs through to the converter so hourly sessions
+    (1Hz_1hr, status_1hr) produce per-hour RINEX filenames instead of
+    overwriting each other under the daily name (e.g. SSSSDDD0.YYd.Z).
 
     Returns:
         (converter, raw_extension) or (None, None) if unsupported.
@@ -509,6 +516,7 @@ def _create_converter(
             naming_convention=naming,
             apply_header_corrections=apply_header,
             loglevel=logging.INFO,
+            session_type=session_type,
         )
         return converter, ".sbf.gz"
     elif "netr9" in receiver_type:
@@ -518,6 +526,7 @@ def _create_converter(
             naming_convention=naming,
             apply_header_corrections=apply_header,
             loglevel=logging.INFO,
+            session_type=session_type,
         )
         return converter, ".T02*"
     elif "netrs" in receiver_type:
@@ -527,6 +536,7 @@ def _create_converter(
             naming_convention=naming,
             apply_header_corrections=apply_header,
             loglevel=logging.INFO,
+            session_type=session_type,
         )
         return converter, ".T00*"
     elif "g10" in receiver_type or "leica" in receiver_type:
@@ -536,6 +546,7 @@ def _create_converter(
             naming_convention=naming,
             apply_header_corrections=apply_header,
             loglevel=logging.INFO,
+            session_type=session_type,
         )
         return converter, ".m00.gz"
     else:

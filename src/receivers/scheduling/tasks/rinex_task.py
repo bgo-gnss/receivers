@@ -309,6 +309,8 @@ class RINEXTask(ScheduledTask):
             OutputFormat.LEGACY if self.apply_hatanaka else OutputFormat.MODERN
         )
 
+        session_type = self.config.session_type
+
         try:
             if receiver_type == "polarx5":
                 from ...rinex.sbf_converter import SBFConverter
@@ -318,6 +320,7 @@ class RINEXTask(ScheduledTask):
                     rinex_version=RinexVersion(self.rinex_version),
                     output_format=output_format,
                     apply_header_corrections=self.apply_header_corrections,
+                    session_type=session_type,
                 )
             elif receiver_type in ("netr9", "netrs", "netr5"):
                 from ...rinex.trimble_converter import TrimbleConverter
@@ -327,6 +330,7 @@ class RINEXTask(ScheduledTask):
                     rinex_version=RinexVersion(self.rinex_version),
                     output_format=output_format,
                     apply_header_corrections=self.apply_header_corrections,
+                    session_type=session_type,
                 )
             elif receiver_type in ("g10", "leica"):
                 from ...rinex.leica_converter import LeicaConverter
@@ -336,6 +340,7 @@ class RINEXTask(ScheduledTask):
                     rinex_version=RinexVersion(self.rinex_version),
                     output_format=output_format,
                     apply_header_corrections=self.apply_header_corrections,
+                    session_type=session_type,
                 )
             else:
                 self.logger.warning(f"Unknown receiver type: {receiver_type}")
