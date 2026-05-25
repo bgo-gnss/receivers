@@ -149,6 +149,7 @@ class RawToRinexConverter(ABC):
         apply_hatanaka: Optional[bool] = None,
         compression_format: Optional[CompressionFormat] = None,
         loglevel: int = logging.INFO,
+        session_type: Optional[str] = None,
     ):
         """Initialize converter.
 
@@ -170,6 +171,8 @@ class RawToRinexConverter(ABC):
         self.station_id = station_id.upper()
         self.rinex_version = rinex_version
         self.apply_header_corrections = apply_header_corrections
+        # session_type drives hourly vs daily filename session letter; None = daily
+        self.session_type = session_type
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.logger.setLevel(loglevel)
 
@@ -503,6 +506,36 @@ class RawToRinexConverter(ABC):
             self.logger.warning(f"Header correction failed: {e}")
             return 0
 
+    def _data_frequency(self) -> str:
+        """gtimes lfrequency for this conversion ('1H' hourly, '1D' daily).
+
+        Daily is the safe default — legacy callers without a session_type
+        still produce the 24h naming convention they used before.
+        """
+        if self.session_type and "1hr" in self.session_type.lower():
+            return "1H"
+        return "1D"
+
+    def _build_short_filename(
+        self, observation_date: datetime, file_type: str
+    ) -> str:
+        """Build a RINEX 2 short filename via gtimes' frequency-aware template.
+
+        The ``#Rin2`` token in gtimes.datepathlist resolves to ``DDD<letter>.YY``
+        where ``<letter>`` is ``0`` for daily (``lfrequency='1D'``) and the
+        hour letter ``a``–``x`` for hourly (``lfrequency='1H'``). Going through
+        the template (rather than calling ``rinex2_filename`` with an explicit
+        session letter) keeps the converter aligned with how ``FormatResolver``
+        and the rest of the receivers code build paths.
+        """
+        import gtimes.timefunc as gt
+
+        template = f"{self.station_id}#Rin2{file_type}"
+        names = gt.datepathlist(
+            template, self._data_frequency(), datelist=[observation_date]
+        )
+        return names[0]
+
     def _rename_to_convention(
         self,
         rinex_file: Path,
@@ -521,12 +554,9 @@ class RawToRinexConverter(ABC):
 
         # Generate filename based on naming convention
         if self.naming_convention == NamingConvention.SHORT:
-            # RINEX 2 short format: SSSS0DDF.YYo
-            new_name = timefunc.rinex2_filename(
-                self.station_id,
-                observation_date,
-                file_type="o",  # observation
-            )
+            # RINEX 2 short format: SSSS<DOY><session>.YY<type>
+            # session letter comes from gtimes #Rin2 template via _data_frequency().
+            new_name = self._build_short_filename(observation_date, "o")
         else:
             # RINEX 3 long format: SSSS00CCC_R_YYYYDDD...
             new_name = timefunc.rinex3_filename(

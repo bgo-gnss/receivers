@@ -62,6 +62,7 @@ class SBFConverter(RawToRinexConverter):
         compression_format=None,
         observation_types: Optional[List[str]] = None,
         loglevel: int = logging.INFO,
+        session_type: Optional[str] = None,
     ):
         """Initialize SBF converter.
 
@@ -87,6 +88,7 @@ class SBFConverter(RawToRinexConverter):
             apply_hatanaka=apply_hatanaka,
             compression_format=compression_format,
             loglevel=loglevel,
+            session_type=session_type,
         )
         self.observation_types = observation_types
 
@@ -126,8 +128,6 @@ class SBFConverter(RawToRinexConverter):
         Raises:
             ConversionError: If conversion fails
         """
-        from gtimes import timefunc
-
         # Get sbf2rin path
         sbf2rin = self.get_tool_path("sbf2rin")
 
@@ -140,11 +140,10 @@ class SBFConverter(RawToRinexConverter):
             temp_created = False
 
         try:
-            # Generate output filename using gtimes (like mall_septentrio.sh uses timecalc)
-            # Use RINEX 2 short naming with 'T' suffix for temp file
-            base_name = timefunc.rinex2_filename(
-                self.station_id, observation_date, file_type="o"
-            )
+            # Generate output filename via gtimes' frequency-aware #Rin2 template
+            # (see RawToRinexConverter._build_short_filename). Append 'T' suffix
+            # to mark this as the pre-header-correction temp file.
+            base_name = self._build_short_filename(observation_date, "o")
             temp_rinex = output_dir / f"{base_name}T"
 
             # Build sbf2rin command with explicit output file

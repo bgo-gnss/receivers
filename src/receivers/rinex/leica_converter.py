@@ -79,6 +79,7 @@ class LeicaConverter(RawToRinexConverter):
         teqc_config: Optional[Path] = None,
         keep_intermediate: bool = False,
         loglevel: int = logging.INFO,
+        session_type: Optional[str] = None,
     ):
         """Initialize Leica converter.
 
@@ -104,6 +105,7 @@ class LeicaConverter(RawToRinexConverter):
             apply_hatanaka=apply_hatanaka,
             compression_format=compression_format,
             loglevel=loglevel,
+            session_type=session_type,
         )
         self.teqc_config = teqc_config
         self.keep_intermediate = keep_intermediate

@@ -70,6 +70,7 @@ class TrimbleNativeConverter(RawToRinexConverter):
         compression_format=None,
         docker_image: Optional[str] = None,
         loglevel: int = logging.INFO,
+        session_type: Optional[str] = None,
     ):
         """Initialize Trimble native converter.
 
@@ -93,6 +94,7 @@ class TrimbleNativeConverter(RawToRinexConverter):
             apply_hatanaka=apply_hatanaka,
             compression_format=compression_format,
             loglevel=loglevel,
+            session_type=session_type,
         )
         self.docker_image = docker_image or self.DOCKER_IMAGE
         self._temp_dirs: List[Path] = []

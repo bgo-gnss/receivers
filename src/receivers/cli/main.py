@@ -3643,6 +3643,8 @@ def _create_rinex_converter(
     else:
         use_native_trimble = False
 
+    session_type = getattr(args, "session", None)
+
     if "polarx" in receiver_type or "septentrio" in receiver_type:
         converter = SBFConverter(
             station_id=station_id,
@@ -3653,6 +3655,7 @@ def _create_rinex_converter(
             apply_header_corrections=not getattr(args, "no_header_correction", False),
             observation_types=observation_types,
             loglevel=args.loglevel,
+            session_type=session_type,
         )
         raw_extension = ".sbf.gz"
     elif "netr9" in receiver_type:
@@ -3687,6 +3690,7 @@ def _create_rinex_converter(
                     args, "no_header_correction", False
                 ),
                 loglevel=args.loglevel,
+                session_type=session_type,
             )
         else:
             converter = TrimbleConverter(
@@ -3700,6 +3704,7 @@ def _create_rinex_converter(
                 ),
                 keep_intermediate=getattr(args, "keep_intermediate", False),
                 loglevel=args.loglevel,
+                session_type=session_type,
             )
         raw_extension = ".T02*"  # Match .T02 and .T02.gz
     elif "netrs" in receiver_type:
@@ -3734,6 +3739,7 @@ def _create_rinex_converter(
                     args, "no_header_correction", False
                 ),
                 loglevel=args.loglevel,
+                session_type=session_type,
             )
         else:
             converter = TrimbleConverter(
@@ -3747,6 +3753,7 @@ def _create_rinex_converter(
                 ),
                 keep_intermediate=getattr(args, "keep_intermediate", False),
                 loglevel=args.loglevel,
+                session_type=session_type,
             )
         raw_extension = ".T00*"  # Match .T00 and .T00.gz
     elif "g10" in receiver_type or "leica" in receiver_type:
@@ -3759,6 +3766,7 @@ def _create_rinex_converter(
             apply_header_corrections=not getattr(args, "no_header_correction", False),
             keep_intermediate=getattr(args, "keep_intermediate", False),
             loglevel=args.loglevel,
+            session_type=session_type,
         )
         raw_extension = ".m00.gz"
     else:

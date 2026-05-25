@@ -66,6 +66,7 @@ class TrimbleConverter(RawToRinexConverter):
         compression_format=None,
         keep_intermediate: bool = False,
         loglevel: int = logging.INFO,
+        session_type: Optional[str] = None,
     ):
         """Initialize Trimble converter.
 
@@ -90,6 +91,7 @@ class TrimbleConverter(RawToRinexConverter):
             apply_hatanaka=apply_hatanaka,
             compression_format=compression_format,
             loglevel=loglevel,
+            session_type=session_type,
         )
         self.keep_intermediate = keep_intermediate
         self._temp_files: List[Path] = []
