@@ -549,7 +549,14 @@ def _convert_raw_to_rinex(
         rinex_dir = raw_path.parent.parent / "rinex"
         rinex_dir.mkdir(parents=True, exist_ok=True)
 
-        converter = converter_class(station_id=station_id)
+        # Plumb session_type so the converter picks the right gtimes lfrequency
+        # ('1H' vs '1D') for the filename — without this the reconciler writes
+        # daily-form names (e.g. HEDI1450.26d.Z) for hourly raw files and each
+        # hour overwrites the previous (the bug PR #75 fixed in the live path,
+        # silently re-introduced here).
+        converter = converter_class(
+            station_id=station_id, session_type=session_type
+        )
         result = converter.convert_file(raw_path, output_dir=rinex_dir)
 
         if result.success:
