@@ -918,12 +918,15 @@ class PolaRX5(BaseReceiver):
                     archive_file.stat().st_size if archive_file.exists() else None
                 )
 
+                # Record the LOCAL archive filename, not the FTP-side IGS name,
+                # so file_tracking.filename matches what's on disk and consumers
+                # that join on filename see consistent rows.
                 if file_tracker.mark_file_archived(
                     self.station_id,
                     session,
                     file_date,
                     file_hour,
-                    igs_filename,
+                    archive_file.name,
                     file_size,
                 ):
                     registered += 1
@@ -1348,6 +1351,21 @@ class PolaRX5(BaseReceiver):
                     return dt_key
             return None
 
+        def disk_filename(fname):
+            """Return the local archive basename for an FTP filename.
+
+            file_tracking.filename must match what's written to disk, not the
+            FTP-side template name (e.g. AFST145j.26_.gz). The local archive
+            path is stored alongside the IGS name in missing_file_dict; fall
+            back to the FTP name only if we can't resolve it.
+            """
+            if not missing_file_dict:
+                return fname
+            for _dt_key, (arch_path, igs_filename) in missing_file_dict.items():
+                if fname == igs_filename:
+                    return Path(arch_path).name
+            return fname
+
         # Determine if session is hourly (for file_hour tracking)
         is_hourly_session = session and "1hr" in session.lower()
 
@@ -1454,7 +1472,7 @@ class PolaRX5(BaseReceiver):
                                         session,
                                         track_date,
                                         track_hour,
-                                        file_name,
+                                        disk_filename(file_name),
                                     )
                             continue  # No local, no remote - nothing to do
                     else:
@@ -1535,7 +1553,7 @@ class PolaRX5(BaseReceiver):
                                                     session,
                                                     track_date,
                                                     track_hour,
-                                                    file_name,
+                                                    disk_filename(file_name),
                                                 )
                                     continue
                                 else:
@@ -1777,7 +1795,7 @@ class PolaRX5(BaseReceiver):
                                     session,
                                     track_date,
                                     track_hour,
-                                    file_name,
+                                    disk_filename(file_name),
                                     fallback_size,
                                     remote_file_size=remote_file_size,
                                 )
@@ -1826,7 +1844,7 @@ class PolaRX5(BaseReceiver):
                                             session,
                                             track_date,
                                             track_hour,
-                                            file_name,
+                                            Path(archive_path_fb).name,
                                             archive_size_fb,
                                             remote_file_size=remote_file_size,
                                         )
@@ -1992,7 +2010,7 @@ class PolaRX5(BaseReceiver):
                     session,
                     track_date,
                     track_hour,
-                    file_name,
+                    disk_filename(file_name),
                     local_file_size,
                     remote_file_size=remote_file_size,
                 )
@@ -2039,7 +2057,7 @@ class PolaRX5(BaseReceiver):
                             session,
                             track_date,
                             track_hour,
-                            file_name,
+                            Path(archive_path).name,
                             archive_size,
                             remote_file_size=remote_file_size,
                         )
