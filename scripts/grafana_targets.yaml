@@ -32,6 +32,7 @@ targets:
       gps_health_dashboard: "bgp9jh6"
       gps_map_dashboard: "45d42ce0-48b5-4ff6-a58c-a36d3ced2e69"
       gps_station_detail_dashboard: "bgqb686"
+      gps_data_delivery_dashboard: "gps-data-delivery"
 
 # UID mapping for inter-dashboard links
 # Used to rewrite /d/<uid>/... URLs in dashboard JSON
@@ -43,3 +44,5 @@ link_mappings:
     vedur: "45d42ce0-48b5-4ff6-a58c-a36d3ced2e69"
   "gps-station-detail":
     vedur: "bgqb686"
+  "gps-data-delivery":
+    vedur: "gps-data-delivery"
