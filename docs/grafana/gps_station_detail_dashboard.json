@@ -1748,7 +1748,8 @@
               {
                 "id": "color",
                 "value": {
-                  "mode": "thresholds"
+                  "mode": "fixed",
+                  "fixedColor": "blue"
                 }
               },
               {
@@ -1769,7 +1770,7 @@
               },
               {
                 "id": "custom.axisSoftMax",
-                "value": 1
+                "value": 1.5
               },
               {
                 "id": "min",
@@ -1784,7 +1785,8 @@
                 "value": [
                   {"type": "value", "options": {"0": {"text": "offline", "index": 0}}},
                   {"type": "value", "options": {"0.5": {"text": "port closed", "index": 1}}},
-                  {"type": "value", "options": {"1": {"text": "online", "index": 2}}}
+                  {"type": "value", "options": {"1": {"text": "online", "index": 2}}},
+                  {"type": "range", "options": {"from": -10, "to": 10, "result": {"text": " ", "index": 3}}}
                 ]
               },
               {
@@ -1810,7 +1812,7 @@
               {
                 "id": "custom.thresholdsStyle",
                 "value": {
-                  "mode": "off"
+                  "mode": "line"
                 }
               },
               {
@@ -1819,12 +1821,12 @@
                   "mode": "absolute",
                   "steps": [
                     {
-                      "color": "red",
+                      "color": "transparent",
                       "value": null
                     },
                     {
-                      "color": "blue",
-                      "value": 0.75
+                      "color": "orange",
+                      "value": 0.5
                     }
                   ]
                 }
@@ -1835,7 +1837,7 @@
               },
               {
                 "id": "decimals",
-                "value": 0
+                "value": 1
               }
             ]
           },
@@ -1888,7 +1890,7 @@
               {"id": "custom.axisPlacement", "value": "right"},
               {"id": "custom.axisLabel", "value": "Ping"},
               {"id": "custom.axisSoftMin", "value": 0},
-              {"id": "custom.axisSoftMax", "value": 1},
+              {"id": "custom.axisSoftMax", "value": 1.5},
               {"id": "min", "value": -0.1},
               {"id": "max", "value": 1.5},
               {"id": "custom.thresholdsStyle", "value": {"mode": "off"}},
