@@ -1760,12 +1760,32 @@
                 "value": "Ping"
               },
               {
+                "id": "custom.axisCenteredZero",
+                "value": false
+              },
+              {
                 "id": "custom.axisSoftMin",
                 "value": 0
               },
               {
                 "id": "custom.axisSoftMax",
-                "value": 2
+                "value": 1
+              },
+              {
+                "id": "min",
+                "value": -0.1
+              },
+              {
+                "id": "max",
+                "value": 1.5
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {"type": "value", "options": {"0": {"text": "offline", "index": 0}}},
+                  {"type": "value", "options": {"0.5": {"text": "port closed", "index": 1}}},
+                  {"type": "value", "options": {"1": {"text": "online", "index": 2}}}
+                ]
               },
               {
                 "id": "custom.lineInterpolation",
@@ -1868,7 +1888,9 @@
               {"id": "custom.axisPlacement", "value": "right"},
               {"id": "custom.axisLabel", "value": "Ping"},
               {"id": "custom.axisSoftMin", "value": 0},
-              {"id": "custom.axisSoftMax", "value": 2},
+              {"id": "custom.axisSoftMax", "value": 1},
+              {"id": "min", "value": -0.1},
+              {"id": "max", "value": 1.5},
               {"id": "custom.thresholdsStyle", "value": {"mode": "off"}},
               {"id": "custom.hideFrom", "value": {"legend": false, "tooltip": false, "viz": false}},
               {"id": "unit", "value": "short"},
