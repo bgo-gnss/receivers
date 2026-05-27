@@ -1680,7 +1680,7 @@
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "Voltage (V)",
-            "axisPlacement": "auto",
+            "axisPlacement": "left",
             "axisSoftMin": 11,
             "axisSoftMax": 14,
             "barAlignment": 0,
@@ -1692,7 +1692,7 @@
               "tooltip": false,
               "viz": false
             },
-            "insertNulls": 1800000,
+            "insertNulls": 600000,
             "lineInterpolation": "smooth",
             "lineWidth": 2,
             "pointSize": 5,
@@ -1700,7 +1700,7 @@
               "type": "linear"
             },
             "showPoints": "never",
-            "spanNulls": 1800000,
+            "spanNulls": false,
             "stacking": {
               "group": "A",
               "mode": "none"
