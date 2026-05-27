@@ -1159,4 +1159,9 @@ For subcommand help: receivers <command> --help
 
     create_db_parser(subparsers)
 
+    # health-query (EXPLAIN-gated SELECT against gps_health)
+    from .health_query import create_health_query_parser
+
+    create_health_query_parser(subparsers)
+
     return parser
