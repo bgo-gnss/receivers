@@ -623,6 +623,54 @@ locally), not from the IMO server config repo. `data_prepath` in particular shou
 point somewhere reboot-persistent (e.g. `~/tmp/gpsdata/`) — `/tmp/...` is tmpfs.
 See "Configuration → Source of truth" above for the production sync flow.
 
+## Querying gps_health
+
+The `gps_health` database (on `pgdev.vedur.is` in production, localhost in dev) has a
+cartesian-join footgun: any query that joins two or more `block_*_status` tables on
+`USING (sid)` without an additional `ts` predicate will produce a multi-billion-row
+plan that can take `pgdev` down. This actually happened on 2026-05-27 and IT had to
+kill the query manually. See vault note
+[[1779904424-gps-health-cartesian-incident-session]] for the incident write-up.
+
+**Defense in depth, in order of how likely each layer is to save you:**
+
+1. **Server-side timeouts** (always on): `ALTER ROLE bgo IN DATABASE gps_health` sets
+   `statement_timeout=60s`, `lock_timeout=5s`, `idle_in_transaction_session_timeout=30s`.
+   Even raw `psql` cannot run a 30-minute cartesian — postgres kills it at 60s.
+2. **`receivers health-query`** — Python EXPLAIN-gated entry point (this package):
+   ```bash
+   receivers health-query "SELECT count(*) FROM stations"
+   receivers health-query -f path/to/query.sql
+   receivers health-query --explain-only "SELECT ..."
+   receivers health-query --no-explain "SELECT ..."     # bypass gate, use with care
+   receivers health-query --max-rows 1e9 "SELECT ..."   # raise the ceiling
+   receivers health-query --host pgdev.vedur.is "SELECT ..."
+   ```
+   Refuses to execute when the plan's **maximum row estimate across any plan node**
+   exceeds `1e8`, or top-of-plan cost exceeds `1e9`. Sets `statement_timeout=60s` and
+   `lock_timeout=5s` on the session. Pass/refuse decisions are logged under
+   `receivers.cli.health_query`.
+3. **`~/.local/bin/gps-health-q`** — shell wrapper with the same enforcement. Available
+   on bgo's laptop only; use `receivers health-query` on any other host.
+
+**The join rule** — when joining two or more `block_*_status` tables:
+
+```sql
+-- WRONG: cartesian estimate ≈ rows(a) × rows(b)
+SELECT … FROM block_power_status p
+JOIN block_receiver_status r USING (sid)
+WHERE ts > now() - interval '7 days';
+
+-- RIGHT: time alignment in the join, ts predicate on EVERY alias
+SELECT … FROM block_power_status p
+JOIN block_receiver_status r USING (sid, ts)
+WHERE p.ts > now() - interval '7 days'
+  AND r.ts > now() - interval '7 days';
+```
+
+Prefer the pre-built views in `migrations/004`, `migrations/029`, and `sql/health_views.sql`
+over hand-rolling multi-block joins.
+
 ## Troubleshooting
 
 ### Common Issues
