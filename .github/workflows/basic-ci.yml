@@ -83,6 +83,11 @@ jobs:
       run: |
         bandit -r src/ -ll -c pyproject.toml
 
+    - name: Lint SQL joins (cartesian-incident regression guard)
+      if: always()  # run independently of pre-existing ruff/mypy debt
+      run: |
+        python scripts/lint-sql-joins.py
+
   test-with-dependencies:
     name: Test with Full Dependencies
     runs-on: ubuntu-latest
