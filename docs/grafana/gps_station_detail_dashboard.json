@@ -1748,8 +1748,7 @@
               {
                 "id": "color",
                 "value": {
-                  "mode": "fixed",
-                  "fixedColor": "blue"
+                  "mode": "thresholds"
                 }
               },
               {
@@ -1812,7 +1811,7 @@
               {
                 "id": "custom.thresholdsStyle",
                 "value": {
-                  "mode": "line"
+                  "mode": "off"
                 }
               },
               {
@@ -1821,12 +1820,12 @@
                   "mode": "absolute",
                   "steps": [
                     {
-                      "color": "transparent",
+                      "color": "red",
                       "value": null
                     },
                     {
-                      "color": "orange",
-                      "value": 0.5
+                      "color": "blue",
+                      "value": 0.75
                     }
                   ]
                 }
