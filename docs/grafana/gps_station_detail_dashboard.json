@@ -1783,7 +1783,7 @@
                 "id": "mappings",
                 "value": [
                   {"type": "value", "options": {"0": {"text": "offline", "index": 0}}},
-                  {"type": "value", "options": {"0.5": {"text": "port closed", "index": 1}}},
+                  {"type": "value", "options": {"0.5": {"text": "No port", "index": 1}}},
                   {"type": "value", "options": {"1": {"text": "online", "index": 2}}},
                   {"type": "range", "options": {"from": -10, "to": 10, "result": {"text": " ", "index": 3}}}
                 ]
