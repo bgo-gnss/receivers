@@ -19,7 +19,6 @@ from receivers.cli.health_query import (
     parse_explain_estimates,
 )
 
-
 # ── parse_explain_estimates ───────────────────────────────────────────────────
 
 
