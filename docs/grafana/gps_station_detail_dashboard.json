@@ -1866,6 +1866,7 @@
               {"id": "custom.lineWidth", "value": 0},
               {"id": "custom.fillOpacity", "value": 0},
               {"id": "custom.axisPlacement", "value": "right"},
+              {"id": "custom.axisLabel", "value": "Ping"},
               {"id": "custom.axisSoftMin", "value": 0},
               {"id": "custom.axisSoftMax", "value": 2},
               {"id": "custom.thresholdsStyle", "value": {"mode": "off"}},
