@@ -331,7 +331,10 @@ SELECT add_continuous_aggregate_policy(
     if_not_exists     => TRUE
 );
 
-COMMENT ON MATERIALIZED VIEW station_health_1h IS
+-- TimescaleDB continuous aggregates are exposed as regular views in the
+-- catalog (the actual materialization lives in a hypertable underneath),
+-- so COMMENT ON VIEW is correct here, not COMMENT ON MATERIALIZED VIEW.
+COMMENT ON VIEW station_health_1h IS
     'Hourly rollup of station_health_60s for long-range trend panels. '
     'Real-time aggregates fill the last hour from the 60-s source.';
 
