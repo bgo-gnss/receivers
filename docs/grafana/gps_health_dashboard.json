@@ -701,6 +701,83 @@
       "links": []
     },
     {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health_test"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 3
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Cycle filter",
+              "url": "/d/gps-health-voltage/gps-receiver-health-overview?var-status_filter=${__data.fields.next_filter}&var-area=${area:raw}&var-owner=${owner:raw}&var-station=${station:raw}&var-receiver=${receiver:raw}&var-antenna=${antenna:raw}&${__url_time_range}",
+              "targetBlank": false
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 2,
+        "x": 14,
+        "y": 2
+      },
+      "id": 43,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health_test"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH cutoff AS (SELECT max(ts) AS max_ts FROM station_sat_summary_60s),\nlatest AS (\n  SELECT DISTINCT ON (sid) sid, sats_total\n  FROM station_sat_summary_60s, cutoff\n  WHERE ts > cutoff.max_ts - INTERVAL '1 hour'\n  ORDER BY sid, ts DESC\n)\nSELECT COUNT(*) AS \"Low Sats\",\n  CASE\n    WHEN '$status_filter' = 'low_sats' THEN 'not_low_sats'\n    WHEN '$status_filter' = 'not_low_sats' THEN 'all'\n    ELSE 'low_sats'\n  END AS \"next_filter\"\nFROM latest\nWHERE sats_total < 4",
+          "refId": "A"
+        }
+      ],
+      "title": "Low Sats  (new schema)",
+      "type": "stat",
+      "links": []
+    },
+    {
       "id": 31,
       "gridPos": {
         "h": 16,
