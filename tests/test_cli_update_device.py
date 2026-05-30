@@ -209,3 +209,96 @@ def test_probe_returns_no_firmware(parser, capsys):
         rc = cmd_cfg_update_device(args)
     assert rc == 1
     assert "firmware_version" in capsys.readouterr().err
+
+
+# ── Credential overrides ───────────────────────────────────────────────────
+
+
+def test_cli_username_password_passed_to_probe(parser):
+    """--username/--password override the fleet defaults from receivers.cfg."""
+    args = parser.parse_args(
+        [
+            "cfg", "update-device",
+            "--probe", "192.168.3.1",
+            "--field", "firmware_version",
+            "--username", "bench_user",
+            "--password", "bench_pw",
+        ]
+    )
+    writer = _make_writer_mock()
+    mock_probe = MagicMock(return_value=_identity())
+    with (
+        patch("receivers.cfg.device_probe.probe_receiver", mock_probe),
+        patch("tostools.api.tos_writer.TOSWriter", return_value=writer),
+    ):
+        rc = cmd_cfg_update_device(args)
+    assert rc == 0
+    # Verify probe was called with the override creds
+    call_kwargs = mock_probe.call_args.kwargs
+    assert call_kwargs.get("tcp_username") == "bench_user"
+    assert call_kwargs.get("tcp_password") == "bench_pw"
+
+
+def test_no_cli_creds_passes_none_to_probe(parser):
+    """When --username/--password are not given, probe falls back to receivers.cfg defaults."""
+    args = parser.parse_args(
+        ["cfg", "update-device", "--probe", "192.168.3.1", "--field", "firmware_version"]
+    )
+    writer = _make_writer_mock()
+    mock_probe = MagicMock(return_value=_identity())
+    with (
+        patch("receivers.cfg.device_probe.probe_receiver", mock_probe),
+        patch("tostools.api.tos_writer.TOSWriter", return_value=writer),
+    ):
+        rc = cmd_cfg_update_device(args)
+    assert rc == 0
+    call_kwargs = mock_probe.call_args.kwargs
+    # None means "use receivers.cfg defaults" inside _probe_polarx5
+    assert call_kwargs.get("tcp_username") is None
+    assert call_kwargs.get("tcp_password") is None
+
+
+def test_probe_polarx5_applies_credential_overrides_to_extractor():
+    """_probe_polarx5 must set tcp_username/tcp_password on the extractor."""
+    from receivers.cfg.device_probe import _probe_polarx5
+
+    fake_extractor = MagicMock()
+    fake_extractor._query_receiver_setup.return_value = {
+        "serial_number": "SN_X",
+        "receiver_model": "PolaRx5",
+        "firmware_version": "5.7.0",
+        "marker_name": "BENCH",
+    }
+    with patch(
+        "receivers.health.polarx5_tcp_extractor.PolaRX5TCPExtractor",
+        return_value=fake_extractor,
+    ):
+        ident = _probe_polarx5(
+            "192.168.3.1", port=None, station_id_hint="BENCH",
+            tcp_username="alt_user", tcp_password="alt_pw",
+        )
+    # The override creds must have been written onto the extractor before _query
+    assert fake_extractor.tcp_username == "alt_user"
+    assert fake_extractor.tcp_password == "alt_pw"
+    assert ident.serial == "SN_X"
+
+
+def test_probe_polarx5_without_overrides_leaves_extractor_creds_alone():
+    """When no override is passed, _probe_polarx5 must not touch tcp_username/password
+    on the extractor (so it keeps whatever it loaded from receivers.cfg)."""
+    from receivers.cfg.device_probe import _probe_polarx5
+
+    fake_extractor = MagicMock()
+    fake_extractor.tcp_username = "fleet_user"
+    fake_extractor.tcp_password = "fleet_pw"
+    fake_extractor._query_receiver_setup.return_value = {
+        "serial_number": "SN_X", "receiver_model": "PolaRx5",
+        "firmware_version": "5.7.0", "marker_name": "BENCH",
+    }
+    with patch(
+        "receivers.health.polarx5_tcp_extractor.PolaRX5TCPExtractor",
+        return_value=fake_extractor,
+    ):
+        _probe_polarx5("192.168.3.1", port=None, station_id_hint="BENCH")
+    assert fake_extractor.tcp_username == "fleet_user"
+    assert fake_extractor.tcp_password == "fleet_pw"

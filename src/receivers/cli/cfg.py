@@ -2330,7 +2330,9 @@ def cmd_cfg_update_device(args) -> int:
     print(f"Probing {args.probe} …")
     try:
         identity = probe_receiver(
-            host, port, probe_type=args.probe_type
+            host, port, probe_type=args.probe_type,
+            tcp_username=args.username,
+            tcp_password=args.password,
         )
     except (ProbeUnreachableError, ProbeNotIdentifiedError, ProbeError) as e:
         print(f"❌ {e}", file=sys.stderr)
@@ -3029,6 +3031,23 @@ Examples:
             "(history-preserving) instead of the default Pattern 1 "
             "(in-place upsert). Use for firmware UPGRADES where TOS "
             "should remember the upgrade event."
+        ),
+    )
+    upd.add_argument(
+        "--username",
+        help=(
+            "TCP login username, override receivers.cfg [polarx5] tcp_username. "
+            "Use when the bench receiver has different credentials than the "
+            "deployed fleet (e.g. brand-new unit still on TEST creds, or "
+            "newly upgraded firmware where the fleet default doesn't yet "
+            "match)."
+        ),
+    )
+    upd.add_argument(
+        "--password",
+        help=(
+            "TCP login password, override receivers.cfg [polarx5] tcp_password. "
+            "Pair with --username."
         ),
     )
     upd.add_argument(
