@@ -2355,6 +2355,291 @@
     {
       "datasource": {
         "type": "grafana-postgresql-datasource",
+        "uid": "gps_health_test"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "text",
+            "mode": "fixed"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Station"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View station detail",
+                    "url": "/d/gps-station-detail/gps-station-detail?var-station=${__data.fields.Station}&var-area=$area&var-owner=$owner&var-receiver=$receiver&var-antenna=$antenna&${__url_time_range}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "State"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "critical": {
+                        "color": "red",
+                        "index": 0,
+                        "text": "critical"
+                      },
+                      "offline": {
+                        "color": "dark-purple",
+                        "index": 1,
+                        "text": "offline"
+                      },
+                      "degraded": {
+                        "color": "orange",
+                        "index": 2,
+                        "text": "degraded"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 75
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Voltage"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "volt"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.width",
+                "value": 70
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 11.0
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 11.8
+                    },
+                    {
+                      "color": "green",
+                      "value": 12.5
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Cause"
+            },
+            "properties": []
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Duration"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dtdurations"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Loss"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 55
+              },
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 20
+                    },
+                    {
+                      "color": "orange",
+                      "value": 40
+                    },
+                    {
+                      "color": "red",
+                      "value": 70
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "match": "null",
+                      "result": {
+                        "color": "text",
+                        "index": 0,
+                        "text": "-"
+                      }
+                    },
+                    "type": "special"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 22
+      },
+      "id": 45,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Last Update"
+          }
+        ]
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health_test"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH latest_health AS (\n  SELECT DISTINCT ON (sid) sid, ts, voltage\n  FROM station_health_60s\n  WHERE voltage IS NOT NULL\n  ORDER BY sid, ts DESC\n),\nlatest_network AS (\n  SELECT DISTINCT ON (sid) sid, ts, ping_online, ping_loss_pct\n  FROM station_network_60s\n  WHERE ping_online IS NOT NULL\n  ORDER BY sid, ts DESC\n)\nSELECT s.sid AS \"Station\",\n  CASE\n    WHEN lh.voltage < 5.0  THEN 'power failure (' || round(lh.voltage::numeric, 1) || 'V)'\n    WHEN lh.voltage < 11.0 THEN 'low voltage ('   || round(lh.voltage::numeric, 1) || 'V)'\n    WHEN lh.voltage < 11.8 THEN 'battery low ('   || round(lh.voltage::numeric, 1) || 'V)'\n    WHEN ln.ping_online = false THEN 'unreachable'\n    ELSE 'unknown'\n  END AS \"Cause\",\n  ln.ping_loss_pct AS \"Loss\",\n  lh.voltage AS \"Voltage\",\n  CASE\n    WHEN lh.voltage < 11.0 THEN 'critical'\n    WHEN ln.ping_online = false THEN 'offline'\n    ELSE 'ok'\n  END AS \"State\",\n  COALESCE(ln.ts, lh.ts) AS \"Last Update\"\nFROM stations s\nLEFT JOIN latest_health  lh ON lh.sid = s.sid\nLEFT JOIN latest_network ln ON ln.sid = s.sid\nWHERE (lh.voltage < 11.0 OR ln.ping_online = false)\nORDER BY\n  CASE WHEN lh.voltage < 11.0 THEN 0 ELSE 1 END,\n  s.sid",
+          "refId": "A"
+        }
+      ],
+      "title": "Critical & Offline  (new schema, simplified)",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
         "uid": "gps_health"
       },
       "fieldConfig": {
@@ -2656,6 +2941,124 @@
         }
       ],
       "title": "Battery Voltage (fleet min/median/max) - $area",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health_test"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Voltage (V)",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": 3600000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            },
+            "axisMin": 10,
+            "axisMax": 16
+          },
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "volt",
+          "min": 10,
+          "max": 16
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 40
+      },
+      "id": 44,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health_test"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  date_bin('5 minutes', p.ts, TIMESTAMP '2000-01-01') AS time,\n  MIN(p.voltage)::float8 AS \"Min (worst battery)\"\nFROM station_health_60s p\nJOIN stations s ON s.sid = p.sid\nWHERE $__timeFilter(p.ts)\n  AND ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = p.sid AND sam.area_id = '$area'))\n  AND (${owner:singlequote} = 'all' OR s.station_owner = ${owner:singlequote})\n  AND COALESCE(s.power_type, 'battery') = 'battery'\n  AND p.voltage BETWEEN 8 AND 20\nGROUP BY 1\nORDER BY 1",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health_test"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  date_bin('5 minutes', p.ts, TIMESTAMP '2000-01-01') AS time,\n  PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY p.voltage)::float8 AS \"Median\"\nFROM station_health_60s p\nJOIN stations s ON s.sid = p.sid\nWHERE $__timeFilter(p.ts)\n  AND ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = p.sid AND sam.area_id = '$area'))\n  AND (${owner:singlequote} = 'all' OR s.station_owner = ${owner:singlequote})\n  AND COALESCE(s.power_type, 'battery') = 'battery'\n  AND p.voltage BETWEEN 8 AND 20\nGROUP BY 1\nORDER BY 1",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health_test"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  date_bin('5 minutes', p.ts, TIMESTAMP '2000-01-01') AS time,\n  MAX(p.voltage)::float8 AS \"Max\"\nFROM station_health_60s p\nJOIN stations s ON s.sid = p.sid\nWHERE $__timeFilter(p.ts)\n  AND ('$area' = 'all' OR EXISTS (SELECT 1 FROM station_area_members sam WHERE sam.sid = p.sid AND sam.area_id = '$area'))\n  AND (${owner:singlequote} = 'all' OR s.station_owner = ${owner:singlequote})\n  AND COALESCE(s.power_type, 'battery') = 'battery'\n  AND p.voltage BETWEEN 8 AND 20\nGROUP BY 1\nORDER BY 1",
+          "refId": "C"
+        }
+      ],
+      "title": "Battery Voltage  (new schema) - $area",
       "type": "timeseries"
     },
     {
