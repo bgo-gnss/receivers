@@ -2286,17 +2286,21 @@ def cmd_cfg_update_device(args) -> int:
     an earlier `cfg add-receiver` intake) had something change off-network — e.g.
     firmware upgrade on the bench — and you want TOS to reflect the new value.
 
-    Two modes:
+    A mutable attribute can be written for two fundamentally different reasons,
+    and the operator MUST declare which — guessing wrong corrupts the temporal
+    record in opposite directions, so there is no safe default:
 
-    - **Pattern 2 (DEFAULT, transition / history-preserving)** — close the open
-      attribute_value period at ``--date`` and open a new one from that date.
-      This is the correct shape for a *mutable* attribute that genuinely changed
-      in the real world (firmware upgrade, marker rename): TOS then remembers
-      "ran fw 5.6.0 from install to 2026-05-30, fw 5.7.0 from 2026-05-30 on".
-    - **Pattern 1 (--in-place, correction only)** — PATCH the open
-      attribute_value row's value, keeping its dates. Use ONLY when the recorded
-      value was *wrong* (a typo) and you're fixing it without implying the
-      real-world value changed. History-destructive — don't use it for upgrades.
+    - **--change (real-world change → transition, Pattern 2)** — the value
+      genuinely changed in the world (firmware upgrade, marker rename). Closes
+      the open attribute period at ``--date`` and opens a new one from that
+      date, so TOS remembers "ran fw 5.6.0 from install to 2026-05-30, fw 5.7.0
+      from 2026-05-30 on". Records history.
+    - **--correct (fix a wrong record → in-place, Pattern 1)** — the recorded
+      value was simply *wrong* (a typo / bad earlier entry) and the real-world
+      value did not change. Overwrites the open value, keeping its dates. Does
+      NOT create a history period. Using this for a real upgrade would erase
+      the upgrade history; using --change for a typo would invent an upgrade
+      that never happened.
 
     No-op guard: if the probed value already matches the current open TOS value,
     nothing is written (avoids spurious same-value transitions).
@@ -2404,11 +2408,12 @@ def cmd_cfg_update_device(args) -> int:
         )
         return 1
 
-    in_place = args.in_place
+    # Exactly one of --change / --correct is set (argparse required mutex group).
+    in_place = bool(args.correct)
     mode = (
-        "Pattern 1 (in-place upsert — correction)"
+        "--correct → Pattern 1 (in-place upsert, no history)"
         if in_place
-        else "Pattern 2 (transition — close old period, open new)"
+        else "--change → Pattern 2 (transition, records history)"
     )
     print(f"  TOS device: id_entity={id_entity}")
     print(f"  Mode: {mode}")
@@ -2997,34 +3002,35 @@ Examples:
             "the live receiver for the current value. Use case: firmware "
             "upgrade on a bench/warehoused receiver — the device entity "
             "already exists (from a prior `add-receiver`) and needs the new "
-            "value reflected in TOS. DEFAULT is Pattern 2 (transition): close "
-            "the old attribute period and open a new one, preserving history — "
-            "the right shape for a mutable attribute that genuinely changed. "
-            "Pass --in-place only to CORRECT a wrong value (Pattern 1). "
-            "No-op when the value already matches."
+            "value reflected in TOS. You MUST declare intent with exactly one "
+            "of --change (the value really changed → records history via a new "
+            "attribute period) or --correct (the recorded value was wrong → "
+            "overwrite in place, no history). There is no default: choosing "
+            "wrong corrupts the temporal record. No-op when the value already "
+            "matches."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # After a firmware upgrade — records history (close old fw period, open new).
-  # Dry-run by default:
-  receivers cfg update-device --probe 192.168.3.1 --field firmware_version
+  # A firmware upgrade really happened — record it as history (close old fw
+  # period, open a new one). Dry-run by default:
+  receivers cfg update-device --probe 192.168.3.1 --field firmware_version --change
 
   # Same, committing live:
   receivers cfg update-device --probe 192.168.3.1 --field firmware_version \\
-      --no-dry-run
+      --change --no-dry-run
 
   # Back-date the upgrade to when it actually happened:
   receivers cfg update-device --probe 192.168.3.1 --field firmware_version \\
-      --date 2026-05-28 --no-dry-run
+      --change --date 2026-05-28 --no-dry-run
 
-  # Multiple fields at once:
+  # Multiple changed fields at once:
   receivers cfg update-device --probe 192.168.3.1 \\
-      --field firmware_version --field marker_name --no-dry-run
+      --field firmware_version --field marker_name --change --no-dry-run
 
-  # CORRECT a typo in the recorded value (no history entry, overwrite in place):
+  # The recorded value was a typo — CORRECT it in place (no history entry):
   receivers cfg update-device --probe 192.168.3.1 \\
-      --field firmware_version --in-place --no-dry-run
+      --field firmware_version --correct --no-dry-run
 """,
     )
     upd.add_argument(
@@ -3064,15 +3070,26 @@ Examples:
             "upgrade actually happened."
         ),
     )
-    upd.add_argument(
-        "--in-place",
+    # Intent is mandatory and exclusive — a mutable attribute write is either a
+    # real-world change (transition, records history) or a correction of a wrong
+    # record (in-place, no history). No safe default; the operator must declare.
+    intent = upd.add_mutually_exclusive_group(required=True)
+    intent.add_argument(
+        "--change",
         action="store_true",
         help=(
-            "CORRECTION mode (Pattern 1): overwrite the open attribute "
-            "value in place, keeping its dates — no history entry. Use ONLY "
-            "to fix a wrong/typo'd value. The default (no flag) is Pattern 2 "
-            "transition, which preserves history and is correct for a real "
-            "change like a firmware upgrade."
+            "The value genuinely CHANGED in the real world (firmware upgrade, "
+            "marker rename). Pattern 2 transition: close the open attribute "
+            "period at --date and open a new one — records history."
+        ),
+    )
+    intent.add_argument(
+        "--correct",
+        action="store_true",
+        help=(
+            "The recorded value was WRONG (typo / bad earlier entry) and the "
+            "real value did not change. Pattern 1 in-place upsert: overwrite "
+            "the open value keeping its dates — no history entry."
         ),
     )
     upd.add_argument(
