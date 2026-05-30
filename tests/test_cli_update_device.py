@@ -21,7 +21,7 @@ from receivers.cfg.device_probe import (
     ReceiverIdentity,
 )
 from receivers.cli.arguments import create_argument_parser
-from receivers.cli.cfg import cmd_cfg_update_device
+from receivers.cli.cfg import cmd_cfg_update_device, firmware_to_software
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
@@ -512,3 +512,79 @@ def test_probe_polarx5_without_overrides_leaves_extractor_creds_alone():
         _probe_polarx5("192.168.3.1", port=None, station_id_hint="BENCH")
     assert fake_extractor.tcp_username == "fleet_user"
     assert fake_extractor.tcp_password == "fleet_pw"
+
+
+# ── firmware → software_version conversion ──────────────────────────────────
+
+
+def test_firmware_to_software_clean_three_part():
+    assert firmware_to_software("5.7.0") == ("5.70", None)
+    assert firmware_to_software("5.5.0") == ("5.50", None)
+    assert firmware_to_software("4.10.2") == ("4.102", None)
+
+
+def test_firmware_to_software_extra_parts():
+    sw, warn = firmware_to_software("5.7.0.1")
+    assert sw == "5.701"
+    assert warn is None
+
+
+def test_firmware_to_software_non_standard_passes_through_with_warning():
+    for bad in ("5.7", "5", "5.7.0-rc1", ""):
+        sw, warn = firmware_to_software(bad)
+        assert sw == bad
+        assert warn is not None
+
+
+def test_software_version_field_derives_from_firmware(parser):
+    """--field software_version writes the X.YZ form derived from probed fw."""
+    args = parser.parse_args(
+        [
+            "cfg",
+            "update-device",
+            "--probe",
+            "192.168.3.1",
+            "--field",
+            "software_version",
+            "--change",
+            "--no-dry-run",
+        ]
+    )
+    writer = _make_writer_mock(current_value="5.50")  # old sw; probe fw=5.7.0 → 5.70
+    with (
+        patch("receivers.cfg.device_probe.probe_receiver", return_value=_identity()),
+        patch("tostools.api.tos_writer.TOSWriter", return_value=writer),
+    ):
+        rc = cmd_cfg_update_device(args)
+    assert rc == 0
+    writer.transition_attribute_value.assert_called_once()
+    call = writer.transition_attribute_value.call_args
+    assert call.args[1] == "software_version"
+    assert call.args[2] == "5.70"  # derived, not the raw firmware
+
+
+def test_firmware_and_software_in_one_call(parser):
+    """Both fields update together when named explicitly."""
+    args = parser.parse_args(
+        [
+            "cfg",
+            "update-device",
+            "--probe",
+            "192.168.3.1",
+            "--field",
+            "firmware_version",
+            "--field",
+            "software_version",
+            "--change",
+            "--no-dry-run",
+        ]
+    )
+    writer = _make_writer_mock()
+    with (
+        patch("receivers.cfg.device_probe.probe_receiver", return_value=_identity()),
+        patch("tostools.api.tos_writer.TOSWriter", return_value=writer),
+    ):
+        rc = cmd_cfg_update_device(args)
+    assert rc == 0
+    codes = {c.args[1] for c in writer.transition_attribute_value.call_args_list}
+    assert codes == {"firmware_version", "software_version"}

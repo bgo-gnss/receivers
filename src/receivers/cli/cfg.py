@@ -2279,6 +2279,35 @@ def cmd_cfg_add_receiver(args) -> int:
 # ---------------------------------------------------------------------------
 
 
+def firmware_to_software(firmware: str) -> tuple[str, Optional[str]]:
+    """Convert a firmware version to the TOS ``software_version`` style.
+
+    Septentrio TOS records ``software_version`` as the firmware with the
+    patch-dot dropped: firmware ``X.Y.Z`` → software ``X.YZ`` (e.g. ``5.7.0``
+    → ``5.70``, matching the fleet's existing ``5.50``). Probes only expose
+    ``firmware_version``, so when a device doesn't surface software separately
+    we derive it from firmware in this style.
+
+    Best-effort: a clean 3-part ``X.Y.Z`` (optionally with extra parts, which
+    are appended dot-less too) converts cleanly. Anything that doesn't start
+    with at least ``MAJOR.MINOR.PATCH`` numeric is passed through unchanged and
+    a warning string is returned so the caller can surface it.
+
+    Returns ``(software_version, warning_or_None)``.
+    """
+    parts = firmware.split(".")
+    if len(parts) >= 3 and all(p.isdigit() for p in parts[:3]):
+        # 5.7.0 -> 5.70 ; 5.7.0.1 -> 5.701 (drop every dot after the first)
+        software = parts[0] + "." + "".join(parts[1:])
+        return software, None
+    return (
+        firmware,
+        f"firmware {firmware!r} is not a clean X.Y.Z version — passing it "
+        f"through to software_version unchanged; override with the actual "
+        f"value if the receiver uses a different software string.",
+    )
+
+
 def cmd_cfg_update_device(args) -> int:
     """Probe a receiver and update the matching TOS device entity's attribute(s).
 
@@ -2363,8 +2392,17 @@ def cmd_cfg_update_device(args) -> int:
     )
 
     # ---- Map requested fields → values from probe -----------------------
+    # software_version is derived from the probed firmware (X.Y.Z → X.YZ) since
+    # the probe only surfaces firmware_version; see firmware_to_software().
+    software_value: Optional[str] = None
+    if identity.firmware_version:
+        software_value, sw_warn = firmware_to_software(identity.firmware_version)
+        if sw_warn and "software_version" in args.field:
+            print(f"  ⚠️  {sw_warn}", file=sys.stderr)
+
     field_sources: Dict[str, Optional[str]] = {
         "firmware_version": identity.firmware_version,
+        "software_version": software_value,
         "model": identity.model_raw,
         "marker_name": identity.marker_name,
     }
@@ -3052,7 +3090,10 @@ Examples:
         metavar="CODE",
         help=(
             "Attribute code to update; repeatable. Supported: "
-            "firmware_version, model, marker_name."
+            "firmware_version, software_version, model, marker_name. "
+            "software_version is derived from the probed firmware "
+            "(X.Y.Z → X.YZ, e.g. 5.7.0 → 5.70) since probes don't expose it "
+            "separately."
         ),
     )
     upd.add_argument(
