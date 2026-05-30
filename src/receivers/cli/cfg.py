@@ -2654,23 +2654,24 @@ Examples:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # PolaRX5 on the bench (WiFi AP), dry-run by default:
-  receivers cfg add-receiver --probe 192.168.20.1 \\
-      --owner "Veðurstofa Íslands" --location "Bench A" \\
-      --date-start 2026-05-12
+  # PolaRX5 bench intake — relies on defaults for owner + location
+  # (Jarðeðlismælihópur + 'B9 - Kjallari - Jörð'):
+  receivers cfg add-receiver --probe 192.168.3.1 --date-start 2026-05-12
+
+  # Same, committing live (overrides the dry-run default):
+  receivers cfg add-receiver --probe 192.168.3.1 --date-start 2026-05-12 --no-dry-run
+
+  # Non-standard warehouse — override --location:
+  receivers cfg add-receiver --probe 192.168.20.1 --date-start 2026-05-12 \\
+      --location "Vagnhöfði - Kjallari - Jörð"
 
   # Trimble NetR9 at a deployed station:
   receivers cfg add-receiver --probe 10.20.30.40 --probe-type netr9 \\
-      --owner "Veðurstofa Íslands" --location "Reykjavík warehouse" \\
-      --date-start 2026-05-12
+      --date-start 2026-05-12 --location "Reykjavík warehouse"
 
   # Leica G10 — probe only confirms reachability, serial must be supplied:
   receivers cfg add-receiver --probe 10.20.30.41 --probe-type g10 \\
-      --serial G10-12345 --owner "Veðurstofa Íslands" \\
-      --location "Bench B" --date-start 2026-05-12
-
-  # Commit live (overrides the dry-run default):
-  receivers cfg add-receiver --probe 192.168.20.1 ... --no-dry-run
+      --serial G10-12345 --date-start 2026-05-12
 """,
     )
     add_rx.add_argument(
@@ -2722,9 +2723,12 @@ Examples:
     )
     add_rx.add_argument(
         "--location",
+        default="B9 - Kjallari - Jörð",
         help=(
-            "Physical warehouse / bench location. Required via CLI when "
-            "--from-file is not used (or does not include `location`)."
+            "Physical warehouse / bench location. "
+            "Default: 'B9 - Kjallari - Jörð' — the standard bench-intake "
+            "location for the GPS receiver fleet. Override for other "
+            "warehouses (e.g. 'Vagnhöfði - Kjallari - Jörð', 'Ísafjörður')."
         ),
     )
     add_rx.add_argument(

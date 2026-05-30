@@ -478,12 +478,11 @@ def test_from_file_cli_arg_overrides_file_value(parser, owners_yaml, tmp_path) -
     assert attrs["owner"] == "Veðurstofa Íslands"
 
 
-def test_from_file_missing_required_field(
-    parser, owners_yaml, tmp_path, capsys
+def test_from_file_missing_location_falls_back_to_cli_default(
+    parser, owners_yaml, tmp_path
 ) -> None:
-    """File lacks `location` AND CLI doesn't supply → exit 2."""
+    """File lacks `location` → CLI default 'B9 - Kjallari - Jörð' fills in."""
     intake = _write_intake_file(tmp_path)
-    # Remove location from the file
     import yaml as _yaml
 
     body = _yaml.safe_load(intake.read_text())
@@ -500,10 +499,35 @@ def test_from_file_missing_required_field(
             str(owners_yaml),
         ]
     )
+    # argparse fills the default before cmd_cfg_add_receiver gets the args
+    assert args.location == "B9 - Kjallari - Jörð"
+
+
+def test_missing_date_start_still_required(
+    parser, owners_yaml, tmp_path, capsys
+) -> None:
+    """date_start has no default — still triggers exit 2 when missing."""
+    intake = _write_intake_file(tmp_path)
+    import yaml as _yaml
+
+    body = _yaml.safe_load(intake.read_text())
+    body.pop("date_start", None)
+    intake.write_text(_yaml.safe_dump(body, allow_unicode=True), encoding="utf-8")
+
+    args = parser.parse_args(
+        [
+            "cfg",
+            "add-receiver",
+            "--from-file",
+            str(intake),
+            "--owners-cache",
+            str(owners_yaml),
+        ]
+    )
     rc = cmd_cfg_add_receiver(args)
     assert rc == 2
     err = capsys.readouterr().err
-    assert "--location" in err
+    assert "--date-start" in err
     assert "required" in err.lower() or "missing" in err.lower()
 
 
