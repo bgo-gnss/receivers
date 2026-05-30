@@ -42,42 +42,63 @@ def _identity(**overrides) -> ReceiverIdentity:
     return ReceiverIdentity(**base)
 
 
-def _make_writer_mock(*, device=None) -> MagicMock:
+def _make_writer_mock(*, device=None, current_value="5.6.0") -> MagicMock:
+    """Build a TOSWriter mock.
+
+    ``current_value`` is what get_attribute_values reports as the open period
+    value — default '5.6.0' so an update to '5.7.0' is a real change (not a
+    no-op). Pass current_value='5.7.0' to exercise the no-op guard, or None
+    to simulate no existing open period.
+    """
     writer = MagicMock()
     writer.find_device_by_serial.return_value = device or {"id_entity": 12345}
     writer.upsert_attribute_value.return_value = {"ok": True}
     writer.transition_attribute_value.return_value = {"ok": True}
+    if current_value is None:
+        writer.get_attribute_values.return_value = []
+    else:
+        writer.get_attribute_values.return_value = [
+            {
+                "id_attribute_value": 1,
+                "code": "firmware_version",
+                "value": current_value,
+                "date_from": "2026-05-21",
+                "date_to": None,
+            }
+        ]
     return writer
 
 
 # ── Happy path ─────────────────────────────────────────────────────────────
 
 
-def test_dry_run_firmware_update(parser, capsys):
+def test_dry_run_firmware_update_defaults_to_transition(parser, capsys):
     args = parser.parse_args(
         ["cfg", "update-device", "--probe", "192.168.3.1", "--field", "firmware_version"]
     )
-    writer = _make_writer_mock()
+    writer = _make_writer_mock()  # current open value 5.6.0; probe reports 5.7.0
     with (
         patch("receivers.cfg.device_probe.probe_receiver", return_value=_identity()),
         patch("tostools.api.tos_writer.TOSWriter", return_value=writer),
     ):
         rc = cmd_cfg_update_device(args)
     assert rc == 0
-    # Dry-run: writer still receives the call (with dry_run=True passed at construction)
     writer.find_device_by_serial.assert_called_once_with("gnss_receiver", "SN_4101524")
-    writer.upsert_attribute_value.assert_called_once()
-    call = writer.upsert_attribute_value.call_args
-    assert call.args[0] == 12345                  # id_entity
-    assert call.args[1] == "firmware_version"     # code
-    assert call.args[2] == "5.7.0"                # value
-    assert call.args[3] == date.today().isoformat()  # date
+    # DEFAULT is transition (Pattern 2), NOT in-place upsert.
+    writer.transition_attribute_value.assert_called_once()
+    writer.upsert_attribute_value.assert_not_called()
+    call = writer.transition_attribute_value.call_args
+    assert call.args[0] == 12345                       # id_entity
+    assert call.args[1] == "firmware_version"          # code
+    assert call.args[2] == "5.7.0"                     # new value
+    assert call.args[3] == date.today().isoformat()    # transition date
     out = capsys.readouterr().out
     assert "DRY RUN" in out
+    assert "Pattern 2 (transition" in out
     assert "5.7.0" in out
 
 
-def test_commit_firmware_update(parser, capsys):
+def test_commit_firmware_upgrade_transition(parser, capsys):
     args = parser.parse_args(
         [
             "cfg", "update-device",
@@ -95,18 +116,18 @@ def test_commit_firmware_update(parser, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "DRY RUN" not in out
-    assert "Pattern 1 (in-place upsert)" in out
-    writer.upsert_attribute_value.assert_called_once()
-    writer.transition_attribute_value.assert_not_called()
+    assert "Pattern 2 (transition" in out
+    writer.transition_attribute_value.assert_called_once()
+    writer.upsert_attribute_value.assert_not_called()
 
 
-def test_transition_mode_uses_pattern_2(parser, capsys):
+def test_in_place_mode_uses_pattern_1(parser, capsys):
     args = parser.parse_args(
         [
             "cfg", "update-device",
             "--probe", "192.168.3.1",
             "--field", "firmware_version",
-            "--transition",
+            "--in-place",
             "--date", "2026-05-30",
             "--no-dry-run",
         ]
@@ -118,11 +139,46 @@ def test_transition_mode_uses_pattern_2(parser, capsys):
     ):
         rc = cmd_cfg_update_device(args)
     assert rc == 0
-    writer.transition_attribute_value.assert_called_once_with(
+    writer.upsert_attribute_value.assert_called_once_with(
         12345, "firmware_version", "5.7.0", "2026-05-30"
     )
+    writer.transition_attribute_value.assert_not_called()
+    assert "Pattern 1 (in-place" in capsys.readouterr().out
+
+
+def test_noop_when_value_unchanged(parser, capsys):
+    """Probed value already matches the open TOS value → no write."""
+    args = parser.parse_args(
+        ["cfg", "update-device", "--probe", "192.168.3.1", "--field", "firmware_version",
+         "--no-dry-run"]
+    )
+    # current open value already 5.7.0; probe also reports 5.7.0
+    writer = _make_writer_mock(current_value="5.7.0")
+    with (
+        patch("receivers.cfg.device_probe.probe_receiver", return_value=_identity()),
+        patch("tostools.api.tos_writer.TOSWriter", return_value=writer),
+    ):
+        rc = cmd_cfg_update_device(args)
+    assert rc == 0
+    writer.transition_attribute_value.assert_not_called()
     writer.upsert_attribute_value.assert_not_called()
-    assert "Pattern 2" in capsys.readouterr().out
+    assert "no change" in capsys.readouterr().out
+
+
+def test_transition_when_no_open_period_exists(parser):
+    """No existing open period → still transitions (tostools falls back to add)."""
+    args = parser.parse_args(
+        ["cfg", "update-device", "--probe", "192.168.3.1", "--field", "firmware_version",
+         "--no-dry-run"]
+    )
+    writer = _make_writer_mock(current_value=None)  # no open period
+    with (
+        patch("receivers.cfg.device_probe.probe_receiver", return_value=_identity()),
+        patch("tostools.api.tos_writer.TOSWriter", return_value=writer),
+    ):
+        rc = cmd_cfg_update_device(args)
+    assert rc == 0
+    writer.transition_attribute_value.assert_called_once()
 
 
 def test_multiple_fields_in_one_call(parser):
@@ -142,7 +198,8 @@ def test_multiple_fields_in_one_call(parser):
     ):
         rc = cmd_cfg_update_device(args)
     assert rc == 0
-    assert writer.upsert_attribute_value.call_count == 2
+    # both fields transition (default); model current value differs from probe
+    assert writer.transition_attribute_value.call_count == 2
 
 
 # ── Error paths ────────────────────────────────────────────────────────────

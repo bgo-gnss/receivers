@@ -2288,11 +2288,18 @@ def cmd_cfg_update_device(args) -> int:
 
     Two modes:
 
-    - **Pattern 1 (default, in-place upsert)** — PATCH the open attribute_value
-      row to the new value. Operationally cheapest; history-destructive.
-    - **Pattern 2 (--transition)** — close the open period at ``--date`` and
-      open a new one with the new value. Two HTTP calls. Use when you want TOS
-      to remember "ran fw 5.6.0 from X to Y, fw 5.7.0 from Y onwards".
+    - **Pattern 2 (DEFAULT, transition / history-preserving)** — close the open
+      attribute_value period at ``--date`` and open a new one from that date.
+      This is the correct shape for a *mutable* attribute that genuinely changed
+      in the real world (firmware upgrade, marker rename): TOS then remembers
+      "ran fw 5.6.0 from install to 2026-05-30, fw 5.7.0 from 2026-05-30 on".
+    - **Pattern 1 (--in-place, correction only)** — PATCH the open
+      attribute_value row's value, keeping its dates. Use ONLY when the recorded
+      value was *wrong* (a typo) and you're fixing it without implying the
+      real-world value changed. History-destructive — don't use it for upgrades.
+
+    No-op guard: if the probed value already matches the current open TOS value,
+    nothing is written (avoids spurious same-value transitions).
 
     Dry-run by default. Does NOT touch stations.cfg — for that, use
     ``cfg reconcile <SID> --field receiver_firmware_version --source receiver``
@@ -2330,7 +2337,9 @@ def cmd_cfg_update_device(args) -> int:
     print(f"Probing {args.probe} …")
     try:
         identity = probe_receiver(
-            host, port, probe_type=args.probe_type,
+            host,
+            port,
+            probe_type=args.probe_type,
             tcp_username=args.username,
             tcp_password=args.password,
         )
@@ -2389,31 +2398,56 @@ def cmd_cfg_update_device(args) -> int:
         return 1
     id_entity = device.get("id_entity") if isinstance(device, dict) else None
     if not id_entity:
-        print(f"❌ TOS lookup returned a device without id_entity: {device!r}",
-              file=sys.stderr)
+        print(
+            f"❌ TOS lookup returned a device without id_entity: {device!r}",
+            file=sys.stderr,
+        )
         return 1
 
-    mode = "Pattern 2 (close+open, history-preserving)" if args.transition else \
-           "Pattern 1 (in-place upsert)"
+    in_place = args.in_place
+    mode = (
+        "Pattern 1 (in-place upsert — correction)"
+        if in_place
+        else "Pattern 2 (transition — close old period, open new)"
+    )
     print(f"  TOS device: id_entity={id_entity}")
     print(f"  Mode: {mode}")
     print(f"  Date: {when_iso}")
     if dry_run:
         print("  DRY RUN — no writes (use --no-dry-run to commit)")
 
+    def _current_open_value(code: str) -> Optional[str]:
+        """Return the value of the currently-open (date_to=None) period, or None."""
+        try:
+            rows = writer.get_attribute_values(id_entity, code=code)
+        except Exception:  # noqa: BLE001 — read failure shouldn't block the write
+            return None
+        if not isinstance(rows, list):
+            return None
+        open_rows = [r for r in rows if isinstance(r, dict) and not r.get("date_to")]
+        if not open_rows:
+            return None
+        # If multiple open rows somehow exist, the last is the most recent.
+        return open_rows[-1].get("value")
+
     # ---- Apply each field -----------------------------------------------
     rc = 0
     for code, new_value in field_values.items():
+        current = _current_open_value(code)
+        if current is not None and str(current) == str(new_value):
+            print(f"  = {code} already {new_value!r} — no change")
+            continue
         try:
-            if args.transition:
-                writer.transition_attribute_value(
-                    id_entity, code, new_value, when_iso
-                )
+            if in_place:
+                writer.upsert_attribute_value(id_entity, code, new_value, when_iso)
             else:
-                writer.upsert_attribute_value(
-                    id_entity, code, new_value, when_iso
-                )
-            print(f"  ✓ {code} → {new_value!r}")
+                writer.transition_attribute_value(id_entity, code, new_value, when_iso)
+            arrow = (
+                f"{current!r} → {new_value!r}"
+                if current is not None
+                else f"{new_value!r}"
+            )
+            print(f"  ✓ {code}: {arrow}")
         except Exception as e:  # noqa: BLE001 — surface any TOS write error
             print(f"  ❌ {code}: {e}", file=sys.stderr)
             rc = 1
@@ -2963,28 +2997,34 @@ Examples:
             "the live receiver for the current value. Use case: firmware "
             "upgrade on a bench/warehoused receiver — the device entity "
             "already exists (from a prior `add-receiver`) and needs the new "
-            "value reflected in TOS. Default Pattern 1 (in-place upsert)."
+            "value reflected in TOS. DEFAULT is Pattern 2 (transition): close "
+            "the old attribute period and open a new one, preserving history — "
+            "the right shape for a mutable attribute that genuinely changed. "
+            "Pass --in-place only to CORRECT a wrong value (Pattern 1). "
+            "No-op when the value already matches."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # After a firmware upgrade on a bench receiver (dry-run by default):
+  # After a firmware upgrade — records history (close old fw period, open new).
+  # Dry-run by default:
   receivers cfg update-device --probe 192.168.3.1 --field firmware_version
 
   # Same, committing live:
   receivers cfg update-device --probe 192.168.3.1 --field firmware_version \\
       --no-dry-run
 
+  # Back-date the upgrade to when it actually happened:
+  receivers cfg update-device --probe 192.168.3.1 --field firmware_version \\
+      --date 2026-05-28 --no-dry-run
+
   # Multiple fields at once:
   receivers cfg update-device --probe 192.168.3.1 \\
-      --field firmware_version --field model --no-dry-run
+      --field firmware_version --field marker_name --no-dry-run
 
-  # Pattern 2 — preserve TOS history (close old period, open new):
+  # CORRECT a typo in the recorded value (no history entry, overwrite in place):
   receivers cfg update-device --probe 192.168.3.1 \\
-      --field firmware_version --transition --date 2026-05-30 --no-dry-run
-
-  # When the receiver isn't reachable but you know the new firmware:
-  # (not yet supported — use `cfg add-receiver --from-file` style for that)
+      --field firmware_version --in-place --no-dry-run
 """,
     )
     upd.add_argument(
@@ -3018,19 +3058,21 @@ Examples:
         "--date",
         metavar="YYYY-MM-DD",
         help=(
-            "Effective date for the change. Default: today. With "
-            "--transition, this is the transition date (close old period "
-            "at this date, open new from this date)."
+            "Effective date of the change. Default: today. This is the "
+            "transition date — the old attribute period is closed at this "
+            "date and the new one opens from it. Back-date it to when the "
+            "upgrade actually happened."
         ),
     )
     upd.add_argument(
-        "--transition",
+        "--in-place",
         action="store_true",
         help=(
-            "Pattern 2: close the old attribute period + open a new one "
-            "(history-preserving) instead of the default Pattern 1 "
-            "(in-place upsert). Use for firmware UPGRADES where TOS "
-            "should remember the upgrade event."
+            "CORRECTION mode (Pattern 1): overwrite the open attribute "
+            "value in place, keeping its dates — no history entry. Use ONLY "
+            "to fix a wrong/typo'd value. The default (no flag) is Pattern 2 "
+            "transition, which preserves history and is correct for a real "
+            "change like a firmware upgrade."
         ),
     )
     upd.add_argument(
