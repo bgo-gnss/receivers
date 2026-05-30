@@ -478,57 +478,104 @@ def test_from_file_cli_arg_overrides_file_value(parser, owners_yaml, tmp_path) -
     assert attrs["owner"] == "Veðurstofa Íslands"
 
 
-def test_from_file_missing_location_falls_back_to_cli_default(
+def test_default_location_when_neither_cli_nor_file_supplies(
     parser, owners_yaml, tmp_path
 ) -> None:
-    """File lacks `location` → CLI default 'B9 - Kjallari - Jörð' fills in."""
-    intake = _write_intake_file(tmp_path)
+    """No --location AND no `location` in file → default to B9 - Kjallari - Jörð."""
     import yaml as _yaml
 
+    intake = _write_intake_file(tmp_path)
     body = _yaml.safe_load(intake.read_text())
     body.pop("location")
     intake.write_text(_yaml.safe_dump(body, allow_unicode=True), encoding="utf-8")
 
     args = parser.parse_args(
         [
-            "cfg",
-            "add-receiver",
-            "--from-file",
-            str(intake),
-            "--owners-cache",
-            str(owners_yaml),
+            "cfg", "add-receiver",
+            "--from-file", str(intake),
+            "--owners-cache", str(owners_yaml),
         ]
     )
-    # argparse fills the default before cmd_cfg_add_receiver gets the args
+    writer = _make_writer_mock()
+    with (
+        patch("receivers.cfg.device_probe.probe_receiver"),
+        patch("tostools.api.tos_writer.TOSWriter", return_value=writer),
+    ):
+        rc = cmd_cfg_add_receiver(args)
+    assert rc == 0
     assert args.location == "B9 - Kjallari - Jörð"
 
 
-def test_missing_date_start_still_required(
-    parser, owners_yaml, tmp_path, capsys
-) -> None:
-    """date_start has no default — still triggers exit 2 when missing."""
-    intake = _write_intake_file(tmp_path)
+def test_file_location_wins_over_default(parser, owners_yaml, tmp_path) -> None:
+    """File `location` is preserved — the CLI default doesn't override it."""
+    intake = _write_intake_file(
+        tmp_path, location="Vagnhöfði - Kjallari - Jörð"
+    )
+    args = parser.parse_args(
+        [
+            "cfg", "add-receiver",
+            "--from-file", str(intake),
+            "--owners-cache", str(owners_yaml),
+        ]
+    )
+    writer = _make_writer_mock()
+    with (
+        patch("receivers.cfg.device_probe.probe_receiver"),
+        patch("tostools.api.tos_writer.TOSWriter", return_value=writer),
+    ):
+        rc = cmd_cfg_add_receiver(args)
+    assert rc == 0
+    assert args.location == "Vagnhöfði - Kjallari - Jörð"
+
+
+def test_default_date_start_is_today(parser, owners_yaml, tmp_path) -> None:
+    """No --date-start AND no `date_start` in file → default to today."""
+    from datetime import date
+
     import yaml as _yaml
 
+    intake = _write_intake_file(tmp_path)
     body = _yaml.safe_load(intake.read_text())
     body.pop("date_start", None)
     intake.write_text(_yaml.safe_dump(body, allow_unicode=True), encoding="utf-8")
 
     args = parser.parse_args(
         [
-            "cfg",
-            "add-receiver",
-            "--from-file",
-            str(intake),
-            "--owners-cache",
-            str(owners_yaml),
+            "cfg", "add-receiver",
+            "--from-file", str(intake),
+            "--owners-cache", str(owners_yaml),
         ]
     )
-    rc = cmd_cfg_add_receiver(args)
-    assert rc == 2
-    err = capsys.readouterr().err
-    assert "--date-start" in err
-    assert "required" in err.lower() or "missing" in err.lower()
+    writer = _make_writer_mock()
+    with (
+        patch("receivers.cfg.device_probe.probe_receiver"),
+        patch("tostools.api.tos_writer.TOSWriter", return_value=writer),
+    ):
+        rc = cmd_cfg_add_receiver(args)
+    assert rc == 0
+    assert args.date_start == date.today().isoformat()
+
+
+def test_file_date_start_wins_over_today_default(
+    parser, owners_yaml, tmp_path
+) -> None:
+    """File `date_start` is preserved — the today-default doesn't override it."""
+    intake = _write_intake_file(tmp_path, date_start="2026-01-15")
+    args = parser.parse_args(
+        [
+            "cfg", "add-receiver",
+            "--from-file", str(intake),
+            "--owners-cache", str(owners_yaml),
+        ]
+    )
+    writer = _make_writer_mock()
+    with (
+        patch("receivers.cfg.device_probe.probe_receiver"),
+        patch("tostools.api.tos_writer.TOSWriter", return_value=writer),
+    ):
+        rc = cmd_cfg_add_receiver(args)
+    assert rc == 0
+    assert args.date_start == "2026-01-15"
 
 
 def test_probe_and_from_file_mutually_exclusive(

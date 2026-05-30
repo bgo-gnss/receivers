@@ -24,7 +24,7 @@ import json
 import logging
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 
@@ -2047,6 +2047,21 @@ def cmd_cfg_add_receiver(args) -> int:
     if not getattr(args, "owner", None):
         args.owner = "Jarðeðlismælihópur"
 
+    # ---- Apply default --location ---------------------------------------
+    # ~71% of historical intakes land at B9 - Kjallari - Jörð (id_entity=4
+    # in TOS — the main GPS warehouse). Saves the operator typing the
+    # exact string every time; override via --location or via the
+    # `location` key in --from-file for non-B9 warehouses.
+    if not getattr(args, "location", None):
+        args.location = "B9 - Kjallari - Jörð"
+
+    # ---- Apply default --date-start (today) -----------------------------
+    # The intake almost always happens "now" — registering today's
+    # warehouse arrival. For back-dated intakes pass --date-start
+    # explicitly or set `date_start:` in --from-file.
+    if not getattr(args, "date_start", None):
+        args.date_start = date.today().isoformat()
+
     # ---- Required-field validation (CLI-or-file) ------------------------
     missing = [
         f for f in ("owner", "location", "date_start") if not getattr(args, f, None)
@@ -2654,24 +2669,27 @@ Examples:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # PolaRX5 bench intake — relies on defaults for owner + location
-  # (Jarðeðlismælihópur + 'B9 - Kjallari - Jörð'):
-  receivers cfg add-receiver --probe 192.168.3.1 --date-start 2026-05-12
+  # PolaRX5 bench intake — relies on defaults for owner + location +
+  # date-start (Jarðeðlismælihópur, 'B9 - Kjallari - Jörð', today):
+  receivers cfg add-receiver --probe 192.168.3.1
 
   # Same, committing live (overrides the dry-run default):
-  receivers cfg add-receiver --probe 192.168.3.1 --date-start 2026-05-12 --no-dry-run
+  receivers cfg add-receiver --probe 192.168.3.1 --no-dry-run
 
   # Non-standard warehouse — override --location:
-  receivers cfg add-receiver --probe 192.168.20.1 --date-start 2026-05-12 \\
+  receivers cfg add-receiver --probe 192.168.20.1 \\
       --location "Vagnhöfði - Kjallari - Jörð"
+
+  # Backdating an intake that physically happened earlier:
+  receivers cfg add-receiver --probe 192.168.3.1 --date-start 2026-05-12
 
   # Trimble NetR9 at a deployed station:
   receivers cfg add-receiver --probe 10.20.30.40 --probe-type netr9 \\
-      --date-start 2026-05-12 --location "Reykjavík warehouse"
+      --location "Reykjavík warehouse"
 
   # Leica G10 — probe only confirms reachability, serial must be supplied:
   receivers cfg add-receiver --probe 10.20.30.41 --probe-type g10 \\
-      --serial G10-12345 --date-start 2026-05-12
+      --serial G10-12345
 """,
     )
     add_rx.add_argument(
@@ -2723,20 +2741,27 @@ Examples:
     )
     add_rx.add_argument(
         "--location",
-        default="B9 - Kjallari - Jörð",
+        # No argparse default — applied in cmd_cfg_add_receiver AFTER the
+        # --from-file merge so a `location:` key in the file isn't silently
+        # overridden by the CLI fallback.
         help=(
             "Physical warehouse / bench location. "
-            "Default: 'B9 - Kjallari - Jörð' — the standard bench-intake "
-            "location for the GPS receiver fleet. Override for other "
-            "warehouses (e.g. 'Vagnhöfði - Kjallari - Jörð', 'Ísafjörður')."
+            "Default (when neither CLI nor --from-file supplies one): "
+            "'B9 - Kjallari - Jörð' — the standard bench-intake location for "
+            "the GPS receiver fleet. Override for other warehouses "
+            "(e.g. 'Vagnhöfði - Kjallari - Jörð', 'Ísafjörður')."
         ),
     )
     add_rx.add_argument(
         "--date-start",
         metavar="YYYY-MM-DD",
+        # Same reasoning as --location: applied post-merge so file values
+        # win over the today-fallback.
         help=(
-            "Start date for all attribute values. Required via CLI when "
-            "--from-file is not used (or does not include `date_start`)."
+            "Start date for all attribute values. "
+            "Default (when neither CLI nor --from-file supplies one): today "
+            "(YYYY-MM-DD). Override when registering a device whose intake "
+            "actually happened on a different day."
         ),
     )
     add_rx.add_argument(
