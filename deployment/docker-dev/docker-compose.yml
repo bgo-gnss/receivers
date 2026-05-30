@@ -130,17 +130,21 @@ services:
     profiles: ["migration-test"]
     restart: "no"
 
+    # network_mode: host avoids docker-proxy port-forwarding (which intermittently
+    # fails to route connections through on this laptop's bridge setup). Postgres
+    # then binds directly to port 5433 on the host's network namespace, which
+    # also matches how gps-grafana-dev (host-net) reaches it.
+    network_mode: host
+
     environment:
       - POSTGRES_DB=gps_health_test
       - POSTGRES_USER=bgo
       - POSTGRES_PASSWORD=gps_health_test
       - PGDATA=/var/lib/postgresql/data/pgdata
+      - PGPORT=5433   # not 5432 — leaves the laptop's main PG on 5432 alone
       # TimescaleDB tuning hint — light defaults for laptop use
       - TS_TUNE_MAX_CONNS=50
       - TS_TUNE_MEMORY=2GB
-
-    ports:
-      - "127.0.0.1:5433:5432"   # bound to localhost only — not exposed off the laptop
 
     volumes:
       - timescaledb-test-data:/var/lib/postgresql/data

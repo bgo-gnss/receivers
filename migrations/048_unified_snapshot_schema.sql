@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS station_health_60s (
 
     -- PowerStatus (block 4101)
     voltage         REAL,
-    power_source    VARCHAR(10),
+    power_source    TEXT,
 
     -- ReceiverStatus (block 4014)
     cpu_load        REAL,
@@ -81,7 +81,10 @@ CREATE TABLE IF NOT EXISTS station_health_60s (
     ext_error       INT,
 
     -- PVTGeodetic (block 4007) + PosCovGeodetic (4006)
-    fix_type        VARCHAR(10),
+    -- TEXT for enum-like strings — the source block_*_status columns are
+    -- unbounded VARCHAR and observed fix_type values include "WGS-84,3D,Autonomous"
+    -- (20 chars), so a fixed VARCHAR(N) is a trap waiting to happen.
+    fix_type        TEXT,
     nr_sv           SMALLINT,
     latitude        DOUBLE PRECISION,
     longitude       DOUBLE PRECISION,
@@ -89,7 +92,7 @@ CREATE TABLE IF NOT EXISTS station_health_60s (
     h_accuracy      REAL,
     v_accuracy      REAL,
     latency         REAL,
-    raim_status     VARCHAR(20),
+    raim_status     TEXT,
 
     -- DiskStatus (block 4059)
     disk_used_mb    INT,
@@ -103,7 +106,7 @@ CREATE TABLE IF NOT EXISTS station_health_60s (
     session_status_1hr BOOLEAN,
 
     -- ReceiverTime (block 5914)
-    time_sync_level    VARCHAR(20),
+    time_sync_level    TEXT,
     delta_ls           INT,
 
     -- IPStatus / WiFiAPStatus (network identity)
@@ -111,7 +114,7 @@ CREATE TABLE IF NOT EXISTS station_health_60s (
     wifi_clients       SMALLINT,
 
     -- Provenance — which pathway populated this row first
-    source             VARCHAR(10),  -- 'tcp_probe' | 'sbf_parse' | 'merged'
+    source             TEXT,  -- 'tcp_probe' | 'sbf_parse' | 'merged'
     written_at         TIMESTAMPTZ DEFAULT NOW(),
 
     PRIMARY KEY (sid, ts)
@@ -152,10 +155,10 @@ CREATE TABLE IF NOT EXISTS station_network_60s (
     ctrl_port_open      BOOLEAN,
     ctrl_response_ms    REAL,    -- NULL until probe service is extended
 
-    -- Composite + NTRIP
-    overall_status      VARCHAR(20),
-    ntrip_server_status VARCHAR(20),
-    ntrip_error_code    VARCHAR(20),
+    -- Composite + NTRIP — TEXT (source columns are unbounded VARCHAR)
+    overall_status      TEXT,
+    ntrip_server_status TEXT,
+    ntrip_error_code    TEXT,
 
     PRIMARY KEY (sid, ts)
 );
