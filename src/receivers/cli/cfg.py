@@ -2275,6 +2275,151 @@ def cmd_cfg_add_receiver(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# cmd_cfg_update_device — probe an existing TOS device and update its attrs
+# ---------------------------------------------------------------------------
+
+
+def cmd_cfg_update_device(args) -> int:
+    """Probe a receiver and update the matching TOS device entity's attribute(s).
+
+    Use case: a receiver that's already in TOS (typically warehoused at B9 from
+    an earlier `cfg add-receiver` intake) had something change off-network — e.g.
+    firmware upgrade on the bench — and you want TOS to reflect the new value.
+
+    Two modes:
+
+    - **Pattern 1 (default, in-place upsert)** — PATCH the open attribute_value
+      row to the new value. Operationally cheapest; history-destructive.
+    - **Pattern 2 (--transition)** — close the open period at ``--date`` and
+      open a new one with the new value. Two HTTP calls. Use when you want TOS
+      to remember "ran fw 5.6.0 from X to Y, fw 5.7.0 from Y onwards".
+
+    Dry-run by default. Does NOT touch stations.cfg — for that, use
+    ``cfg reconcile <SID> --field receiver_firmware_version --source receiver``
+    once the device is deployed.
+    """
+    from datetime import date as _date
+
+    from tostools.api.tos_writer import TOSWriter
+
+    from ..cfg.device_probe import (
+        ProbeError,
+        ProbeNotIdentifiedError,
+        ProbeUnreachableError,
+        parse_host_port,
+        probe_receiver,
+    )
+
+    if not args.field:
+        print(
+            "❌ --field is required (e.g. --field firmware_version)",
+            file=sys.stderr,
+        )
+        return 2
+
+    # ---- Parse probe target ---------------------------------------------
+    try:
+        host, port = parse_host_port(args.probe)
+    except ValueError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        return 2
+
+    when_iso = args.date or _date.today().isoformat()
+
+    # ---- Probe the receiver ---------------------------------------------
+    print(f"Probing {args.probe} …")
+    try:
+        identity = probe_receiver(
+            host, port, probe_type=args.probe_type
+        )
+    except (ProbeUnreachableError, ProbeNotIdentifiedError, ProbeError) as e:
+        print(f"❌ {e}", file=sys.stderr)
+        return 1
+
+    if not identity.serial:
+        print(
+            "❌ probe did not return a serial — can't look up the TOS device",
+            file=sys.stderr,
+        )
+        return 1
+    print(
+        f"  identity: serial={identity.serial!r} "
+        f"model={identity.model_raw!r} fw={identity.firmware_version!r}"
+    )
+
+    # ---- Map requested fields → values from probe -----------------------
+    field_sources: Dict[str, Optional[str]] = {
+        "firmware_version": identity.firmware_version,
+        "model": identity.model_raw,
+        "marker_name": identity.marker_name,
+    }
+    field_values: Dict[str, str] = {}
+    for f in args.field:
+        if f not in field_sources:
+            print(
+                f"❌ field {f!r} not supported by --probe "
+                f"(supported: {sorted(field_sources)})",
+                file=sys.stderr,
+            )
+            return 2
+        val = field_sources[f]
+        if not val:
+            print(f"❌ probe didn't return a {f} value", file=sys.stderr)
+            return 1
+        field_values[f] = val
+
+    # ---- Find the device in TOS -----------------------------------------
+    dry_run = not args.no_dry_run
+    writer = TOSWriter(dry_run=dry_run)
+
+    device = writer.find_device_by_serial(args.subtype, identity.serial)
+    if not device:
+        print(
+            f"❌ no TOS device of subtype {args.subtype!r} with serial "
+            f"{identity.serial!r}",
+            file=sys.stderr,
+        )
+        print(
+            f"   If this is a brand-new intake, use `receivers cfg add-receiver "
+            f"--probe {args.probe}` instead.",
+            file=sys.stderr,
+        )
+        return 1
+    id_entity = device.get("id_entity") if isinstance(device, dict) else None
+    if not id_entity:
+        print(f"❌ TOS lookup returned a device without id_entity: {device!r}",
+              file=sys.stderr)
+        return 1
+
+    mode = "Pattern 2 (close+open, history-preserving)" if args.transition else \
+           "Pattern 1 (in-place upsert)"
+    print(f"  TOS device: id_entity={id_entity}")
+    print(f"  Mode: {mode}")
+    print(f"  Date: {when_iso}")
+    if dry_run:
+        print("  DRY RUN — no writes (use --no-dry-run to commit)")
+
+    # ---- Apply each field -----------------------------------------------
+    rc = 0
+    for code, new_value in field_values.items():
+        try:
+            if args.transition:
+                writer.transition_attribute_value(
+                    id_entity, code, new_value, when_iso
+                )
+            else:
+                writer.upsert_attribute_value(
+                    id_entity, code, new_value, when_iso
+                )
+            print(f"  ✓ {code} → {new_value!r}")
+        except Exception as e:  # noqa: BLE001 — surface any TOS write error
+            print(f"  ❌ {code}: {e}", file=sys.stderr)
+            rc = 1
+
+    return rc
+
+
+# ---------------------------------------------------------------------------
 # argparse wiring
 # ---------------------------------------------------------------------------
 
@@ -2806,6 +2951,92 @@ Examples:
         help="Emit a structured JSON summary instead of plain text.",
     )
     add_rx.set_defaults(func=cmd_cfg_add_receiver)
+
+    # ---- update-device ---------------------------------------------------
+    upd = cfg_subparsers.add_parser(
+        "update-device",
+        help="Probe a receiver and update its TOS device attribute(s)",
+        description=(
+            "Update an already-in-TOS device entity's attribute(s) by probing "
+            "the live receiver for the current value. Use case: firmware "
+            "upgrade on a bench/warehoused receiver — the device entity "
+            "already exists (from a prior `add-receiver`) and needs the new "
+            "value reflected in TOS. Default Pattern 1 (in-place upsert)."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # After a firmware upgrade on a bench receiver (dry-run by default):
+  receivers cfg update-device --probe 192.168.3.1 --field firmware_version
+
+  # Same, committing live:
+  receivers cfg update-device --probe 192.168.3.1 --field firmware_version \\
+      --no-dry-run
+
+  # Multiple fields at once:
+  receivers cfg update-device --probe 192.168.3.1 \\
+      --field firmware_version --field model --no-dry-run
+
+  # Pattern 2 — preserve TOS history (close old period, open new):
+  receivers cfg update-device --probe 192.168.3.1 \\
+      --field firmware_version --transition --date 2026-05-30 --no-dry-run
+
+  # When the receiver isn't reachable but you know the new firmware:
+  # (not yet supported — use `cfg add-receiver --from-file` style for that)
+""",
+    )
+    upd.add_argument(
+        "--probe",
+        metavar="HOST[:PORT]",
+        required=True,
+        help="Receiver IP/host (with optional port).",
+    )
+    upd.add_argument(
+        "--probe-type",
+        choices=PROBE_TYPE_CHOICES,
+        default="auto",
+        help="Receiver protocol; 'auto' tries PolaRX5 only (default).",
+    )
+    upd.add_argument(
+        "--field",
+        action="append",
+        default=[],
+        metavar="CODE",
+        help=(
+            "Attribute code to update; repeatable. Supported: "
+            "firmware_version, model, marker_name."
+        ),
+    )
+    upd.add_argument(
+        "--subtype",
+        default="gnss_receiver",
+        help="TOS subtype to search for. Default: gnss_receiver.",
+    )
+    upd.add_argument(
+        "--date",
+        metavar="YYYY-MM-DD",
+        help=(
+            "Effective date for the change. Default: today. With "
+            "--transition, this is the transition date (close old period "
+            "at this date, open new from this date)."
+        ),
+    )
+    upd.add_argument(
+        "--transition",
+        action="store_true",
+        help=(
+            "Pattern 2: close the old attribute period + open a new one "
+            "(history-preserving) instead of the default Pattern 1 "
+            "(in-place upsert). Use for firmware UPGRADES where TOS "
+            "should remember the upgrade event."
+        ),
+    )
+    upd.add_argument(
+        "--no-dry-run",
+        action="store_true",
+        help="Commit the writes; without this flag, payloads are logged only.",
+    )
+    upd.set_defaults(func=cmd_cfg_update_device)
 
     # ---- move-device (unified: station OR warehouse target) -------------
     move = cfg_subparsers.add_parser(
