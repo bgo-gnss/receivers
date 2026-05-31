@@ -27,7 +27,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 
 from tostools.api.tos_writer import TOSWriter
 
@@ -971,6 +971,157 @@ def _apply_device_attribute_transitions(
         result.tos_changes["device_comment"] = w.transition_attribute_value(
             device_id, "comment", device_comment, eff_date
         )
+
+
+# ---------------------------------------------------------------------------
+# Install-attribute fill (station-install post-step)
+# ---------------------------------------------------------------------------
+
+#: Installation attributes filled on a station install. v1 is the position
+#: group only — the only install-time fields that (a) have a real TOS
+#: attribute code, (b) are sourced from stations.cfg, and (c) belong to the
+#: station entity (so they survive a receiver swap). Receiver-derived attrs
+#: (sampling_interval, FTP/HTTP/CTRL ports, ip_address) have **no** TOS
+#: attribute code — there is nowhere to write them — so they are out of
+#: scope here; see receivers todo #28 for the descope rationale. Antenna /
+#: monument / radome attrs belong to the future ``cfg replace-antenna`` /
+#: ``replace-radome`` verbs (todo #21), not a receiver move.
+INSTALL_POSITION_FIELDS: tuple[str, ...] = ("latitude", "longitude", "height")
+
+
+@dataclass
+class InstallAttrProposal:
+    """One proposed install-attribute write, handed to a confirm callback.
+
+    The cfg value is always the value we propose to write to TOS — on
+    install, stations.cfg (surveyed coordinates) is the ground truth and
+    TOS is being populated/aligned from it (the inverse of ``cfg
+    reconcile``, which treats TOS as authoritative for cfg).
+    """
+
+    cfg_key: str
+    label: str
+    cfg_value: str  # value proposed for the TOS write (cfg is ground truth)
+    tos_value: Optional[str]  # current open TOS value, or None if absent
+    differs: bool  # True when TOS already has a *different* value
+    spec: Any  # FieldSpec (avoids a circular import at module load)
+
+
+def fill_install_attributes(
+    writer: TOSWriter,
+    station_id: str,
+    station_config: Dict[str, Any],
+    tos_data: Optional[Dict[str, Any]],
+    eff_date: str,
+    *,
+    confirm: Callable[[InstallAttrProposal], str],
+    fields: Sequence[str] = INSTALL_POSITION_FIELDS,
+    position_tolerance_m: float = 2.0,
+) -> Dict[str, str]:
+    """Fill station install attributes in TOS from stations.cfg, with confirm.
+
+    For each field in ``fields`` that stations.cfg has a value for, compare
+    against the current open TOS value and, when a write is warranted, ask
+    ``confirm`` what to do. The caller's ``confirm`` callback owns all
+    interaction (prompts, dry-run previews, ``--yes`` / ``--change`` /
+    ``--correct`` policy) and returns one of:
+
+    * ``"add"`` / ``"correct"`` — Pattern 1 upsert (write the open value).
+      ``"add"`` is the natural choice when TOS has no value yet; ``"correct"``
+      fixes a wrong existing value in place (no history).
+    * ``"change"`` — Pattern 2 transition (close the open period at
+      ``eff_date``, open a new one). Records history.
+    * ``"skip"`` — leave TOS untouched for this field.
+
+    Fields where stations.cfg is empty, or where TOS already matches cfg
+    (within ``position_tolerance_m`` for the position group), are no-ops and
+    ``confirm`` is never called for them.
+
+    Dry-run is governed by the ``writer`` (a dry-run ``TOSWriter`` turns every
+    push into a no-op ``DryRunResult``); this function does not branch on it.
+
+    Returns a ``{cfg_key: outcome}`` map for the caller's summary, where
+    outcome is ``"unchanged"``, ``"skipped"``, or a short
+    ``"<verb>→<value>"`` description.
+
+    Raises:
+        CfgOperationError: when ``tos_data`` is missing its ``id_entity`` (no
+            resolvable station entity to write to).
+    """
+    # Local imports keep operations.py import-light and avoid a load-time
+    # cycle (reconciler imports field_manifest which is fine, but tos_push
+    # imports back into this package's typing surface).
+    from .field_manifest import with_position_tolerance
+    from .reconciler import compare_station
+    from .tos_push import push_field_to_tos, push_field_transition_to_tos
+
+    if not tos_data or tos_data.get("id_entity") is None:
+        raise CfgOperationError(
+            f"fill_install_attributes: TOS has no resolvable station entity "
+            f"for {station_id!r} (missing id_entity) — cannot write install "
+            f"attributes."
+        )
+
+    specs = with_position_tolerance(position_tolerance_m)
+    diffs = compare_station(
+        station_id=station_id,
+        station_config=station_config,
+        receiver_identity=None,
+        tos_data=tos_data,
+        fields=list(fields),
+        queried_sources={"cfg", "tos"},
+        field_specs=specs,
+    )
+
+    changes: Dict[str, str] = {}
+    for d in diffs:
+        if d.cfg_value is None:
+            # Nothing in stations.cfg to install for this field.
+            continue
+        differs = d.tos_value is not None and not d.spec.values_equal(
+            d.cfg_value, d.tos_value
+        )
+        if d.tos_value is not None and not differs:
+            changes[d.cfg_key] = "unchanged"
+            continue
+
+        proposal = InstallAttrProposal(
+            cfg_key=d.cfg_key,
+            label=d.label,
+            cfg_value=d.cfg_value,
+            tos_value=d.tos_value,
+            differs=differs,
+            spec=d.spec,
+        )
+        action = confirm(proposal)
+        if action == "skip":
+            changes[d.cfg_key] = "skipped"
+            continue
+        if action in ("add", "correct"):
+            push_field_to_tos(
+                writer=writer,
+                spec=d.spec,
+                value=d.cfg_value,
+                tos_data=tos_data,
+                date_from=eff_date,
+            )
+            changes[d.cfg_key] = f"upsert→{d.cfg_value}"
+        elif action == "change":
+            push_field_transition_to_tos(
+                writer=writer,
+                spec=d.spec,
+                new_value=d.cfg_value,
+                old_value=str(d.tos_value),
+                tos_data=tos_data,
+                transition_date=eff_date,
+            )
+            changes[d.cfg_key] = f"transition→{d.cfg_value}"
+        else:
+            raise CfgOperationError(
+                f"fill_install_attributes: confirm() returned unknown action "
+                f"{action!r} for {d.cfg_key!r} (expected add/correct/change/skip)."
+            )
+    return changes
 
 
 def delete_join(

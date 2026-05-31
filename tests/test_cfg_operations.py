@@ -7,6 +7,7 @@ calls happen, and use a tmp ``stations.cfg`` for the file-write paths.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -1494,4 +1495,239 @@ def test_replace_receiver_continue_from_validates_step_name():
             continue_from="bogus",
             writer=w,
             dry_run=True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# fill_install_attributes — position install-attr fill (todo #28)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingWriter:
+    """Minimal TOSWriter stand-in that records attribute-write calls.
+
+    ``fill_install_attributes`` reaches the writer only through
+    ``tos_push.push_field_to_tos`` (→ ``upsert_attribute_value``) and
+    ``push_field_transition_to_tos`` (→ ``transition_attribute_value``); for
+    station-entity fields ``resolve_entity_id`` short-circuits to the station
+    id without touching the writer, so those two methods are all we need.
+    """
+
+    def __init__(self):
+        self.dry_run = True
+        self.calls: list[dict] = []
+
+    def upsert_attribute_value(self, id_entity, code, value, date_from, **kw):
+        self.calls.append(
+            {
+                "method": "upsert_attribute_value",
+                "id_entity": id_entity,
+                "code": code,
+                "value": value,
+                "date_from": date_from,
+            }
+        )
+        return {"ok": True}
+
+    def transition_attribute_value(
+        self, id_entity, code, new_value, transition_date, **kw
+    ):
+        self.calls.append(
+            {
+                "method": "transition_attribute_value",
+                "id_entity": id_entity,
+                "code": code,
+                "new_value": new_value,
+                "transition_date": transition_date,
+            }
+        )
+        return {"closed": {"ok": True}, "opened": {"ok": True}}
+
+
+def _install_writer() -> Any:
+    """Recording writer usable by the install-attr push helpers.
+
+    Annotated ``Any`` so the duck-typed fake satisfies the ``writer:
+    TOSWriter`` parameter of ``fill_install_attributes`` without a cast at
+    every call site (mirrors how the MagicMock-based ``_writer_mock`` is
+    accepted elsewhere in this file).
+    """
+    return _RecordingWriter()
+
+
+def _station_cfg(lat=None, lon=None, height=None):
+    cfg = {}
+    if lat is not None:
+        cfg["latitude"] = lat
+    if lon is not None:
+        cfg["longitude"] = lon
+    if height is not None:
+        cfg["height"] = height
+    return cfg
+
+
+def _tos_record(id_entity=4242, lat=None, lon=None, altitude=None):
+    """Minimal TOS station dict for the position extractors + push helpers."""
+    rec = {"id_entity": id_entity}
+    if lat is not None:
+        rec["lat"] = lat
+    if lon is not None:
+        rec["lon"] = lon
+    if altitude is not None:
+        rec["altitude"] = altitude
+    return rec
+
+
+def test_fill_install_attrs_adds_missing_position():
+    """cfg has position, TOS has none → upsert each field (Pattern 1)."""
+    from receivers.cfg.operations import fill_install_attributes
+
+    w = _install_writer()
+    changes = fill_install_attributes(
+        w,
+        "HRAC",
+        _station_cfg(lat="64.130000", lon="-21.900000", height="100.0"),
+        _tos_record(),  # no lat/lon/altitude in TOS yet
+        "2026-05-31T12:00:00",
+        confirm=lambda p: "add",
+    )
+    upserts = {
+        c["code"]: c["value"]
+        for c in w.calls
+        if c["method"] == "upsert_attribute_value"
+    }
+    assert upserts == {
+        "lat": "64.130000",
+        "lon": "-21.900000",
+        "altitude": "100.0",
+    }
+    # all writes target the station entity id from tos_data
+    assert all(
+        c["id_entity"] == 4242
+        for c in w.calls
+        if c["method"] == "upsert_attribute_value"
+    )
+    assert changes["latitude"].startswith("upsert→")
+    assert "transition_attribute_value" not in {c["method"] for c in w.calls}
+
+
+def test_fill_install_attrs_noop_when_equal():
+    """TOS already matches cfg within tolerance → no writes, no confirm."""
+    from receivers.cfg.operations import fill_install_attributes
+
+    w = _install_writer()
+    confirm_calls = []
+
+    changes = fill_install_attributes(
+        w,
+        "HRAC",
+        _station_cfg(lat="64.130000", lon="-21.900000", height="100.0"),
+        _tos_record(lat="64.130000", lon="-21.900000", altitude="100.4"),
+        "2026-05-31T12:00:00",
+        confirm=lambda p: confirm_calls.append(p) or "add",
+        position_tolerance_m=2.0,
+    )
+    # height 100.0 vs 100.4 is within 2 m; lat/lon identical → all unchanged
+    assert confirm_calls == []
+    assert not [
+        c
+        for c in w.calls
+        if c["method"] in ("upsert_attribute_value", "transition_attribute_value")
+    ]
+    assert set(changes.values()) == {"unchanged"}
+
+
+def test_fill_install_attrs_differ_change_uses_transition():
+    """cfg differs from TOS + confirm 'change' → Pattern 2 transition."""
+    from receivers.cfg.operations import fill_install_attributes
+
+    w = _install_writer()
+    changes = fill_install_attributes(
+        w,
+        "HRAC",
+        _station_cfg(height="250.0"),
+        _tos_record(altitude="100.0"),  # differs by 150 m
+        "2026-05-31T12:00:00",
+        confirm=lambda p: "change",
+    )
+    transitions = [c for c in w.calls if c["method"] == "transition_attribute_value"]
+    assert len(transitions) == 1
+    assert transitions[0]["code"] == "altitude"
+    assert transitions[0]["new_value"] == "250.0"
+    assert transitions[0]["transition_date"] == "2026-05-31T12:00:00"
+    assert changes["height"].startswith("transition→")
+
+
+def test_fill_install_attrs_differ_correct_uses_upsert():
+    """cfg differs from TOS + confirm 'correct' → Pattern 1 in-place upsert."""
+    from receivers.cfg.operations import fill_install_attributes
+
+    w = _install_writer()
+    changes = fill_install_attributes(
+        w,
+        "HRAC",
+        _station_cfg(height="250.0"),
+        _tos_record(altitude="100.0"),
+        "2026-05-31T12:00:00",
+        confirm=lambda p: "correct",
+    )
+    upserts = [c for c in w.calls if c["method"] == "upsert_attribute_value"]
+    assert len(upserts) == 1
+    assert upserts[0]["code"] == "altitude" and upserts[0]["value"] == "250.0"
+    assert "transition_attribute_value" not in {c["method"] for c in w.calls}
+    assert changes["height"].startswith("upsert→")
+
+
+def test_fill_install_attrs_skip_writes_nothing():
+    """confirm 'skip' → field recorded as skipped, no TOS write."""
+    from receivers.cfg.operations import fill_install_attributes
+
+    w = _install_writer()
+    changes = fill_install_attributes(
+        w,
+        "HRAC",
+        _station_cfg(lat="64.130000"),
+        _tos_record(),
+        "2026-05-31T12:00:00",
+        confirm=lambda p: "skip",
+    )
+    assert not [
+        c
+        for c in w.calls
+        if c["method"] in ("upsert_attribute_value", "transition_attribute_value")
+    ]
+    assert changes["latitude"] == "skipped"
+
+
+def test_fill_install_attrs_skips_fields_absent_from_cfg():
+    """Fields with no cfg value are silently ignored (confirm never called)."""
+    from receivers.cfg.operations import fill_install_attributes
+
+    w = _install_writer()
+    seen = []
+    changes = fill_install_attributes(
+        w,
+        "HRAC",
+        _station_cfg(lat="64.130000"),  # lon/height absent
+        _tos_record(),
+        "2026-05-31T12:00:00",
+        confirm=lambda p: seen.append(p.cfg_key) or "add",
+    )
+    assert seen == ["latitude"]
+    assert "longitude" not in changes and "height" not in changes
+
+
+def test_fill_install_attrs_requires_id_entity():
+    """Missing id_entity in tos_data → CfgOperationError (no silent no-op)."""
+    from receivers.cfg.operations import fill_install_attributes
+
+    w = _install_writer()
+    with pytest.raises(CfgOperationError):
+        fill_install_attributes(
+            w,
+            "HRAC",
+            _station_cfg(lat="64.13"),
+            {"lat": "64.13"},  # no id_entity
+            "2026-05-31T12:00:00",
+            confirm=lambda p: "add",
         )

@@ -3348,7 +3348,71 @@ Examples:
     move.add_argument(
         "--json",
         action="store_true",
-        help="Emit a structured JSON summary instead of plain text.",
+        help=(
+            "Emit a structured JSON summary instead of plain text. "
+            "Disables the interactive install-attribute fill (its prompts "
+            "would corrupt the JSON document)."
+        ),
+    )
+    # ---- Install-attribute fill (station destinations only) -------------
+    move.add_argument(
+        "--no-install-attrs",
+        dest="no_install_attrs",
+        action="store_true",
+        help=(
+            "Skip the post-install fill of station position attributes "
+            "(latitude/longitude/height) into TOS from stations.cfg. The "
+            "fill runs by default on station destinations and is a no-op "
+            "for warehouse moves."
+        ),
+    )
+    move.add_argument(
+        "--position-tolerance-m",
+        dest="position_tolerance_m",
+        type=float,
+        default=2.0,
+        metavar="METERS",
+        help=(
+            "Tolerance (m) for treating a cfg vs TOS position value as equal "
+            "during the install-attribute fill. Default: 2.0."
+        ),
+    )
+    move.add_argument(
+        "-y",
+        "--yes",
+        dest="yes",
+        action="store_true",
+        help=(
+            "Install-attr fill: add missing TOS position values without "
+            "prompting. Differing values are still skipped unless "
+            "--change/--correct says how to write them."
+        ),
+    )
+    # Intent for install-attr values that DIFFER between cfg and TOS. Optional
+    # here (unlike `cfg update-device`): missing values just get added; only a
+    # genuine cfg-vs-TOS disagreement needs an intent, and absent one the fill
+    # prompts (or skips under --yes / dry-run). Mirrors the update-device
+    # --change/--correct semantics so operators learn one model.
+    move_intent = move.add_mutually_exclusive_group(required=False)
+    move_intent.add_argument(
+        "--change",
+        dest="change",
+        action="store_true",
+        help=(
+            "Install-attr fill: when a position value differs, treat it as a "
+            "real-world change → Pattern 2 transition (close the open TOS "
+            "period at --date, open a new one). Records history."
+        ),
+    )
+    move_intent.add_argument(
+        "--correct",
+        dest="correct",
+        action="store_true",
+        help=(
+            "Install-attr fill: when a position value differs, treat the TOS "
+            "record as simply wrong → Pattern 1 in-place upsert (overwrite the "
+            "open value, keep its dates). No history."
+        ),
     )
     move.set_defaults(func=cmd_cfg_move_device)
 
@@ -3840,11 +3904,132 @@ def _compute_visit_edit_diff(before: dict, after: dict) -> dict:
     return diff
 
 
+def _run_install_attr_fill(args, result, *, dry_run: bool) -> None:
+    """Fill station install attributes (position group) in TOS after a move.
+
+    Runs only for station-destination moves (``result.station_id`` set).
+    Reuses the reconcile engine via
+    :func:`receivers.cfg.operations.fill_install_attributes`, sourcing values
+    from stations.cfg (ground truth for surveyed coordinates) and writing them
+    to the TOS station entity. Interaction lives entirely in the ``confirm``
+    callback below; the data layer just executes the returned decisions.
+
+    Best-effort: any failure is reported and swallowed so it never masks the
+    successful move that already landed.
+    """
+    from tostools.api.tos_writer import TOSWriter
+
+    from ..cfg.operations import (
+        InstallAttrProposal,
+        fill_install_attributes,
+    )
+    from ..config_utils import get_station_config
+
+    station_id = result.station_id
+    intent_default = (
+        "change"
+        if getattr(args, "change", False)
+        else ("correct" if getattr(args, "correct", False) else None)
+    )
+    assume_yes = bool(getattr(args, "yes", False))
+    tolerance_m = getattr(args, "position_tolerance_m", 2.0)
+    eff_date = result.date or _effective_date_for(args)
+
+    station_config = get_station_config(station_id)
+    if not station_config:
+        print(
+            f"   ⚠️  install attrs: no stations.cfg section for {station_id} — skipped"
+        )
+        return
+    tos_data = _query_tos(station_id)
+    if not tos_data or tos_data.get("id_entity") is None:
+        print(f"   ⚠️  install attrs: no TOS station record for {station_id} — skipped")
+        return
+
+    def confirm(p: InstallAttrProposal) -> str:
+        if not p.differs:
+            # TOS has no value yet — propose to add it.
+            if dry_run:
+                print(
+                    f"   🌵 [dry-run] would ADD {p.label} = {p.cfg_value!r} "
+                    f"to TOS station entity (date_from={eff_date.split('T', 1)[0]})"
+                )
+                return "add"
+            if assume_yes:
+                print(f"   → add {p.label} = {p.cfg_value!r} (--yes)")
+                return "add"
+            ans = (
+                input(f"   Add {p.label} = {p.cfg_value!r} to TOS? [y/N] ")
+                .strip()
+                .lower()
+            )
+            return "add" if ans in ("y", "yes") else "skip"
+
+        # TOS already has a different value — this is the "else confirm" path.
+        print(f"   {p.label}: cfg={p.cfg_value!r}  TOS={p.tos_value!r}  (differ)")
+        if dry_run:
+            if intent_default:
+                print(
+                    f"   🌵 [dry-run] would {intent_default.upper()} {p.label} "
+                    f"→ {p.cfg_value!r}"
+                )
+                return intent_default
+            print(
+                "   🌵 [dry-run] differing value — pass --change (history) or "
+                "--correct (in-place) to write; skipping"
+            )
+            return "skip"
+        if intent_default:
+            if assume_yes:
+                return intent_default
+            ans = (
+                input(f"     apply --{intent_default} ({p.cfg_value!r})? [y/N] ")
+                .strip()
+                .lower()
+            )
+            return intent_default if ans in ("y", "yes") else "skip"
+        if assume_yes:
+            # Never guess change-vs-correct under --yes; require an explicit flag.
+            print("     ⏭  differing value and no --change/--correct given — skipping")
+            return "skip"
+        ans = (
+            input("     [c]hange (records history) / [f]ix in place / [s]kip? ")
+            .strip()
+            .lower()
+        )
+        return {"c": "change", "f": "correct"}.get(ans, "skip")
+
+    try:
+        changes = fill_install_attributes(
+            TOSWriter(dry_run=dry_run),
+            station_id,
+            station_config,
+            tos_data,
+            eff_date,
+            confirm=confirm,
+            position_tolerance_m=tolerance_m,
+        )
+    except Exception as exc:  # noqa: BLE001 — never mask the completed move
+        print(f"   ⚠️  install-attr fill failed (move already applied): {exc}")
+        logger.warning("[%s] install-attr fill failed: %s", station_id, exc)
+        return
+
+    written = {k: v for k, v in changes.items() if v not in ("unchanged", "skipped")}
+    if written:
+        verb = "would write" if dry_run else "wrote"
+        print(f"   install attrs {verb}: {written}")
+    elif changes:
+        print("   install attrs: no changes (TOS already matches stations.cfg)")
+
+
 def cmd_cfg_move_device(args) -> int:
     """``cfg move-device`` — move a receiver to a station OR a warehouse.
 
     Auto-detects target by looking up ``--to`` first as a station marker
     then as a location name. See :func:`receivers.cfg.operations.move_device`.
+
+    On a station-destination move, also fills the station's position
+    install-attributes in TOS from stations.cfg (unless ``--no-install-attrs``).
     """
     import sys
 
@@ -3876,6 +4061,16 @@ def cmd_cfg_move_device(args) -> int:
         print(f"❌ {exc}", file=sys.stderr)
         return 1
     _print_result_summary(result, json_output=args.json, dry_run=dry_run)
+
+    # Station installs get a position install-attribute fill in TOS. Skipped
+    # for warehouse moves (result.station_id is None there), when disabled, and
+    # in JSON mode (the interactive prompts would corrupt the JSON document).
+    if (
+        result.station_id is not None
+        and not getattr(args, "no_install_attrs", False)
+        and not args.json
+    ):
+        _run_install_attr_fill(args, result, dry_run=dry_run)
     return 0
 
 
