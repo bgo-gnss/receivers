@@ -2160,11 +2160,23 @@ def cmd_cfg_add_receiver(args) -> int:
         owner=args.owner,
         date_start=date_start,
     )
-    optional = iter_optional_attributes(
-        firmware=firmware_attr,
-        comment=args.comment,
-        galvos=args.galvos,
+    optional = list(
+        iter_optional_attributes(
+            firmware=firmware_attr,
+            comment=args.comment,
+            galvos=args.galvos,
+        )
     )
+
+    # Derive software_version from firmware in the Septentrio TOS style
+    # (X.Y.Z → X.YZ, e.g. 5.7.0 → 5.70). The probe only surfaces firmware, so a
+    # device that doesn't expose software separately gets it derived here — same
+    # convention as `cfg update-device`. See firmware_to_software().
+    if firmware_attr:
+        software_value, sw_warn = firmware_to_software(firmware_attr)
+        if sw_warn:
+            print(f"  ⚠️  {sw_warn}", file=sys.stderr)
+        optional.append(("software_version", software_value))
 
     # ---- Writer setup ---------------------------------------------------
     scheme = "https" if args.port == 443 else "http"

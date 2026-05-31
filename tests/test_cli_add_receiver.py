@@ -144,11 +144,14 @@ def test_no_dry_run_flips_writer_and_runs_upserts(base_args) -> None:
 
     assert rc == 0
     assert tw_cls.call_args.kwargs["dry_run"] is False
-    # Two optional upserts: firmware_version (probed) + galvos (CLI)
+    # Three optional upserts: firmware_version (probed) + galvos (CLI) +
+    # software_version (derived from firmware: 5.5.0 → 5.50)
     upsert_calls = writer.upsert_attribute_value.call_args_list
-    assert len(upsert_calls) == 2
-    codes = [c.kwargs.get("code") for c in upsert_calls]
-    assert codes == ["firmware_version", "galvos"]
+    assert len(upsert_calls) == 3
+    upserts = {c.kwargs.get("code"): c.kwargs.get("value") for c in upsert_calls}
+    assert upserts["firmware_version"] == "5.5.0"
+    assert upserts["galvos"] == "55555"
+    assert upserts["software_version"] == "5.50"  # derived X.Y.Z → X.YZ
     for call in upsert_calls:
         assert call.args[0] == 4242  # id_entity
         assert call.kwargs["date_from"] == "2026-05-12T00:00:00"
@@ -491,9 +494,12 @@ def test_default_location_when_neither_cli_nor_file_supplies(
 
     args = parser.parse_args(
         [
-            "cfg", "add-receiver",
-            "--from-file", str(intake),
-            "--owners-cache", str(owners_yaml),
+            "cfg",
+            "add-receiver",
+            "--from-file",
+            str(intake),
+            "--owners-cache",
+            str(owners_yaml),
         ]
     )
     writer = _make_writer_mock()
@@ -508,14 +514,15 @@ def test_default_location_when_neither_cli_nor_file_supplies(
 
 def test_file_location_wins_over_default(parser, owners_yaml, tmp_path) -> None:
     """File `location` is preserved — the CLI default doesn't override it."""
-    intake = _write_intake_file(
-        tmp_path, location="Vagnhöfði - Kjallari - Jörð"
-    )
+    intake = _write_intake_file(tmp_path, location="Vagnhöfði - Kjallari - Jörð")
     args = parser.parse_args(
         [
-            "cfg", "add-receiver",
-            "--from-file", str(intake),
-            "--owners-cache", str(owners_yaml),
+            "cfg",
+            "add-receiver",
+            "--from-file",
+            str(intake),
+            "--owners-cache",
+            str(owners_yaml),
         ]
     )
     writer = _make_writer_mock()
@@ -541,9 +548,12 @@ def test_default_date_start_is_today(parser, owners_yaml, tmp_path) -> None:
 
     args = parser.parse_args(
         [
-            "cfg", "add-receiver",
-            "--from-file", str(intake),
-            "--owners-cache", str(owners_yaml),
+            "cfg",
+            "add-receiver",
+            "--from-file",
+            str(intake),
+            "--owners-cache",
+            str(owners_yaml),
         ]
     )
     writer = _make_writer_mock()
@@ -556,16 +566,17 @@ def test_default_date_start_is_today(parser, owners_yaml, tmp_path) -> None:
     assert args.date_start == date.today().isoformat()
 
 
-def test_file_date_start_wins_over_today_default(
-    parser, owners_yaml, tmp_path
-) -> None:
+def test_file_date_start_wins_over_today_default(parser, owners_yaml, tmp_path) -> None:
     """File `date_start` is preserved — the today-default doesn't override it."""
     intake = _write_intake_file(tmp_path, date_start="2026-01-15")
     args = parser.parse_args(
         [
-            "cfg", "add-receiver",
-            "--from-file", str(intake),
-            "--owners-cache", str(owners_yaml),
+            "cfg",
+            "add-receiver",
+            "--from-file",
+            str(intake),
+            "--owners-cache",
+            str(owners_yaml),
         ]
     )
     writer = _make_writer_mock()
