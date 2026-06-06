@@ -3553,6 +3553,17 @@ Examples:
         ),
     )
     visit.add_argument(
+        "--delete",
+        action="store_true",
+        help=(
+            "DELETE mode. Requires --id ID_MAINTENANCE. Permanently removes "
+            "the vitjun from TOS (no undo) — use only to clean up an "
+            "accidentally-created record. To keep a real visit's record, edit "
+            "it with --id N instead of deleting. Dry-run by default; add "
+            "--no-dry-run to commit."
+        ),
+    )
+    visit.add_argument(
         "--no-dry-run",
         action="store_true",
         help="Commit the writes (irrelevant for read modes).",
@@ -3727,6 +3738,201 @@ step in isolation, or just --no-dry-run after eyeballing the args.
         help="Emit a structured JSON summary.",
     )
     rr.set_defaults(func=cmd_cfg_replace_receiver)
+
+    # ---- replace-modem (telemetry: GSM modem / router swap) -------------
+    rm = cfg_subparsers.add_parser(
+        "replace-modem",
+        help="Swap a station's GSM modem/router — TOS modem_gsm Pattern 2 + cfg",
+        description=(
+            "Record a telemetry router/modem replacement. In TOS the router "
+            "is a `modem_gsm` device child of the station (canonical "
+            "serial/model/owner/status shape). Creates the new modem, opens a "
+            "station join at --date, retires the old modem to the warehouse "
+            "(with --old-status, default 'bilað'), writes a Breyting vitjun, "
+            "and updates stations.cfg `router_type` when --router-type is "
+            "given. A modem can't be probed — identity is manual entry. The "
+            "IP lives on the SIM card; use `cfg replace-sim` for that."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Dry-run a router swap at GSIG:
+  receivers cfg replace-modem --station GSIG \\
+      --new-serial 6001312345 --new-model "Teltonika RUT241" \\
+      --router-type Teltonika --date 2026-06-06
+
+  # Commit it:
+  receivers cfg replace-modem --station GSIG \\
+      --new-serial 6001312345 --new-model "Teltonika RUT241" \\
+      --router-type Teltonika --participants bgo@vedur.is --no-dry-run
+""",
+    )
+    rm.add_argument(
+        "--station",
+        required=True,
+        metavar="MARKER",
+        help="4-char RINEX marker of the station.",
+    )
+    rm.add_argument(
+        "--new-serial",
+        dest="new_serial",
+        required=True,
+        help="Serial number of the new modem/router.",
+    )
+    rm.add_argument(
+        "--new-model",
+        dest="new_model",
+        required=True,
+        help="Model of the new modem (free-text, e.g. 'Teltonika RUT241').",
+    )
+    rm.add_argument(
+        "--owner",
+        default="Jarðeðlismælihópur",
+        help="TOS owner attribute. Default: Jarðeðlismælihópur.",
+    )
+    rm.add_argument(
+        "--router-type",
+        dest="router_type",
+        metavar="TYPE",
+        help=(
+            "stations.cfg `router_type` value (e.g. 'Teltonika'). When "
+            "omitted, stations.cfg is left untouched."
+        ),
+    )
+    rm.add_argument(
+        "--date",
+        metavar="YYYY-MM-DD[THH:MM:SS]",
+        help="When the swap happened. Default: now. Bare date → noon.",
+    )
+    rm.add_argument(
+        "--old-status",
+        dest="old_status",
+        default="bilað",
+        help=(
+            "status attribute applied to the OLD modem when it moves to the "
+            "warehouse. Default: 'bilað'. Pass empty string to skip."
+        ),
+    )
+    rm.add_argument(
+        "--old-comment",
+        dest="old_comment",
+        help="comment attribute applied to the OLD modem (optional).",
+    )
+    rm.add_argument(
+        "--vitjun",
+        metavar="TEXT",
+        help="Override the auto-derived 'Skipt um router/modem' vitjun text.",
+    )
+    rm.add_argument(
+        "--participants",
+        metavar="EMAIL[,EMAIL...]",
+        help="Participant emails for the vitjun.",
+    )
+    rm.add_argument(
+        "--warehouse",
+        dest="warehouse",
+        metavar="LOCATION_NAME",
+        help="Override the transit warehouse for the old modem (default B9).",
+    )
+    rm.add_argument(
+        "--cfg-path",
+        dest="cfg_path",
+        help="Override the stations.cfg location.",
+    )
+    rm.add_argument(
+        "--no-dry-run",
+        action="store_true",
+        help="Commit the writes.",
+    )
+    rm.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a structured JSON summary.",
+    )
+    rm.set_defaults(func=cmd_cfg_replace_modem)
+
+    # ---- replace-sim (telemetry: SIM card / IP swap) -------------------
+    rs = cfg_subparsers.add_parser(
+        "replace-sim",
+        help="Swap a station's SIM card (new IP) — TOS sim_card Pattern 2 + cfg",
+        description=(
+            "Record a SIM-card replacement. In TOS the SIM is a `sim_card` "
+            "device child carrying `ip_address` (+ optional `phone_number`) — "
+            "not the canonical device shape. Creates a NEW sim_card entity, "
+            "opens a station join at --date, closes the old SIM's join (SIMs "
+            "aren't warehoused), and writes a vitjun. stations.cfg `router_ip` "
+            "is left alone unless --update-cfg-ip is given (cfg router_ip is "
+            "often a DNS hostname, not a literal IP)."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Dry-run a SIM swap at GSIG (new IP):
+  receivers cfg replace-sim --station GSIG --ip 10.4.1.240 --date 2026-06-06
+
+  # Commit, also writing the literal IP into stations.cfg router_ip:
+  receivers cfg replace-sim --station GSIG --ip 10.4.1.240 \\
+      --phone 8400754 --update-cfg-ip --no-dry-run
+""",
+    )
+    rs.add_argument(
+        "--station",
+        required=True,
+        metavar="MARKER",
+        help="4-char RINEX marker of the station.",
+    )
+    rs.add_argument(
+        "--ip",
+        required=True,
+        metavar="IP_ADDRESS",
+        help="The new SIM's IP address (e.g. 10.4.1.240).",
+    )
+    rs.add_argument(
+        "--phone",
+        metavar="NUMBER",
+        help="Optional phone number / MSISDN for the new SIM.",
+    )
+    rs.add_argument(
+        "--date",
+        metavar="YYYY-MM-DD[THH:MM:SS]",
+        help="When the swap happened. Default: now. Bare date → noon.",
+    )
+    rs.add_argument(
+        "--vitjun",
+        metavar="TEXT",
+        help="Override the auto-derived 'Skipt um SIM-kort' vitjun text.",
+    )
+    rs.add_argument(
+        "--participants",
+        metavar="EMAIL[,EMAIL...]",
+        help="Participant emails for the vitjun.",
+    )
+    rs.add_argument(
+        "--update-cfg-ip",
+        dest="update_cfg_ip",
+        action="store_true",
+        help=(
+            "Also write the new IP to stations.cfg `router_ip`. Off by "
+            "default — cfg router_ip is often a DNS hostname that shouldn't "
+            "be overwritten with a literal IP."
+        ),
+    )
+    rs.add_argument(
+        "--cfg-path",
+        dest="cfg_path",
+        help="Override the stations.cfg location.",
+    )
+    rs.add_argument(
+        "--no-dry-run",
+        action="store_true",
+        help="Commit the writes.",
+    )
+    rs.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a structured JSON summary.",
+    )
+    rs.set_defaults(func=cmd_cfg_replace_sim)
 
     # ---- delete-join ----------------------------------------------------
     dj = cfg_subparsers.add_parser(
@@ -4112,6 +4318,68 @@ def cmd_cfg_replace_receiver(args) -> int:
     return 0
 
 
+def cmd_cfg_replace_modem(args) -> int:
+    """``cfg replace-modem`` — swap a station's GSM modem/router in TOS + cfg."""
+    import sys
+
+    from ..cfg.operations import (
+        CfgOperationError,
+        replace_modem,
+    )
+
+    dry_run = not args.no_dry_run
+    try:
+        result = replace_modem(
+            args.station,
+            new_serial=args.new_serial,
+            new_model=args.new_model,
+            owner=args.owner or "Jarðeðlismælihópur",
+            new_router_type=args.router_type,
+            date=_normalise_date_arg(args.date),
+            old_status=args.old_status,
+            old_comment=args.old_comment,
+            vitjun=args.vitjun,
+            participants=args.participants or "",
+            warehouse=args.warehouse,
+            dry_run=dry_run,
+            cfg_path=Path(args.cfg_path) if args.cfg_path else None,
+        )
+    except CfgOperationError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        return 1
+    _print_result_summary(result, json_output=args.json, dry_run=dry_run)
+    return 0
+
+
+def cmd_cfg_replace_sim(args) -> int:
+    """``cfg replace-sim`` — swap a station's SIM card (new IP) in TOS + cfg."""
+    import sys
+
+    from ..cfg.operations import (
+        CfgOperationError,
+        replace_sim,
+    )
+
+    dry_run = not args.no_dry_run
+    try:
+        result = replace_sim(
+            args.station,
+            ip_address=args.ip,
+            phone_number=args.phone,
+            date=_normalise_date_arg(args.date),
+            vitjun=args.vitjun,
+            participants=args.participants or "",
+            update_cfg_ip=args.update_cfg_ip,
+            dry_run=dry_run,
+            cfg_path=Path(args.cfg_path) if args.cfg_path else None,
+        )
+    except CfgOperationError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        return 1
+    _print_result_summary(result, json_output=args.json, dry_run=dry_run)
+    return 0
+
+
 def cmd_cfg_delete_join(args) -> int:
     """``cfg delete-join`` — delete a stale entity_connection row by id."""
     from ..cfg.operations import delete_join
@@ -4148,10 +4416,11 @@ def _has_any_edit_flag(args) -> bool:
 
 
 def cmd_cfg_visit(args) -> int:
-    """``cfg visit`` — list / show / create / edit vitjun.
+    """``cfg visit`` — list / show / create / edit / delete vitjun.
 
     Mode is picked from args:
       * ``--station S --history {id|full}`` → list
+      * ``--id N --delete`` → DELETE (permanent removal)
       * ``--id N`` alone → show one
       * ``--id N`` + edit flags → edit existing
       * ``--station S --work TEXT`` → create new
@@ -4161,10 +4430,26 @@ def cmd_cfg_visit(args) -> int:
     from ..cfg.operations import (
         CfgOperationError,
         add_visit,
+        delete_visit,
         list_visits,
         show_visit,
         update_visit,
     )
+
+    # --- Delete mode -------------------------------------------------------
+    # Checked first: --delete is a distinct destructive mode, not an edit flag.
+    if getattr(args, "delete", False):
+        if args.vitjun_id is None:
+            print("❌ --delete requires --id ID_MAINTENANCE", file=sys.stderr)
+            return 2
+        dry_run = not args.no_dry_run
+        try:
+            result = delete_visit(args.vitjun_id, dry_run=dry_run)
+        except (CfgOperationError, RuntimeError) as exc:
+            print(f"❌ {exc}", file=sys.stderr)
+            return 1
+        _print_result_summary(result, json_output=args.json, dry_run=dry_run)
+        return 0
 
     # --- List mode ---------------------------------------------------------
     if args.history is not None:
@@ -4348,7 +4633,8 @@ def handle_cfg_command(args) -> int:
         print("❌ No cfg subcommand specified")
         print(
             "Available: reconcile, extract, list, history, add-receiver, "
-            "move-device, replace-receiver, visit, delete-join"
+            "update-device, move-device, replace-receiver, replace-modem, "
+            "replace-sim, visit, delete-join"
         )
         print("\nTry: receivers cfg move-device --help")
         return 2

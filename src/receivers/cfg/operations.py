@@ -212,17 +212,21 @@ def _resolve_station(writer: TOSWriter, station_id: str) -> int:
     return eid
 
 
-def _find_open_gnss_receiver_child(
-    writer: TOSWriter, station_eid: int
+def _find_open_child(
+    writer: TOSWriter, station_eid: int, subtype: str
 ) -> Optional[int]:
-    """Return the id_entity of the open gnss_receiver child of a station.
+    """Return the id_entity of the open child of ``subtype`` joined to a station.
 
-    Used by :func:`install_device` for the destination-displacement
-    constraint: a station should have at most one open receiver join at
-    a time. If one exists, the operator must retire/transfer it before
-    installing a new one.
+    Walks the station's ``children_connections``, keeps the ones with no
+    ``time_to`` (open joins), and returns the first whose own
+    ``code_entity_subtype`` matches ``subtype`` (e.g. ``"gnss_receiver"``,
+    ``"modem_gsm"``, ``"sim_card"``).
 
-    Returns ``None`` when no open receiver join exists at the station.
+    Used for the destination-displacement constraint: a station should have
+    at most one open join per device subtype. If one exists, the operator
+    must retire/transfer it before installing a replacement.
+
+    Returns ``None`` when no open child of that subtype exists.
     """
     history = writer.get_entity_history(station_eid)
     if not isinstance(history, dict):
@@ -236,10 +240,21 @@ def _find_open_gnss_receiver_child(
         child_hist = writer.get_entity_history(int(cid))
         if (
             isinstance(child_hist, dict)
-            and child_hist.get("code_entity_subtype") == "gnss_receiver"
+            and child_hist.get("code_entity_subtype") == subtype
         ):
             return int(cid)
     return None
+
+
+def _find_open_gnss_receiver_child(
+    writer: TOSWriter, station_eid: int
+) -> Optional[int]:
+    """Return the id_entity of the open gnss_receiver child of a station.
+
+    Thin wrapper over :func:`_find_open_child` for the common receiver case.
+    Returns ``None`` when no open receiver join exists at the station.
+    """
+    return _find_open_child(writer, station_eid, "gnss_receiver")
 
 
 def _device_attribute(device_hist: Dict[str, Any], code: str) -> Optional[str]:
@@ -1160,6 +1175,45 @@ def delete_join(
     )
 
 
+def delete_visit(
+    id_maintenance: int,
+    *,
+    dry_run: bool = True,
+    writer: Optional[TOSWriter] = None,
+) -> OperationResult:
+    """Delete a single vitjun (maintenance record) by id.
+
+    Admin-level destructive operation — no undo on TOS. Use only to clean up
+    known-bad records such as a vitjun created by accident. To preserve the
+    history for a visit that genuinely happened, prefer :func:`update_visit`
+    with ``completed=True`` (mark done but keep the record).
+
+    To find the right id, list the station's vitjun records with
+    :func:`list_visits` (or ``receivers cfg visit --station SID --history id``)
+    and identify the bad one by date / work text. Never delete without
+    inspecting first.
+
+    Args:
+        id_maintenance: ``id_maintenance`` of the vitjun to delete.
+        dry_run: When True (default), logs the DELETE without sending.
+        writer: Optional pre-built TOSWriter.
+
+    Returns:
+        :class:`OperationResult` with ``operation='delete-visit'``,
+        ``vitjun_id=id_maintenance`` and
+        ``tos_changes={'id_maintenance': N, 'deleted': <response>}``.
+    """
+    w = _resolve_writer(writer, dry_run)
+    resp = w.delete_maintenance(id_maintenance)
+    return OperationResult(
+        operation="delete-visit",
+        date=None,
+        tos_changes={"id_maintenance": id_maintenance, "deleted": resp},
+        vitjun_id=id_maintenance,
+        dry_run=dry_run,
+    )
+
+
 def add_visit(
     station_id: str,
     *,
@@ -1714,6 +1768,326 @@ def replace_receiver(
         result.cfg_changes = install_new.cfg_changes
         result.vitjun_id = install_new.vitjun_id
 
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Telemetry swaps — modem_gsm (router) + sim_card
+# ---------------------------------------------------------------------------
+
+
+def _create_and_join_device(
+    w: TOSWriter,
+    *,
+    subtype: str,
+    attributes: List[Dict[str, Optional[str]]],
+    station_eid: int,
+    eff_date: str,
+    dry_run: bool,
+) -> tuple[Optional[int], Any, Any]:
+    """Create a device and open a station join. Returns (id, create, join).
+
+    In dry-run the create returns a :class:`DryRunResult` with no id; the
+    join is still issued with a ``0`` placeholder child so the preview shows
+    both calls (mirrors :func:`replace_receiver`'s warehouse-intake step).
+    """
+    created = w.create_device(
+        entity_subtype=subtype, attributes=attributes, force=False
+    )
+    device_id = created.get("id_entity") if isinstance(created, dict) else None
+    if device_id is None and not dry_run:
+        raise CfgOperationError(
+            f"create_device({subtype}) returned no id_entity — cannot join to station."
+        )
+    join = w.create_entity_connection(
+        id_parent=station_eid,
+        id_child=int(device_id) if device_id else 0,
+        time_from=eff_date,
+        time_to=None,
+    )
+    return device_id, created, join
+
+
+def _retire_old_child(
+    w: TOSWriter,
+    old_id: Optional[int],
+    eff_date: str,
+    *,
+    to_warehouse_eid: Optional[int] = None,
+) -> Any:
+    """Close an old device's open station join at ``eff_date``.
+
+    When ``to_warehouse_eid`` is given, reparents the device to that warehouse
+    (Pattern-2 close+open via :meth:`TOSWriter.move_device`) — used for modems,
+    which are trackable returnable hardware. Otherwise just closes the open
+    join (device left parentless / retired) — used for SIM cards, which aren't
+    warehoused inventory. Returns the writer response, or ``None`` when there
+    was no ``old_id`` or no open join.
+    """
+    if old_id is None:
+        return None
+    if to_warehouse_eid is not None:
+        return w.move_device(old_id, to_warehouse_eid, eff_date)
+    open_join = w.get_open_parent_join(old_id)
+    if open_join and open_join.get("id") is not None:
+        return w.patch_entity_connection(int(open_join["id"]), time_to=eff_date)
+    return None
+
+
+def replace_modem(
+    station_id: str,
+    *,
+    new_serial: str,
+    new_model: str,
+    owner: str = "Jarðeðlismælihópur",
+    new_router_type: Optional[str] = None,
+    date: Optional[str] = None,
+    old_status: Optional[str] = "bilað",
+    old_comment: Optional[str] = None,
+    vitjun: Optional[str] = None,
+    participants: str = "",
+    warehouse: Optional[str] = None,
+    dry_run: bool = True,
+    writer: Optional[TOSWriter] = None,
+    cfg_path: Optional[Path] = None,
+) -> OperationResult:
+    """Swap a station's GSM modem/router in TOS (Pattern-2) + stations.cfg.
+
+    A site visit replaced the telemetry router. In TOS the router is a
+    ``modem_gsm`` device child of the station (it carries the canonical
+    serial/model/owner/status shape — same as a receiver). This:
+
+      1. Creates the new ``modem_gsm`` device (manual entry — a modem can't be
+         probed) and opens a station join at ``date``.
+      2. Retires the old modem (if any): moves it to the warehouse and applies
+         ``old_status``/``old_comment`` (e.g. ``"bilað"``).
+      3. Writes a Breyting vitjun on the station ("Skipt um router/modem …").
+      4. Updates ``stations.cfg[router_type]`` when ``new_router_type`` is given.
+         The IP lives on the ``sim_card`` — use :func:`replace_sim` for that.
+
+    Args:
+        station_id: 4-char marker of the station.
+        new_serial / new_model: New modem identity (required). ``new_model`` is
+            free-text vendor naming, e.g. ``"Teltonika RUT200"``.
+        owner: TOS owner attribute. Default ``"Jarðeðlismælihópur"``.
+        new_router_type: stations.cfg ``router_type`` value (e.g. ``"Teltonika"``).
+            When ``None``, stations.cfg is left untouched.
+        date: When the swap happened. Default now; bare date → noon.
+        old_status / old_comment: Pattern-2 transitions on the OLD modem
+            (``None``/``""`` to skip). Default status ``"bilað"``.
+        vitjun: Override the auto-derived vitjun text.
+        participants: Comma-separated emails for the vitjun.
+        warehouse: Override the transit warehouse (default B9).
+        dry_run / writer / cfg_path: As :func:`move_device`.
+
+    Returns:
+        :class:`OperationResult` with ``operation="replace-modem"``.
+    """
+    w = _resolve_writer(writer, dry_run)
+    station_eid = _resolve_station(w, station_id)
+    eff_date = _visit_default_time(date)
+
+    old_id = _find_open_child(w, station_eid, "modem_gsm")
+    old_serial: Optional[str] = None
+    if old_id is not None:
+        old_hist = w.get_entity_history(old_id)
+        if isinstance(old_hist, dict):
+            old_serial = _device_attribute(old_hist, "serial_number")
+        if old_serial and old_serial == new_serial:
+            raise CfgOperationError(
+                f"New modem serial {new_serial!r} matches the modem already "
+                f"open at {station_id}. Did the swap actually happen?"
+            )
+
+    from tostools.device import build_required_attributes
+
+    igs_model = new_model  # no IGS table for telemetry — free-text vendor name
+    attrs = build_required_attributes(
+        serial=new_serial, model=igs_model, owner=owner, date_start=eff_date
+    )
+
+    result = OperationResult(
+        operation="replace-modem",
+        station_id=station_id,
+        serial=new_serial,
+        date=eff_date,
+        tos_changes={
+            "plan": {
+                "old_serial": old_serial,
+                "new_serial": new_serial,
+                "new_model": new_model,
+            }
+        },
+        dry_run=dry_run,
+    )
+
+    # 1: retire the old modem FIRST (move to warehouse + status transition),
+    # then create + join the new one. Retire-first keeps the station with at
+    # most one open modem_gsm child at any instant — a mid-run failure leaves
+    # it momentarily modem-less (honest, recoverable) rather than with two
+    # simultaneously-open modems (ambiguous for the child-walk reader).
+    if old_id is not None:
+        warehouse_eid = _b9_eid(w, warehouse=warehouse)
+        result.tos_changes["retire_old"] = _retire_old_child(
+            w, old_id, eff_date, to_warehouse_eid=warehouse_eid
+        )
+        _apply_device_attribute_transitions(
+            w,
+            old_id,
+            eff_date,
+            device_status=old_status,
+            device_comment=old_comment,
+            result=result,
+        )
+
+    # 2: create the new modem + open its station join.
+    _new_id, created, join = _create_and_join_device(
+        w,
+        subtype="modem_gsm",
+        attributes=attrs,
+        station_eid=station_eid,
+        eff_date=eff_date,
+        dry_run=dry_run,
+    )
+    result.tos_changes["new_modem_create"] = created
+    result.tos_changes["new_modem_join"] = join
+
+    # 3: vitjun on the station.
+    old_label = (old_serial or "?") if old_id is not None else None
+    work = vitjun or (
+        f"Skipt um router/modem: {old_label} → {new_model} {new_serial}"
+        if old_label
+        else f"Settur upp router/modem: {new_model} {new_serial}"
+    )
+    vit = w.add_maintenance_visit(
+        station_eid,
+        start_time=eff_date,
+        maintenance_type="on_site",
+        participants=participants,
+        reasons=["change"],
+        work=work,
+    )
+    result.tos_changes["vitjun"] = vit
+    result.vitjun_id = vit.get("id_maintenance")
+
+    # 4: stations.cfg router_type (only when given; IP is the SIM's job).
+    if new_router_type and not dry_run:
+        target_cfg = _resolve_cfg_path(cfg_path)
+        result.cfg_changes = _apply_cfg_updates(
+            target_cfg, station_id, {"router_type": new_router_type}
+        )
+    return result
+
+
+def replace_sim(
+    station_id: str,
+    *,
+    ip_address: str,
+    phone_number: Optional[str] = None,
+    date: Optional[str] = None,
+    vitjun: Optional[str] = None,
+    participants: str = "",
+    update_cfg_ip: bool = False,
+    dry_run: bool = True,
+    writer: Optional[TOSWriter] = None,
+    cfg_path: Optional[Path] = None,
+) -> OperationResult:
+    """Swap a station's SIM card in TOS (new sim_card entity) + stations.cfg.
+
+    A site visit replaced the SIM, giving a new IP. In TOS the SIM is a
+    ``sim_card`` device child of the station carrying ``ip_address`` (and
+    optionally ``phone_number``) — NOT the canonical device shape. This:
+
+      1. Creates a new ``sim_card`` device (:func:`build_sim_card_attributes`)
+         and opens a station join at ``date``.
+      2. Closes the old SIM's station join (SIMs aren't warehoused — the old
+         entity is left retired, not reparented).
+      3. Writes a vitjun on the station ("Skipt um SIM-kort, nýtt IP …").
+      4. When ``update_cfg_ip`` is True, writes the new IP to
+         ``stations.cfg[router_ip]``. **Off by default**: cfg ``router_ip`` is
+         frequently a DNS hostname (e.g. ``GSIG.gps.vedur.is``) that should not
+         be overwritten with a literal IP without operator intent.
+
+    Args:
+        station_id: 4-char marker of the station.
+        ip_address: The new SIM's IP (required).
+        phone_number: Optional MSISDN.
+        date: When the swap happened. Default now; bare date → noon.
+        vitjun: Override the auto-derived vitjun text.
+        participants: Comma-separated emails for the vitjun.
+        update_cfg_ip: Write ``router_ip`` in stations.cfg (default False).
+        dry_run / writer / cfg_path: As :func:`move_device`.
+
+    Returns:
+        :class:`OperationResult` with ``operation="replace-sim"``.
+    """
+    w = _resolve_writer(writer, dry_run)
+    station_eid = _resolve_station(w, station_id)
+    eff_date = _visit_default_time(date)
+
+    old_id = _find_open_child(w, station_eid, "sim_card")
+    old_ip: Optional[str] = None
+    if old_id is not None:
+        old_hist = w.get_entity_history(old_id)
+        if isinstance(old_hist, dict):
+            old_ip = _device_attribute(old_hist, "ip_address")
+        if old_ip is not None and old_ip == ip_address:
+            raise CfgOperationError(
+                f"New IP {ip_address!r} matches the SIM already open at "
+                f"{station_id}. Nothing changed — refusing to create a "
+                f"duplicate sim_card. (Use `cfg visit` to record a visit "
+                f"without an equipment change.)"
+            )
+
+    from tostools.device import build_sim_card_attributes
+
+    attrs = build_sim_card_attributes(
+        ip_address=ip_address, date_start=eff_date, phone_number=phone_number
+    )
+
+    result = OperationResult(
+        operation="replace-sim",
+        station_id=station_id,
+        date=eff_date,
+        tos_changes={"plan": {"old_ip": old_ip, "new_ip": ip_address}},
+        dry_run=dry_run,
+    )
+
+    # Retire the old SIM FIRST (close its station join — SIMs aren't
+    # warehoused), then create + join the new one, so the station never has
+    # two open sim_card children simultaneously (see replace_modem rationale).
+    result.tos_changes["retire_old"] = _retire_old_child(w, old_id, eff_date)
+    _new_id, created, join = _create_and_join_device(
+        w,
+        subtype="sim_card",
+        attributes=attrs,
+        station_eid=station_eid,
+        eff_date=eff_date,
+        dry_run=dry_run,
+    )
+    result.tos_changes["new_sim_create"] = created
+    result.tos_changes["new_sim_join"] = join
+
+    work = vitjun or (
+        f"Skipt um SIM-kort, nýtt IP {ip_address}"
+        + (f" (var {old_ip})" if old_ip else "")
+    )
+    vit = w.add_maintenance_visit(
+        station_eid,
+        start_time=eff_date,
+        maintenance_type="on_site",
+        participants=participants,
+        reasons=["change"],
+        work=work,
+    )
+    result.tos_changes["vitjun"] = vit
+    result.vitjun_id = vit.get("id_maintenance")
+
+    if update_cfg_ip and not dry_run:
+        target_cfg = _resolve_cfg_path(cfg_path)
+        result.cfg_changes = _apply_cfg_updates(
+            target_cfg, station_id, {"router_ip": ip_address}
+        )
     return result
 
 
