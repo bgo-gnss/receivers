@@ -3776,14 +3776,36 @@ Examples:
     rm.add_argument(
         "--new-serial",
         dest="new_serial",
-        required=True,
-        help="Serial number of the new modem/router.",
+        help=(
+            "Serial number of the new modem/router. Required unless --probe "
+            "supplies it (probe value is overridden when this is given)."
+        ),
     )
     rm.add_argument(
         "--new-model",
         dest="new_model",
-        required=True,
-        help="Model of the new modem (free-text, e.g. 'Teltonika RUT241').",
+        help=(
+            "Model of the new modem (free-text, e.g. 'Teltonika RUT241'). "
+            "Required unless --probe supplies it."
+        ),
+    )
+    rm.add_argument(
+        "--probe",
+        metavar="HOST[:PORT]",
+        help=(
+            "Auto-extract the new modem's identity (serial/model/mac/"
+            "manufacturer/subtype) live from the Teltonika router at HOST via "
+            "the RutOS REST API. Explicit --new-* / --mac / etc. override "
+            "probed values. Credentials from receivers.cfg [teltonika]."
+        ),
+    )
+    rm.add_argument(
+        "--username",
+        help="Override receivers.cfg [teltonika] username for the probe.",
+    )
+    rm.add_argument(
+        "--password",
+        help="Override receivers.cfg [teltonika] password for the probe.",
     )
     rm.add_argument(
         "--owner",
@@ -3920,9 +3942,29 @@ Examples:
     )
     rs.add_argument(
         "--ip",
-        required=True,
         metavar="IP_ADDRESS",
-        help="The new SIM's IP address (e.g. 10.4.1.240).",
+        help=(
+            "The new SIM's IP address (e.g. 10.4.1.240). Required unless "
+            "--probe supplies it (probe value overridden when this is given)."
+        ),
+    )
+    rs.add_argument(
+        "--probe",
+        metavar="HOST[:PORT]",
+        help=(
+            "Auto-extract the SIM identity (ip/iccid/provider) live from the "
+            "Teltonika router at HOST via the RutOS REST API. Explicit --ip / "
+            "--serial / --provider override probed values. Credentials from "
+            "receivers.cfg [teltonika]."
+        ),
+    )
+    rs.add_argument(
+        "--username",
+        help="Override receivers.cfg [teltonika] username for the probe.",
+    )
+    rs.add_argument(
+        "--password",
+        help="Override receivers.cfg [teltonika] password for the probe.",
     )
     rs.add_argument(
         "--phone",
@@ -4400,8 +4442,58 @@ def cmd_cfg_replace_receiver(args) -> int:
     return 0
 
 
+def _probe_telemetry_or_exit(args):
+    """Probe the router at ``args.probe`` and return the TelemetryIdentity.
+
+    Returns ``None`` when ``--probe`` was not given. On a probe failure prints
+    an actionable error and raises ``SystemExit`` (the caller is a CLI handler).
+    """
+    host = getattr(args, "probe", None)
+    if not host:
+        return None
+    import sys
+
+    from ..cfg.telemetry_probe import (
+        ProbeAuthError,
+        ProbeCredentialsError,
+        ProbeError,
+        ProbeUnreachableError,
+        probe_teltonika,
+    )
+
+    print(f"Probing Teltonika router at {host} …")
+    try:
+        identity = probe_teltonika(
+            host,
+            username=getattr(args, "username", None),
+            password=getattr(args, "password", None),
+        )
+    except (ProbeCredentialsError, ProbeAuthError) as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    except (ProbeUnreachableError, ProbeError) as exc:
+        print(f"❌ probe failed: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    # Echo what the probe found so the operator sees the source values before
+    # any write (they still go through the dry-run preview below).
+    print(
+        f"  router: serial={identity.router_serial!r} model={identity.router_model!r} "
+        f"mac={identity.router_mac!r} subtype={identity.modem_subtype!r}"
+    )
+    print(
+        f"  SIM:    iccid={identity.sim_iccid!r} ip={identity.sim_ip_address!r} "
+        f"provider={identity.provider!r}"
+    )
+    return identity
+
+
 def cmd_cfg_replace_modem(args) -> int:
-    """``cfg replace-modem`` — swap a station's GSM modem/router in TOS + cfg."""
+    """``cfg replace-modem`` — swap a station's GSM modem/router in TOS + cfg.
+
+    With ``--probe HOST`` the new modem's identity (serial/model/mac/manufacturer/
+    subtype) is read live from the Teltonika router; explicit flags override the
+    probed values.
+    """
     import sys
 
     from ..cfg.operations import (
@@ -4415,20 +4507,36 @@ def cmd_cfg_replace_modem(args) -> int:
     except ValueError as exc:
         print(f"❌ {exc}", file=sys.stderr)
         return 2
+
+    probe = _probe_telemetry_or_exit(args)
+    # Explicit flag wins over the probed value (operator override).
+    new_serial = args.new_serial or (probe.router_serial if probe else None)
+    new_model = args.new_model or (probe.router_model if probe else None)
+    if not new_serial or not new_model:
+        missing = "serial" if not new_serial else "model"
+        print(
+            f"❌ modem {missing} unknown — pass --new-{missing} or use --probe "
+            f"against a reachable router.",
+            file=sys.stderr,
+        )
+        return 2
+
     try:
         result = replace_modem(
             args.station,
-            new_serial=args.new_serial,
-            new_model=args.new_model,
+            new_serial=new_serial,
+            new_model=new_model,
             owner=args.owner or "Jarðeðlismælihópur",
             new_router_type=args.router_type,
-            ip_address=args.ip,
+            ip_address=args.ip or (probe.sim_ip_address if probe else None),
             phone_number=args.phone,
-            provider=args.provider,
-            mac_address=args.mac,
-            manufacturer=args.manufacturer,
+            provider=args.provider or (probe.provider if probe else None),
+            mac_address=args.mac or (probe.router_mac if probe else None),
+            manufacturer=args.manufacturer
+            or (probe.router_manufacturer if probe else None),
             io_type=args.io_type,
-            modem_subtype=args.modem_subtype,
+            modem_subtype=args.modem_subtype
+            or (probe.modem_subtype if probe else None),
             comment=args.comment,
             extra_attrs=extra_attrs or None,
             date=_normalise_date_arg(args.date),
@@ -4448,7 +4556,11 @@ def cmd_cfg_replace_modem(args) -> int:
 
 
 def cmd_cfg_replace_sim(args) -> int:
-    """``cfg replace-sim`` — swap a station's SIM card (new IP) in TOS + cfg."""
+    """``cfg replace-sim`` — swap a station's SIM card (new IP) in TOS + cfg.
+
+    With ``--probe HOST`` the SIM's identity (ip/iccid/provider) is read live
+    from the Teltonika router; explicit flags override the probed values.
+    """
     import sys
 
     from ..cfg.operations import (
@@ -4462,13 +4574,23 @@ def cmd_cfg_replace_sim(args) -> int:
     except ValueError as exc:
         print(f"❌ {exc}", file=sys.stderr)
         return 2
+
+    probe = _probe_telemetry_or_exit(args)
+    ip_address = args.ip or (probe.sim_ip_address if probe else None)
+    if not ip_address:
+        print(
+            "❌ SIM ip unknown — pass --ip or use --probe against a reachable router.",
+            file=sys.stderr,
+        )
+        return 2
+
     try:
         result = replace_sim(
             args.station,
-            ip_address=args.ip,
+            ip_address=ip_address,
             phone_number=args.phone,
-            serial_number=args.serial,
-            provider=args.provider,
+            serial_number=args.serial or (probe.sim_iccid if probe else None),
+            provider=args.provider or (probe.provider if probe else None),
             model=args.model,
             owner=args.owner,
             comment=args.comment,
