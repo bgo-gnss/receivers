@@ -242,3 +242,75 @@ def test_probe_degrades_on_missing_endpoint():
     assert ident.provider is None
     # WAN IP still works (separate endpoint)
     assert ident.sim_ip_address == "10.6.1.228"
+
+
+# --- send_sms (MSISDN-discovery) -------------------------------------------
+
+
+def test_send_sms_dry_run_sends_nothing():
+    """Dry-run returns the planned payload and never opens a session."""
+    from receivers.cfg.telemetry_probe import send_sms
+
+    # No patching of Session/creds: if dry_run tried to connect it would fail.
+    plan = send_sms("10.6.1.228", "8400754", "GSIG check", dry_run=True)
+    assert plan["dry_run"] is True
+    assert plan["sent"] is False
+    assert plan["to"] == "8400754"
+    assert plan["endpoint"] == "/api/messages/actions/send"
+
+
+def test_send_sms_live_posts_expected_payload():
+    from receivers.cfg.telemetry_probe import send_sms
+
+    sess = _fake_session()
+    ok = MagicMock()
+    ok.status_code = 200
+    ok.json.return_value = {"success": True}
+    sess.post.return_value = MagicMock(  # login first, then send — use side_effect
+        status_code=200, json=lambda: {"success": True, "data": {"token": "t"}}
+    )
+
+    posts = []
+
+    def _post(url, **kw):
+        posts.append((url, kw))
+        r = MagicMock()
+        r.status_code = 200
+        if url.endswith("/api/login"):
+            r.json.return_value = {"success": True, "data": {"token": "t"}}
+        else:
+            r.json.return_value = {"success": True}
+        return r
+
+    sess.post.side_effect = _post
+    cm_creds, cm_sess, cm_log = _patch(sess)
+    with cm_creds, cm_sess, cm_log:
+        res = send_sms("10.6.1.228", "8400754", "GSIG check", dry_run=False)
+    assert res["sent"] is True
+    # Find the send POST (not the login)
+    send_call = next(c for c in posts if c[0].endswith("/api/messages/actions/send"))
+    body = send_call[1]["json"]
+    assert body["data"]["number"] == "8400754"
+    assert body["data"]["message"] == "GSIG check"
+
+
+def test_send_sms_rejected_raises():
+    from receivers.cfg.telemetry_probe import ProbeError, send_sms
+
+    sess = _fake_session()
+
+    def _post(url, **kw):
+        r = MagicMock()
+        if url.endswith("/api/login"):
+            r.status_code = 200
+            r.json.return_value = {"success": True, "data": {"token": "t"}}
+        else:
+            r.status_code = 500
+            r.text = "modem busy"
+        return r
+
+    sess.post.side_effect = _post
+    cm_creds, cm_sess, cm_log = _patch(sess)
+    with cm_creds, cm_sess, cm_log:
+        with pytest.raises(ProbeError):
+            send_sms("10.6.1.228", "8400754", "x", dry_run=False)

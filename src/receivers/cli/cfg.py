@@ -3971,6 +3971,35 @@ Examples:
         metavar="NUMBER",
         help="Optional phone number / MSISDN for the new SIM.",
     )
+    # MSISDN discovery (opt-in, outward-facing): a SIM can't read its own
+    # number, so text a catcher from the field router and read the sender off it.
+    rs.add_argument(
+        "--discover-phone",
+        dest="discover_phone",
+        action="store_true",
+        help=(
+            "When --phone is not given: send ONE SMS from the field router "
+            "(--probe / --discover-phone-from) to a catcher number "
+            "(--discover-phone-to or [teltonika] discover_phone_to), then "
+            "prompt for the number it arrives from = this SIM's MSISDN. "
+            "Outward-facing + costs a message; only sends with --no-dry-run."
+        ),
+    )
+    rs.add_argument(
+        "--discover-phone-to",
+        dest="discover_phone_to",
+        metavar="NUMBER",
+        help=(
+            "Catcher number that receives the discovery SMS (your mobile). "
+            "Default: [teltonika] discover_phone_to in receivers.cfg."
+        ),
+    )
+    rs.add_argument(
+        "--discover-phone-from",
+        dest="discover_phone_from",
+        metavar="HOST",
+        help=("Router to send the discovery SMS from. Default: the --probe host."),
+    )
     # Optional TOS attributes on the new sim_card (SIM_CARD_ATTR_CODES).
     rs.add_argument("--serial", metavar="SERIAL", help="serial_number attribute.")
     rs.add_argument("--provider", metavar="NAME", help="provider (e.g. Síminn, Nova).")
@@ -4555,11 +4584,89 @@ def cmd_cfg_replace_modem(args) -> int:
     return 0
 
 
+def _discover_phone(args, *, dry_run: bool) -> Optional[str]:
+    """Discover the field SIM's MSISDN by texting a catcher, then prompt.
+
+    A SIM can't read its own number, so we send one SMS *from* the field router
+    (``--probe`` host, or ``--discover-phone-from``) to a catcher number (the
+    operator's mobile, from ``--discover-phone-to`` or ``receivers.cfg
+    [teltonika] discover_phone_to``). The catcher's received-message sender =
+    this SIM's number; since we can't read the operator's phone, we send + then
+    prompt them to type what they received.
+
+    Outward-facing + costs a message → in dry-run we only preview the send.
+    Returns the entered number, or ``None`` (operator skipped / dry-run).
+    """
+    import sys
+
+    from ..cfg.telemetry_probe import (
+        ProbeError,
+        resolve_discover_phone_to,
+        send_sms,
+    )
+
+    from_host = getattr(args, "discover_phone_from", None) or getattr(
+        args, "probe", None
+    )
+    if not from_host:
+        print(
+            "❌ --discover-phone needs a sending router: use --probe HOST or "
+            "--discover-phone-from HOST.",
+            file=sys.stderr,
+        )
+        return None
+    to_number = getattr(args, "discover_phone_to", None) or resolve_discover_phone_to()
+    if not to_number:
+        print(
+            "❌ --discover-phone needs a catcher number: pass --discover-phone-to "
+            "or set [teltonika] discover_phone_to in receivers.cfg.",
+            file=sys.stderr,
+        )
+        return None
+
+    station = args.station
+    body = f"{station} SIM number check ({_normalise_date_arg(args.date) or 'now'})"
+    mode = "[DRY-RUN] would send" if dry_run else "sending"
+    print(
+        f"   📲 {mode} SMS from {from_host} → {to_number}: {body!r} "
+        f"(reveals the {station} SIM's own number on your phone)"
+    )
+    try:
+        send_sms(
+            from_host,
+            to_number,
+            body,
+            username=getattr(args, "username", None),
+            password=getattr(args, "password", None),
+            dry_run=dry_run,
+        )
+    except ProbeError as exc:
+        print(f"   ❌ SMS send failed: {exc}", file=sys.stderr)
+        return None
+
+    if dry_run:
+        print(
+            "   (dry-run: no SMS sent. Re-run with --no-dry-run to send, then "
+            "enter the number you receive.)"
+        )
+        return None
+    print(
+        f"   ✅ SMS sent. Check {to_number} for the message; its sender is the "
+        f"{station} SIM's number."
+    )
+    try:
+        entered = input("   Enter the number you received (blank to skip): ").strip()
+    except EOFError:
+        entered = ""
+    return entered or None
+
+
 def cmd_cfg_replace_sim(args) -> int:
     """``cfg replace-sim`` — swap a station's SIM card (new IP) in TOS + cfg.
 
     With ``--probe HOST`` the SIM's identity (ip/iccid/provider) is read live
     from the Teltonika router; explicit flags override the probed values.
+    ``--discover-phone`` additionally texts a catcher to reveal the SIM's MSISDN.
     """
     import sys
 
@@ -4584,11 +4691,17 @@ def cmd_cfg_replace_sim(args) -> int:
         )
         return 2
 
+    # MSISDN discovery: --phone wins; else --discover-phone texts a catcher from
+    # the field router so its sender header reveals this SIM's own number.
+    phone = args.phone
+    if not phone and getattr(args, "discover_phone", False):
+        phone = _discover_phone(args, dry_run=dry_run)
+
     try:
         result = replace_sim(
             args.station,
             ip_address=ip_address,
-            phone_number=args.phone,
+            phone_number=phone,
             serial_number=args.serial or (probe.sim_iccid if probe else None),
             provider=args.provider or (probe.provider if probe else None),
             model=args.model,

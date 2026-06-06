@@ -152,6 +152,26 @@ def resolve_credentials(
     return (username or cfg_user, password or cfg_pass)
 
 
+def resolve_discover_phone_to(cfg_path: Optional[str] = None) -> Optional[str]:
+    """Return the MSISDN-discovery catcher number from ``[teltonika]``.
+
+    Reads ``discover_phone_to`` (the operator's mobile that receives the
+    discovery SMS so its sender header reveals the field SIM's number). Returns
+    ``None`` when unset — the CLI then requires ``--discover-phone-to`` on the
+    command line.
+    """
+    path = _find_receivers_cfg(cfg_path)
+    if not path:
+        return None
+    try:
+        cp = configparser.ConfigParser(interpolation=None)
+        cp.read(path)
+        return cp.get("teltonika", "discover_phone_to", fallback=None) or None
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("teltonika discover_phone_to load failed: %s", exc)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # REST client
 # ---------------------------------------------------------------------------
@@ -199,38 +219,25 @@ def _wan_ip(interfaces_data: Any) -> Optional[str]:
     return fallback
 
 
-def probe_teltonika(
+def _login(
     host: str,
     *,
-    username: Optional[str] = None,
-    password: Optional[str] = None,
-    cfg_path: Optional[str] = None,
-    timeout: int = DEFAULT_TIMEOUT,
-    verify_tls: bool = False,
-) -> TelemetryIdentity:
-    """Probe a Teltonika RutOS router and return its telemetry identity.
+    username: Optional[str],
+    password: Optional[str],
+    cfg_path: Optional[str],
+    timeout: int,
+    verify_tls: bool,
+):
+    """Authenticate to a RutOS router; return ``(base_url, session, headers)``.
 
-    Args:
-        host: Router IP or hostname (scheme optional; HTTPS assumed).
-        username / password: Explicit credential overrides; resolved from
-            ``receivers.cfg [teltonika]`` when omitted.
-        cfg_path: Override receivers.cfg location (testing / non-standard host).
-        timeout: Per-request timeout in seconds.
-        verify_tls: Verify the router's TLS cert. Default ``False`` — fleet
-            routers use self-signed certs. Set ``True`` only with a real cert.
-
-    Returns:
-        :class:`TelemetryIdentity` with whatever fields the router exposed.
-
-    Raises:
-        ProbeCredentialsError: No usable credentials.
-        ProbeAuthError: Login rejected (bad credentials).
-        ProbeUnreachableError: Network/TLS failure or unexpected HTTP error.
+    Shared by :func:`probe_teltonika` (read) and :func:`send_sms` (write).
+    Resolves credentials, opens a TLS-relaxed session, POSTs /api/login, and
+    returns the bearer-auth header. Raises the same Probe* errors as the probe.
     """
     try:
         import requests
     except ImportError as exc:  # pragma: no cover — requests is a hard dep
-        raise ProbeError("requests not installed — cannot probe router") from exc
+        raise ProbeError("requests not installed — cannot reach router") from exc
 
     user, pw = resolve_credentials(
         username=username, password=password, cfg_path=cfg_path
@@ -259,7 +266,6 @@ def probe_teltonika(
         except Exception:  # noqa: BLE001
             pass
 
-    # --- Login -----------------------------------------------------------
     try:
         resp = session.post(
             f"{base}/api/login",
@@ -282,13 +288,52 @@ def probe_teltonika(
     if not token:
         raise ProbeAuthError(f"{host}: login succeeded but no token returned")
 
-    headers = {"Authorization": f"Bearer {token}"}
+    return base, session, {"Authorization": f"Bearer {token}"}
+
+
+def probe_teltonika(
+    host: str,
+    *,
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+    cfg_path: Optional[str] = None,
+    timeout: int = DEFAULT_TIMEOUT,
+    verify_tls: bool = False,
+) -> TelemetryIdentity:
+    """Probe a Teltonika RutOS router and return its telemetry identity.
+
+    Args:
+        host: Router IP or hostname (scheme optional; HTTPS assumed).
+        username / password: Explicit credential overrides; resolved from
+            ``receivers.cfg [teltonika]`` when omitted.
+        cfg_path: Override receivers.cfg location (testing / non-standard host).
+        timeout: Per-request timeout in seconds.
+        verify_tls: Verify the router's TLS cert. Default ``False`` — fleet
+            routers use self-signed certs. Set ``True`` only with a real cert.
+
+    Returns:
+        :class:`TelemetryIdentity` with whatever fields the router exposed.
+
+    Raises:
+        ProbeCredentialsError: No usable credentials.
+        ProbeAuthError: Login rejected (bad credentials).
+        ProbeUnreachableError: Network/TLS failure or unexpected HTTP error.
+    """
+    base, session, headers = _login(
+        host,
+        username=username,
+        password=password,
+        cfg_path=cfg_path,
+        timeout=timeout,
+        verify_tls=verify_tls,
+    )
 
     def _get(endpoint: str) -> Optional[Any]:
         """GET an endpoint; return its ``data`` payload, or None on any failure.
 
         Probes are best-effort per-field — a missing/forbidden endpoint degrades
         the identity (fields stay None) rather than failing the whole probe.
+        Broad except: a single flaky endpoint must never fail the whole probe.
         """
         try:
             r = session.get(f"{base}{endpoint}", headers=headers, timeout=timeout)
@@ -296,7 +341,7 @@ def probe_teltonika(
                 logger.debug("%s %s → HTTP %s", host, endpoint, r.status_code)
                 return None
             return r.json().get("data")
-        except (requests.exceptions.RequestException, ValueError) as exc:
+        except Exception as exc:  # noqa: BLE001 — best-effort per-field
             logger.debug("%s %s failed: %s", host, endpoint, exc)
             return None
 
@@ -331,6 +376,90 @@ def probe_teltonika(
     identity.sim_ip_address = _wan_ip(_get("/api/interfaces/status"))
 
     return identity
+
+
+def send_sms(
+    host: str,
+    to_number: str,
+    message: str,
+    *,
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+    cfg_path: Optional[str] = None,
+    timeout: int = DEFAULT_TIMEOUT,
+    verify_tls: bool = False,
+    dry_run: bool = True,
+) -> Dict[str, Any]:
+    """Send one SMS *from* the router's SIM via the RutOS REST API.
+
+    Used by the MSISDN-discovery flow: the field router texts a known catcher
+    number, whose received-message sender header then reveals this SIM's own
+    number (a SIM cannot read its own MSISDN locally).
+
+    **Outward-facing, costs a message.** Dry-run by default — returns the
+    planned request without sending. The CLI only flips ``dry_run=False`` under
+    an explicit ``--discover-phone`` + ``--no-dry-run`` from the operator.
+
+    Uses ``POST /api/messages/actions/send`` with body
+    ``{"data": {"number": <to>, "message": <text>, "modem": "1-1"}}`` (the
+    RutOS 7.x messages endpoint; ``modem`` defaults to the primary modem id).
+
+    Args:
+        host: Router IP/hostname (the SENDING router — the field unit).
+        to_number: Destination (the catcher / operator mobile).
+        message: SMS body.
+        username/password/cfg_path/timeout/verify_tls: As :func:`probe_teltonika`.
+        dry_run: When True (default), do not send — return the planned payload.
+
+    Returns:
+        ``{"dry_run": bool, "to": ..., "endpoint": ..., "sent": bool,
+           "response": <api-response-or-None>}``.
+
+    Raises:
+        ProbeCredentialsError / ProbeAuthError / ProbeUnreachableError as login.
+        ProbeError: When the send is attempted but the API rejects it.
+    """
+    endpoint = "/api/messages/actions/send"
+    payload = {"data": {"number": to_number, "message": message, "modem": "1-1"}}
+
+    if dry_run:
+        return {
+            "dry_run": True,
+            "to": to_number,
+            "endpoint": endpoint,
+            "sent": False,
+            "response": None,
+        }
+
+    base, session, headers = _login(
+        host,
+        username=username,
+        password=password,
+        cfg_path=cfg_path,
+        timeout=timeout,
+        verify_tls=verify_tls,
+    )
+    try:
+        r = session.post(
+            f"{base}{endpoint}", headers=headers, json=payload, timeout=timeout
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise ProbeUnreachableError(f"{host}: SMS send request failed: {exc}") from exc
+    if r.status_code not in (200, 201):
+        raise ProbeError(
+            f"{host}: SMS send rejected (HTTP {r.status_code}): {r.text[:200]}"
+        )
+    try:
+        resp_json = r.json()
+    except ValueError:
+        resp_json = None
+    return {
+        "dry_run": False,
+        "to": to_number,
+        "endpoint": endpoint,
+        "sent": True,
+        "response": resp_json,
+    }
 
 
 def _format_mac(hex_mac: Optional[str]) -> Optional[str]:
