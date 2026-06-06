@@ -9,7 +9,7 @@ This provides basic health monitoring for receivers with limited capabilities.
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from ftplib import FTP, error_perm
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -45,7 +45,7 @@ class G10FTPHealthInferrer:
             Dictionary with inferred health data
         """
         health_data = {
-            "extraction_time": datetime.now(timezone.utc).isoformat() + "Z",
+            "extraction_time": datetime.now(UTC).isoformat() + "Z",
             "data_quality": {},
             "receiver_specific": {
                 "health_inference_method": "ftp_file_analysis",
@@ -164,7 +164,7 @@ class G10FTPHealthInferrer:
         Returns:
             Dictionary with data flow health status
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Get files with valid timestamps
         files_with_time = [f for f in files_info if f.get("mtime")]

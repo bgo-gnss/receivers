@@ -5,7 +5,7 @@ import logging
 import os
 import re
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from ftplib import FTP
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
@@ -365,7 +365,7 @@ class PolaRX5(BaseReceiver):
             "ip": self.ip_number,
             "port": self.ip_port,  # Keep original FTP port in config
             "http_port": 8060,  # Add HTTP port
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "error": error_msg if not (router_ok and receiver_ok) else None,
         }
 
@@ -3073,8 +3073,8 @@ class PolaRX5(BaseReceiver):
         from pathlib import Path
 
         # Build status_1hr path using configuration
-        year = datetime.now(timezone.utc).year
-        month = datetime.now(timezone.utc).strftime("%b").lower()
+        year = datetime.now(UTC).year
+        month = datetime.now(UTC).strftime("%b").lower()
 
         status_dir = (
             Path(self.data_prepath)

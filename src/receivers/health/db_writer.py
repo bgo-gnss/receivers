@@ -6,7 +6,7 @@ with backward compatibility via checkcomm view.
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from typing import Any, Dict, List, Optional
 
 # Type alias for psycopg2 connection (to avoid import at module level)
@@ -339,10 +339,10 @@ class HealthDatabaseWriter:
             datetime object (timezone-aware UTC)
         """
         if timestamp is None:
-            return datetime.now(timezone.utc)
+            return datetime.now(UTC)
         if isinstance(timestamp, datetime):
             if timestamp.tzinfo is None:
-                return timestamp.replace(tzinfo=timezone.utc)
+                return timestamp.replace(tzinfo=UTC)
             return timestamp
         if isinstance(timestamp, str):
             # Remove 'Z' suffix if present
@@ -350,7 +350,7 @@ class HealthDatabaseWriter:
             if "+" not in ts and "T" in ts:
                 ts += "+00:00"
             return datetime.fromisoformat(ts)
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)
 
     def write_health_data(self, health_data: Dict[str, Any]) -> bool:
         """Write health data to appropriate block tables.

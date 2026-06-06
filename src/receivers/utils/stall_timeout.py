@@ -21,7 +21,7 @@ Timeout priority:
 import logging
 import math
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -432,9 +432,9 @@ def _query_health_gate(
                     if last_update is not None:
                         # Ensure timezone-aware comparison
                         if last_update.tzinfo is None:
-                            last_update = last_update.replace(tzinfo=timezone.utc)
+                            last_update = last_update.replace(tzinfo=UTC)
                         age_seconds = (
-                            datetime.now(tz=timezone.utc) - last_update
+                            datetime.now(tz=UTC) - last_update
                         ).total_seconds()
 
                         if age_seconds < 1800:

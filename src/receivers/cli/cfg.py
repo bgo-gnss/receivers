@@ -24,7 +24,7 @@ import json
 import logging
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 
@@ -602,7 +602,7 @@ def _effective_date_for(args: argparse.Namespace) -> str:
     ed = getattr(args, "effective_date", None)
     if ed:
         return ed
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S+00:00")
     logger.debug("--effective-date not set; defaulting to now (%s)", now)
     return now
 
@@ -1652,7 +1652,7 @@ def _parse_since(spec: str) -> datetime:
             if unit == "h"
             else timedelta(minutes=n)
         )
-        return datetime.now(timezone.utc) - delta
+        return datetime.now(UTC) - delta
     try:
         # Accept "2026-04-01" or "2026-04-01T12:00:00+00:00"
         dt = datetime.fromisoformat(spec)
@@ -1661,14 +1661,14 @@ def _parse_since(spec: str) -> datetime:
             f"invalid --since value {spec!r} (use 30d/12h/45m or ISO 8601)"
         ) from exc
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     return dt
 
 
 def _fmt_ts(ts: Optional[datetime]) -> str:
     if ts is None:
         return "—"
-    return ts.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M")
+    return ts.astimezone(UTC).strftime("%Y-%m-%d %H:%M")
 
 
 def _print_records_table(records, *, show_resolution: bool) -> None:

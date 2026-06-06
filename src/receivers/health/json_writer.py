@@ -8,7 +8,7 @@ Saves health data to JSON files in status_1hr/json/:
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -47,7 +47,7 @@ class HealthJSONWriter:
         json_dir.mkdir(parents=True, exist_ok=True)
 
         # Generate filename with timestamp
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
         filename = f"{self.station_id}_{timestamp}.json"
         filepath = json_dir / filename
 

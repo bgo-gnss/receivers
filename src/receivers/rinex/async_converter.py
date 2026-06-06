@@ -259,7 +259,10 @@ def _rinex_worker(
 
         # Create converter and determine raw extension
         converter, raw_extension = _create_converter(
-            station_id, receiver_type, rinex_config, worker_logger,
+            station_id,
+            receiver_type,
+            rinex_config,
+            worker_logger,
             session_type=session_type,
         )
         if converter is None or raw_extension is None:
@@ -390,7 +393,10 @@ def _single_file_worker(
         receiver_type = station_config.get("receiver", {}).get("type", "").lower()
 
         converter, _ext = _create_converter(
-            station_id, receiver_type, rinex_config, worker_logger,
+            station_id,
+            receiver_type,
+            rinex_config,
+            worker_logger,
             session_type=session_type,
         )
         if converter is None:

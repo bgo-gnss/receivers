@@ -4,7 +4,7 @@ import socket
 import subprocess
 import time
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from typing import Any, Dict, Optional, Union
 
 from ..config.receivers_config import get_receivers_config
@@ -363,7 +363,7 @@ class BaseReceiver(ABC):
         }
 
         # Build health status structure
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         health_status = {
             "station_id": self.station_id,
             "receiver_type": self.get_receiver_type(),
@@ -408,7 +408,7 @@ class BaseReceiver(ABC):
 
         try:
             # Build base path for current year/month
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             year = now.year
             month = now.strftime("%b").lower()
             base_path = f"{self.data_prepath}/{year}/{month}"

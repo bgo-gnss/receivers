@@ -17,7 +17,7 @@ import logging
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -119,8 +119,8 @@ class PipelineJob:
     target_time: datetime
     priority: TaskPriority
     stages: Dict[PipelineStage, StageResult] = field(default_factory=dict)
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     @classmethod
     def create(
@@ -195,8 +195,8 @@ class PipelineJob:
         """Mark a stage as started."""
         if stage in self.stages:
             self.stages[stage].status = StageStatus.RUNNING
-            self.stages[stage].start_time = datetime.now(timezone.utc)
-            self.updated_at = datetime.now(timezone.utc)
+            self.stages[stage].start_time = datetime.now(UTC)
+            self.updated_at = datetime.now(UTC)
 
     def mark_stage_complete(
         self,
@@ -208,19 +208,19 @@ class PipelineJob:
         if stage in self.stages:
             result = self.stages[stage]
             result.status = StageStatus.COMPLETED
-            result.end_time = datetime.now(timezone.utc)
+            result.end_time = datetime.now(UTC)
             result.output_files = output_files or []
             result.metrics = metrics or {}
-            self.updated_at = datetime.now(timezone.utc)
+            self.updated_at = datetime.now(UTC)
 
     def mark_stage_failed(self, stage: PipelineStage, error: str) -> None:
         """Mark a stage as failed."""
         if stage in self.stages:
             result = self.stages[stage]
             result.status = StageStatus.FAILED
-            result.end_time = datetime.now(timezone.utc)
+            result.end_time = datetime.now(UTC)
             result.error = error
-            self.updated_at = datetime.now(timezone.utc)
+            self.updated_at = datetime.now(UTC)
 
     def is_complete(self) -> bool:
         """Check if all stages are complete (success or failure)."""
@@ -515,7 +515,7 @@ class PipelineStateStore:
         """
         from datetime import timedelta
 
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
 
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(

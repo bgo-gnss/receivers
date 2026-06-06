@@ -299,9 +299,12 @@ def probe_receiver(
     if probe_type == "auto":
         try:
             return _probe_polarx5(
-                host, port,
-                station_id_hint=station_id_hint, timeout=timeout,
-                tcp_username=tcp_username, tcp_password=tcp_password,
+                host,
+                port,
+                station_id_hint=station_id_hint,
+                timeout=timeout,
+                tcp_username=tcp_username,
+                tcp_password=tcp_password,
             )
         except ProbeUnreachableError as e:
             raise ProbeUnreachableError(
@@ -320,9 +323,12 @@ def probe_receiver(
         )
     if probe_type == "polarx5":
         return _probe_polarx5(
-            host, port,
-            station_id_hint=station_id_hint, timeout=timeout,
-            tcp_username=tcp_username, tcp_password=tcp_password,
+            host,
+            port,
+            station_id_hint=station_id_hint,
+            timeout=timeout,
+            tcp_username=tcp_username,
+            tcp_password=tcp_password,
         )
     return PROBE_STRATEGIES[probe_type](
         host, port, station_id_hint=station_id_hint, timeout=timeout

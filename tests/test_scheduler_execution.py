@@ -5,7 +5,7 @@ handle errors, and integrate with production logging - all using mocks.
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, call, patch
 
@@ -261,7 +261,7 @@ class TestSchedulerDownloadExecution:
 
         # Simulate job start
         job_id = "1Hz_1hr_TEST1"
-        scheduler.running_jobs[job_id] = datetime.now(timezone.utc)
+        scheduler.running_jobs[job_id] = datetime.now(UTC)
 
         # Verify job is tracked
         assert len(scheduler.running_jobs) == 1

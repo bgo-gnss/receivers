@@ -5,7 +5,7 @@ using existing HTTP download clients with enhanced BaseDownloadManager capabilit
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -60,7 +60,7 @@ class TrimbleDownloadManager(BaseDownloadManager):
                 "success": result.get("success", False),
                 "ip": self.ip_address,
                 "port": self.port,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "error": result.get("error"),
             }
         except Exception as e:
@@ -68,7 +68,7 @@ class TrimbleDownloadManager(BaseDownloadManager):
                 "success": False,
                 "ip": self.ip_address,
                 "port": self.port,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "error": str(e),
             }
 

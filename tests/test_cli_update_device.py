@@ -23,7 +23,6 @@ from receivers.cfg.device_probe import (
 from receivers.cli.arguments import create_argument_parser
 from receivers.cli.cfg import cmd_cfg_update_device, firmware_to_software
 
-
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
 
