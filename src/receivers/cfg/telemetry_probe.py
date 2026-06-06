@@ -57,16 +57,19 @@ class TelemetryIdentity:
     """
 
     host: str
-    # modem_gsm (router)
+    # modem_gsm (router). router_lan_ip is the router's own management/LAN
+    # address (e.g. 192.168.100.1) — distinct from the mobile WAN IP, which is
+    # a SIM attribute. Keeping them on separate entities avoids double-entry.
     router_serial: Optional[str] = None
     router_model: Optional[str] = None
     router_manufacturer: Optional[str] = None
     router_mac: Optional[str] = None
     router_firmware: Optional[str] = None
+    router_lan_ip: Optional[str] = None  # LAN/management IP → modem.ip_address
     modem_subtype: Optional[str] = None  # e.g. "4G" — derived from conntype
     # sim_card
     sim_iccid: Optional[str] = None
-    sim_ip_address: Optional[str] = None
+    sim_ip_address: Optional[str] = None  # mobile WAN IP → sim.ip_address
     provider: Optional[str] = None
     imsi: Optional[str] = None  # informational (module identity)
     imei: Optional[str] = None  # informational (module identity)
@@ -190,33 +193,58 @@ def _conntype_to_subtype(conntype: Optional[str]) -> Optional[str]:
     return token or None
 
 
+def _iface_addr(iface: Any) -> Optional[str]:
+    """Return an interface dict's first IPv4 address, or None."""
+    if not isinstance(iface, dict):
+        return None
+    addrs = iface.get("ipv4-address") or []
+    if addrs and isinstance(addrs[0], dict):
+        return addrs[0].get("address") or None
+    return None
+
+
 def _wan_ip(interfaces_data: Any) -> Optional[str]:
-    """Pull the WAN IPv4 from /api/interfaces/status: the default-route iface.
+    """Pull the mobile WAN IPv4 from /api/interfaces/status: the default-route iface.
 
     The WAN interface is the one carrying a default route (``route[].target ==
-    "0.0.0.0"``); its ``ipv4-address[0].address`` is the public/SIM IP. Falls
-    back to the first non-loopback, non-private-LAN address if no default route
-    is found.
+    "0.0.0.0"``); its address is the mobile/public IP that belongs on the SIM.
+    Verified live: the mobile interface (``mob1s1a1_4``) holds the default
+    route. Returns None when no default-route interface has an address — we do
+    NOT fall back to a non-default address, since that would wrongly pick up the
+    LAN IP (a separate, router-owned attribute).
     """
     if not isinstance(interfaces_data, list):
         return None
-    fallback: Optional[str] = None
     for iface in interfaces_data:
         if not isinstance(iface, dict):
-            continue
-        addrs = iface.get("ipv4-address") or []
-        addr = addrs[0].get("address") if addrs and isinstance(addrs[0], dict) else None
-        if not addr:
             continue
         routes = iface.get("route") or []
         has_default = any(
             isinstance(r, dict) and r.get("target") == "0.0.0.0" for r in routes
         )
         if has_default:
-            return addr
-        if fallback is None and addr != "127.0.0.1":
-            fallback = addr
-    return fallback
+            addr = _iface_addr(iface)
+            if addr:
+                return addr
+    return None
+
+
+def _lan_ip(interfaces_data: Any) -> Optional[str]:
+    """Pull the router LAN/management IPv4 (the ``lan`` interface, e.g. 192.168.100.1).
+
+    This is the router's OWN address → belongs on the modem_gsm entity, distinct
+    from the mobile WAN IP (:func:`_wan_ip`, a SIM attribute). Matched by
+    interface name == ``"lan"`` (verified live: name/interface/id all == "lan").
+    """
+    if not isinstance(interfaces_data, list):
+        return None
+    for iface in interfaces_data:
+        if not isinstance(iface, dict):
+            continue
+        name = (iface.get("name") or iface.get("interface") or "").lower()
+        if name == "lan":
+            return _iface_addr(iface)
+    return None
 
 
 def _login(
@@ -372,8 +400,12 @@ def probe_teltonika(
         identity.imsi = m.get("imsi") or None
         identity.imei = m.get("imei") or None
 
-    # --- WAN IP (the SIM's ip_address): /api/interfaces/status -----------
-    identity.sim_ip_address = _wan_ip(_get("/api/interfaces/status"))
+    # --- IPs: /api/interfaces/status (fetched once) ----------------------
+    # Mobile WAN IP → SIM; router LAN/management IP → modem. Kept distinct so
+    # each lands on its correct entity (no double-entry).
+    ifaces = _get("/api/interfaces/status")
+    identity.sim_ip_address = _wan_ip(ifaces)
+    identity.router_lan_ip = _lan_ip(ifaces)
 
     return identity
 

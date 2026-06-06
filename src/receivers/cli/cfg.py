@@ -3822,9 +3822,25 @@ Examples:
         ),
     )
     # Optional TOS attributes on the new modem_gsm (MODEM_GSM_ATTR_CODES).
-    rm.add_argument("--ip", metavar="IP", help="modem ip_address attribute.")
+    rm.add_argument(
+        "--ip",
+        metavar="IP",
+        help=(
+            "Router LAN/management IP (e.g. 192.168.100.1). With --probe this "
+            "is auto-filled from the router's 'lan' interface. NOTE: this is "
+            "the router's own IP, not the mobile WAN IP (that's a SIM "
+            "attribute — see replace-sim)."
+        ),
+    )
     rm.add_argument("--phone", metavar="NUMBER", help="modem phone_number attribute.")
-    rm.add_argument("--provider", metavar="NAME", help="provider (e.g. Síminn, Nova).")
+    rm.add_argument(
+        "--provider",
+        metavar="NAME",
+        help=(
+            "provider attribute — rarely set on a modem (provider is a SIM "
+            "attribute; --probe does NOT auto-fill it here)."
+        ),
+    )
     rm.add_argument("--mac", metavar="MAC", help="mac_address attribute.")
     rm.add_argument(
         "--manufacturer",
@@ -4557,9 +4573,14 @@ def cmd_cfg_replace_modem(args) -> int:
             new_model=new_model,
             owner=args.owner or "Jarðeðlismælihópur",
             new_router_type=args.router_type,
-            ip_address=args.ip or (probe.sim_ip_address if probe else None),
+            # Modem IP = the router's own LAN/management IP (e.g. 192.168.100.1),
+            # NOT the mobile WAN IP — that's a SIM attribute (see replace-sim).
+            ip_address=args.ip or (probe.router_lan_ip if probe else None),
             phone_number=args.phone,
-            provider=args.provider or (probe.provider if probe else None),
+            # provider is a SIM attribute (the carrier of the subscription) —
+            # never auto-filled onto the modem. Honour an explicit --provider
+            # only (rare), but the probe value feeds replace-sim, not here.
+            provider=args.provider,
             mac_address=args.mac or (probe.router_mac if probe else None),
             manufacturer=args.manufacturer
             or (probe.router_manufacturer if probe else None),

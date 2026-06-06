@@ -17,6 +17,7 @@ from receivers.cfg.telemetry_probe import (
     ProbeUnreachableError,
     _conntype_to_subtype,
     _format_mac,
+    _lan_ip,
     _wan_ip,
     probe_teltonika,
 )
@@ -62,9 +63,10 @@ _MODEMS_STATUS = {
 _INTERFACES_STATUS = {
     "success": True,
     "data": [
-        {"ipv4-address": [{"address": "192.168.100.1"}], "route": []},
-        {"ipv4-address": [{"address": "127.0.0.1"}], "route": []},
+        {"name": "lan", "ipv4-address": [{"address": "192.168.100.1"}], "route": []},
+        {"name": "loopback", "ipv4-address": [{"address": "127.0.0.1"}], "route": []},
         {
+            "name": "mob1s1a1_4",
             "ipv4-address": [{"address": "10.6.1.228"}],
             "route": [{"target": "0.0.0.0", "nexthop": "0.0.0.0"}],
         },
@@ -134,17 +136,34 @@ def test_wan_ip_picks_default_route():
     assert _wan_ip(_INTERFACES_STATUS["data"]) == "10.6.1.228"
 
 
-def test_wan_ip_fallback_non_loopback_when_no_default_route():
+def test_wan_ip_no_fallback_without_default_route():
+    # Must NOT return a non-default address (would wrongly grab the LAN IP).
     data = [
-        {"ipv4-address": [{"address": "127.0.0.1"}], "route": []},
-        {"ipv4-address": [{"address": "10.0.0.5"}], "route": []},
+        {"name": "lan", "ipv4-address": [{"address": "192.168.100.1"}], "route": []},
     ]
-    assert _wan_ip(data) == "10.0.0.5"
+    assert _wan_ip(data) is None
 
 
 def test_wan_ip_none_when_empty():
     assert _wan_ip([]) is None
     assert _wan_ip(None) is None
+
+
+def test_lan_ip_picks_lan_interface():
+    assert _lan_ip(_INTERFACES_STATUS["data"]) == "192.168.100.1"
+
+
+def test_lan_ip_none_when_no_lan():
+    data = [
+        {
+            "name": "mob1s1a1_4",
+            "ipv4-address": [{"address": "10.6.1.228"}],
+            "route": [{"target": "0.0.0.0"}],
+        },
+    ]
+    assert _lan_ip(data) is None
+    assert _lan_ip([]) is None
+    assert _lan_ip(None) is None
 
 
 # --- full probe (mocked HTTP) ----------------------------------------------
@@ -162,9 +181,10 @@ def test_probe_teltonika_full_identity():
     assert ident.router_mac == "20:97:27:0A:77:27"  # WAN port, colon-formatted
     assert ident.router_firmware == "RUT2M_R_00.07.22.3"
     assert ident.modem_subtype == "4G"
+    assert ident.router_lan_ip == "192.168.100.1"  # LAN IP → modem, not WAN
     # SIM
     assert ident.sim_iccid == "89354010260102025676"
-    assert ident.sim_ip_address == "10.6.1.228"
+    assert ident.sim_ip_address == "10.6.1.228"  # mobile WAN IP → SIM
     assert ident.provider == "Siminn"
     assert ident.imsi == "274012011380378"
     assert ident.imei == "864677069907244"
