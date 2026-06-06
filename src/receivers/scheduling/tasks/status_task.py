@@ -14,7 +14,7 @@ Key characteristics:
 
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
 from ..task_interface import (
@@ -73,7 +73,7 @@ class StatusTask(ScheduledTask):
         Returns:
             Tuple of (now, now)
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         return (now, now)
 
     def validate_prerequisites(self) -> Tuple[bool, Optional[str]]:

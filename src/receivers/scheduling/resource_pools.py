@@ -14,7 +14,7 @@ import logging
 import os
 from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from queue import PriorityQueue
 from threading import Lock
 from typing import Any, Callable, Dict, List, Optional
@@ -138,7 +138,7 @@ class ResourcePoolManager:
         if self._network_pool is None:
             self.start()
 
-        task_id = task_id or f"net_{datetime.now(timezone.utc).timestamp()}"
+        task_id = task_id or f"net_{datetime.now(UTC).timestamp()}"
 
         # Submit directly to the pool (APScheduler handles priority)
         assert self._network_pool is not None
@@ -180,7 +180,7 @@ class ResourcePoolManager:
         if self._cpu_pool is None:
             self.start()
 
-        task_id = task_id or f"cpu_{datetime.now(timezone.utc).timestamp()}"
+        task_id = task_id or f"cpu_{datetime.now(UTC).timestamp()}"
 
         # Submit directly to the pool
         assert self._cpu_pool is not None

@@ -19,7 +19,7 @@ Usage:
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from typing import Any, Dict, Optional
 
 from .database_factory import DatabaseConnectionFactory
@@ -126,11 +126,11 @@ class ConnectivityWriter:
         """
         ts = health_data.get("timestamp")
         if ts is None:
-            return datetime.now(timezone.utc)
+            return datetime.now(UTC)
 
         if isinstance(ts, datetime):
             if ts.tzinfo is None:
-                return ts.replace(tzinfo=timezone.utc)
+                return ts.replace(tzinfo=UTC)
             return ts
 
         if isinstance(ts, str):
@@ -141,9 +141,9 @@ class ConnectivityWriter:
                 return datetime.fromisoformat(ts_str)
             except ValueError:
                 self.logger.warning(f"Could not parse timestamp '{ts}', using now")
-                return datetime.now(timezone.utc)
+                return datetime.now(UTC)
 
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)
 
     def _write_ping_status(
         self,

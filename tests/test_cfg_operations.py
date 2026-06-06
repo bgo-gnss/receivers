@@ -7,6 +7,7 @@ calls happen, and use a tmp ``stations.cfg`` for the file-write paths.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -24,9 +25,12 @@ from receivers.cfg.operations import (
     _visit_default_time,
     add_visit,
     delete_join,
+    delete_visit,
     list_visits,
     move_device,
+    replace_modem,
     replace_receiver,
+    replace_sim,
     show_visit,
     update_visit,
 )
@@ -1495,3 +1499,644 @@ def test_replace_receiver_continue_from_validates_step_name():
             writer=w,
             dry_run=True,
         )
+
+
+# ---------------------------------------------------------------------------
+# fill_install_attributes — position install-attr fill (todo #28)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingWriter:
+    """Minimal TOSWriter stand-in that records attribute-write calls.
+
+    ``fill_install_attributes`` reaches the writer only through
+    ``tos_push.push_field_to_tos`` (→ ``upsert_attribute_value``) and
+    ``push_field_transition_to_tos`` (→ ``transition_attribute_value``); for
+    station-entity fields ``resolve_entity_id`` short-circuits to the station
+    id without touching the writer, so those two methods are all we need.
+    """
+
+    def __init__(self):
+        self.dry_run = True
+        self.calls: list[dict] = []
+
+    def upsert_attribute_value(self, id_entity, code, value, date_from, **kw):
+        self.calls.append(
+            {
+                "method": "upsert_attribute_value",
+                "id_entity": id_entity,
+                "code": code,
+                "value": value,
+                "date_from": date_from,
+            }
+        )
+        return {"ok": True}
+
+    def transition_attribute_value(
+        self, id_entity, code, new_value, transition_date, **kw
+    ):
+        self.calls.append(
+            {
+                "method": "transition_attribute_value",
+                "id_entity": id_entity,
+                "code": code,
+                "new_value": new_value,
+                "transition_date": transition_date,
+            }
+        )
+        return {"closed": {"ok": True}, "opened": {"ok": True}}
+
+
+def _install_writer() -> Any:
+    """Recording writer usable by the install-attr push helpers.
+
+    Annotated ``Any`` so the duck-typed fake satisfies the ``writer:
+    TOSWriter`` parameter of ``fill_install_attributes`` without a cast at
+    every call site (mirrors how the MagicMock-based ``_writer_mock`` is
+    accepted elsewhere in this file).
+    """
+    return _RecordingWriter()
+
+
+def _station_cfg(lat=None, lon=None, height=None):
+    cfg = {}
+    if lat is not None:
+        cfg["latitude"] = lat
+    if lon is not None:
+        cfg["longitude"] = lon
+    if height is not None:
+        cfg["height"] = height
+    return cfg
+
+
+def _tos_record(id_entity=4242, lat=None, lon=None, altitude=None):
+    """Minimal TOS station dict for the position extractors + push helpers."""
+    rec = {"id_entity": id_entity}
+    if lat is not None:
+        rec["lat"] = lat
+    if lon is not None:
+        rec["lon"] = lon
+    if altitude is not None:
+        rec["altitude"] = altitude
+    return rec
+
+
+def test_fill_install_attrs_adds_missing_position():
+    """cfg has position, TOS has none → upsert each field (Pattern 1)."""
+    from receivers.cfg.operations import fill_install_attributes
+
+    w = _install_writer()
+    changes = fill_install_attributes(
+        w,
+        "HRAC",
+        _station_cfg(lat="64.130000", lon="-21.900000", height="100.0"),
+        _tos_record(),  # no lat/lon/altitude in TOS yet
+        "2026-05-31T12:00:00",
+        confirm=lambda p: "add",
+    )
+    upserts = {
+        c["code"]: c["value"]
+        for c in w.calls
+        if c["method"] == "upsert_attribute_value"
+    }
+    assert upserts == {
+        "lat": "64.130000",
+        "lon": "-21.900000",
+        "altitude": "100.0",
+    }
+    # all writes target the station entity id from tos_data
+    assert all(
+        c["id_entity"] == 4242
+        for c in w.calls
+        if c["method"] == "upsert_attribute_value"
+    )
+    assert changes["latitude"].startswith("upsert→")
+    assert "transition_attribute_value" not in {c["method"] for c in w.calls}
+
+
+def test_fill_install_attrs_noop_when_equal():
+    """TOS already matches cfg within tolerance → no writes, no confirm."""
+    from receivers.cfg.operations import fill_install_attributes
+
+    w = _install_writer()
+    confirm_calls = []
+
+    changes = fill_install_attributes(
+        w,
+        "HRAC",
+        _station_cfg(lat="64.130000", lon="-21.900000", height="100.0"),
+        _tos_record(lat="64.130000", lon="-21.900000", altitude="100.4"),
+        "2026-05-31T12:00:00",
+        confirm=lambda p: confirm_calls.append(p) or "add",
+        position_tolerance_m=2.0,
+    )
+    # height 100.0 vs 100.4 is within 2 m; lat/lon identical → all unchanged
+    assert confirm_calls == []
+    assert not [
+        c
+        for c in w.calls
+        if c["method"] in ("upsert_attribute_value", "transition_attribute_value")
+    ]
+    assert set(changes.values()) == {"unchanged"}
+
+
+def test_fill_install_attrs_differ_change_uses_transition():
+    """cfg differs from TOS + confirm 'change' → Pattern 2 transition."""
+    from receivers.cfg.operations import fill_install_attributes
+
+    w = _install_writer()
+    changes = fill_install_attributes(
+        w,
+        "HRAC",
+        _station_cfg(height="250.0"),
+        _tos_record(altitude="100.0"),  # differs by 150 m
+        "2026-05-31T12:00:00",
+        confirm=lambda p: "change",
+    )
+    transitions = [c for c in w.calls if c["method"] == "transition_attribute_value"]
+    assert len(transitions) == 1
+    assert transitions[0]["code"] == "altitude"
+    assert transitions[0]["new_value"] == "250.0"
+    assert transitions[0]["transition_date"] == "2026-05-31T12:00:00"
+    assert changes["height"].startswith("transition→")
+
+
+def test_fill_install_attrs_differ_correct_uses_upsert():
+    """cfg differs from TOS + confirm 'correct' → Pattern 1 in-place upsert."""
+    from receivers.cfg.operations import fill_install_attributes
+
+    w = _install_writer()
+    changes = fill_install_attributes(
+        w,
+        "HRAC",
+        _station_cfg(height="250.0"),
+        _tos_record(altitude="100.0"),
+        "2026-05-31T12:00:00",
+        confirm=lambda p: "correct",
+    )
+    upserts = [c for c in w.calls if c["method"] == "upsert_attribute_value"]
+    assert len(upserts) == 1
+    assert upserts[0]["code"] == "altitude" and upserts[0]["value"] == "250.0"
+    assert "transition_attribute_value" not in {c["method"] for c in w.calls}
+    assert changes["height"].startswith("upsert→")
+
+
+def test_fill_install_attrs_skip_writes_nothing():
+    """confirm 'skip' → field recorded as skipped, no TOS write."""
+    from receivers.cfg.operations import fill_install_attributes
+
+    w = _install_writer()
+    changes = fill_install_attributes(
+        w,
+        "HRAC",
+        _station_cfg(lat="64.130000"),
+        _tos_record(),
+        "2026-05-31T12:00:00",
+        confirm=lambda p: "skip",
+    )
+    assert not [
+        c
+        for c in w.calls
+        if c["method"] in ("upsert_attribute_value", "transition_attribute_value")
+    ]
+    assert changes["latitude"] == "skipped"
+
+
+def test_fill_install_attrs_skips_fields_absent_from_cfg():
+    """Fields with no cfg value are silently ignored (confirm never called)."""
+    from receivers.cfg.operations import fill_install_attributes
+
+    w = _install_writer()
+    seen = []
+    changes = fill_install_attributes(
+        w,
+        "HRAC",
+        _station_cfg(lat="64.130000"),  # lon/height absent
+        _tos_record(),
+        "2026-05-31T12:00:00",
+        confirm=lambda p: seen.append(p.cfg_key) or "add",
+    )
+    assert seen == ["latitude"]
+    assert "longitude" not in changes and "height" not in changes
+
+
+def test_fill_install_attrs_requires_id_entity():
+    """Missing id_entity in tos_data → CfgOperationError (no silent no-op)."""
+    from receivers.cfg.operations import fill_install_attributes
+
+    w = _install_writer()
+    with pytest.raises(CfgOperationError):
+        fill_install_attributes(
+            w,
+            "HRAC",
+            _station_cfg(lat="64.13"),
+            {"lat": "64.13"},  # no id_entity
+            "2026-05-31T12:00:00",
+            confirm=lambda p: "add",
+        )
+
+
+# ---------------------------------------------------------------------------
+# delete_visit
+# ---------------------------------------------------------------------------
+
+
+def test_delete_visit_passes_id_through_to_writer():
+    w = MagicMock()
+    w.delete_maintenance.return_value = None
+    result = delete_visit(5147, writer=w, dry_run=False)
+    w.delete_maintenance.assert_called_once_with(5147)
+    assert result.operation == "delete-visit"
+    assert result.tos_changes["id_maintenance"] == 5147
+    assert result.vitjun_id == 5147
+    assert result.dry_run is False
+
+
+def test_delete_visit_dry_run_default():
+    w = MagicMock()
+    w.delete_maintenance.return_value = "fake-dry-run"
+    result = delete_visit(5147, writer=w)  # dry_run defaults to True
+    assert result.dry_run is True
+    w.delete_maintenance.assert_called_once_with(5147)
+
+
+# ---------------------------------------------------------------------------
+# replace_modem / replace_sim — telemetry swaps
+# ---------------------------------------------------------------------------
+
+
+def _telemetry_writer(
+    *,
+    station_eid=4312,
+    old_child_id=None,
+    old_subtype=None,
+    old_attrs=None,
+):
+    """Writer mock for replace_modem / replace_sim.
+
+    Drives ``_find_open_child``'s two-step history walk: the station history
+    lists one open child (``old_child_id``), and that child's history reports
+    ``old_subtype`` + ``old_attrs``. When ``old_child_id`` is None the station
+    has no open telemetry child (fresh install).
+    """
+    w = MagicMock()
+    w.dry_run = False
+    w.find_station_by_marker.return_value = station_eid
+    w.find_location_by_name.return_value = 4  # B9 warehouse eid
+
+    station_hist = {
+        "children_connections": (
+            [{"id_entity_child": old_child_id, "time_to": None}]
+            if old_child_id is not None
+            else []
+        )
+    }
+    child_hist = {
+        "code_entity_subtype": old_subtype,
+        "attributes": old_attrs or [],
+    }
+
+    def _hist(eid):
+        if eid == station_eid:
+            return station_hist
+        if old_child_id is not None and eid == old_child_id:
+            return child_hist
+        return None
+
+    w.get_entity_history.side_effect = _hist
+    w.create_device.return_value = {"id_entity": 22000}
+    w.create_entity_connection.return_value = {"opened": "ok"}
+    w.move_device.return_value = {"closed": "ok", "opened": "ok"}
+    w.get_open_parent_join.return_value = {"id": 555, "id_entity_parent": station_eid}
+    w.patch_entity_connection.return_value = {"closed": "ok"}
+    w.transition_attribute_value.return_value = {"closed": {}, "opened": {}}
+    w.add_maintenance_visit.return_value = {"id_maintenance": 9999}
+    return w
+
+
+def _attr(code, value):
+    return {"code": code, "value": value, "date_from": "2020-01-01", "date_to": None}
+
+
+def test_replace_modem_fresh_install_no_old():
+    """No existing modem → create new modem_gsm + join + vitjun; no retire."""
+    w = _telemetry_writer(old_child_id=None)
+    result = replace_modem(
+        "GSIG",
+        new_serial="6001312345",
+        new_model="Teltonika RUT241",
+        date="2026-06-06",
+        writer=w,
+        dry_run=False,
+    )
+    # New device created with modem_gsm subtype
+    w.create_device.assert_called_once()
+    assert w.create_device.call_args.kwargs["entity_subtype"] == "modem_gsm"
+    # Joined to the station (4312)
+    w.create_entity_connection.assert_called_once()
+    assert w.create_entity_connection.call_args.kwargs["id_parent"] == 4312
+    # Vitjun written, no old retire
+    w.add_maintenance_visit.assert_called_once()
+    w.move_device.assert_not_called()
+    assert result.operation == "replace-modem"
+    assert result.serial == "6001312345"
+    assert result.vitjun_id == 9999
+
+
+def test_replace_modem_swaps_old_to_warehouse():
+    """Existing modem → new created + old moved to B9 with status transition."""
+    w = _telemetry_writer(
+        old_child_id=20771,
+        old_subtype="modem_gsm",
+        old_attrs=[_attr("serial_number", "6001254079")],
+    )
+    result = replace_modem(
+        "GSIG",
+        new_serial="6001312345",
+        new_model="Teltonika RUT241",
+        old_status="bilað",
+        date="2026-06-06",
+        writer=w,
+        dry_run=False,
+    )
+    # Old modem moved to warehouse (eid 4) via move_device
+    w.move_device.assert_called_once_with(20771, 4, "2026-06-06T12:00:00")
+    # Old status transitioned to bilað
+    w.transition_attribute_value.assert_any_call(
+        20771, "status", "bilað", "2026-06-06T12:00:00"
+    )
+    assert result.tos_changes["plan"]["old_serial"] == "6001254079"
+
+
+def test_replace_modem_rejects_same_serial():
+    """New serial == open modem's serial → refuse (no-op swap)."""
+    w = _telemetry_writer(
+        old_child_id=20771,
+        old_subtype="modem_gsm",
+        old_attrs=[_attr("serial_number", "6001254079")],
+    )
+    with pytest.raises(CfgOperationError, match="matches the modem already"):
+        replace_modem(
+            "GSIG",
+            new_serial="6001254079",
+            new_model="Teltonika RUT200",
+            writer=w,
+            dry_run=False,
+        )
+
+
+def test_replace_modem_writes_router_type_to_cfg(cfg_file):
+    """--router-type updates stations.cfg router_type on a live run."""
+    # GSIG section needed in the cfg fixture
+    cfg_file.write_text(cfg_file.read_text() + "\n[GSIG]\nrouter_type = Conel\n")
+    w = _telemetry_writer(old_child_id=None)
+    result = replace_modem(
+        "GSIG",
+        new_serial="6001312345",
+        new_model="Teltonika RUT241",
+        new_router_type="Teltonika",
+        writer=w,
+        dry_run=False,
+        cfg_path=cfg_file,
+    )
+    assert result.cfg_changes.get("router_type") == "Teltonika"
+    assert "router_type = Teltonika" in cfg_file.read_text()
+
+
+def test_replace_modem_dry_run_no_cfg_write(cfg_file):
+    """Dry-run: cfg untouched even with --router-type."""
+    w = _telemetry_writer(old_child_id=None)
+    before = cfg_file.read_text()
+    result = replace_modem(
+        "GSIG",
+        new_serial="6001312345",
+        new_model="Teltonika RUT241",
+        new_router_type="Teltonika",
+        writer=w,
+        dry_run=True,
+        cfg_path=cfg_file,
+    )
+    assert result.cfg_changes == {}
+    assert cfg_file.read_text() == before
+
+
+def test_replace_sim_creates_new_entity_and_closes_old():
+    """SIM swap: new sim_card created + joined; old join closed (not warehoused)."""
+    w = _telemetry_writer(
+        old_child_id=5785,
+        old_subtype="sim_card",
+        old_attrs=[_attr("ip_address", "10.4.1.225")],
+    )
+    result = replace_sim(
+        "GSIG",
+        ip_address="10.4.1.240",
+        phone_number="8400754",
+        date="2026-06-06",
+        writer=w,
+        dry_run=False,
+    )
+    # New sim_card created + joined to station
+    assert w.create_device.call_args.kwargs["entity_subtype"] == "sim_card"
+    w.create_entity_connection.assert_called_once()
+    # Old SIM join CLOSED via patch (not moved to a warehouse)
+    w.patch_entity_connection.assert_called_once_with(
+        555, time_to="2026-06-06T12:00:00"
+    )
+    w.move_device.assert_not_called()
+    assert result.operation == "replace-sim"
+    assert result.tos_changes["plan"]["old_ip"] == "10.4.1.225"
+    assert result.tos_changes["plan"]["new_ip"] == "10.4.1.240"
+
+
+def test_replace_sim_cfg_ip_off_by_default(cfg_file):
+    """router_ip in cfg is NOT written unless --update-cfg-ip given."""
+    cfg_file.write_text(
+        cfg_file.read_text() + "\n[GSIG]\nrouter_ip = GSIG.gps.vedur.is\n"
+    )
+    w = _telemetry_writer(old_child_id=None)
+    result = replace_sim(
+        "GSIG",
+        ip_address="10.4.1.240",
+        writer=w,
+        dry_run=False,
+        cfg_path=cfg_file,
+        update_cfg_ip=False,
+    )
+    assert result.cfg_changes == {}
+    assert "GSIG.gps.vedur.is" in cfg_file.read_text()  # hostname preserved
+
+
+def test_replace_sim_cfg_ip_written_when_requested(cfg_file):
+    """--update-cfg-ip writes the literal IP to router_ip."""
+    cfg_file.write_text(
+        cfg_file.read_text() + "\n[GSIG]\nrouter_ip = GSIG.gps.vedur.is\n"
+    )
+    w = _telemetry_writer(old_child_id=None)
+    result = replace_sim(
+        "GSIG",
+        ip_address="10.4.1.240",
+        writer=w,
+        dry_run=False,
+        cfg_path=cfg_file,
+        update_cfg_ip=True,
+    )
+    assert result.cfg_changes.get("router_ip") == "10.4.1.240"
+    assert "router_ip = 10.4.1.240" in cfg_file.read_text()
+
+
+def test_replace_sim_ip_only_omits_phone():
+    """No --phone → sim_card built with ip_address (+ default status), no phone."""
+    w = _telemetry_writer(old_child_id=None)
+    replace_sim("GSIG", ip_address="10.4.1.240", writer=w, dry_run=False)
+    attrs = w.create_device.call_args.kwargs["attributes"]
+    codes = [a["code"] for a in attrs]
+    assert "ip_address" in codes
+    assert "phone_number" not in codes  # omitted when not given
+    assert "status" in codes  # default "virkt"
+
+
+def test_replace_sim_passes_optional_attrs():
+    """Named optionals + extra_attrs flow into the sim_card builder."""
+    w = _telemetry_writer(old_child_id=None)
+    replace_sim(
+        "GSIG",
+        ip_address="10.4.1.240",
+        phone_number="8400754",
+        serial_number="89354010120801048520",
+        provider="Síminn",
+        model="sim kort",
+        owner="Jarðeðlismælihópur",
+        extra_attrs={"date_end": "2027-01-01"},
+        writer=w,
+        dry_run=False,
+    )
+    attrs = {
+        a["code"]: a["value"] for a in w.create_device.call_args.kwargs["attributes"]
+    }
+    assert attrs["provider"] == "Síminn"
+    assert attrs["serial_number"] == "89354010120801048520"
+    assert attrs["date_end"] == "2027-01-01"
+
+
+def test_replace_modem_passes_optional_attrs():
+    """Named optionals + extra_attrs flow into the modem_gsm builder."""
+    w = _telemetry_writer(old_child_id=None)
+    replace_modem(
+        "GSIG",
+        new_serial="6001312345",
+        new_model="Teltonika RUT241",
+        ip_address="157.157.24.132",
+        mac_address="00:0A:14:85:54:A0",
+        manufacturer="Teltonika",
+        io_type="Ethernet+RS232",
+        modem_subtype="4G",
+        provider="Nova",
+        extra_attrs={"comment": "site visit"},
+        writer=w,
+        dry_run=False,
+    )
+    attrs = {
+        a["code"]: a["value"] for a in w.create_device.call_args.kwargs["attributes"]
+    }
+    assert attrs["mac_address"] == "00:0A:14:85:54:A0"
+    assert attrs["manufacturer"] == "Teltonika"
+    assert attrs["io_type"] == "Ethernet+RS232"
+    assert attrs["subtype"] == "4G"  # modem_subtype → TOS `subtype`
+    assert attrs["comment"] == "site visit"
+
+
+def test_replace_sim_rejects_same_ip():
+    """New IP == open SIM's IP → refuse (no duplicate sim_card churn)."""
+    w = _telemetry_writer(
+        old_child_id=5785,
+        old_subtype="sim_card",
+        old_attrs=[_attr("ip_address", "10.4.1.225")],
+    )
+    with pytest.raises(CfgOperationError, match="matches the SIM already"):
+        replace_sim("GSIG", ip_address="10.4.1.225", writer=w, dry_run=False)
+    w.create_device.assert_not_called()
+
+
+def test_replace_modem_retires_old_before_creating_new():
+    """Retire-first ordering: old modem moved out before the new one is joined."""
+    w = _telemetry_writer(
+        old_child_id=20771,
+        old_subtype="modem_gsm",
+        old_attrs=[_attr("serial_number", "6001254079")],
+    )
+    call_order = []
+    w.move_device.side_effect = lambda *a, **k: (
+        call_order.append("retire") or {"closed": "ok"}
+    )
+    w.create_device.side_effect = lambda *a, **k: (
+        call_order.append("create") or {"id_entity": 22000}
+    )
+    replace_modem(
+        "GSIG",
+        new_serial="6001312345",
+        new_model="Teltonika RUT241",
+        writer=w,
+        dry_run=False,
+    )
+    assert call_order == ["retire", "create"]
+
+
+def test_replace_sim_retires_old_before_creating_new():
+    """Retire-first ordering for SIM: old join closed before new SIM created."""
+    w = _telemetry_writer(
+        old_child_id=5785,
+        old_subtype="sim_card",
+        old_attrs=[_attr("ip_address", "10.4.1.225")],
+    )
+    call_order = []
+    w.patch_entity_connection.side_effect = lambda *a, **k: (
+        call_order.append("retire") or {"closed": "ok"}
+    )
+    w.create_device.side_effect = lambda *a, **k: (
+        call_order.append("create") or {"id_entity": 22001}
+    )
+    replace_sim("GSIG", ip_address="10.4.1.240", writer=w, dry_run=False)
+    assert call_order == ["retire", "create"]
+
+
+# ---------------------------------------------------------------------------
+# _parse_attr_pairs — generic --attr code=value escape hatch (CLI helper)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_attr_pairs_basic():
+    from receivers.cli.cfg import _parse_attr_pairs
+
+    assert _parse_attr_pairs(["a=1", "b=2"]) == {"a": "1", "b": "2"}
+
+
+def test_parse_attr_pairs_value_with_equals():
+    from receivers.cli.cfg import _parse_attr_pairs
+
+    # Only the first '=' is the separator (values may contain '=').
+    assert _parse_attr_pairs(["io_type=A=B"]) == {"io_type": "A=B"}
+
+
+def test_parse_attr_pairs_none_and_empty():
+    from receivers.cli.cfg import _parse_attr_pairs
+
+    assert _parse_attr_pairs(None) == {}
+    assert _parse_attr_pairs([]) == {}
+
+
+def test_parse_attr_pairs_rejects_missing_equals():
+    import pytest as _pytest
+
+    from receivers.cli.cfg import _parse_attr_pairs
+
+    with _pytest.raises(ValueError, match="code=value"):
+        _parse_attr_pairs(["noequals"])
+
+
+def test_parse_attr_pairs_rejects_empty_code():
+    import pytest as _pytest
+
+    from receivers.cli.cfg import _parse_attr_pairs
+
+    with _pytest.raises(ValueError, match="empty attribute code"):
+        _parse_attr_pairs(["=value"])

@@ -5,7 +5,7 @@ Tests PipelineJob, PipelineStateStore, and stage dependency management.
 
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -53,7 +53,7 @@ class TestStageResult:
 
     def test_duration_calculation(self):
         """Test duration calculation."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         result = StageResult(
             stage=PipelineStage.DOWNLOAD,
             status=StageStatus.COMPLETED,
@@ -102,7 +102,7 @@ class TestPipelineJob:
         job = PipelineJob.create(
             station_id="ELDC",
             session_type="15s_24hr",
-            target_time=datetime(2025, 1, 1, 0, 0, tzinfo=timezone.utc),
+            target_time=datetime(2025, 1, 1, 0, 0, tzinfo=UTC),
             enabled_stages=[PipelineStage.DOWNLOAD, PipelineStage.RINEX],
             priority=TaskPriority.STANDARD,
         )
@@ -119,7 +119,7 @@ class TestPipelineJob:
         job = PipelineJob.create(
             station_id="ELDC",
             session_type="15s_24hr",
-            target_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            target_time=datetime(2025, 1, 1, tzinfo=UTC),
             enabled_stages=[PipelineStage.DOWNLOAD, PipelineStage.RINEX],
         )
 
@@ -133,7 +133,7 @@ class TestPipelineJob:
         job = PipelineJob.create(
             station_id="ELDC",
             session_type="15s_24hr",
-            target_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            target_time=datetime(2025, 1, 1, tzinfo=UTC),
             enabled_stages=[
                 PipelineStage.DOWNLOAD,
                 PipelineStage.RINEX,
@@ -154,7 +154,7 @@ class TestPipelineJob:
         job = PipelineJob.create(
             station_id="ELDC",
             session_type="15s_24hr",
-            target_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            target_time=datetime(2025, 1, 1, tzinfo=UTC),
             enabled_stages=[
                 PipelineStage.DOWNLOAD,
                 PipelineStage.RINEX,
@@ -177,7 +177,7 @@ class TestPipelineJob:
         job = PipelineJob.create(
             station_id="ELDC",
             session_type="15s_24hr",
-            target_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            target_time=datetime(2025, 1, 1, tzinfo=UTC),
             enabled_stages=[PipelineStage.DOWNLOAD],
         )
 
@@ -192,7 +192,7 @@ class TestPipelineJob:
         job = PipelineJob.create(
             station_id="ELDC",
             session_type="15s_24hr",
-            target_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            target_time=datetime(2025, 1, 1, tzinfo=UTC),
             enabled_stages=[PipelineStage.DOWNLOAD],
         )
 
@@ -214,7 +214,7 @@ class TestPipelineJob:
         job = PipelineJob.create(
             station_id="ELDC",
             session_type="15s_24hr",
-            target_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            target_time=datetime(2025, 1, 1, tzinfo=UTC),
             enabled_stages=[PipelineStage.DOWNLOAD],
         )
 
@@ -230,7 +230,7 @@ class TestPipelineJob:
         job = PipelineJob.create(
             station_id="ELDC",
             session_type="15s_24hr",
-            target_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            target_time=datetime(2025, 1, 1, tzinfo=UTC),
             enabled_stages=[PipelineStage.DOWNLOAD, PipelineStage.RINEX],
         )
 
@@ -247,7 +247,7 @@ class TestPipelineJob:
         job = PipelineJob.create(
             station_id="ELDC",
             session_type="15s_24hr",
-            target_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            target_time=datetime(2025, 1, 1, tzinfo=UTC),
             enabled_stages=[PipelineStage.DOWNLOAD, PipelineStage.RINEX],
         )
 
@@ -262,7 +262,7 @@ class TestPipelineJob:
         job = PipelineJob.create(
             station_id="ELDC",
             session_type="15s_24hr",
-            target_time=datetime(2025, 1, 1, 0, 0, tzinfo=timezone.utc),
+            target_time=datetime(2025, 1, 1, 0, 0, tzinfo=UTC),
             enabled_stages=[PipelineStage.DOWNLOAD, PipelineStage.RINEX],
             priority=TaskPriority.REALTIME,
         )
@@ -294,7 +294,7 @@ class TestPipelineStateStore:
             job = PipelineJob.create(
                 station_id="ELDC",
                 session_type="15s_24hr",
-                target_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
+                target_time=datetime(2025, 1, 1, tzinfo=UTC),
                 enabled_stages=[PipelineStage.DOWNLOAD, PipelineStage.RINEX],
             )
 
@@ -326,7 +326,7 @@ class TestPipelineStateStore:
             incomplete = PipelineJob.create(
                 station_id="ELDC",
                 session_type="15s_24hr",
-                target_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
+                target_time=datetime(2025, 1, 1, tzinfo=UTC),
                 enabled_stages=[PipelineStage.DOWNLOAD],
             )
             store.save_job(incomplete)
@@ -335,7 +335,7 @@ class TestPipelineStateStore:
             complete = PipelineJob.create(
                 station_id="THOB",
                 session_type="15s_24hr",
-                target_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
+                target_time=datetime(2025, 1, 1, tzinfo=UTC),
                 enabled_stages=[PipelineStage.DOWNLOAD],
             )
             complete.mark_stage_complete(PipelineStage.DOWNLOAD)
@@ -355,7 +355,7 @@ class TestPipelineStateStore:
             job = PipelineJob.create(
                 station_id="ELDC",
                 session_type="15s_24hr",
-                target_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
+                target_time=datetime(2025, 1, 1, tzinfo=UTC),
                 enabled_stages=[PipelineStage.DOWNLOAD],
             )
             store.save_job(job)
@@ -385,7 +385,7 @@ class TestPipelineStateStore:
             job = PipelineJob.create(
                 station_id="ELDC",
                 session_type="15s_24hr",
-                target_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
+                target_time=datetime(2025, 1, 1, tzinfo=UTC),
                 enabled_stages=[PipelineStage.DOWNLOAD],
             )
             store.save_job(job)
@@ -409,7 +409,7 @@ class TestPipelineStateStore:
                 job = PipelineJob.create(
                     station_id=f"STN{i}",
                     session_type="15s_24hr",
-                    target_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
+                    target_time=datetime(2025, 1, 1, tzinfo=UTC),
                     enabled_stages=[PipelineStage.DOWNLOAD],
                 )
                 if i == 0:

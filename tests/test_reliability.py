@@ -15,7 +15,7 @@ from __future__ import annotations
 import struct
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -430,7 +430,7 @@ class TestQueryHealthGateIntegration:
 
         # station_latest_metrics → sats=0, fresh (age computed in Python)
         mock_cur.fetchone.side_effect = [
-            (0, 50.0, datetime.now(timezone.utc)),
+            (0, 50.0, datetime.now(UTC)),
         ]
 
         result = _query_health_gate("GJAC")
@@ -449,7 +449,7 @@ class TestQueryHealthGateIntegration:
 
         # sats=12 (OK), disk=99.5% (>98), fresh (age computed in Python)
         mock_cur.fetchone.side_effect = [
-            (12, 99.5, datetime.now(timezone.utc)),
+            (12, 99.5, datetime.now(UTC)),
         ]
 
         result = _query_health_gate("DISKFULL")
@@ -469,7 +469,7 @@ class TestQueryHealthGateIntegration:
         # sats=0, disk=99%, but stale (1 hour old → proceed)
         from datetime import timedelta
 
-        stale_time = datetime.now(timezone.utc) - timedelta(hours=1)
+        stale_time = datetime.now(UTC) - timedelta(hours=1)
         mock_cur.fetchone.side_effect = [
             (0, 99.0, stale_time),
             None,  # block_disk_status → no data (disk_pct=99, not 0/None)
@@ -509,7 +509,7 @@ class TestQueryHealthGateIntegration:
         # Healthy station: sats=15, disk=50%, fresh (age computed in Python)
         # disk_pct=50 → block_disk_status query not reached
         mock_cur.fetchone.side_effect = [
-            (15, 50.0, datetime.now(timezone.utc)),
+            (15, 50.0, datetime.now(UTC)),
         ]
 
         result = _query_health_gate("GOOD")
@@ -530,7 +530,7 @@ class TestQueryHealthGateIntegration:
         # Healthy metrics, but broken disk (total_mb=0)
         # Age computed in Python (fresh), disk_pct=0 → triggers block_disk_status query
         mock_cur.fetchone.side_effect = [
-            (15, 0.0, datetime.now(timezone.utc)),
+            (15, 0.0, datetime.now(UTC)),
             (0,),  # block_disk_status → total_mb=0 → broken
         ]
 
@@ -552,7 +552,7 @@ class TestQueryHealthGateIntegration:
         # Healthy metrics, no disk data in block_disk_status
         # disk_pct=50 → block_disk_status query not reached
         mock_cur.fetchone.side_effect = [
-            (15, 50.0, datetime.now(timezone.utc)),
+            (15, 50.0, datetime.now(UTC)),
         ]
 
         result = _query_health_gate("NODISK")
@@ -589,7 +589,7 @@ class TestHealthGateSessionAware:
 
         # sats=0, disk OK, fresh — gate would fire for 1Hz_1hr but not for 15s_24hr
         mock_cur.fetchone.side_effect = [
-            (0, 50.0, datetime.now(timezone.utc)),
+            (0, 50.0, datetime.now(UTC)),
         ]
 
         assert _query_health_gate("GSIG", "15s_24hr") is None
@@ -606,7 +606,7 @@ class TestHealthGateSessionAware:
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
         mock_cur.fetchone.side_effect = [
-            (0, 50.0, datetime.now(timezone.utc)),
+            (0, 50.0, datetime.now(UTC)),
         ]
 
         assert _query_health_gate("GSIG", "1Hz_1hr") == "no_satellites"
@@ -623,7 +623,7 @@ class TestHealthGateSessionAware:
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
         mock_cur.fetchone.side_effect = [
-            (0, 50.0, datetime.now(timezone.utc)),
+            (0, 50.0, datetime.now(UTC)),
         ]
 
         assert _query_health_gate("GSIG", "status_1hr") == "no_satellites"
@@ -641,7 +641,7 @@ class TestHealthGateSessionAware:
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
         mock_cur.fetchone.side_effect = [
-            (0, 50.0, datetime.now(timezone.utc)),
+            (0, 50.0, datetime.now(UTC)),
         ]
 
         assert _query_health_gate("GSIG", None) == "no_satellites"
@@ -660,7 +660,7 @@ class TestHealthGateSessionAware:
 
         # sats=15 (OK), disk=99% (>98) — gate fires for any session
         mock_cur.fetchone.side_effect = [
-            (15, 99.5, datetime.now(timezone.utc)),
+            (15, 99.5, datetime.now(UTC)),
         ]
 
         assert _query_health_gate("ANY", "15s_24hr") == "disk_full"
@@ -679,7 +679,7 @@ class TestHealthGateSessionAware:
 
         # disk_pct=0 → triggers block_disk_status query → total_mb=0 → broken
         mock_cur.fetchone.side_effect = [
-            (15, 0.0, datetime.now(timezone.utc)),
+            (15, 0.0, datetime.now(UTC)),
             (0,),
         ]
 

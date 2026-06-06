@@ -516,9 +516,7 @@ class RawToRinexConverter(ABC):
             return "1H"
         return "1D"
 
-    def _build_short_filename(
-        self, observation_date: datetime, file_type: str
-    ) -> str:
+    def _build_short_filename(self, observation_date: datetime, file_type: str) -> str:
         """Build a RINEX 2 short filename via gtimes' frequency-aware template.
 
         The ``#Rin2`` token in gtimes.datepathlist resolves to ``DDD<letter>.YY``

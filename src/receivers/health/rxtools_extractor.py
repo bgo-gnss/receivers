@@ -16,7 +16,7 @@ which wraps bin2asc with proper CSV parsing.
 import logging
 import os
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -155,7 +155,7 @@ class RxToolsExtractor:
             Dictionary with structured health data
         """
         health_data = {
-            "extraction_time": datetime.now(timezone.utc).isoformat(),
+            "extraction_time": datetime.now(UTC).isoformat(),
             "metrics": {},
             "data_quality": {},
             "receiver_specific": {},

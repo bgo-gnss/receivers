@@ -20,7 +20,7 @@ Trimble API Endpoints:
 import logging
 import re
 import socket
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -121,7 +121,7 @@ class TrimbleHTTPExtractor:
             Dictionary with extracted health data in standardized format
             matching the PolaRX5 health data schema.
         """
-        start_time = datetime.now(timezone.utc)
+        start_time = datetime.now(UTC)
 
         # Initialize health data structure (matching PolaRX5 format)
         health_data = {
@@ -308,7 +308,7 @@ class TrimbleHTTPExtractor:
         health_data["status_summary"] = self._count_statuses(statuses)
 
         # Calculate extraction duration
-        end_time = datetime.now(timezone.utc)
+        end_time = datetime.now(UTC)
         duration_ms = int((end_time - start_time).total_seconds() * 1000)
         health_data["extraction_metadata"]["extraction_duration_ms"] = duration_ms
 

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, Iterable, List, Optional
 
@@ -22,7 +22,7 @@ from .field_manifest import FIELDS, FieldSpec
 logger = logging.getLogger(__name__)
 
 
-class Verdict(str, Enum):
+class Verdict(StrEnum):
     OK = "ok"  # cfg matches all queried sources
     MISSING = "missing"  # cfg empty, ≥1 source has a value
     CONFLICT = "conflict"  # cfg present, disagrees with at least one source

@@ -118,6 +118,8 @@ def _probe_polarx5(
     *,
     station_id_hint: Optional[str] = None,
     timeout: float = 10.0,
+    tcp_username: Optional[str] = None,
+    tcp_password: Optional[str] = None,
 ) -> ReceiverIdentity:
     """Probe SBF block 5902 over the PolaRX5 TCP control port.
 
@@ -125,6 +127,12 @@ def _probe_polarx5(
     :class:`PolaRX5TCPExtractor`. ``station_id_hint`` only feeds the
     extractor's logger — pass ``"BENCH"`` for a fresh receiver that
     isn't in stations.cfg yet.
+
+    ``tcp_username`` and ``tcp_password`` override the fleet defaults
+    from receivers.cfg ``[polarx5]`` when given. Use for bench receivers
+    that have non-default credentials (e.g. fresh-out-of-box on TEST
+    creds, or just-upgraded firmware where the recorded fleet password
+    doesn't yet match what the receiver expects).
     """
     from ..health.polarx5_tcp_extractor import PolaRX5TCPExtractor
 
@@ -134,6 +142,10 @@ def _probe_polarx5(
         port=port or PolaRX5TCPExtractor.CONTROL_PORT,
         timeout=timeout,
     )
+    if tcp_username:
+        extractor.tcp_username = tcp_username
+    if tcp_password:
+        extractor.tcp_password = tcp_password
     try:
         setup = extractor._query_receiver_setup()
     except OSError as e:
@@ -271,6 +283,8 @@ def probe_receiver(
     probe_type: str = "auto",
     station_id_hint: Optional[str] = None,
     timeout: float = 10.0,
+    tcp_username: Optional[str] = None,
+    tcp_password: Optional[str] = None,
 ) -> ReceiverIdentity:
     """Return a :class:`ReceiverIdentity` for the receiver at ``host:port``.
 
@@ -278,11 +292,19 @@ def probe_receiver(
     information that ``auto`` can't infer (Trimble model family; G10
     operator-supplied serial/model). For those, pass ``--probe-type``
     explicitly.
+
+    ``tcp_username``/``tcp_password``: PolaRX5-only — override receivers.cfg
+    ``[polarx5]`` fleet defaults. Ignored by Trimble / G10 probe strategies.
     """
     if probe_type == "auto":
         try:
             return _probe_polarx5(
-                host, port, station_id_hint=station_id_hint, timeout=timeout
+                host,
+                port,
+                station_id_hint=station_id_hint,
+                timeout=timeout,
+                tcp_username=tcp_username,
+                tcp_password=tcp_password,
             )
         except ProbeUnreachableError as e:
             raise ProbeUnreachableError(
@@ -298,6 +320,15 @@ def probe_receiver(
         raise ValueError(
             f"Unknown --probe-type {probe_type!r}. "
             f"Valid choices: {', '.join(PROBE_TYPE_CHOICES)}"
+        )
+    if probe_type == "polarx5":
+        return _probe_polarx5(
+            host,
+            port,
+            station_id_hint=station_id_hint,
+            timeout=timeout,
+            tcp_username=tcp_username,
+            tcp_password=tcp_password,
         )
     return PROBE_STRATEGIES[probe_type](
         host, port, station_id_hint=station_id_hint, timeout=timeout

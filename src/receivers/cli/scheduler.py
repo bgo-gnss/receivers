@@ -11,7 +11,7 @@ import json
 import signal
 import sys
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 try:
@@ -551,7 +551,7 @@ def cmd_scheduler_reconcile(args) -> int:
                     current = start_date
                     while current <= end_date:
                         dt = datetime.combine(current, datetime.min.time()).replace(
-                            tzinfo=timezone.utc
+                            tzinfo=UTC
                         )
                         hours = [0] if session_type == "15s_24hr" else list(range(24))
                         for hour in hours:

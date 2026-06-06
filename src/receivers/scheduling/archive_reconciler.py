@@ -13,7 +13,7 @@ to ArchiveFileChecker + filesystem glob when format data is unavailable.
 
 import logging
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
@@ -233,9 +233,7 @@ def _reconcile_station_session(
         # Iterate newest-first so recent files (1-3 days old) get converted first
         current = end_date
         while current >= start_date:
-            dt = datetime.combine(current, datetime.min.time()).replace(
-                tzinfo=timezone.utc
-            )
+            dt = datetime.combine(current, datetime.min.time()).replace(tzinfo=UTC)
 
             if session_type == "15s_24hr":
                 # Daily file: check one file per day
@@ -554,9 +552,7 @@ def _convert_raw_to_rinex(
         # daily-form names (e.g. HEDI1450.26d.Z) for hourly raw files and each
         # hour overwrites the previous (the bug PR #75 fixed in the live path,
         # silently re-introduced here).
-        converter = converter_class(
-            station_id=station_id, session_type=session_type
-        )
+        converter = converter_class(station_id=station_id, session_type=session_type)
         result = converter.convert_file(raw_path, output_dir=rinex_dir)
 
         if result.success:

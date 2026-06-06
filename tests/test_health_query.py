@@ -23,9 +23,7 @@ from receivers.cli.health_query import (
 
 
 def test_parse_simple_seq_scan():
-    text = (
-        "Seq Scan on stations  (cost=0.00..4.50 rows=173 width=64)"
-    )
+    text = "Seq Scan on stations  (cost=0.00..4.50 rows=173 width=64)"
     max_rows, top_cost = parse_explain_estimates(text)
     assert max_rows == 173
     assert top_cost == 4.50
@@ -146,7 +144,9 @@ def test_health_query_subcommand_is_registered():
 def test_health_query_no_explain_and_explain_only_are_mutex():
     parser = create_argument_parser()
     with pytest.raises(SystemExit):
-        parser.parse_args(["health-query", "--explain-only", "--no-explain", "SELECT 1"])
+        parser.parse_args(
+            ["health-query", "--explain-only", "--no-explain", "SELECT 1"]
+        )
 
 
 def test_health_query_accepts_file_argument(tmp_path):

@@ -10,7 +10,7 @@ processing one day per station per invocation to limit FTP session duration.
 
 import logging
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -413,7 +413,7 @@ def _download_day_generic(
         receiver = create_receiver(station_id, station_config)
 
         start_time = datetime.combine(process_date, datetime.min.time()).replace(
-            tzinfo=timezone.utc
+            tzinfo=UTC
         )
 
         if session_type == "15s_24hr":
@@ -524,7 +524,7 @@ def _extract_and_store_health(
         extract_date = (
             datetime.combine(file_date, datetime.min.time())
             if file_date
-            else datetime.now(timezone.utc)
+            else datetime.now(UTC)
         )
 
         health_data = extractor.extract_daily_health(sbf_files, extract_date)
