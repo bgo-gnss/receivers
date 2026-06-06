@@ -1841,6 +1841,15 @@ def replace_modem(
     new_model: str,
     owner: str = "Jarðeðlismælihópur",
     new_router_type: Optional[str] = None,
+    ip_address: Optional[str] = None,
+    phone_number: Optional[str] = None,
+    provider: Optional[str] = None,
+    mac_address: Optional[str] = None,
+    manufacturer: Optional[str] = None,
+    io_type: Optional[str] = None,
+    modem_subtype: Optional[str] = None,
+    comment: Optional[str] = None,
+    extra_attrs: Optional[Dict[str, Optional[str]]] = None,
     date: Optional[str] = None,
     old_status: Optional[str] = "bilað",
     old_comment: Optional[str] = None,
@@ -1854,13 +1863,13 @@ def replace_modem(
     """Swap a station's GSM modem/router in TOS (Pattern-2) + stations.cfg.
 
     A site visit replaced the telemetry router. In TOS the router is a
-    ``modem_gsm`` device child of the station (it carries the canonical
-    serial/model/owner/status shape — same as a receiver). This:
+    ``modem_gsm`` device child of the station (canonical serial/model/owner/
+    status shape plus telemetry optionals). This:
 
-      1. Creates the new ``modem_gsm`` device (manual entry — a modem can't be
-         probed) and opens a station join at ``date``.
-      2. Retires the old modem (if any): moves it to the warehouse and applies
+      1. Retires the old modem (if any): moves it to the warehouse and applies
          ``old_status``/``old_comment`` (e.g. ``"bilað"``).
+      2. Creates the new ``modem_gsm`` device (manual entry — a modem can't be
+         probed) and opens a station join at ``date``.
       3. Writes a Breyting vitjun on the station ("Skipt um router/modem …").
       4. Updates ``stations.cfg[router_type]`` when ``new_router_type`` is given.
          The IP lives on the ``sim_card`` — use :func:`replace_sim` for that.
@@ -1872,6 +1881,13 @@ def replace_modem(
         owner: TOS owner attribute. Default ``"Jarðeðlismælihópur"``.
         new_router_type: stations.cfg ``router_type`` value (e.g. ``"Teltonika"``).
             When ``None``, stations.cfg is left untouched.
+        ip_address, phone_number, provider, mac_address, manufacturer,
+            io_type, modem_subtype, comment: Optional TOS attributes on the new
+            ``modem_gsm`` (see :data:`tostools.device.MODEM_GSM_ATTR_CODES`).
+            ``modem_subtype`` maps to the TOS ``subtype`` attribute (e.g.
+            ``"4G"``). Omitted when falsy.
+        extra_attrs: Escape hatch — ``{code: value}`` for any attribute not
+            covered by the named params; merged last (can override).
         date: When the swap happened. Default now; bare date → noon.
         old_status / old_comment: Pattern-2 transitions on the OLD modem
             (``None``/``""`` to skip). Default status ``"bilað"``.
@@ -1899,11 +1915,23 @@ def replace_modem(
                 f"open at {station_id}. Did the swap actually happen?"
             )
 
-    from tostools.device import build_required_attributes
+    from tostools.device import build_modem_gsm_attributes
 
-    igs_model = new_model  # no IGS table for telemetry — free-text vendor name
-    attrs = build_required_attributes(
-        serial=new_serial, model=igs_model, owner=owner, date_start=eff_date
+    # No IGS table for telemetry — new_model is free-text vendor naming.
+    attrs = build_modem_gsm_attributes(
+        serial=new_serial,
+        model=new_model,
+        owner=owner,
+        date_start=eff_date,
+        ip_address=ip_address,
+        phone_number=phone_number,
+        provider=provider,
+        mac_address=mac_address,
+        manufacturer=manufacturer,
+        io_type=io_type,
+        modem_subtype=modem_subtype,
+        comment=comment,
+        extra=extra_attrs,
     )
 
     result = OperationResult(
@@ -1984,6 +2012,12 @@ def replace_sim(
     *,
     ip_address: str,
     phone_number: Optional[str] = None,
+    serial_number: Optional[str] = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    owner: Optional[str] = None,
+    comment: Optional[str] = None,
+    extra_attrs: Optional[Dict[str, Optional[str]]] = None,
     date: Optional[str] = None,
     vitjun: Optional[str] = None,
     participants: str = "",
@@ -1995,13 +2029,13 @@ def replace_sim(
     """Swap a station's SIM card in TOS (new sim_card entity) + stations.cfg.
 
     A site visit replaced the SIM, giving a new IP. In TOS the SIM is a
-    ``sim_card`` device child of the station carrying ``ip_address`` (and
-    optionally ``phone_number``) — NOT the canonical device shape. This:
+    ``sim_card`` device child of the station carrying ``ip_address`` plus
+    optional telemetry attributes — NOT the canonical device shape. This:
 
-      1. Creates a new ``sim_card`` device (:func:`build_sim_card_attributes`)
-         and opens a station join at ``date``.
-      2. Closes the old SIM's station join (SIMs aren't warehoused — the old
+      1. Closes the old SIM's station join (SIMs aren't warehoused — the old
          entity is left retired, not reparented).
+      2. Creates a new ``sim_card`` device (:func:`build_sim_card_attributes`)
+         and opens a station join at ``date``.
       3. Writes a vitjun on the station ("Skipt um SIM-kort, nýtt IP …").
       4. When ``update_cfg_ip`` is True, writes the new IP to
          ``stations.cfg[router_ip]``. **Off by default**: cfg ``router_ip`` is
@@ -2011,7 +2045,11 @@ def replace_sim(
     Args:
         station_id: 4-char marker of the station.
         ip_address: The new SIM's IP (required).
-        phone_number: Optional MSISDN.
+        phone_number, serial_number, provider, model, owner, comment: Optional
+            TOS attributes on the new ``sim_card`` (see
+            :data:`tostools.device.SIM_CARD_ATTR_CODES`). Omitted when falsy.
+        extra_attrs: Escape hatch — ``{code: value}`` for any attribute not
+            covered by the named params; merged last (can override).
         date: When the swap happened. Default now; bare date → noon.
         vitjun: Override the auto-derived vitjun text.
         participants: Comma-separated emails for the vitjun.
@@ -2042,7 +2080,15 @@ def replace_sim(
     from tostools.device import build_sim_card_attributes
 
     attrs = build_sim_card_attributes(
-        ip_address=ip_address, date_start=eff_date, phone_number=phone_number
+        ip_address=ip_address,
+        date_start=eff_date,
+        phone_number=phone_number,
+        serial_number=serial_number,
+        provider=provider,
+        model=model,
+        owner=owner,
+        comment=comment,
+        extra=extra_attrs,
     )
 
     result = OperationResult(

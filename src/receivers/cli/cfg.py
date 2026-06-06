@@ -3799,6 +3799,43 @@ Examples:
             "omitted, stations.cfg is left untouched."
         ),
     )
+    # Optional TOS attributes on the new modem_gsm (MODEM_GSM_ATTR_CODES).
+    rm.add_argument("--ip", metavar="IP", help="modem ip_address attribute.")
+    rm.add_argument("--phone", metavar="NUMBER", help="modem phone_number attribute.")
+    rm.add_argument("--provider", metavar="NAME", help="provider (e.g. Síminn, Nova).")
+    rm.add_argument("--mac", metavar="MAC", help="mac_address attribute.")
+    rm.add_argument(
+        "--manufacturer",
+        metavar="NAME",
+        help="manufacturer (e.g. Teltonika, Conel).",
+    )
+    rm.add_argument(
+        "--io-type",
+        dest="io_type",
+        metavar="SPEC",
+        help="io_type attribute (e.g. 'Ethernet+RS232').",
+    )
+    rm.add_argument(
+        "--modem-subtype",
+        dest="modem_subtype",
+        metavar="VALUE",
+        help="TOS `subtype` attribute on the modem (e.g. '3G'/'4G').",
+    )
+    rm.add_argument(
+        "--comment",
+        metavar="TEXT",
+        help="comment attribute on the new modem.",
+    )
+    rm.add_argument(
+        "--attr",
+        action="append",
+        metavar="CODE=VALUE",
+        help=(
+            "Generic escape hatch — set any TOS attribute code not covered by "
+            "a named flag. Repeatable. Example: --attr io_type=Ethernet+RS232. "
+            "Overrides a named flag if the same code is given both ways."
+        ),
+    )
     rm.add_argument(
         "--date",
         metavar="YYYY-MM-DD[THH:MM:SS]",
@@ -3892,6 +3929,26 @@ Examples:
         metavar="NUMBER",
         help="Optional phone number / MSISDN for the new SIM.",
     )
+    # Optional TOS attributes on the new sim_card (SIM_CARD_ATTR_CODES).
+    rs.add_argument("--serial", metavar="SERIAL", help="serial_number attribute.")
+    rs.add_argument("--provider", metavar="NAME", help="provider (e.g. Síminn, Nova).")
+    rs.add_argument(
+        "--model", metavar="MODEL", help="model attribute (e.g. 'sim kort')."
+    )
+    rs.add_argument("--owner", metavar="OWNER", help="owner attribute.")
+    rs.add_argument(
+        "--comment", metavar="TEXT", help="comment attribute on the new SIM."
+    )
+    rs.add_argument(
+        "--attr",
+        action="append",
+        metavar="CODE=VALUE",
+        help=(
+            "Generic escape hatch — set any TOS attribute code not covered by "
+            "a named flag (e.g. --attr date_end=2027-01-01). Repeatable. "
+            "Overrides a named flag if the same code is given both ways."
+        ),
+    )
     rs.add_argument(
         "--date",
         metavar="YYYY-MM-DD[THH:MM:SS]",
@@ -3978,6 +4035,31 @@ Examples:
         help="Emit a structured JSON summary.",
     )
     dj.set_defaults(func=cmd_cfg_delete_join)
+
+
+def _parse_attr_pairs(pairs: Optional[List[str]]) -> Dict[str, Optional[str]]:
+    """Parse repeatable ``--attr code=value`` tokens into a ``{code: value}`` dict.
+
+    Backs the generic telemetry escape hatch on ``replace-modem`` /
+    ``replace-sim`` — lets an operator set any TOS attribute code not covered
+    by a named flag (e.g. ``--attr io_type=Ethernet+RS232``). The value may
+    itself contain ``=`` (only the first is the separator). Raises ``ValueError``
+    on a token with no ``=`` so a typo surfaces instead of being silently
+    dropped.
+    """
+    out: Dict[str, Optional[str]] = {}
+    for tok in pairs or []:
+        if "=" not in tok:
+            raise ValueError(
+                f"--attr expects code=value, got {tok!r} (no '='). "
+                f"Example: --attr io_type=Ethernet+RS232"
+            )
+        code, value = tok.split("=", 1)
+        code = code.strip()
+        if not code:
+            raise ValueError(f"--attr {tok!r}: empty attribute code")
+        out[code] = value
+    return out
 
 
 def _normalise_date_arg(value: Optional[str]) -> Optional[str]:
@@ -4329,12 +4411,26 @@ def cmd_cfg_replace_modem(args) -> int:
 
     dry_run = not args.no_dry_run
     try:
+        extra_attrs = _parse_attr_pairs(args.attr)
+    except ValueError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        return 2
+    try:
         result = replace_modem(
             args.station,
             new_serial=args.new_serial,
             new_model=args.new_model,
             owner=args.owner or "Jarðeðlismælihópur",
             new_router_type=args.router_type,
+            ip_address=args.ip,
+            phone_number=args.phone,
+            provider=args.provider,
+            mac_address=args.mac,
+            manufacturer=args.manufacturer,
+            io_type=args.io_type,
+            modem_subtype=args.modem_subtype,
+            comment=args.comment,
+            extra_attrs=extra_attrs or None,
             date=_normalise_date_arg(args.date),
             old_status=args.old_status,
             old_comment=args.old_comment,
@@ -4362,10 +4458,21 @@ def cmd_cfg_replace_sim(args) -> int:
 
     dry_run = not args.no_dry_run
     try:
+        extra_attrs = _parse_attr_pairs(args.attr)
+    except ValueError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        return 2
+    try:
         result = replace_sim(
             args.station,
             ip_address=args.ip,
             phone_number=args.phone,
+            serial_number=args.serial,
+            provider=args.provider,
+            model=args.model,
+            owner=args.owner,
+            comment=args.comment,
+            extra_attrs=extra_attrs or None,
             date=_normalise_date_arg(args.date),
             vitjun=args.vitjun,
             participants=args.participants or "",

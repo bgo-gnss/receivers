@@ -1985,12 +1985,64 @@ def test_replace_sim_cfg_ip_written_when_requested(cfg_file):
 
 
 def test_replace_sim_ip_only_omits_phone():
-    """No --phone → sim_card built with ip_address only."""
+    """No --phone → sim_card built with ip_address (+ default status), no phone."""
     w = _telemetry_writer(old_child_id=None)
     replace_sim("GSIG", ip_address="10.4.1.240", writer=w, dry_run=False)
     attrs = w.create_device.call_args.kwargs["attributes"]
     codes = [a["code"] for a in attrs]
-    assert codes == ["ip_address"]
+    assert "ip_address" in codes
+    assert "phone_number" not in codes  # omitted when not given
+    assert "status" in codes  # default "virkt"
+
+
+def test_replace_sim_passes_optional_attrs():
+    """Named optionals + extra_attrs flow into the sim_card builder."""
+    w = _telemetry_writer(old_child_id=None)
+    replace_sim(
+        "GSIG",
+        ip_address="10.4.1.240",
+        phone_number="8400754",
+        serial_number="89354010120801048520",
+        provider="Síminn",
+        model="sim kort",
+        owner="Jarðeðlismælihópur",
+        extra_attrs={"date_end": "2027-01-01"},
+        writer=w,
+        dry_run=False,
+    )
+    attrs = {
+        a["code"]: a["value"] for a in w.create_device.call_args.kwargs["attributes"]
+    }
+    assert attrs["provider"] == "Síminn"
+    assert attrs["serial_number"] == "89354010120801048520"
+    assert attrs["date_end"] == "2027-01-01"
+
+
+def test_replace_modem_passes_optional_attrs():
+    """Named optionals + extra_attrs flow into the modem_gsm builder."""
+    w = _telemetry_writer(old_child_id=None)
+    replace_modem(
+        "GSIG",
+        new_serial="6001312345",
+        new_model="Teltonika RUT241",
+        ip_address="157.157.24.132",
+        mac_address="00:0A:14:85:54:A0",
+        manufacturer="Teltonika",
+        io_type="Ethernet+RS232",
+        modem_subtype="4G",
+        provider="Nova",
+        extra_attrs={"comment": "site visit"},
+        writer=w,
+        dry_run=False,
+    )
+    attrs = {
+        a["code"]: a["value"] for a in w.create_device.call_args.kwargs["attributes"]
+    }
+    assert attrs["mac_address"] == "00:0A:14:85:54:A0"
+    assert attrs["manufacturer"] == "Teltonika"
+    assert attrs["io_type"] == "Ethernet+RS232"
+    assert attrs["subtype"] == "4G"  # modem_subtype → TOS `subtype`
+    assert attrs["comment"] == "site visit"
 
 
 def test_replace_sim_rejects_same_ip():
@@ -2045,3 +2097,46 @@ def test_replace_sim_retires_old_before_creating_new():
     )
     replace_sim("GSIG", ip_address="10.4.1.240", writer=w, dry_run=False)
     assert call_order == ["retire", "create"]
+
+
+# ---------------------------------------------------------------------------
+# _parse_attr_pairs — generic --attr code=value escape hatch (CLI helper)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_attr_pairs_basic():
+    from receivers.cli.cfg import _parse_attr_pairs
+
+    assert _parse_attr_pairs(["a=1", "b=2"]) == {"a": "1", "b": "2"}
+
+
+def test_parse_attr_pairs_value_with_equals():
+    from receivers.cli.cfg import _parse_attr_pairs
+
+    # Only the first '=' is the separator (values may contain '=').
+    assert _parse_attr_pairs(["io_type=A=B"]) == {"io_type": "A=B"}
+
+
+def test_parse_attr_pairs_none_and_empty():
+    from receivers.cli.cfg import _parse_attr_pairs
+
+    assert _parse_attr_pairs(None) == {}
+    assert _parse_attr_pairs([]) == {}
+
+
+def test_parse_attr_pairs_rejects_missing_equals():
+    import pytest as _pytest
+
+    from receivers.cli.cfg import _parse_attr_pairs
+
+    with _pytest.raises(ValueError, match="code=value"):
+        _parse_attr_pairs(["noequals"])
+
+
+def test_parse_attr_pairs_rejects_empty_code():
+    import pytest as _pytest
+
+    from receivers.cli.cfg import _parse_attr_pairs
+
+    with _pytest.raises(ValueError, match="empty attribute code"):
+        _parse_attr_pairs(["=value"])
