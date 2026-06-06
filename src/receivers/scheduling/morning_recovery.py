@@ -25,7 +25,7 @@ See `docs/design/morning-recovery.md` for the full design rationale.
 
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from typing import List, Tuple
 
 logger = logging.getLogger("receivers.scheduler.morning_recovery")
@@ -238,7 +238,7 @@ def _run_morning_recovery_job(
             this many minutes. Default 120 (2 h) — fresh transient-failure
             marks stay queued; long-stale marks remain skipped.
     """
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(UTC).date()
     # Most-recent-first so newest gaps get retried before the deadline if time runs out.
     target_dates = [today - timedelta(days=n) for n in range(1, days_back + 1)]
 
@@ -267,7 +267,7 @@ def _run_morning_recovery_job(
         # the final log line so an operator can see what was deferred.
         # When invoked outside the 01:30 UTC window (e.g. manual dry-run at 14:00),
         # the "next" deadline is tomorrow, so the loop proceeds normally.
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         deadline_today = now.replace(
             hour=_DEADLINE_HOUR_UTC, minute=0, second=0, microsecond=0
         )

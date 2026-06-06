@@ -15,7 +15,7 @@ import logging
 import re
 import socket
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -90,7 +90,7 @@ class G10HTTPExtractor:
         Returns:
             Dictionary with extracted health data in standardized format.
         """
-        start_time = datetime.now(timezone.utc)
+        start_time = datetime.now(UTC)
 
         health_data = {
             "station_id": self.station_id,
@@ -136,7 +136,7 @@ class G10HTTPExtractor:
             health_data["overall_status"] = self._calculate_overall_status(statuses)
             health_data["status_summary"] = self._count_statuses(statuses)
 
-            end_time = datetime.now(timezone.utc)
+            end_time = datetime.now(UTC)
             duration_ms = int((end_time - start_time).total_seconds() * 1000)
             health_data["extraction_metadata"]["extraction_duration_ms"] = duration_ms
             return health_data
@@ -215,7 +215,7 @@ class G10HTTPExtractor:
         health_data["status_summary"] = self._count_statuses(statuses)
 
         # Calculate extraction duration
-        end_time = datetime.now(timezone.utc)
+        end_time = datetime.now(UTC)
         duration_ms = int((end_time - start_time).total_seconds() * 1000)
         health_data["extraction_metadata"]["extraction_duration_ms"] = duration_ms
 

@@ -24,7 +24,7 @@ import json
 import logging
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 
@@ -602,7 +602,7 @@ def _effective_date_for(args: argparse.Namespace) -> str:
     ed = getattr(args, "effective_date", None)
     if ed:
         return ed
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S+00:00")
     logger.debug("--effective-date not set; defaulting to now (%s)", now)
     return now
 
@@ -1652,7 +1652,7 @@ def _parse_since(spec: str) -> datetime:
             if unit == "h"
             else timedelta(minutes=n)
         )
-        return datetime.now(timezone.utc) - delta
+        return datetime.now(UTC) - delta
     try:
         # Accept "2026-04-01" or "2026-04-01T12:00:00+00:00"
         dt = datetime.fromisoformat(spec)
@@ -1661,14 +1661,14 @@ def _parse_since(spec: str) -> datetime:
             f"invalid --since value {spec!r} (use 30d/12h/45m or ISO 8601)"
         ) from exc
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     return dt
 
 
 def _fmt_ts(ts: Optional[datetime]) -> str:
     if ts is None:
         return "—"
-    return ts.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M")
+    return ts.astimezone(UTC).strftime("%Y-%m-%d %H:%M")
 
 
 def _print_records_table(records, *, show_resolution: bool) -> None:
@@ -2047,6 +2047,21 @@ def cmd_cfg_add_receiver(args) -> int:
     if not getattr(args, "owner", None):
         args.owner = "Jarðeðlismælihópur"
 
+    # ---- Apply default --location ---------------------------------------
+    # ~71% of historical intakes land at B9 - Kjallari - Jörð (id_entity=4
+    # in TOS — the main GPS warehouse). Saves the operator typing the
+    # exact string every time; override via --location or via the
+    # `location` key in --from-file for non-B9 warehouses.
+    if not getattr(args, "location", None):
+        args.location = "B9 - Kjallari - Jörð"
+
+    # ---- Apply default --date-start (today) -----------------------------
+    # The intake almost always happens "now" — registering today's
+    # warehouse arrival. For back-dated intakes pass --date-start
+    # explicitly or set `date_start:` in --from-file.
+    if not getattr(args, "date_start", None):
+        args.date_start = date.today().isoformat()
+
     # ---- Required-field validation (CLI-or-file) ------------------------
     missing = [
         f for f in ("owner", "location", "date_start") if not getattr(args, f, None)
@@ -2145,11 +2160,23 @@ def cmd_cfg_add_receiver(args) -> int:
         owner=args.owner,
         date_start=date_start,
     )
-    optional = iter_optional_attributes(
-        firmware=firmware_attr,
-        comment=args.comment,
-        galvos=args.galvos,
+    optional = list(
+        iter_optional_attributes(
+            firmware=firmware_attr,
+            comment=args.comment,
+            galvos=args.galvos,
+        )
     )
+
+    # Derive software_version from firmware in the Septentrio TOS style
+    # (X.Y.Z → X.YZ, e.g. 5.7.0 → 5.70). The probe only surfaces firmware, so a
+    # device that doesn't expose software separately gets it derived here — same
+    # convention as `cfg update-device`. See firmware_to_software().
+    if firmware_attr:
+        software_value, sw_warn = firmware_to_software(firmware_attr)
+        if sw_warn:
+            print(f"  ⚠️  {sw_warn}", file=sys.stderr)
+        optional.append(("software_version", software_value))
 
     # ---- Writer setup ---------------------------------------------------
     scheme = "https" if args.port == 443 else "http"
@@ -2257,6 +2284,230 @@ def cmd_cfg_add_receiver(args) -> int:
                     f"Connected to location {args.location!r} (connection id={conn_id})"
                 )
     return 0
+
+
+# ---------------------------------------------------------------------------
+# cmd_cfg_update_device — probe an existing TOS device and update its attrs
+# ---------------------------------------------------------------------------
+
+
+def firmware_to_software(firmware: str) -> tuple[str, Optional[str]]:
+    """Convert a firmware version to the TOS ``software_version`` style.
+
+    Septentrio TOS records ``software_version`` as the firmware with the
+    patch-dot dropped: firmware ``X.Y.Z`` → software ``X.YZ`` (e.g. ``5.7.0``
+    → ``5.70``, matching the fleet's existing ``5.50``). Probes only expose
+    ``firmware_version``, so when a device doesn't surface software separately
+    we derive it from firmware in this style.
+
+    Best-effort: a clean 3-part ``X.Y.Z`` (optionally with extra parts, which
+    are appended dot-less too) converts cleanly. Anything that doesn't start
+    with at least ``MAJOR.MINOR.PATCH`` numeric is passed through unchanged and
+    a warning string is returned so the caller can surface it.
+
+    Returns ``(software_version, warning_or_None)``.
+    """
+    parts = firmware.split(".")
+    if len(parts) >= 3 and all(p.isdigit() for p in parts[:3]):
+        # 5.7.0 -> 5.70 ; 5.7.0.1 -> 5.701 (drop every dot after the first)
+        software = parts[0] + "." + "".join(parts[1:])
+        return software, None
+    return (
+        firmware,
+        f"firmware {firmware!r} is not a clean X.Y.Z version — passing it "
+        f"through to software_version unchanged; override with the actual "
+        f"value if the receiver uses a different software string.",
+    )
+
+
+def cmd_cfg_update_device(args) -> int:
+    """Probe a receiver and update the matching TOS device entity's attribute(s).
+
+    Use case: a receiver that's already in TOS (typically warehoused at B9 from
+    an earlier `cfg add-receiver` intake) had something change off-network — e.g.
+    firmware upgrade on the bench — and you want TOS to reflect the new value.
+
+    A mutable attribute can be written for two fundamentally different reasons,
+    and the operator MUST declare which — guessing wrong corrupts the temporal
+    record in opposite directions, so there is no safe default:
+
+    - **--change (real-world change → transition, Pattern 2)** — the value
+      genuinely changed in the world (firmware upgrade, marker rename). Closes
+      the open attribute period at ``--date`` and opens a new one from that
+      date, so TOS remembers "ran fw 5.6.0 from install to 2026-05-30, fw 5.7.0
+      from 2026-05-30 on". Records history.
+    - **--correct (fix a wrong record → in-place, Pattern 1)** — the recorded
+      value was simply *wrong* (a typo / bad earlier entry) and the real-world
+      value did not change. Overwrites the open value, keeping its dates. Does
+      NOT create a history period. Using this for a real upgrade would erase
+      the upgrade history; using --change for a typo would invent an upgrade
+      that never happened.
+
+    No-op guard: if the probed value already matches the current open TOS value,
+    nothing is written (avoids spurious same-value transitions).
+
+    Dry-run by default. Does NOT touch stations.cfg — for that, use
+    ``cfg reconcile <SID> --field receiver_firmware_version --source receiver``
+    once the device is deployed.
+    """
+    from datetime import date as _date
+
+    from tostools.api.tos_writer import TOSWriter
+
+    from ..cfg.device_probe import (
+        ProbeError,
+        ProbeNotIdentifiedError,
+        ProbeUnreachableError,
+        parse_host_port,
+        probe_receiver,
+    )
+
+    if not args.field:
+        print(
+            "❌ --field is required (e.g. --field firmware_version)",
+            file=sys.stderr,
+        )
+        return 2
+
+    # ---- Parse probe target ---------------------------------------------
+    try:
+        host, port = parse_host_port(args.probe)
+    except ValueError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        return 2
+
+    when_iso = args.date or _date.today().isoformat()
+
+    # ---- Probe the receiver ---------------------------------------------
+    print(f"Probing {args.probe} …")
+    try:
+        identity = probe_receiver(
+            host,
+            port,
+            probe_type=args.probe_type,
+            tcp_username=args.username,
+            tcp_password=args.password,
+        )
+    except (ProbeUnreachableError, ProbeNotIdentifiedError, ProbeError) as e:
+        print(f"❌ {e}", file=sys.stderr)
+        return 1
+
+    if not identity.serial:
+        print(
+            "❌ probe did not return a serial — can't look up the TOS device",
+            file=sys.stderr,
+        )
+        return 1
+    print(
+        f"  identity: serial={identity.serial!r} "
+        f"model={identity.model_raw!r} fw={identity.firmware_version!r}"
+    )
+
+    # ---- Map requested fields → values from probe -----------------------
+    # software_version is derived from the probed firmware (X.Y.Z → X.YZ) since
+    # the probe only surfaces firmware_version; see firmware_to_software().
+    software_value: Optional[str] = None
+    if identity.firmware_version:
+        software_value, sw_warn = firmware_to_software(identity.firmware_version)
+        if sw_warn and "software_version" in args.field:
+            print(f"  ⚠️  {sw_warn}", file=sys.stderr)
+
+    field_sources: Dict[str, Optional[str]] = {
+        "firmware_version": identity.firmware_version,
+        "software_version": software_value,
+        "model": identity.model_raw,
+        "marker_name": identity.marker_name,
+    }
+    field_values: Dict[str, str] = {}
+    for f in args.field:
+        if f not in field_sources:
+            print(
+                f"❌ field {f!r} not supported by --probe "
+                f"(supported: {sorted(field_sources)})",
+                file=sys.stderr,
+            )
+            return 2
+        val = field_sources[f]
+        if not val:
+            print(f"❌ probe didn't return a {f} value", file=sys.stderr)
+            return 1
+        field_values[f] = val
+
+    # ---- Find the device in TOS -----------------------------------------
+    dry_run = not args.no_dry_run
+    writer = TOSWriter(dry_run=dry_run)
+
+    device = writer.find_device_by_serial(args.subtype, identity.serial)
+    if not device:
+        print(
+            f"❌ no TOS device of subtype {args.subtype!r} with serial "
+            f"{identity.serial!r}",
+            file=sys.stderr,
+        )
+        print(
+            f"   If this is a brand-new intake, use `receivers cfg add-receiver "
+            f"--probe {args.probe}` instead.",
+            file=sys.stderr,
+        )
+        return 1
+    id_entity = device.get("id_entity") if isinstance(device, dict) else None
+    if not id_entity:
+        print(
+            f"❌ TOS lookup returned a device without id_entity: {device!r}",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Exactly one of --change / --correct is set (argparse required mutex group).
+    in_place = bool(args.correct)
+    mode = (
+        "--correct → Pattern 1 (in-place upsert, no history)"
+        if in_place
+        else "--change → Pattern 2 (transition, records history)"
+    )
+    print(f"  TOS device: id_entity={id_entity}")
+    print(f"  Mode: {mode}")
+    print(f"  Date: {when_iso}")
+    if dry_run:
+        print("  DRY RUN — no writes (use --no-dry-run to commit)")
+
+    def _current_open_value(code: str) -> Optional[str]:
+        """Return the value of the currently-open (date_to=None) period, or None."""
+        try:
+            rows = writer.get_attribute_values(id_entity, code=code)
+        except Exception:  # noqa: BLE001 — read failure shouldn't block the write
+            return None
+        if not isinstance(rows, list):
+            return None
+        open_rows = [r for r in rows if isinstance(r, dict) and not r.get("date_to")]
+        if not open_rows:
+            return None
+        # If multiple open rows somehow exist, the last is the most recent.
+        return open_rows[-1].get("value")
+
+    # ---- Apply each field -----------------------------------------------
+    rc = 0
+    for code, new_value in field_values.items():
+        current = _current_open_value(code)
+        if current is not None and str(current) == str(new_value):
+            print(f"  = {code} already {new_value!r} — no change")
+            continue
+        try:
+            if in_place:
+                writer.upsert_attribute_value(id_entity, code, new_value, when_iso)
+            else:
+                writer.transition_attribute_value(id_entity, code, new_value, when_iso)
+            arrow = (
+                f"{current!r} → {new_value!r}"
+                if current is not None
+                else f"{new_value!r}"
+            )
+            print(f"  ✓ {code}: {arrow}")
+        except Exception as e:  # noqa: BLE001 — surface any TOS write error
+            print(f"  ❌ {code}: {e}", file=sys.stderr)
+            rc = 1
+
+    return rc
 
 
 # ---------------------------------------------------------------------------
@@ -2654,23 +2905,27 @@ Examples:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # PolaRX5 on the bench (WiFi AP), dry-run by default:
+  # PolaRX5 bench intake — relies on defaults for owner + location +
+  # date-start (Jarðeðlismælihópur, 'B9 - Kjallari - Jörð', today):
+  receivers cfg add-receiver --probe 192.168.3.1
+
+  # Same, committing live (overrides the dry-run default):
+  receivers cfg add-receiver --probe 192.168.3.1 --no-dry-run
+
+  # Non-standard warehouse — override --location:
   receivers cfg add-receiver --probe 192.168.20.1 \\
-      --owner "Veðurstofa Íslands" --location "Bench A" \\
-      --date-start 2026-05-12
+      --location "Vagnhöfði - Kjallari - Jörð"
+
+  # Backdating an intake that physically happened earlier:
+  receivers cfg add-receiver --probe 192.168.3.1 --date-start 2026-05-12
 
   # Trimble NetR9 at a deployed station:
   receivers cfg add-receiver --probe 10.20.30.40 --probe-type netr9 \\
-      --owner "Veðurstofa Íslands" --location "Reykjavík warehouse" \\
-      --date-start 2026-05-12
+      --location "Reykjavík warehouse"
 
   # Leica G10 — probe only confirms reachability, serial must be supplied:
   receivers cfg add-receiver --probe 10.20.30.41 --probe-type g10 \\
-      --serial G10-12345 --owner "Veðurstofa Íslands" \\
-      --location "Bench B" --date-start 2026-05-12
-
-  # Commit live (overrides the dry-run default):
-  receivers cfg add-receiver --probe 192.168.20.1 ... --no-dry-run
+      --serial G10-12345
 """,
     )
     add_rx.add_argument(
@@ -2722,17 +2977,27 @@ Examples:
     )
     add_rx.add_argument(
         "--location",
+        # No argparse default — applied in cmd_cfg_add_receiver AFTER the
+        # --from-file merge so a `location:` key in the file isn't silently
+        # overridden by the CLI fallback.
         help=(
-            "Physical warehouse / bench location. Required via CLI when "
-            "--from-file is not used (or does not include `location`)."
+            "Physical warehouse / bench location. "
+            "Default (when neither CLI nor --from-file supplies one): "
+            "'B9 - Kjallari - Jörð' — the standard bench-intake location for "
+            "the GPS receiver fleet. Override for other warehouses "
+            "(e.g. 'Vagnhöfði - Kjallari - Jörð', 'Ísafjörður')."
         ),
     )
     add_rx.add_argument(
         "--date-start",
         metavar="YYYY-MM-DD",
+        # Same reasoning as --location: applied post-merge so file values
+        # win over the today-fallback.
         help=(
-            "Start date for all attribute values. Required via CLI when "
-            "--from-file is not used (or does not include `date_start`)."
+            "Start date for all attribute values. "
+            "Default (when neither CLI nor --from-file supplies one): today "
+            "(YYYY-MM-DD). Override when registering a device whose intake "
+            "actually happened on a different day."
         ),
     )
     add_rx.add_argument(
@@ -2777,6 +3042,132 @@ Examples:
         help="Emit a structured JSON summary instead of plain text.",
     )
     add_rx.set_defaults(func=cmd_cfg_add_receiver)
+
+    # ---- update-device ---------------------------------------------------
+    upd = cfg_subparsers.add_parser(
+        "update-device",
+        help="Probe a receiver and update its TOS device attribute(s)",
+        description=(
+            "Update an already-in-TOS device entity's attribute(s) by probing "
+            "the live receiver for the current value. Use case: firmware "
+            "upgrade on a bench/warehoused receiver — the device entity "
+            "already exists (from a prior `add-receiver`) and needs the new "
+            "value reflected in TOS. You MUST declare intent with exactly one "
+            "of --change (the value really changed → records history via a new "
+            "attribute period) or --correct (the recorded value was wrong → "
+            "overwrite in place, no history). There is no default: choosing "
+            "wrong corrupts the temporal record. No-op when the value already "
+            "matches."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # A firmware upgrade really happened — record it as history (close old fw
+  # period, open a new one). Dry-run by default:
+  receivers cfg update-device --probe 192.168.3.1 --field firmware_version --change
+
+  # Same, committing live:
+  receivers cfg update-device --probe 192.168.3.1 --field firmware_version \\
+      --change --no-dry-run
+
+  # Back-date the upgrade to when it actually happened:
+  receivers cfg update-device --probe 192.168.3.1 --field firmware_version \\
+      --change --date 2026-05-28 --no-dry-run
+
+  # Multiple changed fields at once:
+  receivers cfg update-device --probe 192.168.3.1 \\
+      --field firmware_version --field marker_name --change --no-dry-run
+
+  # The recorded value was a typo — CORRECT it in place (no history entry):
+  receivers cfg update-device --probe 192.168.3.1 \\
+      --field firmware_version --correct --no-dry-run
+""",
+    )
+    upd.add_argument(
+        "--probe",
+        metavar="HOST[:PORT]",
+        required=True,
+        help="Receiver IP/host (with optional port).",
+    )
+    upd.add_argument(
+        "--probe-type",
+        choices=PROBE_TYPE_CHOICES,
+        default="auto",
+        help="Receiver protocol; 'auto' tries PolaRX5 only (default).",
+    )
+    upd.add_argument(
+        "--field",
+        action="append",
+        default=[],
+        metavar="CODE",
+        help=(
+            "Attribute code to update; repeatable. Supported: "
+            "firmware_version, software_version, model, marker_name. "
+            "software_version is derived from the probed firmware "
+            "(X.Y.Z → X.YZ, e.g. 5.7.0 → 5.70) since probes don't expose it "
+            "separately."
+        ),
+    )
+    upd.add_argument(
+        "--subtype",
+        default="gnss_receiver",
+        help="TOS subtype to search for. Default: gnss_receiver.",
+    )
+    upd.add_argument(
+        "--date",
+        metavar="YYYY-MM-DD",
+        help=(
+            "Effective date of the change. Default: today. This is the "
+            "transition date — the old attribute period is closed at this "
+            "date and the new one opens from it. Back-date it to when the "
+            "upgrade actually happened."
+        ),
+    )
+    # Intent is mandatory and exclusive — a mutable attribute write is either a
+    # real-world change (transition, records history) or a correction of a wrong
+    # record (in-place, no history). No safe default; the operator must declare.
+    intent = upd.add_mutually_exclusive_group(required=True)
+    intent.add_argument(
+        "--change",
+        action="store_true",
+        help=(
+            "The value genuinely CHANGED in the real world (firmware upgrade, "
+            "marker rename). Pattern 2 transition: close the open attribute "
+            "period at --date and open a new one — records history."
+        ),
+    )
+    intent.add_argument(
+        "--correct",
+        action="store_true",
+        help=(
+            "The recorded value was WRONG (typo / bad earlier entry) and the "
+            "real value did not change. Pattern 1 in-place upsert: overwrite "
+            "the open value keeping its dates — no history entry."
+        ),
+    )
+    upd.add_argument(
+        "--username",
+        help=(
+            "TCP login username, override receivers.cfg [polarx5] tcp_username. "
+            "Use when the bench receiver has different credentials than the "
+            "deployed fleet (e.g. brand-new unit still on TEST creds, or "
+            "newly upgraded firmware where the fleet default doesn't yet "
+            "match)."
+        ),
+    )
+    upd.add_argument(
+        "--password",
+        help=(
+            "TCP login password, override receivers.cfg [polarx5] tcp_password. "
+            "Pair with --username."
+        ),
+    )
+    upd.add_argument(
+        "--no-dry-run",
+        action="store_true",
+        help="Commit the writes; without this flag, payloads are logged only.",
+    )
+    upd.set_defaults(func=cmd_cfg_update_device)
 
     # ---- move-device (unified: station OR warehouse target) -------------
     move = cfg_subparsers.add_parser(
@@ -2957,7 +3348,71 @@ Examples:
     move.add_argument(
         "--json",
         action="store_true",
-        help="Emit a structured JSON summary instead of plain text.",
+        help=(
+            "Emit a structured JSON summary instead of plain text. "
+            "Disables the interactive install-attribute fill (its prompts "
+            "would corrupt the JSON document)."
+        ),
+    )
+    # ---- Install-attribute fill (station destinations only) -------------
+    move.add_argument(
+        "--no-install-attrs",
+        dest="no_install_attrs",
+        action="store_true",
+        help=(
+            "Skip the post-install fill of station position attributes "
+            "(latitude/longitude/height) into TOS from stations.cfg. The "
+            "fill runs by default on station destinations and is a no-op "
+            "for warehouse moves."
+        ),
+    )
+    move.add_argument(
+        "--position-tolerance-m",
+        dest="position_tolerance_m",
+        type=float,
+        default=2.0,
+        metavar="METERS",
+        help=(
+            "Tolerance (m) for treating a cfg vs TOS position value as equal "
+            "during the install-attribute fill. Default: 2.0."
+        ),
+    )
+    move.add_argument(
+        "-y",
+        "--yes",
+        dest="yes",
+        action="store_true",
+        help=(
+            "Install-attr fill: add missing TOS position values without "
+            "prompting. Differing values are still skipped unless "
+            "--change/--correct says how to write them."
+        ),
+    )
+    # Intent for install-attr values that DIFFER between cfg and TOS. Optional
+    # here (unlike `cfg update-device`): missing values just get added; only a
+    # genuine cfg-vs-TOS disagreement needs an intent, and absent one the fill
+    # prompts (or skips under --yes / dry-run). Mirrors the update-device
+    # --change/--correct semantics so operators learn one model.
+    move_intent = move.add_mutually_exclusive_group(required=False)
+    move_intent.add_argument(
+        "--change",
+        dest="change",
+        action="store_true",
+        help=(
+            "Install-attr fill: when a position value differs, treat it as a "
+            "real-world change → Pattern 2 transition (close the open TOS "
+            "period at --date, open a new one). Records history."
+        ),
+    )
+    move_intent.add_argument(
+        "--correct",
+        dest="correct",
+        action="store_true",
+        help=(
+            "Install-attr fill: when a position value differs, treat the TOS "
+            "record as simply wrong → Pattern 1 in-place upsert (overwrite the "
+            "open value, keep its dates). No history."
+        ),
     )
     move.set_defaults(func=cmd_cfg_move_device)
 
@@ -3095,6 +3550,17 @@ Examples:
             "Mark the visit as not completed (completed=false in TOS). "
             "In create mode applies to the new record; in edit mode "
             "explicitly flips the existing record's completed flag."
+        ),
+    )
+    visit.add_argument(
+        "--delete",
+        action="store_true",
+        help=(
+            "DELETE mode. Requires --id ID_MAINTENANCE. Permanently removes "
+            "the vitjun from TOS (no undo) — use only to clean up an "
+            "accidentally-created record. To keep a real visit's record, edit "
+            "it with --id N instead of deleting. Dry-run by default; add "
+            "--no-dry-run to commit."
         ),
     )
     visit.add_argument(
@@ -3273,6 +3739,345 @@ step in isolation, or just --no-dry-run after eyeballing the args.
     )
     rr.set_defaults(func=cmd_cfg_replace_receiver)
 
+    # ---- replace-modem (telemetry: GSM modem / router swap) -------------
+    rm = cfg_subparsers.add_parser(
+        "replace-modem",
+        help="Swap a station's GSM modem/router — TOS modem_gsm Pattern 2 + cfg",
+        description=(
+            "Record a telemetry router/modem replacement. In TOS the router "
+            "is a `modem_gsm` device child of the station (canonical "
+            "serial/model/owner/status shape). Creates the new modem, opens a "
+            "station join at --date, retires the old modem to the warehouse "
+            "(with --old-status, default 'bilað'), writes a Breyting vitjun, "
+            "and updates stations.cfg `router_type` when --router-type is "
+            "given. A modem can't be probed — identity is manual entry. The "
+            "IP lives on the SIM card; use `cfg replace-sim` for that."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Dry-run a router swap at GSIG:
+  receivers cfg replace-modem --station GSIG \\
+      --new-serial 6001312345 --new-model "Teltonika RUT241" \\
+      --router-type Teltonika --date 2026-06-06
+
+  # Commit it:
+  receivers cfg replace-modem --station GSIG \\
+      --new-serial 6001312345 --new-model "Teltonika RUT241" \\
+      --router-type Teltonika --participants bgo@vedur.is --no-dry-run
+""",
+    )
+    rm.add_argument(
+        "--station",
+        required=True,
+        metavar="MARKER",
+        help="4-char RINEX marker of the station.",
+    )
+    rm.add_argument(
+        "--new-serial",
+        dest="new_serial",
+        help=(
+            "Serial number of the new modem/router. Required unless --probe "
+            "supplies it (probe value is overridden when this is given)."
+        ),
+    )
+    rm.add_argument(
+        "--new-model",
+        dest="new_model",
+        help=(
+            "Model of the new modem (free-text, e.g. 'Teltonika RUT241'). "
+            "Required unless --probe supplies it."
+        ),
+    )
+    rm.add_argument(
+        "--probe",
+        metavar="HOST[:PORT]",
+        help=(
+            "Auto-extract the new modem's identity (serial/model/mac/"
+            "manufacturer/subtype) live from the Teltonika router at HOST via "
+            "the RutOS REST API. Explicit --new-* / --mac / etc. override "
+            "probed values. Credentials from receivers.cfg [teltonika]."
+        ),
+    )
+    rm.add_argument(
+        "--username",
+        help="Override receivers.cfg [teltonika] username for the probe.",
+    )
+    rm.add_argument(
+        "--password",
+        help="Override receivers.cfg [teltonika] password for the probe.",
+    )
+    rm.add_argument(
+        "--owner",
+        default="Jarðeðlismælihópur",
+        help="TOS owner attribute. Default: Jarðeðlismælihópur.",
+    )
+    rm.add_argument(
+        "--router-type",
+        dest="router_type",
+        metavar="TYPE",
+        help=(
+            "stations.cfg `router_type` value (e.g. 'Teltonika'). When "
+            "omitted, stations.cfg is left untouched."
+        ),
+    )
+    # Optional TOS attributes on the new modem_gsm (MODEM_GSM_ATTR_CODES).
+    rm.add_argument(
+        "--ip",
+        metavar="IP",
+        help=(
+            "Router LAN/management IP (e.g. 192.168.100.1). With --probe this "
+            "is auto-filled from the router's 'lan' interface. NOTE: this is "
+            "the router's own IP, not the mobile WAN IP (that's a SIM "
+            "attribute — see replace-sim)."
+        ),
+    )
+    rm.add_argument("--phone", metavar="NUMBER", help="modem phone_number attribute.")
+    rm.add_argument(
+        "--provider",
+        metavar="NAME",
+        help=(
+            "provider attribute — rarely set on a modem (provider is a SIM "
+            "attribute; --probe does NOT auto-fill it here)."
+        ),
+    )
+    rm.add_argument("--mac", metavar="MAC", help="mac_address attribute.")
+    rm.add_argument(
+        "--manufacturer",
+        metavar="NAME",
+        help="manufacturer (e.g. Teltonika, Conel).",
+    )
+    rm.add_argument(
+        "--io-type",
+        dest="io_type",
+        metavar="SPEC",
+        help="io_type attribute (e.g. 'Ethernet+RS232').",
+    )
+    rm.add_argument(
+        "--modem-subtype",
+        dest="modem_subtype",
+        metavar="VALUE",
+        help="TOS `subtype` attribute on the modem (e.g. '3G'/'4G').",
+    )
+    rm.add_argument(
+        "--comment",
+        metavar="TEXT",
+        help="comment attribute on the new modem.",
+    )
+    rm.add_argument(
+        "--attr",
+        action="append",
+        metavar="CODE=VALUE",
+        help=(
+            "Generic escape hatch — set any TOS attribute code not covered by "
+            "a named flag. Repeatable. Example: --attr io_type=Ethernet+RS232. "
+            "Overrides a named flag if the same code is given both ways."
+        ),
+    )
+    rm.add_argument(
+        "--date",
+        metavar="YYYY-MM-DD[THH:MM:SS]",
+        help="When the swap happened. Default: now. Bare date → noon.",
+    )
+    rm.add_argument(
+        "--old-status",
+        dest="old_status",
+        default="bilað",
+        help=(
+            "status attribute applied to the OLD modem when it moves to the "
+            "warehouse. Default: 'bilað'. Pass empty string to skip."
+        ),
+    )
+    rm.add_argument(
+        "--old-comment",
+        dest="old_comment",
+        help="comment attribute applied to the OLD modem (optional).",
+    )
+    rm.add_argument(
+        "--vitjun",
+        metavar="TEXT",
+        help="Override the auto-derived 'Skipt um router/modem' vitjun text.",
+    )
+    rm.add_argument(
+        "--participants",
+        metavar="EMAIL[,EMAIL...]",
+        help="Participant emails for the vitjun.",
+    )
+    rm.add_argument(
+        "--warehouse",
+        dest="warehouse",
+        metavar="LOCATION_NAME",
+        help="Override the transit warehouse for the old modem (default B9).",
+    )
+    rm.add_argument(
+        "--cfg-path",
+        dest="cfg_path",
+        help="Override the stations.cfg location.",
+    )
+    rm.add_argument(
+        "--no-dry-run",
+        action="store_true",
+        help="Commit the writes.",
+    )
+    rm.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a structured JSON summary.",
+    )
+    rm.set_defaults(func=cmd_cfg_replace_modem)
+
+    # ---- replace-sim (telemetry: SIM card / IP swap) -------------------
+    rs = cfg_subparsers.add_parser(
+        "replace-sim",
+        help="Swap a station's SIM card (new IP) — TOS sim_card Pattern 2 + cfg",
+        description=(
+            "Record a SIM-card replacement. In TOS the SIM is a `sim_card` "
+            "device child carrying `ip_address` (+ optional `phone_number`) — "
+            "not the canonical device shape. Creates a NEW sim_card entity, "
+            "opens a station join at --date, closes the old SIM's join (SIMs "
+            "aren't warehoused), and writes a vitjun. stations.cfg `router_ip` "
+            "is left alone unless --update-cfg-ip is given (cfg router_ip is "
+            "often a DNS hostname, not a literal IP)."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Dry-run a SIM swap at GSIG (new IP):
+  receivers cfg replace-sim --station GSIG --ip 10.4.1.240 --date 2026-06-06
+
+  # Commit, also writing the literal IP into stations.cfg router_ip:
+  receivers cfg replace-sim --station GSIG --ip 10.4.1.240 \\
+      --phone 8400754 --update-cfg-ip --no-dry-run
+""",
+    )
+    rs.add_argument(
+        "--station",
+        required=True,
+        metavar="MARKER",
+        help="4-char RINEX marker of the station.",
+    )
+    rs.add_argument(
+        "--ip",
+        metavar="IP_ADDRESS",
+        help=(
+            "The new SIM's IP address (e.g. 10.4.1.240). Required unless "
+            "--probe supplies it (probe value overridden when this is given)."
+        ),
+    )
+    rs.add_argument(
+        "--probe",
+        metavar="HOST[:PORT]",
+        help=(
+            "Auto-extract the SIM identity (ip/iccid/provider) live from the "
+            "Teltonika router at HOST via the RutOS REST API. Explicit --ip / "
+            "--serial / --provider override probed values. Credentials from "
+            "receivers.cfg [teltonika]."
+        ),
+    )
+    rs.add_argument(
+        "--username",
+        help="Override receivers.cfg [teltonika] username for the probe.",
+    )
+    rs.add_argument(
+        "--password",
+        help="Override receivers.cfg [teltonika] password for the probe.",
+    )
+    rs.add_argument(
+        "--phone",
+        metavar="NUMBER",
+        help="Optional phone number / MSISDN for the new SIM.",
+    )
+    # MSISDN discovery (opt-in, outward-facing): a SIM can't read its own
+    # number, so text a catcher from the field router and read the sender off it.
+    rs.add_argument(
+        "--discover-phone",
+        dest="discover_phone",
+        action="store_true",
+        help=(
+            "When --phone is not given: send ONE SMS from the field router "
+            "(--probe / --discover-phone-from) to a catcher number "
+            "(--discover-phone-to or [teltonika] discover_phone_to), then "
+            "prompt for the number it arrives from = this SIM's MSISDN. "
+            "Outward-facing + costs a message; only sends with --no-dry-run."
+        ),
+    )
+    rs.add_argument(
+        "--discover-phone-to",
+        dest="discover_phone_to",
+        metavar="NUMBER",
+        help=(
+            "Catcher number that receives the discovery SMS (your mobile). "
+            "Default: [teltonika] discover_phone_to in receivers.cfg."
+        ),
+    )
+    rs.add_argument(
+        "--discover-phone-from",
+        dest="discover_phone_from",
+        metavar="HOST",
+        help=("Router to send the discovery SMS from. Default: the --probe host."),
+    )
+    # Optional TOS attributes on the new sim_card (SIM_CARD_ATTR_CODES).
+    rs.add_argument("--serial", metavar="SERIAL", help="serial_number attribute.")
+    rs.add_argument("--provider", metavar="NAME", help="provider (e.g. Síminn, Nova).")
+    rs.add_argument(
+        "--model", metavar="MODEL", help="model attribute (e.g. 'sim kort')."
+    )
+    rs.add_argument("--owner", metavar="OWNER", help="owner attribute.")
+    rs.add_argument(
+        "--comment", metavar="TEXT", help="comment attribute on the new SIM."
+    )
+    rs.add_argument(
+        "--attr",
+        action="append",
+        metavar="CODE=VALUE",
+        help=(
+            "Generic escape hatch — set any TOS attribute code not covered by "
+            "a named flag (e.g. --attr date_end=2027-01-01). Repeatable. "
+            "Overrides a named flag if the same code is given both ways."
+        ),
+    )
+    rs.add_argument(
+        "--date",
+        metavar="YYYY-MM-DD[THH:MM:SS]",
+        help="When the swap happened. Default: now. Bare date → noon.",
+    )
+    rs.add_argument(
+        "--vitjun",
+        metavar="TEXT",
+        help="Override the auto-derived 'Skipt um SIM-kort' vitjun text.",
+    )
+    rs.add_argument(
+        "--participants",
+        metavar="EMAIL[,EMAIL...]",
+        help="Participant emails for the vitjun.",
+    )
+    rs.add_argument(
+        "--update-cfg-ip",
+        dest="update_cfg_ip",
+        action="store_true",
+        help=(
+            "Also write the new IP to stations.cfg `router_ip`. Off by "
+            "default — cfg router_ip is often a DNS hostname that shouldn't "
+            "be overwritten with a literal IP."
+        ),
+    )
+    rs.add_argument(
+        "--cfg-path",
+        dest="cfg_path",
+        help="Override the stations.cfg location.",
+    )
+    rs.add_argument(
+        "--no-dry-run",
+        action="store_true",
+        help="Commit the writes.",
+    )
+    rs.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a structured JSON summary.",
+    )
+    rs.set_defaults(func=cmd_cfg_replace_sim)
+
     # ---- delete-join ----------------------------------------------------
     dj = cfg_subparsers.add_parser(
         "delete-join",
@@ -3317,6 +4122,31 @@ Examples:
         help="Emit a structured JSON summary.",
     )
     dj.set_defaults(func=cmd_cfg_delete_join)
+
+
+def _parse_attr_pairs(pairs: Optional[List[str]]) -> Dict[str, Optional[str]]:
+    """Parse repeatable ``--attr code=value`` tokens into a ``{code: value}`` dict.
+
+    Backs the generic telemetry escape hatch on ``replace-modem`` /
+    ``replace-sim`` — lets an operator set any TOS attribute code not covered
+    by a named flag (e.g. ``--attr io_type=Ethernet+RS232``). The value may
+    itself contain ``=`` (only the first is the separator). Raises ``ValueError``
+    on a token with no ``=`` so a typo surfaces instead of being silently
+    dropped.
+    """
+    out: Dict[str, Optional[str]] = {}
+    for tok in pairs or []:
+        if "=" not in tok:
+            raise ValueError(
+                f"--attr expects code=value, got {tok!r} (no '='). "
+                f"Example: --attr io_type=Ethernet+RS232"
+            )
+        code, value = tok.split("=", 1)
+        code = code.strip()
+        if not code:
+            raise ValueError(f"--attr {tok!r}: empty attribute code")
+        out[code] = value
+    return out
 
 
 def _normalise_date_arg(value: Optional[str]) -> Optional[str]:
@@ -3449,11 +4279,132 @@ def _compute_visit_edit_diff(before: dict, after: dict) -> dict:
     return diff
 
 
+def _run_install_attr_fill(args, result, *, dry_run: bool) -> None:
+    """Fill station install attributes (position group) in TOS after a move.
+
+    Runs only for station-destination moves (``result.station_id`` set).
+    Reuses the reconcile engine via
+    :func:`receivers.cfg.operations.fill_install_attributes`, sourcing values
+    from stations.cfg (ground truth for surveyed coordinates) and writing them
+    to the TOS station entity. Interaction lives entirely in the ``confirm``
+    callback below; the data layer just executes the returned decisions.
+
+    Best-effort: any failure is reported and swallowed so it never masks the
+    successful move that already landed.
+    """
+    from tostools.api.tos_writer import TOSWriter
+
+    from ..cfg.operations import (
+        InstallAttrProposal,
+        fill_install_attributes,
+    )
+    from ..config_utils import get_station_config
+
+    station_id = result.station_id
+    intent_default = (
+        "change"
+        if getattr(args, "change", False)
+        else ("correct" if getattr(args, "correct", False) else None)
+    )
+    assume_yes = bool(getattr(args, "yes", False))
+    tolerance_m = getattr(args, "position_tolerance_m", 2.0)
+    eff_date = result.date or _effective_date_for(args)
+
+    station_config = get_station_config(station_id)
+    if not station_config:
+        print(
+            f"   ⚠️  install attrs: no stations.cfg section for {station_id} — skipped"
+        )
+        return
+    tos_data = _query_tos(station_id)
+    if not tos_data or tos_data.get("id_entity") is None:
+        print(f"   ⚠️  install attrs: no TOS station record for {station_id} — skipped")
+        return
+
+    def confirm(p: InstallAttrProposal) -> str:
+        if not p.differs:
+            # TOS has no value yet — propose to add it.
+            if dry_run:
+                print(
+                    f"   🌵 [dry-run] would ADD {p.label} = {p.cfg_value!r} "
+                    f"to TOS station entity (date_from={eff_date.split('T', 1)[0]})"
+                )
+                return "add"
+            if assume_yes:
+                print(f"   → add {p.label} = {p.cfg_value!r} (--yes)")
+                return "add"
+            ans = (
+                input(f"   Add {p.label} = {p.cfg_value!r} to TOS? [y/N] ")
+                .strip()
+                .lower()
+            )
+            return "add" if ans in ("y", "yes") else "skip"
+
+        # TOS already has a different value — this is the "else confirm" path.
+        print(f"   {p.label}: cfg={p.cfg_value!r}  TOS={p.tos_value!r}  (differ)")
+        if dry_run:
+            if intent_default:
+                print(
+                    f"   🌵 [dry-run] would {intent_default.upper()} {p.label} "
+                    f"→ {p.cfg_value!r}"
+                )
+                return intent_default
+            print(
+                "   🌵 [dry-run] differing value — pass --change (history) or "
+                "--correct (in-place) to write; skipping"
+            )
+            return "skip"
+        if intent_default:
+            if assume_yes:
+                return intent_default
+            ans = (
+                input(f"     apply --{intent_default} ({p.cfg_value!r})? [y/N] ")
+                .strip()
+                .lower()
+            )
+            return intent_default if ans in ("y", "yes") else "skip"
+        if assume_yes:
+            # Never guess change-vs-correct under --yes; require an explicit flag.
+            print("     ⏭  differing value and no --change/--correct given — skipping")
+            return "skip"
+        ans = (
+            input("     [c]hange (records history) / [f]ix in place / [s]kip? ")
+            .strip()
+            .lower()
+        )
+        return {"c": "change", "f": "correct"}.get(ans, "skip")
+
+    try:
+        changes = fill_install_attributes(
+            TOSWriter(dry_run=dry_run),
+            station_id,
+            station_config,
+            tos_data,
+            eff_date,
+            confirm=confirm,
+            position_tolerance_m=tolerance_m,
+        )
+    except Exception as exc:  # noqa: BLE001 — never mask the completed move
+        print(f"   ⚠️  install-attr fill failed (move already applied): {exc}")
+        logger.warning("[%s] install-attr fill failed: %s", station_id, exc)
+        return
+
+    written = {k: v for k, v in changes.items() if v not in ("unchanged", "skipped")}
+    if written:
+        verb = "would write" if dry_run else "wrote"
+        print(f"   install attrs {verb}: {written}")
+    elif changes:
+        print("   install attrs: no changes (TOS already matches stations.cfg)")
+
+
 def cmd_cfg_move_device(args) -> int:
     """``cfg move-device`` — move a receiver to a station OR a warehouse.
 
     Auto-detects target by looking up ``--to`` first as a station marker
     then as a location name. See :func:`receivers.cfg.operations.move_device`.
+
+    On a station-destination move, also fills the station's position
+    install-attributes in TOS from stations.cfg (unless ``--no-install-attrs``).
     """
     import sys
 
@@ -3485,6 +4436,16 @@ def cmd_cfg_move_device(args) -> int:
         print(f"❌ {exc}", file=sys.stderr)
         return 1
     _print_result_summary(result, json_output=args.json, dry_run=dry_run)
+
+    # Station installs get a position install-attribute fill in TOS. Skipped
+    # for warehouse moves (result.station_id is None there), when disabled, and
+    # in JSON mode (the interactive prompts would corrupt the JSON document).
+    if (
+        result.station_id is not None
+        and not getattr(args, "no_install_attrs", False)
+        and not args.json
+    ):
+        _run_install_attr_fill(args, result, dry_run=dry_run)
     return 0
 
 
@@ -3516,6 +4477,262 @@ def cmd_cfg_replace_receiver(args) -> int:
             continue_from=args.continue_from,
             skip_marker_check=args.skip_marker_check,
             warehouse=args.warehouse,
+            dry_run=dry_run,
+            cfg_path=Path(args.cfg_path) if args.cfg_path else None,
+        )
+    except CfgOperationError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        return 1
+    _print_result_summary(result, json_output=args.json, dry_run=dry_run)
+    return 0
+
+
+def _probe_telemetry_or_exit(args):
+    """Probe the router at ``args.probe`` and return the TelemetryIdentity.
+
+    Returns ``None`` when ``--probe`` was not given. On a probe failure prints
+    an actionable error and raises ``SystemExit`` (the caller is a CLI handler).
+    """
+    host = getattr(args, "probe", None)
+    if not host:
+        return None
+    import sys
+
+    from ..cfg.telemetry_probe import (
+        ProbeAuthError,
+        ProbeCredentialsError,
+        ProbeError,
+        ProbeUnreachableError,
+        probe_teltonika,
+    )
+
+    print(f"Probing Teltonika router at {host} …")
+    try:
+        identity = probe_teltonika(
+            host,
+            username=getattr(args, "username", None),
+            password=getattr(args, "password", None),
+        )
+    except (ProbeCredentialsError, ProbeAuthError) as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    except (ProbeUnreachableError, ProbeError) as exc:
+        print(f"❌ probe failed: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    # Echo what the probe found so the operator sees the source values before
+    # any write (they still go through the dry-run preview below).
+    print(
+        f"  router: serial={identity.router_serial!r} model={identity.router_model!r} "
+        f"mac={identity.router_mac!r} subtype={identity.modem_subtype!r}"
+    )
+    print(
+        f"  SIM:    iccid={identity.sim_iccid!r} ip={identity.sim_ip_address!r} "
+        f"provider={identity.provider!r}"
+    )
+    return identity
+
+
+def cmd_cfg_replace_modem(args) -> int:
+    """``cfg replace-modem`` — swap a station's GSM modem/router in TOS + cfg.
+
+    With ``--probe HOST`` the new modem's identity (serial/model/mac/manufacturer/
+    subtype) is read live from the Teltonika router; explicit flags override the
+    probed values.
+    """
+    import sys
+
+    from ..cfg.operations import (
+        CfgOperationError,
+        replace_modem,
+    )
+
+    dry_run = not args.no_dry_run
+    try:
+        extra_attrs = _parse_attr_pairs(args.attr)
+    except ValueError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        return 2
+
+    probe = _probe_telemetry_or_exit(args)
+    # Explicit flag wins over the probed value (operator override).
+    new_serial = args.new_serial or (probe.router_serial if probe else None)
+    new_model = args.new_model or (probe.router_model if probe else None)
+    if not new_serial or not new_model:
+        missing = "serial" if not new_serial else "model"
+        print(
+            f"❌ modem {missing} unknown — pass --new-{missing} or use --probe "
+            f"against a reachable router.",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        result = replace_modem(
+            args.station,
+            new_serial=new_serial,
+            new_model=new_model,
+            owner=args.owner or "Jarðeðlismælihópur",
+            new_router_type=args.router_type,
+            # Modem IP = the router's own LAN/management IP (e.g. 192.168.100.1),
+            # NOT the mobile WAN IP — that's a SIM attribute (see replace-sim).
+            ip_address=args.ip or (probe.router_lan_ip if probe else None),
+            phone_number=args.phone,
+            # provider is a SIM attribute (the carrier of the subscription) —
+            # never auto-filled onto the modem. Honour an explicit --provider
+            # only (rare), but the probe value feeds replace-sim, not here.
+            provider=args.provider,
+            mac_address=args.mac or (probe.router_mac if probe else None),
+            manufacturer=args.manufacturer
+            or (probe.router_manufacturer if probe else None),
+            io_type=args.io_type,
+            modem_subtype=args.modem_subtype
+            or (probe.modem_subtype if probe else None),
+            comment=args.comment,
+            extra_attrs=extra_attrs or None,
+            date=_normalise_date_arg(args.date),
+            old_status=args.old_status,
+            old_comment=args.old_comment,
+            vitjun=args.vitjun,
+            participants=args.participants or "",
+            warehouse=args.warehouse,
+            dry_run=dry_run,
+            cfg_path=Path(args.cfg_path) if args.cfg_path else None,
+        )
+    except CfgOperationError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        return 1
+    _print_result_summary(result, json_output=args.json, dry_run=dry_run)
+    return 0
+
+
+def _discover_phone(args, *, dry_run: bool) -> Optional[str]:
+    """Discover the field SIM's MSISDN by texting a catcher, then prompt.
+
+    A SIM can't read its own number, so we send one SMS *from* the field router
+    (``--probe`` host, or ``--discover-phone-from``) to a catcher number (the
+    operator's mobile, from ``--discover-phone-to`` or ``receivers.cfg
+    [teltonika] discover_phone_to``). The catcher's received-message sender =
+    this SIM's number; since we can't read the operator's phone, we send + then
+    prompt them to type what they received.
+
+    Outward-facing + costs a message → in dry-run we only preview the send.
+    Returns the entered number, or ``None`` (operator skipped / dry-run).
+    """
+    import sys
+
+    from ..cfg.telemetry_probe import (
+        ProbeError,
+        resolve_discover_phone_to,
+        send_sms,
+    )
+
+    from_host = getattr(args, "discover_phone_from", None) or getattr(
+        args, "probe", None
+    )
+    if not from_host:
+        print(
+            "❌ --discover-phone needs a sending router: use --probe HOST or "
+            "--discover-phone-from HOST.",
+            file=sys.stderr,
+        )
+        return None
+    to_number = getattr(args, "discover_phone_to", None) or resolve_discover_phone_to()
+    if not to_number:
+        print(
+            "❌ --discover-phone needs a catcher number: pass --discover-phone-to "
+            "or set [teltonika] discover_phone_to in receivers.cfg.",
+            file=sys.stderr,
+        )
+        return None
+
+    station = args.station
+    body = f"{station} SIM number check ({_normalise_date_arg(args.date) or 'now'})"
+    mode = "[DRY-RUN] would send" if dry_run else "sending"
+    print(
+        f"   📲 {mode} SMS from {from_host} → {to_number}: {body!r} "
+        f"(reveals the {station} SIM's own number on your phone)"
+    )
+    try:
+        send_sms(
+            from_host,
+            to_number,
+            body,
+            username=getattr(args, "username", None),
+            password=getattr(args, "password", None),
+            dry_run=dry_run,
+        )
+    except ProbeError as exc:
+        print(f"   ❌ SMS send failed: {exc}", file=sys.stderr)
+        return None
+
+    if dry_run:
+        print(
+            "   (dry-run: no SMS sent. Re-run with --no-dry-run to send, then "
+            "enter the number you receive.)"
+        )
+        return None
+    print(
+        f"   ✅ SMS sent. Check {to_number} for the message; its sender is the "
+        f"{station} SIM's number."
+    )
+    try:
+        entered = input("   Enter the number you received (blank to skip): ").strip()
+    except EOFError:
+        entered = ""
+    return entered or None
+
+
+def cmd_cfg_replace_sim(args) -> int:
+    """``cfg replace-sim`` — swap a station's SIM card (new IP) in TOS + cfg.
+
+    With ``--probe HOST`` the SIM's identity (ip/iccid/provider) is read live
+    from the Teltonika router; explicit flags override the probed values.
+    ``--discover-phone`` additionally texts a catcher to reveal the SIM's MSISDN.
+    """
+    import sys
+
+    from ..cfg.operations import (
+        CfgOperationError,
+        replace_sim,
+    )
+
+    dry_run = not args.no_dry_run
+    try:
+        extra_attrs = _parse_attr_pairs(args.attr)
+    except ValueError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        return 2
+
+    probe = _probe_telemetry_or_exit(args)
+    ip_address = args.ip or (probe.sim_ip_address if probe else None)
+    if not ip_address:
+        print(
+            "❌ SIM ip unknown — pass --ip or use --probe against a reachable router.",
+            file=sys.stderr,
+        )
+        return 2
+
+    # MSISDN discovery: --phone wins; else --discover-phone texts a catcher from
+    # the field router so its sender header reveals this SIM's own number.
+    phone = args.phone
+    if not phone and getattr(args, "discover_phone", False):
+        phone = _discover_phone(args, dry_run=dry_run)
+
+    try:
+        result = replace_sim(
+            args.station,
+            ip_address=ip_address,
+            phone_number=phone,
+            serial_number=args.serial or (probe.sim_iccid if probe else None),
+            provider=args.provider or (probe.provider if probe else None),
+            model=args.model,
+            owner=args.owner,
+            comment=args.comment,
+            extra_attrs=extra_attrs or None,
+            date=_normalise_date_arg(args.date),
+            vitjun=args.vitjun,
+            participants=args.participants or "",
+            update_cfg_ip=args.update_cfg_ip,
             dry_run=dry_run,
             cfg_path=Path(args.cfg_path) if args.cfg_path else None,
         )
@@ -3562,10 +4779,11 @@ def _has_any_edit_flag(args) -> bool:
 
 
 def cmd_cfg_visit(args) -> int:
-    """``cfg visit`` — list / show / create / edit vitjun.
+    """``cfg visit`` — list / show / create / edit / delete vitjun.
 
     Mode is picked from args:
       * ``--station S --history {id|full}`` → list
+      * ``--id N --delete`` → DELETE (permanent removal)
       * ``--id N`` alone → show one
       * ``--id N`` + edit flags → edit existing
       * ``--station S --work TEXT`` → create new
@@ -3575,10 +4793,26 @@ def cmd_cfg_visit(args) -> int:
     from ..cfg.operations import (
         CfgOperationError,
         add_visit,
+        delete_visit,
         list_visits,
         show_visit,
         update_visit,
     )
+
+    # --- Delete mode -------------------------------------------------------
+    # Checked first: --delete is a distinct destructive mode, not an edit flag.
+    if getattr(args, "delete", False):
+        if args.vitjun_id is None:
+            print("❌ --delete requires --id ID_MAINTENANCE", file=sys.stderr)
+            return 2
+        dry_run = not args.no_dry_run
+        try:
+            result = delete_visit(args.vitjun_id, dry_run=dry_run)
+        except (CfgOperationError, RuntimeError) as exc:
+            print(f"❌ {exc}", file=sys.stderr)
+            return 1
+        _print_result_summary(result, json_output=args.json, dry_run=dry_run)
+        return 0
 
     # --- List mode ---------------------------------------------------------
     if args.history is not None:
@@ -3762,7 +4996,8 @@ def handle_cfg_command(args) -> int:
         print("❌ No cfg subcommand specified")
         print(
             "Available: reconcile, extract, list, history, add-receiver, "
-            "move-device, replace-receiver, visit, delete-join"
+            "update-device, move-device, replace-receiver, replace-modem, "
+            "replace-sim, visit, delete-join"
         )
         print("\nTry: receivers cfg move-device --help")
         return 2

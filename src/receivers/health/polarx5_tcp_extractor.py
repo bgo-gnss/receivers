@@ -27,7 +27,7 @@ import socket
 import ssl
 import struct
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from .metrics import MetricChecker, load_thresholds
@@ -192,7 +192,7 @@ class PolaRX5TCPExtractor:
             Dictionary with extracted health data in standardized format
         """
         health_data = {
-            "extraction_time": datetime.now(timezone.utc).isoformat(),
+            "extraction_time": datetime.now(UTC).isoformat(),
             "extraction_method": "tcp_command",
             "metrics": {},
             "data_quality": {},

@@ -143,7 +143,9 @@ def cmd_health_query(args: argparse.Namespace) -> int:
                     cur.execute(f"EXPLAIN {sql_trimmed}")
                     explain_text = "\n".join(row[0] for row in cur.fetchall())
                 except Exception as e:
-                    print(f"receivers health-query: EXPLAIN failed: {e}", file=sys.stderr)
+                    print(
+                        f"receivers health-query: EXPLAIN failed: {e}", file=sys.stderr
+                    )
                     print("Refusing to execute.", file=sys.stderr)
                     logger.warning("health-query EXPLAIN failed: %s", e)
                     return 1

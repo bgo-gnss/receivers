@@ -1,6 +1,6 @@
 """Tests for ConnectivityWriter."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -88,7 +88,7 @@ class TestExtractTimestamp:
     def test_extract_datetime_timestamp(self):
         """Test extracting datetime object."""
         writer = ConnectivityWriter()
-        expected = datetime(2025, 10, 1, 12, 0, 0, tzinfo=timezone.utc)
+        expected = datetime(2025, 10, 1, 12, 0, 0, tzinfo=UTC)
         health_data = {"timestamp": expected}
         ts = writer._extract_timestamp(health_data)
         assert ts == expected
@@ -99,7 +99,7 @@ class TestExtractTimestamp:
         naive = datetime(2025, 10, 1, 12, 0, 0)
         health_data = {"timestamp": naive}
         ts = writer._extract_timestamp(health_data)
-        assert ts.tzinfo == timezone.utc
+        assert ts.tzinfo == UTC
 
     def test_no_timestamp_uses_now(self):
         """Test fallback to current time when no timestamp."""
@@ -108,7 +108,7 @@ class TestExtractTimestamp:
         ts = writer._extract_timestamp(health_data)
         assert ts.tzinfo is not None
         # Should be very recent
-        diff = abs((datetime.now(timezone.utc) - ts).total_seconds())
+        diff = abs((datetime.now(UTC) - ts).total_seconds())
         assert diff < 5
 
     def test_invalid_timestamp_uses_now(self):
@@ -131,7 +131,7 @@ class TestWritePingStatus:
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
         health_data = _make_health_data(ping_accessible=True, ftp_open=True)
-        ts = datetime(2025, 10, 1, 12, 0, 0, tzinfo=timezone.utc)
+        ts = datetime(2025, 10, 1, 12, 0, 0, tzinfo=UTC)
 
         writer._write_ping_status(mock_conn, "ELDC", health_data, ts)
 
@@ -153,7 +153,7 @@ class TestWritePingStatus:
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
         health_data = _make_health_data(ping_accessible=False)
-        ts = datetime(2025, 10, 1, 12, 0, 0, tzinfo=timezone.utc)
+        ts = datetime(2025, 10, 1, 12, 0, 0, tzinfo=UTC)
 
         writer._write_ping_status(mock_conn, "ELDC", health_data, ts)
 
@@ -179,7 +179,7 @@ class TestWritePingStatus:
             http_open=False,
             control_open=False,
         )
-        ts = datetime(2025, 10, 1, 12, 0, 0, tzinfo=timezone.utc)
+        ts = datetime(2025, 10, 1, 12, 0, 0, tzinfo=UTC)
 
         writer._write_ping_status(mock_conn, "ELDC", health_data, ts)
 
@@ -199,7 +199,7 @@ class TestWritePingStatus:
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
         health_data = _make_health_data()
-        ts = datetime(2025, 10, 1, 12, 0, 0, tzinfo=timezone.utc)
+        ts = datetime(2025, 10, 1, 12, 0, 0, tzinfo=UTC)
 
         writer._write_ping_status(mock_conn, "ELDC", health_data, ts)
 
@@ -221,7 +221,7 @@ class TestWritePortStatus:
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
         health_data = _make_health_data(protocol_type="ftp", ftp_port=2160)
-        ts = datetime(2025, 10, 1, 12, 0, 0, tzinfo=timezone.utc)
+        ts = datetime(2025, 10, 1, 12, 0, 0, tzinfo=UTC)
 
         writer._write_port_status(mock_conn, "ELDC", health_data, ts)
 
@@ -240,7 +240,7 @@ class TestWritePortStatus:
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
         health_data = _make_health_data(protocol_type="http", http_port=80)
-        ts = datetime(2025, 10, 1, 12, 0, 0, tzinfo=timezone.utc)
+        ts = datetime(2025, 10, 1, 12, 0, 0, tzinfo=UTC)
 
         writer._write_port_status(mock_conn, "MANA", health_data, ts)
 

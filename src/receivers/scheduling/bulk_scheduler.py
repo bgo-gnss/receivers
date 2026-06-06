@@ -18,7 +18,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
@@ -166,7 +166,7 @@ def _retry_failed_daily_job(session_type: str) -> None:
 
         from ..health.database_factory import DatabaseConnectionFactory
 
-        today_midnight = datetime.now(timezone.utc).replace(
+        today_midnight = datetime.now(UTC).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
         # Pass yesterday's date explicitly in UTC. Using SQL's
@@ -410,7 +410,7 @@ def _download_station_data_job(
         timeout_minutes: Maximum job duration in minutes (for monitoring and eventual enforcement)
         run_rinex: Whether to run RINEX conversion after download
     """
-    exec_start_time = datetime.now(timezone.utc)
+    exec_start_time = datetime.now(UTC)
 
     # Set up logging
     logger = logging.getLogger(f"receivers.download.{station_id}")
@@ -2416,7 +2416,7 @@ class BulkDownloadScheduler:
         Only applies to daily sessions (cron triggers with a specific hour).
         Hourly sessions naturally catch up on their next hourly tick.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         catchup_count = 0
 
         for session_type, stations in session_stations.items():
@@ -2714,7 +2714,7 @@ class BulkDownloadScheduler:
         Direct scheduling uses the module-level function to avoid serialization issues.
         """
         job_id = f"{session_type}_{station_id}"
-        start_time = datetime.now(timezone.utc)
+        start_time = datetime.now(UTC)
 
         try:
             self.running_jobs[job_id] = start_time
@@ -2775,9 +2775,8 @@ class BulkDownloadScheduler:
 
     def _log_misfire_status(self) -> None:
         """Log whether daily download jobs were misfired or recovered at startup."""
-        from datetime import timezone
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for job in self.scheduler.get_jobs():
             if not job.id.endswith("_batch_summary") and "_00_" not in job.id:
                 continue
@@ -2817,9 +2816,8 @@ class BulkDownloadScheduler:
             tkw = base_trigger.trigger_kwargs
             if base_trigger.trigger_type != "cron" or "hour" not in tkw:
                 continue
-            from datetime import timezone
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             sched_hour = int(str(tkw["hour"]).split(",")[0])
             sched_minute = int(tkw["minute"])
             window_end = now.replace(

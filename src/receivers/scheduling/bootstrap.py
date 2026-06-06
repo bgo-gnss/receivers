@@ -15,7 +15,7 @@ continues via the normal backfill scheduler for ``full_lookback_days``.
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -123,7 +123,7 @@ def schedule_bootstrap(
         logger.warning("Bootstrap: no eligible stations found")
         return 0
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     total_jobs = 0
     wave_offset = 0
 

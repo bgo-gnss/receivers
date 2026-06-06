@@ -12,6 +12,7 @@ Supports multiple schedule formats:
 
 import re
 from dataclasses import dataclass
+from datetime import UTC
 from typing import Any, Dict, List, Tuple, Union
 
 
@@ -271,7 +272,7 @@ def apply_distribution_window(
             seconds_offset = int((station_index / total_stations) * window_seconds)
 
         # Set start_date to now + offset so first run is staggered
-        start_time = datetime.now(timezone.utc) + timedelta(seconds=seconds_offset)
+        start_time = datetime.now(UTC) + timedelta(seconds=seconds_offset)
         kwargs["start_date"] = start_time
 
         return trigger.trigger_type, kwargs

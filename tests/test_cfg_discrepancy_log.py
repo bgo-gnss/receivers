@@ -8,7 +8,7 @@ migration 038.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -252,7 +252,7 @@ def _make_row(rid: int, station_id: str, cfg_key: str, **overrides):
         "receiver_value": None,
         "tos_value": None,
         "verdict": "conflict",
-        "detected_at": datetime(2026, 5, 3, tzinfo=timezone.utc),
+        "detected_at": datetime(2026, 5, 3, tzinfo=UTC),
         "detected_by": DETECTED_BY_HEALTH,
         "resolved_at": None,
         "resolved_by": None,
@@ -339,7 +339,7 @@ class TestGetHistory:
     def test_filters_by_field_and_since(self, mocked_db):
         cursor = mocked_db
         cursor.fetchall.return_value = []
-        since = datetime(2026, 4, 1, tzinfo=timezone.utc)
+        since = datetime(2026, 4, 1, tzinfo=UTC)
 
         get_history(cfg_key="receiver_serial", since=since, limit=10)
 
@@ -364,7 +364,7 @@ class TestDiscrepancyRecord:
             receiver_value=None,
             tos_value=None,
             verdict="conflict",
-            detected_at=datetime(2026, 5, 3, tzinfo=timezone.utc),
+            detected_at=datetime(2026, 5, 3, tzinfo=UTC),
             detected_by=DETECTED_BY_HEALTH,
             resolved_at=None,
             resolved_by=None,
@@ -375,7 +375,7 @@ class TestDiscrepancyRecord:
         assert rec.is_open is True
 
     def test_as_dict_includes_iso_timestamps(self):
-        ts = datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc)
+        ts = datetime(2026, 5, 3, 12, 0, tzinfo=UTC)
         rec = DiscrepancyRecord(
             id=1,
             station_id="ELDC",

@@ -111,6 +111,25 @@ longer silently writes to `stations.cfg`. Discrepancies are logged with
 a hint to run `receivers cfg reconcile <SID>`. Pass `--update-cfg` to
 restore the legacy in-place write for the rare cases that need it.
 
+**Install-attribute fill on `cfg move-device --to STATION`**: a station-
+destination move now also fills the station's **position** attributes
+(`latitude`/`longitude`/`height` → TOS station entity `lat`/`lon`/`altitude`)
+into TOS from `stations.cfg` — stations.cfg is the ground truth for surveyed
+coordinates here (the inverse of `cfg reconcile`, where TOS is authoritative).
+Behaviour: adds missing TOS values (confirm `y/N`, or `-y/--yes`); no-op when
+TOS already matches within `--position-tolerance-m` (default 2 m); on a genuine
+cfg≠TOS difference it requires an explicit intent — `--change` (Pattern 2
+transition, records history) or `--correct` (Pattern 1 in-place, no history),
+same semantics as `cfg update-device` — and prompts `[c]hange/[f]ix/[s]kip`
+when neither flag is given. Disable with `--no-install-attrs`; skipped for
+warehouse moves and in `--json` mode. **Scope note**: only the position group
+is filled. The receiver-derived attrs (`sampling_interval`, FTP/HTTP/CTRL
+ports, `ip_address`) have **no TOS attribute code** — there is nowhere to
+write them — so they are out of scope (see vault todo #29). `antenna_height`
+is a stations.cfg *composite* (antenna ARP + monument height) that TOS splits
+across two entities, hence non-writable from one cfg number; antenna/monument/
+radome belong to the future `cfg replace-antenna`/`replace-radome` verbs.
+
 ### Production Mode
 
 ```bash
