@@ -92,8 +92,86 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # ---------------------------------------------------------------------------
+  # timescaledb-test — sidecar Postgres for migration dry-runs
+  # ---------------------------------------------------------------------------
+  # Purpose: a clean, isolated Postgres with the TimescaleDB extension preloaded,
+  # so the 048_unified_snapshot_schema migration (and future TS-dependent work)
+  # can be exercised end-to-end without touching the laptop's gps_health DB.
+  #
+  # Image:   timescale/timescaledb:latest-pg17 (PG 17 + TimescaleDB Community)
+  #          — matches pgdev.vedur.is's PostgreSQL 17.7.
+  #
+  # Port:    5433 on the host (laptop's main PG keeps 5432).
+  #
+  # Profile: "migration-test" — does NOT auto-start with `docker compose up`.
+  #          Bring it up explicitly:
+  #            docker compose --profile migration-test up -d timescaledb-test
+  #
+  # Apply migration 048 + rollback dry-run:
+  #   psql -h localhost -p 5433 -U bgo -d gps_health_test \
+  #        -f migrations/001_block_aligned_schema.sql        # parent stations table
+  #   psql -h localhost -p 5433 -U bgo -d gps_health_test \
+  #        -f migrations/048_unified_snapshot_schema.sql     # the new schema
+  #   psql -h localhost -p 5433 -U bgo -d gps_health_test \
+  #        -f migrations/048_unified_snapshot_schema_rollback.sql
+  #   psql -h localhost -p 5433 -U bgo -d gps_health_test \
+  #        -f migrations/048_unified_snapshot_schema.sql     # idempotence check
+  #
+  # Reset the test DB:
+  #   docker compose --profile migration-test down -v timescaledb-test
+  #
+  # Connect from psql:
+  #   PGPASSWORD=gps_health_test psql -h localhost -p 5433 -U bgo -d gps_health_test
+  # ---------------------------------------------------------------------------
+  timescaledb-test:
+    image: timescale/timescaledb:latest-pg17
+    container_name: gps-timescaledb-test
+    profiles: ["migration-test"]
+    restart: "no"
+
+    # network_mode: host avoids docker-proxy port-forwarding (which intermittently
+    # fails to route connections through on this laptop's bridge setup). Postgres
+    # then binds directly to port 5433 on the host's network namespace, which
+    # also matches how gps-grafana-dev (host-net) reaches it.
+    network_mode: host
+
+    environment:
+      - POSTGRES_DB=gps_health_test
+      - POSTGRES_USER=bgo
+      - POSTGRES_PASSWORD=gps_health_test
+      - PGDATA=/var/lib/postgresql/data/pgdata
+      - PGPORT=5433   # not 5432 — leaves the laptop's main PG on 5432 alone
+      # TimescaleDB tuning hint — light defaults for laptop use
+      - TS_TUNE_MAX_CONNS=50
+      - TS_TUNE_MEMORY=2GB
+
+    volumes:
+      - timescaledb-test-data:/var/lib/postgresql/data
+      # Mount the migrations folder read-only at /migrations so they can be
+      # applied without copying files: `psql ... -f /migrations/048_*.sql`
+      # from inside the container, or `-f migrations/048_*.sql` from the host.
+      - ../../migrations:/migrations:ro
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bgo -d gps_health_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 12      # ~1 minute window for first-boot TimescaleDB init
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   grafana-data:
+
+  # Persistent storage for the dry-run TimescaleDB — survives `docker compose
+  # down` but is wiped by `docker compose down -v`. Keep it across iterations
+  # so you don't redo CREATE EXTENSION + initial pg setup every restart.
+  timescaledb-test-data:
 
   # Cache volume - separate from host for Docker isolation
   gps-cache:

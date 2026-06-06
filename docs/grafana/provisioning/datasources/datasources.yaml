@@ -14,3 +14,22 @@ datasources:
       postgresVersion: 1500
     isDefault: true
     editable: true
+
+  # ── TimescaleDB sidecar (migration 048 dry-run target) ──
+  # Comes up on localhost:5433 when the docker-dev compose is brought up with
+  # `--profile migration-test`. Used for side-by-side dashboard testing of the
+  # new station_*_60s snapshot schema before any production cutover.
+  - name: gps_health_test
+    uid: gps_health_test
+    type: grafana-postgresql-datasource
+    access: proxy
+    url: localhost:5433
+    user: bgo
+    database: gps_health_test
+    secureJsonData:
+      password: gps_health_test
+    jsonData:
+      sslmode: disable
+      postgresVersion: 1700
+    isDefault: false
+    editable: true
