@@ -219,8 +219,11 @@ def _wan_ip(interfaces_data: Any) -> Optional[str]:
         if not isinstance(iface, dict):
             continue
         routes = iface.get("route") or []
+        # "0.0.0.0" here is the RutOS default-route *target* we match against
+        # (the WAN iface carries it) — not a socket bind address.
         has_default = any(
-            isinstance(r, dict) and r.get("target") == "0.0.0.0" for r in routes
+            isinstance(r, dict) and r.get("target") == "0.0.0.0"  # nosec B104
+            for r in routes
         )
         if has_default:
             addr = _iface_addr(iface)
