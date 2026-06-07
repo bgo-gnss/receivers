@@ -82,7 +82,14 @@ WINDOW_ERRORS=$(cat "${LOG_SOURCES[@]}" 2>/dev/null \
     2>/dev/null || true)
 
 # === Build report ============================================================
-
+#
+# Report generation is best-effort log-scraping. A `head`-truncated pipe over a
+# large error volume makes the upstream `jq`/`printf` die with SIGPIPE, which
+# `pipefail` + `errexit` would otherwise turn into a unit failure *after* the
+# report was already written (observed: exit 2 / perpetual "failed" state on a
+# high-error morning). Relax errexit + pipefail for the block — the written file
+# is the deliverable — then restore them for the chmod/verify tail below.
+set +e +o pipefail
 {
     echo "============================================================"
     echo "Morning recovery report — $TARGET_DATE (window 01:25-01:50 UTC)"
@@ -180,8 +187,10 @@ WINDOW_ERRORS=$(cat "${LOG_SOURCES[@]}" 2>/dev/null \
     echo "Window warnings/errors      : $WERR_COUNT"
     echo "============================================================"
 } > "$REPORT_FILE"
+set -e -o pipefail
 
 chmod 644 "$REPORT_FILE"
 
 # Print path to stdout so journal capture is useful too
 echo "Report written: $REPORT_FILE"
+exit 0
