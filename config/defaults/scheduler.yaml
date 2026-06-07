@@ -29,7 +29,13 @@ sessions:
     rinex: true
 
   1Hz_1hr:
-    enabled: false
+    enabled: true
+    schedule: ":01"             # standard hourly window (hh:01)
+    midnight_offset: 10         # at hour 0, start at 00:11 to clear 15s_24hr's :01-:06 window
+    distribution_window: 5      # files are small, 5min spread is plenty
+    lookback_periods: 1         # last hour only to start; bump later for backfill
+    archiving_mode: immediate
+    rinex: true
 
   status_1hr:
     enabled: true
@@ -93,14 +99,19 @@ morning_recovery:
   # `schedule` accepts either a single string (legacy) or a list of strings
   # for multi-fire. Each list entry is independently parsed and can be any
   # supported format — daily time ("01:30"), interval ("6h"), or full cron
-  # ("cron: 30 1,6 * * *"). Multi-fire example:
-  #   schedule:
-  #     - "01:30"                # before GAMIT
-  #     - "06:00"                # mid-morning catch-up
-  schedule: "01:30"            # Daily at 01:30 UTC (before GAMIT)
+  # ("cron: 30 1,6 * * *").
+  #
+  # The 01:30 fire is gated by _DEADLINE_HOUR_UTC=3 in morning_recovery.py
+  # (stops iterating new dates ~02:45 to protect GAMIT). The 03:30 and 05:30
+  # fires run with a fresh ~24h budget (deadline rolls to next day) and pick
+  # up dates that the prior fire deferred.
+  schedule:
+    - "01:30"                  # pre-GAMIT sweep
+    - "03:30"                  # picks up what 01:30 deferred
+    - "05:30"                  # final morning catch-up
   sessions:
     - 15s_24hr
-  days_back: 3                 # Cover 1-3 day outages; 1 = yesterday only
+  days_back: 7                 # Cover up to 7-day outages (was 3)
   max_workers: 4               # Parallel station downloads
   station_timeout_minutes: 8   # Hard ceiling per station
   bypass_known_missing: false  # Trust file_tracking 'missing' state (see is_file_missing TTL)

@@ -211,16 +211,16 @@ receivers download STATION --sync --archive  # Phase 1 is always active
 
 ### Scheduling System
 - **Hourly timeline** (optimized distribution):
-  - `:01-:11` — `1Hz_1hr` live downloads (hours 1-23)
-  - `:01-:16` — `15s_24hr` live downloads (midnight only)
-  - `:15-:25` — `status_1hr` live downloads
-  - `:16-:26` — `1Hz_1hr` midnight downloads (hour 0, offset avoids 15s clash)
-  - `:25-:55` — BACKFILL WINDOW (self-gating, gap detection, SBF→RINEX reconciler)
+  - `:01-:06` — `1Hz_1hr` live downloads (hours 1-23, `distribution_window: 5`)
+  - `:01-:06` — `15s_24hr` live downloads (midnight only)
+  - `:11-:16` — `1Hz_1hr` midnight downloads (hour 0, offset clears 15s_24hr's :01-:06)
+  - `:15-:20` — `status_1hr` live downloads
+  - `:30-:55` — BACKFILL WINDOW (self-gating, gap detection, SBF→RINEX reconciler at :30)
   - `:55-:00` — cooldown
   - Health monitoring: every 5m on separate executor (always)
 - **Three executors**: `default` (live downloads), `health` (monitoring), `backfill` (gap fill + reconciler)
 - **Distribution windows**: Stations spread evenly across time to prevent burst load
-- **Midnight offset**: 1Hz_1hr uses `midnight_offset: 15` to avoid clashing with 15s_24hr at hour 0
+- **Midnight offset**: 1Hz_1hr uses `midnight_offset: 10` (hour 0 starts at 00:11) to clear 15s_24hr's :01-:06 window
 - **Multi-session backfill**: All three sessions backfilled via self-gating interval jobs
 - **Gap detection**: Periodic scan for missing files (every 2h, configurable)
 - **Archive reconciler**: SBF→RINEX conversion for orphaned raw files (every 6h)
