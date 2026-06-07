@@ -444,6 +444,40 @@ def test_ensure_port_forwards_live_creates_and_applies():
     assert len(apply_posts) == 1
 
 
+def test_ensure_port_forwards_apply_501_is_soft():
+    """Apply endpoint 501 must not raise: config POSTs already succeeded and
+    RutOS auto-applies redirect rules. Record applied=False + apply_status/note,
+    keep `created` populated, don't error."""
+    from receivers.cfg.telemetry_probe import ensure_port_forwards
+
+    sess = _pf_session()
+    base_post = sess.post.side_effect
+
+    def _post_501_on_apply(url, **kw):
+        r = base_post(url, **kw)
+        if url.endswith("/port_forwards/changes"):
+            r.status_code = 501
+            r.text = "Not Implemented"
+        return r
+
+    sess.post.side_effect = _post_501_on_apply
+    cm_creds, cm_sess, cm_log = _patch(sess)
+    with cm_creds, cm_sess, cm_log:
+        res = ensure_port_forwards(
+            "10.6.1.228",
+            "192.168.100.60",
+            [{"name": "GPS_control", "src_dport": "28784"}],
+            dry_run=False,
+        )
+    # config write succeeded → rule recorded as created, no exception raised
+    assert res["created"] == ["GPS_control"]
+    assert res["applied"] is False
+    assert res["apply_status"] == 501
+    assert "auto-applies" in res["apply_note"]
+    # the create POST still happened
+    assert [b for u, b in sess._posts if u.endswith("/port_forwards/config")]
+
+
 def test_ensure_port_forwards_all_present_no_apply():
     from receivers.cfg.telemetry_probe import ensure_port_forwards
 
