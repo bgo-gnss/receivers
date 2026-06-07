@@ -1,5 +1,11 @@
 -- Migration 048: unified 60-s snapshot schema (TimescaleDB hypertables)
 --
+-- requires-extension: timescaledb
+--   install.sh Phase 7 parses this directive and SKIPS this migration
+--   (leaving it pending, NOT marked applied) when the named extension is
+--   absent — so it applies for real once TimescaleDB is installed. Do not
+--   remove this line without also updating the migration body's preflight.
+--
 -- Purpose
 -- -------
 -- Introduces the new station-snapshot architecture agreed on 2026-05-28:

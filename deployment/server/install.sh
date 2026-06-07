@@ -693,14 +693,36 @@ APPLIED=$(sudo -u "$ADMIN_USER" psql -d "$DB_NAME" -tAc \
     "SELECT migration_name FROM schema_migrations ORDER BY migration_name" 2>/dev/null)
 
 PENDING_COUNT=0
+SKIPPED_COUNT=0
 for migration_file in "$MIGRATIONS_DIR"/[0-9][0-9][0-9]_*.sql; do
     [[ ! -f "$migration_file" ]] && continue
     basename=$(basename "$migration_file" .sql)
     [[ "$basename" == *_rollback ]] && continue
     echo "$APPLIED" | grep -qx "$basename" && continue
 
+    # Prerequisite gate: a migration may declare `-- requires-extension: <name>`
+    # in its header. If that extension is not installed, SKIP the migration and
+    # leave it PENDING (do NOT mark it applied) so it runs for real once the
+    # prerequisite is met. Used by 048 (TimescaleDB) so a routine code deploy
+    # isn't blocked by infra that isn't stood up yet.
+    REQ_EXT=$(grep -m1 -oE '^-- requires-extension:[[:space:]]*[a-zA-Z0-9_]+' "$migration_file" \
+        | sed -E 's/^-- requires-extension:[[:space:]]*//')
+    if [[ -n "$REQ_EXT" ]]; then
+        HAS_EXT=$(sudo -u "$ADMIN_USER" psql -d "$DB_NAME" -tAc \
+            "SELECT 1 FROM pg_extension WHERE extname='$REQ_EXT'" 2>/dev/null)
+        if [[ "$HAS_EXT" != "1" ]]; then
+            warn "Skipping $basename — requires '$REQ_EXT' extension (not installed); left PENDING"
+            SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+            continue
+        fi
+    fi
+
     echo "  Applying: $basename"
-    if sudo -u "$ADMIN_USER" psql -d "$DB_NAME" -f "$migration_file" -q 2>&1; then
+    # ON_ERROR_STOP: psql is invoked without it here, so a mid-migration error
+    # would otherwise exit 0 and get falsely marked applied over an aborted
+    # transaction. Force a non-zero exit on the first error so the shell `if`
+    # below catches it and aborts the install.
+    if sudo -u "$ADMIN_USER" psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -f "$migration_file" -q 2>&1; then
         sudo -u "$ADMIN_USER" psql -d "$DB_NAME" -c \
             "INSERT INTO schema_migrations (migration_name) VALUES ('$basename') ON CONFLICT DO NOTHING" -q
         ok "Applied $basename"
@@ -710,6 +732,10 @@ for migration_file in "$MIGRATIONS_DIR"/[0-9][0-9][0-9]_*.sql; do
         exit 1
     fi
 done
+
+if [[ $SKIPPED_COUNT -gt 0 ]]; then
+    warn "$SKIPPED_COUNT migration(s) skipped (missing prerequisite extension); still pending"
+fi
 
 if [[ $PENDING_COUNT -eq 0 ]]; then
     TOTAL=$(echo "$APPLIED" | wc -l)
