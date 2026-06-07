@@ -4144,6 +4144,79 @@ Examples:
     )
     epf.set_defaults(func=cmd_cfg_ensure_port_forwards)
 
+    # ---- ensure-conntrack-helper (Teltonika FTP passive-mode fix, SSH) --
+    ecth = cfg_subparsers.add_parser(
+        "ensure-conntrack-helper",
+        help="Enable the RutOS conntrack FTP helper over SSH (fixes passive-mode FTP through NAT)",
+        description=(
+            "RutOS 7+ ships with net.netfilter.nf_conntrack_helper=0, which "
+            "disables automatic conntrack-helper assignment — so the FTP helper "
+            "never attaches and passive-mode data ports are unreachable through "
+            "NAT, stalling downloads. This enables it (sysctl, live + persisted "
+            "in /etc/sysctl.conf) over SSH, since it is not in the RutOS REST "
+            "API. Touches only connection tracking — never firewall/routing — so "
+            "it cannot sever the management path. SSH login is root (the REST "
+            "admin password); credentials from receivers.cfg [teltonika]. "
+            "Idempotent, dry-run by default."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Dry-run: show what would change on the router at 10.6.1.228
+  receivers cfg ensure-conntrack-helper --host 10.6.1.228
+
+  # Enable the helper (live + persisted):
+  receivers cfg ensure-conntrack-helper --host 10.6.1.228 --no-dry-run
+
+  # Also extend the FTP helper to track ports 21,2160 (needs a module reload):
+  receivers cfg ensure-conntrack-helper --host 10.6.1.228 \\
+      --ftp-ports 21,2160 --no-dry-run
+""",
+    )
+    ecth.add_argument(
+        "--host",
+        required=True,
+        metavar="IP",
+        help="Router IP/hostname (the Teltonika unit).",
+    )
+    ecth.add_argument(
+        "--ssh-user",
+        default="root",
+        help="SSH login user (default: root — RutOS dropbear).",
+    )
+    ecth.add_argument(
+        "--ssh-port",
+        type=int,
+        default=22,
+        help="SSH port (default: 22).",
+    )
+    ecth.add_argument(
+        "--ftp-ports",
+        metavar="P1,P2",
+        help="Also set nf_conntrack_ftp module ports (e.g. 21,2160). Requires a "
+        "module reload; off by default since port-21 tracking + the 2160→21 "
+        "DNAT already covers the receiver.",
+    )
+    ecth.add_argument(
+        "--username",
+        help="Override receivers.cfg [teltonika] username (for password lookup).",
+    )
+    ecth.add_argument(
+        "--password",
+        help="Override receivers.cfg [teltonika] password.",
+    )
+    ecth.add_argument(
+        "--no-dry-run",
+        action="store_true",
+        help="Apply the change on the router (connection-tracking only).",
+    )
+    ecth.add_argument(
+        "--json",
+        action="store_true",
+        help="(reserved) structured output.",
+    )
+    ecth.set_defaults(func=cmd_cfg_ensure_conntrack_helper)
+
     # ---- delete-join ----------------------------------------------------
     dj = cfg_subparsers.add_parser(
         "delete-join",
@@ -4897,6 +4970,58 @@ def cmd_cfg_ensure_port_forwards(args) -> int:
         print(
             f"   created: {res.get('created') or '(none)'}; applied={res.get('applied')}"
         )
+    return 0
+
+
+def cmd_cfg_ensure_conntrack_helper(args) -> int:
+    """``cfg ensure-conntrack-helper`` — enable the RutOS FTP conntrack helper via SSH."""
+    import sys
+
+    from ..cfg.conntrack_helper import ProbeError, ensure_conntrack_helper
+
+    dry_run = not args.no_dry_run
+    try:
+        res = ensure_conntrack_helper(
+            args.host,
+            ssh_user=args.ssh_user,
+            ssh_port=args.ssh_port,
+            ftp_ports=args.ftp_ports,
+            username=args.username,
+            password=args.password,
+            dry_run=dry_run,
+        )
+    except ProbeError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        import json
+
+        print(json.dumps(res, indent=2))
+        return 0
+
+    prefix = "🌵 DRY-RUN" if dry_run else "✅ APPLIED"
+    b = res.get("before", {})
+    print(
+        f"{prefix} ensure-conntrack-helper host={args.host}  "
+        f"(before: helper={b.get('helper')} persisted={b.get('persisted')} "
+        f"ftp_ports={b.get('ftp_ports')})"
+    )
+    if not res.get("changed"):
+        print("   already enabled — nothing to do.")
+        return 0
+    if dry_run:
+        print("   would run:")
+        for cmd in res.get("planned", []):
+            print(f"     $ {cmd}")
+    else:
+        a = res.get("after", {})
+        print(
+            f"   after: helper={a.get('helper')} persisted={a.get('persisted')} "
+            f"ftp_ports={a.get('ftp_ports')}"
+        )
+        for note in res.get("notes", []):
+            print(f"   ⚠️  {note}")
     return 0
 
 
