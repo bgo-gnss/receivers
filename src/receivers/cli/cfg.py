@@ -4897,6 +4897,8 @@ def cmd_cfg_ensure_port_forwards(args) -> int:
         print(
             f"   created: {res.get('created') or '(none)'}; applied={res.get('applied')}"
         )
+        if res.get("apply_note"):
+            print(f"   ⚠️  {res['apply_note']}")
     return 0
 
 

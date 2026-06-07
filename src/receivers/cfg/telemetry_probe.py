@@ -659,7 +659,13 @@ def ensure_port_forwards(
             )
         result["created"].append(w["name"])
 
-    # Apply (uci commit + reload) so the staged rules go live.
+    # Apply (uci commit + reload) so the staged rules go live. The config POSTs
+    # above already succeeded — the rules are written. RutOS auto-applies new
+    # redirect rules, and the explicit apply endpoint is not always permitted for
+    # an admin API token (observed: 501 on /port_forwards/changes, 403 on
+    # /firewall/changes). Treat a non-2xx apply as a soft condition: record it,
+    # don't raise — the rules were committed regardless. Only a transport-level
+    # failure (router unreachable mid-batch) is a hard error.
     try:
         ra = session.post(
             f"{base}/api/firewall/port_forwards/changes",
@@ -669,11 +675,16 @@ def ensure_port_forwards(
         )
     except Exception as exc:  # noqa: BLE001
         raise ProbeUnreachableError(f"{host}: apply (changes) failed: {exc}") from exc
-    if ra.status_code not in (200, 201):
-        raise ProbeError(
-            f"{host}: apply (changes) → HTTP {ra.status_code}: {ra.text[:200]}"
+    if ra.status_code in (200, 201):
+        result["applied"] = True
+    else:
+        result["applied"] = False
+        result["apply_status"] = ra.status_code
+        result["apply_note"] = (
+            f"apply endpoint returned HTTP {ra.status_code}; rules were written "
+            f"to config and RutOS auto-applies redirect rules — expected live. "
+            f"Verify with a reachability check on the forwarded port."
         )
-    result["applied"] = True
     return result
 
 
