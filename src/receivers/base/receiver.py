@@ -593,6 +593,14 @@ class BaseReceiver(ABC):
                 station=self.station_id, session=session, session_letter=session_letter
             )
 
+        # An empty datelist (e.g. start == end for an hourly session — a
+        # zero-length range, as produced by `download STATION -s D -e D
+        # --session 1Hz_1hr`) would make gtimes.datepathlist compare
+        # `None <= end_time` and raise TypeError. There are no periods to
+        # format, so return an empty path list directly.
+        if not dt_list:
+            return []
+
         # Use gtimes datepathlist for consistent datetime formatting
         return gt.datepathlist(
             path_template, frequency, datelist=dt_list, closed="both"
