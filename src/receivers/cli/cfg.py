@@ -4859,10 +4859,13 @@ def cmd_cfg_ensure_port_forwards(args) -> int:
             return 2
 
     # Default wanted set: control + ftp + http (the PolaRX5 trio). Operator can
-    # narrow with --ports.
+    # narrow with --ports. WAN src_dport → receiver LAN dest_port:
+    #   control 28784 → 28784 (unchanged — Septentrio TCP command port)
+    #   ftp     2160  → 21     (WAN-exposed port maps to the receiver's FTP 21)
+    #   http    8060  → 80     (WAN-exposed port maps to the receiver's web 80)
     port_map = {
         "control": {"name": "GPS_control", "src_dport": "28784"},
-        "ftp": {"name": "GPS_ftp", "src_dport": "2160"},
+        "ftp": {"name": "GPS_ftp", "src_dport": "2160", "dest_port": "21"},
         "http": {"name": "GPS_http", "src_dport": "8060", "dest_port": "80"},
     }
     which = args.ports or ["control", "ftp", "http"]
