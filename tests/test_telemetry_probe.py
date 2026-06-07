@@ -334,3 +334,129 @@ def test_send_sms_rejected_raises():
     with cm_creds, cm_sess, cm_log:
         with pytest.raises(ProbeError):
             send_sms("10.6.1.228", "8400754", "x", dry_run=False)
+
+
+# --- port forwards (ensure_port_forwards / list_port_forwards) --------------
+
+_PORT_FORWARDS = {
+    "success": True,
+    "data": [
+        {
+            "name": "GPS_http",
+            "src": "wan",
+            "src_dport": "8060",
+            "dest": "lan",
+            "dest_ip": "192.168.100.60",
+            "dest_port": "80",
+            "proto": ["tcp"],
+            "enabled": "1",
+            ".type": "redirect",
+        }
+    ],
+}
+
+
+def _pf_session():
+    """Session mock: login + port_forwards GET/POST + changes apply."""
+    sess = MagicMock()
+    posts = []
+
+    def _post(url, **kw):
+        posts.append((url, kw.get("json")))
+        r = MagicMock()
+        r.status_code = 200
+        if url.endswith("/api/login"):
+            r.json.return_value = {"success": True, "data": {"token": "t"}}
+        else:
+            r.json.return_value = {"success": True}
+        return r
+
+    def _get(url, **kw):
+        r = MagicMock()
+        r.status_code = 200
+        r.json.return_value = _PORT_FORWARDS
+        return r
+
+    sess.post.side_effect = _post
+    sess.get.side_effect = _get
+    sess._posts = posts
+    return sess
+
+
+def test_list_port_forwards():
+    from receivers.cfg.telemetry_probe import list_port_forwards
+
+    sess = _pf_session()
+    cm_creds, cm_sess, cm_log = _patch(sess)
+    with cm_creds, cm_sess, cm_log:
+        fws = list_port_forwards("10.6.1.228")
+    assert [f["name"] for f in fws] == ["GPS_http"]
+
+
+def test_ensure_port_forwards_dry_run_no_write():
+    from receivers.cfg.telemetry_probe import ensure_port_forwards
+
+    sess = _pf_session()
+    cm_creds, cm_sess, cm_log = _patch(sess)
+    with cm_creds, cm_sess, cm_log:
+        res = ensure_port_forwards(
+            "10.6.1.228",
+            "192.168.100.60",
+            [
+                {"name": "GPS_control", "src_dport": "28784"},
+                {"name": "GPS_ftp", "src_dport": "2160"},
+                {"name": "GPS_http", "src_dport": "8060", "dest_port": "80"},
+            ],
+            dry_run=True,
+        )
+    assert res["dry_run"] is True
+    assert res["applied"] is False
+    assert "GPS_http" in res["skipped"]  # already present (same dport+dest_ip)
+    created_names = [w["name"] for w in res["would_create"]]
+    assert created_names == ["GPS_control", "GPS_ftp"]
+    # dry-run must not POST anything
+    assert not [u for u, _ in sess._posts if u.endswith("/port_forwards/config")]
+
+
+def test_ensure_port_forwards_live_creates_and_applies():
+    from receivers.cfg.telemetry_probe import ensure_port_forwards
+
+    sess = _pf_session()
+    cm_creds, cm_sess, cm_log = _patch(sess)
+    with cm_creds, cm_sess, cm_log:
+        res = ensure_port_forwards(
+            "10.6.1.228",
+            "192.168.100.60",
+            [
+                {"name": "GPS_control", "src_dport": "28784"},
+                {"name": "GPS_http", "src_dport": "8060", "dest_port": "80"},
+            ],
+            dry_run=False,
+        )
+    assert res["created"] == ["GPS_control"]  # http already present, skipped
+    assert res["applied"] is True
+    # exactly one create POST + one apply POST
+    create_posts = [b for u, b in sess._posts if u.endswith("/port_forwards/config")]
+    apply_posts = [u for u, _ in sess._posts if u.endswith("/port_forwards/changes")]
+    assert len(create_posts) == 1
+    assert create_posts[0]["data"]["src_dport"] == "28784"
+    assert create_posts[0]["data"]["dest_ip"] == "192.168.100.60"
+    assert len(apply_posts) == 1
+
+
+def test_ensure_port_forwards_all_present_no_apply():
+    from receivers.cfg.telemetry_probe import ensure_port_forwards
+
+    sess = _pf_session()
+    cm_creds, cm_sess, cm_log = _patch(sess)
+    with cm_creds, cm_sess, cm_log:
+        res = ensure_port_forwards(
+            "10.6.1.228",
+            "192.168.100.60",
+            [{"name": "GPS_http", "src_dport": "8060", "dest_port": "80"}],
+            dry_run=False,
+        )
+    # nothing to create → no apply call
+    assert res["created"] == []
+    assert res["applied"] is False
+    assert not [u for u, _ in sess._posts if u.endswith("/port_forwards/changes")]

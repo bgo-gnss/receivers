@@ -4078,6 +4078,72 @@ Examples:
     )
     rs.set_defaults(func=cmd_cfg_replace_sim)
 
+    # ---- ensure-port-forwards (Teltonika router DNAT) -------------------
+    epf = cfg_subparsers.add_parser(
+        "ensure-port-forwards",
+        help="Ensure a receiver's control/ftp/http DNAT forwards on its Teltonika router",
+        description=(
+            "Idempotently create the WAN→LAN port forwards a PolaRX5 receiver "
+            "needs to be reachable through its Teltonika router (control 28784, "
+            "ftp 2160, http 8060), then apply. Additive only — never deletes or "
+            "edits existing rules, and never touches conntrack/raw iptables, so "
+            "it cannot sever the router's management path. The receiver's LAN "
+            "dest IP is inferred from an existing forward, or pass --dest-ip. "
+            "Credentials from receivers.cfg [teltonika]. Dry-run by default."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Dry-run: show which forwards are missing for the router at 10.6.1.228
+  receivers cfg ensure-port-forwards --host 10.6.1.228
+
+  # Create the missing ones (control+ftp+http) and apply:
+  receivers cfg ensure-port-forwards --host 10.6.1.228 --no-dry-run
+
+  # Only the control port (what the PolaRX5 probe needs), explicit dest IP:
+  receivers cfg ensure-port-forwards --host 10.6.1.228 \\
+      --dest-ip 192.168.100.60 --ports control --no-dry-run
+""",
+    )
+    epf.add_argument(
+        "--host",
+        required=True,
+        metavar="IP[:PORT]",
+        help="Router IP/hostname (the Teltonika unit).",
+    )
+    epf.add_argument(
+        "--dest-ip",
+        dest="dest_ip",
+        metavar="LAN_IP",
+        help="Receiver's LAN IP (e.g. 192.168.100.60). Default: inferred from "
+        "an existing forward.",
+    )
+    epf.add_argument(
+        "--ports",
+        nargs="+",
+        choices=("control", "ftp", "http"),
+        help="Which forwards to ensure. Default: all three (control ftp http).",
+    )
+    epf.add_argument(
+        "--username",
+        help="Override receivers.cfg [teltonika] username.",
+    )
+    epf.add_argument(
+        "--password",
+        help="Override receivers.cfg [teltonika] password.",
+    )
+    epf.add_argument(
+        "--no-dry-run",
+        action="store_true",
+        help="Commit the forwards (additive firewall change on the router).",
+    )
+    epf.add_argument(
+        "--json",
+        action="store_true",
+        help="(reserved) structured output.",
+    )
+    epf.set_defaults(func=cmd_cfg_ensure_port_forwards)
+
     # ---- delete-join ----------------------------------------------------
     dj = cfg_subparsers.add_parser(
         "delete-join",
@@ -4743,6 +4809,97 @@ def cmd_cfg_replace_sim(args) -> int:
     return 0
 
 
+def cmd_cfg_ensure_port_forwards(args) -> int:
+    """``cfg ensure-port-forwards`` — ensure receiver DNAT forwards on the router.
+
+    Idempotently creates the control(28784)/ftp(2160)/http(8060) WAN→LAN port
+    forwards a PolaRX5 receiver needs to be reachable through its Teltonika
+    router, then applies. The receiver's LAN dest IP is taken from an existing
+    forward (e.g. the http one) or ``--dest-ip``.
+    """
+    import sys
+
+    from ..cfg.telemetry_probe import (
+        ProbeError,
+        ensure_port_forwards,
+        list_port_forwards,
+    )
+
+    host = args.host
+    dry_run = not args.no_dry_run
+
+    # Resolve the receiver's LAN dest IP: explicit flag wins; else infer from an
+    # existing forward (they all point at the receiver), else error.
+    dest_ip = args.dest_ip
+    try:
+        existing = list_port_forwards(
+            host, username=args.username, password=args.password
+        )
+    except ProbeError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        return 1
+    if not dest_ip:
+        dests = {r.get("dest_ip") for r in existing if r.get("dest_ip")}
+        if len(dests) == 1:
+            dest_ip = dests.pop()
+            print(f"   dest_ip {dest_ip} (inferred from existing forward)")
+        elif len(dests) > 1:
+            print(
+                f"❌ multiple dest_ip in existing forwards ({sorted(dests)}); "
+                f"pass --dest-ip to disambiguate.",
+                file=sys.stderr,
+            )
+            return 2
+        else:
+            print(
+                "❌ no existing forward to infer the receiver LAN IP from; "
+                "pass --dest-ip 192.168.x.y.",
+                file=sys.stderr,
+            )
+            return 2
+
+    # Default wanted set: control + ftp + http (the PolaRX5 trio). Operator can
+    # narrow with --ports.
+    port_map = {
+        "control": {"name": "GPS_control", "src_dport": "28784"},
+        "ftp": {"name": "GPS_ftp", "src_dport": "2160"},
+        "http": {"name": "GPS_http", "src_dport": "8060", "dest_port": "80"},
+    }
+    which = args.ports or ["control", "ftp", "http"]
+    wanted = [port_map[p] for p in which if p in port_map]
+
+    try:
+        res = ensure_port_forwards(
+            host,
+            dest_ip,
+            wanted,
+            username=args.username,
+            password=args.password,
+            dry_run=dry_run,
+        )
+    except ProbeError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        return 1
+
+    prefix = "🌵 DRY-RUN" if dry_run else "✅ APPLIED"
+    print(f"{prefix} ensure-port-forwards host={host} dest_ip={dest_ip}")
+    if res.get("skipped"):
+        print(f"   already present: {res['skipped']}")
+    if dry_run:
+        for w in res.get("would_create", []):
+            print(
+                f"   would create: {w['name']} wan:{w['src_dport']} → "
+                f"{w['dest_ip']}:{w['dest_port']} {w['proto']}"
+            )
+        if not res.get("would_create"):
+            print("   nothing to create — all forwards present.")
+    else:
+        print(
+            f"   created: {res.get('created') or '(none)'}; applied={res.get('applied')}"
+        )
+    return 0
+
+
 def cmd_cfg_delete_join(args) -> int:
     """``cfg delete-join`` — delete a stale entity_connection row by id."""
     from ..cfg.operations import delete_join
@@ -4997,7 +5154,7 @@ def handle_cfg_command(args) -> int:
         print(
             "Available: reconcile, extract, list, history, add-receiver, "
             "update-device, move-device, replace-receiver, replace-modem, "
-            "replace-sim, visit, delete-join"
+            "replace-sim, ensure-port-forwards, visit, delete-join"
         )
         print("\nTry: receivers cfg move-device --help")
         return 2

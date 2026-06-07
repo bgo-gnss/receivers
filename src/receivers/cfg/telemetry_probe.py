@@ -33,7 +33,7 @@ from __future__ import annotations
 import configparser
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -495,6 +495,186 @@ def send_sms(
         "sent": True,
         "response": resp_json,
     }
+
+
+# ---------------------------------------------------------------------------
+# RutOS port-forwards (DNAT) — so the WAN-side scheduler can reach the
+# receiver's control/FTP/HTTP ports on the router's LAN.
+# ---------------------------------------------------------------------------
+#
+# Endpoint shapes verified live against a RUT241 (fw 00.07.22, 2026-06-07):
+#   GET  /api/firewall/port_forwards/config   → {"data": [ {rule}, ... ]}
+#   POST /api/firewall/port_forwards/config   → create a rule (body {"data": {...}})
+#   POST /api/firewall/port_forwards/changes  → apply staged config (uci commit
+#        + reload); RutOS 7.x needs this or the rule is staged but not live.
+# A rule mirrors the existing fleet shape, e.g. GPS_http:
+#   {"enabled":"1","proto":["tcp"],"src":"wan","src_dport":"28784",
+#    "dest":"lan","dest_ip":"192.168.100.60","dest_port":"28784",
+#    "name":"GPS_control",".type":"redirect"}
+
+
+def list_port_forwards(
+    host: str,
+    *,
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+    cfg_path: Optional[str] = None,
+    timeout: int = DEFAULT_TIMEOUT,
+    verify_tls: bool = False,
+) -> List[Dict[str, Any]]:
+    """Return the router's current port-forward (DNAT redirect) rules.
+
+    Read-only. Raises the same Probe* errors as :func:`probe_teltonika` on
+    auth/connectivity failure.
+    """
+    base, session, headers = _login(
+        host,
+        username=username,
+        password=password,
+        cfg_path=cfg_path,
+        timeout=timeout,
+        verify_tls=verify_tls,
+    )
+    try:
+        r = session.get(
+            f"{base}/api/firewall/port_forwards/config",
+            headers=headers,
+            timeout=timeout,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise ProbeUnreachableError(f"{host}: port_forwards GET failed: {exc}") from exc
+    if r.status_code != 200:
+        raise ProbeUnreachableError(f"{host}: port_forwards GET → HTTP {r.status_code}")
+    data = r.json().get("data")
+    return data if isinstance(data, list) else []
+
+
+def ensure_port_forwards(
+    host: str,
+    dest_ip: str,
+    wanted: List[Dict[str, Any]],
+    *,
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+    cfg_path: Optional[str] = None,
+    timeout: int = DEFAULT_TIMEOUT,
+    verify_tls: bool = False,
+    dry_run: bool = True,
+) -> Dict[str, Any]:
+    """Idempotently ensure each wanted DNAT forward exists; apply if changed.
+
+    ``wanted`` is a list of ``{"name","src_dport","dest_port","proto"}`` dicts
+    (``proto`` defaults to ``["tcp"]``). A forward is considered already-present
+    when an existing rule has the same ``src_dport`` AND ``dest_ip`` — so this
+    is safe to re-run. Missing ones are POSTed, then a single apply commits.
+
+    **Outward-facing, mutates the router firewall.** Dry-run by default: returns
+    the planned creates without sending. Additive only (never deletes/edits
+    existing rules), and never touches conntrack/raw-iptables — so it cannot
+    sever the management path.
+
+    Returns ``{"dry_run", "existing":[names], "created":[names],
+    "skipped":[names], "applied":bool}``.
+    """
+    existing = list_port_forwards(
+        host,
+        username=username,
+        password=password,
+        cfg_path=cfg_path,
+        timeout=timeout,
+        verify_tls=verify_tls,
+    )
+
+    def _present(src_dport: str) -> bool:
+        return any(
+            str(r.get("src_dport")) == str(src_dport)
+            and str(r.get("dest_ip")) == str(dest_ip)
+            for r in existing
+        )
+
+    to_create = [w for w in wanted if not _present(w["src_dport"])]
+    skipped = [w["name"] for w in wanted if _present(w["src_dport"])]
+
+    result: Dict[str, Any] = {
+        "dry_run": dry_run,
+        "dest_ip": dest_ip,
+        "existing": [r.get("name") for r in existing],
+        "created": [],
+        "skipped": skipped,
+        "applied": False,
+    }
+
+    if dry_run or not to_create:
+        result["would_create"] = [
+            {
+                "name": w["name"],
+                "src_dport": w["src_dport"],
+                "dest_ip": dest_ip,
+                "dest_port": w.get("dest_port", w["src_dport"]),
+                "proto": w.get("proto", ["tcp"]),
+            }
+            for w in to_create
+        ]
+        return result
+
+    # Live: re-login (the list call's session/token is fine to reuse, but a
+    # fresh write session avoids any TTL edge during a multi-POST batch).
+    base, session, headers = _login(
+        host,
+        username=username,
+        password=password,
+        cfg_path=cfg_path,
+        timeout=timeout,
+        verify_tls=verify_tls,
+    )
+    for w in to_create:
+        body = {
+            "data": {
+                "name": w["name"],
+                "enabled": "1",
+                ".type": "redirect",
+                "src": "wan",
+                "dest": "lan",
+                "src_dport": str(w["src_dport"]),
+                "dest_ip": dest_ip,
+                "dest_port": str(w.get("dest_port", w["src_dport"])),
+                "proto": w.get("proto", ["tcp"]),
+            }
+        }
+        try:
+            r = session.post(
+                f"{base}/api/firewall/port_forwards/config",
+                headers=headers,
+                json=body,
+                timeout=timeout,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise ProbeUnreachableError(
+                f"{host}: create forward {w['name']!r} failed: {exc}"
+            ) from exc
+        if r.status_code not in (200, 201):
+            raise ProbeError(
+                f"{host}: create forward {w['name']!r} → HTTP {r.status_code}: "
+                f"{r.text[:200]}"
+            )
+        result["created"].append(w["name"])
+
+    # Apply (uci commit + reload) so the staged rules go live.
+    try:
+        ra = session.post(
+            f"{base}/api/firewall/port_forwards/changes",
+            headers=headers,
+            json={"data": {}},
+            timeout=timeout,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise ProbeUnreachableError(f"{host}: apply (changes) failed: {exc}") from exc
+    if ra.status_code not in (200, 201):
+        raise ProbeError(
+            f"{host}: apply (changes) → HTTP {ra.status_code}: {ra.text[:200]}"
+        )
+    result["applied"] = True
+    return result
 
 
 def _format_mac(hex_mac: Optional[str]) -> Optional[str]:
