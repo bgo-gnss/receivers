@@ -2320,6 +2320,65 @@ def firmware_to_software(firmware: str) -> tuple[str, Optional[str]]:
     )
 
 
+def _create_update_vitjun(
+    writer, device_eid, changed, field_values, when_iso, label, args
+) -> None:
+    """Create a maintenance visit (default Fjarvitjun) on the device's station.
+
+    Resolves the station from the device's open parent join. Skips cleanly when
+    the device is warehoused (parent is a ``Lager``) or has no open parent.
+    Retries once on the intermittent maintenance-endpoint 401 — the attribute
+    change has already landed, so a vitjun failure is a warning, not fatal.
+    """
+    try:
+        join = writer.get_open_parent_join(device_eid)
+    except Exception as e:  # noqa: BLE001
+        print(f"  ⚠️  {label} skipped — couldn't resolve station: {e}", file=sys.stderr)
+        return
+    parent_eid = (join or {}).get("id_entity_parent")
+    if not parent_eid:
+        print(f"  ⚠️  {label} skipped — device has no open station parent")
+        return
+    try:
+        sub = (writer.get_entity_history(parent_eid) or {}).get(
+            "code_entity_subtype", ""
+        )
+    except Exception:  # noqa: BLE001
+        sub = ""
+    if isinstance(sub, str) and "lager" in sub.lower():
+        print(f"  ⚠️  {label} skipped — device is in a warehouse, not at a station")
+        return
+
+    mtype = "remote" if args.visit_type == "remote" else "on_site"
+    work = args.work or (
+        "Uppfærði " + ", ".join(f"{c} í {field_values[c]}" for c in changed)
+    )
+
+    def _do():
+        return writer.add_maintenance_visit(
+            parent_eid,
+            start_time=when_iso,
+            maintenance_type=mtype,
+            reasons=[args.reason],
+            work=work,
+            participants=args.participants or "",
+        )
+
+    try:
+        res = _do()
+    except Exception:  # noqa: BLE001 — intermittent endpoint 401; retry once
+        try:
+            res = _do()
+        except Exception as e:  # noqa: BLE001
+            print(
+                f"  ⚠️  {label} create failed (attribute change already applied): {e}",
+                file=sys.stderr,
+            )
+            return
+    vid = (res.get("id_maintenance") or res.get("id")) if isinstance(res, dict) else res
+    print(f"  ✓ {label} created (id={vid}): {work!r}")
+
+
 def cmd_cfg_update_device(args) -> int:
     """Probe a receiver and update the matching TOS device entity's attribute(s).
 
@@ -2487,25 +2546,46 @@ def cmd_cfg_update_device(args) -> int:
 
     # ---- Apply each field -----------------------------------------------
     rc = 0
+    changed: list[str] = []
     for code, new_value in field_values.items():
         current = _current_open_value(code)
         if current is not None and str(current) == str(new_value):
             print(f"  = {code} already {new_value!r} — no change")
             continue
+        arrow = (
+            f"{current!r} → {new_value!r}" if current is not None else f"{new_value!r}"
+        )
         try:
             if in_place:
                 writer.upsert_attribute_value(id_entity, code, new_value, when_iso)
             else:
                 writer.transition_attribute_value(id_entity, code, new_value, when_iso)
-            arrow = (
-                f"{current!r} → {new_value!r}"
-                if current is not None
-                else f"{new_value!r}"
-            )
             print(f"  ✓ {code}: {arrow}")
+            changed.append(code)
         except Exception as e:  # noqa: BLE001 — surface any TOS write error
-            print(f"  ❌ {code}: {e}", file=sys.stderr)
-            rc = 1
+            # TOS's public attribute_value endpoint sometimes COMMITS the write
+            # but still returns 401 "invalid token" (a known server quirk). Don't
+            # trust the exception alone — re-read and check whether it landed.
+            if not dry_run and str(_current_open_value(code)) == str(new_value):
+                print(f"  ✓ {code}: {arrow}  (committed despite {type(e).__name__})")
+                changed.append(code)
+            else:
+                print(f"  ❌ {code}: {e}", file=sys.stderr)
+                rc = 1
+
+    # ---- Auto-vitjun: a real --change is a maintenance event ------------
+    # Default to a Fjarvitjun (remote) — firmware/marker updates are done
+    # remotely. Skipped for --correct (fixing a record is not a field event)
+    # and for --no-vitjun. Mirrors the vitjun replace-modem/replace-receiver
+    # write for a hardware swap, just remote-by-default.
+    want_vitjun = (not in_place) and (not args.no_vitjun) and bool(changed)
+    label = "Fjarvitjun" if args.visit_type == "remote" else "Staðarvitjun"
+    if want_vitjun and not dry_run:
+        _create_update_vitjun(
+            writer, id_entity, changed, field_values, when_iso, label, args
+        )
+    elif want_vitjun and dry_run:
+        print(f"  (would also create a {label} on the station — --no-vitjun to skip)")
 
     return rc
 
@@ -3166,6 +3246,39 @@ Examples:
         "--no-dry-run",
         action="store_true",
         help="Commit the writes; without this flag, payloads are logged only.",
+    )
+    # Auto-vitjun for a committed --change (a real maintenance event).
+    upd.add_argument(
+        "--participants",
+        metavar="EMAIL[,EMAIL...]",
+        default="",
+        help="Participant emails for the auto-created vitjun (--change only).",
+    )
+    upd.add_argument(
+        "--visit-type",
+        dest="visit_type",
+        choices=("remote", "onsite"),
+        default="remote",
+        help="Auto-vitjun type — 'remote' (Fjarvitjun, default; firmware/marker "
+        "updates are remote) or 'onsite' (Staðarvitjun).",
+    )
+    upd.add_argument(
+        "--reason",
+        choices=("change", "repairs", "inspection", "improvements", "other"),
+        default="change",
+        help="Reason for the auto-vitjun (default: change).",
+    )
+    upd.add_argument(
+        "--work",
+        metavar="TEXT",
+        help="Override the auto-derived vitjun work text "
+        "(default: 'Uppfærði <field> í <value>').",
+    )
+    upd.add_argument(
+        "--no-vitjun",
+        dest="no_vitjun",
+        action="store_true",
+        help="Don't auto-create a vitjun for the change.",
     )
     upd.set_defaults(func=cmd_cfg_update_device)
 
