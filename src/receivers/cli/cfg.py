@@ -4217,6 +4217,65 @@ Examples:
     )
     ecth.set_defaults(func=cmd_cfg_ensure_conntrack_helper)
 
+    # ---- correct-date (Pattern 4 historical date correction) ------------
+    cd = cfg_subparsers.add_parser(
+        "correct-date",
+        help="Shift every TOS boundary at one date to another (fix a mis-dated swap)",
+        description=(
+            "Correct a swap/change that was recorded in TOS on the wrong day. "
+            "Scans the station, its child devices (and their children, e.g. a "
+            "SIM under a modem), and the station's vitjuns, and shifts EVERY "
+            "boundary whose instant equals --from to --to: join time_from/"
+            "time_to, attribute date_from/date_to (and a datetime `value` like "
+            "date_start), and vitjun start/end. Exact-instant match (bare date "
+            "→ noon, the field-work convention), so unrelated same-day "
+            "boundaries are never touched. Dry-run by default; on commit it "
+            "re-reads and verifies no --from boundary remains. Credentials from "
+            "database.cfg [tos]."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Review the shift (no writes):
+  receivers cfg correct-date --station ROTH --from 2026-06-08 --to 2026-06-04
+
+  # Apply it (with read-back verify):
+  receivers cfg correct-date --station ROTH --from 2026-06-08 --to 2026-06-04 \\
+      --no-dry-run
+""",
+    )
+    cd.add_argument(
+        "--station",
+        required=True,
+        metavar="MARKER",
+        help="4-char RINEX marker of the station.",
+    )
+    cd.add_argument(
+        "--from",
+        dest="from_date",
+        required=True,
+        metavar="DATE",
+        help="The wrong instant to find (YYYY-MM-DD → noon, or full ISO datetime).",
+    )
+    cd.add_argument(
+        "--to",
+        dest="to_date",
+        required=True,
+        metavar="DATE",
+        help="The correct instant to shift matched boundaries to.",
+    )
+    cd.add_argument(
+        "--no-dry-run",
+        action="store_true",
+        help="Commit the date shift (live TOS writes).",
+    )
+    cd.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a structured JSON summary.",
+    )
+    cd.set_defaults(func=cmd_cfg_correct_date)
+
     # ---- delete-join ----------------------------------------------------
     dj = cfg_subparsers.add_parser(
         "delete-join",
@@ -5027,6 +5086,73 @@ def cmd_cfg_ensure_conntrack_helper(args) -> int:
         )
         for note in res.get("notes", []):
             print(f"   ⚠️  {note}")
+    return 0
+
+
+def cmd_cfg_correct_date(args) -> int:
+    """``cfg correct-date`` — shift all TOS boundaries at --from to --to."""
+    import sys
+
+    from ..cfg.operations import CfgOperationError, correct_date
+
+    dry_run = not args.no_dry_run
+    try:
+        result = correct_date(
+            args.station, args.from_date, args.to_date, dry_run=dry_run
+        )
+    except CfgOperationError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        return 1
+
+    frm = result.tos_changes["from"]
+    to = result.tos_changes["to"]
+    changes = result.tos_changes["changes"]
+
+    if args.json:
+        import json
+
+        print(
+            json.dumps(
+                {
+                    "station": result.station_id,
+                    "from": frm,
+                    "to": to,
+                    "dry_run": result.dry_run,
+                    "changes": changes,
+                    "leftover": result.tos_changes.get("leftover"),
+                },
+                indent=2,
+                ensure_ascii=False,
+                default=str,
+            )
+        )
+        return 0
+
+    prefix = "🌵 DRY-RUN" if dry_run else "✅ APPLIED"
+    print(
+        f"{prefix} correct-date {args.station}: {frm} → {to}  "
+        f"({len(changes)} boundaries)"
+    )
+    if not changes:
+        print(f"   no boundaries found at {frm} — nothing to correct.")
+        return 0
+    for kind, header in (
+        ("join", "joins"),
+        ("attr", "attributes"),
+        ("vitjun", "vitjuns"),
+    ):
+        rows = [c for c in changes if c["kind"] == kind]
+        if rows:
+            print(f"   {header} ({len(rows)}):")
+            for c in rows:
+                flds = "+".join(c["fields"])
+                print(f"     #{c['id']}  {flds}  — {c['label']}")
+    if not dry_run:
+        leftover = result.tos_changes.get("leftover") or []
+        if leftover:
+            print(f"   ⚠️  {len(leftover)} STILL at {frm}: {leftover}")
+        else:
+            print(f"   ✅ verified: no {frm} boundaries remain.")
     return 0
 
 

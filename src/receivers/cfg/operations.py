@@ -2150,3 +2150,182 @@ def _station_router_ip(
     if not parser.has_section(station_id):
         return None
     return parser.get(station_id, "router_ip", fallback=None) or None
+
+
+# ---------------------------------------------------------------------------
+# correct-date — Pattern 4 historical date correction (general)
+# ---------------------------------------------------------------------------
+
+
+def _scan_entity_ids(writer: TOSWriter, station_eid: int) -> List[int]:
+    """Station + its child devices + their children (2-hop), de-duplicated.
+
+    Covers the realistic swap topologies: a receiver/modem/SIM as a direct
+    child of the station, and a SIM as a child of a modem.
+    """
+    ids: List[int] = [station_eid]
+    seen = {station_eid}
+
+    def _add_children(parent_id: int) -> List[int]:
+        added: List[int] = []
+        hist = writer.get_entity_history(parent_id) or {}
+        for c in hist.get("children_connections") or []:
+            cid = c.get("id_entity_child")
+            if cid and cid not in seen:
+                seen.add(cid)
+                ids.append(cid)
+                added.append(cid)
+        return added
+
+    level1 = _add_children(station_eid)
+    for dev in level1:
+        _add_children(dev)
+    return ids
+
+
+def correct_date(
+    station_id: str,
+    from_date: str,
+    to_date: str,
+    *,
+    writer: Optional[TOSWriter] = None,
+    dry_run: bool = True,
+) -> OperationResult:
+    """Shift every TOS boundary at ``from_date`` to ``to_date`` for a station.
+
+    Generalises the one-off "the swap was recorded on the wrong day" fix
+    (Pattern 4 historical correction). Scans the station, its child devices
+    and their children (e.g. a SIM under a modem), and the station's
+    maintenance visits, and shifts every boundary whose instant equals
+    ``from_date`` to ``to_date``:
+
+      * entity_connection ``time_from`` / ``time_to`` (device joins)
+      * attribute_value ``date_from`` / ``date_to`` (and ``value`` when the
+        value is itself the from-instant, e.g. a ``date_start`` attribute)
+      * maintenance ``start_time`` / ``end_time`` (the swap vitjun)
+
+    Match is on the exact instant (bare ``YYYY-MM-DD`` → noon, the field-work
+    convention), so unrelated same-day boundaries are never touched. Dry-run
+    by default; on commit, re-reads every touched entity and asserts no
+    ``from_date`` boundary remains.
+    """
+    w = _resolve_writer(writer, dry_run)
+    eid = _resolve_station(w, station_id)
+
+    from_iso = w._tos_date(_visit_default_time(from_date))
+    to_iso = w._tos_date(_visit_default_time(to_date))
+    if from_iso == to_iso:
+        raise CfgOperationError(
+            f"--from and --to resolve to the same instant ({from_iso}); "
+            f"nothing to correct."
+        )
+
+    def _at_from(value: Optional[str]) -> bool:
+        return bool(value) and w._tos_date(value) == from_iso
+
+    entity_ids = _scan_entity_ids(w, eid)
+    changes: List[Dict[str, Any]] = []
+    conn_seen: set = set()
+
+    for ent in entity_ids:
+        eh = w.get_entity_history(ent) or {}
+
+        # Attributes (date_from / date_to / a datetime-valued `value`).
+        for a in eh.get("attributes") or []:
+            fields = {}
+            for fld in ("date_from", "date_to", "value"):
+                if _at_from(a.get(fld)):
+                    fields[fld] = to_iso
+            if fields:
+                changes.append(
+                    {
+                        "kind": "attr",
+                        "id": a.get("id_attribute_value"),
+                        "fields": fields,
+                        "label": f"{a.get('code')} (entity {ent})",
+                        "old": {k: a.get(k) for k in fields},
+                    }
+                )
+
+        # Connections: children_connections (ent as parent) + parent_history
+        # (ent as child — catches warehouse-return joins). Same join id can
+        # appear in both views; dedupe by connection id.
+        conn_rows = [
+            (c.get("id_entity_connection"), c)
+            for c in (eh.get("children_connections") or [])
+        ]
+        try:
+            ph = w._request("GET", f"/entity/parent_history/{ent}") or []
+        except Exception:  # noqa: BLE001 — parent_history optional per entity
+            ph = []
+        conn_rows += [(c.get("id"), c) for c in ph]
+
+        for conn_id, c in conn_rows:
+            if conn_id is None or conn_id in conn_seen:
+                continue
+            conn_seen.add(conn_id)
+            fields = {}
+            for fld in ("time_from", "time_to"):
+                if _at_from(c.get(fld)):
+                    fields[fld] = to_iso
+            if fields:
+                changes.append(
+                    {
+                        "kind": "join",
+                        "id": conn_id,
+                        "fields": fields,
+                        "label": f"join {conn_id} (entity {ent})",
+                        "old": {k: c.get(k) for k in fields},
+                    }
+                )
+
+    # Maintenance visits on the station.
+    for v in w.list_maintenance_visits(eid) or []:
+        fields = {}
+        for fld in ("start_time", "end_time"):
+            if _at_from(v.get(fld)):
+                fields[fld] = to_iso
+        if fields:
+            changes.append(
+                {
+                    "kind": "vitjun",
+                    "id": v.get("id"),
+                    "fields": fields,
+                    "label": f"vitjun {v.get('id')}",
+                    "old": {k: v.get(k) for k in fields},
+                }
+            )
+
+    # Apply (no-op in dry-run — TOSWriter returns DryRunResult).
+    for ch in changes:
+        if ch["kind"] == "join":
+            w.patch_entity_connection(ch["id"], **ch["fields"])
+        elif ch["kind"] == "attr":
+            w.patch_attribute_value(ch["id"], **ch["fields"])
+        elif ch["kind"] == "vitjun":
+            w.update_maintenance_visit(ch["id"], **ch["fields"])
+
+    result = OperationResult(
+        operation="correct-date",
+        station_id=station_id,
+        date=f"{from_iso} → {to_iso}",
+        tos_changes={"from": from_iso, "to": to_iso, "changes": changes},
+        dry_run=dry_run,
+    )
+
+    if not dry_run:
+        leftover: List[str] = []
+        for ent in entity_ids:
+            eh = w.get_entity_history(ent) or {}
+            for a in eh.get("attributes") or []:
+                if any(_at_from(a.get(k)) for k in ("date_from", "date_to", "value")):
+                    leftover.append(f"attr {a.get('id_attribute_value')}")
+            for c in eh.get("children_connections") or []:
+                if _at_from(c.get("time_from")) or _at_from(c.get("time_to")):
+                    leftover.append(f"conn {c.get('id_entity_connection')}")
+        for v in w.list_maintenance_visits(eid) or []:
+            if _at_from(v.get("start_time")) or _at_from(v.get("end_time")):
+                leftover.append(f"vitjun {v.get('id')}")
+        result.tos_changes["leftover"] = leftover
+
+    return result
