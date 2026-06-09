@@ -50,6 +50,25 @@ def test_resolve_env_var(tmp_path, monkeypatch):
     assert resolve_global_repo() == repo
 
 
+def test_resolve_from_receivers_cfg(tmp_path, monkeypatch):
+    """receivers.cfg [paths] gps_config_data_repo is used when env var is unset."""
+    repo = _init_repo(tmp_path / "cfgdata")
+    monkeypatch.delenv("GPS_CONFIG_DATA_REPO", raising=False)
+    monkeypatch.setattr("receivers.cfg.global_sync._repo_from_cfg", lambda: str(repo))
+    assert resolve_global_repo() == repo
+
+
+def test_env_var_beats_receivers_cfg(tmp_path, monkeypatch):
+    """Precedence: env var wins over the receivers.cfg value."""
+    env_repo = _init_repo(tmp_path / "env")
+    cfg_repo = _init_repo(tmp_path / "cfg")
+    monkeypatch.setenv("GPS_CONFIG_DATA_REPO", str(env_repo))
+    monkeypatch.setattr(
+        "receivers.cfg.global_sync._repo_from_cfg", lambda: str(cfg_repo)
+    )
+    assert resolve_global_repo() == env_repo
+
+
 def test_resolve_missing_repo_errors(tmp_path, monkeypatch):
     monkeypatch.setenv("GPS_CONFIG_DATA_REPO", str(tmp_path / "nope"))
     with pytest.raises(CfgOperationError, match="not found"):

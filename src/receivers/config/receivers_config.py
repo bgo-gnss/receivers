@@ -119,6 +119,20 @@ class ReceiversConfig:
             self.logger.warning(f"Using fallback data_prepath: {fallback}")
             return fallback
 
+    def get_gps_config_data_repo(self) -> Optional[str]:
+        """Return the configured gps-config-data clone path, or None.
+
+        Read from ``[paths] gps_config_data_repo`` in receivers.cfg. This is the
+        source-of-truth git repo that ``cfg ... --global`` writes + commits.
+        Returns ``None`` when unset so the caller (``resolve_global_repo``) can
+        apply its own env-var / hardcoded-default fallback chain.
+        """
+        try:
+            value = self.config.get("paths", "gps_config_data_repo")
+            return value.strip() or None
+        except (configparser.NoSectionError, configparser.NoOptionError):
+            return None
+
     def get_prepath(self) -> str:
         """DEPRECATED: Use get_data_prepath() instead.
 

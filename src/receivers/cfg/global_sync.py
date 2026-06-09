@@ -33,16 +33,32 @@ _COAUTHOR_TRAILER = (
 )
 
 
+def _repo_from_cfg() -> Optional[str]:
+    """Read ``[paths] gps_config_data_repo`` from receivers.cfg, or None."""
+    try:
+        from ..config.receivers_config import ReceiversConfig
+
+        return ReceiversConfig().get_gps_config_data_repo()
+    except Exception:  # noqa: BLE001 — config absent/unreadable → fall through
+        return None
+
+
 def resolve_global_repo(repo: Optional[str] = None) -> Path:
     """Return the gps-config-data clone directory, validated.
 
-    Precedence: explicit ``repo`` → ``$GPS_CONFIG_DATA_REPO`` →
-    :data:`DEFAULT_GLOBAL_REPO` (``~/git/gps-config-data``). The chosen path must
-    be a git work-tree (contains ``.git``) and hold a ``stations.cfg``.
+    Precedence: explicit ``repo`` → ``$GPS_CONFIG_DATA_REPO`` → receivers.cfg
+    ``[paths] gps_config_data_repo`` → :data:`DEFAULT_GLOBAL_REPO`
+    (``~/git/gps-config-data``). The chosen path must be a git work-tree
+    (contains ``.git``) and hold a ``stations.cfg``.
 
     Raises :class:`CfgOperationError` with an actionable message otherwise.
     """
-    raw = repo or os.environ.get("GPS_CONFIG_DATA_REPO") or DEFAULT_GLOBAL_REPO
+    raw = (
+        repo
+        or os.environ.get("GPS_CONFIG_DATA_REPO")
+        or _repo_from_cfg()
+        or DEFAULT_GLOBAL_REPO
+    )
     path = Path(raw).expanduser()
     if not path.exists():
         raise CfgOperationError(
