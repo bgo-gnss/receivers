@@ -46,6 +46,101 @@ from ..cfg.reconciler import (
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# --global: write the gps-config-data repo (source of truth) + git commit
+# ---------------------------------------------------------------------------
+
+
+def _add_global_flags(
+    parser: argparse.ArgumentParser, *, swap_warning: bool = False
+) -> None:
+    """Add ``--global`` / ``--push`` to a cfg-writing subparser.
+
+    ``--global`` retargets the cfg write from the local/deployed config to the
+    gps-config-data git repo and commits it; ``--push`` additionally pushes
+    (opt-in — push propagates to rek-d01 via the sync timer).
+
+    ``swap_warning=True`` (for the TOS-mutating verbs) appends a caution that
+    ``--global`` finalizes cfg *as part of recording the swap* — it must not be
+    used to backfill an already-recorded swap (that would re-mutate TOS).
+    """
+    help_text = (
+        "Write the gps-config-data repo (source of truth) and git commit, "
+        "instead of the local/deployed config. Does NOT touch the local config."
+    )
+    if swap_warning:
+        help_text += (
+            " NOTE: finalizes cfg AS PART OF recording this swap — use only when "
+            "performing the swap, never to backfill an already-recorded one."
+        )
+    parser.add_argument(
+        "--global",
+        dest="global_cfg",
+        action="store_true",
+        help=help_text,
+    )
+    parser.add_argument(
+        "--push",
+        action="store_true",
+        help="With --global, also git push (propagates to rek-d01 via the "
+        "config-sync timer). Off by default.",
+    )
+
+
+def _resolve_global_target(args) -> Optional[Path]:
+    """Return the gps-config-data ``stations.cfg`` path when ``--global`` is set.
+
+    Mutually exclusive with ``--cfg-path`` (``--global`` owns the path). Returns
+    ``None`` when ``--global`` was not given (caller uses its normal cfg_path).
+    """
+    if not getattr(args, "global_cfg", False):
+        return None
+    from ..cfg.global_sync import resolve_global_repo
+
+    if getattr(args, "cfg_path", None):
+        from ..cfg.operations import CfgOperationError
+
+        raise CfgOperationError("--global and --cfg-path are mutually exclusive")
+    return resolve_global_repo() / "stations.cfg"
+
+
+def _maybe_commit_global(args, message: str, *, changed: bool, dry_run: bool) -> None:
+    """Commit the gps-config-data edit when ``--global`` wrote something.
+
+    No-op unless ``--global`` is set. Prints a one-line summary. ``changed``
+    tells us whether the verb actually edited the repo's stations.cfg this run.
+    """
+    if not getattr(args, "global_cfg", False):
+        return
+    from ..cfg.global_sync import git_commit_cfg, resolve_global_repo
+
+    repo = resolve_global_repo()
+    if dry_run:
+        res = git_commit_cfg(repo, ["stations.cfg"], message, dry_run=True)
+        if res.get("diff"):
+            print(f"🌵 would commit to {repo.name}: {message!r}")
+        else:
+            print(f"   (--global) no cfg changes to commit in {repo.name}")
+        return
+    if not changed:
+        print(f"   (--global) = no cfg changes to commit in {repo.name}")
+        return
+    res = git_commit_cfg(
+        repo, ["stations.cfg"], message, push=getattr(args, "push", False)
+    )
+    if not res.get("committed"):
+        print(f"   (--global) = nothing to commit ({res.get('reason', '')})")
+        return
+    line = f"   (--global) ✓ committed {res['commit']} in {repo.name}"
+    if getattr(args, "push", False):
+        line += (
+            " + pushed"
+            if res.get("pushed")
+            else f" — PUSH FAILED: {res.get('push_error')}"
+        )
+    print(line)
+
+
 def _progress(message: str, *, json_mode: bool, **kwargs) -> None:
     """Print progress lines to stderr in JSON mode, stdout otherwise.
 
@@ -940,6 +1035,9 @@ def _reconcile_one(
 
     n_written = 0
     n_skipped = 0
+    # --global retargets the cfg write to the gps-config-data repo's stations.cfg
+    # (the source of truth); None → apply_diff/remove_diff use the local config.
+    _global_target = _resolve_global_target(args)
     actionable = [d for d in diffs if d.needs_attention]
     canonicalize_on = getattr(args, "canonicalize", False)
     fmt_mismatches = [d for d in diffs if d.format_mismatch] if canonicalize_on else []
@@ -1213,7 +1311,7 @@ def _reconcile_one(
                     )
                 new_value = mapped
             try:
-                changed = apply_diff(station_id, d, new_value)
+                changed = apply_diff(station_id, d, new_value, cfg_path=_global_target)
                 if changed:
                     n_written += 1
                     if not silent:
@@ -1263,7 +1361,7 @@ def _reconcile_one(
                     )
                 new_value = mapped
             try:
-                changed = apply_diff(station_id, d, new_value)
+                changed = apply_diff(station_id, d, new_value, cfg_path=_global_target)
                 if changed:
                     n_written += 1
                     if not silent:
@@ -1290,7 +1388,11 @@ def _reconcile_one(
             else:
                 try:
                     changed = apply_diff(
-                        station_id, d, rx_val, resolved_by="canonicalize"
+                        station_id,
+                        d,
+                        rx_val,
+                        cfg_path=_global_target,
+                        resolved_by="canonicalize",
                     )
                     if changed:
                         n_written += 1
@@ -1318,7 +1420,12 @@ def _reconcile_one(
                         print(f"     ~ {d.cfg_key}: remove {d.cfg_raw!r} (dry-run)")
                 else:
                     try:
-                        changed = remove_diff(station_id, d, resolved_by="canonicalize")
+                        changed = remove_diff(
+                            station_id,
+                            d,
+                            cfg_path=_global_target,
+                            resolved_by="canonicalize",
+                        )
                         if changed:
                             n_written += 1
                             if not silent:
@@ -1347,7 +1454,7 @@ def _reconcile_one(
                     break
                 if choice in ("d", "delete", ""):
                     try:
-                        changed = remove_diff(station_id, d)
+                        changed = remove_diff(station_id, d, cfg_path=_global_target)
                         if changed:
                             n_written += 1
                             print(f"       ✅ removed {d.cfg_key}")
@@ -1616,6 +1723,19 @@ def cmd_cfg_reconcile(args) -> int:
                 entry["writes"] = n_written
                 entry["skipped"] = n_skipped
             json_collect.append(entry)
+
+    # --global: commit the gps-config-data stations.cfg edits this run made,
+    # once, bundling all reconciled stations/fields. (No-op unless --global.)
+    if getattr(args, "global_cfg", False):
+        _sids = sorted(configs)
+        _sid_label = "/".join(_sids) if len(_sids) <= 5 else f"{len(_sids)} stations"
+        _flds = ",".join(args.field) if getattr(args, "field", None) else "fields"
+        _maybe_commit_global(
+            args,
+            f"stations({_sid_label}): cfg reconcile {_flds}",
+            changed=total_written > 0,
+            dry_run=args.dry_run,
+        )
 
     if args.json:
         print(json.dumps(json_collect, indent=2, default=str))
@@ -2839,6 +2959,7 @@ Diagnosing TCP authentication failures:
             "for historical fixes (e.g. the actual firmware upgrade date)."
         ),
     )
+    _add_global_flags(rec)
     rec.set_defaults(func=cmd_cfg_reconcile)
 
     # ----- cfg list -------------------------------------------------------
@@ -3527,6 +3648,7 @@ Examples:
             "open value, keep its dates). No history."
         ),
     )
+    _add_global_flags(move, swap_warning=True)
     move.set_defaults(func=cmd_cfg_move_device)
 
     # ---- visit (create / edit / show / list) ----------------------------
@@ -3850,6 +3972,7 @@ step in isolation, or just --no-dry-run after eyeballing the args.
         action="store_true",
         help="Emit a structured JSON summary.",
     )
+    _add_global_flags(rr, swap_warning=True)
     rr.set_defaults(func=cmd_cfg_replace_receiver)
 
     # ---- replace-modem (telemetry: GSM modem / router swap) -------------
@@ -4037,6 +4160,7 @@ Examples:
         action="store_true",
         help="Emit a structured JSON summary.",
     )
+    _add_global_flags(rm, swap_warning=True)
     rm.set_defaults(func=cmd_cfg_replace_modem)
 
     # ---- replace-sim (telemetry: SIM card / IP swap) -------------------
@@ -4189,6 +4313,7 @@ Examples:
         action="store_true",
         help="Emit a structured JSON summary.",
     )
+    _add_global_flags(rs, swap_warning=True)
     rs.set_defaults(func=cmd_cfg_replace_sim)
 
     # ---- ensure-port-forwards (Teltonika router DNAT) -------------------
@@ -4726,6 +4851,9 @@ def cmd_cfg_move_device(args) -> int:
 
     dry_run = not args.no_dry_run
     try:
+        _cfg_path = _resolve_global_target(args) or (
+            Path(args.cfg_path) if args.cfg_path else None
+        )
         result = move_device(
             args.serial,
             to=args.to,
@@ -4739,7 +4867,7 @@ def cmd_cfg_move_device(args) -> int:
             device_status=args.device_status,
             device_comment=args.device_comment,
             dry_run=dry_run,
-            cfg_path=Path(args.cfg_path) if args.cfg_path else None,
+            cfg_path=_cfg_path,
             skip_vitjun=args.no_vitjun,
             skip_cfg=args.no_cfg,
         )
@@ -4747,6 +4875,12 @@ def cmd_cfg_move_device(args) -> int:
         print(f"❌ {exc}", file=sys.stderr)
         return 1
     _print_result_summary(result, json_output=args.json, dry_run=dry_run)
+    _maybe_commit_global(
+        args,
+        f"stations({args.to or args.serial}): cfg move-device",
+        changed=bool(result.cfg_changes),
+        dry_run=dry_run,
+    )
 
     # Station installs get a position install-attribute fill in TOS. Skipped
     # for warehouse moves (result.station_id is None there), when disabled, and
@@ -4771,6 +4905,9 @@ def cmd_cfg_replace_receiver(args) -> int:
 
     dry_run = not args.no_dry_run
     try:
+        _cfg_path = _resolve_global_target(args) or (
+            Path(args.cfg_path) if args.cfg_path else None
+        )
         result = replace_receiver(
             args.station,
             args.new_type,
@@ -4789,12 +4926,18 @@ def cmd_cfg_replace_receiver(args) -> int:
             skip_marker_check=args.skip_marker_check,
             warehouse=args.warehouse,
             dry_run=dry_run,
-            cfg_path=Path(args.cfg_path) if args.cfg_path else None,
+            cfg_path=_cfg_path,
         )
     except CfgOperationError as exc:
         print(f"❌ {exc}", file=sys.stderr)
         return 1
     _print_result_summary(result, json_output=args.json, dry_run=dry_run)
+    _maybe_commit_global(
+        args,
+        f"stations({args.station}): cfg replace-receiver",
+        changed=bool(result.cfg_changes),
+        dry_run=dry_run,
+    )
     return 0
 
 
@@ -4878,6 +5021,9 @@ def cmd_cfg_replace_modem(args) -> int:
         return 2
 
     try:
+        _cfg_path = _resolve_global_target(args) or (
+            Path(args.cfg_path) if args.cfg_path else None
+        )
         result = replace_modem(
             args.station,
             new_serial=new_serial,
@@ -4907,12 +5053,18 @@ def cmd_cfg_replace_modem(args) -> int:
             participants=args.participants or "",
             warehouse=args.warehouse,
             dry_run=dry_run,
-            cfg_path=Path(args.cfg_path) if args.cfg_path else None,
+            cfg_path=_cfg_path,
         )
     except CfgOperationError as exc:
         print(f"❌ {exc}", file=sys.stderr)
         return 1
     _print_result_summary(result, json_output=args.json, dry_run=dry_run)
+    _maybe_commit_global(
+        args,
+        f"stations({args.station}): cfg replace-modem",
+        changed=bool(result.cfg_changes),
+        dry_run=dry_run,
+    )
     return 0
 
 
@@ -5030,6 +5182,9 @@ def cmd_cfg_replace_sim(args) -> int:
         phone = _discover_phone(args, dry_run=dry_run)
 
     try:
+        _cfg_path = _resolve_global_target(args) or (
+            Path(args.cfg_path) if args.cfg_path else None
+        )
         result = replace_sim(
             args.station,
             ip_address=ip_address,
@@ -5045,12 +5200,18 @@ def cmd_cfg_replace_sim(args) -> int:
             participants=args.participants or "",
             update_cfg_ip=args.update_cfg_ip,
             dry_run=dry_run,
-            cfg_path=Path(args.cfg_path) if args.cfg_path else None,
+            cfg_path=_cfg_path,
         )
     except CfgOperationError as exc:
         print(f"❌ {exc}", file=sys.stderr)
         return 1
     _print_result_summary(result, json_output=args.json, dry_run=dry_run)
+    _maybe_commit_global(
+        args,
+        f"stations({args.station}): cfg replace-sim",
+        changed=bool(result.cfg_changes),
+        dry_run=dry_run,
+    )
     return 0
 
 
