@@ -21,7 +21,7 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .operations import CfgOperationError
 
@@ -72,7 +72,9 @@ def resolve_global_repo(repo: Optional[str] = None) -> Path:
     return path
 
 
-def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+def _git(
+    repo: Path, *args: str, check: bool = True, timeout: Optional[int] = None
+) -> subprocess.CompletedProcess:
     """Run a git command in ``repo`` with a deterministic identity.
 
     The ``-c user.*`` overrides make commits work even where the repo/CI has no
@@ -92,7 +94,84 @@ def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProc
         capture_output=True,
         text=True,
         check=check,
+        timeout=timeout,
     )
+
+
+def _origin_state(repo: Path) -> Optional[Tuple[int, int]]:
+    """Return ``(behind, ahead)`` of HEAD vs its upstream, or ``None``.
+
+    ``None`` means the branch has no upstream — a local-only clone that cannot
+    diverge from any origin (e.g. a fresh ``git init`` in tests). When an
+    upstream exists, a best-effort ``git fetch`` refreshes it first so the
+    counts reflect what origin actually holds.
+    """
+    upstream = _git(
+        repo,
+        "rev-parse",
+        "--abbrev-ref",
+        "--symbolic-full-name",
+        "@{upstream}",
+        check=False,
+    )
+    if upstream.returncode != 0:
+        return None  # no upstream → local-only, nothing to diverge from
+
+    # Refresh origin so behind/ahead is accurate. Best-effort: a network blip
+    # falls back to the last-known ref (the require-push + push step is the final
+    # arbiter — a non-ff push is rejected).
+    try:
+        _git(repo, "fetch", "--quiet", check=False, timeout=30)
+    except subprocess.TimeoutExpired:
+        pass
+
+    counts = _git(
+        repo, "rev-list", "--left-right", "--count", "@{upstream}...HEAD", check=False
+    )
+    if counts.returncode != 0:
+        return None
+    try:
+        behind_s, ahead_s = counts.stdout.split()
+        return int(behind_s), int(ahead_s)
+    except ValueError:
+        return None
+
+
+def assert_committable(repo: Path, *, push: bool) -> None:
+    """Raise unless a ``--global`` commit on ``repo`` is safe right now.
+
+    The divergence guardrail. ``--global`` is a laptop-side finalize: edit →
+    commit → push → the rek-d01 config-sync timer ``git pull --ff-only``-s the
+    new commit. A local commit that is *not* pushed leaves the clone ahead of
+    origin, so the server's ff-only pull fails and config propagation silently
+    stops. To keep every clone linear with origin:
+
+      * a commit on a **remote-tracked** clone **requires ``push=True``**; and
+      * the clone must be **even with origin** (not behind/ahead).
+
+    A **local-only** clone (no upstream — e.g. a test repo) cannot diverge from
+    any origin, so the guardrail is a no-op there.
+
+    Call this BEFORE writing the cfg file so a refusal leaves no dirty work-tree.
+    """
+    state = _origin_state(repo)
+    if state is None:
+        return  # local-only clone — nothing to diverge from
+    behind, ahead = state
+    if not push:
+        raise CfgOperationError(
+            f"--global commit on a remote-tracked clone ({repo.name}) requires "
+            f"--push: committing without pushing leaves the clone ahead of "
+            f"origin and breaks the rek-d01 config-sync `git pull --ff-only`. "
+            f"Re-run with --push, or use --dry-run to preview."
+        )
+    if behind or ahead:
+        raise CfgOperationError(
+            f"{repo.name} is not even with origin (behind {behind}, ahead "
+            f"{ahead}) — committing now would diverge it and break the "
+            f"config-sync ff-only pull. Run `git -C {repo} pull --ff-only` "
+            f"(and push any local commits) first, then retry."
+        )
 
 
 def git_commit_cfg(
@@ -109,9 +188,15 @@ def git_commit_cfg(
       * **dry-run** returns the working-tree diff for ``rel_paths`` and the
         planned message, writing nothing.
       * refuses a **detached HEAD** (no branch to commit onto sensibly).
+      * **divergence guardrail** (when the clone is remote-tracked): the commit
+        **requires ``push=True``** and refuses when the clone is not even with
+        origin. A local commit that isn't pushed leaves the clone *ahead* of
+        origin, which breaks the rek-d01 config-sync timer's ``git pull
+        --ff-only`` — silently halting config propagation. ``--global`` is a
+        laptop-side finalize (edit → commit → push → sync); keeping every commit
+        pushed keeps the clone linear so the server only ever fast-forwards.
+        A local-only clone (no upstream — e.g. tests) skips the guardrail.
       * **no-op** when nothing is staged (returns ``committed=False``).
-      * **push is opt-in**; a push failure is reported but leaves the local
-        commit intact (the operator can push by hand) rather than raising.
 
     Returns ``{"committed", "pushed", "commit", "message", "diff"?, "push_error"?}``.
     """
@@ -134,6 +219,8 @@ def git_commit_cfg(
             f"{repo} is in a detached-HEAD state — checkout a branch before "
             f"committing with --global"
         )
+
+    assert_committable(repo, push=push)
 
     _git(repo, "add", "--", *rel_paths)
 
