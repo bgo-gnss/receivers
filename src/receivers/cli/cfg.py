@@ -57,16 +57,20 @@ def _add_global_flags(
     """Add ``--global`` / ``--push`` to a cfg-writing subparser.
 
     ``--global`` retargets the cfg write from the local/deployed config to the
-    gps-config-data git repo and commits it; ``--push`` additionally pushes
-    (opt-in — push propagates to rek-d01 via the sync timer).
+    gps-config-data git repo and commits it. A real (non-dry-run) ``--global``
+    commit **requires ``--push``**: an unpushed local commit leaves the clone
+    ahead of origin and breaks the rek-d01 config-sync ``git pull --ff-only``.
+    ``--global`` is a laptop-side finalize — use ``--dry-run`` to preview without
+    committing.
 
     ``swap_warning=True`` (for the TOS-mutating verbs) appends a caution that
     ``--global`` finalizes cfg *as part of recording the swap* — it must not be
     used to backfill an already-recorded swap (that would re-mutate TOS).
     """
     help_text = (
-        "Write the gps-config-data repo (source of truth) and git commit, "
-        "instead of the local/deployed config. Does NOT touch the local config."
+        "Write the gps-config-data repo (source of truth) and git commit + push "
+        "(requires --push), instead of the local/deployed config. Does NOT touch "
+        "the local config. Laptop-side finalize; use --dry-run to preview."
     )
     if swap_warning:
         help_text += (
@@ -82,9 +86,22 @@ def _add_global_flags(
     parser.add_argument(
         "--push",
         action="store_true",
-        help="With --global, also git push (propagates to rek-d01 via the "
-        "config-sync timer). Off by default.",
+        help="Required with --global for a real commit: git push so the clone "
+        "stays even with origin (the config-sync timer ff-pulls it to rek-d01). "
+        "Without it, --global refuses to commit.",
     )
+
+
+def _is_dry_run(args) -> bool:
+    """Resolve a verb's dry-run state across the two flag conventions.
+
+    reconcile uses ``--dry-run`` (``args.dry_run``); the write verbs default to
+    dry-run and gate commits behind ``--no-dry-run`` (``args.no_dry_run``).
+    """
+    dry = getattr(args, "dry_run", None)
+    if dry is not None:
+        return bool(dry)
+    return not getattr(args, "no_dry_run", False)
 
 
 def _resolve_global_target(args) -> Optional[Path]:
@@ -92,16 +109,23 @@ def _resolve_global_target(args) -> Optional[Path]:
 
     Mutually exclusive with ``--cfg-path`` (``--global`` owns the path). Returns
     ``None`` when ``--global`` was not given (caller uses its normal cfg_path).
+
+    When ``--global`` will actually commit (not a dry-run), runs the divergence
+    guardrail **before** the caller writes anything — so a refusal (missing
+    ``--push`` / clone not even with origin) leaves no dirty working tree.
     """
     if not getattr(args, "global_cfg", False):
         return None
-    from ..cfg.global_sync import resolve_global_repo
+    from ..cfg.global_sync import assert_committable, resolve_global_repo
 
     if getattr(args, "cfg_path", None):
         from ..cfg.operations import CfgOperationError
 
         raise CfgOperationError("--global and --cfg-path are mutually exclusive")
-    return resolve_global_repo() / "stations.cfg"
+    repo = resolve_global_repo()
+    if not _is_dry_run(args):
+        assert_committable(repo, push=getattr(args, "push", False))
+    return repo / "stations.cfg"
 
 
 def _maybe_commit_global(args, message: str, *, changed: bool, dry_run: bool) -> None:
@@ -996,6 +1020,7 @@ def _reconcile_one(
     args: argparse.Namespace,
     receiver_identity: Optional[Dict[str, Any]] = None,
     tos_data: Optional[Dict[str, Any]] = None,
+    global_target: Optional[Path] = None,
 ) -> Tuple[List[FieldDiff], int, int]:
     """Reconcile one station given pre-fetched probe data.
 
@@ -1037,7 +1062,8 @@ def _reconcile_one(
     n_skipped = 0
     # --global retargets the cfg write to the gps-config-data repo's stations.cfg
     # (the source of truth); None → apply_diff/remove_diff use the local config.
-    _global_target = _resolve_global_target(args)
+    # Resolved once by the handler (incl. the divergence preflight) and passed in.
+    _global_target = global_target
     actionable = [d for d in diffs if d.needs_attention]
     canonicalize_on = getattr(args, "canonicalize", False)
     fmt_mismatches = [d for d in diffs if d.format_mismatch] if canonicalize_on else []
@@ -1596,6 +1622,17 @@ def cmd_cfg_reconcile(args) -> int:
     if not configs:
         return 1
 
+    # Resolve the --global target ONCE up front. This also runs the divergence
+    # preflight (require --push, clone even with origin) before any write, so a
+    # refusal aborts cleanly with no dirty work-tree.
+    from ..cfg.operations import CfgOperationError as _CfgOpErr
+
+    try:
+        global_target = _resolve_global_target(args)
+    except _CfgOpErr as exc:
+        _progress(f"❌ {exc}", json_mode=args.json)
+        return 1
+
     # Skip discontinued / inactive stations — probing them is pointless and,
     # in some cases, harmful (e.g. BLAL shares an IP with SODU).
     _SKIP_STATUSES = frozenset({"discontinued", "inactive"})
@@ -1702,7 +1739,14 @@ def cmd_cfg_reconcile(args) -> int:
         rx_identity, tos_d = probe_results.get(sid, (None, None))
         try:
             diffs, n_written, n_skipped = _reconcile_one(
-                sid, cfg, sources, fields, args, rx_identity, tos_d
+                sid,
+                cfg,
+                sources,
+                fields,
+                args,
+                rx_identity,
+                tos_d,
+                global_target=global_target,
             )
         except KeyboardInterrupt:
             print("\nInterrupted")

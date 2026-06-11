@@ -430,6 +430,16 @@ including the config sync system and the future TOS/tostools integration vision.
 never directly on the server. The sync timer (`gps-config-sync.timer`) propagates changes to
 the live server within ~10 minutes. `database.cfg` is the only file never synced (local credentials).
 
+**Finalizing cfg from TOS — `cfg ... --global`**: the cfg verbs write the **local/deployed**
+config by default; `--global` instead writes the **gps-config-data repo** (resolved from
+`receivers.cfg [paths] gps_config_data_repo` → `$GPS_CONFIG_DATA_REPO` → `~/git/gps-config-data`)
+and commits it. `--push` (required for a real commit) pushes so the sync timer ff-pulls it to
+rek-d01. **`--global` is a laptop-side tool** (bgo/Hildur run it; technicians use the future
+rek_new web UI). A non-dry-run `--global` commit **requires `--push`** and refuses if the clone
+isn't even with origin — an unpushed local commit would leave the clone ahead of origin and
+break the server's `git pull --ff-only`, silently halting config sync. Use `--global --dry-run`
+to preview. The divergence preflight runs before any write, so a refusal leaves no dirty tree.
+
 ### Station Configuration
 ```bash
 # Configuration loaded from gps_parser package

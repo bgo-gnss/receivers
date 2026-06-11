@@ -40,6 +40,43 @@ def test_global_and_cfg_path_mutually_exclusive():
         _resolve_global_target(_args(global_cfg=True, cfg_path="/some/path"))
 
 
+def test_preflight_runs_guardrail_when_not_dry_run(tmp_path):
+    """Non-dry-run --global resolution runs assert_committable before any write."""
+    repo = tmp_path / "cfgdata"
+    with (
+        patch("receivers.cfg.global_sync.resolve_global_repo", return_value=repo),
+        patch("receivers.cfg.global_sync.assert_committable") as ac,
+    ):
+        out = _resolve_global_target(_args(global_cfg=True, dry_run=False, push=True))
+    ac.assert_called_once_with(repo, push=True)
+    assert out == repo / "stations.cfg"
+
+
+def test_preflight_skipped_on_dry_run(tmp_path):
+    """Dry-run --global resolves the path but does NOT run the guardrail."""
+    repo = tmp_path / "cfgdata"
+    with (
+        patch("receivers.cfg.global_sync.resolve_global_repo", return_value=repo),
+        patch("receivers.cfg.global_sync.assert_committable") as ac,
+    ):
+        out = _resolve_global_target(_args(global_cfg=True, dry_run=True))
+    ac.assert_not_called()
+    assert out == repo / "stations.cfg"
+
+
+def test_preflight_uses_no_dry_run_convention(tmp_path):
+    """Write verbs use --no-dry-run; _is_dry_run maps it so the guardrail runs."""
+    repo = tmp_path / "cfgdata"
+    with (
+        patch("receivers.cfg.global_sync.resolve_global_repo", return_value=repo),
+        patch("receivers.cfg.global_sync.assert_committable") as ac,
+    ):
+        _resolve_global_target(
+            SimpleNamespace(global_cfg=True, cfg_path=None, push=True, no_dry_run=True)
+        )
+    ac.assert_called_once()
+
+
 # --- _maybe_commit_global ---------------------------------------------------
 
 
