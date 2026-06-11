@@ -393,6 +393,23 @@ class PolaRX5(BaseReceiver):
             return self.session_map[session][0]  # First element is the letter
         return "a"  # Default fallback
 
+    def _build_remote_template(self, session: str, compression: str) -> str:
+        """Build the gtimes template for remote (on-receiver) file paths.
+
+        Default Septentrio fleet layout::
+
+            {base_path}{LOG-session-dir}/%y%j/{STATION}#Rin2_{compression}
+
+        The session directory comes from ``session_map[session][1]`` (e.g.
+        ``LOG1_15s_24hr``) and filenames use IGS ``#Rin2`` naming.
+
+        Subclasses (e.g. :class:`~receivers.septentrio.mosaic_x5.MosaicX5`)
+        override this to support non-standard on-disk layouts — a custom session
+        directory and/or a different filename pattern.
+        """
+        session_dir = self.session_map[session][1]
+        return f"{self.base_path}{session_dir}/%y%j/{self.station_id}#Rin2_{compression}"
+
     def download_data(
         self,
         start: Optional[Union[datetime, str]] = None,
@@ -463,7 +480,7 @@ class PolaRX5(BaseReceiver):
             )
             return {
                 "station_id": self.station_id,
-                "receiver_type": "PolaRX5",
+                "receiver_type": self.get_receiver_type(),
                 "status": "unreachable",
                 "files_downloaded": 0,
                 "downloaded_files": [],
@@ -485,7 +502,7 @@ class PolaRX5(BaseReceiver):
             )
             return {
                 "station_id": self.station_id,
-                "receiver_type": "PolaRX5",
+                "receiver_type": self.get_receiver_type(),
                 "status": "unreachable",
                 "files_downloaded": 0,
                 "downloaded_files": [],
@@ -507,9 +524,6 @@ class PolaRX5(BaseReceiver):
         }
 
         self.logger.info(f"Checking {session} sessions from {start} to {end}")
-
-        # Generate all datetime lists and paths using unified approach
-        session_info = self.session_map[session][1]
 
         # Generate datetime list using unified build_path method
         file_datetime_list = self.build_path(
@@ -534,10 +548,10 @@ class PolaRX5(BaseReceiver):
             file_datetime_list, full_archive_template, session, ffrequency
         )
 
-        # Create remote paths with filenames using unified method
-        remote_template = (
-            f"{self.base_path}{session_info}/%y%j/{self.station_id}#Rin2_{compression}"
-        )
+        # Create remote paths with filenames using unified method.
+        # Built via _build_remote_template() so subclasses can override the
+        # on-receiver directory / filename layout (non-standard setups).
+        remote_template = self._build_remote_template(session, compression)
         remote_full_paths = self.build_path(
             file_datetime_list, remote_template, session, ffrequency
         )
@@ -3131,7 +3145,7 @@ class PolaRX5(BaseReceiver):
         """
         return {
             "station_id": self.station_id,
-            "receiver_type": "PolaRX5",
+            "receiver_type": self.get_receiver_type(),
             "ip": self.ip_number,
             "port": self.ip_port,
             "pasv_mode": self.pasv,

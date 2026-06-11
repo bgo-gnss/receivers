@@ -29,6 +29,15 @@ class ReceiverFactory:
 
             self._receiver_types["PolaRX5"] = PolaRX5
 
+            # mosaic-X5 is PolaRX5-compatible (same SBF/ports); thin subclass
+            # adds correct identity + non-standard-layout support.
+            try:
+                from ..septentrio.mosaic_x5 import MosaicX5
+
+                self._receiver_types["mosaic-X5"] = MosaicX5
+            except ImportError:
+                self.logger.debug("mosaic-X5 receiver type not available")
+
             # Try to import additional receiver types
             try:
                 from ..trimble.netrs import NetRS
