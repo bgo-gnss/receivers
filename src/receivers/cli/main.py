@@ -3645,7 +3645,11 @@ def _create_rinex_converter(
 
     session_type = getattr(args, "session", None)
 
-    if "polarx" in receiver_type or "septentrio" in receiver_type:
+    if (
+        "polarx" in receiver_type
+        or "septentrio" in receiver_type
+        or "mosaic" in receiver_type
+    ):
         converter = SBFConverter(
             station_id=station_id,
             rinex_version=rinex_version,

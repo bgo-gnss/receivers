@@ -312,7 +312,7 @@ class RINEXTask(ScheduledTask):
         session_type = self.config.session_type
 
         try:
-            if receiver_type == "polarx5":
+            if receiver_type in ("polarx5", "mosaic-x5"):
                 from ...rinex.sbf_converter import SBFConverter
 
                 return SBFConverter(

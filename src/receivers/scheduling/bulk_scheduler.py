@@ -1727,7 +1727,7 @@ class BulkDownloadScheduler:
             config.read(config_path)
 
             # Check each receiver type section
-            for receiver_type in ["polarx5", "netr5", "netr9", "netrs", "g10"]:
+            for receiver_type in ["polarx5", "mosaic-x5", "netr5", "netr9", "netrs", "g10"]:
                 if receiver_type not in config:
                     continue
 
@@ -2633,8 +2633,8 @@ class BulkDownloadScheduler:
         schedule = status_monitoring.get("schedule", "5m")
 
         # Get stations that support health checks (all receiver types with get_health_status)
-        # Supported: PolaRX5, NetR9, NetRS, NetR5, G10
-        supported_health_types = {"polarx5", "netr9", "netrs", "netr5", "g10"}
+        # Supported: PolaRX5, mosaic-X5, NetR9, NetRS, NetR5, G10
+        supported_health_types = {"polarx5", "mosaic-x5", "netr9", "netrs", "netr5", "g10"}
         health_stations = []
         skipped_stations = []
         for station_id, config in self.stations.items():

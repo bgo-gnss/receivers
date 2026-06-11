@@ -308,8 +308,8 @@ class BaseReceiver(ABC):
         if metrics:
             # Determine critical ports based on receiver type
             receiver_type = self.get_receiver_type().upper()
-            if "POLARX" in receiver_type:
-                # PolaRX5: FTP and HTTP are critical, control is just warning
+            if "POLARX" in receiver_type or "MOSAIC" in receiver_type:
+                # PolaRX5 / mosaic-X5: FTP and HTTP are critical, control is just warning
                 critical_ports = {"ftp", "http"}
             elif any(t in receiver_type for t in ["NETR", "NETRS", "NETR9", "NETR5"]):
                 # Trimble: HTTP is critical

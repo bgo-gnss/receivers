@@ -463,7 +463,7 @@ def _get_remote_file_size(
     """
     receiver_type = station_config.get("receiver_type", "").lower()
 
-    if receiver_type in ("polarx5", ""):
+    if receiver_type in ("polarx5", "mosaic-x5", ""):
         return _get_remote_size_ftp(
             station_id, session_type, file_date, file_hour, station_config
         )
