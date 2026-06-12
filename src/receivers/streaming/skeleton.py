@@ -133,14 +133,20 @@ def metadata_from_tos(station: Dict[str, Any], *, station_id: str) -> SkeletonMe
         except (TypeError, ValueError):
             return None
 
+    # Fall back to the raw TOS value when the IGS table has no mapping — better a
+    # valid raw name than a blank header. (The tostools IGS table currently misses
+    # e.g. TRM115000.10 and maps mosaic-X5 to "SEPT MOSAICX5" vs the rcvr_ant.tab
+    # spelling "SEPT MOSAIC-X5" — tracked as a tostools fix.)
+    rec_model = ta.current_receiver_model(station)
+    ant_model = ta.current_antenna_model(station)
     return SkeletonMetadata(
         marker_name=station_id,
         marker_number=station_id,
         rec_serial=ta.current_receiver_serial(station),
-        rec_type=to_igs_receiver(ta.current_receiver_model(station)),
+        rec_type=to_igs_receiver(rec_model) or rec_model,
         rec_version=ta.current_receiver_firmware(station),
         ant_serial=ta.current_antenna_serial(station),
-        ant_type=to_igs_antenna(ta.current_antenna_model(station)),
+        ant_type=to_igs_antenna(ant_model) or ant_model,
         ant_radome=to_igs_radome(ta.current_radome_model(station)) or "NONE",
         antenna_h=_f(ta.current_antenna_height(station)),
     )
