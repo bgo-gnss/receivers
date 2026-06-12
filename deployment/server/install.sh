@@ -237,6 +237,11 @@ PACKAGES=(
     python3 python3-pip python3-venv python3-dev
     git jq curl wget
     nfs-common
+    # BNC (BKG Ntrip Client) runtime libs — BNC ships as a mostly-static Qt binary
+    # but still dynamically links X11-client + glib libs at load time, even when run
+    # headless (-nw). Only needed for the stream_capture acquisition mode (Phase 8
+    # symlinks the bnc binary); cheap to install unconditionally.
+    libx11-6 libxext6 libxcb1 libglib2.0-0
 )
 
 MISSING=()
@@ -804,6 +809,12 @@ for bin in teqc gfzrnx RNX2CRX CRX2RNX runpkr00 mdb2rinex; do
     [[ -f "$TOOLS_DIR/bin/$bin" ]] && ln -sf "$TOOLS_DIR/bin/$bin" /usr/local/bin/
 done
 
+# BNC (BKG Ntrip Client) — RTCM3 stream capture for the streaming acquisition mode
+# (receivers.streaming / stream_scheduler). Lives in gps-tools/bin/ like the other
+# binaries; runtime X11/glib libs come from Phase 1. Optional: stream capture is
+# opt-in (gated behind stream_capture.enabled), so a missing bnc is not an error.
+[[ -f "$TOOLS_DIR/bin/bnc" ]] && ln -sf "$TOOLS_DIR/bin/bnc" /usr/local/bin/bnc
+
 # Report tool status
 echo "  Tool availability:"
 for tool in bin2asc sbf2rin teqc gfzrnx RNX2CRX runpkr00 mdb2rinex; do
@@ -813,6 +824,14 @@ for tool in bin2asc sbf2rin teqc gfzrnx RNX2CRX runpkr00 mdb2rinex; do
         warn "$tool: not found"
     fi
 done
+
+# BNC reported separately — it is optional (only the stream_capture mode needs it).
+if command -v bnc &>/dev/null; then
+    ok "bnc: $(which bnc) ($(bnc --version 2>/dev/null | head -1))"
+else
+    echo "  bnc: not installed (optional — only for stream_capture acquisition mode;"
+    echo "       add the BNC binary to gps-tools/bin/ to enable it)"
+fi
 
 else
     warn "Skipping external tools (--skip-tools)"
