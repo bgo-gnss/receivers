@@ -102,4 +102,6 @@ class TestMetadataFromTos:
         assert meta.rec_serial == "4101636" and meta.rec_version == "5.6.0"
         assert meta.rec_type == "SEPT POLARX5"  # IGS-standardised
         assert meta.ant_serial == "0001"
+        # TRM115000.10 is not in the IGS table -> falls back to the raw TOS value
+        assert meta.ant_type == "TRM115000.10"
         assert meta.ant_radome == "NONE"
