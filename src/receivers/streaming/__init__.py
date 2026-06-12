@@ -28,6 +28,7 @@ from .gap import (
     make_archive_slot_checker,
 )
 from .ingest import BncRinexFile, IngestResult, StreamIngestor, parse_bnc_rinex_name
+from .pipeline import StationCycleResult, StreamPipeline
 from .supervisor import StreamSupervisor, SuperviseResult
 
 __all__ = [
@@ -49,4 +50,6 @@ __all__ = [
     "GapPolicy",
     "find_missing_hours",
     "make_archive_slot_checker",
+    "StreamPipeline",
+    "StationCycleResult",
 ]
