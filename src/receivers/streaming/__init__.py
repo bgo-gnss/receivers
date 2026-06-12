@@ -19,6 +19,7 @@ from .config import (
     StreamConfig,
     get_acquisition_mode,
 )
+from .supervisor import StreamSupervisor, SuperviseResult
 
 __all__ = [
     "AcquisitionMode",
@@ -26,4 +27,6 @@ __all__ = [
     "get_acquisition_mode",
     "DEFAULT_CASTER_HOST",
     "DEFAULT_CASTER_PORT",
+    "StreamSupervisor",
+    "SuperviseResult",
 ]
