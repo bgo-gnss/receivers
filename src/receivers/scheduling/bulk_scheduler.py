@@ -2019,12 +2019,57 @@ class BulkDownloadScheduler:
         self._schedule_archive_reconciler()
         self._schedule_integrity_checker()
         self._schedule_morning_recovery()
+        self._schedule_stream_capture()
 
         # Catch up any missed daily downloads (e.g., 15s_24hr if scheduler started after midnight)
         self._schedule_daily_catchup(session_stations)
 
         # Bootstrap: aggressive initial downloads on cold start
         self._schedule_bootstrap()
+
+    def _schedule_stream_capture(self) -> None:
+        """Schedule BNC stream supervision + the ingest/downsample/gap pipeline.
+
+        Gated behind ``stream_capture.enabled`` (default False): the stream
+        subsystem requires BNC deployed on the host and is opt-in per environment.
+        """
+        sc_cfg = self.yaml_config.get("stream_capture", {})
+        if not sc_cfg.get("enabled", False):
+            self.logger.debug("Stream capture disabled in config")
+            return
+
+        from .stream_scheduler import (
+            _run_stream_pipeline_job,
+            _run_stream_supervise_job,
+        )
+
+        sup_trigger = parse_schedule(sc_cfg.get("supervise_schedule", "10m"))
+        self.scheduler.add_job(
+            func=_run_stream_supervise_job,
+            trigger=sup_trigger.trigger_type,
+            id="stream_supervise",
+            replace_existing=True,
+            max_instances=1,
+            executor="backfill",
+            **sup_trigger.trigger_kwargs,
+        )
+
+        days_back = sc_cfg.get("days_back", 1)
+        pipe_trigger = parse_schedule(sc_cfg.get("pipeline_schedule", ":20"))
+        self.scheduler.add_job(
+            func=_run_stream_pipeline_job,
+            trigger=pipe_trigger.trigger_type,
+            args=[days_back],
+            id="stream_pipeline",
+            replace_existing=True,
+            max_instances=1,
+            executor="backfill",
+            **pipe_trigger.trigger_kwargs,
+        )
+        self.logger.info(
+            f"Scheduled stream capture (supervise {sup_trigger.description}, "
+            f"pipeline {pipe_trigger.description}, {days_back}d back)"
+        )
 
     def _schedule_config_watcher(self) -> None:
         """Schedule periodic config file change detection."""
