@@ -19,6 +19,7 @@ from .config import (
     StreamConfig,
     get_acquisition_mode,
 )
+from .downsample import DownsampleResult, RinexDownsampler
 from .supervisor import StreamSupervisor, SuperviseResult
 
 __all__ = [
@@ -29,4 +30,6 @@ __all__ = [
     "DEFAULT_CASTER_PORT",
     "StreamSupervisor",
     "SuperviseResult",
+    "RinexDownsampler",
+    "DownsampleResult",
 ]
