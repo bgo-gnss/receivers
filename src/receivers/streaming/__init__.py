@@ -20,6 +20,13 @@ from .config import (
     get_acquisition_mode,
 )
 from .downsample import DownsampleResult, RinexDownsampler
+from .gap import (
+    GapFiller,
+    GapFillResult,
+    GapPolicy,
+    find_missing_hours,
+    make_archive_slot_checker,
+)
 from .ingest import BncRinexFile, IngestResult, StreamIngestor, parse_bnc_rinex_name
 from .supervisor import StreamSupervisor, SuperviseResult
 
@@ -37,4 +44,9 @@ __all__ = [
     "IngestResult",
     "BncRinexFile",
     "parse_bnc_rinex_name",
+    "GapFiller",
+    "GapFillResult",
+    "GapPolicy",
+    "find_missing_hours",
+    "make_archive_slot_checker",
 ]
