@@ -20,7 +20,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from ..streaming import (
     GapFiller,
@@ -61,6 +61,10 @@ class StreamSettings:
     interval: int = 15
     min_missing_to_fill: int = 2
     recent_grace_hours: int = 2
+    caster_host: str = "ntrcaster.vedur.is"
+    caster_port: int = 2101
+    caster_user: Optional[str] = None
+    caster_password: Optional[str] = None
 
     @staticmethod
     def _expand(p: str) -> str:
@@ -93,6 +97,10 @@ def load_stream_settings() -> StreamSettings:
         interval=int(_get("interval", "15")),
         min_missing_to_fill=int(_get("min_missing_to_fill", "2")),
         recent_grace_hours=int(_get("recent_grace_hours", "2")),
+        caster_host=_get("caster_host", "ntrcaster.vedur.is"),
+        caster_port=int(_get("caster_port", "2101")),
+        caster_user=_get("caster_user", "") or None,
+        caster_password=_get("caster_password", "") or None,
     )
 
 
@@ -161,6 +169,95 @@ def build_stream_pipeline(settings: StreamSettings, *, tracker_recorder, downloa
 
 
 # -- module-level job functions (APScheduler) -------------------------------
+
+
+def generate_bnc_config_file(
+    station_id: str, station_config: Dict[str, Any], settings: StreamSettings
+) -> Path:
+    """Render and write the BNC config for one stream station.
+
+    Output: ``<bnc_config_dir>/rtcm2rinex-<SID>.bnc`` (0600 — contains caster creds).
+    """
+    from ..streaming.bnc_config import bnc_config_filename, write_bnc_config
+    from ..streaming.config import StreamConfig
+
+    rnx_path = str(Path(settings.rt_base) / station_id)
+    sc = StreamConfig.from_station_config(
+        station_id,
+        station_config,
+        rnx_path=rnx_path,
+        caster_user=settings.caster_user,
+        caster_password=settings.caster_password,
+    )
+    sc.caster_host = settings.caster_host
+    sc.caster_port = settings.caster_port
+    out = Path(settings.bnc_config_dir) / bnc_config_filename(station_id)
+    return write_bnc_config(sc, out)
+
+
+def refresh_station_skeleton(station_id, settings: StreamSettings, get_tos_metadata) -> str:
+    """Refresh a station's stored ``.SKL`` from TOS, rewriting only on change.
+
+    ``get_tos_metadata(station_id)`` returns a TOS ``get_complete_station_metadata``
+    dict (injected for testability). Requires an existing skeleton (migrated from the
+    legacy host); returns a status string: ``updated`` | ``unchanged`` | ``no_skeleton``
+    | ``no_tos``.
+    """
+    from ..streaming.skeleton import metadata_from_tos, refresh_skeleton
+
+    skl = Path(settings.rt_base) / station_id / f"{station_id}.SKL"
+    if not skl.exists():
+        logger.warning("No stored skeleton for %s at %s — skipping refresh", station_id, skl)
+        return "no_skeleton"
+    station = get_tos_metadata(station_id)
+    if not station:
+        logger.warning("No TOS metadata for %s — skeleton left unchanged", station_id)
+        return "no_tos"
+    meta = metadata_from_tos(station, station_id=station_id)
+    updated, changed = refresh_skeleton(skl.read_text(), meta)
+    if changed:
+        skl.write_text(updated)
+        logger.info("Refreshed RINEX skeleton for %s from TOS", station_id)
+        return "updated"
+    return "unchanged"
+
+
+def _run_stream_config_refresh_job() -> None:
+    """(Re)generate .bnc configs + refresh .SKL headers from TOS for stream stations.
+
+    Low-frequency job: BNC + the pipeline read the stored configs/skeletons; this only
+    keeps them in sync with stations.cfg + TOS (equipment swaps, firmware updates).
+    """
+    from ..cli.main import get_all_station_configs
+
+    configs = get_all_station_configs()
+    stations = enumerate_stream_stations(configs)
+    if not stations:
+        return
+    settings = load_stream_settings()
+    tos_provider = _make_tos_metadata_provider()
+    for sid in stations:
+        try:
+            generate_bnc_config_file(sid, configs[sid], settings)
+            refresh_station_skeleton(sid, settings, tos_provider)
+        except Exception as e:  # noqa: BLE001 - isolate per station
+            logger.error("Stream config refresh failed for %s: %s", sid, e)
+
+
+def _make_tos_metadata_provider():
+    """Build a TOSClient-backed metadata provider (lazy — needs [tos] config)."""
+    from tostools.api.tos_client import TOSClient
+
+    client = TOSClient()
+
+    def provider(station_id: str):
+        try:
+            return client.get_complete_station_metadata(station_id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("TOS query failed for %s: %s", station_id, e)
+            return None
+
+    return provider
 
 
 def _run_stream_supervise_job() -> None:

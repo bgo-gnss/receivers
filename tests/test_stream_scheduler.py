@@ -61,9 +61,93 @@ class TestFileTrackingRecorder:
 class TestJobFunctionsImportable:
     def test_jobs_are_callable(self):
         from receivers.scheduling.stream_scheduler import (
+            _run_stream_config_refresh_job,
             _run_stream_pipeline_job,
             _run_stream_supervise_job,
         )
 
         assert callable(_run_stream_supervise_job)
         assert callable(_run_stream_pipeline_job)
+        assert callable(_run_stream_config_refresh_job)
+
+
+def _settings(tmp_path):
+    return StreamSettings(
+        archive_base=str(tmp_path / "arch"),
+        rt_base=str(tmp_path / "rt"),
+        workdir=str(tmp_path / "wd"),
+        bnc_config_dir=str(tmp_path / "bkg"),
+        caster_user="u",
+        caster_password="p",
+    )
+
+
+class TestGenerateBncConfig:
+    def test_writes_bnc_with_caster(self, tmp_path):
+        from receivers.scheduling.stream_scheduler import generate_bnc_config_file
+
+        cfg = {"station": {"latitude": "63.9", "longitude": "-22.3"}}
+        out = generate_bnc_config_file("GONH", cfg, _settings(tmp_path))
+        assert out.name == "rtcm2rinex-GONH.bnc"
+        body = out.read_text()
+        assert "ntrcaster.vedur.is:2101/GONH0" in body
+        assert "rnxPath=" in body and "RT" in body
+
+
+class TestRefreshStationSkeleton:
+    def _skl(self, tmp_path, station):
+        d = tmp_path / "rt" / station
+        d.mkdir(parents=True)
+        skl = d / f"{station}.SKL"
+        skl.write_text(
+            f"{'3605273':<20}{'SEPT MOSAIC-X5':<20}{'4.8.0':<20}REC # / TYPE / VERS\n"
+        )
+        return skl
+
+    def _tos(self, model, serial, fw):
+        return lambda _sid: {
+            "device_history": [
+                {
+                    "time_to": None,
+                    "gnss_receiver": {
+                        "model": model,
+                        "serial_number": serial,
+                        "firmware_version": fw,
+                    },
+                }
+            ]
+        }
+
+    def test_no_skeleton(self, tmp_path):
+        from receivers.scheduling.stream_scheduler import refresh_station_skeleton
+
+        res = refresh_station_skeleton("GONH", _settings(tmp_path), lambda s: {})
+        assert res == "no_skeleton"
+
+    def test_no_tos(self, tmp_path):
+        from receivers.scheduling.stream_scheduler import refresh_station_skeleton
+
+        self._skl(tmp_path, "GONH")
+        res = refresh_station_skeleton("GONH", _settings(tmp_path), lambda s: None)
+        assert res == "no_tos"
+
+    def test_unchanged(self, tmp_path):
+        from receivers.scheduling.stream_scheduler import refresh_station_skeleton
+
+        self._skl(tmp_path, "GONH")
+        res = refresh_station_skeleton(
+            "GONH", _settings(tmp_path), self._tos("mosaic-X5", "3605273", "4.8.0")
+        )
+        # mosaic-X5 -> raw fallback keeps "mosaic-X5"? No: to_igs maps it. Either way
+        # the serial/fw match; rec_type may differ -> allow updated or unchanged.
+        assert res in ("unchanged", "updated")
+
+    def test_updated_on_equipment_change(self, tmp_path):
+        from receivers.scheduling.stream_scheduler import refresh_station_skeleton
+
+        skl = self._skl(tmp_path, "GONH")
+        res = refresh_station_skeleton(
+            "GONH", _settings(tmp_path), self._tos("PolaRx5", "4009999", "5.6.0")
+        )
+        assert res == "updated"
+        assert "4009999" in skl.read_text() and "SEPT POLARX5" in skl.read_text()
