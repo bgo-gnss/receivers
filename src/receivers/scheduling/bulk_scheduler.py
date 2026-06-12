@@ -2039,8 +2039,21 @@ class BulkDownloadScheduler:
             return
 
         from .stream_scheduler import (
+            _run_stream_config_refresh_job,
             _run_stream_pipeline_job,
             _run_stream_supervise_job,
+        )
+
+        # Config refresh: (re)generate .bnc + refresh .SKL headers from TOS (daily).
+        cfg_trigger = parse_schedule(sc_cfg.get("config_refresh_schedule", "06:00"))
+        self.scheduler.add_job(
+            func=_run_stream_config_refresh_job,
+            trigger=cfg_trigger.trigger_type,
+            id="stream_config_refresh",
+            replace_existing=True,
+            max_instances=1,
+            executor="backfill",
+            **cfg_trigger.trigger_kwargs,
         )
 
         sup_trigger = parse_schedule(sc_cfg.get("supervise_schedule", "10m"))
