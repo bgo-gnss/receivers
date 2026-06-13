@@ -195,31 +195,71 @@ def generate_bnc_config_file(
     return write_bnc_config(sc, out)
 
 
-def refresh_station_skeleton(station_id, settings: StreamSettings, get_tos_metadata) -> str:
-    """Refresh a station's stored ``.SKL`` from TOS, rewriting only on change.
+def _config_position(station_config: Optional[Dict[str, Any]]):
+    """Extract (lat, lon, height) floats from a station config, or None."""
+    if not station_config:
+        return None
+    from ..streaming.config import _lookup
+
+    try:
+        lat = _lookup(station_config, "latitude")
+        lon = _lookup(station_config, "longitude")
+        hgt = _lookup(station_config, "height")
+        if lat and lon and hgt:
+            return (float(lat), float(lon), float(hgt))
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def refresh_station_skeleton(
+    station_id,
+    settings: StreamSettings,
+    get_tos_metadata,
+    *,
+    station_config: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Create or refresh a station's stored ``.SKL`` from TOS, writing only on change.
 
     ``get_tos_metadata(station_id)`` returns a TOS ``get_complete_station_metadata``
-    dict (injected for testability). Requires an existing skeleton (migrated from the
-    legacy host); returns a status string: ``updated`` | ``unchanged`` | ``no_skeleton``
-    | ``no_tos``.
+    dict (injected for testability). When no skeleton exists yet, a base one is built
+    from the station's surveyed position (``station_config`` lat/lon/height) + TOS
+    equipment. Returns: ``created`` | ``updated`` | ``unchanged`` | ``no_position`` |
+    ``no_tos``.
     """
-    from ..streaming.skeleton import metadata_from_tos, refresh_skeleton
+    from ..streaming.skeleton import build_skeleton, metadata_from_tos, refresh_skeleton
 
     skl = Path(settings.rt_base) / station_id / f"{station_id}.SKL"
-    if not skl.exists():
-        logger.warning("No stored skeleton for %s at %s — skipping refresh", station_id, skl)
-        return "no_skeleton"
     station = get_tos_metadata(station_id)
     if not station:
-        logger.warning("No TOS metadata for %s — skeleton left unchanged", station_id)
+        if skl.exists():
+            logger.warning("No TOS metadata for %s — skeleton left unchanged", station_id)
+            return "no_tos"
+        logger.warning("No TOS metadata and no skeleton for %s — cannot create", station_id)
         return "no_tos"
     meta = metadata_from_tos(station, station_id=station_id)
-    updated, changed = refresh_skeleton(skl.read_text(), meta)
-    if changed:
-        skl.write_text(updated)
-        logger.info("Refreshed RINEX skeleton for %s from TOS", station_id)
-        return "updated"
-    return "unchanged"
+
+    if skl.exists():
+        updated, changed = refresh_skeleton(skl.read_text(), meta)
+        if changed:
+            skl.write_text(updated)
+            logger.info("Refreshed RINEX skeleton for %s from TOS", station_id)
+            return "updated"
+        return "unchanged"
+
+    # No skeleton yet — build a base header from the surveyed position.
+    pos = _config_position(station_config)
+    if pos is None:
+        logger.warning(
+            "No skeleton and no position for %s — cannot create base header", station_id
+        )
+        return "no_position"
+    skl.parent.mkdir(parents=True, exist_ok=True)
+    skl.write_text(
+        build_skeleton(meta, latitude=pos[0], longitude=pos[1], height=pos[2])
+    )
+    logger.info("Created base RINEX skeleton for %s from TOS + surveyed position", station_id)
+    return "created"
 
 
 def _run_stream_config_refresh_job() -> None:
@@ -239,7 +279,9 @@ def _run_stream_config_refresh_job() -> None:
     for sid in stations:
         try:
             generate_bnc_config_file(sid, configs[sid], settings)
-            refresh_station_skeleton(sid, settings, tos_provider)
+            refresh_station_skeleton(
+                sid, settings, tos_provider, station_config=configs[sid]
+            )
         except Exception as e:  # noqa: BLE001 - isolate per station
             logger.error("Stream config refresh failed for %s: %s", sid, e)
 
