@@ -118,11 +118,38 @@ class TestRefreshStationSkeleton:
             ]
         }
 
-    def test_no_skeleton(self, tmp_path):
+    def test_no_tos_no_skeleton(self, tmp_path):
         from receivers.scheduling.stream_scheduler import refresh_station_skeleton
 
+        # No TOS metadata and no existing skeleton -> cannot create.
         res = refresh_station_skeleton("GONH", _settings(tmp_path), lambda s: {})
-        assert res == "no_skeleton"
+        assert res == "no_tos"
+
+    def test_creates_base_skeleton_from_position(self, tmp_path):
+        from receivers.scheduling.stream_scheduler import refresh_station_skeleton
+
+        settings = _settings(tmp_path)
+        cfg = {"station": {"latitude": "63.9", "longitude": "-22.3", "height": "300.0"}}
+        res = refresh_station_skeleton(
+            "GONH",
+            settings,
+            self._tos("PolaRx5", "4001", "5.6.0"),
+            station_config=cfg,
+        )
+        assert res == "created"
+        skl = tmp_path / "rt" / "GONH" / "GONH.SKL"
+        assert skl.exists()
+        body = skl.read_text()
+        assert "APPROX POSITION XYZ" in body and "4001" in body and "SEPT POLARX5" in body
+
+    def test_no_position_no_skeleton(self, tmp_path):
+        from receivers.scheduling.stream_scheduler import refresh_station_skeleton
+
+        res = refresh_station_skeleton(
+            "GONH", _settings(tmp_path), self._tos("PolaRx5", "4001", "5.6.0"),
+            station_config={"station": {}},
+        )
+        assert res == "no_position"
 
     def test_no_tos(self, tmp_path):
         from receivers.scheduling.stream_scheduler import refresh_station_skeleton

@@ -18,6 +18,7 @@ the original survey) and keeps the per-file write path TOS-free.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -25,6 +26,13 @@ logger = logging.getLogger(__name__)
 
 #: RINEX-2 header label column (0-indexed): data in [0:60], label in [60:80].
 _LABEL_COL = 60
+
+# WGS84 / ITRF ellipsoid constants for geodetic→ECEF.
+_WGS84_A = 6378137.0
+_WGS84_E2 = 6.69437999014e-3
+
+#: Default skeleton COMMENT line (matches the legacy IMO RT-stream skeletons).
+DEFAULT_COMMENT = "File configured from IMO rt streams"
 
 
 @dataclass
@@ -111,6 +119,61 @@ def refresh_skeleton(existing: str, meta: SkeletonMetadata) -> Tuple[str, bool]:
     """Refill ``existing`` from ``meta``; return (new_text, changed)."""
     updated = fill_skeleton(existing, meta)
     return updated, updated != existing
+
+
+def geodetic_to_ecef(lat_deg: float, lon_deg: float, height_m: float) -> Tuple[float, float, float]:
+    """Convert geodetic lat/lon/height (WGS84, degrees/metres) to ECEF X/Y/Z."""
+    lat = math.radians(lat_deg)
+    lon = math.radians(lon_deg)
+    sin_lat = math.sin(lat)
+    n = _WGS84_A / math.sqrt(1.0 - _WGS84_E2 * sin_lat * sin_lat)
+    x = (n + height_m) * math.cos(lat) * math.cos(lon)
+    y = (n + height_m) * math.cos(lat) * math.sin(lon)
+    z = (n * (1.0 - _WGS84_E2) + height_m) * sin_lat
+    return x, y, z
+
+
+def build_skeleton(
+    meta: SkeletonMetadata,
+    *,
+    latitude: float,
+    longitude: float,
+    height: float,
+    comment: str = DEFAULT_COMMENT,
+) -> str:
+    """Build a fresh ``.SKL`` for a new stream station from metadata + position.
+
+    Produces the full RINEX-2 header with APPROX POSITION XYZ computed from the
+    geodetic coordinates (the one piece a refresh-only flow can't supply). Once
+    written, subsequent updates go through :func:`refresh_skeleton` (which never
+    touches the position line).
+    """
+    x, y, z = geodetic_to_ecef(latitude, longitude, height)
+    rows: List[Tuple[str, str]] = [
+        (comment, "COMMENT"),
+        (_fmt_marker(meta.marker_name or ""), "MARKER NAME"),
+        (_fmt_marker(meta.marker_number or ""), "MARKER NUMBER"),
+        (
+            _fmt_observer_agency(meta.observer or "", meta.agency or ""),
+            "OBSERVER / AGENCY",
+        ),
+        (
+            _fmt_rec(meta.rec_serial or "", meta.rec_type or "", meta.rec_version or ""),
+            "REC # / TYPE / VERS",
+        ),
+        (
+            _fmt_ant(meta.ant_serial or "", meta.ant_type or "", meta.ant_radome or "NONE"),
+            "ANT # / TYPE",
+        ),
+        (f"{x:14.4f}{y:14.4f}{z:14.4f}".ljust(_LABEL_COL), "APPROX POSITION XYZ"),
+        (
+            _fmt_delta(meta.antenna_h or 0.0, meta.antenna_e or 0.0, meta.antenna_n or 0.0),
+            "ANTENNA: DELTA H/E/N",
+        ),
+        ("     1     1", "WAVELENGTH FACT L1/2"),
+        ("", "END OF HEADER"),
+    ]
+    return "\n".join(f"{data:<{_LABEL_COL}}{label}".rstrip() for data, label in rows) + "\n"
 
 
 def metadata_from_tos(station: Dict[str, Any], *, station_id: str) -> SkeletonMetadata:

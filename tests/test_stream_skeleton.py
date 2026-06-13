@@ -2,7 +2,9 @@
 
 from receivers.streaming.skeleton import (
     SkeletonMetadata,
+    build_skeleton,
     fill_skeleton,
+    geodetic_to_ecef,
     metadata_from_tos,
     refresh_skeleton,
 )
@@ -78,6 +80,41 @@ class TestRefresh:
         )
         _, changed = refresh_skeleton(GONH_SKL, meta)
         assert changed is False
+
+
+class TestBuildSkeleton:
+    def test_ecef_matches_gonh_survey(self):
+        # cfg LLH -> ECEF within a couple metres of the surveyed GONH.SKL position
+        x, y, z = geodetic_to_ecef(63.885537, -22.270311, 347.41)
+        assert abs(x - 2605201.0352) < 3
+        assert abs(y - -1066895.4189) < 3
+        assert abs(z - 5704422.1172) < 3
+
+    def test_build_full_header(self):
+        meta = SkeletonMetadata(
+            marker_name="GONH",
+            marker_number="GONH",
+            rec_serial="3605273",
+            rec_type="SEPT MOSAIC-X5",
+            rec_version="4.8.0",
+            ant_serial="60283B0038",
+            ant_type="TRM115000.10",
+            ant_radome="NONE",
+        )
+        skl = build_skeleton(meta, latitude=63.885537, longitude=-22.270311, height=347.41)
+        labels = [ln[60:].strip() for ln in skl.splitlines()]
+        assert labels[0] == "COMMENT" and labels[-1] == "END OF HEADER"
+        assert "APPROX POSITION XYZ" in labels and "REC # / TYPE / VERS" in labels
+        # the freshly-built header round-trips through fill_skeleton unchanged
+        assert fill_skeleton(skl, SkeletonMetadata()) == skl
+
+    def test_build_is_refreshable(self):
+        meta = SkeletonMetadata(marker_name="GONH", rec_serial="111")
+        skl = build_skeleton(meta, latitude=63.9, longitude=-22.3, height=300.0)
+        _, changed = refresh_skeleton(
+            skl, SkeletonMetadata(rec_serial="222", rec_type="SEPT POLARX5")
+        )
+        assert changed is True
 
 
 class TestMetadataFromTos:
