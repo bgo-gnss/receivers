@@ -2598,6 +2598,11 @@ class BulkDownloadScheduler:
                 continue
             if config.get("health_check") == "passive":
                 continue
+            # Stream-capture stations are acquired via the stream pipeline (BNC),
+            # not the file-download scheduler. The gap-filler downloads files only
+            # on demand to backfill stream gaps.
+            if str(config.get("acquisition_mode", "")).strip().lower() == "stream":
+                continue
 
             # Apply station filter if specified
             if self.station_filter and station_id not in self.station_filter:
