@@ -87,13 +87,18 @@ class StreamConfig:
         rnx_path: str,
         caster_user: Optional[str] = None,
         caster_password: Optional[str] = None,
+        mountpoint_suffix: str = "0",
     ) -> StreamConfig:
         """Build a StreamConfig from a station's adapted config dict.
 
-        ``mountpoint`` defaults to ``<SID>0`` (the IMO caster convention); caster
-        host/port and lat/lon are taken from the station config when present.
+        ``mountpoint`` defaults to ``<SID><mountpoint_suffix>`` (the IMO caster
+        convention, e.g. ``GONH0``), or a per-station ``stream_mountpoint`` override;
+        caster host/port and lat/lon are taken from the station config when present.
         """
-        mountpoint = _lookup(station_config, "stream_mountpoint") or f"{station_id}0"
+        mountpoint = (
+            _lookup(station_config, "stream_mountpoint")
+            or f"{station_id}{mountpoint_suffix}"
+        )
         host = _lookup(station_config, "caster_host") or DEFAULT_CASTER_HOST
         port_s = _lookup(station_config, "caster_port")
         lat = _lookup(station_config, "latitude")

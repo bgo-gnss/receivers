@@ -65,6 +65,7 @@ class StreamSettings:
     caster_port: int = 2101
     caster_user: Optional[str] = None
     caster_password: Optional[str] = None
+    mountpoint_suffix: str = "0"
 
     @staticmethod
     def _expand(p: str) -> str:
@@ -72,35 +73,57 @@ class StreamSettings:
 
 
 def load_stream_settings() -> StreamSettings:
-    """Read stream settings from receivers.cfg ``[streaming]`` (with defaults)."""
+    """Read stream settings from receivers.cfg.
+
+    Stream-specific settings (paths, tools, intervals, gap policy) come from
+    ``[streaming]``. The NTRIP caster connection (host/port/credentials/mountpoint
+    suffix) is shared with the RTK stream-status checks, so it is read from
+    ``[ntrip_defaults]`` — with optional ``[streaming]`` overrides — rather than
+    duplicated.
+    """
     from ..config.receivers_config import get_receivers_config
 
     rc = get_receivers_config()
     archive_base = rc.get_data_prepath()
     workdir = str(Path(rc.get_tmp_dir()) / "stream_downsample")
 
-    def _get(key: str, default: str) -> str:
+    def _get(section: str, key: str, default: str) -> str:
         try:
-            return rc.config.get("streaming", key, fallback=default)  # type: ignore[attr-defined]
+            return rc.config.get(section, key, fallback=default)  # type: ignore[attr-defined]
         except Exception:
             return default
 
+    def _s(key: str, default: str) -> str:
+        return _get("streaming", key, default)
+
+    # Caster: prefer a [streaming] override, else fall back to [ntrip_defaults].
+    caster_host = _s("caster_host", "") or _get("ntrip_defaults", "host", "ntrcaster.vedur.is")
+    caster_port = int(_s("caster_port", "") or _get("ntrip_defaults", "port", "2101"))
+    caster_user = _s("caster_user", "") or _get("ntrip_defaults", "username", "") or None
+    caster_password = (
+        _s("caster_password", "") or _get("ntrip_defaults", "password", "") or None
+    )
+    mountpoint_suffix = _s("mountpoint_suffix", "") or _get(
+        "ntrip_defaults", "mountpoint_suffix", "0"
+    )
+
     return StreamSettings(
         archive_base=archive_base,
-        rt_base=StreamSettings._expand(_get("rt_base", "~/tmp/RT-rinex")),
+        rt_base=StreamSettings._expand(_s("rt_base", "~/tmp/RT-rinex")),
         workdir=workdir,
-        bnc_path=StreamSettings._expand(_get("bnc_path", "bnc")),
-        bnc_config_dir=StreamSettings._expand(_get("bnc_config_dir", "~/.config/BKG")),
-        crx2rnx=_get("crx2rnx", "CRX2RNX"),
-        rnx2crx=_get("rnx2crx", "RNX2CRX"),
-        teqc=_get("teqc", "teqc"),
-        interval=int(_get("interval", "15")),
-        min_missing_to_fill=int(_get("min_missing_to_fill", "2")),
-        recent_grace_hours=int(_get("recent_grace_hours", "2")),
-        caster_host=_get("caster_host", "ntrcaster.vedur.is"),
-        caster_port=int(_get("caster_port", "2101")),
-        caster_user=_get("caster_user", "") or None,
-        caster_password=_get("caster_password", "") or None,
+        bnc_path=StreamSettings._expand(_s("bnc_path", "bnc")),
+        bnc_config_dir=StreamSettings._expand(_s("bnc_config_dir", "~/.config/BKG")),
+        crx2rnx=_s("crx2rnx", "CRX2RNX"),
+        rnx2crx=_s("rnx2crx", "RNX2CRX"),
+        teqc=_s("teqc", "teqc"),
+        interval=int(_s("interval", "15")),
+        min_missing_to_fill=int(_s("min_missing_to_fill", "2")),
+        recent_grace_hours=int(_s("recent_grace_hours", "2")),
+        caster_host=caster_host,
+        caster_port=caster_port,
+        caster_user=caster_user,
+        caster_password=caster_password,
+        mountpoint_suffix=mountpoint_suffix.split(",")[0].strip() or "0",
     )
 
 
@@ -188,6 +211,7 @@ def generate_bnc_config_file(
         rnx_path=rnx_path,
         caster_user=settings.caster_user,
         caster_password=settings.caster_password,
+        mountpoint_suffix=settings.mountpoint_suffix,
     )
     sc.caster_host = settings.caster_host
     sc.caster_port = settings.caster_port
