@@ -971,8 +971,8 @@ class MetricChecker:
 
         # Define critical ports by receiver type
         receiver_type_upper = (receiver_type or "").upper()
-        if "POLARX" in receiver_type_upper:
-            # PolaRX5: FTP and HTTP are critical for data downloads
+        if "POLARX" in receiver_type_upper or "MOSAIC" in receiver_type_upper:
+            # PolaRX5 / mosaic-X5: FTP and HTTP are critical for data downloads
             critical_ports = {"ftp", "http"}
         elif any(t in receiver_type_upper for t in ["NETR", "NETRS", "NETR9", "NETR5"]):
             # Trimble: HTTP is critical

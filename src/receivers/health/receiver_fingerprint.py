@@ -17,6 +17,11 @@ RECEIVER_FINGERPRINTS: Dict[str, Dict[str, Any]] = {
         "banner_patterns": ["Septentrio"],
         "protocol": "sbf",
     },
+    "mosaic-X5": {
+        "model_patterns": ["mosaic-X5", "mosaic-x5", "MOSAIC-X5", "mosaicX5"],
+        "banner_patterns": ["Septentrio"],
+        "protocol": "sbf",
+    },
     "NetR9": {
         "model_patterns": ["NetR9", "NETR9"],
         "banner_patterns": [],

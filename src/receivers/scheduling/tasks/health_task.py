@@ -251,7 +251,7 @@ class HealthTask(ScheduledTask):
         if isinstance(receiver_type, str):
             receiver_type = receiver_type.lower()
 
-        if receiver_type == "polarx5":
+        if receiver_type in ("polarx5", "mosaic-x5"):
             return self._extract_from_sbf(file_path)
         else:
             # For other receiver types, use generic extraction

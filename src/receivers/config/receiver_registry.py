@@ -77,8 +77,10 @@ def get_capability(receiver_type: str) -> ReceiverCapability | None:
     # Direct match
     if key in REGISTRY:
         return REGISTRY[key]
-    # Substring match for common variants (e.g., 'polarx5e', 'septentrio')
-    if "polarx" in key or "septentrio" in key:
+    # Substring match for common variants (e.g., 'polarx5e', 'septentrio').
+    # mosaic-X5 is SBF-compatible with PolaRX5, so it shares the same capability
+    # (raw extension, SBF converter, sessions).
+    if "polarx" in key or "septentrio" in key or "mosaic" in key:
         return REGISTRY["polarx5"]
     if "netr9" in key:
         return REGISTRY["netr9"]
