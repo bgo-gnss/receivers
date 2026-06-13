@@ -53,6 +53,12 @@ class TestStreamConfigFromStation:
         assert round(sc.latitude, 4) == 63.8855
         assert round(sc.longitude, 4) == -22.2703
 
+    def test_mountpoint_suffix(self):
+        sc = StreamConfig.from_station_config(
+            "GONH", {}, rnx_path="/x/GONH", mountpoint_suffix="1"
+        )
+        assert sc.mountpoint == "GONH1"
+
 
 class TestBuildBncConfig:
     def _cfg(self, **kw):

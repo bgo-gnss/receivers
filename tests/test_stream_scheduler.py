@@ -82,6 +82,49 @@ def _settings(tmp_path):
     )
 
 
+class TestLoadStreamSettings:
+    def _fake_rc(self, ini: str):
+        import configparser
+        from unittest.mock import Mock
+
+        cp = configparser.ConfigParser()
+        cp.read_string(ini)
+        rc = Mock()
+        rc.config = cp
+        rc.get_data_prepath.return_value = "/data"
+        rc.get_tmp_dir.return_value = "/tmp"
+        return rc
+
+    def test_caster_read_from_ntrip_defaults(self, monkeypatch):
+        import receivers.config.receivers_config as rcmod
+
+        rc = self._fake_rc(
+            "[ntrip_defaults]\n"
+            "host = ntrcaster.vedur.is\nport = 2101\n"
+            "username = gpsops\npassword = secret\nmountpoint_suffix = 0,1\n"
+        )
+        monkeypatch.setattr(rcmod, "get_receivers_config", lambda: rc)
+        from receivers.scheduling.stream_scheduler import load_stream_settings
+
+        s = load_stream_settings()
+        assert s.caster_host == "ntrcaster.vedur.is" and s.caster_port == 2101
+        assert s.caster_user == "gpsops" and s.caster_password == "secret"
+        assert s.mountpoint_suffix == "0"  # first of comma-separated
+
+    def test_streaming_overrides_ntrip_defaults(self, monkeypatch):
+        import receivers.config.receivers_config as rcmod
+
+        rc = self._fake_rc(
+            "[ntrip_defaults]\nusername = gpsops\npassword = a\n"
+            "[streaming]\ncaster_user = streamuser\ncaster_password = b\n"
+        )
+        monkeypatch.setattr(rcmod, "get_receivers_config", lambda: rc)
+        from receivers.scheduling.stream_scheduler import load_stream_settings
+
+        s = load_stream_settings()
+        assert s.caster_user == "streamuser" and s.caster_password == "b"
+
+
 class TestGenerateBncConfig:
     def test_writes_bnc_with_caster(self, tmp_path):
         from receivers.scheduling.stream_scheduler import generate_bnc_config_file
