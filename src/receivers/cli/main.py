@@ -108,13 +108,17 @@ def _validate_station_for_download(
 
         receivers_config = get_receivers_config()
         receiver_type = station_config.get("receiver_type", "").lower()
-        if not receivers_config.is_session_supported_by_receiver(
-            receiver_type, session
-        ):
-            supported = receivers_config.get_supported_sessions(receiver_type)
+        # Fail-open, matching the scheduler's capability gate
+        # (bulk_scheduler._get_stations_for_session): only enforce when the
+        # receiver type declares a session_map in receivers.cfg. Types without
+        # a section (e.g. mosaic-X5, which reuses the PolaRX5 session_map at the
+        # receiver level and declares its real sessions per-station via
+        # ``remote_sessions``) are passed through rather than rejected.
+        supported = receivers_config.get_supported_sessions(receiver_type)
+        if supported and session not in supported:
             logger.info(
                 f"⏭️  Skipping {station_id}: {session} not supported for {receiver_type} "
-                f"(supported: {', '.join(supported) or 'none'})"
+                f"(supported: {', '.join(supported)})"
             )
             return None
 
