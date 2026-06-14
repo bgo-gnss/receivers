@@ -85,7 +85,6 @@ def load_stream_settings() -> StreamSettings:
 
     rc = get_receivers_config()
     archive_base = rc.get_data_prepath()
-    workdir = str(Path(rc.get_tmp_dir()) / "stream_downsample")
 
     def _get(section: str, key: str, default: str) -> str:
         try:
@@ -97,9 +96,13 @@ def load_stream_settings() -> StreamSettings:
         return _get("streaming", key, default)
 
     # Caster: prefer a [streaming] override, else fall back to [ntrip_defaults].
-    caster_host = _s("caster_host", "") or _get("ntrip_defaults", "host", "ntrcaster.vedur.is")
+    caster_host = _s("caster_host", "") or _get(
+        "ntrip_defaults", "host", "ntrcaster.vedur.is"
+    )
     caster_port = int(_s("caster_port", "") or _get("ntrip_defaults", "port", "2101"))
-    caster_user = _s("caster_user", "") or _get("ntrip_defaults", "username", "") or None
+    caster_user = (
+        _s("caster_user", "") or _get("ntrip_defaults", "username", "") or None
+    )
     caster_password = (
         _s("caster_password", "") or _get("ntrip_defaults", "password", "") or None
     )
@@ -107,9 +110,16 @@ def load_stream_settings() -> StreamSettings:
         "ntrip_defaults", "mountpoint_suffix", "0"
     )
 
+    # All stream working files live under a single tmp base, consistent with the
+    # scheduler's cache root (~/.cache/gps_receivers/): rt_base holds BNC's RINEX
+    # output + the stored .SKL headers; the downsample workdir holds intermediates.
+    stream_tmp = StreamSettings._expand(_s("stream_tmp", "~/.cache/gps_receivers/tmp"))
+    rt_base = StreamSettings._expand(_s("rt_base", str(Path(stream_tmp) / "RT-rinex")))
+    workdir = str(Path(stream_tmp) / "stream_downsample")
+
     return StreamSettings(
         archive_base=archive_base,
-        rt_base=StreamSettings._expand(_s("rt_base", "~/tmp/RT-rinex")),
+        rt_base=rt_base,
         workdir=workdir,
         bnc_path=StreamSettings._expand(_s("bnc_path", "bnc")),
         bnc_config_dir=StreamSettings._expand(_s("bnc_config_dir", "~/.config/BKG")),
@@ -130,7 +140,9 @@ def load_stream_settings() -> StreamSettings:
 def _make_file_tracking_recorder(tracker):
     """Adapt a FileTracker into the StreamIngestor tracker seam."""
 
-    def record(station_id: str, archive_path: Path, file_date: datetime, session_type: str):
+    def record(
+        station_id: str, archive_path: Path, file_date: datetime, session_type: str
+    ):
         size = archive_path.stat().st_size if archive_path.exists() else None
         tracker.mark_file_archived(
             station_id,
@@ -158,7 +170,9 @@ def _download_gap(station_id: str, start: datetime, end: datetime):
     )
 
 
-def build_stream_pipeline(settings: StreamSettings, *, tracker_recorder, downloader) -> StreamPipeline:
+def build_stream_pipeline(
+    settings: StreamSettings, *, tracker_recorder, downloader
+) -> StreamPipeline:
     """Construct a StreamPipeline from settings + real seams."""
     supervisor = StreamSupervisor(settings.bnc_path, settings.bnc_config_dir)
     ingestor = StreamIngestor(
@@ -257,9 +271,13 @@ def refresh_station_skeleton(
     station = get_tos_metadata(station_id)
     if not station:
         if skl.exists():
-            logger.warning("No TOS metadata for %s — skeleton left unchanged", station_id)
+            logger.warning(
+                "No TOS metadata for %s — skeleton left unchanged", station_id
+            )
             return "no_tos"
-        logger.warning("No TOS metadata and no skeleton for %s — cannot create", station_id)
+        logger.warning(
+            "No TOS metadata and no skeleton for %s — cannot create", station_id
+        )
         return "no_tos"
     meta = metadata_from_tos(station, station_id=station_id)
 
@@ -282,7 +300,9 @@ def refresh_station_skeleton(
     skl.write_text(
         build_skeleton(meta, latitude=pos[0], longitude=pos[1], height=pos[2])
     )
-    logger.info("Created base RINEX skeleton for %s from TOS + surveyed position", station_id)
+    logger.info(
+        "Created base RINEX skeleton for %s from TOS + surveyed position", station_id
+    )
     return "created"
 
 

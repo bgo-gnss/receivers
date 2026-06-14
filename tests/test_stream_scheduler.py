@@ -8,8 +8,43 @@ from receivers.scheduling.stream_scheduler import (
     _make_file_tracking_recorder,
     build_stream_pipeline,
     enumerate_stream_stations,
+    load_stream_settings,
 )
 from receivers.streaming import StreamPipeline
+
+
+class TestLoadSettingsPaths:
+    """Stream working files live under ~/.cache/gps_receivers/tmp/ for
+    consistency with the scheduler's cache root."""
+
+    def _fake_rc(self, streaming=None):
+        streaming = streaming or {}
+        rc = Mock()
+        rc.get_data_prepath.return_value = "/data"
+        rc.config.get.side_effect = lambda section, key, fallback=None: (
+            streaming.get(key, fallback) if section == "streaming" else fallback
+        )
+        return rc
+
+    def test_default_tmp_under_cache(self, monkeypatch):
+        import receivers.config.receivers_config as rcmod
+
+        monkeypatch.setattr(rcmod, "get_receivers_config", lambda: self._fake_rc())
+        s = load_stream_settings()
+        assert s.rt_base.endswith("/.cache/gps_receivers/tmp/RT-rinex")
+        assert s.workdir.endswith("/.cache/gps_receivers/tmp/stream_downsample")
+
+    def test_stream_tmp_override(self, monkeypatch):
+        import receivers.config.receivers_config as rcmod
+
+        monkeypatch.setattr(
+            rcmod,
+            "get_receivers_config",
+            lambda: self._fake_rc({"stream_tmp": "/srv/streamtmp"}),
+        )
+        s = load_stream_settings()
+        assert s.rt_base == "/srv/streamtmp/RT-rinex"
+        assert s.workdir == "/srv/streamtmp/stream_downsample"
 
 
 class TestEnumerate:
@@ -183,13 +218,17 @@ class TestRefreshStationSkeleton:
         skl = tmp_path / "rt" / "GONH" / "GONH.SKL"
         assert skl.exists()
         body = skl.read_text()
-        assert "APPROX POSITION XYZ" in body and "4001" in body and "SEPT POLARX5" in body
+        assert (
+            "APPROX POSITION XYZ" in body and "4001" in body and "SEPT POLARX5" in body
+        )
 
     def test_no_position_no_skeleton(self, tmp_path):
         from receivers.scheduling.stream_scheduler import refresh_station_skeleton
 
         res = refresh_station_skeleton(
-            "GONH", _settings(tmp_path), self._tos("PolaRx5", "4001", "5.6.0"),
+            "GONH",
+            _settings(tmp_path),
+            self._tos("PolaRx5", "4001", "5.6.0"),
             station_config={"station": {}},
         )
         assert res == "no_position"

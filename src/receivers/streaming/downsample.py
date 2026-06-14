@@ -169,7 +169,12 @@ class RinexDownsampler:
         else:
             crx = workdir / src.name
             shutil.copy(str(src), str(crx))
-        obs = crx.with_suffix(crx.suffix[:-1] + "o")  # .??d -> .??o
+        # CRX2RNX preserves the case of the trailing char (.??D -> .??O,
+        # .??d -> .??o). BNC writes uppercase-O RINEX2, so stream-ingested
+        # hourly files are .??D.Z; hardcoding lowercase "o" here pointed teqc at
+        # a non-existent path and broke every stream downsample.
+        last = crx.suffix[-1]
+        obs = crx.with_suffix(crx.suffix[:-1] + ("O" if last == "D" else "o"))
         if self._run([self.crx2rnx, "-f", str(crx)], None) != 0:
             raise RuntimeError(f"CRX2RNX failed: {crx}")
         return obs

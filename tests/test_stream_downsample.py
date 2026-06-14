@@ -25,7 +25,10 @@ class FakeRunner:
             Path(stdout_path).write_bytes(b"X" * 2000)
         if tool == "CRX2RNX":
             crx = Path(cmd[-1])
-            crx.with_suffix(crx.suffix[:-1] + "o").write_bytes(b"obs")
+            # Real CRX2RNX preserves the case of the trailing char (.D->.O, .d->.o).
+            last = crx.suffix[-1]
+            obs = crx.with_suffix(crx.suffix[:-1] + ("O" if last == "D" else "o"))
+            obs.write_bytes(b"obs")
         elif tool == "RNX2CRX":
             obs = Path(cmd[-1])
             obs.with_name(_swap_obs_to_hatanaka(obs.name)).write_bytes(b"hatanaka")
@@ -92,9 +95,36 @@ class TestDownsample:
         teqc_cmd = next(c for c in runner.calls if Path(c[0]).name == "teqc")
         assert "-O.int" in teqc_cmd and "15" in teqc_cmd and "-O.dec" in teqc_cmd
 
+    def test_uppercase_bnc_hatanaka_sources(self, tmp_path):
+        """BNC writes uppercase-O RINEX2, so stream-ingested hourly files are
+        ``.26D.Z`` and CRX2RNX yields ``.26O``. Regression: ``_to_obs`` hardcoded
+        lowercase ``o``, handing teqc a non-existent ``.26o`` path and breaking
+        every stream downsample.
+        """
+        out = tmp_path / "GONH1620.26D.Z"
+        files = []
+        for h in range(3):
+            f = tmp_path / "src" / f"GONH162{h}.26D.Z"  # uppercase D (BNC path)
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(b"hatanaka-gz")
+            files.append(f)
+        runner = FakeRunner()
+        res = RinexDownsampler(interval=15, runner=runner).downsample_day(
+            "GONH", files, out, tmp_path / "wd"
+        )
+        assert res.status == "created", res.error
+        assert res.source_count == 3
+        # teqc must receive the uppercase .26O obs files CRX2RNX actually wrote,
+        # not the lowercase .26o the old code assumed.
+        teqc_cmd = next(c for c in runner.calls if Path(c[0]).name == "teqc")
+        assert any(a.endswith(".26O") for a in teqc_cmd), teqc_cmd
+        assert not any(a.endswith(".26o") for a in teqc_cmd), teqc_cmd
+
     def test_partial_sources_only_existing_used(self, tmp_path):
         out = tmp_path / "GONH1620.26D.Z"
-        srcs = _sources(tmp_path, 2) + [tmp_path / "src" / "GONH1623.26d.Z"]  # last missing
+        srcs = _sources(tmp_path, 2) + [
+            tmp_path / "src" / "GONH1623.26d.Z"
+        ]  # last missing
         runner = FakeRunner()
         res = RinexDownsampler(runner=runner).downsample_day(
             "GONH", srcs, out, tmp_path / "wd"
