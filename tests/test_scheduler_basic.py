@@ -220,6 +220,39 @@ class TestSchedulerStationFiltering:
         # Should limit to max_stations
         assert len(stations) == 3
 
+    @patch("receivers.cli.main.get_all_station_configs")
+    def test_stream_stations_session_aware(self, mock_get_stations):
+        """Stream stations download only the sessions they log on disk
+        (remote_sessions); sessions the stream provides are skipped. A stream
+        station with no remote_sessions (pure low-bandwidth stream) downloads
+        nothing. Regression: acquisition_mode was not carried into self.stations,
+        so the skip silently no-opped and stream stations were downloaded too."""
+        mock_get_stations.return_value = {
+            "ELDC": {"receiver_type": "polarx5", "enabled": True},  # plain download
+            "STRD": {  # stream + logs 15s on disk (download the authoritative SBF)
+                "receiver_type": "mosaic-X5",
+                "enabled": True,
+                "acquisition_mode": "stream",
+                "remote_sessions": "15s_24hr",
+            },
+            "PURE": {  # pure stream, no remote_sessions -> download nothing
+                "receiver_type": "polarx5",
+                "enabled": True,
+                "acquisition_mode": "stream",
+            },
+        }
+        scheduler = BulkDownloadScheduler(production_mode=False)
+
+        s15 = scheduler._get_stations_for_session("15s_24hr")
+        assert "ELDC" in s15  # plain download
+        assert "STRD" in s15  # logs 15s on disk -> authoritative SBF download
+        assert "PURE" not in s15  # no remote_sessions -> no download
+
+        s1hz = scheduler._get_stations_for_session("1Hz_1hr")
+        assert "ELDC" in s1hz
+        assert "STRD" not in s1hz  # 1Hz provided by the stream, not on disk
+        assert "PURE" not in s1hz
+
 
 @pytest.mark.unit
 @pytest.mark.scheduler

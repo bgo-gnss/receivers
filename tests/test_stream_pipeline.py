@@ -15,8 +15,10 @@ DAY = date(2026, 6, 11)  # doy 162
 
 class TestPathHelpers:
     def test_daily_15s_target(self):
+        # Lowercase d = fleet/SBF canonical, so the daily SBF download supersedes
+        # the stream downsample in place (not a .26D.Z vs .26d.Z collision).
         p = daily_15s_target("/data", "GONH", DAY)
-        assert p == Path("/data/2026/jun/GONH/15s_24hr/rinex/GONH1620.26D.Z")
+        assert p == Path("/data/2026/jun/GONH/15s_24hr/rinex/GONH1620.26d.Z")
 
     def test_hourly_sources_globs(self, tmp_path):
         rinex = tmp_path / "2026/jun/GONH/1Hz_1hr/rinex"
@@ -72,6 +74,18 @@ class TestProcessStation:
         assert res.ingest is p.ingestor.ingest_dir.return_value
         assert res.downsample is p.downsampler.downsample_day.return_value
         assert res.gap is p.gap_filler.check_and_fill.return_value
+
+    def test_gap_fill_skipped_when_no_1hz_on_disk(self, tmp_path):
+        """A station that doesn't log 1 Hz on disk (gap_fill=False) must not
+        invoke the gap-filler — otherwise it re-downloads the daily coarse SBF
+        and mislabels it as 1 Hz hourly."""
+        p = _pipeline(tmp_path)
+        res = p.process_station("GONH", DAY, gap_fill=False)
+        p.gap_filler.check_and_fill.assert_not_called()
+        assert res.gap is None
+        # ingest + downsample still run
+        p.ingestor.ingest_dir.assert_called_once()
+        p.downsampler.downsample_day.assert_called_once()
 
 
 class TestRun:

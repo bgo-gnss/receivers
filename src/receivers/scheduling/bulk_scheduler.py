@@ -1512,6 +1512,17 @@ class BulkDownloadScheduler:
                         station_status = "inactive"
 
                 ident = cfg_identity.get(station_id, {})
+                # acquisition_mode + the on-disk sessions a stream station logs
+                # (remote_sessions) drive the session-aware download skip in
+                # _get_stations_for_session — they MUST be carried here or the
+                # skip silently no-ops (config.get returns "" for absent keys).
+                from ..streaming.config import get_acquisition_mode
+
+                remote_sessions = [
+                    s.strip()
+                    for s in str(config.get("remote_sessions") or "").split(",")
+                    if s.strip()
+                ]
                 stations[station_id] = {
                     "station_id": station_id,
                     "receiver_type": receiver_type,
@@ -1521,6 +1532,8 @@ class BulkDownloadScheduler:
                     "timeout_category": config.get("timeout_category", "default"),
                     "station_status": station_status,
                     "health_check": health_check,
+                    "acquisition_mode": get_acquisition_mode(config),
+                    "remote_sessions": remote_sessions,
                     "configured_serial": ident.get("configured_serial"),
                     "configured_firmware": ident.get("configured_firmware"),
                 }
@@ -2598,11 +2611,16 @@ class BulkDownloadScheduler:
                 continue
             if config.get("health_check") == "passive":
                 continue
-            # Stream-capture stations are acquired via the stream pipeline (BNC),
-            # not the file-download scheduler. The gap-filler downloads files only
-            # on demand to backfill stream gaps.
+            # Stream-capture stations: session-aware download. The stream pipeline
+            # (BNC) provides sessions the receiver does NOT log to disk (e.g. 1Hz);
+            # the sessions it DOES log (remote_sessions, e.g. GONH's 15s_24hr) are
+            # still downloaded here because the SBF-derived RINEX is the
+            # authoritative archival product and supersedes the stream's real-time
+            # downsample. A stream station with no remote_sessions (pure low-bandwidth
+            # stream) downloads nothing.
             if str(config.get("acquisition_mode", "")).strip().lower() == "stream":
-                continue
+                if session_type not in config.get("remote_sessions", []):
+                    continue
 
             # Apply station filter if specified
             if self.station_filter and station_id not in self.station_filter:
