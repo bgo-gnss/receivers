@@ -35,11 +35,16 @@ def _month(dt: date) -> str:
 def daily_15s_target(archive_base: Path | str, station_id: str, day: date) -> Path:
     """Archive path for a station's decimated daily (15s) RINEX file.
 
-    Daily RINEX uses hour code ``0``: ``<STA><DOY>0.<yy>D.Z``.
+    Daily RINEX uses hour code ``0`` and the fleet-canonical LOWERCASE Hatanaka
+    extension: ``<STA><DOY>0.<yy>d.Z``. Lowercase matters: the authoritative
+    SBF-download 15s RINEX (sbf2rin) uses this exact name, so the stream's
+    real-time downsample writes the same path and the daily SBF download
+    supersedes it in place (rather than the two coexisting as ``.26D.Z`` vs
+    ``.26d.Z`` — which is what happened before this fix).
     """
     doy = day.timetuple().tm_yday
     yy = day.year % 100
-    name = f"{station_id}{doy:03d}0.{yy:02d}D.Z"
+    name = f"{station_id}{doy:03d}0.{yy:02d}d.Z"
     return (
         Path(archive_base)
         / f"{day.year}"
@@ -51,7 +56,9 @@ def daily_15s_target(archive_base: Path | str, station_id: str, day: date) -> Pa
     )
 
 
-def hourly_1hz_sources(archive_base: Path | str, station_id: str, day: date) -> List[Path]:
+def hourly_1hz_sources(
+    archive_base: Path | str, station_id: str, day: date
+) -> List[Path]:
     """The ingested hourly 1Hz RINEX files for a station+day, sorted."""
     doy = day.timetuple().tm_yday
     yy = day.year % 100
@@ -106,9 +113,21 @@ class StreamPipeline:
         return self.supervisor.supervise()
 
     def process_station(
-        self, station_id: str, day: date, *, now: Optional[datetime] = None
+        self,
+        station_id: str,
+        day: date,
+        *,
+        now: Optional[datetime] = None,
+        gap_fill: bool = True,
     ) -> StationCycleResult:
-        """Ingest → downsample → gap-fill one station for one day."""
+        """Ingest → downsample → gap-fill one station for one day.
+
+        ``gap_fill`` should be True only when the receiver logs the 1 Hz session
+        to disk (so a stream dropout is recoverable by file download). Stations
+        that log a coarser session (e.g. GONH logs only 15s under GRB0051) cannot
+        fill 1 Hz holes from disk — gap-filling them just re-downloads the daily
+        coarse SBF and mislabels it as 1 Hz hourly, so the caller passes False.
+        """
         ingest = self.ingestor.ingest_dir(
             station_id, self.rt_base / station_id, now=now
         )
@@ -117,9 +136,11 @@ class StreamPipeline:
         downsample = self.downsampler.downsample_day(
             station_id, sources, target, self.workdir / station_id
         )
-        gap = self.gap_filler.check_and_fill(
-            station_id, day, downloader=self.downloader, now=now
-        )
+        gap = None
+        if gap_fill:
+            gap = self.gap_filler.check_and_fill(
+                station_id, day, downloader=self.downloader, now=now
+            )
         return StationCycleResult(station_id, ingest, downsample, gap)
 
     def run(

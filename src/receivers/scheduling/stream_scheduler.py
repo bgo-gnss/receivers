@@ -362,10 +362,17 @@ def _run_stream_pipeline_job(days_back: int = 1) -> None:
     from ..cli.main import get_all_station_configs
     from ..health.file_tracker import FileTracker
 
-    stations = enumerate_stream_stations(get_all_station_configs())
+    configs = get_all_station_configs()
+    stations = enumerate_stream_stations(configs)
     if not stations:
         logger.debug("No stream stations configured")
         return
+
+    def _logs_1hz_on_disk(sid: str) -> bool:
+        """Gap-fill (1 Hz from disk) is only valid if the receiver logs 1 Hz.
+        Declared per-station via remote_sessions; absent ⇒ no 1 Hz on disk."""
+        raw = str((configs.get(sid) or {}).get("remote_sessions") or "")
+        return "1Hz_1hr" in [s.strip() for s in raw.split(",")]
 
     settings = load_stream_settings()
     now = datetime.now(UTC)
@@ -382,7 +389,12 @@ def _run_stream_pipeline_job(days_back: int = 1) -> None:
         for day in days:
             for station_id in stations:
                 try:
-                    pipeline.process_station(station_id, day, now=now)
+                    pipeline.process_station(
+                        station_id,
+                        day,
+                        now=now,
+                        gap_fill=_logs_1hz_on_disk(station_id),
+                    )
                 except Exception as e:  # noqa: BLE001 - isolate per-station/day
                     logger.error("Stream pipeline %s %s: %s", station_id, day, e)
     finally:
