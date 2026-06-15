@@ -32,6 +32,10 @@ class FakeRunner:
         elif tool == "RNX2CRX":
             obs = Path(cmd[-1])
             obs.with_name(_swap_obs_to_hatanaka(obs.name)).write_bytes(b"hatanaka")
+        elif tool == "GFZRNX":
+            # gfzrnx writes its -fout target directly (no stdout redirect).
+            out = Path(cmd[cmd.index("-fout") + 1])
+            out.write_bytes(b"X" * 2000)
         return 0
 
     @property
@@ -87,19 +91,20 @@ class TestDownsample:
         assert res.status == "created"
         assert res.ok and res.source_count == 3
         assert out.exists()
-        # 3 decompress + 3 crx2rnx + 1 teqc + 1 rnx2crx + 1 compress
+        # 3 decompress + 3 crx2rnx + 1 gfzrnx + 1 rnx2crx + 1 compress
         assert runner.tools.count("CRX2RNX") == 3
-        assert runner.tools.count("TEQC") == 1
+        assert runner.tools.count("GFZRNX") == 1
         assert runner.tools.count("RNX2CRX") == 1
-        # teqc invoked with the decimation flags
-        teqc_cmd = next(c for c in runner.calls if Path(c[0]).name == "teqc")
-        assert "-O.int" in teqc_cmd and "15" in teqc_cmd and "-O.dec" in teqc_cmd
+        # gfzrnx invoked with the decimation flags (RINEX2 out, 15s sampling)
+        gfz_cmd = next(c for c in runner.calls if Path(c[0]).name == "gfzrnx")
+        assert "-smp" in gfz_cmd and "15" in gfz_cmd
+        assert "-vo" in gfz_cmd and "2" in gfz_cmd
 
     def test_uppercase_bnc_hatanaka_sources(self, tmp_path):
         """BNC writes uppercase-O RINEX2, so stream-ingested hourly files are
         ``.26D.Z`` and CRX2RNX yields ``.26O``. Regression: ``_to_obs`` hardcoded
-        lowercase ``o``, handing teqc a non-existent ``.26o`` path and breaking
-        every stream downsample.
+        lowercase ``o``, handing the decimator a non-existent ``.26o`` path and
+        breaking every stream downsample.
         """
         out = tmp_path / "GONH1620.26D.Z"
         files = []
@@ -114,11 +119,11 @@ class TestDownsample:
         )
         assert res.status == "created", res.error
         assert res.source_count == 3
-        # teqc must receive the uppercase .26O obs files CRX2RNX actually wrote,
-        # not the lowercase .26o the old code assumed.
-        teqc_cmd = next(c for c in runner.calls if Path(c[0]).name == "teqc")
-        assert any(a.endswith(".26O") for a in teqc_cmd), teqc_cmd
-        assert not any(a.endswith(".26o") for a in teqc_cmd), teqc_cmd
+        # the decimator must receive the uppercase .26O obs files CRX2RNX actually
+        # wrote, not the lowercase .26o the old code assumed.
+        gfz_cmd = next(c for c in runner.calls if Path(c[0]).name == "gfzrnx")
+        assert any(a.endswith(".26O") for a in gfz_cmd), gfz_cmd
+        assert not any(a.endswith(".26o") for a in gfz_cmd), gfz_cmd
 
     def test_partial_sources_only_existing_used(self, tmp_path):
         out = tmp_path / "GONH1620.26D.Z"
@@ -133,11 +138,11 @@ class TestDownsample:
         assert res.source_count == 2
         assert runner.tools.count("CRX2RNX") == 2
 
-    def test_teqc_failure_reported(self, tmp_path):
+    def test_decimation_failure_reported(self, tmp_path):
         out = tmp_path / "GONH1620.26D.Z"
-        res = RinexDownsampler(runner=FakeRunner(fail_tool="teqc")).downsample_day(
+        res = RinexDownsampler(runner=FakeRunner(fail_tool="gfzrnx")).downsample_day(
             "GONH", _sources(tmp_path), out, tmp_path / "wd"
         )
         assert res.status == "failed"
-        assert "teqc" in (res.error or "").lower()
+        assert "gfzrnx" in (res.error or "").lower()
         assert not out.exists()

@@ -57,7 +57,7 @@ class StreamSettings:
     bnc_config_dir: str = "~/.config/BKG"
     crx2rnx: str = "CRX2RNX"
     rnx2crx: str = "RNX2CRX"
-    teqc: str = "teqc"
+    gfzrnx: str = "gfzrnx"
     interval: int = 15
     min_missing_to_fill: int = 2
     recent_grace_hours: int = 2
@@ -125,7 +125,7 @@ def load_stream_settings() -> StreamSettings:
         bnc_config_dir=StreamSettings._expand(_s("bnc_config_dir", "~/.config/BKG")),
         crx2rnx=_s("crx2rnx", "CRX2RNX"),
         rnx2crx=_s("rnx2crx", "RNX2CRX"),
-        teqc=_s("teqc", "teqc"),
+        gfzrnx=_s("gfzrnx", "gfzrnx"),
         interval=int(_s("interval", "15")),
         min_missing_to_fill=int(_s("min_missing_to_fill", "2")),
         recent_grace_hours=int(_s("recent_grace_hours", "2")),
@@ -184,7 +184,7 @@ def build_stream_pipeline(
         interval=settings.interval,
         crx2rnx=settings.crx2rnx,
         rnx2crx=settings.rnx2crx,
-        teqc=settings.teqc,
+        gfzrnx=settings.gfzrnx,
     )
     gap_filler = GapFiller(
         make_archive_slot_checker(settings.archive_base),
