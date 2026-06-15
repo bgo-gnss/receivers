@@ -73,7 +73,7 @@ class RinexDownsampler:
         interval: int = 15,
         crx2rnx: str = "CRX2RNX",
         rnx2crx: str = "RNX2CRX",
-        teqc: str = "teqc",
+        gfzrnx: str = "gfzrnx",
         compressor: Optional[Sequence[str]] = None,
         runner: Optional[Runner] = None,
         min_output_size: int = DEFAULT_MIN_OUTPUT_SIZE,
@@ -81,7 +81,10 @@ class RinexDownsampler:
         self.interval = interval
         self.crx2rnx = crx2rnx
         self.rnx2crx = rnx2crx
-        self.teqc = teqc
+        # gfzrnx, not teqc, does the concat+decimate: teqc 2019 hardcodes the
+        # GLONASS slot max at 24 and aborts on modern slots (R25+) that appear in
+        # BNC stream RINEX, failing the whole day. gfzrnx handles them.
+        self.gfzrnx = gfzrnx
         # Default to gzip (handles/produces .Z-named gzip); overridable to `compress`.
         self.compressor = list(compressor) if compressor else ["gzip", "-c"]
         self._run: Runner = runner or _default_runner
@@ -180,17 +183,26 @@ class RinexDownsampler:
         return obs
 
     def _decimate(self, obs_files: List[Path], daily_obs: Path) -> None:
-        """teqc concat + decimate the hourly obs files into one daily obs."""
+        """gfzrnx concat + decimate the hourly obs files into one daily obs.
+
+        ``-vo 2`` keeps the output RINEX 2 (the legacy ``conv1Hzrinto15s`` /
+        teqc product); ``-smp`` sets the sample interval; ``-f`` overwrites.
+        gfzrnx writes ``-fout`` itself (no stdout redirect, unlike teqc).
+        """
         cmd = [
-            self.teqc,
-            "-O.int",
-            str(self.interval),
-            "-O.dec",
-            str(self.interval),
+            self.gfzrnx,
+            "-finp",
             *[str(f) for f in obs_files],
+            "-fout",
+            str(daily_obs),
+            "-smp",
+            str(self.interval),
+            "-vo",
+            "2",
+            "-f",
         ]
-        if self._run(cmd, daily_obs) != 0:
-            raise RuntimeError("teqc decimation failed")
+        if self._run(cmd, None) != 0:
+            raise RuntimeError("gfzrnx decimation failed")
 
     def _to_hatanaka_compressed(self, daily_obs: Path, workdir: Path) -> Path:
         """RNX2CRX the daily obs then compress → .??d.Z (gzip)."""
