@@ -789,6 +789,363 @@ def add_monument(
     return result
 
 
+# ---------------------------------------------------------------------------
+# Campaign history import (station.info → TOS) + continuity transitions
+# ---------------------------------------------------------------------------
+
+# Station-level attribute code carrying the campaign/continuous classification.
+_CONTINUITY_CODE = "continuity"
+_CONTINUITY_VALUES = ("campaign", "continuous")
+
+
+def _existing_session_index(
+    writer: TOSWriter, station_eid: int
+) -> set[tuple[Optional[str], Optional[str], str]]:
+    """Index a station's existing device sessions for idempotent import.
+
+    Returns a set of ``(subtype, serial_number, time_from_date)`` tuples — one
+    per child join on the station (open or closed). The importer skips an
+    occupation whose ``(gnss_receiver, serial, start-date)`` already appears
+    here, so re-running the import is a no-op (the design dedup key:
+    marker + session-start + receiver serial).
+
+    Built from the station's ``children_connections`` + each child's
+    ``serial_number`` attribute — not the lagging ``/basic_search/`` index — so
+    it is reliable on a freshly-written station.
+    """
+    index: set[tuple[Optional[str], Optional[str], str]] = set()
+    history = writer.get_entity_history(station_eid)
+    if not isinstance(history, dict):
+        return index
+    for conn in history.get("children_connections") or []:
+        cid = conn.get("id_entity_child")
+        tfrom = conn.get("time_from")
+        if cid is None or not tfrom:
+            continue
+        child_hist = writer.get_entity_history(int(cid))
+        if not isinstance(child_hist, dict):
+            continue
+        subtype = child_hist.get("code_entity_subtype")
+        serial = _device_attribute(child_hist, "serial_number")
+        index.add((subtype, serial, str(tfrom)[:10]))
+    return index
+
+
+def _ensure_device(
+    writer: TOSWriter,
+    subtype: str,
+    attrs: List[Dict[str, Any]],
+    serial: str,
+    force: bool,
+) -> Optional[int]:
+    """Return an existing device's id_entity (by serial) or create it.
+
+    Campaign occupations may reuse a device across stations/years, and a
+    re-run must not duplicate it — so look the serial up first and reuse the
+    entity when found, only creating when it is genuinely new. Returns ``None``
+    in dry-run (no id assigned yet), which callers render as a previewed join.
+    """
+    existing = writer.find_device_by_serial(subtype, serial)
+    if isinstance(existing, dict) and existing.get("id_entity") is not None:
+        return int(existing["id_entity"])
+    resp = writer.create_device(subtype, attrs, force=force)
+    return resp.get("id_entity") if isinstance(resp, dict) else None
+
+
+def import_campaigns(
+    writer: Optional[TOSWriter] = None,
+    *,
+    station_id: str,
+    station_info_path: Union[str, Path],
+    marker: Optional[str] = None,
+    owner: str = "Jarðeðlismælihópur",
+    with_monument: bool = False,
+    monument_height: Optional[str] = None,
+    force: bool = False,
+    dry_run: bool = True,
+) -> OperationResult:
+    """Import a station's GAMIT ``station.info`` campaign occupations into TOS.
+
+    Each occupation (a closed receiver + antenna install span) becomes a pair
+    of **closed** device sessions on the station: a ``gnss_receiver`` and an
+    ``antenna`` (plus a ``radome`` when the dome is not ``NONE``), each joined
+    over the occupation's exact ``[time_from, time_to]`` window. Because the
+    receiver and antenna for one occupation share the *same* full datetimes,
+    they land in a single TOS session (the session-split trap that bites
+    ``add-antenna`` cannot occur here).
+
+    Campaign occupations are **metadata-only** — no ``stations.cfg``, download,
+    or monitoring footprint is created (campaigns never enter the operational
+    system; only the continuous install does). This function therefore writes
+    nothing outside TOS.
+
+    Monuments: a campaign does *not* require a monument. When a campaign used a
+    tripod over a benchmark, that tripod is recorded as a monument — pass
+    ``with_monument=True`` (optionally ``monument_height``) to create one per
+    occupation. Default is off (the common DHARP-on-benchmark case, e.g. VOTT).
+
+    Idempotency: an occupation already present as a ``(gnss_receiver, serial,
+    start-date)`` session on the station is skipped (see
+    :func:`_existing_session_index`); existing device entities are reused by
+    serial rather than duplicated.
+
+    Args:
+        writer: Configured :class:`TOSWriter`, or ``None`` to build one.
+        station_id: 4-char marker — the TOS station to attach occupations to.
+        station_info_path: Path to a GAMIT ``station.info`` file.
+        marker: station.info marker to read (defaults to ``station_id``).
+        owner: Owner label for created devices.
+        with_monument: Create a monument per occupation (tripod-over-benchmark).
+        monument_height: Mark→ARP height for the monument; defaults to the
+            occupation's station.info antenna height.
+        force: Bypass duplicate-serial / session-skip guards.
+        dry_run: When ``True`` (default), no writes are sent.
+
+    Returns:
+        :class:`OperationResult` with ``operation="import-campaigns"``; per-
+        occupation summaries live under ``tos_changes["occupations"]``.
+    """
+    from tostools.device import (
+        build_antenna_attributes,
+        build_monument_attributes,
+        build_required_attributes,
+        synthetic_serial,
+        validate_model,
+    )
+    from tostools.standards.gamit_station_info import parse_station_info
+
+    occupations = parse_station_info(station_info_path, marker=marker or station_id)
+
+    result = OperationResult(
+        operation="import-campaigns",
+        station_id=station_id,
+        dry_run=dry_run,
+    )
+    if not occupations:
+        raise CfgOperationError(
+            f"No station.info occupations found for marker "
+            f"{(marker or station_id)!r} in {station_info_path}."
+        )
+
+    w = _resolve_writer(writer, dry_run)
+    station_eid = _resolve_station(w, station_id)
+    existing = _existing_session_index(w, station_eid)
+
+    summaries: List[Dict[str, Any]] = []
+    created = skipped = 0
+
+    for occ in occupations:
+        time_from = occ.time_from.replace(microsecond=0).isoformat()
+        time_to = (
+            occ.time_to.replace(microsecond=0).isoformat() if occ.time_to else None
+        )
+
+        rx_serial = occ.receiver_sn or synthetic_serial(
+            "gnss_receiver", station_id, time_from
+        )
+        key = ("gnss_receiver", rx_serial, time_from[:10])
+        if key in existing and not force:
+            skipped += 1
+            summaries.append(
+                {
+                    "time_from": time_from,
+                    "time_to": time_to,
+                    "status": "skipped (already present)",
+                    "receiver_serial": rx_serial,
+                }
+            )
+            continue
+
+        summary: Dict[str, Any] = {
+            "time_from": time_from,
+            "time_to": time_to,
+            "status": "created",
+        }
+
+        # --- receiver -------------------------------------------------------
+        rx_model = validate_model("gnss_receiver", occ.receiver_type)
+        # Device attributes (serial/model/owner/status/firmware) are intrinsic
+        # to the entity and stay OPEN (date_to=None) — exactly as add_receiver /
+        # add_antenna create them, and as move_device leaves them when retiring a
+        # unit (it closes the JOIN and transitions status, never the identity
+        # attrs). Only the station↔device join is time-bounded to the occupation.
+        rx_attrs = build_required_attributes(rx_serial, rx_model, owner, time_from)
+        if occ.vers:
+            rx_attrs.append(
+                {
+                    "code": "firmware_version",
+                    "value": occ.vers,
+                    "date_from": time_from,
+                    "date_to": None,
+                }
+            )
+        rx_id = _ensure_device(w, "gnss_receiver", rx_attrs, rx_serial, force)
+        summary["receiver"] = {
+            "serial": rx_serial,
+            "model": rx_model,
+            "id_entity": rx_id,
+        }
+        if rx_id is not None:
+            w.create_entity_connection(station_eid, rx_id, time_from, time_to)
+            summary["receiver"]["joined"] = True
+
+        # --- antenna --------------------------------------------------------
+        ant_synthetic = not occ.antenna_sn
+        ant_serial = occ.antenna_sn or synthetic_serial(
+            "antenna", station_id, time_from
+        )
+        ant_model = validate_model("antenna", occ.antenna_type)
+        ant_attrs = build_antenna_attributes(
+            serial=ant_serial,
+            model=ant_model,
+            owner=owner,
+            date_start=time_from,
+            antenna_height=occ.antenna_height or None,
+        )
+        ant_id = _ensure_device(w, "antenna", ant_attrs, ant_serial, force)
+        summary["antenna"] = {
+            "serial": ant_serial,
+            "model": ant_model,
+            "synthetic_serial": ant_synthetic,
+            "height": occ.antenna_height,
+            "id_entity": ant_id,
+        }
+        if ant_id is not None:
+            w.create_entity_connection(station_eid, ant_id, time_from, time_to)
+            summary["antenna"]["joined"] = True
+
+        # --- radome (only when present) ------------------------------------
+        if occ.dome and occ.dome != "NONE":
+            rad_model = validate_model("radome", occ.dome)
+            rad_serial = synthetic_serial("radome", station_id, time_from)
+            rad_attrs = build_required_attributes(
+                rad_serial, rad_model, owner, time_from
+            )
+            rad_id = _ensure_device(w, "radome", rad_attrs, rad_serial, force)
+            summary["radome"] = {"serial": rad_serial, "id_entity": rad_id}
+            if rad_id is not None:
+                w.create_entity_connection(station_eid, rad_id, time_from, time_to)
+                summary["radome"]["joined"] = True
+
+        # --- monument (optional — tripod over benchmark) -------------------
+        if with_monument:
+            mon_height = monument_height or occ.antenna_height or "0.0"
+            mon_serial = synthetic_serial("monument", station_id, time_from)
+            mon_attrs = build_monument_attributes(
+                serial=mon_serial,
+                owner=owner,
+                date_start=time_from,
+                monument_height=mon_height,
+            )
+            mon_id = _ensure_device(w, "monument", mon_attrs, mon_serial, force)
+            summary["monument"] = {
+                "serial": mon_serial,
+                "height": mon_height,
+                "id_entity": mon_id,
+            }
+            if mon_id is not None:
+                w.create_entity_connection(station_eid, mon_id, time_from, time_to)
+                summary["monument"]["joined"] = True
+
+        created += 1
+        summaries.append(summary)
+
+    result.tos_changes["occupations"] = summaries
+    result.tos_changes["summary"] = {
+        "total": len(occupations),
+        "created": created,
+        "skipped": skipped,
+    }
+    logger.info(
+        "import-campaigns %s: %d occupation(s) — %d created, %d skipped%s",
+        station_id,
+        len(occupations),
+        created,
+        skipped,
+        " (dry-run)" if dry_run else "",
+    )
+    return result
+
+
+def set_continuity(
+    writer: Optional[TOSWriter] = None,
+    *,
+    station_id: str,
+    from_date: str,
+    value: str,
+    correct_current: Optional[str] = None,
+    dry_run: bool = True,
+) -> OperationResult:
+    """Transition a station's ``continuity`` classification at a date.
+
+    Continuity is fluid: a station can move campaign → continuous and back over
+    time. This closes the currently-open ``continuity`` period at ``from_date``
+    and opens a new one with ``value`` (via
+    :meth:`TOSWriter.transition_attribute_value`), preserving history.
+
+    ``correct_current`` handles the case where the currently-open period has the
+    *wrong* value (e.g. VOTT was created ``continuous`` from 2012 when that span
+    was actually ``campaign``): the open period's value is first PATCHed to
+    ``correct_current`` in place, *then* the transition closes it at
+    ``from_date`` and opens ``value``. The net result is
+    ``correct_current`` over the historical span and ``value`` from
+    ``from_date`` onward.
+
+    Args:
+        writer: Configured :class:`TOSWriter`, or ``None`` to build one.
+        station_id: 4-char station marker.
+        from_date: Transition date (bare ``YYYY-MM-DD`` → noon, matching the
+            other verbs). The close of the old period and open of the new.
+        value: New continuity value (``"campaign"`` or ``"continuous"``).
+        correct_current: When set, relabel the currently-open period to this
+            value before transitioning (historical mislabel fix).
+        dry_run: When ``True`` (default), no writes are sent.
+    """
+    if value not in _CONTINUITY_VALUES:
+        raise CfgOperationError(
+            f"continuity value must be one of {_CONTINUITY_VALUES}, got {value!r}"
+        )
+    if correct_current is not None and correct_current not in _CONTINUITY_VALUES:
+        raise CfgOperationError(
+            f"--correct-current must be one of {_CONTINUITY_VALUES}, "
+            f"got {correct_current!r}"
+        )
+
+    w = _resolve_writer(writer, dry_run)
+    station_eid = _resolve_station(w, station_id)
+    eff_date = _visit_default_time(from_date)
+
+    result = OperationResult(
+        operation="set-continuity",
+        station_id=station_id,
+        date=eff_date,
+        dry_run=dry_run,
+    )
+
+    if correct_current is not None:
+        existing = w.get_attribute_values(station_eid, _CONTINUITY_CODE)
+        open_periods = [a for a in existing if a.get("date_to") is None]
+        if open_periods:
+            current = max(open_periods, key=lambda a: a.get("date_from") or "")
+            id_av = current.get("id_attribute_value") or current.get("id")
+            if id_av is not None and current.get("value") != correct_current:
+                result.tos_changes["corrected_current"] = w.patch_attribute_value(
+                    int(id_av), value=correct_current
+                )
+
+    result.tos_changes["transition"] = w.transition_attribute_value(
+        station_eid, _CONTINUITY_CODE, value, eff_date
+    )
+    logger.info(
+        "set-continuity %s: → %s from %s%s",
+        station_id,
+        value,
+        eff_date,
+        " (dry-run)" if dry_run else "",
+    )
+    return result
+
+
 def move_device(
     serial: Optional[str] = None,
     *,
