@@ -185,9 +185,10 @@ class RinexDownsampler:
     def _decimate(self, obs_files: List[Path], daily_obs: Path) -> None:
         """gfzrnx concat + decimate the hourly obs files into one daily obs.
 
-        ``-vo 2`` keeps the output RINEX 2 (the legacy ``conv1Hzrinto15s`` /
-        teqc product); ``-smp`` sets the sample interval; ``-f`` overwrites.
-        gfzrnx writes ``-fout`` itself (no stdout redirect, unlike teqc).
+        ``-vo 3`` writes RINEX 3, matching the authoritative SBF/sbf2rin 15s
+        product (3.04) so the stream interim and the daily SBF supersede agree on
+        version; ``-smp`` sets the sample interval; ``-f`` overwrites. gfzrnx
+        writes ``-fout`` itself (no stdout redirect, unlike teqc).
         """
         cmd = [
             self.gfzrnx,
@@ -198,7 +199,7 @@ class RinexDownsampler:
             "-smp",
             str(self.interval),
             "-vo",
-            "2",
+            "3",
             "-f",
         ]
         if self._run(cmd, None) != 0:

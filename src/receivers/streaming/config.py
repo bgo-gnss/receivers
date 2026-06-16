@@ -72,10 +72,13 @@ class StreamConfig:
     rnx_path: str = ""
     rnx_interval: str = "1 hour"
     rnx_sampling: int = 1
-    rnx_version: int = 2
+    # RINEX 3 by default: matches the authoritative SBF/sbf2rin product (3.04) so
+    # the stream interim and the daily SBF supersede agree on version, and RINEX 3
+    # represents modern multi-GNSS (incl. GLONASS slots >24) properly.
+    rnx_version: int = 3
     latitude: Optional[float] = None
     longitude: Optional[float] = None
-    country: str = "IS"
+    country: str = "ISL"  # 3-char ISO for valid RINEX 3 long filenames
     extra: Dict[str, str] = field(default_factory=dict)
 
     @classmethod

@@ -39,13 +39,14 @@ def build_bnc_config(cfg: StreamConfig) -> str:
     authority = _credentialed_authority(cfg)
     lat = f"{cfg.latitude:.2f}" if cfg.latitude is not None else "0.00"
     lon = f"{cfg.longitude:.2f}" if cfg.longitude is not None else "0.00"
-    rnx_v3 = 1 if cfg.rnx_version >= 3 else 0
+    # BNC config booleans use Qt checkbox serialization: 2 = checked, 0 = unchecked
+    # (cf. autoStart=2). rnxV3=1 is NEITHER, so it silently left BNC on RINEX 2 —
+    # rnxV3 must be "2" to actually emit RINEX 3.
+    rnx_v3 = 2 if cfg.rnx_version >= 3 else 0
     log_file = str(Path(cfg.rnx_path) / "RinexObs.log")
 
     # mountPoints format: //auth/MOUNT FORMAT COUNTRY LAT LON nmea ntrip-version
-    mount_line = (
-        f"//{authority}/{cfg.mountpoint} RTCM_3 {cfg.country} {lat} {lon} no 1"
-    )
+    mount_line = f"//{authority}/{cfg.mountpoint} RTCM_3 {cfg.country} {lat} {lon} no 1"
 
     general: List[Tuple[str, str]] = [
         ("adviseFail", "15"),

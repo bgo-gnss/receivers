@@ -79,14 +79,14 @@ class TestBuildBncConfig:
         assert "[General]" in body and "[PPP]" in body
         assert "rnxIntr=1 hour" in body
         assert "rnxSampl=1" in body
-        assert "rnxV3=0" in body  # version 2 -> rnxV3=0
+        assert "rnxV3=2" in body  # default rnx_version=3 -> Qt-checked (2)
         assert "rnxPath=/home/gpsops/tmp/RT-rinex/GONH" in body
 
     def test_mountpoint_and_caster_with_credentials(self):
         body = build_bnc_config(self._cfg())
         assert (
             "mountPoints=//user:secret@ntrcaster.vedur.is:2101/GONH0 "
-            "RTCM_3 IS 63.92 -22.37 no 1" in body
+            "RTCM_3 ISL 63.92 -22.37 no 1" in body
         )
         assert "casterUrlList=http://user:secret@ntrcaster.vedur.is:2101" in body
 
@@ -95,8 +95,13 @@ class TestBuildBncConfig:
         assert "casterUrlList=http://ntrcaster.vedur.is:2101" in body
         assert "@" not in body.split("casterUrlList=")[1].splitlines()[0]
 
-    def test_rnx_version_3(self):
-        assert "rnxV3=1" in build_bnc_config(self._cfg(rnx_version=3))
+    def test_rnx_version_3_is_qt_checked(self):
+        # BNC booleans use Qt serialization: 2 = checked. rnxV3=1 silently left
+        # BNC on RINEX 2 (the bug this fixed).
+        assert "rnxV3=2" in build_bnc_config(self._cfg(rnx_version=3))
+
+    def test_rnx_version_2_is_qt_unchecked(self):
+        assert "rnxV3=0" in build_bnc_config(self._cfg(rnx_version=2))
 
 
 class TestWriteBncConfig:

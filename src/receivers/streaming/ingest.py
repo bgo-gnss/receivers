@@ -1,18 +1,18 @@
 """Ingest BNC stream-capture RINEX into the data archive + file_tracking.
 
-Port of the legacy ``sort-lmi-1Hz.sh``: BNC writes hourly 1 Hz RINEX obs files
-(``SSSSDDDH.YYO``) into ``~/tmp/RT-rinex/<SID>/``. This module moves each *completed*
-hourly file (the in-progress current hour is skipped) into the archive at
-``<base>/<YYYY>/<mon>/<SID>/1Hz_1hr/rinex/`` in the fleet's Hatanaka-compressed
-form (``.YYD.Z``), and records it via an injectable file-tracking callback so stream
-stations show up in the dashboards like file-download stations.
+Port of the legacy ``sort-lmi-1Hz.sh``: BNC writes hourly 1 Hz RINEX obs files —
+either RINEX 2 short names (``SSSSDDDH.YYO``) or RINEX 3 long names
+(``SSSSMRCCC_S_YYYYDDDHHMM_01H_MO.rnx``) — into ``~/tmp/RT-rinex/<SID>/``. This
+module moves each *completed* hourly file (the in-progress current hour is skipped)
+into the archive at ``<base>/<YYYY>/<mon>/<SID>/1Hz_1hr/rinex/`` under the fleet's
+canonical short, lowercase Hatanaka name (``SSSSDDDH.YYd.Z``) — matching the
+SBF/sbf2rin product — regardless of the source RINEX version, and records it via an
+injectable file-tracking callback so stream stations show up in the dashboards like
+file-download stations.
 
 External commands (RNX2CRX, compress) go through one injectable ``runner``; the
 file-tracking integration is an injectable ``tracker`` seam. Both make the
 scan/parse/skip/place logic fully unit-testable without tools or a database.
-
-NOTE: the real file_tracking recorder is wired in the scheduler-integration step;
-exact tool flags / .Z format need validation on rek-d01 (see RinexDownsampler).
 """
 
 from __future__ import annotations
@@ -39,6 +39,15 @@ _RINEX2_OBS_RE = re.compile(
     r"^(?P<sta>[A-Z0-9]{4})(?P<doy>\d{3})(?P<hour>[a-xA-X0])\.(?P<yy>\d{2})[Oo]$"
 )
 
+# RINEX3 long obs name (BNC stream RINEX 3 output), e.g.
+#   GONH00ISL_S_20261670700_01H_MO.rnx
+# = SSSS MR CCC _ <src> _ YYYYDDDHHMM _ <period> [_ <sample>] _ <typ>O.rnx
+_RINEX3_OBS_RE = re.compile(
+    r"^(?P<sta>[A-Z0-9]{4})\d{2}[A-Z]{3}_[A-Z]_"
+    r"(?P<yyyy>\d{4})(?P<doy>\d{3})(?P<hh>\d{2})\d{2}_"
+    r"\d+[A-Z](?:_\d+[A-Z])?_[A-Z]O\.rnx$"
+)
+
 
 def _default_runner(cmd: Sequence[str], stdout_path: Optional[Path] = None) -> int:
     if stdout_path is not None:
@@ -54,9 +63,14 @@ def _hour_to_int(hour_char: str) -> int:
     return ord(hour_char.lower()) - ord("a")
 
 
+def _hour_letter(hour: int) -> str:
+    """0 → 'a' … 23 → 'x' (RINEX hour code)."""
+    return chr(ord("a") + hour)
+
+
 @dataclass(frozen=True)
 class BncRinexFile:
-    """A parsed BNC hourly RINEX obs filename."""
+    """A parsed BNC hourly RINEX obs filename (RINEX2 short or RINEX3 long)."""
 
     station: str
     doy: int
@@ -66,15 +80,32 @@ class BncRinexFile:
 
     @property
     def datetime(self) -> datetime:
-        d = datetime.strptime(f"{self.year} {self.doy}", "%Y %j").replace(
-            tzinfo=UTC
-        )
+        d = datetime.strptime(f"{self.year} {self.doy}", "%Y %j").replace(tzinfo=UTC)
         return d.replace(hour=self.hour)
 
     @property
+    def short_obs_name(self) -> str:
+        """Canonical short obs name (lowercase) — the RNX2CRX input.
+
+        Derived from parsed fields, so a RINEX3 *long* BNC name normalizes to the
+        fleet-standard short name carrying the (RINEX3) content.
+        """
+        return (
+            f"{self.station}{self.doy:03d}{_hour_letter(self.hour)}"
+            f".{self.year % 100:02d}o"
+        )
+
+    @property
     def hatanaka_name(self) -> str:
-        """Archive filename: ``...O`` → ``...D.Z``."""
-        return _swap_obs_to_hatanaka(self.name) + ".Z"
+        """Canonical archive filename: short, lowercase Hatanaka ``SSSSDDDH.YYd.Z``.
+
+        Matches the authoritative SBF/sbf2rin product naming so the stream and
+        download 15s products share one convention regardless of RINEX version.
+        """
+        return (
+            f"{self.station}{self.doy:03d}{_hour_letter(self.hour)}"
+            f".{self.year % 100:02d}d.Z"
+        )
 
     def archive_path(self, base: Path | str, session_type: str = "1Hz_1hr") -> Path:
         dt = self.datetime
@@ -90,19 +121,28 @@ class BncRinexFile:
 
 
 def parse_bnc_rinex_name(name: str) -> Optional[BncRinexFile]:
-    """Parse a BNC RINEX2 hourly obs filename, or None if it doesn't match."""
+    """Parse a BNC hourly obs filename (RINEX2 short or RINEX3 long), else None."""
     m = _RINEX2_OBS_RE.match(name)
-    if not m:
-        return None
-    yy = int(m.group("yy"))
-    year = 2000 + yy if yy < 80 else 1900 + yy
-    return BncRinexFile(
-        station=m.group("sta"),
-        doy=int(m.group("doy")),
-        hour=_hour_to_int(m.group("hour")),
-        year=year,
-        name=name,
-    )
+    if m:
+        yy = int(m.group("yy"))
+        year = 2000 + yy if yy < 80 else 1900 + yy
+        return BncRinexFile(
+            station=m.group("sta"),
+            doy=int(m.group("doy")),
+            hour=_hour_to_int(m.group("hour")),
+            year=year,
+            name=name,
+        )
+    m = _RINEX3_OBS_RE.match(name)
+    if m:
+        return BncRinexFile(
+            station=m.group("sta"),
+            doy=int(m.group("doy")),
+            hour=int(m.group("hh")),
+            year=int(m.group("yyyy")),
+            name=name,
+        )
+    return None
 
 
 @dataclass
@@ -144,7 +184,10 @@ class StreamIngestor:
         if not rt_dir.is_dir():
             return result
 
-        for path in sorted(rt_dir.glob("*.??[Oo]")):
+        # RINEX2 short obs (*.YYO) and RINEX3 long obs (*.rnx). Nav/other .rnx
+        # files don't match parse_bnc_rinex_name and are skipped below.
+        candidates = sorted(list(rt_dir.glob("*.??[Oo]")) + list(rt_dir.glob("*.rnx")))
+        for path in candidates:
             parsed = parse_bnc_rinex_name(path.name)
             if parsed is None:
                 continue
@@ -169,19 +212,33 @@ class StreamIngestor:
         return result
 
     def _ingest_one(self, parsed: BncRinexFile, obs_path: Path) -> None:
-        compressed = self._hatanaka_compress(obs_path)
+        compressed = self._hatanaka_compress(parsed, obs_path)
         dest = parsed.archive_path(self.archive_base, self.session_type)
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(compressed), str(dest))
         if self._track is not None:
             self._track(parsed.station, dest, parsed.datetime, self.session_type)
 
-    def _hatanaka_compress(self, obs_path: Path) -> Path:
-        """RNX2CRX the obs file then compress → ``.??d.Z`` (in the same dir)."""
-        if self._run([self.rnx2crx, "-f", str(obs_path)], None) != 0:
-            raise RuntimeError(f"RNX2CRX failed: {obs_path}")
-        hatanaka = obs_path.with_name(_swap_obs_to_hatanaka(obs_path.name))
-        compressed = obs_path.with_name(hatanaka.name + ".Z")
-        if self._run([*self.compressor, str(hatanaka)], compressed) != 0:
-            raise RuntimeError(f"compress failed: {hatanaka}")
-        return compressed
+    def _hatanaka_compress(self, parsed: BncRinexFile, obs_path: Path) -> Path:
+        """Normalize to the canonical short obs name, RNX2CRX, compress → ``.YYd.Z``.
+
+        The BNC source may be a RINEX2 short name or a RINEX3 long ``.rnx``; both
+        are copied to ``parsed.short_obs_name`` first so RNX2CRX yields the
+        fleet-standard short Hatanaka name (lowercase) regardless of input form.
+        """
+        short_obs = obs_path.with_name(parsed.short_obs_name)
+        copied = obs_path.resolve() != short_obs.resolve()
+        if copied:
+            shutil.copy(str(obs_path), str(short_obs))
+        try:
+            if self._run([self.rnx2crx, "-f", str(short_obs)], None) != 0:
+                raise RuntimeError(f"RNX2CRX failed: {short_obs}")
+            hatanaka = short_obs.with_name(_swap_obs_to_hatanaka(short_obs.name))
+            compressed = short_obs.with_name(parsed.hatanaka_name)
+            if self._run([*self.compressor, str(hatanaka)], compressed) != 0:
+                raise RuntimeError(f"compress failed: {hatanaka}")
+            hatanaka.unlink(missing_ok=True)
+            return compressed
+        finally:
+            if copied:
+                short_obs.unlink(missing_ok=True)
