@@ -2697,7 +2697,17 @@ def cmd_cfg_discover_phone(args) -> int:
         )
         return 2
 
-    message = args.message or f"GPS SIM MSISDN discovery {_date.today().isoformat()}"
+    # Identify the source in the body so the received SMS says which station/SIM
+    # it's from: '<marker> <ip> GPS SIM MSISDN discovery <date>'. --station labels
+    # the message even when --host is given (they can be passed together).
+    if args.message:
+        message = args.message
+    else:
+        bits = []
+        if args.station:
+            bits.append(args.station)
+        bits += [host, "GPS SIM MSISDN discovery", _date.today().isoformat()]
+        message = " ".join(bits)
     dry_run = not args.no_dry_run
 
     try:

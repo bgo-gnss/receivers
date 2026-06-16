@@ -552,7 +552,11 @@ def send_sms_ssh(
         )
 
     payload = shlex.quote(f"{to_number.strip()} {message}")
-    cmd = f"gsmctl -S -s {payload}"
+    # gsmctl SMS ops can stall on a busy/flaky modem and never return — the SSH
+    # exit-status wait then blocks forever. Cap it with a router-side `timeout`
+    # (busybox); the SMS is fire-and-forget once handed to the modem.
+    send_timeout = 30
+    cmd = f"timeout {send_timeout} gsmctl -S -s {payload}"
     if dry_run:
         return {
             "dry_run": True,
@@ -577,12 +581,18 @@ def send_sms_ssh(
 
     client = _connect(host, ssh_user=ssh_user, password=pw, port=port, timeout=timeout)
     try:
-        rc, out, err = _run(client, cmd, timeout=timeout)
+        rc, out, err = _run(client, cmd, timeout=send_timeout + 10)
     finally:
         try:
             client.close()
         except Exception:  # noqa: BLE001 — best-effort close
             pass
+    if rc == 124:
+        raise ProbeError(
+            f"{host}: gsmctl SMS send timed out after {send_timeout}s — the modem's "
+            f"SMS subsystem is stalled (signal/registration may still be fine). The "
+            f"message may not have been queued; check the catcher phone and retry."
+        )
     if rc != 0:
         raise ProbeError(
             f"{host}: gsmctl SMS send failed (rc={rc}): {(err or out)[:200]}"
