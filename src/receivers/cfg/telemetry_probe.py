@@ -497,6 +497,106 @@ def send_sms(
     }
 
 
+def send_sms_ssh(
+    host: str,
+    to_number: str,
+    message: str,
+    *,
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+    cfg_path: Optional[str] = None,
+    ssh_user: str = "root",
+    port: int = 22,
+    timeout: int = DEFAULT_TIMEOUT,
+    dry_run: bool = True,
+) -> Dict[str, Any]:
+    """Send one SMS from the router's SIM via ``gsmctl`` over SSH.
+
+    The universal counterpart to :func:`send_sms` (REST): ``gsmctl`` is present
+    on every Teltonika router — legacy RUT240/uhttpd **and** RutOS 7.x — so this
+    works where the REST API is absent or disabled (e.g. VOTT's RUT240, which
+    refuses :443). Same MSISDN-discovery purpose: the field router texts a catcher
+    number, whose received-message sender header reveals this SIM's own number.
+
+    RutOS syntax: ``gsmctl -S -s "<NUMBER> <TEXT>"`` (number + text in one quoted
+    arg). The payload is ``shlex``-quoted to neutralise shell metacharacters, and
+    ``to_number`` is validated as a phone number.
+
+    **Outward-facing, costs a message.** Dry-run by default — returns the planned
+    command without connecting.
+
+    Args:
+        host: Router IP/hostname (the SENDING router).
+        to_number: Destination (the catcher / operator mobile, ``+`` and digits).
+        message: SMS body.
+        username/password/cfg_path: SSH creds — resolved via
+            :func:`resolve_credentials` when not given (RutOS SSH logs in as
+            ``root`` with the web/admin password).
+        ssh_user/port/timeout: SSH connection params.
+        dry_run: When True (default), do not send — return the planned command.
+
+    Returns:
+        ``{"dry_run": bool, "to": ..., "transport": "ssh", "cmd": ...,
+           "sent": bool, "output": ...}``.
+
+    Raises:
+        ProbeError / ProbeAuthError / ProbeUnreachableError on bad input,
+        missing creds, or SSH/auth/send failure.
+    """
+    import re
+    import shlex
+
+    if not re.fullmatch(r"\+?\d{4,15}", (to_number or "").strip()):
+        raise ProbeError(
+            f"invalid --to number {to_number!r} — expected digits, optional leading +"
+        )
+
+    payload = shlex.quote(f"{to_number.strip()} {message}")
+    cmd = f"gsmctl -S -s {payload}"
+    if dry_run:
+        return {
+            "dry_run": True,
+            "to": to_number,
+            "transport": "ssh",
+            "cmd": cmd,
+            "sent": False,
+            "output": None,
+        }
+
+    _user, pw = resolve_credentials(
+        username=username, password=password, cfg_path=cfg_path
+    )
+    if not pw:
+        raise ProbeError(
+            f"{host}: no router password — set [teltonika] password / "
+            f"password_pass_path in receivers.cfg, or pass --password"
+        )
+
+    # Lazy import to avoid a telemetry_probe ↔ conntrack_helper import cycle.
+    from .conntrack_helper import _connect, _run
+
+    client = _connect(host, ssh_user=ssh_user, password=pw, port=port, timeout=timeout)
+    try:
+        rc, out, err = _run(client, cmd, timeout=timeout)
+    finally:
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001 — best-effort close
+            pass
+    if rc != 0:
+        raise ProbeError(
+            f"{host}: gsmctl SMS send failed (rc={rc}): {(err or out)[:200]}"
+        )
+    return {
+        "dry_run": False,
+        "to": to_number,
+        "transport": "ssh",
+        "cmd": cmd,
+        "sent": True,
+        "output": out,
+    }
+
+
 # ---------------------------------------------------------------------------
 # RutOS port-forwards (DNAT) — so the WAN-side scheduler can reach the
 # receiver's control/FTP/HTTP ports on the router's LAN.

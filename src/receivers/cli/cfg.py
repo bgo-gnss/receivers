@@ -2650,6 +2650,79 @@ def cmd_cfg_add_monument(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# cmd_cfg_discover_phone — reveal a router SIM's own phone number (MSISDN)
+# ---------------------------------------------------------------------------
+
+
+def cmd_cfg_discover_phone(args) -> int:
+    """``cfg discover-phone`` — reveal a router SIM's own phone number (MSISDN).
+
+    A SIM can't read its own number locally, so the field router texts a catcher
+    number (``--to``) and the operator reads the sender off that phone. Sent via
+    ``gsmctl`` over SSH — universal across Teltonika routers (works where the REST
+    API is off, e.g. legacy RUT240). Outward-facing + costs a message; dry-run
+    default. Exit 0 on success, 1 on send failure, 2 on input-validation failure.
+    """
+    import sys
+    from datetime import date as _date
+
+    from ..cfg.telemetry_probe import (
+        ProbeError,
+        resolve_discover_phone_to,
+        send_sms_ssh,
+    )
+
+    host = args.host
+    if not host and args.station:
+        from ..config_utils import get_station_config
+
+        cfg = get_station_config(args.station, silent=True)
+        host = (cfg or {}).get("router_ip") or (cfg or {}).get("ip_address")
+        if not host:
+            print(
+                f"❌ no router_ip for {args.station} in stations.cfg — pass --host",
+                file=sys.stderr,
+            )
+            return 2
+    if not host:
+        print("❌ --host or --station is required", file=sys.stderr)
+        return 2
+
+    to = args.to or resolve_discover_phone_to()
+    if not to:
+        print(
+            "❌ --to <catcher mobile> is required (or set [teltonika] "
+            "discover_phone_to in receivers.cfg)",
+            file=sys.stderr,
+        )
+        return 2
+
+    message = args.message or f"GPS SIM MSISDN discovery {_date.today().isoformat()}"
+    dry_run = not args.no_dry_run
+
+    try:
+        result = send_sms_ssh(
+            host, to, message, password=args.password, dry_run=dry_run
+        )
+    except ProbeError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        return 1
+
+    if dry_run:
+        print(
+            f"DRY RUN: would SSH to {host} and send SMS to {to} via "
+            f"{result['cmd']}. Add --no-dry-run to send (costs a message)."
+        )
+    else:
+        print(f"✅ SMS sent from {host} SIM to {to}.")
+        print(
+            f"   Check {to}: the SENDER number of that message is this SIM's own "
+            f"phone number."
+        )
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # cmd_cfg_update_device — probe an existing TOS device and update its attrs
 # ---------------------------------------------------------------------------
 
@@ -3682,6 +3755,53 @@ Examples:
         help="Emit a structured JSON summary instead of plain text.",
     )
     add_mon.set_defaults(func=cmd_cfg_add_monument)
+
+    # ---- discover-phone --------------------------------------------------
+    disc = cfg_subparsers.add_parser(
+        "discover-phone",
+        help="Reveal a router SIM's own phone number by texting a catcher mobile",
+        description=(
+            "A SIM can't read its own MSISDN locally, so the field router texts a "
+            "catcher number (--to) and you read the sender off that phone. Sent "
+            "via gsmctl over SSH — works on every Teltonika router, including "
+            "legacy units whose REST API is off (e.g. a RUT240). Outward-facing "
+            "and costs a message; defaults to dry-run."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # VOTT (router not in cfg) — text your mobile to learn the SIM's number:
+  receivers cfg discover-phone --host 10.4.2.163 --to +3548XXXXXX --no-dry-run
+
+  # By station marker (router_ip from stations.cfg):
+  receivers cfg discover-phone --station GSIG --to +3548XXXXXX --no-dry-run
+""",
+    )
+    disc.add_argument("--host", help="Router IP/hostname (or use --station).")
+    disc.add_argument(
+        "--station", help="Resolve the router IP from stations.cfg instead of --host."
+    )
+    disc.add_argument(
+        "--to",
+        help=(
+            "Catcher mobile that receives the SMS (digits, optional leading +). "
+            "Falls back to [teltonika] discover_phone_to in receivers.cfg."
+        ),
+    )
+    disc.add_argument(
+        "--message",
+        help="SMS body (default: 'GPS SIM MSISDN discovery <date>').",
+    )
+    disc.add_argument(
+        "--password",
+        help="Router SSH password override (default: resolved from [teltonika] config).",
+    )
+    disc.add_argument(
+        "--no-dry-run",
+        action="store_true",
+        help="Actually send the SMS (costs a message); without this, dry-run only.",
+    )
+    disc.set_defaults(func=cmd_cfg_discover_phone)
 
     # ---- update-device ---------------------------------------------------
     upd = cfg_subparsers.add_parser(
