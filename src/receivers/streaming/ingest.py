@@ -187,11 +187,25 @@ class StreamIngestor:
         # RINEX2 short obs (*.YYO) and RINEX3 long obs (*.rnx). Nav/other .rnx
         # files don't match parse_bnc_rinex_name and are skipped below.
         candidates = sorted(list(rt_dir.glob("*.??[Oo]")) + list(rt_dir.glob("*.rnx")))
+
+        # Dedupe per hour: while a station is switching RINEX 2 -> 3, BOTH a short
+        # .YYO and a long .rnx can exist for the same hour, and both normalize to
+        # the same short archive name. Prefer the RINEX 3 (.rnx) so the archive
+        # doesn't get silently overwritten with the RINEX 2 version.
+        best: dict[tuple[int, int, int], tuple[Path, BncRinexFile]] = {}
         for path in candidates:
             parsed = parse_bnc_rinex_name(path.name)
             if parsed is None:
                 continue
-            if (parsed.year, parsed.doy, parsed.hour) == cur:
+            key = (parsed.year, parsed.doy, parsed.hour)
+            chosen = best.get(key)
+            is_long = path.suffix == ".rnx"
+            if chosen is None or (is_long and chosen[0].suffix != ".rnx"):
+                best[key] = (path, parsed)
+
+        for key in sorted(best):
+            path, parsed = best[key]
+            if key == cur:
                 result.skipped_current.append(path.name)  # still being written
                 continue
             try:

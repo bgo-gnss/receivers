@@ -121,6 +121,20 @@ class TestIngest:
         assert not (rt / "GONH167h.26d").exists()
         assert (rt / "GONH00ISL_S_20261670700_01H_MO.rnx").exists()
 
+    def test_prefers_rinex3_when_both_present(self, tmp_path):
+        """Mid RINEX2->RINEX3 switch: both a short .YYO and a long .rnx exist for
+        the same hour (both normalize to one archive name). The .rnx (RINEX 3)
+        must win so the archive isn't silently overwritten with the RINEX 2 file."""
+        rt = tmp_path / "RT" / "GONH"
+        self._make(
+            rt, "GONH167h.26O", "GONH00ISL_S_20261670700_01H_MO.rnx"
+        )  # both hour 7
+        now = parse_bnc_rinex_name("GONH167x.26O").datetime  # hour 23 = current
+        ing = StreamIngestor(archive_base=tmp_path / "arch", runner=FakeRunner())
+        res = ing.ingest_dir("GONH", rt, now=now)
+        assert res.ingested == ["GONH00ISL_S_20261670700_01H_MO.rnx"]  # R3 only
+        assert (tmp_path / "arch/2026/jun/GONH/1Hz_1hr/rinex/GONH167h.26d.Z").exists()
+
     def test_ignores_unparseable(self, tmp_path):
         rt = tmp_path / "RT" / "GONH"
         self._make(rt, "GONH162a.26O", "notes.txt")
