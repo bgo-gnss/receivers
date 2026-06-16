@@ -493,6 +493,302 @@ def _default_rinex_valid_from(install_iso: str) -> str:
     return (dt.date() + _td(days=1)).isoformat()
 
 
+def add_antenna(
+    writer: Optional[TOSWriter] = None,
+    *,
+    station_id: str,
+    model: str,
+    radome: str = "NONE",
+    serial: Optional[str] = None,
+    antenna_height: Optional[str] = None,
+    owner: str = "Jarðeðlismælihópur",
+    date_start: Optional[str] = None,
+    comment: Optional[str] = None,
+    force: bool = False,
+    dry_run: bool = True,
+) -> OperationResult:
+    """Create a GNSS antenna (and radome, when present) in TOS and join to a station.
+
+    Unlike :func:`add_receiver` (warehouse intake of a probed unit), an antenna
+    cannot be probed — its identity comes from the operator / stations.cfg. This
+    creates the ``antenna`` device entity, joins it to the station, and — when
+    ``radome`` is not ``"NONE"`` — does the same for a separate ``radome`` device
+    (TOS models antenna and radome as distinct children of the station).
+
+    Antenna serials are frequently unrecorded. When ``serial`` is empty/None a
+    synthetic ``antenna-<STID>-<YYYYMMDD>`` is generated (see
+    :func:`tostools.device.synthetic_serial`), mirroring the existing radome
+    convention, so the TOS non-empty-serial requirement is met and a provenance
+    ``comment`` is auto-recorded.
+
+    Args:
+        writer: A configured :class:`TOSWriter`, or ``None`` to build one in
+            ``dry_run`` mode (caller owns the writer's lifecycle if passed).
+        station_id: 4-char station marker to install the antenna at.
+        model: Antenna model (IGS name or known alias; validated).
+        radome: Radome IGS code (default ``"NONE"`` → no radome device).
+        serial: Antenna serial, or ``None``/empty → synthetic placeholder.
+        antenna_height: ARP height in metres (string), or ``None`` to omit
+            (RINEX ``ANTENNA: DELTA H`` then defaults to 0.0).
+        owner: Owner label (must match the TOS OwnersCache).
+        date_start: Install date (bare ``YYYY-MM-DD`` → noon, matching
+            ``cfg move-device`` so co-installs share a TOS session); defaults
+            to the station's own TOS ``date_start``, then to today.
+        comment: Free-text comment; defaults to a synthetic-serial note when the
+            serial was generated.
+        force: Bypass the one-open-antenna-per-station guard and the
+            duplicate-serial guard.
+        dry_run: When ``True`` (default), no writes are sent.
+
+    Returns:
+        An :class:`OperationResult` with ``operation="add-antenna"`` and the
+        per-step TOS payloads under ``tos_changes``.
+    """
+    from tostools.device import (
+        build_antenna_attributes,
+        build_required_attributes,
+        synthetic_serial,
+        validate_model,
+    )
+
+    w = _resolve_writer(writer, dry_run)
+    station_eid = _resolve_station(w, station_id)
+
+    # Default install date = the station's own date_start, else today.
+    if not date_start:
+        station_hist = w.get_entity_history(station_eid)
+        st_date = (
+            _device_attribute(station_hist, "date_start")
+            if isinstance(station_hist, dict)
+            else None
+        )
+        date_start = st_date or datetime.now().date().isoformat()
+    # Resolve to a full datetime with the SAME field-work convention as
+    # cfg move-device: bare YYYY-MM-DD -> noon (T12:00:00); a full ISO datetime
+    # is preserved. This alignment matters when co-installing devices: TOS groups
+    # a station's devices into "sessions" keyed on the exact join
+    # (time_from, time_to) in tos_client._build_history_from_connections. An
+    # antenna and a receiver installed on the same day but at different instants
+    # split into SEPARATE sessions, and current_session() — the stream SKL's only
+    # metadata source — then sees just one of them (a blank antenna or blank
+    # receiver in the RINEX header). Using move-device's convention here means
+    # passing the same --date-start / --date to every verb yields one shared
+    # session. (move-device promotes bare dates to noon via _visit_default_time.)
+    eff_date = _visit_default_time(date_start)
+
+    # One open antenna per station (mirrors the receiver displacement guard).
+    open_existing = _find_open_child(w, station_eid, "antenna")
+    if open_existing is not None and not force:
+        raise CfgOperationError(
+            f"{station_id} already has an open antenna child "
+            f"(id_entity={open_existing}). Swap it with the future "
+            f"`cfg replace-antenna` verb, or pass --force to add a second."
+        )
+
+    igs_model = validate_model("antenna", model)
+
+    synthetic = serial is None or str(serial).strip() == ""
+    ant_serial = (
+        synthetic_serial("antenna", station_id, eff_date)
+        if synthetic
+        else str(serial).strip()
+    )
+    if comment is None and synthetic:
+        comment = "antenna serial unknown at install — synthetic placeholder"
+
+    attrs = build_antenna_attributes(
+        serial=ant_serial,
+        model=igs_model,
+        owner=owner,
+        date_start=eff_date,
+        antenna_height=antenna_height,
+    )
+    if antenna_height is None:
+        logger.warning(
+            "%s: no antenna height supplied — antenna created without "
+            "antenna_height; RINEX 'ANTENNA: DELTA H' defaults to 0.0 until "
+            "corrected.",
+            station_id,
+        )
+    if comment:
+        attrs.append(
+            {
+                "code": "comment",
+                "value": comment,
+                "date_from": eff_date,
+                "date_to": None,
+            }
+        )
+
+    result = OperationResult(
+        operation="add-antenna",
+        station_id=station_id,
+        serial=ant_serial,
+        date=eff_date,
+        dry_run=dry_run,
+    )
+    result.tos_changes["antenna_attributes"] = attrs
+    result.tos_changes["synthetic_serial"] = synthetic
+
+    ant_resp = w.create_device("antenna", attrs, force=force)
+    result.tos_changes["antenna_create"] = ant_resp
+    ant_id = ant_resp.get("id_entity") if isinstance(ant_resp, dict) else None
+    if ant_id is not None:
+        # TOS POST /joins returns an empty body on success — wrap it so the
+        # summary reads as "joined", not a bare null that looks like a failure.
+        join_resp = w.create_entity_connection(station_eid, int(ant_id), eff_date)
+        result.tos_changes["antenna_join"] = {
+            "joined": True,
+            "parent": station_eid,
+            "child": int(ant_id),
+            "response": join_resp,
+        }
+    else:
+        result.tos_changes["antenna_join"] = {
+            "joined": False,
+            "parent": station_eid,
+            "note": "device id unknown (dry-run) — join previewed",
+        }
+
+    # Radome — a separate TOS device. "NONE" means no radome at this station.
+    igs_radome = validate_model("radome", radome or "NONE")
+    if igs_radome != "NONE":
+        rad_serial = synthetic_serial("radome", station_id, eff_date)
+        rad_attrs = build_required_attributes(rad_serial, igs_radome, owner, eff_date)
+        result.tos_changes["radome_serial"] = rad_serial
+        rad_resp = w.create_device("radome", rad_attrs, force=force)
+        result.tos_changes["radome_create"] = rad_resp
+        rad_id = rad_resp.get("id_entity") if isinstance(rad_resp, dict) else None
+        if rad_id is not None:
+            rad_join = w.create_entity_connection(station_eid, int(rad_id), eff_date)
+            result.tos_changes["radome_join"] = {
+                "joined": True,
+                "parent": station_eid,
+                "child": int(rad_id),
+                "response": rad_join,
+            }
+        else:
+            result.tos_changes["radome_join"] = {
+                "joined": False,
+                "parent": station_eid,
+            }
+
+    return result
+
+
+def add_monument(
+    writer: Optional[TOSWriter] = None,
+    *,
+    station_id: str,
+    height: str = "0.0",
+    serial: Optional[str] = None,
+    owner: str = "Jarðeðlismælihópur",
+    date_start: Optional[str] = None,
+    comment: Optional[str] = None,
+    force: bool = False,
+    dry_run: bool = True,
+) -> OperationResult:
+    """Create a monument (survey mark/pillar) in TOS and join it to a station.
+
+    The monument carries the ``antenna_height`` offset (mark → antenna reference
+    point); TOS keeps one per height epoch. Like :func:`add_antenna` it can't be
+    probed — identity is operator-supplied and the serial defaults to a synthetic
+    ``monument-<STID>-<YYYYMMDD>`` placeholder (the fleet convention, e.g.
+    ``monument-REYK-19980913``). Monuments have **no model**.
+
+    Args:
+        writer: A configured :class:`TOSWriter`, or ``None`` to build one in
+            ``dry_run`` mode.
+        station_id: 4-char station marker to install the monument at.
+        height: Mark → ARP height in metres (string); defaults to ``"0.0"``.
+        serial: Monument serial, or ``None``/empty → synthetic placeholder.
+        owner: Owner label (must match the TOS OwnersCache).
+        date_start: Install/epoch date (bare ``YYYY-MM-DD`` → noon, matching
+            ``cfg move-device`` so co-installs share a TOS session); defaults to
+            the station's own TOS ``date_start``, then to today.
+        comment: Free-text note; defaults to a synthetic-serial note.
+        force: Bypass the one-open-monument-per-station guard and the
+            duplicate-serial guard.
+        dry_run: When ``True`` (default), no writes are sent.
+
+    Returns:
+        An :class:`OperationResult` with ``operation="add-monument"``.
+    """
+    from tostools.device import build_monument_attributes, synthetic_serial
+
+    w = _resolve_writer(writer, dry_run)
+    station_eid = _resolve_station(w, station_id)
+
+    if not date_start:
+        station_hist = w.get_entity_history(station_eid)
+        st_date = (
+            _device_attribute(station_hist, "date_start")
+            if isinstance(station_hist, dict)
+            else None
+        )
+        date_start = st_date or datetime.now().date().isoformat()
+    # Same field-work convention as cfg move-device (bare date → noon, full ISO
+    # preserved) so a monument co-installed with the receiver/antenna shares one
+    # TOS session — see add_antenna for the session-split rationale.
+    eff_date = _visit_default_time(date_start)
+
+    open_existing = _find_open_child(w, station_eid, "monument")
+    if open_existing is not None and not force:
+        raise CfgOperationError(
+            f"{station_id} already has an open monument child "
+            f"(id_entity={open_existing}). A new height epoch should close the "
+            f"old monument first; or pass --force to add a second."
+        )
+
+    synthetic = serial is None or str(serial).strip() == ""
+    mon_serial = (
+        synthetic_serial("monument", station_id, eff_date)
+        if synthetic
+        else str(serial).strip()
+    )
+    if comment is None and synthetic:
+        comment = (
+            "raðnúmer búið til úr skammstöfun stöðvar + dagsetningu (height epoch)"
+        )
+
+    attrs = build_monument_attributes(
+        serial=mon_serial,
+        owner=owner,
+        date_start=eff_date,
+        monument_height=height,
+        comment=comment,
+    )
+
+    result = OperationResult(
+        operation="add-monument",
+        station_id=station_id,
+        serial=mon_serial,
+        date=eff_date,
+        dry_run=dry_run,
+    )
+    result.tos_changes["monument_attributes"] = attrs
+    result.tos_changes["synthetic_serial"] = synthetic
+
+    resp = w.create_device("monument", attrs, force=force)
+    result.tos_changes["monument_create"] = resp
+    mid = resp.get("id_entity") if isinstance(resp, dict) else None
+    if mid is not None:
+        join = w.create_entity_connection(station_eid, int(mid), eff_date)
+        result.tos_changes["monument_join"] = {
+            "joined": True,
+            "parent": station_eid,
+            "child": int(mid),
+            "response": join,
+        }
+    else:
+        result.tos_changes["monument_join"] = {
+            "joined": False,
+            "parent": station_eid,
+        }
+
+    return result
+
+
 def move_device(
     serial: Optional[str] = None,
     *,
