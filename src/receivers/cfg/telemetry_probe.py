@@ -497,6 +497,41 @@ def send_sms(
     }
 
 
+def _ssh_run_bounded(client: Any, cmd: str, *, timeout: int) -> Tuple[int, str, str]:
+    """Run ``cmd`` over an open paramiko SSH client with a **client-side** timeout.
+
+    Some routers' busybox lacks the ``timeout`` applet (e.g. the RUT240), and
+    paramiko's ``recv_exit_status()`` blocks regardless of the channel timeout —
+    so a stalled remote command (``gsmctl`` against a flaky modem) would hang
+    forever. This polls ``exit_status_ready()`` against a wall-clock deadline and
+    closes the channel if the command overruns. Returns ``(rc, out, err)``
+    (stripped).
+
+    Raises:
+        ProbeError: when the command does not return within ``timeout`` seconds.
+    """
+    import time
+
+    _stdin, stdout, stderr = client.exec_command(cmd, timeout=timeout)  # nosec B601
+    chan = stdout.channel
+    deadline = time.monotonic() + timeout
+    while not chan.exit_status_ready():
+        if time.monotonic() >= deadline:
+            try:
+                chan.close()
+            except Exception:  # noqa: BLE001 — best-effort
+                pass
+            raise ProbeError(
+                f"SSH command did not return within {timeout}s "
+                f"(remote stalled): {cmd[:80]}"
+            )
+        time.sleep(0.2)
+    rc = chan.recv_exit_status()
+    out = stdout.read().decode(errors="replace").strip()
+    err = stderr.read().decode(errors="replace").strip()
+    return rc, out, err
+
+
 def send_sms_ssh(
     host: str,
     to_number: str,
@@ -508,6 +543,7 @@ def send_sms_ssh(
     ssh_user: str = "root",
     port: int = 22,
     timeout: int = DEFAULT_TIMEOUT,
+    send_timeout: int = 30,
     dry_run: bool = True,
 ) -> Dict[str, Any]:
     """Send one SMS from the router's SIM via ``gsmctl`` over SSH.
@@ -552,11 +588,7 @@ def send_sms_ssh(
         )
 
     payload = shlex.quote(f"{to_number.strip()} {message}")
-    # gsmctl SMS ops can stall on a busy/flaky modem and never return — the SSH
-    # exit-status wait then blocks forever. Cap it with a router-side `timeout`
-    # (busybox); the SMS is fire-and-forget once handed to the modem.
-    send_timeout = 30
-    cmd = f"timeout {send_timeout} gsmctl -S -s {payload}"
+    cmd = f"gsmctl -S -s {payload}"
     if dry_run:
         return {
             "dry_run": True,
@@ -577,22 +609,16 @@ def send_sms_ssh(
         )
 
     # Lazy import to avoid a telemetry_probe ↔ conntrack_helper import cycle.
-    from .conntrack_helper import _connect, _run
+    from .conntrack_helper import _connect
 
     client = _connect(host, ssh_user=ssh_user, password=pw, port=port, timeout=timeout)
     try:
-        rc, out, err = _run(client, cmd, timeout=send_timeout + 10)
+        rc, out, err = _ssh_run_bounded(client, cmd, timeout=send_timeout)
     finally:
         try:
             client.close()
         except Exception:  # noqa: BLE001 — best-effort close
             pass
-    if rc == 124:
-        raise ProbeError(
-            f"{host}: gsmctl SMS send timed out after {send_timeout}s — the modem's "
-            f"SMS subsystem is stalled (signal/registration may still be fine). The "
-            f"message may not have been queued; check the catcher phone and retry."
-        )
     if rc != 0:
         raise ProbeError(
             f"{host}: gsmctl SMS send failed (rc={rc}): {(err or out)[:200]}"
@@ -604,6 +630,91 @@ def send_sms_ssh(
         "cmd": cmd,
         "sent": True,
         "output": out,
+    }
+
+
+def query_ussd_ssh(
+    host: str,
+    code: str,
+    *,
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+    cfg_path: Optional[str] = None,
+    ssh_user: str = "root",
+    port: int = 22,
+    timeout: int = DEFAULT_TIMEOUT,
+    ussd_wait: int = 8,
+    dry_run: bool = True,
+) -> Dict[str, Any]:
+    """Run a USSD query via ``gsmctl -U`` over SSH and return the network reply.
+
+    A more reliable own-number probe than the SMS catcher when the modem's SMS
+    subsystem is flaky: the SIM asks the network **directly** — no catcher phone,
+    no delivery wait, the answer comes back in the USSD reply. The ``code`` is
+    operator-specific (e.g. an own-number / MSISDN code) and the reply format
+    varies by operator, so this returns the raw network text.
+
+    ``gsmctl -U "<code>"`` sends the USSD and saves the response to
+    ``/tmp/ussd_<modem>``; we send, wait ``ussd_wait`` s for the network round
+    trip, then read that file — one bounded SSH command (busybox ``sleep`` +
+    ``cat``). Outward-facing (a network query); dry-run by default.
+
+    Args:
+        host: Router IP/hostname.
+        code: USSD string (digits, ``*``, ``#``), e.g. an own-number code.
+        username/password/cfg_path/ssh_user/port/timeout: As :func:`send_sms_ssh`.
+        ussd_wait: Seconds to wait for the network reply before reading the file.
+        dry_run: When True (default), return the planned command without running.
+
+    Returns:
+        ``{"dry_run": bool, "code": ..., "transport": "ssh", "cmd": ...,
+           "response": <raw text or None>}``.
+    """
+    import re
+    import shlex
+
+    if not re.fullmatch(r"[\d*#+]{2,20}", (code or "").strip()):
+        raise ProbeError(f"invalid --ussd code {code!r} — expected digits, '*' and '#'")
+
+    qcode = shlex.quote(code.strip())
+    # send the USSD, give the network a moment, then read the saved reply
+    cmd = f"gsmctl -U {qcode}; sleep {ussd_wait}; cat /tmp/ussd_* 2>/dev/null"
+    if dry_run:
+        return {
+            "dry_run": True,
+            "code": code,
+            "transport": "ssh",
+            "cmd": cmd,
+            "response": None,
+        }
+
+    _user, pw = resolve_credentials(
+        username=username, password=password, cfg_path=cfg_path
+    )
+    if not pw:
+        raise ProbeError(
+            f"{host}: no router password — set [teltonika] password / "
+            f"password_pass_path in receivers.cfg, or pass --password"
+        )
+
+    from .conntrack_helper import _connect
+
+    client = _connect(host, ssh_user=ssh_user, password=pw, port=port, timeout=timeout)
+    try:
+        # rc is not load-bearing — gsmctl -U may return non-zero yet still file a
+        # reply; the saved /tmp/ussd_* text is what matters.
+        _rc, out, err = _ssh_run_bounded(client, cmd, timeout=ussd_wait + 15)
+    finally:
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001 — best-effort close
+            pass
+    return {
+        "dry_run": False,
+        "code": code,
+        "transport": "ssh",
+        "cmd": cmd,
+        "response": (out or err or None),
     }
 
 

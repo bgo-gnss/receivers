@@ -2668,6 +2668,7 @@ def cmd_cfg_discover_phone(args) -> int:
 
     from ..cfg.telemetry_probe import (
         ProbeError,
+        query_ussd_ssh,
         resolve_discover_phone_to,
         send_sms_ssh,
     )
@@ -2687,6 +2688,34 @@ def cmd_cfg_discover_phone(args) -> int:
     if not host:
         print("❌ --host or --station is required", file=sys.stderr)
         return 2
+
+    dry_run = not args.no_dry_run
+
+    # USSD mode (--ussd CODE): query the network directly for the SIM's own number
+    # — no catcher phone, no SMS delivery. More reliable when the modem's SMS
+    # subsystem is flaky. The code is operator-specific.
+    if args.ussd:
+        try:
+            result = query_ussd_ssh(
+                host, args.ussd, password=args.password, dry_run=dry_run
+            )
+        except ProbeError as e:
+            print(f"❌ {e}", file=sys.stderr)
+            return 1
+        if dry_run:
+            print(
+                f"DRY RUN: would run USSD {args.ussd!r} on {host} via "
+                f"{result['cmd']}. Add --no-dry-run to query (a network request)."
+            )
+        else:
+            resp = result.get("response")
+            print(f"✅ USSD {args.ussd!r} on {host} →")
+            print(
+                f"   {resp}"
+                if resp
+                else "   (no reply — code may be wrong or USSD unsupported on this network)"
+            )
+        return 0
 
     to = args.to or resolve_discover_phone_to()
     if not to:
@@ -2708,7 +2737,6 @@ def cmd_cfg_discover_phone(args) -> int:
             bits.append(args.station)
         bits += [host, "GPS SIM MSISDN discovery", _date.today().isoformat()]
         message = " ".join(bits)
-    dry_run = not args.no_dry_run
 
     try:
         result = send_sms_ssh(
@@ -3800,7 +3828,17 @@ Examples:
     )
     disc.add_argument(
         "--message",
-        help="SMS body (default: 'GPS SIM MSISDN discovery <date>').",
+        help="SMS body (default: '<marker> <ip> GPS SIM MSISDN discovery <date>').",
+    )
+    disc.add_argument(
+        "--ussd",
+        metavar="CODE",
+        help=(
+            "USSD-fallback mode: query the network directly for the SIM's own "
+            "number with this operator-specific USSD code (gsmctl -U), instead of "
+            "the SMS catcher. No --to needed; the reply is printed. Use when SMS "
+            "is flaky."
+        ),
     )
     disc.add_argument(
         "--password",
