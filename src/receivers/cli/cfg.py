@@ -196,7 +196,9 @@ def _load_station_configs(
 
     configs: Dict[str, Dict[str, Any]] = {}
     for sid in station_ids:
-        cfg = get_station_config(sid)
+        # silent=True: the ⚠️ skip below is the user-facing signal; the absence
+        # is expected for TOS-only stations not in the local cfg.
+        cfg = get_station_config(sid, silent=True)
         if cfg is None:
             _progress(
                 f"⚠️  {sid}: not found in stations.cfg — skipping",
@@ -5006,7 +5008,10 @@ def _run_install_attr_fill(args, result, *, dry_run: bool) -> None:
     tolerance_m = getattr(args, "position_tolerance_m", 2.0)
     eff_date = result.date or _effective_date_for(args)
 
-    station_config = get_station_config(station_id)
+    # silent=True: a TOS-only operation (e.g. a --no-cfg move of a station not in
+    # the local stations.cfg) legitimately has no local section — the absence is
+    # handled by the ⚠️ message below, so don't also log it at ERROR.
+    station_config = get_station_config(station_id, silent=True)
     if not station_config:
         print(
             f"   ⚠️  install attrs: no stations.cfg section for {station_id} — skipped"

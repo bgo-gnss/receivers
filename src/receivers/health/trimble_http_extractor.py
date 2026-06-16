@@ -101,7 +101,10 @@ class TrimbleHTTPExtractor:
         try:
             from ..config_utils import get_station_config
 
-            cfg = get_station_config(station_id)
+            # silent=True: power_type is supplementary, and station_id is often a
+            # probe placeholder (e.g. "BENCH") with no cfg section — matches the
+            # PolaRX5 extractor; absence here is not an error.
+            cfg = get_station_config(station_id, silent=True)
             if cfg:
                 power_type = cfg.get("power_type") or None
         except Exception as e:
