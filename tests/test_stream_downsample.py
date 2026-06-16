@@ -95,10 +95,10 @@ class TestDownsample:
         assert runner.tools.count("CRX2RNX") == 3
         assert runner.tools.count("GFZRNX") == 1
         assert runner.tools.count("RNX2CRX") == 1
-        # gfzrnx invoked with the decimation flags (RINEX2 out, 15s sampling)
+        # gfzrnx invoked with the decimation flags (RINEX3 out, 15s sampling)
         gfz_cmd = next(c for c in runner.calls if Path(c[0]).name == "gfzrnx")
         assert "-smp" in gfz_cmd and "15" in gfz_cmd
-        assert "-vo" in gfz_cmd and "2" in gfz_cmd
+        assert "-vo" in gfz_cmd and "3" in gfz_cmd
 
     def test_uppercase_bnc_hatanaka_sources(self, tmp_path):
         """BNC writes uppercase-O RINEX2, so stream-ingested hourly files are
