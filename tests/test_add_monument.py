@@ -48,8 +48,10 @@ def test_build_monument_attributes_shape():
     """Monument shape matches fleet data: no model, no status."""
     attrs = build_monument_attributes("s", "owner", "2026-05-01", "0.0")
     codes = {a["code"] for a in attrs}
-    assert codes == {"serial_number", "owner", "date_start", "antenna_height"}
+    # monument-scoped height code (antenna_height is antenna-scoped → TOS 400)
+    assert codes == {"serial_number", "owner", "date_start", "monument_height"}
     assert "model" not in codes and "status" not in codes
+    assert "antenna_height" not in codes
     assert (
         synthetic_serial("monument", "VOTT", "2026-05-01") == "monument-VOTT-20260501"
     )
@@ -77,7 +79,9 @@ def test_add_monument_height_attribute():
         w, station_id="VOTT", height="0.0123", date_start="2026-05-01T00:00:00"
     )
     h = [
-        a for a in r.tos_changes["monument_attributes"] if a["code"] == "antenna_height"
+        a
+        for a in r.tos_changes["monument_attributes"]
+        if a["code"] == "monument_height"
     ]
     assert h and h[0]["value"] == "0.0123"
 

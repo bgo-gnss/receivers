@@ -755,7 +755,7 @@ def add_monument(
         serial=mon_serial,
         owner=owner,
         date_start=eff_date,
-        antenna_height=height,
+        monument_height=height,
         comment=comment,
     )
 
