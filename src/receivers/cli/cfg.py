@@ -1812,9 +1812,7 @@ def _parse_since(spec: str) -> datetime:
         delta = (
             timedelta(days=n)
             if unit == "d"
-            else timedelta(hours=n)
-            if unit == "h"
-            else timedelta(minutes=n)
+            else timedelta(hours=n) if unit == "h" else timedelta(minutes=n)
         )
         return datetime.now(UTC) - delta
     try:
@@ -2447,6 +2445,116 @@ def cmd_cfg_add_receiver(args) -> int:
                 print(
                     f"Connected to location {args.location!r} (connection id={conn_id})"
                 )
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# cmd_cfg_add_antenna — create an antenna (+radome) in TOS and join to a station
+# ---------------------------------------------------------------------------
+
+
+def cmd_cfg_add_antenna(args) -> int:
+    """``cfg add-antenna`` — register a GNSS antenna in TOS and join it to a station.
+
+    Antennas cannot be probed, so identity comes from CLI flags (and the radome,
+    when present, becomes a second TOS device). Unknown antenna serials — common
+    in practice — get a synthetic ``antenna-<STID>-<YYYYMMDD>`` placeholder
+    (mirrors the radome convention). Delegates to
+    :func:`receivers.cfg.operations.add_antenna`. Exit 0 on success, 1 on TOS
+    write failure, 2 on input-validation failure.
+    """
+    import json as _json
+    import sys
+
+    from tostools.api.tos_writer import TOSWriter
+    from tostools.owners import OwnersCache
+
+    from ..cfg.operations import CfgOperationError, add_antenna
+
+    owner = args.owner or "Jarðeðlismælihópur"
+
+    # Owner gate — same OwnersCache check as add-receiver.
+    owners_cache = (
+        OwnersCache(args.owners_cache) if args.owners_cache else OwnersCache()
+    )
+    if owner not in owners_cache.load():
+        print(
+            f"❌ Unknown owner: {owner!r}. Run 'tos owners list' to see allowed "
+            f"values, or 'tos owners list --refresh' if you recently added one.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if not getattr(args, "antenna_height", None):
+        print(
+            "  ⚠️  no --antenna-height given: antenna created without a height; "
+            "RINEX 'ANTENNA: DELTA H' will be 0.0 until corrected.",
+            file=sys.stderr,
+        )
+
+    scheme = "https" if args.port == 443 else "http"
+    base_url = f"{scheme}://{args.server}:{args.port}/tos/v1"
+    dry_run = not args.no_dry_run
+    writer = TOSWriter(base_url=base_url, dry_run=dry_run)
+
+    try:
+        result = add_antenna(
+            writer,
+            station_id=args.station,
+            model=args.model,
+            radome=args.radome,
+            serial=args.serial,
+            antenna_height=args.antenna_height,
+            owner=owner,
+            date_start=args.date_start,
+            comment=args.comment,
+            force=args.force,
+            dry_run=dry_run,
+        )
+    except CfgOperationError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        return 1
+    except ValueError as e:
+        msg = str(e)
+        if "already exists" in msg and not args.force:
+            print(
+                f"❌ {msg}\nPass --force to add the duplicate anyway.",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"❌ {msg}", file=sys.stderr)
+        return 2
+
+    synthetic = bool(result.tos_changes.get("synthetic_serial"))
+    has_radome = (args.radome or "NONE").upper() != "NONE"
+    if args.json:
+        payload = {
+            "operation": result.operation,
+            "station_id": result.station_id,
+            "antenna_serial": result.serial,
+            "synthetic_serial": synthetic,
+            "model": args.model,
+            "radome": args.radome,
+            "radome_serial": result.tos_changes.get("radome_serial"),
+            "antenna_height": args.antenna_height,
+            "date_start": result.date,
+            "owner": owner,
+            "dry_run": result.dry_run,
+            "tos_changes": result.tos_changes,
+        }
+        print(_json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+    else:
+        suffix = " (dry-run)" if result.dry_run else ""
+        synth = " [synthetic serial]" if synthetic else ""
+        print(
+            f"Antenna {args.model} @ {result.station_id}: serial={result.serial}"
+            f"{synth} date_start={result.date}{suffix}"
+        )
+        if has_radome:
+            print(
+                f"  + radome {args.radome} "
+                f"(serial={result.tos_changes.get('radome_serial')})"
+            )
     return 0
 
 
@@ -3287,6 +3395,112 @@ Examples:
         help="Emit a structured JSON summary instead of plain text.",
     )
     add_rx.set_defaults(func=cmd_cfg_add_receiver)
+
+    # ---- add-antenna -----------------------------------------------------
+    add_ant = cfg_subparsers.add_parser(
+        "add-antenna",
+        help="Register a GNSS antenna (and radome) in TOS and join it to a station",
+        description=(
+            "Create an 'antenna' device entity in TOS and join it to a station. "
+            "Antennas cannot be probed, so identity is supplied via flags. When "
+            "--radome is not NONE a separate 'radome' device is created and "
+            "joined too. Unknown antenna serials get a synthetic "
+            "'antenna-<STID>-<YYYYMMDD>' placeholder (mirrors the radome "
+            "convention). Defaults to dry-run."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # SEY9 antenna, serial unknown (synthetic), date defaults to the station's:
+  receivers cfg add-antenna --station SEY9 --model SEPPOLANT_X_MF
+
+  # Commit live, with a known ARP height and explicit install date:
+  receivers cfg add-antenna --station SEY9 --model SEPPOLANT_X_MF \\
+      --antenna-height 0.0083 --date-start 2021-03-25 --no-dry-run
+
+  # Choke-ring with a radome and a real serial:
+  receivers cfg add-antenna --station REYK --model LEIAR25.R4 \\
+      --radome LEIT --serial 725281 --no-dry-run
+""",
+    )
+    add_ant.add_argument(
+        "--station",
+        required=True,
+        metavar="STID",
+        help="4-char station marker to install the antenna at (must exist in TOS).",
+    )
+    add_ant.add_argument(
+        "--model",
+        required=True,
+        help="Antenna model (IGS name or known alias, e.g. SEPPOLANT_X_MF).",
+    )
+    add_ant.add_argument(
+        "--radome",
+        default="NONE",
+        help="Radome IGS code (default: NONE → no radome device created).",
+    )
+    add_ant.add_argument(
+        "--serial",
+        help=(
+            "Antenna serial. Omit when unknown — a synthetic "
+            "'antenna-<STID>-<YYYYMMDD>' placeholder is generated."
+        ),
+    )
+    add_ant.add_argument(
+        "--antenna-height",
+        dest="antenna_height",
+        metavar="METRES",
+        help=(
+            "Antenna ARP height in metres (RINEX 'ANTENNA: DELTA H'). Omit if "
+            "unknown — the antenna is created without it (DELTA H defaults to 0.0)."
+        ),
+    )
+    add_ant.add_argument(
+        "--owner",
+        help=(
+            "Owner label; must match the tostools OwnersCache. Defaults to "
+            "'Jarðeðlismælihópur' (the IMO Geophysical Measurements Group)."
+        ),
+    )
+    add_ant.add_argument(
+        "--date-start",
+        dest="date_start",
+        metavar="YYYY-MM-DD",
+        help=(
+            "Install date. Defaults to the station's own TOS date_start, then "
+            "to today."
+        ),
+    )
+    add_ant.add_argument(
+        "--comment",
+        help="Optional comment attribute (auto-set to a note when serial is synthetic).",
+    )
+    add_ant.add_argument(
+        "--force",
+        action="store_true",
+        help="Bypass the one-open-antenna-per-station and duplicate-serial guards.",
+    )
+    add_ant.add_argument(
+        "--no-dry-run",
+        action="store_true",
+        help="Commit the writes; without this flag, payloads are logged only.",
+    )
+    add_ant.add_argument(
+        "--owners-cache",
+        help="Override the tostools owners.yaml path.",
+    )
+    add_ant.add_argument(
+        "--server",
+        default="vi-api.vedur.is",
+        help="TOS API host (default: vi-api.vedur.is).",
+    )
+    add_ant.add_argument("--port", type=int, default=443)
+    add_ant.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a structured JSON summary instead of plain text.",
+    )
+    add_ant.set_defaults(func=cmd_cfg_add_antenna)
 
     # ---- update-device ---------------------------------------------------
     upd = cfg_subparsers.add_parser(
