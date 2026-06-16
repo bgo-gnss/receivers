@@ -3467,8 +3467,10 @@ Examples:
         dest="date_start",
         metavar="YYYY-MM-DD",
         help=(
-            "Install date. Defaults to the station's own TOS date_start, then "
-            "to today."
+            "Install date. Bare YYYY-MM-DD → noon, matching `cfg move-device`, "
+            "so passing the SAME date to both lands the antenna and receiver in "
+            "one TOS session (else the stream SKL drops one of them). Defaults to "
+            "the station's own TOS date_start, then to today."
         ),
     )
     add_ant.add_argument(

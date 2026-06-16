@@ -112,8 +112,9 @@ def test_add_antenna_synthetic_serial_when_unknown():
     subtype = w.create_device.call_args_list[0].args[0]
     assert subtype == "antenna"
     assert w.create_device.call_count == 1
+    # Bare date promoted to noon (move-device convention) so co-installs align.
     w.create_entity_connection.assert_called_once_with(
-        SEY9_EID, 50001, "2021-03-25T00:00:00"
+        SEY9_EID, 50001, "2021-03-25T12:00:00"
     )
     # synthetic-serial provenance comment auto-added
     attrs = res.tos_changes["antenna_attributes"]
@@ -221,3 +222,32 @@ def test_add_antenna_unknown_station_raises():
         add_antenna(
             w, station_id="ZZZZ", model="SEPPOLANT_X_MF", date_start="2021-03-25"
         )
+
+
+def test_add_antenna_bare_date_promoted_to_noon():
+    """Bare YYYY-MM-DD → noon (move-device convention) so a same-date co-install
+    of antenna + receiver shares one TOS session (else the SKL drops one)."""
+    w = _writer()
+    res = add_antenna(
+        w, station_id="SEY9", model="SEPPOLANT_X_MF", date_start="2021-03-25"
+    )
+    assert res.date == "2021-03-25T12:00:00"
+    w.create_entity_connection.assert_called_once_with(
+        SEY9_EID, 50001, "2021-03-25T12:00:00"
+    )
+
+
+def test_add_antenna_full_datetime_preserved():
+    """A full ISO datetime is used verbatim — lets an operator pin the antenna to
+    the receiver's exact join instant (how SEY9 was aligned)."""
+    w = _writer()
+    res = add_antenna(
+        w,
+        station_id="SEY9",
+        model="SEPPOLANT_X_MF",
+        date_start="2021-03-25T00:00:00",
+    )
+    assert res.date == "2021-03-25T00:00:00"
+    w.create_entity_connection.assert_called_once_with(
+        SEY9_EID, 50001, "2021-03-25T00:00:00"
+    )

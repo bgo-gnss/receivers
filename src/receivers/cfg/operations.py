@@ -531,8 +531,9 @@ def add_antenna(
         antenna_height: ARP height in metres (string), or ``None`` to omit
             (RINEX ``ANTENNA: DELTA H`` then defaults to 0.0).
         owner: Owner label (must match the TOS OwnersCache).
-        date_start: Install date; defaults to the station's own TOS
-            ``date_start``, then to today.
+        date_start: Install date (bare ``YYYY-MM-DD`` → noon, matching
+            ``cfg move-device`` so co-installs share a TOS session); defaults
+            to the station's own TOS ``date_start``, then to today.
         comment: Free-text comment; defaults to a synthetic-serial note when the
             serial was generated.
         force: Bypass the one-open-antenna-per-station guard and the
@@ -546,7 +547,6 @@ def add_antenna(
     from tostools.device import (
         build_antenna_attributes,
         build_required_attributes,
-        normalize_date_start,
         synthetic_serial,
         validate_model,
     )
@@ -563,7 +563,18 @@ def add_antenna(
             else None
         )
         date_start = st_date or datetime.now().date().isoformat()
-    eff_date = normalize_date_start(date_start)
+    # Resolve to a full datetime with the SAME field-work convention as
+    # cfg move-device: bare YYYY-MM-DD -> noon (T12:00:00); a full ISO datetime
+    # is preserved. This alignment matters when co-installing devices: TOS groups
+    # a station's devices into "sessions" keyed on the exact join
+    # (time_from, time_to) in tos_client._build_history_from_connections. An
+    # antenna and a receiver installed on the same day but at different instants
+    # split into SEPARATE sessions, and current_session() — the stream SKL's only
+    # metadata source — then sees just one of them (a blank antenna or blank
+    # receiver in the RINEX header). Using move-device's convention here means
+    # passing the same --date-start / --date to every verb yields one shared
+    # session. (move-device promotes bare dates to noon via _visit_default_time.)
+    eff_date = _visit_default_time(date_start)
 
     # One open antenna per station (mirrors the receiver displacement guard).
     open_existing = _find_open_child(w, station_eid, "antenna")
