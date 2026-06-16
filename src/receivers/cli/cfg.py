@@ -2561,6 +2561,95 @@ def cmd_cfg_add_antenna(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# cmd_cfg_add_monument — create a monument (survey mark) in TOS and join a station
+# ---------------------------------------------------------------------------
+
+
+def cmd_cfg_add_monument(args) -> int:
+    """``cfg add-monument`` — register a survey monument in TOS, joined to a station.
+
+    Monuments carry the ``antenna_height`` (mark → ARP) offset and have no model;
+    an unknown serial gets a synthetic ``monument-<STID>-<YYYYMMDD>`` placeholder.
+    Delegates to :func:`receivers.cfg.operations.add_monument`. Exit 0 on success,
+    1 on TOS write failure, 2 on input-validation failure.
+    """
+    import json as _json
+    import sys
+
+    from tostools.api.tos_writer import TOSWriter
+    from tostools.owners import OwnersCache
+
+    from ..cfg.operations import CfgOperationError, add_monument
+
+    owner = args.owner or "Jarðeðlismælihópur"
+
+    owners_cache = (
+        OwnersCache(args.owners_cache) if args.owners_cache else OwnersCache()
+    )
+    if owner not in owners_cache.load():
+        print(
+            f"❌ Unknown owner: {owner!r}. Run 'tos owners list' to see allowed "
+            f"values, or 'tos owners list --refresh' if you recently added one.",
+            file=sys.stderr,
+        )
+        return 2
+
+    scheme = "https" if args.port == 443 else "http"
+    base_url = f"{scheme}://{args.server}:{args.port}/tos/v1"
+    dry_run = not args.no_dry_run
+    writer = TOSWriter(base_url=base_url, dry_run=dry_run)
+
+    try:
+        result = add_monument(
+            writer,
+            station_id=args.station,
+            height=args.height,
+            serial=args.serial,
+            owner=owner,
+            date_start=args.date_start,
+            comment=args.comment,
+            force=args.force,
+            dry_run=dry_run,
+        )
+    except CfgOperationError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        return 1
+    except ValueError as e:
+        msg = str(e)
+        if "already exists" in msg and not args.force:
+            print(
+                f"❌ {msg}\nPass --force to add the duplicate anyway.",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"❌ {msg}", file=sys.stderr)
+        return 2
+
+    synthetic = bool(result.tos_changes.get("synthetic_serial"))
+    if args.json:
+        payload = {
+            "operation": result.operation,
+            "station_id": result.station_id,
+            "monument_serial": result.serial,
+            "synthetic_serial": synthetic,
+            "height": args.height,
+            "date_start": result.date,
+            "owner": owner,
+            "dry_run": result.dry_run,
+            "tos_changes": result.tos_changes,
+        }
+        print(_json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+    else:
+        suffix = " (dry-run)" if result.dry_run else ""
+        synth = " [synthetic serial]" if synthetic else ""
+        print(
+            f"Monument @ {result.station_id}: serial={result.serial}{synth} "
+            f"height={args.height} date_start={result.date}{suffix}"
+        )
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # cmd_cfg_update_device — probe an existing TOS device and update its attrs
 # ---------------------------------------------------------------------------
 
@@ -3505,6 +3594,94 @@ Examples:
         help="Emit a structured JSON summary instead of plain text.",
     )
     add_ant.set_defaults(func=cmd_cfg_add_antenna)
+
+    # ---- add-monument ----------------------------------------------------
+    add_mon = cfg_subparsers.add_parser(
+        "add-monument",
+        help="Register a survey monument in TOS and join it to a station",
+        description=(
+            "Create a 'monument' device entity in TOS and join it to a station. "
+            "The monument carries the antenna_height (mark → ARP) offset; TOS "
+            "keeps one per height epoch. Monuments have no model and can't be "
+            "probed — an unknown serial gets a synthetic "
+            "'monument-<STID>-<YYYYMMDD>' placeholder. Defaults to dry-run."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # VOTT monument, flush mount (height 0.0), serial synthetic, date defaults:
+  receivers cfg add-monument --station VOTT --height 0.0
+
+  # Commit live with an explicit epoch date:
+  receivers cfg add-monument --station VOTT --height 0.0 \\
+      --date-start 2026-05-01T00:00:00 --no-dry-run
+""",
+    )
+    add_mon.add_argument(
+        "--station",
+        required=True,
+        metavar="STID",
+        help="4-char station marker to install the monument at (must exist in TOS).",
+    )
+    add_mon.add_argument(
+        "--height",
+        default="0.0",
+        metavar="METRES",
+        help="Mark → ARP antenna_height in metres (default: 0.0).",
+    )
+    add_mon.add_argument(
+        "--serial",
+        help=(
+            "Monument serial. Omit when unknown — a synthetic "
+            "'monument-<STID>-<YYYYMMDD>' placeholder is generated."
+        ),
+    )
+    add_mon.add_argument(
+        "--owner",
+        help=(
+            "Owner label; must match the tostools OwnersCache. Defaults to "
+            "'Jarðeðlismælihópur'."
+        ),
+    )
+    add_mon.add_argument(
+        "--date-start",
+        dest="date_start",
+        metavar="YYYY-MM-DD",
+        help=(
+            "Install/epoch date. Bare YYYY-MM-DD → noon, matching `cfg "
+            "move-device`. Defaults to the station's own TOS date_start, then today."
+        ),
+    )
+    add_mon.add_argument(
+        "--comment",
+        help="Optional comment attribute (auto-set when serial is synthetic).",
+    )
+    add_mon.add_argument(
+        "--force",
+        action="store_true",
+        help="Bypass the one-open-monument-per-station and duplicate-serial guards.",
+    )
+    add_mon.add_argument(
+        "--no-dry-run",
+        action="store_true",
+        help="Commit the writes; without this flag, payloads are logged only.",
+    )
+    add_mon.add_argument(
+        "--owners-cache",
+        help="Override the tostools owners.yaml path.",
+    )
+    add_mon.add_argument(
+        "--server",
+        default="vi-api.vedur.is",
+        help="TOS API host (default: vi-api.vedur.is).",
+    )
+    add_mon.add_argument("--port", type=int, default=443)
+    add_mon.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a structured JSON summary instead of plain text.",
+    )
+    add_mon.set_defaults(func=cmd_cfg_add_monument)
 
     # ---- update-device ---------------------------------------------------
     upd = cfg_subparsers.add_parser(

@@ -676,6 +676,119 @@ def add_antenna(
     return result
 
 
+def add_monument(
+    writer: Optional[TOSWriter] = None,
+    *,
+    station_id: str,
+    height: str = "0.0",
+    serial: Optional[str] = None,
+    owner: str = "Jarðeðlismælihópur",
+    date_start: Optional[str] = None,
+    comment: Optional[str] = None,
+    force: bool = False,
+    dry_run: bool = True,
+) -> OperationResult:
+    """Create a monument (survey mark/pillar) in TOS and join it to a station.
+
+    The monument carries the ``antenna_height`` offset (mark → antenna reference
+    point); TOS keeps one per height epoch. Like :func:`add_antenna` it can't be
+    probed — identity is operator-supplied and the serial defaults to a synthetic
+    ``monument-<STID>-<YYYYMMDD>`` placeholder (the fleet convention, e.g.
+    ``monument-REYK-19980913``). Monuments have **no model**.
+
+    Args:
+        writer: A configured :class:`TOSWriter`, or ``None`` to build one in
+            ``dry_run`` mode.
+        station_id: 4-char station marker to install the monument at.
+        height: Mark → ARP height in metres (string); defaults to ``"0.0"``.
+        serial: Monument serial, or ``None``/empty → synthetic placeholder.
+        owner: Owner label (must match the TOS OwnersCache).
+        date_start: Install/epoch date (bare ``YYYY-MM-DD`` → noon, matching
+            ``cfg move-device`` so co-installs share a TOS session); defaults to
+            the station's own TOS ``date_start``, then to today.
+        comment: Free-text note; defaults to a synthetic-serial note.
+        force: Bypass the one-open-monument-per-station guard and the
+            duplicate-serial guard.
+        dry_run: When ``True`` (default), no writes are sent.
+
+    Returns:
+        An :class:`OperationResult` with ``operation="add-monument"``.
+    """
+    from tostools.device import build_monument_attributes, synthetic_serial
+
+    w = _resolve_writer(writer, dry_run)
+    station_eid = _resolve_station(w, station_id)
+
+    if not date_start:
+        station_hist = w.get_entity_history(station_eid)
+        st_date = (
+            _device_attribute(station_hist, "date_start")
+            if isinstance(station_hist, dict)
+            else None
+        )
+        date_start = st_date or datetime.now().date().isoformat()
+    # Same field-work convention as cfg move-device (bare date → noon, full ISO
+    # preserved) so a monument co-installed with the receiver/antenna shares one
+    # TOS session — see add_antenna for the session-split rationale.
+    eff_date = _visit_default_time(date_start)
+
+    open_existing = _find_open_child(w, station_eid, "monument")
+    if open_existing is not None and not force:
+        raise CfgOperationError(
+            f"{station_id} already has an open monument child "
+            f"(id_entity={open_existing}). A new height epoch should close the "
+            f"old monument first; or pass --force to add a second."
+        )
+
+    synthetic = serial is None or str(serial).strip() == ""
+    mon_serial = (
+        synthetic_serial("monument", station_id, eff_date)
+        if synthetic
+        else str(serial).strip()
+    )
+    if comment is None and synthetic:
+        comment = (
+            "raðnúmer búið til úr skammstöfun stöðvar + dagsetningu (height epoch)"
+        )
+
+    attrs = build_monument_attributes(
+        serial=mon_serial,
+        owner=owner,
+        date_start=eff_date,
+        antenna_height=height,
+        comment=comment,
+    )
+
+    result = OperationResult(
+        operation="add-monument",
+        station_id=station_id,
+        serial=mon_serial,
+        date=eff_date,
+        dry_run=dry_run,
+    )
+    result.tos_changes["monument_attributes"] = attrs
+    result.tos_changes["synthetic_serial"] = synthetic
+
+    resp = w.create_device("monument", attrs, force=force)
+    result.tos_changes["monument_create"] = resp
+    mid = resp.get("id_entity") if isinstance(resp, dict) else None
+    if mid is not None:
+        join = w.create_entity_connection(station_eid, int(mid), eff_date)
+        result.tos_changes["monument_join"] = {
+            "joined": True,
+            "parent": station_eid,
+            "child": int(mid),
+            "response": join,
+        }
+    else:
+        result.tos_changes["monument_join"] = {
+            "joined": False,
+            "parent": station_eid,
+        }
+
+    return result
+
+
 def move_device(
     serial: Optional[str] = None,
     *,
