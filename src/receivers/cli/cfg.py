@@ -2650,6 +2650,267 @@ def cmd_cfg_add_monument(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# cmd_cfg_import_campaigns — station.info campaign occupations → TOS
+# ---------------------------------------------------------------------------
+
+
+def cmd_cfg_import_campaigns(args) -> int:
+    """``cfg import-campaigns`` — import GAMIT station.info occupations into TOS.
+
+    Creates closed receiver+antenna (and optional radome/monument) sessions for
+    each historical campaign occupation. Metadata-only — no stations.cfg /
+    download footprint. Delegates to
+    :func:`receivers.cfg.operations.import_campaigns`. Exit 0 on success,
+    1 on TOS write / precondition failure, 2 on input-validation failure.
+    """
+    import json as _json
+    import sys
+
+    from tostools.api.tos_writer import TOSWriter
+    from tostools.owners import OwnersCache
+
+    from ..cfg.operations import CfgOperationError, import_campaigns
+
+    owner = args.owner or "Jarðeðlismælihópur"
+    owners_cache = (
+        OwnersCache(args.owners_cache) if args.owners_cache else OwnersCache()
+    )
+    if owner not in owners_cache.load():
+        print(
+            f"❌ Unknown owner: {owner!r}. Run 'tos owners list' to see allowed "
+            f"values, or 'tos owners list --refresh' if you recently added one.",
+            file=sys.stderr,
+        )
+        return 2
+
+    scheme = "https" if args.port == 443 else "http"
+    base_url = f"{scheme}://{args.server}:{args.port}/tos/v1"
+    dry_run = not args.no_dry_run
+    writer = TOSWriter(base_url=base_url, dry_run=dry_run)
+
+    try:
+        result = import_campaigns(
+            writer,
+            station_id=args.station,
+            station_info_path=args.station_info,
+            marker=args.marker,
+            owner=owner,
+            with_monument=args.with_monument,
+            monument_height=args.monument_height,
+            force=args.force,
+            dry_run=dry_run,
+        )
+    except CfgOperationError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        return 1
+    except ValueError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        return 2
+
+    summary = result.tos_changes.get("summary", {})
+    if args.json:
+        payload = {
+            "operation": result.operation,
+            "station_id": result.station_id,
+            "dry_run": result.dry_run,
+            "tos_changes": result.tos_changes,
+        }
+        print(_json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+    else:
+        suffix = " (dry-run)" if result.dry_run else ""
+        print(
+            f"Campaign import @ {result.station_id}: "
+            f"{summary.get('total', 0)} occupation(s) — "
+            f"{summary.get('created', 0)} created, "
+            f"{summary.get('skipped', 0)} skipped{suffix}"
+        )
+        for occ in result.tos_changes.get("occupations", []):
+            span = f"{occ.get('time_from')} → {occ.get('time_to') or 'open'}"
+            if occ.get("status", "").startswith("skipped"):
+                print(f"  · {span}: skipped (already present)")
+                continue
+            rx = occ.get("receiver", {})
+            ant = occ.get("antenna", {})
+            extras = []
+            if "radome" in occ:
+                extras.append("radome")
+            if "monument" in occ:
+                extras.append("monument")
+            extra = f" +{'+'.join(extras)}" if extras else ""
+            print(
+                f"  · {span}: rx {rx.get('model')} ({rx.get('serial')}), "
+                f"ant {ant.get('model')} ({ant.get('serial')}){extra}"
+            )
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# cmd_cfg_set_continuity — transition a station's campaign/continuous tag
+# ---------------------------------------------------------------------------
+
+
+def cmd_cfg_set_continuity(args) -> int:
+    """``cfg set-continuity`` — transition a station's continuity classification.
+
+    Closes the open ``continuity`` period at ``--from`` and opens a new one with
+    ``--campaign`` / ``--continuous``; ``--correct-current`` first relabels a
+    mislabeled open period. Delegates to
+    :func:`receivers.cfg.operations.set_continuity`. Exit 0 success, 1 TOS/
+    precondition failure, 2 input-validation failure.
+    """
+    import json as _json
+    import sys
+
+    from tostools.api.tos_writer import TOSWriter
+
+    from ..cfg.operations import CfgOperationError, set_continuity
+
+    value = "continuous" if args.continuous else "campaign"
+
+    scheme = "https" if args.port == 443 else "http"
+    base_url = f"{scheme}://{args.server}:{args.port}/tos/v1"
+    dry_run = not args.no_dry_run
+    writer = TOSWriter(base_url=base_url, dry_run=dry_run)
+
+    try:
+        result = set_continuity(
+            writer,
+            station_id=args.station,
+            from_date=getattr(args, "from"),
+            value=value,
+            correct_current=args.correct_current,
+            dry_run=dry_run,
+        )
+    except CfgOperationError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        payload = {
+            "operation": result.operation,
+            "station_id": result.station_id,
+            "value": value,
+            "from": result.date,
+            "correct_current": args.correct_current,
+            "dry_run": result.dry_run,
+            "tos_changes": result.tos_changes,
+        }
+        print(_json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+    else:
+        suffix = " (dry-run)" if result.dry_run else ""
+        corrected = (
+            f" (relabelled prior period → {args.correct_current})"
+            if args.correct_current
+            else ""
+        )
+        print(
+            f"Continuity @ {result.station_id}: → {value} from "
+            f"{result.date}{corrected}{suffix}"
+        )
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# cmd_cfg_add_station — scaffold a stations.cfg section from TOS (TOS → cfg)
+# ---------------------------------------------------------------------------
+
+
+def cmd_cfg_add_station(args) -> int:
+    """``cfg add-station`` — create a stations.cfg section for a TOS station.
+
+    Reads a station that already exists in TOS (its open device session) and
+    materialises a ``[STID]`` section so the rek scheduler will monitor it.
+    Inverse of the ``add-*`` device verbs. Delegates to
+    :func:`receivers.cfg.operations.add_station`. Exit 0 success, 1 on TOS /
+    precondition / section-exists failure.
+    """
+    import json as _json
+    import sys
+
+    from tostools.api.tos_client import TOSClient
+
+    from ..cfg.operations import CfgOperationError, add_station
+
+    dry_run = not args.no_dry_run
+
+    try:
+        global_target = _resolve_global_target(args)  # None unless --global
+    except CfgOperationError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        return 1
+
+    scheme = "https" if args.port == 443 else "http"
+    base_url = f"{scheme}://{args.server}:{args.port}/tos/v1"
+    client = TOSClient(base_url=base_url)
+
+    try:
+        result = add_station(
+            client,
+            station_id=args.station,
+            cfg_path=global_target,
+            connection_type=args.connection_type,
+            router_ip=args.router_ip,
+            router_type=args.router_type,
+            rinex_run_by=args.rinex_run_by,
+            rinex_observer=args.rinex_observer,
+            rinex_agency=args.rinex_agency,
+            station_owner=args.station_owner,
+            firmware=args.firmware,
+            dry_run=dry_run,
+        )
+    except CfgOperationError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        return 1
+    except ValueError as e:
+        # Section already exists (create_station_section guard).
+        print(f"❌ {e}", file=sys.stderr)
+        return 1
+
+    warnings = result.tos_changes.get("warnings", [])
+    if args.json:
+        print(
+            _json.dumps(
+                {
+                    "operation": result.operation,
+                    "station_id": result.station_id,
+                    "dry_run": result.dry_run,
+                    "section": result.cfg_changes,
+                    "warnings": warnings,
+                },
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
+        )
+    else:
+        suffix = " (dry-run)" if result.dry_run else ""
+        target = (
+            "gps-config-data repo"
+            if getattr(args, "global_cfg", False)
+            else "deployed stations.cfg"
+        )
+        print(
+            f"add-station {result.station_id}: {len(result.cfg_changes)} fields "
+            f"→ {target}{suffix}\n"
+        )
+        print(f"[{result.station_id}]")
+        for k, v in result.cfg_changes.items():
+            print(f"{k} = {v}")
+        if warnings:
+            print()
+            for w in warnings:
+                print(f"⚠ {w}")
+
+    _maybe_commit_global(
+        args,
+        f"feat: add {args.station} to monitoring (from TOS)",
+        changed=not dry_run,
+        dry_run=dry_run,
+    )
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # cmd_cfg_discover_phone — reveal a router SIM's own phone number (MSISDN)
 # ---------------------------------------------------------------------------
 
@@ -3793,6 +4054,252 @@ Examples:
         help="Emit a structured JSON summary instead of plain text.",
     )
     add_mon.set_defaults(func=cmd_cfg_add_monument)
+
+    # ---- import-campaigns ------------------------------------------------
+    imp = cfg_subparsers.add_parser(
+        "import-campaigns",
+        help="Import GAMIT station.info campaign occupations into TOS",
+        description=(
+            "Read a station's historical occupations from a GAMIT "
+            "station.info file and create one CLOSED receiver+antenna "
+            "session per occupation in TOS (plus radome when the dome is "
+            "not NONE, and a monument with --with-monument). Campaign "
+            "occupations are metadata-only — NO stations.cfg / download / "
+            "monitoring footprint is created. Idempotent: an occupation "
+            "already present (by receiver serial + start date) is skipped. "
+            "Defaults to dry-run."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Preview VOTT's campaign occupations from the SOPAC station.info:
+  receivers cfg import-campaigns --station VOTT \\
+      --station-info ~/git/tostools/data/station_config/station.info.sopac.apr05
+
+  # Commit live:
+  receivers cfg import-campaigns --station VOTT \\
+      --station-info path/to/station.info.sopac.apr05 --no-dry-run
+
+  # A campaign that used a tripod over the benchmark → record monuments too:
+  receivers cfg import-campaigns --station XXXX \\
+      --station-info path/to/station.info --with-monument --no-dry-run
+""",
+    )
+    imp.add_argument(
+        "--station",
+        required=True,
+        metavar="STID",
+        help="4-char station marker to attach the occupations to (must exist in TOS).",
+    )
+    imp.add_argument(
+        "--station-info",
+        dest="station_info",
+        required=True,
+        metavar="PATH",
+        help="Path to a GAMIT station.info file (SOPAC format).",
+    )
+    imp.add_argument(
+        "--marker",
+        help="station.info marker to read (default: same as --station).",
+    )
+    imp.add_argument(
+        "--with-monument",
+        dest="with_monument",
+        action="store_true",
+        help=(
+            "Create a monument per occupation — use when the campaign sat on a "
+            "tripod over a benchmark (the tripod is recorded as a monument). "
+            "Off by default: a campaign needs no monument when the antenna was "
+            "mounted directly on the benchmark (DHARP)."
+        ),
+    )
+    imp.add_argument(
+        "--monument-height",
+        dest="monument_height",
+        metavar="METRES",
+        help="Mark→ARP height for --with-monument (default: occupation's antenna height).",
+    )
+    imp.add_argument(
+        "--owner",
+        help="Owner label (must match the TOS OwnersCache). Default: Jarðeðlismælihópur.",
+    )
+    imp.add_argument(
+        "--force",
+        action="store_true",
+        help="Bypass duplicate-serial and already-present-session guards.",
+    )
+    imp.add_argument(
+        "--no-dry-run",
+        action="store_true",
+        help="Commit the writes; without this flag, payloads are logged only.",
+    )
+    imp.add_argument("--owners-cache", help="Override the tostools owners.yaml path.")
+    imp.add_argument(
+        "--server",
+        default="vi-api.vedur.is",
+        help="TOS API host (default: vi-api.vedur.is).",
+    )
+    imp.add_argument("--port", type=int, default=443)
+    imp.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a structured JSON summary instead of plain text.",
+    )
+    imp.set_defaults(func=cmd_cfg_import_campaigns)
+
+    # ---- set-continuity --------------------------------------------------
+    cont = cfg_subparsers.add_parser(
+        "set-continuity",
+        help="Transition a station's campaign/continuous continuity tag",
+        description=(
+            "Close the station's currently-open 'continuity' period at --from "
+            "and open a new one (campaign or continuous), preserving history. "
+            "Continuity is fluid — a station can move campaign→continuous and "
+            "back over time. Use --correct-current to first relabel a "
+            "mislabeled open period (e.g. a station created 'continuous' from a "
+            "date that was actually 'campaign'). Defaults to dry-run."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Mark VOTT continuous from its permanent install date:
+  receivers cfg set-continuity --station VOTT --from 2017-06-01 --continuous
+
+  # Fix VOTT (created 'continuous' from 2012 when 2012→install was 'campaign'):
+  receivers cfg set-continuity --station VOTT --from 2017-06-01 \\
+      --continuous --correct-current campaign --no-dry-run
+
+  # Return a decommissioned continuous station to campaign use:
+  receivers cfg set-continuity --station XXXX --from 2026-01-01 --campaign --no-dry-run
+""",
+    )
+    cont.add_argument(
+        "--station",
+        required=True,
+        metavar="STID",
+        help="4-char station marker (must exist in TOS).",
+    )
+    cont.add_argument(
+        "--from",
+        dest="from",
+        required=True,
+        metavar="YYYY-MM-DD",
+        help="Transition date. Bare YYYY-MM-DD → noon, matching the other verbs.",
+    )
+    group = cont.add_mutually_exclusive_group(required=True)
+    group.add_argument(
+        "--campaign",
+        action="store_true",
+        help="Set continuity to 'campaign' from --from.",
+    )
+    group.add_argument(
+        "--continuous",
+        action="store_true",
+        help="Set continuity to 'continuous' from --from.",
+    )
+    cont.add_argument(
+        "--correct-current",
+        dest="correct_current",
+        choices=("campaign", "continuous"),
+        help="Relabel the currently-open period to this value before transitioning.",
+    )
+    cont.add_argument(
+        "--no-dry-run",
+        action="store_true",
+        help="Commit the writes; without this flag, payloads are logged only.",
+    )
+    cont.add_argument(
+        "--server",
+        default="vi-api.vedur.is",
+        help="TOS API host (default: vi-api.vedur.is).",
+    )
+    cont.add_argument("--port", type=int, default=443)
+    cont.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a structured JSON summary instead of plain text.",
+    )
+    cont.set_defaults(func=cmd_cfg_set_continuity)
+
+    # ---- add-station -----------------------------------------------------
+    addst = cfg_subparsers.add_parser(
+        "add-station",
+        help="Create a stations.cfg section for a station that exists in TOS",
+        description=(
+            "Materialise a [STID] stations.cfg section from TOS so the rek "
+            "scheduler will monitor the station. The INVERSE of the add-* "
+            "device verbs (those write a probed device TO TOS; this reads TOS "
+            "INTO stations.cfg). TOS-sourced fields reuse the cfg-reconcile "
+            "backend (receiver/antenna/radome/position/name); the SIM's IP and "
+            "modem model fill router_ip/router_type; ports/connection_type have "
+            "no TOS source and are type-defaulted/flagged. Non-IGS antenna names "
+            "and zero antenna heights are copied through WITH A WARNING. Writes "
+            "the deployed config by default; --global writes the gps-config-data "
+            "repo. Defaults to dry-run (prints the section it would write)."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Preview the [VOTT] section add-station would generate from TOS:
+  receivers cfg add-station VOTT
+
+  # Write it to the deployed stations.cfg:
+  receivers cfg add-station VOTT --no-dry-run
+
+  # Finalize into gps-config-data (source of truth) and push → syncs to rek:
+  receivers cfg add-station VOTT --global --push --no-dry-run
+
+  # Override fields TOS can't supply:
+  receivers cfg add-station VOTT --connection-type IP,radio --router-ip 10.4.2.163
+""",
+    )
+    addst.add_argument(
+        "station",
+        metavar="STID",
+        help="4-char station marker (must already exist in TOS with an open session).",
+    )
+    addst.add_argument(
+        "--connection-type",
+        dest="connection_type",
+        default="3G-radio",
+        help="cfg connection_type (no TOS source; default: 3G-radio).",
+    )
+    addst.add_argument(
+        "--router-ip",
+        dest="router_ip",
+        help="Override the SIM-derived router IP (else read from the TOS SIM card).",
+    )
+    addst.add_argument(
+        "--router-type",
+        dest="router_type",
+        help="Override the modem-derived router type (else from the TOS modem model).",
+    )
+    addst.add_argument(
+        "--firmware",
+        help="Receiver firmware for cfg (TOS often lacks it for older units).",
+    )
+    addst.add_argument("--rinex-run-by", dest="rinex_run_by", default="IMO")
+    addst.add_argument("--rinex-observer", dest="rinex_observer", default="IMO")
+    addst.add_argument("--rinex-agency", dest="rinex_agency", default="IMO")
+    addst.add_argument("--station-owner", dest="station_owner", default="IMO")
+    addst.add_argument(
+        "--no-dry-run",
+        action="store_true",
+        help="Write the section; without this flag, the section is printed only.",
+    )
+    _add_global_flags(addst)
+    addst.add_argument(
+        "--server",
+        default="vi-api.vedur.is",
+        help="TOS API host (default: vi-api.vedur.is).",
+    )
+    addst.add_argument("--port", type=int, default=443)
+    addst.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a structured JSON summary instead of plain text.",
+    )
+    addst.set_defaults(func=cmd_cfg_add_station)
 
     # ---- discover-phone --------------------------------------------------
     disc = cfg_subparsers.add_parser(

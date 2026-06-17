@@ -318,9 +318,15 @@ def _get_load_monitor() -> Optional["LoadMonitor"]:
 
 
 def _check_config_changes_job() -> None:
-    """Check for stations.cfg changes (standalone job function for APScheduler)."""
+    """Check for config changes (standalone job function for APScheduler).
+
+    Watches both ``stations.cfg`` (station status/identity) and
+    ``station_areas.yaml`` (Grafana area grouping) so config edits apply on their
+    own — no manual reseed.
+    """
     if _scheduler_instance is not None:
         _scheduler_instance._check_config_changes()
+        _scheduler_instance._check_areas_config_changes()
 
 
 def _write_connectivity_status(
@@ -1703,6 +1709,54 @@ class BulkDownloadScheduler:
             self.logger.info(f"Removed stations: {', '.join(sorted(removed_ids))}")
         if changed:
             self.logger.info(f"Config changes: {'; '.join(changed)}")
+
+    def _reseed_areas(self) -> None:
+        """Rewrite ``station_area_members`` from the deployed station_areas.yaml."""
+        try:
+            from ..db.seeder import Seeder
+
+            result = Seeder().seed_areas()
+            self.logger.info(
+                "Reseeded station areas: %s areas, %s members",
+                result.get("areas"),
+                result.get("members"),
+            )
+        except Exception as e:  # noqa: BLE001 — never let a reseed error kill the job
+            self.logger.error(f"Area reseed failed: {e}")
+
+    def _check_areas_config_changes(self) -> None:
+        """Watch ``station_areas.yaml`` mtime and reseed areas when it changes.
+
+        Areas are config (gps-config-data → sync timer → runtime config dir), so
+        an edit should apply on its own, mirroring the ``stations.cfg`` auto-sync.
+        On the first call (scheduler startup) it reseeds once so the DB matches
+        the deployed yaml regardless of how the station list was last seeded; on
+        later calls it reseeds only when the file's mtime changes.
+        """
+        from ..db.seeder import resolve_areas_yaml
+
+        try:
+            areas_path = resolve_areas_yaml()
+            current_mtime = areas_path.stat().st_mtime
+        except OSError:
+            return
+
+        if not hasattr(self, "_areas_mtime"):
+            # Startup: align the DB with the deployed yaml, then track mtime.
+            self._areas_mtime = current_mtime
+            self._reseed_areas()
+            return
+
+        if current_mtime == self._areas_mtime:
+            return
+
+        self.logger.info(
+            "station_areas.yaml changed (mtime %.0f → %.0f), reseeding areas",
+            self._areas_mtime,
+            current_mtime,
+        )
+        self._areas_mtime = current_mtime
+        self._reseed_areas()
 
     def _load_receiver_session_capabilities(self) -> Dict[str, List[str]]:
         """Load session capabilities for each receiver type from receivers.cfg.
