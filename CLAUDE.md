@@ -426,6 +426,11 @@ logger = logging.getLogger(f"receivers.download.{station_id}")
 **Config architecture**: See `docs/architecture/config-data-flow.md` for the full design,
 including the config sync system and the future TOS/tostools integration vision.
 
+**Station onboarding**: See `docs/architecture/station-onboarding.md` for the end-to-end
+TOS device-intake walkthrough (add-receiver/move-device → add-antenna → add-monument →
+telemetry → stream-flip/download), with the session-split / monument_height /
+find_station-reindex / legacy-router gotchas.
+
 **Source of truth**: `gps-config-data` repo (`git.vedur.is/bgo/gps-config-data`). Edit there,
 never directly on the server. The sync timer (`gps-config-sync.timer`) propagates changes to
 the live server within ~10 minutes. `database.cfg` is the only file never synced (local credentials).
