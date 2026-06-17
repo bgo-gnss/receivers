@@ -223,3 +223,50 @@ def test_git_commit_cfg_blocks_remote_without_push(tmp_path):
         git_commit_cfg(repo, ["stations.cfg"], "msg", push=False)
     # nothing committed (HEAD unchanged) — clone stays clean for the sync
     assert _run(repo, "rev-list", "--count", "HEAD").strip() == "1"
+
+
+# --- committer identity (GitLab pre-receive: email must be the pusher's) -----
+
+
+def test_commit_uses_repo_configured_identity(tmp_path):
+    """A repo with its own identity commits with THAT email, not a placeholder.
+
+    GitLab's pre-receive hook rejects a push whose committer email isn't one of
+    the pusher's verified emails. Overriding a real clone's identity with a
+    placeholder (gps@vedur.is) breaks the --global --push flow — so when the repo
+    has a configured identity, it must win.
+    """
+    repo = _init_repo(tmp_path / "cfgdata")
+    _run(repo, "config", "user.name", "Benedikt")
+    _run(repo, "config", "user.email", "bgo@vedur.is")
+    (repo / "stations.cfg").write_text("[ROTH]\nreceiver_firmware_version = 5.7.0\n")
+
+    res = git_commit_cfg(repo, ["stations.cfg"], "stations(ROTH): fw 5.7.0")
+    assert res["committed"] is True
+    committer_email = _run(repo, "log", "-1", "--format=%ce").strip()
+    assert committer_email == "bgo@vedur.is"
+
+
+def test_commit_falls_back_to_placeholder_identity(tmp_path, monkeypatch):
+    """With NO identity anywhere (isolated git config), the placeholder is used.
+
+    Isolates global/system git config so no machine identity leaks in — only
+    then does git_commit_cfg fall back to the gps@vedur.is placeholder so a
+    commit doesn't fail outright (the CI / fresh-container case).
+    """
+    empty = tmp_path / "empty-gitconfig"
+    empty.write_text("")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(empty))
+
+    path = tmp_path / "noident"
+    path.mkdir()
+    _run(path, "init", "-q", "-b", "main")
+    (path / "stations.cfg").write_text("[ROTH]\nx = 1\n")
+    _run(path, "-c", "user.name=t", "-c", "user.email=t@t", "add", "stations.cfg")
+    _run(path, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "seed")
+
+    (path / "stations.cfg").write_text("[ROTH]\nx = 2\n")
+    res = git_commit_cfg(path, ["stations.cfg"], "msg")
+    assert res["committed"] is True
+    assert _run(path, "log", "-1", "--format=%ce").strip() == "gps@vedur.is"

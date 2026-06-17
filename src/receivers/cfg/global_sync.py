@@ -75,19 +75,29 @@ def resolve_global_repo(repo: Optional[str] = None) -> Path:
 def _git(
     repo: Path, *args: str, check: bool = True, timeout: Optional[int] = None
 ) -> subprocess.CompletedProcess:
-    """Run a git command in ``repo`` with a deterministic identity.
+    """Run a git command in ``repo``.
 
-    The ``-c user.*`` overrides make commits work even where the repo/CI has no
-    configured identity (e.g. a fresh ``git init`` in tests).
+    Uses the repo's **own configured identity** when it has one — a real clone
+    carries the operator's GitLab-verified email (e.g. ``bgo@vedur.is``), and
+    GitLab's pre-receive hook rejects a push whose committer email isn't one of
+    the pusher's verified emails ("You cannot push commits for X"). Only when the
+    repo has *no* identity configured (e.g. a fresh ``git init`` in tests) do we
+    inject a placeholder so commits don't fail outright.
     """
-    cmd = [
-        "git",
-        "-c",
-        "user.name=GPS Receivers cfg",
-        "-c",
-        "user.email=gps@vedur.is",
-        *args,
-    ]
+    ident: list[str] = []
+    probe = subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email"],
+        capture_output=True,
+        text=True,
+    )
+    if probe.returncode != 0 or not probe.stdout.strip():
+        ident = [
+            "-c",
+            "user.name=GPS Receivers cfg",
+            "-c",
+            "user.email=gps@vedur.is",
+        ]
+    cmd = ["git", *ident, *args]
     return subprocess.run(
         cmd,
         cwd=str(repo),
