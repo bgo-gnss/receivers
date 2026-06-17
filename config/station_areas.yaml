@@ -376,6 +376,7 @@ regional_areas:
       - THOC
       - URHC
       - VONC
+      - VOTT
 
   vatnajokull:
     name: "Vatnajökull"
@@ -427,6 +428,7 @@ regional_areas:
       - THOC
       - URHC
       - VONC
+      - VOTT
 
 # =============================================================================
 # NOTES
