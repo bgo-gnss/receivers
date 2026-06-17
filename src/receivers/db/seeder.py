@@ -15,6 +15,7 @@ Replaces the separate scripts:
 from __future__ import annotations
 
 import logging
+import os
 import socket
 from pathlib import Path
 from typing import Optional
@@ -23,11 +24,47 @@ from .connection import get_connection
 
 logger = logging.getLogger(__name__)
 
-# Project-relative config directory
+# Project-relative config directory — the *bundled default* station_areas.yaml.
+# The canonical copy lives in gps-config-data and is deployed to the runtime
+# config dir (see :func:`resolve_areas_yaml`); this repo copy is the bootstrap
+# fallback only.
 CONFIG_DIR = Path(__file__).parent.parent.parent.parent / "config"
 
 # Sections in stations.cfg that are NOT station IDs
 EXCLUDED_SECTIONS = {"DEFAULT", "DEFAULTS", "Configs", "PATHS", "FILES"}
+
+
+def resolve_areas_yaml() -> Path:
+    """Locate ``station_areas.yaml``, preferring the synced config over the repo.
+
+    ``station_areas.yaml`` is config, not code: edit it in gps-config-data, push,
+    and the sync timer deploys it to the runtime config dir — exactly like
+    ``stations.cfg``. Resolution mirrors
+    :func:`receivers.cfg.operations._resolve_cfg_path`:
+
+        1. ``$GPS_CONFIG_DATA_REPO/station_areas.yaml`` (the source-of-truth
+           clone, for laptop-side editing) when it exists;
+        2. the gps_parser runtime config dir (usually
+           ``~/.config/gpsconfig/``) — the sync-deployed copy on rek;
+        3. the bundled :data:`CONFIG_DIR` default (bootstrap fallback).
+    """
+    repo = os.environ.get("GPS_CONFIG_DATA_REPO")
+    if repo:
+        candidate = Path(repo).expanduser() / "station_areas.yaml"
+        if candidate.exists():
+            return candidate
+    try:
+        import gps_parser  # type: ignore
+
+        deployed = (
+            Path(gps_parser.ConfigParser().get_stations_config_path()).parent
+            / "station_areas.yaml"
+        )
+        if deployed.exists():
+            return deployed
+    except Exception:  # noqa: BLE001 — gps_parser absent/misconfigured → fall through
+        pass
+    return CONFIG_DIR / "defaults" / "station_areas.yaml"
 
 
 def _is_station_id(section: str) -> bool:
@@ -344,7 +381,7 @@ class Seeder:
         """
         import yaml
 
-        yaml_path = areas_file or CONFIG_DIR / "station_areas.yaml"
+        yaml_path = areas_file or resolve_areas_yaml()
         if not yaml_path.exists():
             logger.error("Areas file not found: %s", yaml_path)
             print(f"Error: {yaml_path} not found")
