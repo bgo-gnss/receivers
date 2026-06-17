@@ -1146,6 +1146,258 @@ def set_continuity(
     return result
 
 
+# Receiver ports have no TOS attribute code (CLAUDE.md scope note), so a new
+# station section gets type-appropriate defaults. Keyed on the canonical
+# stations.cfg short receiver_type.
+_STATION_PORT_DEFAULTS: Dict[str, Dict[str, str]] = {
+    "PolaRX5": {
+        "receiver_ftpport": "2160",
+        "receiver_httpport": "8060",
+        "receiver_controlport": "28784",
+    },
+    "mosaic-X5": {
+        "receiver_ftpport": "2160",
+        "receiver_httpport": "8060",
+        "receiver_controlport": "28784",
+    },
+    "NetRS": {"receiver_httpport": "8060"},
+    "NetR9": {"receiver_httpport": "8060"},
+    "NetR5": {"receiver_httpport": "8060"},
+}
+
+# Field order for a generated stations.cfg section (mirrors existing sections).
+_STATION_CFG_ORDER: tuple[str, ...] = (
+    "router_ip",
+    "router_type",
+    "receiver_type",
+    "receiver_ftpport",
+    "receiver_httpport",
+    "receiver_controlport",
+    "station_id",
+    "connection_type",
+    "station_name",
+    "rinex_run_by",
+    "rinex_observer",
+    "rinex_agency",
+    "station_owner",
+    "rinex_marker_name",
+    "rinex_marker_number",
+    "antenna_serial",
+    "antenna_type",
+    "antenna_radome",
+    "antenna_height",
+    "rinex_config_valid_from",
+    "latitude",
+    "longitude",
+    "height",
+    "receiver_firmware_version",
+    "receiver_serial",
+)
+
+
+def _short_router_type(model: Optional[str]) -> Optional[str]:
+    """Map a TOS modem model to the stations.cfg ``router_type`` short form.
+
+    ``"Teltonika RUT240"`` → ``"RUT240"``; an unknown model passes through so a
+    new vendor isn't silently dropped.
+    """
+    if not model:
+        return None
+    for prefix in ("Teltonika ", "Teltonica "):
+        if model.startswith(prefix):
+            return model[len(prefix) :].strip()
+    return model.strip()
+
+
+def add_station(
+    client: Optional[Any] = None,
+    *,
+    station_id: str,
+    cfg_path: Optional[Path] = None,
+    connection_type: str = "3G-radio",
+    router_ip: Optional[str] = None,
+    router_type: Optional[str] = None,
+    rinex_run_by: str = "IMO",
+    rinex_observer: str = "IMO",
+    rinex_agency: str = "IMO",
+    station_owner: str = "IMO",
+    firmware: Optional[str] = None,
+    dry_run: bool = True,
+) -> OperationResult:
+    """Scaffold a new ``stations.cfg`` section for a TOS station (TOS → cfg).
+
+    The inverse of the ``add-*`` device verbs: those write a probed device *to*
+    TOS; this reads a station that already exists in TOS (its open receiver /
+    antenna / radome / monument / SIM / modem session) and materialises a
+    ``[STID]`` section so the rek scheduler will monitor it.
+
+    TOS-sourced fields reuse the ``cfg reconcile`` backend
+    (:mod:`receivers.cfg.tos_adapter`) so the two never drift: receiver
+    type/serial/firmware, antenna type/serial/radome, the composite
+    antenna_height (antenna ARP + monument), and lat/lon/height/name. The SIM's
+    ``ip_address`` → ``router_ip`` and the modem ``model`` → ``router_type`` are
+    read directly (they aren't in the reconcile device map). Ports /
+    connection_type have no TOS attribute code and are type-defaulted / flagged.
+
+    Faithful, not laundering: a non-IGS antenna name or a zero antenna_height in
+    TOS is copied through **with a warning**, so the operator sees the data-quality
+    issue before it syncs to rek (it does not refuse).
+
+    Args:
+        client: A read-only ``TOSClient`` (duck-typed: needs
+            ``get_complete_station_metadata`` + ``get_entity_history``), or
+            ``None`` to build one.
+        station_id: 4-char marker — the TOS station to materialise.
+        cfg_path: Target stations.cfg (default: resolved deployed/repo path).
+        connection_type: cfg ``connection_type`` (no TOS source; default 3G-radio).
+        router_ip: Override the SIM-derived IP.
+        router_type: Override the modem-derived router type.
+        rinex_run_by / rinex_observer / rinex_agency / station_owner: RINEX
+            metadata constants (no TOS source).
+        firmware: Receiver firmware for cfg (TOS often lacks it for old units).
+        dry_run: When ``True`` (default), the section is built and returned but
+            not written.
+
+    Returns:
+        :class:`OperationResult` ``operation="add-station"``; the generated
+        section is in ``cfg_changes`` and any data-quality warnings in
+        ``tos_changes["warnings"]``.
+    """
+    from tostools.standards.igs_equipment import ANTENNA_IGS
+
+    from ..config.receivers_config import create_station_section
+    from . import tos_adapter
+
+    if client is None:
+        from tostools.api.tos_client import TOSClient
+
+        client = TOSClient()
+
+    station = client.get_complete_station_metadata(station_id)
+    if not station:
+        raise CfgOperationError(
+            f"No TOS station found for marker {station_id!r} "
+            f"(get_complete_station_metadata returned nothing)."
+        )
+    session = tos_adapter.current_session(station)
+    if session is None:
+        raise CfgOperationError(
+            f"{station_id} has no open device session in TOS — install the "
+            f"continuous receiver/antenna first (add-receiver/move-device, "
+            f"add-antenna), then re-run add-station."
+        )
+
+    warnings: List[str] = []
+    rx_type = _canonical_receiver_type(tos_adapter.current_receiver_model(station))
+    antenna_type = tos_adapter.current_antenna_model(station)
+    antenna_height = tos_adapter.current_antenna_height(station)
+
+    # Telemetry: SIM ip_address → router_ip, modem model → router_type. Not in
+    # the reconcile device map, so read the open children directly (TOSClient
+    # duck-types _find_open_child via get_entity_history).
+    eid = station.get("id_entity")
+    if router_ip is None and eid is not None:
+        sim_id = _find_open_child(client, int(eid), "sim_card")
+        if sim_id is not None:
+            sim_hist = client.get_entity_history(sim_id)
+            if isinstance(sim_hist, dict):
+                router_ip = _device_attribute(sim_hist, "ip_address")
+    if router_type is None and eid is not None:
+        modem_id = _find_open_child(client, int(eid), "modem_gsm")
+        if modem_id is not None:
+            modem_hist = client.get_entity_history(modem_id)
+            if isinstance(modem_hist, dict):
+                router_type = _short_router_type(_device_attribute(modem_hist, "model"))
+
+    # rinex_config_valid_from = the open session's start (NB: may be the TOS
+    # data-entry date, not the true continuous-install date). TOS hands time_from
+    # back as a datetime via _build_history_from_connections; tolerate str too.
+    _tf = session.get("time_from")
+    if _tf is None:
+        valid_from = None
+    else:
+        valid_from = (_tf.isoformat() if hasattr(_tf, "isoformat") else str(_tf))[:10]
+
+    raw: Dict[str, Optional[str]] = {
+        "router_ip": router_ip,
+        "router_type": router_type,
+        "receiver_type": rx_type,
+        "station_id": station_id,
+        "connection_type": connection_type,
+        "station_name": tos_adapter.station_name(station),
+        "rinex_run_by": rinex_run_by,
+        "rinex_observer": rinex_observer,
+        "rinex_agency": rinex_agency,
+        "station_owner": station_owner,
+        "rinex_marker_name": station_id,
+        "rinex_marker_number": station_id,
+        "antenna_serial": tos_adapter.current_antenna_serial(station),
+        "antenna_type": antenna_type,
+        "antenna_radome": tos_adapter.current_radome_model(station) or "NONE",
+        "antenna_height": antenna_height,
+        "rinex_config_valid_from": valid_from,
+        "latitude": tos_adapter.station_latitude(station),
+        "longitude": tos_adapter.station_longitude(station),
+        "height": tos_adapter.station_height(station),
+        "receiver_firmware_version": firmware
+        or tos_adapter.current_receiver_firmware(station),
+        "receiver_serial": tos_adapter.current_receiver_serial(station),
+    }
+    if rx_type:
+        raw.update(_STATION_PORT_DEFAULTS.get(rx_type, {}))
+
+    # Data-quality warnings — surface, don't refuse.
+    if antenna_type and antenna_type not in ANTENNA_IGS:
+        warnings.append(
+            f"antenna_type {antenna_type!r} is not an IGS-recognised name — "
+            f"RINEX headers will carry a non-standard antenna; verify in TOS."
+        )
+    try:
+        if antenna_height is not None and float(antenna_height) == 0.0:
+            warnings.append(
+                "antenna_height is 0.0 (likely a TOS placeholder, not the "
+                "surveyed mark→ARP height) — confirm before production RINEX."
+            )
+    except (TypeError, ValueError):
+        pass
+    if not router_ip:
+        warnings.append(
+            "router_ip could not be derived from the SIM in TOS — set it with "
+            "--router-ip or the station cannot be reached."
+        )
+    if valid_from and valid_from >= "2025":
+        warnings.append(
+            f"rinex_config_valid_from={valid_from} is the receiver's TOS "
+            f"session start — confirm it's the real continuous-install date."
+        )
+
+    fields = {k: str(raw[k]) for k in _STATION_CFG_ORDER if raw.get(k) is not None}
+
+    result = OperationResult(
+        operation="add-station",
+        station_id=station_id,
+        date=valid_from,
+        dry_run=dry_run,
+    )
+    result.cfg_changes = fields
+    result.tos_changes["warnings"] = warnings
+
+    if not dry_run:
+        target = _resolve_cfg_path(cfg_path)
+        create_station_section(target, station_id, fields)
+        result.tos_changes["cfg_path"] = str(target)
+
+    for w in warnings:
+        logger.warning("add-station %s: %s", station_id, w)
+    logger.info(
+        "add-station %s: %d fields%s",
+        station_id,
+        len(fields),
+        " (dry-run)" if dry_run else f" → {result.tos_changes.get('cfg_path')}",
+    )
+    return result
+
+
 def move_device(
     serial: Optional[str] = None,
     *,
