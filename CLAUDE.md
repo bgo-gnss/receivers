@@ -471,7 +471,7 @@ Two separate fields in `stations.cfg` control station visibility:
 
 A station can have both fields set (e.g., GRVM: `station_status = inactive` + `health_check = passive`).
 
-**Config change detection**: The scheduler watches `stations.cfg` for changes (mtime-based, every 5 minutes) and automatically syncs `station_status` and `health_check` to the PostgreSQL database. No scheduler restart needed for config changes.
+**Config change detection**: The scheduler watches `stations.cfg` for changes (mtime-based, every 1 minute) and automatically syncs `station_status` and `health_check` to the PostgreSQL database. A detected change also re-runs the stream config refresh + supervise (when `stream_capture.enabled`), so an `acquisition_mode=stream` flip takes effect within ~1 min instead of waiting for the daily 06:00 `stream_config_refresh`. No scheduler restart needed for config changes.
 
 **Auto-detection**: Stations with `receiver_type` set to None/empty/unknown are automatically flagged as `station_status = inactive` by the scheduler.
 
