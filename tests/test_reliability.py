@@ -437,7 +437,10 @@ class TestQueryHealthGateIntegration:
         assert result == "no_satellites"
 
     @patch("receivers.health.database_factory.DatabaseConnectionFactory")
-    def test_disk_full_detected(self, mock_dbf):
+    def test_disk_full_does_not_gate(self, mock_dbf):
+        # A full receiver disk still serves fresh ring-buffered data (ALHV,
+        # 2026-06-12), so disk_usage_pct > 98 must NOT gate the download — it
+        # only warns and proceeds. (Was: returned "disk_full".)
         from receivers.utils.stall_timeout import _query_health_gate
 
         mock_conn = MagicMock()
@@ -453,7 +456,7 @@ class TestQueryHealthGateIntegration:
         ]
 
         result = _query_health_gate("DISKFULL")
-        assert result == "disk_full"
+        assert result is None  # proceeds despite full disk
 
     @patch("receivers.health.database_factory.DatabaseConnectionFactory")
     def test_stale_data_proceeds(self, mock_dbf):
@@ -647,8 +650,8 @@ class TestHealthGateSessionAware:
         assert _query_health_gate("GSIG", None) == "no_satellites"
 
     @patch("receivers.health.database_factory.DatabaseConnectionFactory")
-    def test_disk_full_still_skips_15s_24hr(self, mock_dbf):
-        """disk_full is session-agnostic — daily backfill still skips on full disk."""
+    def test_disk_full_does_not_skip_any_session(self, mock_dbf):
+        """A full disk never gates — it warns and proceeds for every session."""
         from receivers.utils.stall_timeout import _query_health_gate
 
         mock_conn = MagicMock()
@@ -658,12 +661,12 @@ class TestHealthGateSessionAware:
         mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cur)
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        # sats=15 (OK), disk=99% (>98) — gate fires for any session
+        # sats=15 (OK), disk=99.5% (>98) — no longer a skip for any session
         mock_cur.fetchone.side_effect = [
             (15, 99.5, datetime.now(UTC)),
         ]
 
-        assert _query_health_gate("ANY", "15s_24hr") == "disk_full"
+        assert _query_health_gate("ANY", "15s_24hr") is None
 
     @patch("receivers.health.database_factory.DatabaseConnectionFactory")
     def test_disk_broken_still_skips_15s_24hr(self, mock_dbf):

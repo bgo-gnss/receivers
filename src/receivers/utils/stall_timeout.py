@@ -372,9 +372,12 @@ def check_station_health_gate(
       Daily backfill sessions (15s_24hr) pull yesterday's archived file and
       are not gated on current sats. ``session_type=None`` keeps the legacy
       behaviour (always gate) for safety.
-    - disk_usage_pct > 98 → "disk_full" (all sessions)
     - block_disk_status.total_mb == 0 → "disk_broken" (all sessions)
     - All checks require live metrics fresher than 30 minutes (stale → proceed)
+
+    NB: ``disk_usage_pct > 98`` is **not** a skip — a full receiver disk still
+    serves fresh ring-buffered data, so it only warns and proceeds (see ALHV,
+    2026-06-12). It used to return "disk_full"; that gate was removed.
 
     Cache is keyed on ``(station_id, session_type)`` so the same station can
     yield different answers for different sessions.
@@ -448,7 +451,21 @@ def _query_health_gate(
                             ):
                                 return "no_satellites"
                             if disk_pct is not None and disk_pct > 98:
-                                return "disk_full"
+                                # A full receiver disk is an ALERT, not a skip.
+                                # The receiver keeps ring-buffering fresh data
+                                # (legacy rek downloads such stations fine), so
+                                # gating here only loses data: ALHV stalled
+                                # 2026-06-12 → 06-19 because its NetR9 disk sat
+                                # at 98-99% while still serving hourly files.
+                                # Disk fullness is already surfaced via
+                                # station_latest_metrics / dashboards, so just
+                                # warn and proceed with the download.
+                                logger.warning(
+                                    "%s receiver disk %.1f%% full — downloading "
+                                    "anyway (not gating)",
+                                    station_id,
+                                    disk_pct,
+                                )
 
                     # Check for broken disk (total_mb = 0 with recent data).
                     # Distinct from disk_full: total_mb=0 means the disk is
