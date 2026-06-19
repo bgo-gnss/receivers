@@ -36,6 +36,7 @@ from .skeleton import (
     geodetic_to_ecef,
     metadata_from_tos,
     refresh_skeleton,
+    upgrade_skeleton,
 )
 from .supervisor import StreamSupervisor, SuperviseResult
 
@@ -63,6 +64,7 @@ __all__ = [
     "SkeletonMetadata",
     "fill_skeleton",
     "refresh_skeleton",
+    "upgrade_skeleton",
     "metadata_from_tos",
     "build_skeleton",
     "geodetic_to_ecef",

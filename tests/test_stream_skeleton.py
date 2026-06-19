@@ -7,6 +7,7 @@ from receivers.streaming.skeleton import (
     geodetic_to_ecef,
     metadata_from_tos,
     refresh_skeleton,
+    upgrade_skeleton,
 )
 
 
@@ -102,9 +103,16 @@ class TestBuildSkeleton:
             ant_radome="NONE",
         )
         skl = build_skeleton(meta, latitude=63.885537, longitude=-22.270311, height=347.41)
-        labels = [ln[60:].strip() for ln in skl.splitlines()]
-        assert labels[0] == "COMMENT" and labels[-1] == "END OF HEADER"
+        lines = skl.splitlines()
+        labels = [ln[60:].strip() for ln in lines]
+        # 3.04 schema: version line first, MARKER TYPE present, no WAVELENGTH FACT
+        assert labels[0] == "RINEX VERSION / TYPE" and labels[-1] == "END OF HEADER"
+        assert "MARKER TYPE" in labels
+        assert "WAVELENGTH FACT L1/2" not in labels
         assert "APPROX POSITION XYZ" in labels and "REC # / TYPE / VERS" in labels
+        # version line content matches the sbf2rin product layout
+        vline = lines[0]
+        assert vline[:60] == "     3.04           OBSERVATION DATA    M".ljust(60)
         # the freshly-built header round-trips through fill_skeleton unchanged
         assert fill_skeleton(skl, SkeletonMetadata()) == skl
 
@@ -115,6 +123,41 @@ class TestBuildSkeleton:
             skl, SkeletonMetadata(rec_serial="222", rec_type="SEPT POLARX5")
         )
         assert changed is True
+
+
+class TestUpgradeSkeleton:
+    def test_legacy_rinex2_upgraded_to_304(self):
+        # GONH_SKL is the legacy RINEX-2 shape (no version line, WAVELENGTH FACT).
+        upgraded, changed = upgrade_skeleton(GONH_SKL)
+        assert changed is True
+        labels = [ln[60:].strip() for ln in upgraded.splitlines()]
+        assert labels[0] == "RINEX VERSION / TYPE"
+        assert "MARKER TYPE" in labels
+        assert "WAVELENGTH FACT L1/2" not in labels
+        # MARKER TYPE inserted right after MARKER NUMBER
+        assert labels[labels.index("MARKER NUMBER") + 1] == "MARKER TYPE"
+
+    def test_position_preserved_verbatim(self):
+        # The surveyed ECEF must survive the structural upgrade untouched.
+        upgraded, _ = upgrade_skeleton(GONH_SKL)
+        pos = next(ln for ln in upgraded.splitlines() if "APPROX POSITION" in ln)
+        assert "2605201.0352 -1066895.4189  5704422.1172" in pos
+
+    def test_idempotent_on_already_304(self):
+        once, _ = upgrade_skeleton(GONH_SKL)
+        twice, changed = upgrade_skeleton(once)
+        assert changed is False and twice == once
+
+    def test_built_header_is_not_changed(self):
+        # A freshly built 3.04 skeleton is already upgraded → no-op.
+        skl = build_skeleton(
+            SkeletonMetadata(marker_name="GONH", marker_number="GONH"),
+            latitude=63.9,
+            longitude=-22.3,
+            height=300.0,
+        )
+        _, changed = upgrade_skeleton(skl)
+        assert changed is False
 
 
 class TestMetadataFromTos:
