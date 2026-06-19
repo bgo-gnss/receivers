@@ -347,3 +347,85 @@ class TestEndToEndLocal:
         res2 = eng.run()
         assert res2.ok
         assert res2.transferred == 0
+
+
+class TestFreshness:
+    def test_inactive_needs_no_db(self, tmp_path):
+        from receivers.archive.freshness import evaluate_freshness
+
+        target = _target(tmp_path, active=False)
+        s = evaluate_freshness(None, target, now=datetime(2026, 6, 23, 12, 0))
+        assert s.state == "inactive"
+        assert not s.is_alerting
+
+    def test_never_is_alerting(self, db_conn):
+        from receivers.archive.freshness import evaluate_freshness
+
+        target = _target("/x", name="test_target")
+        s = evaluate_freshness(db_conn, target, now=datetime(2026, 6, 23, 12, 0))
+        assert s.state == "never"
+        assert s.is_alerting
+
+    def test_ok_within_threshold(self, db_conn):
+        from receivers.archive.freshness import evaluate_freshness
+        from receivers.archive.state import record_run
+
+        now = datetime(2026, 6, 23, 12, 0)
+        last = now - timedelta(minutes=10)
+        record_run(
+            db_conn, "test_target", ran_at=last, files=1, ok=True, advance_to=last
+        )
+        target = _target("/x", name="test_target")
+        s = evaluate_freshness(db_conn, target, now=now, max_age_minutes=120)
+        assert s.state == "ok"
+        assert not s.is_alerting
+
+    def test_stale_past_threshold(self, db_conn):
+        from receivers.archive.freshness import evaluate_freshness
+        from receivers.archive.state import record_run
+
+        now = datetime(2026, 6, 23, 12, 0)
+        last = now - timedelta(minutes=200)
+        record_run(
+            db_conn, "test_target", ran_at=last, files=1, ok=True, advance_to=last
+        )
+        target = _target("/x", name="test_target")
+        s = evaluate_freshness(db_conn, target, now=now, max_age_minutes=120)
+        assert s.state == "stale"
+        assert s.is_alerting
+
+
+class TestSchedulerWiring:
+    def test_archive_sync_in_default_config(self):
+        from receivers.scheduling.config_loader import get_default_config
+
+        cfg = get_default_config()
+        assert "archive_sync" in cfg
+        assert cfg["archive_sync"]["enabled"] is False  # opt-in only
+        assert cfg["archive_sync"]["schedule"] == ":45"
+
+    def test_job_no_op_without_config(self):
+        # Missing sync.yaml -> no targets -> no-op, must not raise (no DB touched).
+        from receivers.archive.job import run_archive_sync_job
+
+        run_archive_sync_job(config_path="/nonexistent/sync.yaml")
+
+    def test_job_no_op_with_only_inactive(self, tmp_path):
+        from receivers.archive.job import run_archive_sync_job
+
+        cfg = tmp_path / "sync.yaml"
+        cfg.write_text(
+            """
+targets:
+  - name: imo_archive
+    active: false
+    host: rawdata.vedur.is
+    user: gpsops
+    dest: ~/gpsdata
+    source_root: /mnt/data/gpsdata
+    sessions: [15s_24hr]
+    cutover: "2026-06-22T00:00:00"
+"""
+        )
+        # all inactive -> returns before opening any DB connection
+        run_archive_sync_job(config_path=str(cfg))

@@ -2115,6 +2115,7 @@ class BulkDownloadScheduler:
         self._schedule_gap_detection()
         self._schedule_archive_reconciler()
         self._schedule_integrity_checker()
+        self._schedule_archive_sync()
         self._schedule_morning_recovery()
         self._schedule_stream_capture()
 
@@ -2411,6 +2412,38 @@ class BulkDownloadScheduler:
             f"{days_back} days back, tolerance={size_tolerance_pct}%, "
             f"receiver_check={'on' if check_receiver else 'off'}, immediate first run)"
         )
+
+    def _schedule_archive_sync(self) -> None:
+        """Schedule the batch delta push to the long-term archive gateway.
+
+        Pushes raw files newer than each target's watermark to rawdata (-> ananas)
+        and forward-indexes them in archive_catalog, then logs freshness.
+        Disabled by default — double-gated: this scheduler flag in scheduler.yaml
+        AND ``active: true`` on a target in sync.yaml. See design 1781867391.
+        """
+        cfg = self.yaml_config.get("archive_sync", {})
+        if not cfg.get("enabled", False):
+            self.logger.info("Archive sync disabled in config")
+            return
+
+        from ..archive.job import run_archive_sync_job
+
+        schedule = cfg.get("schedule", ":45")
+        max_age_minutes = cfg.get("max_age_minutes", 120)
+        base_trigger = parse_schedule(schedule)
+
+        self.scheduler.add_job(
+            func=run_archive_sync_job,
+            trigger=base_trigger.trigger_type,
+            kwargs={"max_age_minutes": max_age_minutes},
+            id="archive_sync",
+            replace_existing=True,
+            max_instances=1,
+            executor="backfill",
+            **base_trigger.trigger_kwargs,
+        )
+
+        self.logger.info(f"Scheduled archive sync ({base_trigger.description})")
 
     def _schedule_morning_recovery(self) -> None:
         """Schedule the daily morning recovery pass.

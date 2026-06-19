@@ -46,6 +46,9 @@ def cmd_archive_sync(args: argparse.Namespace) -> int:
         print("No sync targets configured (sync.yaml absent or empty).")
         return 0
 
+    if args.status:
+        return _cmd_status(args, targets)
+
     # The catalog + watermark need a DB; a pure dry-run can run without one.
     conn = _get_conn(args.host, required=not args.dry_run)
 
@@ -76,6 +79,52 @@ def cmd_archive_sync(args: argparse.Namespace) -> int:
             )
         )
     return exit_code
+
+
+def _cmd_status(args: argparse.Namespace, targets) -> int:
+    """Print per-target sync freshness; non-zero exit if any target is alerting."""
+    from datetime import datetime
+
+    from ..archive.freshness import evaluate_all
+
+    conn = _get_conn(args.host, required=True)
+    try:
+        statuses = evaluate_all(
+            conn, targets, now=datetime.now(), max_age_minutes=args.max_age_minutes
+        )
+    finally:
+        if conn is not None:
+            conn.close()
+
+    if args.json:
+        print(
+            json.dumps(
+                [_status_dict(s) for s in statuses], indent=2, default=_json_default
+            )
+        )
+    else:
+        for s in statuses:
+            icon = {"ok": "✅", "stale": "🔴", "never": "⚠️", "inactive": "⏸️"}.get(
+                s.state, "?"
+            )
+            age = (
+                f"{s.age_seconds / 60:.0f} min ago"
+                if s.age_seconds is not None
+                else "—"
+            )
+            last = f"{s.last_success:%Y-%m-%d %H:%M:%S}" if s.last_success else "never"
+            print(f"{icon} {s.target}: {s.state}  (last success {last}, {age})")
+    return 1 if any(s.is_alerting for s in statuses) else 0
+
+
+def _status_dict(s) -> dict:
+    return {
+        "target": s.target,
+        "state": s.state,
+        "last_success": s.last_success,
+        "age_seconds": s.age_seconds,
+        "threshold_seconds": s.threshold_seconds,
+    }
 
 
 def _print_result(result) -> None:
@@ -136,6 +185,18 @@ def create_archive_sync_parser(subparsers) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--host", help="gps_health host override (default: from config)"
+    )
+    parser.add_argument(
+        "--status",
+        action="store_true",
+        help="Show per-target sync freshness instead of syncing "
+        "(non-zero exit if any target is stale/never)",
+    )
+    parser.add_argument(
+        "--max-age-minutes",
+        type=int,
+        default=120,
+        help="Freshness threshold for --status (default: 120)",
     )
     parser.add_argument(
         "--json", action="store_true", help="Emit machine-readable JSON results"
