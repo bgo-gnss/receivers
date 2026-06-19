@@ -41,13 +41,13 @@ DEFAULT_COMMENT = "File configured from IMO rt streams"
 #: skeleton's version line is for self-documentation / standalone validity.
 RINEX3_VERSION = "3.04"
 
-#: RINEX placeholder for an unknown equipment serial. Our sbf2rin product emits a
-#: zeros serial for serial-less equipment; we mirror that. TOS stores a *synthetic*
-#: serial for serial-less devices (``<subtype>-<STATION>-<YYYYMMDD>``, e.g.
+#: RINEX placeholder for an unknown equipment serial. Matches our sbf2rin product,
+#: which emits ``0000`` for serial-less equipment. TOS stores a *synthetic* serial
+#: for serial-less devices (``<subtype>-<STATION>-<YYYYMMDD>``, e.g.
 #: ``antenna-SEY9-20210325``) so the device stays unique — but that string is a
 #: TOS-internal identity, not a real serial, and it overflows the 20-char RINEX
 #: serial field. We replace any synthetic serial with this placeholder in headers.
-UNKNOWN_SERIAL = "000000"
+UNKNOWN_SERIAL = "0000"
 
 #: Matches a tostools synthetic serial ``<subtype>-<STATION>-<YYYYMMDD>``.
 _SYNTHETIC_SERIAL_RE = re.compile(r"^[A-Za-z]+-[A-Za-z0-9]+-\d{8}$")
