@@ -74,10 +74,17 @@ class ArchiveSync:
 
     @property
     def remote_dest(self) -> str:
-        """``user@host:dest`` honouring a ``--dest-override`` (e.g. staging)."""
-        if self.dest_override is not None:
-            return f"{self.target.user}@{self.target.host}:{self.dest_override}"
-        return self.target.remote
+        """rsync destination, honouring ``--dest-override`` (e.g. staging).
+
+        ``user@host:dest`` for a remote target; a bare local path when the
+        target has no ``host`` (local staging / byte-verify / tests).
+        """
+        dest = (
+            self.dest_override if self.dest_override is not None else self.target.dest
+        )
+        if not self.target.host:
+            return dest
+        return f"{self.target.user}@{self.target.host}:{dest}"
 
     # ---- delta discovery ---------------------------------------------------
 
@@ -190,6 +197,14 @@ class ArchiveSync:
         but does NOT block the run: rsync already moved the bytes, and re-playing
         the whole delta over one bad file is the unbounded-work trap. The
         integrity-verify pass reconciles the missing/!= row later.
+
+        Commits per file so a crash mid-loop loses at most one row, not the run.
+        NOTE: the forward catalog is best-effort, NOT a complete ledger. If the
+        process dies after a file transfers but before its row commits, the next
+        run's ``--ignore-existing`` rsync skips it (no itemize line) so it is
+        never re-cataloged: it ends up on-archive-but-uncataloged. The backward
+        archive-vs-catalog reconciliation pass (post-Monday) must find exactly
+        that case; the freshness/integrity story must not assume completeness.
         """
         if self.conn is None:
             return 0, []
@@ -224,8 +239,8 @@ class ArchiveSync:
                 file_size=os.path.getsize(local),
                 content_sha256=digest,
             )
+            self.conn.commit()  # per-file: a crash loses one row, not the run
             cataloged += 1
-        self.conn.commit()
         return cataloged, errors
 
     def _archive_path(self, rel: str) -> str:

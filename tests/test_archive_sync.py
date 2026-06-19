@@ -288,3 +288,62 @@ class TestDbRoundTrip:
             db_conn, "test_target", ran_at=t2, files=0, ok=False, advance_to=None
         )
         assert get_last_success(db_conn, "test_target") == t1
+
+
+class TestEndToEndLocal:
+    """Exercise the REAL rsync command + parser + catalog against a local dest.
+
+    No SSH, no stub: a local destination (empty host) drives the actual
+    ``rsync -a --ignore-existing --itemize-changes`` invocation, so the real
+    itemize output feeds the real ``_parse_transferred`` and the real catalog
+    upsert. This is the gap unit stubs cannot cover.
+    """
+
+    def test_real_rsync_lands_file_and_catalogs(self, tmp_path, db_conn):
+        import hashlib
+        import shutil
+
+        if not shutil.which("rsync"):
+            pytest.skip("rsync not available")
+
+        src = tmp_path / "src"
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        rel = "2026/jun/AKUR/15s_24hr/raw/AKUR_a.T02.gz"
+        payload = b"raw payload bytes"
+        # write content FIRST, then set mtime above the cutover floor (writing
+        # resets mtime, so order matters).
+        f = src / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(payload)
+        ts = (CUTOVER + timedelta(days=1)).timestamp()
+        os.utime(f, (ts, ts))
+
+        target = _target(src, name="test_target", host="", dest=str(dst))
+        eng = ArchiveSync(target, conn=db_conn, dry_run=False)
+        res = eng.run()
+
+        # real rsync actually moved the file to the relative tree under dest
+        assert (dst / rel).is_file()
+        assert res.ok
+        assert res.transferred == 1
+        assert res.cataloged == 1
+
+        # catalog row written with the real content hash (magic-byte: plain here)
+        expected_hash = hashlib.sha256(payload).hexdigest()
+        with db_conn.cursor() as cur:
+            cur.execute(
+                "SELECT station, session_type, file_category, content_sha256, "
+                "compression, file_path FROM archive_catalog "
+                "WHERE storage_location='test_target'"
+            )
+            row = cur.fetchone()
+        assert row[0:3] == ("AKUR", "15s_24hr", "raw")
+        assert row[3] == expected_hash
+        assert row[4] == ".gz"
+        assert row[5] == f"{dst}/{rel}"
+
+        # second run is idempotent: --ignore-existing => nothing transfers
+        res2 = eng.run()
+        assert res2.ok
+        assert res2.transferred == 0
