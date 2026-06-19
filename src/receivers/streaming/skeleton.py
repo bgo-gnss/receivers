@@ -176,11 +176,22 @@ def build_skeleton(
     return "\n".join(f"{data:<{_LABEL_COL}}{label}".rstrip() for data, label in rows) + "\n"
 
 
-def metadata_from_tos(station: Dict[str, Any], *, station_id: str) -> SkeletonMetadata:
+def metadata_from_tos(
+    station: Dict[str, Any],
+    *,
+    station_id: str,
+    station_config: Optional[Dict[str, Any]] = None,
+) -> SkeletonMetadata:
     """Map a TOS ``get_complete_station_metadata`` dict to skeleton fields.
 
     Reuses the battle-tested ``receivers.cfg.tos_adapter`` accessors and
     IGS-name standardisation from tostools.
+
+    ``OBSERVER / AGENCY`` is not a TOS attribute — it is operational metadata
+    that lives in ``stations.cfg`` (``rinex_observer`` / ``rinex_agency``),
+    exactly like our sbf2rin product header (e.g. ``HMF/BGO  /  JH/IMO``). When
+    a ``station_config`` is supplied these fill the otherwise-blank line; without
+    it the line is left for the template to preserve.
     """
     from tostools.standards.igs_equipment import (
         to_igs_antenna,
@@ -196,6 +207,13 @@ def metadata_from_tos(station: Dict[str, Any], *, station_id: str) -> SkeletonMe
         except (TypeError, ValueError):
             return None
 
+    observer = agency = None
+    if station_config:
+        from .config import _lookup
+
+        observer = _lookup(station_config, "rinex_observer")
+        agency = _lookup(station_config, "rinex_agency")
+
     # Fall back to the raw TOS value when the IGS table has no mapping — better a
     # valid raw name than a blank header. (The tostools IGS table currently misses
     # e.g. TRM115000.10 and maps mosaic-X5 to "SEPT MOSAICX5" vs the rcvr_ant.tab
@@ -205,6 +223,8 @@ def metadata_from_tos(station: Dict[str, Any], *, station_id: str) -> SkeletonMe
     return SkeletonMetadata(
         marker_name=station_id,
         marker_number=station_id,
+        observer=observer,
+        agency=agency,
         rec_serial=ta.current_receiver_serial(station),
         rec_type=to_igs_receiver(rec_model) or rec_model,
         rec_version=ta.current_receiver_firmware(station),
