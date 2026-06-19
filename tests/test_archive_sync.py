@@ -204,6 +204,19 @@ class TestRun:
         res = ArchiveSync(target, conn=None, dry_run=True).run()
         assert res.ok and "inactive" in res.message
 
+    def test_force_runs_inactive_target(self, tmp_path, monkeypatch):
+        # Pre-stage verify: an inactive target must still run under --force.
+        new = CUTOVER + timedelta(days=1)
+        _make_file(tmp_path, "2026/jun/AKUR/15s_24hr/raw/AKUR_a.T02.gz", new)
+        target = _target(tmp_path, active=False)
+        eng = ArchiveSync(target, conn=None, dry_run=True, force=True)
+        monkeypatch.setattr(eng, "_rsync", lambda rel, imm: (True, list(rel), ""))
+        res = eng.run()
+        assert res.ok
+        assert "inactive" not in res.message
+        assert res.delta_count == 1
+        assert res.transferred == 1
+
     def test_dry_run_no_db(self, tmp_path, monkeypatch):
         new = CUTOVER + timedelta(days=1)
         _make_file(tmp_path, "2026/jun/AKUR/15s_24hr/raw/AKUR_a.T02.gz", new)
