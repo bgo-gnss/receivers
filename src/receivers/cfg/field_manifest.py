@@ -74,10 +74,12 @@ def _strip_placeholder(value: Optional[str]) -> Optional[str]:
     receivers both surface "I don't have a real value" via well-known
     sentinels (``"0000000000"``, ``"Unknown"``, ``""``).
 
-    Also strips TOS synthetic antenna identifiers of the form
-    ``antenna-{STATION}-{YYYYMMDD}`` (e.g. ``antenna-AFST-20210527``).
-    TOS generates these when no real serial is recorded; they carry no
-    hardware meaning and must not be written to stations.cfg.
+    Also strips TOS synthetic device identifiers of the form
+    ``{subtype}-{STATION}-{YYYYMMDD}`` (e.g. ``antenna-AFST-20210527``,
+    ``receiver-OLKE-20001017``). TOS generates these when no real serial is
+    recorded; they carry no hardware meaning and must not be written to
+    stations.cfg. The date separator is optional — TOS has produced malformed
+    variants without it (e.g. ``antenna-RVIT20150625``), which must also strip.
     """
     s = _strip(value)
     if s is None:
@@ -87,8 +89,9 @@ def _strip_placeholder(value: Optional[str]) -> Optional[str]:
     # All-zero serials of any length (0, 00, 000000, 0000000000, …).
     if s and set(s) == {"0"}:
         return None
-    # TOS synthetic antenna identifier: antenna-{4-letter-station}-{YYYYMMDD}
-    if re.match(r"^antenna-[A-Z]{4}-\d{8}$", s, re.IGNORECASE):
+    # TOS synthetic device identifier: {subtype}-{4-char station}[-]{YYYYMMDD},
+    # any subtype (antenna/receiver/…), with or without the date dash.
+    if re.match(r"^[a-z]+-[A-Za-z0-9]{4}-?\d{8}$", s, re.IGNORECASE):
         return None
     return s
 
