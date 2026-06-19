@@ -55,8 +55,10 @@ class SyncTarget:
     sessions: tuple[str, ...]
     """Session-dir names to include (e.g. ('15s_24hr', '1Hz_1hr', 'status_1hr'))."""
 
-    file_category: str
-    """'raw' for the MVP (the unambiguous tier; rinex/dissemination is post-#34)."""
+    file_categories: tuple[str, ...]
+    """Tiers to push, in order — e.g. ('raw', 'rinex'). Each tier carries its own
+    archive immutability rule (raw never overwrites; rinex updates-if-newer) —
+    see ``engine.IMMUTABILITY``."""
 
     exclude_stations: frozenset[str]
     """Stations NOT pushed here — aliases (DYNA/HRNC/HAUR) for the archive."""
@@ -115,7 +117,10 @@ def _build_target(raw: dict, default_overlap: int) -> SyncTarget:
         dest=raw["dest"],
         source_root=raw["source_root"],
         sessions=tuple(raw.get("sessions", ())),
-        file_category=raw.get("file_category", "raw"),
+        # Accept the list `file_categories`, or the legacy singular `file_category`.
+        file_categories=tuple(
+            raw.get("file_categories") or [raw.get("file_category", "raw")]
+        ),
         exclude_stations=frozenset(raw.get("exclude_stations", ())),
         cutover=_parse_cutover(raw["cutover"], name),
         overlap_minutes=int(raw.get("overlap_minutes", default_overlap)),
