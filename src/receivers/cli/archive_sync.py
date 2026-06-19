@@ -61,6 +61,7 @@ def cmd_archive_sync(args: argparse.Namespace) -> int:
                 conn=conn,
                 dry_run=args.dry_run,
                 dest_override=args.dest_override,
+                force=args.force,
             )
             result = engine.run()
             results.append(result)
@@ -179,6 +180,12 @@ def create_archive_sync_parser(subparsers) -> argparse.ArgumentParser:
     parser.add_argument(
         "--dest-override",
         help="Override the remote dest path (e.g. ~/gpsdata_staging for pre-stage)",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Run even if the target is inactive (for the pre-stage verify before "
+        "the cutover). The scheduled :45 job is unaffected — it only runs active targets.",
     )
     parser.add_argument(
         "--config", help="Path to sync.yaml (default: GPS_CONFIG_PATH/sync.yaml)"

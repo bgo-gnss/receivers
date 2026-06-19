@@ -75,12 +75,17 @@ class ArchiveSync:
         *,
         dry_run: bool = False,
         dest_override: Optional[str] = None,
+        force: bool = False,
         rsync_timeout: int = 1800,
     ) -> None:
         self.target = target
         self.conn = conn
         self.dry_run = dry_run
         self.dest_override = dest_override
+        # Run even when the target is inactive — for the manual pre-stage verify
+        # before the cutover. The scheduled :45 job never sets this (it only ever
+        # runs already-active targets, filtered in run_archive_sync_job).
+        self.force = force
         self.rsync_timeout = rsync_timeout
 
     # ---- destination -------------------------------------------------------
@@ -279,7 +284,7 @@ class ArchiveSync:
             target=self.target.name, floor=floor, dry_run=self.dry_run
         )
 
-        if not self.target.active:
+        if not self.target.active and not self.force:
             result.ok = True
             result.message = "target inactive — skipped"
             return result
