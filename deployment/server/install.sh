@@ -507,7 +507,7 @@ phase 5 "Configuration"
 
 # Deploy config files: gps-config-data → package defaults → skip
 DEFAULTS_DIR="$INSTALL_DIR/config/defaults"
-CONFIG_FILES=(stations.cfg receivers.cfg scheduler.yaml database.cfg icinga.cfg station_areas.yaml)
+CONFIG_FILES=(stations.cfg receivers.cfg scheduler.yaml database.cfg icinga.cfg station_areas.yaml sync.yaml)
 # database.cfg may contain credentials edited directly on the server — never
 # overwrite it on update runs; only deploy when the file is absent or --wipe.
 PROTECTED_FILES=(database.cfg)
