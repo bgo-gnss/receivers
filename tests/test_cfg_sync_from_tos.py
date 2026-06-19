@@ -35,6 +35,32 @@ class TestOverwriteSpecs:
             assert k not in keys
 
 
+class TestSyntheticSerialStrip:
+    """TOS synthetic device serials must never leak into stations.cfg.
+
+    Surfaced building sync-from-tos: RVIT's TOS antenna serial was the malformed
+    no-dash synthetic `antenna-RVIT20150625`, which the old antenna-only,
+    dash-required regex missed — so it would have been written to cfg.
+    """
+
+    def test_synthetic_variants_strip_to_none(self):
+        from receivers.cfg.field_manifest import _strip_placeholder
+
+        for v in (
+            "antenna-RVIT20150625",  # malformed: no date dash (the bug)
+            "antenna-AFST-20210527",  # canonical antenna synthetic
+            "receiver-OLKE-20001017",  # receiver subtype synthetic
+            "antenna-SEY9-20210325",
+        ):
+            assert _strip_placeholder(v) is None, v
+
+    def test_real_serials_pass_through(self):
+        from receivers.cfg.field_manifest import _strip_placeholder
+
+        for v in ("5423R48810", "4435237690", "3070341", "0220368057", "26094"):
+            assert _strip_placeholder(v) == v
+
+
 class TestIsLiteralIp:
     def test_ips(self):
         assert _is_literal_ip("10.6.1.229")
