@@ -49,6 +49,16 @@ def cmd_archive_sync(args: argparse.Namespace) -> int:
     if args.status:
         return _cmd_status(args, targets)
 
+    cutover_override = None
+    if args.cutover:
+        from ..archive.config import _parse_cutover
+
+        try:
+            cutover_override = _parse_cutover(args.cutover, "cli")
+        except ValueError as exc:
+            print(f"Invalid --cutover: {exc}")
+            return 1
+
     # The catalog + watermark need a DB; a pure dry-run can run without one.
     conn = _get_conn(args.host, required=not args.dry_run)
 
@@ -62,6 +72,7 @@ def cmd_archive_sync(args: argparse.Namespace) -> int:
                 dry_run=args.dry_run,
                 dest_override=args.dest_override,
                 force=args.force,
+                cutover_override=cutover_override,
             )
             result = engine.run()
             results.append(result)
@@ -186,6 +197,12 @@ def create_archive_sync_parser(subparsers) -> argparse.ArgumentParser:
         action="store_true",
         help="Run even if the target is inactive (for the pre-stage verify before "
         "the cutover). The scheduled :45 job is unaffected — it only runs active targets.",
+    )
+    parser.add_argument(
+        "--cutover",
+        help="Override the target's cutover (ISO ts, e.g. 2026-06-18T00:00:00) for "
+        "this run — e.g. a pre-stage verify with a recent cutover so there is a "
+        "real delta. Does not change sync.yaml.",
     )
     parser.add_argument(
         "--config", help="Path to sync.yaml (default: GPS_CONFIG_PATH/sync.yaml)"

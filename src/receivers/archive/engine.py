@@ -76,6 +76,7 @@ class ArchiveSync:
         dry_run: bool = False,
         dest_override: Optional[str] = None,
         force: bool = False,
+        cutover_override: Optional[datetime] = None,
         rsync_timeout: int = 1800,
     ) -> None:
         self.target = target
@@ -86,6 +87,9 @@ class ArchiveSync:
         # before the cutover. The scheduled :45 job never sets this (it only ever
         # runs already-active targets, filtered in run_archive_sync_job).
         self.force = force
+        # Override the target's cutover (watermark floor) for a manual run — e.g.
+        # a pre-stage verify with a recent cutover so there is a real delta to push.
+        self.cutover_override = cutover_override
         self.rsync_timeout = rsync_timeout
 
     # ---- destination -------------------------------------------------------
@@ -278,7 +282,12 @@ class ArchiveSync:
         # during/after the scan is caught next run (its mtime >= scan_start).
         scan_start = datetime.now()
         last = get_last_success(self.conn, self.target.name) if self.conn else None
-        floor = compute_floor(last, self.target.cutover, self.target.overlap_minutes)
+        cutover = (
+            self.cutover_override
+            if self.cutover_override is not None
+            else self.target.cutover
+        )
+        floor = compute_floor(last, cutover, self.target.overlap_minutes)
 
         result = SyncRunResult(
             target=self.target.name, floor=floor, dry_run=self.dry_run

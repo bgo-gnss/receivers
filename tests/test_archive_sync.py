@@ -204,6 +204,29 @@ class TestRun:
         res = ArchiveSync(target, conn=None, dry_run=True).run()
         assert res.ok and "inactive" in res.message
 
+    def test_cutover_override_changes_floor(self, tmp_path, monkeypatch):
+        # Target cutover is in the future (CUTOVER); a file dated before it would
+        # be excluded. An earlier --cutover override pulls it into the delta.
+        before_cutover = CUTOVER - timedelta(days=2)
+        _make_file(tmp_path, "2026/jun/AKUR/15s_24hr/raw/AKUR_a.T02.gz", before_cutover)
+        target = _target(tmp_path)  # cutover = CUTOVER (future relative to the file)
+
+        # without override: floor = CUTOVER, file is older -> empty delta
+        eng = ArchiveSync(target, conn=None, dry_run=True)
+        assert eng.run().delta_count == 0
+
+        # with an earlier override: file is newer than the override -> in delta
+        eng2 = ArchiveSync(
+            target,
+            conn=None,
+            dry_run=True,
+            cutover_override=CUTOVER - timedelta(days=3),
+        )
+        monkeypatch.setattr(eng2, "_rsync", lambda rel, imm: (True, list(rel), ""))
+        res = eng2.run()
+        assert res.delta_count == 1
+        assert res.floor == CUTOVER - timedelta(days=3)
+
     def test_force_runs_inactive_target(self, tmp_path, monkeypatch):
         # Pre-stage verify: an inactive target must still run under --force.
         new = CUTOVER + timedelta(days=1)
