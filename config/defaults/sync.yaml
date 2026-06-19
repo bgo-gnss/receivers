@@ -1,0 +1,41 @@
+# Archive sync / dissemination configuration
+# Location: ~/.config/gpsconfig/sync.yaml  (or $GPS_CONFIG_PATH/sync.yaml)
+#
+# Declarative targets for `receivers archive-sync`. The first target feeds the
+# IMO long-term archive through the single write gateway (rawdata -> ananas).
+# Dissemination targets (EPOS, etc.) are added later as tier: dissemination and
+# stay inactive until the provenance engine (#34) lands.
+# Design: 1781867391-data-dissemination-archive-sync-design.
+
+# Default re-scan window below each target's watermark (guards the mtime-boundary
+# / clock-skew race). Per-target `overlap_minutes` overrides this.
+overlap_minutes: 5
+
+targets:
+  # --- IMO long-term archive (rawdata gateway -> ananas) -------------------
+  - name: imo_archive
+    # MASTER SWITCH. Keep false until the legacy `:45` rsync cron is stopped;
+    # flip to true at the atomic cutover (the legacy and rek_new feeds must
+    # never both push at once).
+    active: false
+    tier: archive                 # authoritative, audited, NO format conversion
+
+    host: rawdata.vedur.is
+    user: gpsops
+    dest: ~/gpsdata               # = a disk ON ananas; the sole archive writer
+
+    source_root: /mnt/data/gpsdata # rek_new local collection root
+
+    sessions: [15s_24hr, 1Hz_1hr, status_1hr]
+    file_category: raw            # MVP: raw tier only (unambiguous)
+
+    # Aliases are global-namespace renames, NOT stations — they must not pollute
+    # the long-term archive (handled later in the dissemination layer instead).
+    exclude_stations: [DYNA, HRNC, HAUR]
+
+    # Watermark floor. Files older than this never enter the delta, so legacy-era
+    # files are never re-pushed. Set to the actual cutover instant before going
+    # live. (Placeholder — confirm the real Monday cutover timestamp.)
+    cutover: "2026-06-22T00:00:00"
+
+    # overlap_minutes: 5          # optional per-target override

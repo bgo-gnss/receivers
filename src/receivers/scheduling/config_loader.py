@@ -199,6 +199,15 @@ def get_default_config() -> Dict[str, Any]:
             "check_receiver": True,
             "size_tolerance_pct": 50.0,
         },
+        # Batch delta push to the long-term archive gateway (rawdata -> ananas).
+        # Disabled by default: double-gated with `active: true` per target in
+        # sync.yaml. The targets/cutover/excludes live in sync.yaml; this only
+        # gates WHETHER and WHEN to run. See design 1781867391.
+        "archive_sync": {
+            "enabled": False,
+            "schedule": ":45",
+            "max_age_minutes": 120,
+        },
         "load_monitoring": {
             "enabled": False,
             "max_cpu_load": 8.0,

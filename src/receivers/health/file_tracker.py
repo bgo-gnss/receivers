@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from ..utils.canonical_key import find_by_canonical_key
+
 logger = logging.getLogger(__name__)
 
 
@@ -1902,17 +1904,22 @@ class GapDetector:
             station_id, session_type, dt, receiver_type
         )
 
-        # Check if file exists
+        # Check if file exists at the exact expected name (fast path).
         if os.path.isfile(expected_path):
             file_size = os.path.getsize(expected_path)
             return True, expected_path, file_size
 
-        # Also check for compressed version
-        if not expected_path.endswith(".gz"):
-            gz_path = expected_path + ".gz"
-            if os.path.isfile(gz_path):
-                file_size = os.path.getsize(gz_path)
-                return True, gz_path, file_size
+        # Fall back to a compression-/case-invariant lookup: the archive may
+        # hold the same data under a different compression suffix or extension
+        # case (e.g. NetRS raw is uncompressed ``.T00`` in the long-term archive
+        # while rek_new emits ``.T00.gz``). This also catches ``.Z``/``.bz2`` and
+        # the reverse case (expected ``.gz`` but the plain file is present) that
+        # the old ``+ ".gz"`` fallback missed. See utils/canonical_key.py.
+        match = find_by_canonical_key(
+            os.path.dirname(expected_path), os.path.basename(expected_path)
+        )
+        if match is not None:
+            return True, match, os.path.getsize(match)
 
         return False, expected_path, None
 

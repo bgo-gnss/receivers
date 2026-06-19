@@ -1,5 +1,14 @@
 """Sync task implementation for remote file synchronization.
 
+.. deprecated::
+    DORMANT — not wired into the live pipeline (no scheduler.yaml sync section,
+    no enqueue site) and its ``DEFAULT_PATH`` is stale (``/data/gps/archive`` —
+    the real archive dest is ``gpsops@rawdata:~/gpsdata``). The archive feed is a
+    *host-level batch delta sweep*, implemented in ``receivers.archive`` /
+    ``receivers archive-sync`` (design 1781867391), NOT this per-station
+    pipeline-triggered task. Do not enable this without reconciling against that
+    engine — two rawdata-push paths would race on the same immutability rules.
+
 SyncTask uses rsync to transfer files to permanent storage with
 immutability rules to prevent accidental data loss.
 
