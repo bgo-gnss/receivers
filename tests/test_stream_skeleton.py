@@ -1,6 +1,7 @@
 """Tests for RINEX skeleton fill/refresh (validated vs the real GONH.SKL)."""
 
 from receivers.streaming.skeleton import (
+    UNKNOWN_SERIAL,
     SkeletonMetadata,
     build_skeleton,
     fill_skeleton,
@@ -185,6 +186,50 @@ class TestMetadataFromTos:
         # TRM115000.10 is not in the IGS table -> falls back to the raw TOS value
         assert meta.ant_type == "TRM115000.10"
         assert meta.ant_radome == "NONE"
+
+    def test_synthetic_serials_replaced_with_unknown(self):
+        # SEY9-class case: serial-less antenna carries a synthetic TOS serial
+        # (antenna-<STID>-<YYYYMMDD>, 21 chars) that overflows the RINEX field.
+        station = {
+            "device_history": [
+                {
+                    "time_to": None,
+                    "gnss_receiver": {
+                        "model": "PolaRx5",
+                        "serial_number": "receiver-SEY9-20210325",  # synthetic
+                        "firmware_version": "5.4.0",
+                    },
+                    "antenna": {
+                        "model": "SEPPOLANT_X_MF",
+                        "serial_number": "antenna-SEY9-20210325",  # synthetic, 21 ch
+                    },
+                    "radome": {"model": "NONE"},
+                }
+            ]
+        }
+        meta = metadata_from_tos(station, station_id="SEY9")
+        assert meta.ant_serial == UNKNOWN_SERIAL
+        assert meta.rec_serial == UNKNOWN_SERIAL
+        # rendered ANT line: serial fits, antenna type/radome stay column-aligned
+        skl = build_skeleton(meta, latitude=64.0, longitude=-21.0, height=100.0)
+        ant = next(ln for ln in skl.splitlines() if "ANT # / TYPE" in ln)
+        assert ant.startswith(UNKNOWN_SERIAL)
+        assert ant[20:35].strip() == "SEPPOLANT_X_MF"  # type field at cols 21-35
+        assert ant[36:40].strip() == "NONE"            # radome at cols 37-40
+
+    def test_real_serial_passes_through(self):
+        station = {
+            "device_history": [
+                {
+                    "time_to": None,
+                    "gnss_receiver": {"model": "PolaRx5", "serial_number": "3605273"},
+                    "antenna": {"model": "TRM115000.10", "serial_number": "60283B0038"},
+                    "radome": {"model": "NONE"},
+                }
+            ]
+        }
+        meta = metadata_from_tos(station, station_id="GONH")
+        assert meta.ant_serial == "60283B0038" and meta.rec_serial == "3605273"
 
     def test_observer_agency_from_station_config(self):
         # OBSERVER / AGENCY is cfg-sourced (not a TOS attribute); without a

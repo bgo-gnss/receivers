@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -39,6 +40,27 @@ DEFAULT_COMMENT = "File configured from IMO rt streams"
 #: NB: for the live stream output BNC regenerates this line from ``rnxV3`` — the
 #: skeleton's version line is for self-documentation / standalone validity.
 RINEX3_VERSION = "3.04"
+
+#: RINEX placeholder for an unknown equipment serial. Our sbf2rin product emits a
+#: zeros serial for serial-less equipment; we mirror that. TOS stores a *synthetic*
+#: serial for serial-less devices (``<subtype>-<STATION>-<YYYYMMDD>``, e.g.
+#: ``antenna-SEY9-20210325``) so the device stays unique — but that string is a
+#: TOS-internal identity, not a real serial, and it overflows the 20-char RINEX
+#: serial field. We replace any synthetic serial with this placeholder in headers.
+UNKNOWN_SERIAL = "000000"
+
+#: Matches a tostools synthetic serial ``<subtype>-<STATION>-<YYYYMMDD>``.
+_SYNTHETIC_SERIAL_RE = re.compile(r"^[A-Za-z]+-[A-Za-z0-9]+-\d{8}$")
+
+#: RINEX equipment serial field width (REC # and ANT # are both A20).
+_SERIAL_W = 20
+
+
+def _real_or_unknown(serial: Optional[str]) -> Optional[str]:
+    """Map a synthetic TOS serial to the RINEX unknown placeholder, else pass through."""
+    if serial and _SYNTHETIC_SERIAL_RE.match(serial):
+        return UNKNOWN_SERIAL
+    return serial
 
 
 @dataclass
@@ -74,13 +96,28 @@ def _fmt_observer_agency(observer: str, agency: str) -> str:
     return f"{observer:<20}{agency:<40}"
 
 
+def _fit_serial(serial: str) -> str:
+    """Clamp a serial to the 20-char RINEX field so it can't shift later columns.
+
+    Synthetic serials are mapped to UNKNOWN_SERIAL upstream; this is a backstop so
+    any other over-long serial truncates (with a warning) instead of silently
+    misaligning REC/ANT TYPE and radome.
+    """
+    if len(serial) > _SERIAL_W:
+        logger.warning(
+            "Serial %r exceeds the %d-char RINEX field; truncating", serial, _SERIAL_W
+        )
+        return serial[:_SERIAL_W]
+    return serial
+
+
 def _fmt_rec(serial: str, rtype: str, version: str) -> str:
-    return f"{serial:<20}{rtype:<20}{version:<20}"
+    return f"{_fit_serial(serial):<20}{rtype:<20}{version:<20}"
 
 
 def _fmt_ant(serial: str, model: str, radome: str) -> str:
     # antenna number cols 1-20; antenna model cols 21-35 + radome cols 37-40
-    return f"{serial:<20}{model:<15} {radome:<4}".ljust(60)
+    return f"{_fit_serial(serial):<20}{model:<15} {radome:<4}".ljust(60)
 
 
 def _fmt_delta(h: float, e: float, n: float) -> str:
@@ -288,10 +325,10 @@ def metadata_from_tos(
         marker_number=station_id,
         observer=observer,
         agency=agency,
-        rec_serial=ta.current_receiver_serial(station),
+        rec_serial=_real_or_unknown(ta.current_receiver_serial(station)),
         rec_type=to_igs_receiver(rec_model) or rec_model,
         rec_version=ta.current_receiver_firmware(station),
-        ant_serial=ta.current_antenna_serial(station),
+        ant_serial=_real_or_unknown(ta.current_antenna_serial(station)),
         ant_type=to_igs_antenna(ant_model) or ant_model,
         ant_radome=to_igs_radome(ta.current_radome_model(station)) or "NONE",
         antenna_h=_f(ta.current_antenna_height(station)),
