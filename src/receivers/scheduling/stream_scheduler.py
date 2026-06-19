@@ -279,7 +279,9 @@ def refresh_station_skeleton(
             "No TOS metadata and no skeleton for %s — cannot create", station_id
         )
         return "no_tos"
-    meta = metadata_from_tos(station, station_id=station_id)
+    meta = metadata_from_tos(
+        station, station_id=station_id, station_config=station_config
+    )
 
     if skl.exists():
         updated, changed = refresh_skeleton(skl.read_text(), meta)

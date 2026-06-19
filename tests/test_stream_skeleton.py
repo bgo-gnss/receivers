@@ -142,3 +142,31 @@ class TestMetadataFromTos:
         # TRM115000.10 is not in the IGS table -> falls back to the raw TOS value
         assert meta.ant_type == "TRM115000.10"
         assert meta.ant_radome == "NONE"
+
+    def test_observer_agency_from_station_config(self):
+        # OBSERVER / AGENCY is cfg-sourced (not a TOS attribute); without a
+        # station_config the line stays blank, with one it is filled.
+        station = {
+            "device_history": [
+                {
+                    "time_to": None,
+                    "gnss_receiver": {
+                        "model": "PolaRx5",
+                        "serial_number": "4101636",
+                        "firmware_version": "5.6.0",
+                    },
+                    "antenna": {"model": "TRM115000.10", "serial_number": "0001"},
+                    "radome": {"model": "NONE"},
+                }
+            ]
+        }
+        meta_blank = metadata_from_tos(station, station_id="HRSC")
+        assert meta_blank.observer is None and meta_blank.agency is None
+
+        cfg = {"rinex_observer": "BGO", "rinex_agency": "IMO"}
+        meta = metadata_from_tos(station, station_id="HRSC", station_config=cfg)
+        assert meta.observer == "BGO" and meta.agency == "IMO"
+        # and it renders into the OBSERVER / AGENCY line of a built header
+        skl = build_skeleton(meta, latitude=64.0, longitude=-21.0, height=100.0)
+        obs_line = next(ln for ln in skl.splitlines() if "OBSERVER / AGENCY" in ln)
+        assert obs_line.startswith("BGO") and "IMO" in obs_line
