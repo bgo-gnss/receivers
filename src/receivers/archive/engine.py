@@ -2,12 +2,14 @@
 
 Per run, for one target:
   1. floor = max(last_success - overlap, cutover)          (watermark, bounded work)
-  2. delta = local files under source_root, category match, mtime > floor,
-     session in target.sessions, station not excluded       (find + path filter)
-  3. rsync --files-from --ignore-existing (raw is immutable) to user@host:dest
-  4. for each file rsync ACTUALLY transferred: content_sha256 on the local file,
-     upsert archive_catalog                                  (forward-free index)
-  5. advance the watermark only when rsync succeeded.
+  2. for each tier in target.file_categories (raw, rinex, …):
+       delta = local tier files, mtime > floor, session in target.sessions,
+               station not excluded                          (find + path filter)
+       rsync --files-from to user@host:dest with the tier's IMMUTABILITY flag
+               (raw --ignore-existing, rinex --update)
+       for each file rsync ACTUALLY transferred: content_sha256 on the local
+               file, upsert archive_catalog                  (forward-free index)
+  3. advance the watermark only when EVERY tier's rsync succeeded.
 
 Dry-run does steps 1-3 with rsync --dry-run and writes nothing (no catalog, no
 watermark). A missing DB connection is tolerated in dry-run (floor falls back to
@@ -34,7 +36,18 @@ logger = logging.getLogger("receivers.archive.sync")
 
 # raw archive bytes are already compressed — don't waste CPU re-compressing on the
 # wire, and never delete on the archive (single-writer, immutable history).
-_SKIP_COMPRESS = "gz,Z,bz2,T02,T00,t02,t00,m00,M00,sbf"
+_SKIP_COMPRESS = "gz,Z,bz2,T02,T00,t02,t00,m00,M00,sbf,crx,d"
+
+# Per-tier archive write policy. raw is the permanent record (never overwrite an
+# archived raw file). rinex is regenerable from raw, so a newer local copy may
+# replace the archived one (--update). Unknown tiers default to immutable (safe).
+# Both flags coexist with "never --delete".
+IMMUTABILITY = {"raw": "--ignore-existing", "rinex": "--update"}
+_DEFAULT_IMMUTABILITY = "--ignore-existing"
+
+
+def _immutability_flag(category: str) -> str:
+    return IMMUTABILITY.get(category, _DEFAULT_IMMUTABILITY)
 
 
 @dataclass
@@ -88,8 +101,8 @@ class ArchiveSync:
 
     # ---- delta discovery ---------------------------------------------------
 
-    def find_delta(self, floor: datetime) -> list[str]:
-        """Absolute paths of candidate files newer than ``floor``.
+    def find_delta(self, floor: datetime, category: str) -> list[str]:
+        """Absolute paths of ``category`` files newer than ``floor``.
 
         Uses ``find -newermt`` (fast FS-level mtime prune) for the category
         subtree, then filters to the target's sessions and excludes alias
@@ -105,7 +118,7 @@ class ArchiveSync:
             "-type",
             "f",
             "-path",
-            f"*/{self.target.file_category}/*",
+            f"*/{category}/*",
             "-newermt",
             floor.strftime("%Y-%m-%d %H:%M:%S"),
         ]
@@ -134,11 +147,11 @@ class ArchiveSync:
 
     # ---- rsync -------------------------------------------------------------
 
-    def _build_rsync_cmd(self, files_from: str) -> list[str]:
+    def _build_rsync_cmd(self, files_from: str, immutability: str) -> list[str]:
         cmd = [
             "rsync",
             "-a",  # archive mode (no -z: raw is already compressed)
-            "--ignore-existing",  # raw immutability: never overwrite the archive
+            immutability,  # per-tier: raw --ignore-existing, rinex --update
             "--partial",  # resume interrupted transfers
             "--itemize-changes",  # so we learn what actually transferred
             f"--skip-compress={_SKIP_COMPRESS}",
@@ -165,16 +178,19 @@ class ArchiveSync:
                 transferred.append(name)
         return transferred
 
-    def _rsync(self, rel_paths: list[str]) -> tuple[bool, list[str], str]:
+    def _rsync(
+        self, rel_paths: list[str], immutability: str
+    ) -> tuple[bool, list[str], str]:
         """Run rsync for the given relative paths; return (ok, transferred, stderr)."""
         with tempfile.NamedTemporaryFile("w", suffix=".files-from", delete=False) as fh:
             fh.write("\n".join(rel_paths) + "\n")
             files_from = fh.name
         try:
-            cmd = self._build_rsync_cmd(files_from)
+            cmd = self._build_rsync_cmd(files_from, immutability)
             logger.info(
-                "rsync %d file(s) -> %s%s",
+                "rsync %d file(s) [%s] -> %s%s",
                 len(rel_paths),
+                immutability,
                 self.remote_dest,
                 " [dry-run]" if self.dry_run else "",
             )
@@ -268,46 +284,42 @@ class ArchiveSync:
             result.message = "target inactive — skipped"
             return result
 
-        delta = self.find_delta(floor)
-        result.delta_count = len(delta)
-
-        if not delta:
-            result.ok = True
-            result.message = "no files newer than watermark"
-            if not self.dry_run and self.conn is not None:
-                record_run(
-                    self.conn,
-                    self.target.name,
-                    ran_at=scan_start,
-                    files=0,
-                    ok=True,
-                    advance_to=scan_start,
+        # Each tier (raw, rinex, …) is its own find + rsync with its own
+        # immutability rule. The watermark is per-target and advances only if
+        # EVERY tier's rsync succeeded.
+        all_ok = True
+        per_cat: list[str] = []
+        for category in self.target.file_categories:
+            delta = self.find_delta(floor, category)
+            result.delta_count += len(delta)
+            transferred: list[str] = []
+            if delta:
+                rel_paths = [os.path.relpath(p, self.target.source_root) for p in delta]
+                rsync_ok, transferred, stderr = self._rsync(
+                    rel_paths, _immutability_flag(category)
                 )
-            return result
+                if stderr:
+                    result.errors.append(f"{category}: {stderr}")
+                if not rsync_ok:
+                    all_ok = False
+                if not self.dry_run:
+                    cataloged, cat_errors = self._catalog_transferred(transferred)
+                    result.cataloged += cataloged
+                    result.errors.extend(f"{category}: {e}" for e in cat_errors)
+            result.transferred += len(transferred)
+            per_cat.append(f"{category} {len(transferred)}/{len(delta)}")
 
-        rel_paths = [os.path.relpath(p, self.target.source_root) for p in delta]
-        rsync_ok, transferred, stderr = self._rsync(rel_paths)
-        result.transferred = len(transferred)
-        if stderr:
-            result.errors.append(stderr)
+        result.ok = all_ok
+        if not self.dry_run and self.conn is not None:
+            record_run(
+                self.conn,
+                self.target.name,
+                ran_at=scan_start,
+                files=result.transferred,
+                ok=all_ok,
+                advance_to=scan_start if all_ok else None,
+            )
 
-        if not self.dry_run:
-            cataloged, cat_errors = self._catalog_transferred(transferred)
-            result.cataloged = cataloged
-            result.errors.extend(cat_errors)
-            if self.conn is not None:
-                record_run(
-                    self.conn,
-                    self.target.name,
-                    ran_at=scan_start,
-                    files=len(transferred),
-                    ok=rsync_ok,
-                    advance_to=scan_start if rsync_ok else None,
-                )
-
-        result.ok = rsync_ok
-        result.message = (
-            f"{'would transfer' if self.dry_run else 'transferred'} "
-            f"{result.transferred}/{result.delta_count} file(s)"
-        )
+        verb = "would transfer" if self.dry_run else "transferred"
+        result.message = f"{verb} " + ", ".join(per_cat)
         return result

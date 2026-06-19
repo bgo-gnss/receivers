@@ -23,7 +23,7 @@ def _target(tmp_root, **over):
         dest="~/gpsdata",
         source_root=str(tmp_root),
         sessions=("15s_24hr", "1Hz_1hr", "status_1hr"),
-        file_category="raw",
+        file_categories=("raw",),
         exclude_stations=frozenset({"DYNA", "HRNC", "HAUR"}),
         cutover=CUTOVER,
         overlap_minutes=5,
@@ -48,7 +48,7 @@ targets:
     dest: ~/gpsdata
     source_root: /mnt/data/gpsdata
     sessions: [15s_24hr, 1Hz_1hr]
-    file_category: raw
+    file_categories: [raw, rinex]
     exclude_stations: [DYNA, HRNC, HAUR]
     cutover: "2026-06-22T00:00:00"
 """
@@ -59,9 +59,29 @@ targets:
         assert t.name == "imo_archive"
         assert t.active is True
         assert t.overlap_minutes == 7  # inherited file default
+        assert t.file_categories == ("raw", "rinex")
         assert t.exclude_stations == frozenset({"DYNA", "HRNC", "HAUR"})
         assert t.cutover == CUTOVER
         assert t.remote == "gpsops@rawdata.vedur.is:~/gpsdata"
+
+    def test_legacy_singular_file_category(self, tmp_path):
+        cfg = tmp_path / "sync.yaml"
+        cfg.write_text(
+            """
+targets:
+  - name: imo_archive
+    active: true
+    host: rawdata.vedur.is
+    user: gpsops
+    dest: ~/gpsdata
+    source_root: /mnt/data/gpsdata
+    sessions: [15s_24hr]
+    file_category: raw
+    cutover: "2026-06-22T00:00:00"
+"""
+        )
+        t = load_sync_config(cfg)[0]
+        assert t.file_categories == ("raw",)
 
     def test_missing_file_returns_empty(self, tmp_path):
         assert load_sync_config(tmp_path / "nope.yaml") == []
@@ -153,16 +173,28 @@ class TestFindDelta:
 
         target = _target(tmp_path)
         eng = ArchiveSync(target, conn=None, dry_run=True)
-        got = {os.path.relpath(p, str(tmp_path)) for p in eng.find_delta(CUTOVER)}
+        got = {
+            os.path.relpath(p, str(tmp_path)) for p in eng.find_delta(CUTOVER, "raw")
+        }
         assert got == {
             "2026/jun/AKUR/15s_24hr/raw/AKUR_new.T02.gz",
             "2026/jun/THOB/1Hz_1hr/raw/THOB_new.sbf.gz",
         }
 
+    def test_rinex_category_finds_rinex_only(self, tmp_path):
+        new = CUTOVER + timedelta(days=1)
+        _make_file(tmp_path, "2026/jun/AKUR/15s_24hr/raw/AKUR_new.T02.gz", new)
+        _make_file(tmp_path, "2026/jun/AKUR/15s_24hr/rinex/AKUR_new.d.Z", new)
+        eng = ArchiveSync(_target(tmp_path), conn=None, dry_run=True)
+        got = {
+            os.path.relpath(p, str(tmp_path)) for p in eng.find_delta(CUTOVER, "rinex")
+        }
+        assert got == {"2026/jun/AKUR/15s_24hr/rinex/AKUR_new.d.Z"}
+
     def test_missing_source_root(self, tmp_path):
         target = _target(tmp_path / "nope")
         eng = ArchiveSync(target, conn=None, dry_run=True)
-        assert eng.find_delta(CUTOVER) == []
+        assert eng.find_delta(CUTOVER, "raw") == []
 
 
 # ------------------------------------------------------------------------- run()
@@ -177,11 +209,11 @@ class TestRun:
         _make_file(tmp_path, "2026/jun/AKUR/15s_24hr/raw/AKUR_a.T02.gz", new)
         target = _target(tmp_path)
         eng = ArchiveSync(target, conn=None, dry_run=True)
-        # stub rsync: pretend it would transfer the one file
+        # stub rsync: pretend it would transfer the one file (rel_paths, immutability)
         monkeypatch.setattr(
             eng,
             "_rsync",
-            lambda rel: (True, list(rel), ""),
+            lambda rel, imm: (True, list(rel), ""),
         )
         res = eng.run()
         assert res.ok
@@ -194,7 +226,30 @@ class TestRun:
         res = ArchiveSync(target, conn=None, dry_run=True).run()
         assert res.ok
         assert res.delta_count == 0
-        assert "no files" in res.message
+        assert res.transferred == 0
+        assert "raw 0/0" in res.message
+
+    def test_both_tiers_use_correct_immutability(self, tmp_path, monkeypatch):
+        new = CUTOVER + timedelta(days=1)
+        _make_file(tmp_path, "2026/jun/AKUR/15s_24hr/raw/AKUR_a.T02.gz", new)
+        _make_file(tmp_path, "2026/jun/AKUR/15s_24hr/rinex/AKUR_a.d.Z", new)
+        target = _target(tmp_path, file_categories=("raw", "rinex"))
+        eng = ArchiveSync(target, conn=None, dry_run=True)
+        # capture the immutability flag rsync is invoked with per tier
+        seen: dict[str, str] = {}
+
+        def fake_rsync(rel, imm):
+            cat = "rinex" if any("/rinex/" in r for r in rel) else "raw"
+            seen[cat] = imm
+            return True, list(rel), ""
+
+        monkeypatch.setattr(eng, "_rsync", fake_rsync)
+        res = eng.run()
+        assert res.ok
+        assert res.delta_count == 2
+        assert res.transferred == 2
+        assert seen == {"raw": "--ignore-existing", "rinex": "--update"}
+        assert "raw 1/1" in res.message and "rinex 1/1" in res.message
 
     def test_archive_path_uses_dest(self, tmp_path):
         target = _target(tmp_path)
@@ -347,6 +402,53 @@ class TestEndToEndLocal:
         res2 = eng.run()
         assert res2.ok
         assert res2.transferred == 0
+
+    def test_raw_immutable_rinex_updates(self, tmp_path, db_conn):
+        """Real rsync: raw is never overwritten; a newer rinex replaces the old."""
+        import shutil
+
+        if not shutil.which("rsync"):
+            pytest.skip("rsync not available")
+
+        src = tmp_path / "src"
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        raw_rel = "2026/jun/AKUR/15s_24hr/raw/AKUR_a.T02.gz"
+        rnx_rel = "2026/jun/AKUR/15s_24hr/rinex/AKUR_a.d.Z"
+
+        def write(rel, data, when):
+            f = src / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(data)
+            ts = when.timestamp()
+            os.utime(f, (ts, ts))
+
+        write(raw_rel, b"raw v1", CUTOVER + timedelta(days=1))
+        write(rnx_rel, b"rinex v1", CUTOVER + timedelta(days=1))
+
+        target = _target(
+            src,
+            name="test_target",
+            host="",
+            dest=str(dst),
+            file_categories=("raw", "rinex"),
+        )
+        eng = ArchiveSync(target, conn=db_conn, dry_run=False)
+        res = eng.run()
+        assert res.ok
+        assert res.transferred == 2  # both tiers landed
+        assert (dst / raw_rel).read_bytes() == b"raw v1"
+        assert (dst / rnx_rel).read_bytes() == b"rinex v1"
+
+        # regenerate BOTH with newer content + newer mtime, re-sync.
+        write(raw_rel, b"raw v2 MUST NOT WIN", CUTOVER + timedelta(days=2))
+        write(rnx_rel, b"rinex v2", CUTOVER + timedelta(days=2))
+        eng.run()
+
+        # raw: --ignore-existing => archive keeps v1 (immutable record)
+        assert (dst / raw_rel).read_bytes() == b"raw v1"
+        # rinex: --update => archive now holds the newer v2 (regenerable)
+        assert (dst / rnx_rel).read_bytes() == b"rinex v2"
 
 
 class TestFreshness:

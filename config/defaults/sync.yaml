@@ -27,7 +27,10 @@ targets:
     source_root: /mnt/data/gpsdata # rek_new local collection root
 
     sessions: [15s_24hr, 1Hz_1hr, status_1hr]
-    file_category: raw            # MVP: raw tier only (unambiguous)
+    # Tiers to push, each with its own archive write policy (engine.IMMUTABILITY):
+    #   raw   -> --ignore-existing (permanent record, never overwritten)
+    #   rinex -> --update          (regenerable; newer local copy may replace)
+    file_categories: [raw, rinex]
 
     # Aliases are global-namespace renames, NOT stations — they must not pollute
     # the long-term archive (handled later in the dissemination layer instead).
