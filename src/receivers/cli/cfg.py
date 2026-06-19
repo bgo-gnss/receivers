@@ -1814,7 +1814,9 @@ def _parse_since(spec: str) -> datetime:
         delta = (
             timedelta(days=n)
             if unit == "d"
-            else timedelta(hours=n) if unit == "h" else timedelta(minutes=n)
+            else timedelta(hours=n)
+            if unit == "h"
+            else timedelta(minutes=n)
         )
         return datetime.now(UTC) - delta
     try:
@@ -3326,6 +3328,250 @@ def cmd_cfg_update_device(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# sync-from-tos: bring stations.cfg in line with current TOS device state
+# ---------------------------------------------------------------------------
+
+# Surveyed coordinates: stations.cfg / survey is the ground truth — never
+# overwrite from TOS (flag-only). antenna_height/east/north are non-writable
+# composites already excluded by the tos_writable filter.
+_SYNC_POSITION_EXCLUDE = frozenset({"latitude", "longitude", "height"})
+
+
+def _sync_overwrite_specs():
+    """FieldSpecs sync-from-tos overwrites: TOS-authoritative device identity.
+
+    The tos-writable fields (receiver type/serial/firmware, antenna
+    type/serial/radome, station_name) minus surveyed position.
+    """
+    from ..cfg.field_manifest import FIELDS
+
+    return [
+        s for s in FIELDS if s.tos_writable and s.cfg_key not in _SYNC_POSITION_EXCLUDE
+    ]
+
+
+def _is_literal_ip(value) -> bool:
+    import ipaddress
+
+    if not value:
+        return False
+    try:
+        ipaddress.ip_address(str(value).strip())
+        return True
+    except ValueError:
+        return False
+
+
+def _plan_router_ip(cfg_ip, sim_ip):
+    """Decide what to do with ``router_ip`` given the cfg value + TOS SIM ip.
+
+    Returns ``("set", ip)`` to overwrite, ``("flag", (cfg, sim))`` to report-only,
+    or ``None`` (in sync / nothing to do):
+
+    * cfg missing             → ``("set", sim)``  (fill)
+    * cfg literal IP, drifted → ``("set", sim)``  (a pinned IP fell out of date)
+    * cfg hostname, mismatch  → ``("flag", …)``   (a stale hostname is a DNS fix, not
+                                                   a cfg edit — never auto-clobber)
+    * equal / no SIM ip       → ``None``
+    """
+    if not sim_ip:
+        return None
+    sim_ip = str(sim_ip).strip()
+    cfg_ip = (str(cfg_ip).strip() if cfg_ip else "") or None
+    if cfg_ip is None:
+        return ("set", sim_ip)
+    if _is_literal_ip(cfg_ip):
+        return ("set", sim_ip) if cfg_ip != sim_ip else None
+    return ("flag", (cfg_ip, sim_ip)) if cfg_ip != sim_ip else None
+
+
+def _fetch_sim_ip(station_id: str):
+    """Current TOS ``sim_card`` ``ip_address`` for a station, or ``None``.
+
+    Walks the station's open children to the sim_card (~N TOS round-trips) —
+    SINGLE station only; far too many calls for ``--all``.
+    """
+    try:
+        from tostools.api.tos_writer import TOSWriter
+
+        from ..cfg.operations import (
+            _device_attribute,
+            _find_open_child,
+            _resolve_station,
+        )
+
+        writer = TOSWriter(dry_run=True)
+        eid = _resolve_station(writer, station_id)
+        sim_eid = _find_open_child(writer, eid, "sim_card")
+        if sim_eid is None:
+            return None
+        hist = writer.get_entity_history(sim_eid)
+        if not isinstance(hist, dict):
+            return None
+        return _device_attribute(hist, "ip_address")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sync-from-tos: SIM ip lookup failed for %s: %s", station_id, exc)
+        return None
+
+
+def _local_stations_cfg_path() -> Path:
+    import gps_parser as _gps  # type: ignore
+
+    return Path(_gps.ConfigParser().get_stations_config_path())
+
+
+def cmd_cfg_sync_from_tos(args) -> int:
+    """Overwrite stations.cfg device fields from current TOS state (TOS-authoritative)."""
+    from ..cfg.reconciler import apply_diff, compare_station
+    from ..config.receivers_config import _update_cfg_field
+    from ..config_utils import get_station_config
+    from .arguments import normalize_station_tokens
+
+    # GUARDRAIL: never bulk-apply blindly. TOS is not yet the single source of
+    # truth — stale/legacy records exist (e.g. an unclosed decade-old receiver
+    # join), so a no-review bulk overwrite can clobber correct cfg. --all is a
+    # report/per-station sweep; the dangerous --all + --yes combo is refused.
+    if args.all and args.yes:
+        print(
+            "❌ Refusing --all with --yes. TOS can be stale (errors surface from "
+            "anywhere), so a blind bulk overwrite can clobber correct cfg.\n"
+            "   Review `cfg sync-from-tos --all` (dry-run), then apply the ones you "
+            "trust per-station: `cfg sync-from-tos <SID> --no-dry-run`."
+        )
+        return 1
+
+    if args.all:
+        station_ids = _all_station_ids()
+        include_sim = False  # SIM lookup is ~N TOS calls/station — too slow for --all
+    else:
+        station_ids = normalize_station_tokens(args.station)
+        include_sim = not args.no_sim
+    if not station_ids:
+        print("Specify one or more station markers, or --all.")
+        return 1
+
+    dry = _is_dry_run(args)
+    try:
+        global_target = _resolve_global_target(args)  # preflight; None unless --global
+    except Exception as exc:  # noqa: BLE001
+        print(f"❌ {exc}")
+        return 1
+
+    overwrite_keys = {s.cfg_key for s in _sync_overwrite_specs()}
+    # local always; also the gps-config-data repo when --global.
+    write_targets = [None] + ([global_target] if global_target is not None else [])
+
+    any_global_change = False
+    for sid in station_ids:
+        station_config = get_station_config(sid, silent=True)
+        if not station_config:
+            print(f"⏭️  {sid}: no stations.cfg section — skipping")
+            continue
+        tos_data = _query_tos(sid)
+        if not tos_data:
+            print(f"⏭️  {sid}: no TOS record — skipping")
+            continue
+
+        diffs = compare_station(
+            sid,
+            station_config,
+            receiver_identity=None,  # TOS-only: no live receiver probe
+            tos_data=tos_data,
+            queried_sources={"cfg", "tos"},
+        )
+        planned = [
+            d
+            for d in diffs
+            if d.cfg_key in overwrite_keys
+            and d.tos_value is not None
+            and d.needs_attention
+        ]
+        flagged = [
+            d
+            for d in diffs
+            if d.cfg_key in _SYNC_POSITION_EXCLUDE
+            and d.needs_attention
+            and d.tos_value is not None
+        ]
+
+        # SIM -> router_ip (single-station only)
+        sim_overwrite = None  # literal IP to write
+        sim_flag = None  # (cfg_hostname, tos_ip) — reported, not changed
+        if include_sim:
+            plan = _plan_router_ip(station_config.get("router_ip"), _fetch_sim_ip(sid))
+            if plan and plan[0] == "set":
+                sim_overwrite = plan[1]
+            elif plan and plan[0] == "flag":
+                sim_flag = plan[1]
+
+        if not planned and sim_overwrite is None and not flagged and sim_flag is None:
+            print(f"✅ {sid}: already in sync with TOS")
+            continue
+
+        print(f"━━ {sid} ━━")
+        for d in planned:
+            print(
+                f"  → {d.cfg_key}: {d.cfg_value!r} → {d.spec.cfg_format(d.tos_value)!r}"
+            )
+        if sim_overwrite is not None:
+            cur = station_config.get("router_ip") or "(missing)"
+            print(f"  → router_ip: {cur!r} → {sim_overwrite!r}  (TOS SIM)")
+        for d in flagged:
+            print(
+                f"  ⚠ {d.cfg_key}: cfg={d.cfg_value!r} TOS={d.tos_value!r} — flag only "
+                "(survey is ground truth; not changed)"
+            )
+        if sim_flag is not None:
+            print(
+                f"  ⚠ router_ip: cfg hostname {sim_flag[0]!r} vs TOS SIM {sim_flag[1]!r}"
+                " — not changed (fix DNS or pin the IP manually)"
+            )
+
+        if dry or (not planned and sim_overwrite is None):
+            continue
+        if not args.yes:
+            n = len(planned) + (1 if sim_overwrite is not None else 0)
+            if input(f"  Apply {n} change(s) to {sid}? [y/N] ").strip().lower() != "y":
+                print(f"  skipped {sid}")
+                continue
+
+        for d in planned:
+            new_val = d.spec.cfg_format(d.tos_value)
+            if new_val is None:
+                continue
+            for tgt in write_targets:
+                if apply_diff(sid, d, new_val, cfg_path=tgt) and tgt is not None:
+                    any_global_change = True
+            print(f"  ✓ {d.cfg_key} = {new_val!r}")
+        if sim_overwrite is not None:
+            for tgt in write_targets:
+                path = tgt if tgt is not None else _local_stations_cfg_path()
+                if _update_cfg_field(path, sid, "router_ip", sim_overwrite) and (
+                    tgt is not None
+                ):
+                    any_global_change = True
+            print(f"  ✓ router_ip = {sim_overwrite!r}")
+
+    if dry:
+        print(
+            "\n[DRY-RUN] — review each change above: TOS is not yet authoritative, "
+            "so a shown overwrite may be STALE TOS, not a real update.\n"
+            "Rerun with --no-dry-run to apply the ones you trust."
+        )
+        _maybe_commit_global(
+            args, "stations: sync-from-tos", changed=False, dry_run=True
+        )
+    else:
+        _maybe_commit_global(
+            args,
+            "stations: sync-from-tos (TOS→cfg device fields)",
+            changed=any_global_change,
+            dry_run=False,
+        )
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # argparse wiring
 # ---------------------------------------------------------------------------
 
@@ -3576,6 +3822,41 @@ Diagnosing TCP authentication failures:
     )
     _add_global_flags(rec)
     rec.set_defaults(func=cmd_cfg_reconcile)
+
+    # ----- cfg sync-from-tos ---------------------------------------------
+    sync = cfg_subparsers.add_parser(
+        "sync-from-tos",
+        help="Overwrite stations.cfg device fields from current TOS state",
+        description=(
+            "Bring stations.cfg in line with TOS after a device change is recorded "
+            "there. Overwrites TOS-authoritative device fields (receiver "
+            "type/serial/firmware, antenna type/serial/radome, station_name) and a "
+            "single station's SIM router_ip; surveyed position stays cfg-canonical "
+            "(flag-only). No receiver probe — TOS is the source. Default is dry-run."
+        ),
+    )
+    sync.add_argument("station", nargs="*", help="Station marker(s); omit with --all")
+    sync.add_argument(
+        "--all",
+        action="store_true",
+        help="Every station in stations.cfg (skips the per-station SIM lookup)",
+    )
+    sync.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Apply without the per-station confirm prompt",
+    )
+    sync.add_argument(
+        "--no-dry-run", action="store_true", help="Apply writes (default: dry-run)"
+    )
+    sync.add_argument(
+        "--no-sim",
+        action="store_true",
+        help="Skip the SIM/router_ip lookup (single-station)",
+    )
+    _add_global_flags(sync)
+    sync.set_defaults(func=cmd_cfg_sync_from_tos)
 
     # ----- cfg list -------------------------------------------------------
     lst = cfg_subparsers.add_parser(
