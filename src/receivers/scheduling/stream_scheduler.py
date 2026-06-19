@@ -265,7 +265,12 @@ def refresh_station_skeleton(
     equipment. Returns: ``created`` | ``updated`` | ``unchanged`` | ``no_position`` |
     ``no_tos``.
     """
-    from ..streaming.skeleton import build_skeleton, metadata_from_tos, refresh_skeleton
+    from ..streaming.skeleton import (
+        build_skeleton,
+        metadata_from_tos,
+        refresh_skeleton,
+        upgrade_skeleton,
+    )
 
     skl = Path(settings.rt_base) / station_id / f"{station_id}.SKL"
     station = get_tos_metadata(station_id)
@@ -284,10 +289,17 @@ def refresh_station_skeleton(
     )
 
     if skl.exists():
-        updated, changed = refresh_skeleton(skl.read_text(), meta)
-        if changed:
-            skl.write_text(updated)
-            logger.info("Refreshed RINEX skeleton for %s from TOS", station_id)
+        # Structural upgrade (legacy RINEX-2 → 3.04) first, then equipment refill.
+        # Either can mark the skeleton dirty; write once if so.
+        upgraded, struct_changed = upgrade_skeleton(skl.read_text())
+        refilled, equip_changed = refresh_skeleton(upgraded, meta)
+        if struct_changed or equip_changed:
+            skl.write_text(refilled)
+            logger.info(
+                "Refreshed RINEX skeleton for %s from TOS%s",
+                station_id,
+                " (upgraded to 3.04)" if struct_changed else "",
+            )
             return "updated"
         return "unchanged"
 

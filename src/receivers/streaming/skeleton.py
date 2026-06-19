@@ -34,6 +34,12 @@ _WGS84_E2 = 6.69437999014e-3
 #: Default skeleton COMMENT line (matches the legacy IMO RT-stream skeletons).
 DEFAULT_COMMENT = "File configured from IMO rt streams"
 
+#: RINEX version the skeleton declares. 3.04 matches the authoritative sbf2rin
+#: product so the stream interim and the daily SBF supersede agree on version.
+#: NB: for the live stream output BNC regenerates this line from ``rnxV3`` — the
+#: skeleton's version line is for self-documentation / standalone validity.
+RINEX3_VERSION = "3.04"
+
 
 @dataclass
 class SkeletonMetadata:
@@ -52,6 +58,12 @@ class SkeletonMetadata:
     antenna_h: Optional[float] = None
     antenna_e: Optional[float] = None
     antenna_n: Optional[float] = None
+
+
+def _fmt_version(version: str = RINEX3_VERSION) -> str:
+    # RINEX 3 "RINEX VERSION / TYPE": F9.2 version, 11X, A20 file type, A20 system.
+    # Mixed-GNSS observation file → "OBSERVATION DATA" + "M". Matches sbf2rin.
+    return f"{version:>9}{'':11}{'OBSERVATION DATA':<20}{'M':<20}"
 
 
 def _fmt_marker(value: str) -> str:
@@ -140,19 +152,29 @@ def build_skeleton(
     longitude: float,
     height: float,
     comment: str = DEFAULT_COMMENT,
+    version: str = RINEX3_VERSION,
 ) -> str:
     """Build a fresh ``.SKL`` for a new stream station from metadata + position.
 
-    Produces the full RINEX-2 header with APPROX POSITION XYZ computed from the
-    geodetic coordinates (the one piece a refresh-only flow can't supply). Once
-    written, subsequent updates go through :func:`refresh_skeleton` (which never
-    touches the position line).
+    Produces a RINEX 3.04 header skeleton matching our sbf2rin product: it carries
+    the ``RINEX VERSION / TYPE`` line and a (blank) ``MARKER TYPE`` line, and omits
+    the RINEX-2-only ``WAVELENGTH FACT L1/2``. APPROX POSITION XYZ is computed from
+    the geodetic coordinates (the one piece a refresh-only flow can't supply).
+
+    The skeleton is a *partial* header by design: the obs-data-dependent lines
+    (``PGM / RUN BY``, ``SYS / # / OBS TYPES``, ``TIME OF FIRST OBS``,
+    ``SYS / PHASE SHIFT``) are left to BNC, which regenerates them per file.
+    ``MARKER TYPE`` is left blank to mirror our sbf2rin product. Once written,
+    updates go through :func:`refresh_skeleton` (equipment) / :func:`upgrade_skeleton`
+    (structure), neither of which touches the position line.
     """
     x, y, z = geodetic_to_ecef(latitude, longitude, height)
     rows: List[Tuple[str, str]] = [
+        (_fmt_version(version), "RINEX VERSION / TYPE"),
         (comment, "COMMENT"),
         (_fmt_marker(meta.marker_name or ""), "MARKER NAME"),
         (_fmt_marker(meta.marker_number or ""), "MARKER NUMBER"),
+        ("", "MARKER TYPE"),
         (
             _fmt_observer_agency(meta.observer or "", meta.agency or ""),
             "OBSERVER / AGENCY",
@@ -170,10 +192,51 @@ def build_skeleton(
             _fmt_delta(meta.antenna_h or 0.0, meta.antenna_e or 0.0, meta.antenna_n or 0.0),
             "ANTENNA: DELTA H/E/N",
         ),
-        ("     1     1", "WAVELENGTH FACT L1/2"),
         ("", "END OF HEADER"),
     ]
     return "\n".join(f"{data:<{_LABEL_COL}}{label}".rstrip() for data, label in rows) + "\n"
+
+
+def upgrade_skeleton(existing: str) -> Tuple[str, bool]:
+    """Normalise a legacy RINEX-2 skeleton to the 3.04 schema; return (text, changed).
+
+    Structural-only migration that :func:`refresh_skeleton` (equipment-only) cannot
+    do: prepend ``RINEX VERSION / TYPE`` if absent, insert a blank ``MARKER TYPE``
+    after ``MARKER NUMBER`` if absent, and drop the RINEX-2-only
+    ``WAVELENGTH FACT L1/2``. Every other line — crucially ``APPROX POSITION XYZ``,
+    which may be a surveyed ECEF migrated from a legacy skeleton — is preserved
+    verbatim. Idempotent: an already-3.04 skeleton returns unchanged.
+    """
+    rows: List[Tuple[str, str]] = []
+    for raw in existing.splitlines():
+        rows.append((raw[:_LABEL_COL], raw[_LABEL_COL:].strip()))
+
+    labels = {label for _, label in rows}
+    changed = False
+
+    # Drop the RINEX-2-only wavelength-factor line.
+    if "WAVELENGTH FACT L1/2" in labels:
+        rows = [(d, lbl) for d, lbl in rows if lbl != "WAVELENGTH FACT L1/2"]
+        changed = True
+
+    # Insert a blank MARKER TYPE after MARKER NUMBER (fallback MARKER NAME).
+    if "MARKER TYPE" not in labels:
+        anchor = next(
+            (i for i, (_, lbl) in enumerate(rows) if lbl == "MARKER NUMBER"),
+            next((i for i, (_, lbl) in enumerate(rows) if lbl == "MARKER NAME"), -1),
+        )
+        rows.insert(anchor + 1, ("", "MARKER TYPE"))
+        changed = True
+
+    # Prepend the version line if missing.
+    if "RINEX VERSION / TYPE" not in labels:
+        rows.insert(0, (_fmt_version(), "RINEX VERSION / TYPE"))
+        changed = True
+
+    text = "\n".join(f"{d:<{_LABEL_COL}}{lbl}".rstrip() for d, lbl in rows)
+    if existing.endswith("\n"):
+        text += "\n"
+    return text, changed
 
 
 def metadata_from_tos(
