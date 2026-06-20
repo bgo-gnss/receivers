@@ -198,6 +198,10 @@ def get_default_config() -> Dict[str, Any]:
             "sessions": ["15s_24hr", "1Hz_1hr", "status_1hr"],
             "check_receiver": True,
             "size_tolerance_pct": 50.0,
+            # Phase 4: lazily fill file_tracking.content_sha256 (mig 052) for up
+            # to N present files per run, newest-first. 0 disables. Keeps the hot
+            # download/archive path hash-free (Option B).
+            "hash_fill_limit": 1000,
         },
         # Batch delta push to the long-term archive gateway (rawdata -> ananas).
         # Disabled by default: double-gated with `active: true` per target in
@@ -207,6 +211,20 @@ def get_default_config() -> Dict[str, Any]:
             "enabled": False,
             "schedule": ":45",
             "max_age_minutes": 120,
+        },
+        # Periodic archive integrity: re-hash archived files vs
+        # archive_catalog.content_sha256 (read-back) + local cross-check.
+        # Disabled by default. read_root must point at the archive's read-only
+        # mount (rek-d01: /mnt/rawgpsdata) for read-back; without it only the
+        # DB-only local-vs-archive cross-check runs. reverify_after_days re-checks
+        # already-verified rows for slow bit-rot (null = never-verified only).
+        "archive_verify": {
+            "enabled": False,
+            "schedule": "3h",
+            "read_root": None,
+            "storage_location": "imo_archive",
+            "limit": 500,
+            "reverify_after_days": None,
         },
         "load_monitoring": {
             "enabled": False,
@@ -519,6 +537,21 @@ integrity_checker:
   sessions: [15s_24hr, 1Hz_1hr, status_1hr]
   check_receiver: true
   size_tolerance_pct: 50.0
+  # Phase 4: lazily fill file_tracking.content_sha256 (mig 052), newest-first,
+  # up to N files/run. 0 disables. Keeps the hot download/archive path hash-free.
+  hash_fill_limit: 1000
+
+# Periodic archive integrity verify (read-back re-hash vs archive_catalog +
+# local cross-check). Disabled by default. Set read_root to the archive's
+# read-only mount (rek-d01: /mnt/rawgpsdata) to enable read-back; without it
+# only the DB-only local-vs-archive cross-check runs.
+archive_verify:
+  enabled: false
+  schedule: "3h"
+  read_root: null
+  storage_location: imo_archive
+  limit: 500
+  reverify_after_days: null
 
 stations: {}
 
