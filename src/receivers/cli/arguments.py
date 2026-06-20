@@ -1165,8 +1165,10 @@ For subcommand help: receivers <command> --help
     create_health_query_parser(subparsers)
 
     # archive-sync (batch delta push to the long-term archive gateway)
-    from .archive_sync import create_archive_sync_parser
+    from .archive_sync import create_archive_sync_parser, create_archive_verify_parser
 
     create_archive_sync_parser(subparsers)
+    # archive-verify (re-hash archived files + local↔archive cross-check)
+    create_archive_verify_parser(subparsers)
 
     return parser

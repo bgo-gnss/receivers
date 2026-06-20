@@ -15,5 +15,13 @@ dormant per-station pipeline task; this is the authoritative host-level feed.
 
 from .config import SyncTarget, load_sync_config
 from .engine import ArchiveSync, SyncRunResult
+from .verify import VerifyStats, verify_archive_catalog
 
-__all__ = ["SyncTarget", "load_sync_config", "ArchiveSync", "SyncRunResult"]
+__all__ = [
+    "SyncTarget",
+    "load_sync_config",
+    "ArchiveSync",
+    "SyncRunResult",
+    "VerifyStats",
+    "verify_archive_catalog",
+]

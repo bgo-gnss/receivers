@@ -2382,13 +2382,24 @@ class BulkDownloadScheduler:
         sessions = checker_cfg.get("sessions", ["15s_24hr", "1Hz_1hr", "status_1hr"])
         check_receiver = checker_cfg.get("check_receiver", True)
         size_tolerance_pct = checker_cfg.get("size_tolerance_pct", 50.0)
+        hash_fill_limit = checker_cfg.get("hash_fill_limit", 1000)
 
         base_trigger = parse_schedule(schedule)
+
+        # args positions 5/6 = station_filter (None = all), hash_fill_limit
+        job_args = [
+            sessions,
+            days_back,
+            check_receiver,
+            size_tolerance_pct,
+            None,
+            hash_fill_limit,
+        ]
 
         self.scheduler.add_job(
             func=_run_integrity_check_job,
             trigger=base_trigger.trigger_type,
-            args=[sessions, days_back, check_receiver, size_tolerance_pct],
+            args=job_args,
             id="integrity_checker",
             replace_existing=True,
             max_instances=1,
@@ -2401,7 +2412,7 @@ class BulkDownloadScheduler:
             func=_run_integrity_check_job,
             trigger="date",
             run_date=datetime.now() + timedelta(seconds=180),
-            args=[sessions, days_back, check_receiver, size_tolerance_pct],
+            args=job_args,
             id="integrity_checker_startup",
             replace_existing=True,
             executor="backfill",

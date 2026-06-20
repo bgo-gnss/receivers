@@ -28,6 +28,7 @@ def _run_integrity_check_job(
     check_receiver: bool = True,
     size_tolerance_pct: float = 50.0,
     station_filter: Optional[List[str]] = None,
+    hash_fill_limit: int = 1000,
 ) -> None:
     """APScheduler job: periodic file integrity check.
 
@@ -36,12 +37,18 @@ def _run_integrity_check_job(
     2. Size consistency check (flag outliers vs median)
     3. For flagged files only: compare against receiver (FTP SIZE)
 
+    Then a global phase (not date-windowed):
+    4. Content-hash fill — lazily compute file_tracking.content_sha256 for
+       present files that lack it (Option B: keep the hot download/archive path
+       hash-free). Bounded by ``hash_fill_limit`` per run.
+
     Args:
         session_types: Session types to check (e.g., ['15s_24hr', '1Hz_1hr'])
         days_back: Number of days to look back from yesterday
         check_receiver: Whether to do FTP SIZE comparison for flagged files
         size_tolerance_pct: Flag files deviating more than this % from median
         station_filter: If set, only check these station IDs (CLI use)
+        hash_fill_limit: Max files to content-hash per run (0 disables the phase)
     """
     try:
         from ..cli.main import get_all_station_configs
@@ -113,6 +120,11 @@ def _run_integrity_check_job(
                     logger.debug(
                         f"Integrity check failed for {station_id}/{session_type}: {e}"
                     )
+
+        # Phase 4 (global, not date-windowed): lazily fill content_sha256.
+        hash_stats = {"hashed": 0, "missing": 0, "corrupt": 0}
+        if hash_fill_limit > 0:
+            hash_stats = _run_content_hash_fill(tracker, checker, hash_fill_limit)
     finally:
         tracker.close()
 
@@ -120,8 +132,122 @@ def _run_integrity_check_job(
     logger.info(
         f"Integrity check complete in {duration:.1f}s: "
         f"{total_checked} files checked, {total_untracked} untracked found, "
-        f"{total_registered} registered, {total_suspect} suspect"
+        f"{total_registered} registered, {total_suspect} suspect, "
+        f"{hash_stats['hashed']} content-hashed"
     )
+
+
+def _run_content_hash_fill(
+    tracker: "FileTracker",
+    checker: "ArchiveFileChecker",
+    limit: int = 1000,
+) -> Dict[str, int]:
+    """Lazily compute content_sha256 for present files that lack it (mig 052).
+
+    Option B of the integrity design: the hot download/archive path does NOT
+    hash. This phase fills ``file_tracking.content_sha256`` for
+    'downloaded'/'archived' rows where it is NULL — newest first, bounded by
+    ``limit`` per run. ``content_hashed_at`` orders the scan (NULLs first) and,
+    once the backlog is drained, lets a future re-hash detect local bit-rot.
+
+    Raw is immutable, so its hash is write-once. RINEX rows are filled here too;
+    a later header-fix workflow must reset content_sha256 to NULL so the new
+    content gets re-hashed — this phase never overwrites a non-NULL hash.
+
+    Returns counts: {hashed, missing, corrupt}.
+    """
+    result = {"hashed": 0, "missing": 0, "corrupt": 0}
+    if not tracker._conn:
+        return result
+
+    from ..utils.content_hash import CorruptArchiveFileError, content_sha256
+
+    try:
+        with tracker._conn.cursor() as cur:
+            cur.execute(
+                """SELECT sid, session_type, file_date, file_hour, filename
+                FROM file_tracking
+                WHERE status IN ('downloaded', 'archived')
+                  AND content_sha256 IS NULL
+                  AND filename IS NOT NULL
+                ORDER BY content_hashed_at NULLS FIRST, file_date DESC
+                LIMIT %s""",
+                (limit,),
+            )
+            rows = cur.fetchall()
+    except Exception as e:
+        # Most likely the migration 052 columns are absent — skip quietly.
+        logger.debug(f"content-hash fill query failed (mig 052 applied?): {e}")
+        return result
+
+    for sid, session_type, file_date, file_hour, filename in rows:
+        dt = datetime.combine(file_date, datetime.min.time())
+        archive_dir = checker.get_archive_directory(
+            sid,
+            session_type,
+            year=file_date.year,
+            month=dt.strftime("%b").lower(),
+        )
+        path = os.path.join(archive_dir, filename)
+
+        if not os.path.isfile(path):
+            # Local file gone (pruned past retention, or never landed) — leave
+            # the hash NULL; a later run retries if the file reappears.
+            result["missing"] += 1
+            continue
+
+        try:
+            digest = content_sha256(path)
+        except CorruptArchiveFileError as exc:
+            result["corrupt"] += 1
+            logger.warning(f"content-hash: corrupt local file {path}: {exc}")
+            tracker.mark_file_suspect(
+                sid,
+                session_type,
+                file_date,
+                file_hour,
+                reason=f"content_sha256 failed: {exc}",
+            )
+            continue
+        except OSError as exc:
+            result["missing"] += 1
+            logger.debug(f"content-hash: cannot read {path}: {exc}")
+            continue
+
+        try:
+            with tracker._conn.cursor() as cur:
+                if file_hour is None:
+                    cur.execute(
+                        """UPDATE file_tracking
+                        SET content_sha256 = %s, content_hashed_at = NOW(),
+                            updated_at = NOW()
+                        WHERE sid = %s AND session_type = %s
+                          AND file_date = %s AND file_hour IS NULL""",
+                        (digest, sid, session_type, file_date),
+                    )
+                else:
+                    cur.execute(
+                        """UPDATE file_tracking
+                        SET content_sha256 = %s, content_hashed_at = NOW(),
+                            updated_at = NOW()
+                        WHERE sid = %s AND session_type = %s
+                          AND file_date = %s AND file_hour = %s""",
+                        (digest, sid, session_type, file_date, file_hour),
+                    )
+            tracker._conn.commit()
+            result["hashed"] += 1
+        except Exception as e:
+            logger.debug(f"content-hash update failed for {path}: {e}")
+            if tracker._conn:
+                tracker._conn.rollback()
+
+    if result["hashed"] or result["corrupt"]:
+        logger.info(
+            f"Content-hash fill: {result['hashed']} hashed, "
+            f"{result['missing']} missing, {result['corrupt']} corrupt "
+            f"(limit {limit})"
+        )
+    return result
 
 
 def _check_station_session(
