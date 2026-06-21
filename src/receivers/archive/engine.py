@@ -50,6 +50,17 @@ def _immutability_flag(category: str) -> str:
     return IMMUTABILITY.get(category, _DEFAULT_IMMUTABILITY)
 
 
+# Push-on-download (write-through) tuning. The push runs inside a download worker,
+# so it must never stall it: a short rsync timeout bounds a hung archive, and SSH
+# ControlMaster multiplexes many parallel workers' pushes over one connection so
+# they don't storm rawdata's sshd (MaxStartups/MaxSessions) with handshakes.
+_PUSH_RSYNC_TIMEOUT = 60
+_PUSH_SSH = (
+    "ssh -o ControlMaster=auto -o ControlPath=/tmp/.cm-archpush-%C "
+    "-o ControlPersist=30s -o ConnectTimeout=10"
+)
+
+
 @dataclass
 class SyncRunResult:
     """Outcome of one ArchiveSync.run()."""
@@ -156,7 +167,12 @@ class ArchiveSync:
 
     # ---- rsync -------------------------------------------------------------
 
-    def _build_rsync_cmd(self, files_from: str, immutability: str) -> list[str]:
+    def _build_rsync_cmd(
+        self,
+        files_from: str,
+        immutability: str,
+        extra_args: Optional[list[str]] = None,
+    ) -> list[str]:
         cmd = [
             "rsync",
             "-a",  # archive mode (no -z: raw is already compressed)
@@ -166,6 +182,9 @@ class ArchiveSync:
             f"--skip-compress={_SKIP_COMPRESS}",
             f"--files-from={files_from}",
         ]
+        if extra_args:
+            # e.g. -e "ssh -o ControlMaster=..." for the push path's SSH multiplexing
+            cmd[1:1] = extra_args
         if self.dry_run:
             cmd.append("--dry-run")
         # NB: never --delete. Source root (trailing slash) + remote dest.
@@ -188,14 +207,24 @@ class ArchiveSync:
         return transferred
 
     def _rsync(
-        self, rel_paths: list[str], immutability: str
+        self,
+        rel_paths: list[str],
+        immutability: str,
+        *,
+        timeout: Optional[int] = None,
+        extra_args: Optional[list[str]] = None,
     ) -> tuple[bool, list[str], str]:
-        """Run rsync for the given relative paths; return (ok, transferred, stderr)."""
+        """Run rsync for the given relative paths; return (ok, transferred, stderr).
+
+        ``timeout`` overrides the default (the push path uses a short one so a
+        hung archive can't stall a download worker); ``extra_args`` injects extra
+        rsync flags (the push path adds ``-e ssh …`` for SSH multiplexing).
+        """
         with tempfile.NamedTemporaryFile("w", suffix=".files-from", delete=False) as fh:
             fh.write("\n".join(rel_paths) + "\n")
             files_from = fh.name
         try:
-            cmd = self._build_rsync_cmd(files_from, immutability)
+            cmd = self._build_rsync_cmd(files_from, immutability, extra_args=extra_args)
             logger.info(
                 "rsync %d file(s) [%s] -> %s%s",
                 len(rel_paths),
@@ -204,7 +233,10 @@ class ArchiveSync:
                 " [dry-run]" if self.dry_run else "",
             )
             proc = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=self.rsync_timeout
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout or self.rsync_timeout,
             )
             transferred = self._parse_transferred(proc.stdout)
             if proc.returncode != 0:
@@ -267,6 +299,64 @@ class ArchiveSync:
             self.conn.commit()  # per-file: a crash loses one row, not the run
             cataloged += 1
         return cataloged, errors
+
+    # ---- push-on-download (low-latency write-through) -----------------------
+
+    def push_explicit(self, local_paths: list[str]) -> tuple[int, list[str]]:
+        """Push an explicit list of just-produced local files to the archive NOW.
+
+        The low-latency write-through path (the download / RINEX hooks) that
+        complements the ``:45`` watermark sweep: filters to in-scope archive
+        files (same session/category/exclude rules as the sweep), splits raw vs
+        rinex for the per-tier immutability flag, rsyncs each group with a SHORT
+        timeout + SSH multiplexing, then hashes + catalogs exactly what
+        transferred. The ``:45`` sweep stays the backstop for anything missed.
+
+        Best-effort by contract: a single bad file or a failed rsync is recorded
+        in the returned errors, never raised — the caller (a download worker)
+        must not be harmed by the push. Returns ``(pushed, errors)``.
+        """
+        root = self.target.source_root
+        sessions = set(self.target.sessions)
+        cats = set(self.target.file_categories)
+
+        groups: dict[str, list[str]] = {}
+        for p in local_paths:
+            parsed = parse_archive_path(p, root)
+            if parsed is None:
+                continue
+            if sessions and parsed.session_type not in sessions:
+                continue
+            if cats and parsed.file_category not in cats:
+                continue
+            if parsed.station in self.target.exclude_stations:
+                continue
+            if not os.path.isfile(p):
+                continue
+            groups.setdefault(parsed.file_category, []).append(parsed.relative_path)
+
+        # SSH multiplexing so N parallel download workers don't storm rawdata's
+        # sshd with handshakes. Only for a remote target (local-dest tests: no -e).
+        extra = ["-e", _PUSH_SSH] if self.target.host else None
+
+        pushed = 0
+        errors: list[str] = []
+        for category, rels in groups.items():
+            ok, transferred, stderr = self._rsync(
+                rels,
+                _immutability_flag(category),
+                timeout=_PUSH_RSYNC_TIMEOUT,
+                extra_args=extra,
+            )
+            if not ok:
+                errors.append(
+                    stderr or f"rsync failed for {len(rels)} {category} file(s)"
+                )
+                continue
+            n, errs = self._catalog_transferred(transferred)
+            pushed += n
+            errors.extend(errs)
+        return pushed, errors
 
     def _archive_path(self, rel: str) -> str:
         """Where the file lands on the archive (dest base + relative tree)."""
