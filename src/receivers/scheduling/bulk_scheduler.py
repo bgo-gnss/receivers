@@ -816,40 +816,43 @@ def _download_station_data_job(
                         station_id, session_type, start_time, end_time
                     )
 
-                    # Attach pipeline tracking to the future
-                    if (
-                        future
-                        and pipeline_job is not None
-                        and pipeline_store is not None
-                    ):
-                        try:
-                            from .pipeline import PipelineStage
-
-                            pipeline_job.mark_stage_started(PipelineStage.RINEX)
-                            pipeline_store.save_job(pipeline_job)
-                        except Exception:
-                            pass
-
-                        def _on_rinex_done(f, pj=pipeline_job, ps=pipeline_store):
+                    if future:
+                        # Optional pipeline tracking — independent of the push.
+                        if pipeline_job is not None and pipeline_store is not None:
                             try:
                                 from .pipeline import PipelineStage
 
-                                exc = f.exception()
-                                if exc:
-                                    pj.mark_stage_failed(PipelineStage.RINEX, str(exc))
-                                else:
-                                    pj.mark_stage_complete(PipelineStage.RINEX)
-                                    # Push-on-download for the RINEX product, now
-                                    # that conversion finished (this callback runs
-                                    # in the main process). Best-effort.
-                                    try:
-                                        out = (f.result() or {}).get("output_files", [])
-                                        _push_to_storage(out, logger)
-                                    except Exception:
-                                        pass
-                                ps.save_job(pj)
+                                pipeline_job.mark_stage_started(PipelineStage.RINEX)
+                                pipeline_store.save_job(pipeline_job)
                             except Exception:
                                 pass
+
+                        # On conversion completion (callback runs in the main
+                        # process for the ProcessPool): push the derived RINEX to
+                        # the archive AND, if enabled, mark the pipeline stage. The
+                        # push must NOT depend on pipeline tracking — otherwise raw
+                        # syncs but rinex silently doesn't when tracking is off.
+                        def _on_rinex_done(f, pj=pipeline_job, ps=pipeline_store):
+                            exc = f.exception()
+                            if pj is not None and ps is not None:
+                                try:
+                                    from .pipeline import PipelineStage
+
+                                    if exc:
+                                        pj.mark_stage_failed(
+                                            PipelineStage.RINEX, str(exc)
+                                        )
+                                    else:
+                                        pj.mark_stage_complete(PipelineStage.RINEX)
+                                    ps.save_job(pj)
+                                except Exception:
+                                    pass
+                            if exc is None:
+                                try:
+                                    out = (f.result() or {}).get("output_files", [])
+                                    _push_to_storage(out, logger)
+                                except Exception:
+                                    pass
 
                         future.add_done_callback(_on_rinex_done)
                 except Exception as e:
