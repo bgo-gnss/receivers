@@ -97,6 +97,7 @@ def verify_archive_catalog(
     dest_prefix: Optional[str] = None,
     limit: int = 500,
     reverify_after_days: Optional[int] = None,
+    priority_sessions: tuple[str, ...] = ("15s_24hr", "1Hz_1hr"),
     log: logging.Logger = logger,
 ) -> VerifyStats:
     """Verify catalog rows: local↔archive cross-check + optional read-back.
@@ -120,7 +121,10 @@ def verify_archive_catalog(
     if conn is None:
         return stats
 
-    # Never-verified first, then oldest verification, then newest data.
+    # Priority sessions (15s_24hr, 1Hz_1hr) cold-re-hashed FIRST — the daily-
+    # processing inputs whose durability matters most; this is the 1Hz half of
+    # "15s immediate + 1Hz cold-priority". Then never-verified first, oldest
+    # verification, newest data.
     select_sql = """
         SELECT id, station, session_type, file_category, file_date, file_path,
                content_sha256
@@ -132,13 +136,20 @@ def verify_archive_catalog(
                 OR last_verified_at IS NULL
                 OR last_verified_at < now() - (%s * interval '1 day')
               )
-        ORDER BY last_verified_at NULLS FIRST, file_date DESC NULLS LAST
+        ORDER BY (session_type = ANY(%s)) DESC,
+                 last_verified_at NULLS FIRST, file_date DESC NULLS LAST
         LIMIT %s
     """
     with conn.cursor() as cur:
         cur.execute(
             select_sql,
-            (storage_location, reverify_after_days, reverify_after_days, limit),
+            (
+                storage_location,
+                reverify_after_days,
+                reverify_after_days,
+                list(priority_sessions),
+                limit,
+            ),
         )
         rows = cur.fetchall()
 

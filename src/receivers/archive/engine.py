@@ -75,6 +75,17 @@ class SyncRunResult:
     errors: list[str] = field(default_factory=list)
 
 
+@dataclass
+class PushVerifyStats:
+    """Outcome of an immediate per-push read-back (ArchiveSync.verify_pushed)."""
+
+    checked: int = 0
+    verified: int = 0  # read-back matched, last_verified_at stamped
+    mismatched: int = 0  # archive bytes differ (or unreadable) — ARCHIVE CORRUPT
+    deferred: int = 0  # not yet visible on the mount; cold periodic pass covers it
+    findings: list[str] = field(default_factory=list)
+
+
 class ArchiveSync:
     """Run one declarative sync target."""
 
@@ -246,8 +257,14 @@ class ArchiveSync:
 
     # ---- catalog -----------------------------------------------------------
 
-    def _catalog_transferred(self, transferred_rel: list[str]) -> tuple[int, list[str]]:
-        """Hash + upsert each transferred file. Returns (cataloged, errors).
+    def _catalog_transferred(
+        self, transferred_rel: list[str]
+    ) -> tuple[int, list[str], dict[str, str]]:
+        """Hash + upsert each transferred file. Returns (cataloged, errors, digests).
+
+        ``digests`` maps each successfully cataloged relative path to the
+        content_sha256 just computed on its local copy, so a caller can verify the
+        archive copy (read-back) without re-hashing the local file.
 
         A hash failure (corrupt local file) is surfaced as an integrity finding
         but does NOT block the run: rsync already moved the bytes, and re-playing
@@ -263,10 +280,11 @@ class ArchiveSync:
         that case; the freshness/integrity story must not assume completeness.
         """
         if self.conn is None:
-            return 0, []
+            return 0, [], {}
         root = self.target.source_root
         cataloged = 0
         errors: list[str] = []
+        digests: dict[str, str] = {}
         for rel in transferred_rel:
             local = os.path.join(root, rel)
             parsed = parse_archive_path(local, root)
@@ -296,12 +314,15 @@ class ArchiveSync:
                 content_sha256=digest,
             )
             self.conn.commit()  # per-file: a crash loses one row, not the run
+            digests[rel] = digest
             cataloged += 1
-        return cataloged, errors
+        return cataloged, errors, digests
 
     # ---- push-on-download (low-latency write-through) -----------------------
 
-    def push_explicit(self, local_paths: list[str]) -> tuple[int, list[str]]:
+    def push_explicit(
+        self, local_paths: list[str]
+    ) -> tuple[int, list[str], dict[str, str]]:
         """Push an explicit list of just-produced local files to the archive NOW.
 
         The low-latency write-through path (the download / RINEX hooks) that
@@ -313,7 +334,9 @@ class ArchiveSync:
 
         Best-effort by contract: a single bad file or a failed rsync is recorded
         in the returned errors, never raised — the caller (a download worker)
-        must not be harmed by the push. Returns ``(pushed, errors)``.
+        must not be harmed by the push. Returns ``(pushed, errors, digests)``,
+        where ``digests`` maps each cataloged relative path to its local
+        content_sha256 — feed it to ``verify_pushed`` for an immediate read-back.
         """
         root = self.target.source_root
         sessions = set(self.target.sessions)
@@ -336,6 +359,7 @@ class ArchiveSync:
 
         pushed = 0
         errors: list[str] = []
+        digests: dict[str, str] = {}
         for category, rels in groups.items():
             ok, transferred, stderr = self._rsync(
                 rels,
@@ -347,10 +371,108 @@ class ArchiveSync:
                     stderr or f"rsync failed for {len(rels)} {category} file(s)"
                 )
                 continue
-            n, errs = self._catalog_transferred(transferred)
+            n, errs, cat_digests = self._catalog_transferred(transferred)
             pushed += n
             errors.extend(errs)
-        return pushed, errors
+            digests.update(cat_digests)
+        return pushed, errors, digests
+
+    def verify_pushed(
+        self,
+        digests: dict[str, str],
+        *,
+        read_root: str,
+        sessions: set[str],
+        retries: int = 0,
+        retry_wait: float = 1.0,
+    ) -> PushVerifyStats:
+        """Immediate read-back of just-pushed files via the archive RO mount.
+
+        For each cataloged file whose session is in ``sessions``, re-hash the
+        ACTUAL archive copy (``read_root`` + relative path == where the mount maps
+        the dest) and compare to the local content_sha256 stored at push.
+
+          * match     → stamp ``last_verified_at`` (read-back confirmed).
+          * mismatch  → ARCHIVE CORRUPT finding (file present but bytes differ).
+          * absent    → DEFER (NFS dir-attr cache lag is normal right after a
+                        write; the now session-prioritized cold periodic verify
+                        re-hashes it next run). Never a CORRUPT.
+
+        ``retries`` defaults to 0: the caller runs this while holding a push slot
+        (``_push_sem``), and this method does only an NFS read + a DB update (no
+        SSH), so it must not sleep and throttle the midnight 15s burst. A lagging
+        file simply defers to the cold pass (which prioritizes 15s/1Hz). Raise
+        ``retries`` only for an out-of-band sweep where blocking is acceptable.
+
+        NOTE: this read goes through rek-d01's warm NFS cache, so it is a transfer
+        sanity check (largely redundant with rsync's own post-transfer checksum),
+        NOT a durability proof — that is the COLD periodic read-back. Scoped to the
+        critical small-volume sessions (15s_24hr) on purpose; 1Hz relies on the
+        session-prioritized cold pass. Best-effort: never raises.
+        """
+        import time
+
+        from ..utils.canonical_key import canonical_key
+
+        stats = PushVerifyStats()
+        if self.conn is None:
+            return stats
+        root = self.target.source_root
+        for rel, local_digest in digests.items():
+            parsed = parse_archive_path(os.path.join(root, rel), root)
+            if parsed is None or parsed.session_type not in sessions:
+                continue
+            stats.checked += 1
+            archive_file = os.path.join(read_root, rel)
+
+            attempt = 0
+            while not os.path.isfile(archive_file) and attempt < retries:
+                time.sleep(retry_wait)
+                attempt += 1
+            if not os.path.isfile(archive_file):
+                stats.deferred += (
+                    1  # not yet visible on the mount — cold pass covers it
+                )
+                continue
+
+            try:
+                actual = content_sha256(archive_file)
+            except (CorruptArchiveFileError, OSError) as exc:
+                stats.mismatched += 1
+                stats.findings.append(f"unreadable archive file {archive_file}: {exc}")
+                logger.error("push-verify: cannot hash %s: %s", archive_file, exc)
+                continue
+
+            if actual == local_digest:
+                self._stamp_verified(canonical_key(os.path.basename(rel)), parsed)
+                stats.verified += 1
+            else:
+                stats.mismatched += 1
+                stats.findings.append(
+                    f"ARCHIVE CORRUPT {parsed.station}/{parsed.session_type}/"
+                    f"{parsed.file_category}/{parsed.file_date}: "
+                    f"on-disk={actual[:12]} local={local_digest[:12]} ({archive_file})"
+                )
+                logger.error(
+                    "push-verify: archive hash mismatch — %s on-disk=%s local=%s",
+                    archive_file,
+                    actual,
+                    local_digest,
+                )
+        return stats
+
+    def _stamp_verified(self, key: str, parsed) -> None:
+        """Mark the catalog row read-back-verified (matches upsert's logical key)."""
+        if self.conn is None:
+            return
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """UPDATE archive_catalog SET last_verified_at = now()
+                   WHERE storage_location = %s AND session_type = %s
+                     AND file_category = %s AND canonical_key = %s""",
+                (self.target.name, parsed.session_type, parsed.file_category, key),
+            )
+        self.conn.commit()
 
     def _archive_path(self, rel: str) -> str:
         """Where the file lands on the archive (dest base + relative tree)."""
@@ -401,7 +523,7 @@ class ArchiveSync:
                 if not rsync_ok:
                     all_ok = False
                 if not self.dry_run:
-                    cataloged, cat_errors = self._catalog_transferred(transferred)
+                    cataloged, cat_errors, _ = self._catalog_transferred(transferred)
                     result.cataloged += cataloged
                     result.errors.extend(f"{category}: {e}" for e in cat_errors)
             result.transferred += len(transferred)
