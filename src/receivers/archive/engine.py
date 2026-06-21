@@ -51,14 +51,13 @@ def _immutability_flag(category: str) -> str:
 
 
 # Push-on-download (write-through) tuning. The push runs inside a download worker,
-# so it must never stall it: a short rsync timeout bounds a hung archive, and SSH
-# ControlMaster multiplexes many parallel workers' pushes over one connection so
-# they don't storm rawdata's sshd (MaxStartups/MaxSessions) with handshakes.
+# so it must never stall it: a short rsync timeout bounds a hung archive. Concurrency
+# is bounded by the caller (a small semaphore) so parallel workers don't trip
+# rawdata's sshd MaxStartups — which manifests as "connection reset/closed". We do
+# NOT use SSH ControlMaster here: a shared ControlPath under the live scheduler's
+# concurrent pushes failed 100% (spurious "Bad owner or permissions on
+# ssh_config.d"); plain ssh under a capped concurrency is reliable.
 _PUSH_RSYNC_TIMEOUT = 60
-_PUSH_SSH = (
-    "ssh -o ControlMaster=auto -o ControlPath=/tmp/.cm-archpush-%C "
-    "-o ControlPersist=30s -o ConnectTimeout=10"
-)
 
 
 @dataclass
@@ -335,10 +334,6 @@ class ArchiveSync:
                 continue
             groups.setdefault(parsed.file_category, []).append(parsed.relative_path)
 
-        # SSH multiplexing so N parallel download workers don't storm rawdata's
-        # sshd with handshakes. Only for a remote target (local-dest tests: no -e).
-        extra = ["-e", _PUSH_SSH] if self.target.host else None
-
         pushed = 0
         errors: list[str] = []
         for category, rels in groups.items():
@@ -346,7 +341,6 @@ class ArchiveSync:
                 rels,
                 _immutability_flag(category),
                 timeout=_PUSH_RSYNC_TIMEOUT,
-                extra_args=extra,
             )
             if not ok:
                 errors.append(
