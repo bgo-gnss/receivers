@@ -40,7 +40,9 @@ _load_monitor: Optional["LoadMonitor"] = None
 # Per-session batch result accumulator (thread-safe, reset after each daily summary)
 import threading as _threading
 
-_BATCH_STATS: dict = {}  # {session_type: {"ok": [...], "fail": {...}, "expected": [...], "skipped": [...]}}
+_BATCH_STATS: dict = (
+    {}
+)  # {session_type: {"ok": [...], "fail": {...}, "expected": [...], "skipped": [...]}}
 _BATCH_LOCK = _threading.Lock()
 
 
@@ -672,9 +674,11 @@ def _download_station_data_job(
                     "start_time": start_time.isoformat(),
                     "end_time": end_time.isoformat(),
                     "timeout_minutes": timeout_minutes,
-                    "timeout_percent": (job_duration_minutes / timeout_minutes) * 100
-                    if timeout_minutes > 0
-                    else 0,
+                    "timeout_percent": (
+                        (job_duration_minutes / timeout_minutes) * 100
+                        if timeout_minutes > 0
+                        else 0
+                    ),
                 },
             )
 
@@ -718,9 +722,11 @@ def _download_station_data_job(
             session_type,
             station_id,
             "ok" if status in success_statuses else "fail",
-            result.get("error_message", status)
-            if status not in success_statuses
-            else "",
+            (
+                result.get("error_message", status)
+                if status not in success_statuses
+                else ""
+            ),
         )
 
         # Run RINEX conversion if enabled and download was successful
@@ -876,9 +882,11 @@ def _run_rinex_conversion(
             session_type=session_type,
             schedule_minute=0,
             distribution_window=10,
-            frequency=TaskFrequency.HOURLY
-            if session_type == "1Hz_1hr"
-            else TaskFrequency.DAILY,
+            frequency=(
+                TaskFrequency.HOURLY
+                if session_type == "1Hz_1hr"
+                else TaskFrequency.DAILY
+            ),
             lookback_periods=1,
             max_concurrent=1,
             timeout_minutes=30,
@@ -1283,11 +1291,11 @@ class BulkDownloadScheduler:
             if schedule is None:
                 schedule_minute = session_cfg.get(
                     "schedule_minute",
-                    10
-                    if session_type == "15s_24hr"
-                    else 15
-                    if session_type == "1Hz_1hr"
-                    else 25,
+                    (
+                        10
+                        if session_type == "15s_24hr"
+                        else 15 if session_type == "1Hz_1hr" else 25
+                    ),
                 )
                 frequency = session_cfg.get(
                     "frequency", "daily" if session_type == "15s_24hr" else "hourly"
@@ -1303,19 +1311,19 @@ class BulkDownloadScheduler:
                     enabled=session_cfg.get("enabled", True),
                     max_concurrent=session_cfg.get(
                         "max_concurrent",
-                        3
-                        if session_type == "15s_24hr"
-                        else 4
-                        if session_type == "1Hz_1hr"
-                        else 5,
+                        (
+                            3
+                            if session_type == "15s_24hr"
+                            else 4 if session_type == "1Hz_1hr" else 5
+                        ),
                     ),
                     timeout_minutes=session_cfg.get(
                         "timeout_minutes",
-                        45
-                        if session_type == "15s_24hr"
-                        else 30
-                        if session_type == "1Hz_1hr"
-                        else 15,
+                        (
+                            45
+                            if session_type == "15s_24hr"
+                            else 30 if session_type == "1Hz_1hr" else 15
+                        ),
                     ),
                     lookback_periods=session_cfg.get("lookback_periods", 1),
                     rinex=session_cfg.get("rinex", False),
@@ -1332,19 +1340,19 @@ class BulkDownloadScheduler:
                     enabled=session_cfg.get("enabled", True),
                     max_concurrent=session_cfg.get(
                         "max_concurrent",
-                        3
-                        if session_type == "15s_24hr"
-                        else 4
-                        if session_type == "1Hz_1hr"
-                        else 5,
+                        (
+                            3
+                            if session_type == "15s_24hr"
+                            else 4 if session_type == "1Hz_1hr" else 5
+                        ),
                     ),
                     timeout_minutes=session_cfg.get(
                         "timeout_minutes",
-                        45
-                        if session_type == "15s_24hr"
-                        else 30
-                        if session_type == "1Hz_1hr"
-                        else 15,
+                        (
+                            45
+                            if session_type == "15s_24hr"
+                            else 30 if session_type == "1Hz_1hr" else 15
+                        ),
                     ),
                     lookback_periods=session_cfg.get("lookback_periods", 1),
                     rinex=session_cfg.get("rinex", False),
@@ -1737,7 +1745,9 @@ class BulkDownloadScheduler:
             self.logger.info("Config change: refreshing stream capture configs")
             _run_stream_config_refresh_job()
             _run_stream_supervise_job()
-        except Exception as e:  # noqa: BLE001 — never let stream refresh kill the watcher
+        except (
+            Exception
+        ) as e:  # noqa: BLE001 — never let stream refresh kill the watcher
             self.logger.error(f"Stream refresh after config change failed: {e}")
 
     def _reseed_areas(self) -> None:
@@ -1824,7 +1834,14 @@ class BulkDownloadScheduler:
             config.read(config_path)
 
             # Check each receiver type section
-            for receiver_type in ["polarx5", "mosaic-x5", "netr5", "netr9", "netrs", "g10"]:
+            for receiver_type in [
+                "polarx5",
+                "mosaic-x5",
+                "netr5",
+                "netr9",
+                "netrs",
+                "g10",
+            ]:
                 if receiver_type not in config:
                     continue
 
@@ -2116,6 +2133,7 @@ class BulkDownloadScheduler:
         self._schedule_archive_reconciler()
         self._schedule_integrity_checker()
         self._schedule_archive_sync()
+        self._schedule_archive_verify()
         self._schedule_morning_recovery()
         self._schedule_stream_capture()
 
@@ -2382,13 +2400,24 @@ class BulkDownloadScheduler:
         sessions = checker_cfg.get("sessions", ["15s_24hr", "1Hz_1hr", "status_1hr"])
         check_receiver = checker_cfg.get("check_receiver", True)
         size_tolerance_pct = checker_cfg.get("size_tolerance_pct", 50.0)
+        hash_fill_limit = checker_cfg.get("hash_fill_limit", 1000)
 
         base_trigger = parse_schedule(schedule)
+
+        # args positions 5/6 = station_filter (None = all), hash_fill_limit
+        job_args = [
+            sessions,
+            days_back,
+            check_receiver,
+            size_tolerance_pct,
+            None,
+            hash_fill_limit,
+        ]
 
         self.scheduler.add_job(
             func=_run_integrity_check_job,
             trigger=base_trigger.trigger_type,
-            args=[sessions, days_back, check_receiver, size_tolerance_pct],
+            args=job_args,
             id="integrity_checker",
             replace_existing=True,
             max_instances=1,
@@ -2401,7 +2430,7 @@ class BulkDownloadScheduler:
             func=_run_integrity_check_job,
             trigger="date",
             run_date=datetime.now() + timedelta(seconds=180),
-            args=[sessions, days_back, check_receiver, size_tolerance_pct],
+            args=job_args,
             id="integrity_checker_startup",
             replace_existing=True,
             executor="backfill",
@@ -2444,6 +2473,50 @@ class BulkDownloadScheduler:
         )
 
         self.logger.info(f"Scheduled archive sync ({base_trigger.description})")
+
+    def _schedule_archive_verify(self) -> None:
+        """Schedule periodic archive read-back verification.
+
+        Re-hashes archived files against ``archive_catalog.content_sha256``
+        (read-back via the read-only mount) and cross-checks local
+        ``file_tracking`` hashes — detects archive bit-rot / partial transfers
+        and local↔archive divergence. Disabled by default; enable in
+        scheduler.yaml ``archive_verify``. ``read_root`` must point at the
+        archive mount (rek-d01: /mnt/rawgpsdata) for read-back; without it only
+        the DB-only cross-check runs. ``reverify_after_days`` re-checks already
+        verified rows for slow bit-rot.
+        """
+        cfg = self.yaml_config.get("archive_verify", {})
+        if not cfg.get("enabled", False):
+            self.logger.info("Archive verify disabled in config")
+            return
+
+        from ..archive.job import run_archive_verify_job
+
+        schedule = cfg.get("schedule", "3h")
+        base_trigger = parse_schedule(schedule)
+        kwargs = {
+            "read_root": cfg.get("read_root"),
+            "storage_location": cfg.get("storage_location", "imo_archive"),
+            "limit": cfg.get("limit", 500),
+            "reverify_after_days": cfg.get("reverify_after_days"),
+        }
+
+        self.scheduler.add_job(
+            func=run_archive_verify_job,
+            trigger=base_trigger.trigger_type,
+            kwargs=kwargs,
+            id="archive_verify",
+            replace_existing=True,
+            max_instances=1,
+            executor="backfill",
+            **base_trigger.trigger_kwargs,
+        )
+
+        self.logger.info(
+            f"Scheduled archive verify ({base_trigger.description}, "
+            f"read_back={'on' if kwargs['read_root'] else 'off'})"
+        )
 
     def _schedule_morning_recovery(self) -> None:
         """Schedule the daily morning recovery pass.
@@ -2832,7 +2905,14 @@ class BulkDownloadScheduler:
 
         # Get stations that support health checks (all receiver types with get_health_status)
         # Supported: PolaRX5, mosaic-X5, NetR9, NetRS, NetR5, G10
-        supported_health_types = {"polarx5", "mosaic-x5", "netr9", "netrs", "netr5", "g10"}
+        supported_health_types = {
+            "polarx5",
+            "mosaic-x5",
+            "netr9",
+            "netrs",
+            "netr5",
+            "g10",
+        }
         health_stations = []
         skipped_stations = []
         for station_id, config in self.stations.items():

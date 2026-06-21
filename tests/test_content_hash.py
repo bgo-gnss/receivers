@@ -5,6 +5,7 @@ gzip, bzip2 or xz; different bytes hash differently. That round-trip is what
 proves the primitive does its job (back-zip verify, dedup, integrity, #34).
 """
 
+import base64
 import bz2
 import gzip
 import hashlib
@@ -13,6 +14,23 @@ import lzma
 import pytest
 
 from receivers.utils.content_hash import CorruptArchiveFileError, content_sha256
+
+# A real ``.Z`` (Unix LZW compress) blob, embedded so the test needs only
+# ``gzip -dc`` to decode (universally present) — not the ``compress`` *encoder*
+# (often absent in CI). Produced once with: compress -c plain.bin > plain.Z
+# where ``plain.bin`` is the payload below; PLAIN_SHA is its sha256.
+DOT_Z_B64 = (
+    "H52QU4pAoVLECRUpSZ6AQBKGThg3YdaEAYHQSREsIFyQcaEFBJwwedi8CUMGBIAAAkCwSeOmjIKAAws"
+    "eTLiw4cOIEytezLix48eQI0ueTLmy5UuBBA0iVMjQIUSJFJNYxKiRo0eQIkmaRKmSpUuYSWcytfk0p9Sd"
+    "VX1iDbqVqNejMZXSbHoTqk6qPa8C1Tq0q1GwMpfWdIoz6lSeVn9mFcq16FekgeeSLXwXsdq9jN3+hSx3L"
+    "GG7Z/EmXsu38VvAnQfXNXs4rd7Fbf0+jitWdVnDaPMqZtvXMdywgunerux6d2nNs4FL/sw692jMsX2jri"
+    "2ccmjLr3mb3kw7+GTQrXWTziz7d2TPq3GLvgy792nO1L83X5/9ePnp3pmrx26cvHT4+aVHnHjQucedcug"
+    "Nd11x40X3XnfLCbggge1tl9x5tlkX3nMVImdeatWB5xx72nmIX4QKbkiiff9BmKCGI9bn34MIZigiff05"
+    "eCCGIc7HX4MGXgiifPsxWKCFH8an34AclngfgCjCiCOQSJ744o0/HmkilFf6aGSHT7poo5cUOtlijT0WW"
+    "SaLNPJIJJMrzrjjkEtO2CSbcyopoYoy6iikninGmGOQSQYY6JRahonmm3bG6WehUWL5pZlvAQ=="
+)
+DOT_Z_PLAIN_SHA = "cc5e22fe40fe9978600890d8b1c55187ea637029a4e6111154088d460f030134"
+DOT_Z_PLAIN = b"SEPTENTRIO Hatanaka RINEX .d.Z payload \x00\x01\x02 line\n" * 40
 
 PAYLOAD = (
     b"SEPTENTRIO PolaRx5 SBF block stream \x00\x01\x02 ... 15s_24hr raw payload" * 500
@@ -100,11 +118,42 @@ class TestCorruptInput:
             content_sha256(f)
 
 
-class TestUnsupportedFormats:
-    def test_dot_z_raises_not_implemented(self, tmp_path):
-        # .Z (Unix compress) magic 0x1f 0x9d — deferred to the RINEX track.
+class TestDotZCompress:
+    """.Z (Unix LZW compress) — decoded via the gzip binary, hashed decompressed."""
+
+    def test_dot_z_hashes_decompressed_content(self, tmp_path):
+        # A real .Z file hashes to the sha256 of its *decompressed* content —
+        # same primitive as every other format, just a different reader.
         f = tmp_path / "ELDC0410.26d.Z"
-        f.write_bytes(b"\x1f\x9d" + b"\x00" * 32)
+        f.write_bytes(base64.b64decode(DOT_Z_B64))
+        assert content_sha256(f) == DOT_Z_PLAIN_SHA
+
+    def test_dot_z_equals_plain_twin(self, tmp_path):
+        # The compression-invariant guarantee extends to .Z: a .d.Z RINEX hashes
+        # identically to its decompressed .d twin.
+        z = tmp_path / "x.d.Z"
+        z.write_bytes(base64.b64decode(DOT_Z_B64))
+        plain = _write(tmp_path / "x.d", DOT_Z_PLAIN)
+        assert content_sha256(z) == content_sha256(plain)
+
+    def test_truncated_dot_z_never_passes_as_intact(self, tmp_path):
+        # LZW .Z has no CRC/length trailer, so gzip may decode a truncated .Z to
+        # partial output with a zero exit. Either way a truncated file must NOT
+        # yield the intact hash: it raises (gzip hard error) or it hashes
+        # differently — the mismatch is what the verify pass catches.
+        truncated = tmp_path / "trunc.d.Z"
+        truncated.write_bytes(base64.b64decode(DOT_Z_B64)[:120])
+        try:
+            assert content_sha256(truncated) != DOT_Z_PLAIN_SHA
+        except CorruptArchiveFileError:
+            pass  # acceptable: gzip flagged it outright
+
+
+class TestUnsupportedFormats:
+    def test_zstd_raises_not_implemented(self, tmp_path):
+        # zstd magic 0x28 0xb5 0x2f 0xfd — not used in the GNSS archive.
+        f = tmp_path / "weird.zst"
+        f.write_bytes(b"\x28\xb5\x2f\xfd" + b"\x00" * 32)
         with pytest.raises(NotImplementedError):
             content_sha256(f)
 

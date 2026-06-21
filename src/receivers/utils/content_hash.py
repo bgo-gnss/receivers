@@ -25,14 +25,18 @@ import gzip
 import hashlib
 import lzma
 import os
+import subprocess
 from pathlib import Path
 from typing import IO, Union
 
 from .compression_detector import detect_compression
 
 FileRef = Union[str, "os.PathLike[str]"]
-# A readable binary stream: a plain file or a gzip/bz2/lzma decompressing wrapper.
-BinaryStream = Union[IO[bytes], gzip.GzipFile, bz2.BZ2File, lzma.LZMAFile]
+# A readable binary stream: a plain file, a gzip/bz2/lzma decompressing wrapper,
+# or the `gzip -dc` subprocess stream used for .Z (Unix compress).
+BinaryStream = Union[
+    IO[bytes], gzip.GzipFile, bz2.BZ2File, lzma.LZMAFile, "_GzipDcStream"
+]
 
 _CHUNK = 1 << 20  # 1 MiB streaming reads — never load a whole file into memory
 
@@ -44,6 +48,58 @@ class CorruptArchiveFileError(Exception):
     finding. The hasher never returns a hash of partially-decompressed data —
     a corrupt file must not be able to look healthy.
     """
+
+
+class _GzipDcStream:
+    """Readable stream of ``gzip -dc PATH`` stdout, checking a clean exit on close.
+
+    ``.Z`` (Unix LZW *compress*, magic ``1f 9d``) has no Python stdlib reader —
+    ``gzip``/``bz2``/``lzma`` cannot decode it. But the gzip(1) binary does, so
+    we stream its stdout through the *same* chunked hasher every other format
+    uses; the hash is still taken over the decompressed bytes, so a ``.d.Z``
+    Hatanaka RINEX hashes identically to its decompressed ``.d`` twin.
+
+    On exit a non-zero returncode (gzip hard error: not-in-format, I/O failure)
+    becomes :class:`CorruptArchiveFileError`. NOTE: LZW ``.Z`` has no CRC/length
+    trailer — unlike gzip — so a *truncated* ``.Z`` can decode to partial output
+    with a zero exit and is NOT caught here. For ``.Z`` the integrity guarantee
+    comes from content-hash COMPARISON (the verify pass against the stored
+    ``content_sha256``), not from the decompressor.
+    """
+
+    def __init__(self, path: FileRef) -> None:
+        self._path = os.fspath(path)
+        self._proc = subprocess.Popen(
+            ["gzip", "-dc", self._path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    def read(self, size: int = -1) -> bytes:
+        assert self._proc.stdout is not None
+        return self._proc.stdout.read(size)
+
+    def __enter__(self) -> _GzipDcStream:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        exc_type = exc[0] if exc else None
+        # The hasher reads stdout to EOF before we get here, so gzip has finished
+        # producing data; draining stderr (small — error text only) won't deadlock.
+        if self._proc.stdout is not None:
+            self._proc.stdout.close()
+        stderr = b""
+        if self._proc.stderr is not None:
+            stderr = self._proc.stderr.read()
+            self._proc.stderr.close()
+        rc = self._proc.wait()
+        # Only turn a bad exit into corruption when the body didn't already fail,
+        # so we never mask the original error/traceback.
+        if exc_type is None and rc != 0:
+            detail = stderr.decode("utf-8", "replace").strip() or f"gzip exited {rc}"
+            raise CorruptArchiveFileError(
+                f"could not decompress {self._path!r}: {detail}"
+            )
 
 
 def _open_decompressed(path: FileRef, fmt: str | None) -> BinaryStream:
@@ -62,13 +118,9 @@ def _open_decompressed(path: FileRef, fmt: str | None) -> BinaryStream:
     if fmt == "xz":
         return lzma.open(path, "rb")
     if fmt == "compress":
-        # .Z (Unix compress / LZW) — no stdlib reader. Not present in the raw
-        # tier; appears as Hatanaka .d.Z in RINEX. Implement on the
-        # RINEX/dissemination track (#34), with a tested gzip -dc fallback.
-        raise NotImplementedError(
-            ".Z (Unix compress) decompression is not supported yet — "
-            "RINEX/dissemination track, see todo #34"
-        )
+        # .Z (Unix compress / LZW) — no stdlib reader; delegate to the gzip(1)
+        # binary, which decodes .Z. Appears as Hatanaka .d.Z in the RINEX tier.
+        return _GzipDcStream(path)
     raise NotImplementedError(
         f"compression format {fmt!r} is not used in the GNSS archive"
     )
@@ -78,10 +130,11 @@ def content_sha256(path: FileRef, *, chunk_size: int = _CHUNK) -> str:
     """Return the SHA-256 hex digest of ``path``'s decompressed content.
 
     Compression is detected from the file's magic bytes (so a gzip stream named
-    ``.T02`` still hashes as its decompressed content). Streams in ``chunk_size``
-    blocks. Raises :class:`CorruptArchiveFileError` if a compressed file is truncated
-    or corrupt, and :class:`NotImplementedError` for unsupported formats
-    (``.Z`` / zstd / zip).
+    ``.T02`` still hashes as its decompressed content). gzip / bzip2 / xz / .Z
+    (Unix compress, via the gzip binary) are all decoded; the hash is over the
+    decompressed bytes for every format. Streams in ``chunk_size`` blocks. Raises
+    :class:`CorruptArchiveFileError` if a compressed file is truncated or corrupt,
+    and :class:`NotImplementedError` for unsupported formats (zstd / zip).
     """
     detected = detect_compression(Path(path))
     fmt = detected[0] if detected else None

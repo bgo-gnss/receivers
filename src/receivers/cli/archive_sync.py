@@ -171,6 +171,99 @@ def _json_default(obj):
     return str(obj)
 
 
+def cmd_archive_verify(args: argparse.Namespace) -> int:
+    """Verify archived files against the catalog (local↔archive + read-back)."""
+    from ..archive import load_sync_config, verify_archive_catalog
+
+    config_path = Path(args.config) if args.config else None
+    targets = load_sync_config(config_path)
+    target = None
+    if targets:
+        target = next(
+            (t for t in targets if t.name == args.storage_location), targets[0]
+        )
+    # dest_prefix lets us map the stored archive path onto the local read mount.
+    dest_prefix = args.dest_prefix or (target.dest if target else None)
+
+    conn = _get_conn(args.host, required=True)
+    try:
+        stats = verify_archive_catalog(
+            conn,
+            storage_location=args.storage_location,
+            read_root=args.read_root,
+            dest_prefix=dest_prefix,
+            limit=args.limit,
+            reverify_after_days=args.reverify_after_days,
+        )
+    finally:
+        if conn is not None:
+            conn.close()
+
+    if args.json:
+        print(json.dumps(stats.to_dict(), indent=2))
+    else:
+        icon = "❌" if (stats.mismatched or stats.local_divergent) else "✅"
+        mode = "read-back" if stats.read_back else "cross-check only"
+        print(f"{icon} archive verify ({mode}): {stats.checked} checked")
+        print(
+            f"   verified={stats.verified}  CORRUPT={stats.mismatched}  "
+            f"local-divergent={stats.local_divergent}  missing={stats.missing}"
+        )
+        for f in stats.findings[:50]:
+            print(f"   ⚠ {f}")
+    # Non-zero exit on any real integrity problem.
+    return 1 if (stats.mismatched or stats.local_divergent) else 0
+
+
+def create_archive_verify_parser(subparsers) -> argparse.ArgumentParser:
+    parser = subparsers.add_parser(
+        "archive-verify",
+        help="Verify archived files against the catalog (re-hash + local compare)",
+        description=(
+            "Re-hash files on the long-term archive and compare to the stored "
+            "content_sha256 (read-back, needs --read-root = the archive mount), and "
+            "cross-check local file_tracking hashes vs the catalog. Detects "
+            "archive bit-rot / partial transfers and local↔archive divergence."
+        ),
+    )
+    parser.add_argument(
+        "--storage-location",
+        default="imo_archive",
+        help="archive_catalog.storage_location to verify (default: imo_archive); "
+        "also selects the sync target whose dest maps to --read-root",
+    )
+    parser.add_argument(
+        "--read-root",
+        help="Local mount of the archive for read-back re-hashing "
+        "(rek-d01: /mnt/rawgpsdata). Omit for the DB-only cross-check.",
+    )
+    parser.add_argument(
+        "--dest-prefix",
+        help="Archive dest prefix stored in file_path (default: target.dest from "
+        "sync.yaml), swapped for --read-root to locate each file",
+    )
+    parser.add_argument(
+        "--limit", type=int, default=500, help="Max catalog rows per run (default: 500)"
+    )
+    parser.add_argument(
+        "--reverify-after-days",
+        type=int,
+        help="Re-verify rows whose last_verified_at is older than N days "
+        "(default: only never-verified rows)",
+    )
+    parser.add_argument(
+        "--config", help="Path to sync.yaml (default: GPS_CONFIG_PATH/sync.yaml)"
+    )
+    parser.add_argument(
+        "--host", help="gps_health host override (default: from config)"
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON results"
+    )
+    parser.set_defaults(func=cmd_archive_verify)
+    return parser
+
+
 def create_archive_sync_parser(subparsers) -> argparse.ArgumentParser:
     parser = subparsers.add_parser(
         "archive-sync",
