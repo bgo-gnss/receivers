@@ -605,10 +605,14 @@ class TestPushExplicit:
         )
         eng = ArchiveSync(target, conn=db_conn)
 
-        pushed, errors = eng.push_explicit([str(src / raw_rel), str(src / rnx_rel)])
+        pushed, errors, digests = eng.push_explicit(
+            [str(src / raw_rel), str(src / rnx_rel)]
+        )
         assert errors == []
         assert pushed == 2
         assert (dst / raw_rel).is_file() and (dst / rnx_rel).is_file()
+        assert set(digests) == {raw_rel, rnx_rel}
+        assert digests[raw_rel] == hashlib.sha256(raw_payload).hexdigest()
 
         with db_conn.cursor() as cur:
             cur.execute(
@@ -620,7 +624,9 @@ class TestPushExplicit:
         assert rows["rinex"] == hashlib.sha256(rnx_payload).hexdigest()
 
         # re-push is a clean no-op (raw --ignore-existing, rinex --update unchanged)
-        pushed2, errors2 = eng.push_explicit([str(src / raw_rel), str(src / rnx_rel)])
+        pushed2, errors2, _ = eng.push_explicit(
+            [str(src / raw_rel), str(src / rnx_rel)]
+        )
         assert errors2 == []
         assert pushed2 == 0
 
@@ -644,7 +650,7 @@ class TestPushExplicit:
 
         target = _target(src, name="test_target", host="", dest=str(dst))
         eng = ArchiveSync(target, conn=db_conn)
-        pushed, errors = eng.push_explicit(
+        pushed, errors, _ = eng.push_explicit(
             [str(src / excluded), str(src / offscope), str(src / good)]
         )
         assert errors == []
@@ -660,8 +666,99 @@ class TestPushExplicit:
         target = _target(src, name="test_target", host="", dest=str(dst))
         eng = ArchiveSync(target, conn=db_conn)
         # a path that doesn't exist + a path outside the archive tree → no-op, no raise
-        pushed, errors = eng.push_explicit(
+        pushed, errors, digests = eng.push_explicit(
             [str(src / "nope/missing.gz"), "/etc/hostname"]
         )
         assert pushed == 0
         assert errors == []
+        assert digests == {}
+
+
+class TestVerifyPushed:
+    """verify_pushed() — immediate per-push read-back via the archive mount.
+
+    Local dest doubles as the 'archive mount' (read_root=dst): an intact copy
+    stamps last_verified_at; a tampered archive copy is flagged ARCHIVE CORRUPT;
+    an absent file is DEFERRED (never a false corruption); out-of-scope sessions
+    are skipped.
+    """
+
+    def _push(self, tmp_path, db_conn, rel, payload):
+        import shutil
+
+        if not shutil.which("rsync"):
+            pytest.skip("rsync not available")
+        src = tmp_path / "src"
+        dst = tmp_path / "dst"
+        dst.mkdir(exist_ok=True)
+        f = src / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(payload)
+        target = _target(
+            src,
+            name="test_target",
+            host="",
+            dest=str(dst),
+            file_categories=("raw", "rinex"),
+        )
+        eng = ArchiveSync(target, conn=db_conn)
+        pushed, errors, digests = eng.push_explicit([str(f)])
+        assert pushed == 1 and errors == []
+        return eng, dst
+
+    def test_intact_copy_is_verified_and_stamped(self, tmp_path, db_conn):
+        rel = "2026/jun/AKUR/15s_24hr/raw/AKUR202606220000a.T02.gz"
+        eng, dst = self._push(tmp_path, db_conn, rel, b"intact payload")
+        digests = {rel: __import__("hashlib").sha256(b"intact payload").hexdigest()}
+
+        stats = eng.verify_pushed(
+            digests, read_root=str(dst), sessions={"15s_24hr"}, retries=0
+        )
+        assert stats.checked == 1
+        assert stats.verified == 1
+        assert stats.mismatched == 0
+        with db_conn.cursor() as cur:
+            cur.execute(
+                "SELECT last_verified_at FROM archive_catalog "
+                "WHERE storage_location='test_target'"
+            )
+            assert cur.fetchone()[0] is not None
+
+    def test_tampered_archive_is_flagged_corrupt(self, tmp_path, db_conn):
+        rel = "2026/jun/AKUR/15s_24hr/raw/AKUR202606220000a.T02.gz"
+        eng, dst = self._push(tmp_path, db_conn, rel, b"good payload")
+        # corrupt the archive copy AFTER push; local digest is the good one
+        (dst / rel).write_bytes(b"different bytes entirely")
+        digests = {rel: __import__("hashlib").sha256(b"good payload").hexdigest()}
+
+        stats = eng.verify_pushed(
+            digests, read_root=str(dst), sessions={"15s_24hr"}, retries=0
+        )
+        assert stats.mismatched == 1
+        assert stats.verified == 0
+        assert any("ARCHIVE CORRUPT" in f for f in stats.findings)
+
+    def test_absent_archive_file_is_deferred(self, tmp_path, db_conn):
+        rel = "2026/jun/AKUR/15s_24hr/raw/AKUR202606220000a.T02.gz"
+        eng, dst = self._push(tmp_path, db_conn, rel, b"payload")
+        (dst / rel).unlink()  # vanished from the mount (cache lag analogue)
+        digests = {rel: __import__("hashlib").sha256(b"payload").hexdigest()}
+
+        stats = eng.verify_pushed(
+            digests, read_root=str(dst), sessions={"15s_24hr"}, retries=0
+        )
+        assert stats.deferred == 1
+        assert stats.mismatched == 0
+        assert stats.verified == 0
+
+    def test_out_of_scope_session_skipped(self, tmp_path, db_conn):
+        rel = "2026/jun/AKUR/15s_24hr/raw/AKUR202606220000a.T02.gz"
+        eng, dst = self._push(tmp_path, db_conn, rel, b"payload")
+        digests = {rel: __import__("hashlib").sha256(b"payload").hexdigest()}
+
+        # only 1Hz_1hr in scope → the 15s file is not checked
+        stats = eng.verify_pushed(
+            digests, read_root=str(dst), sessions={"1Hz_1hr"}, retries=0
+        )
+        assert stats.checked == 0
+        assert stats.verified == 0

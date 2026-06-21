@@ -225,6 +225,13 @@ def get_default_config() -> Dict[str, Any]:
             "storage_location": "imo_archive",
             "limit": 500,
             "reverify_after_days": None,
+            # Immediate per-push read-back (write-through hooks): re-hash the
+            # archive copy right after a push for these sessions and stamp
+            # last_verified_at. Cheap, small-volume sessions only (15s_24hr is the
+            # GAMIT daily input); requires read_root. 1Hz_1hr relies on the
+            # session-prioritized COLD periodic verify instead (warm-cache
+            # immediate read-back is largely redundant with rsync's own checksum).
+            "push_verify_sessions": ["15s_24hr"],
         },
         "load_monitoring": {
             "enabled": False,
@@ -328,6 +335,7 @@ def merge_with_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
         "gap_detection",
         "archive_reconciler",
         "integrity_checker",
+        "archive_verify",
         "load_monitoring",
         "bootstrap",
     ]:
@@ -552,6 +560,11 @@ archive_verify:
   storage_location: imo_archive
   limit: 500
   reverify_after_days: null
+  # Immediate per-push read-back for these (small-volume) sessions: re-hash the
+  # archive copy right after a write-through push and stamp last_verified_at.
+  # Requires read_root. 1Hz_1hr deliberately omitted (high volume; the cold
+  # periodic verify prioritizes it instead).
+  push_verify_sessions: ["15s_24hr"]
 
 stations: {}
 

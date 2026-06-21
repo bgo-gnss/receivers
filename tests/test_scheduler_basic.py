@@ -384,6 +384,30 @@ class TestSchedulerJobScheduling:
 
 @pytest.mark.unit
 @pytest.mark.scheduler
+def test_merge_fills_push_verify_sessions():
+    """A deployed archive_verify block missing push_verify_sessions gets it filled.
+
+    Regression guard: archive_verify must be in merge_with_defaults' section list,
+    else a deployed scheduler.yaml (which has the block but not the new key) takes
+    the block wholesale → push_verify_sessions absent → immediate 15s read-back
+    silently disabled in production.
+    """
+    from receivers.scheduling.config_loader import merge_with_defaults
+
+    deployed = {
+        "archive_verify": {
+            "enabled": True,
+            "read_root": "/mnt/rawgpsdata",
+            "limit": 5000,
+            "reverify_after_days": None,
+        }
+    }
+    av = merge_with_defaults(deployed)["archive_verify"]
+    assert av["push_verify_sessions"] == ["15s_24hr"]  # default-filled
+    assert av["read_root"] == "/mnt/rawgpsdata"  # deployed value preserved
+    assert av["limit"] == 5000
+
+
 def test_create_scheduler_config(tmp_path):
     """Test creating scheduler configuration file (YAML format)."""
     import yaml

@@ -428,6 +428,32 @@ def _get_push_target():
     return _push_target
 
 
+# Immediate per-push read-back config: (read_root, frozenset(sessions)) or None.
+# Loaded once from scheduler.yaml archive_verify (read_root + push_verify_sessions);
+# None = no immediate read-back (read_root unset or no sessions). Process-lifetime
+# cache, consistent with _get_push_target (restart picks up config changes).
+_push_verify = None
+_push_verify_loaded = False
+
+
+def _get_push_verify():
+    """Return (read_root, sessions) for immediate per-push read-back, or None."""
+    global _push_verify, _push_verify_loaded
+    if _push_verify_loaded:
+        return _push_verify
+    _push_verify_loaded = True
+    try:
+        from .config_loader import load_scheduler_config
+
+        cfg = load_scheduler_config().get("archive_verify", {})
+        read_root = cfg.get("read_root")
+        sessions = frozenset(cfg.get("push_verify_sessions") or [])
+        _push_verify = (read_root, sessions) if read_root and sessions else None
+    except Exception:
+        _push_verify = None
+    return _push_verify
+
+
 def _push_to_storage(local_paths, logger) -> None:
     """Best-effort write-through of just-produced files to the long-term archive.
 
@@ -449,11 +475,34 @@ def _push_to_storage(local_paths, logger) -> None:
         if not _push_sem.acquire(timeout=120):
             logger.warning("push-storage skipped (push slots busy)")
             return
+        verify_cfg = _get_push_verify()
         try:
             with DatabaseConnectionFactory.connection() as conn:
-                pushed, errors = ArchiveSync(target, conn=conn).push_explicit(
-                    list(local_paths)
-                )
+                sync = ArchiveSync(target, conn=conn)
+                pushed, errors, digests = sync.push_explicit(list(local_paths))
+                # Immediate read-back for the critical small-volume sessions
+                # (15s_24hr). Runs while holding the push slot but does NOT sleep
+                # (verify_pushed retries=0): only an NFS read + DB update, so a
+                # lagging file defers to the cold pass rather than throttling the
+                # midnight burst. Isolated: a verify hiccup must not mislabel the
+                # already-committed push as skipped.
+                if verify_cfg and digests:
+                    read_root, vsessions = verify_cfg
+                    try:
+                        vstats = sync.verify_pushed(
+                            digests, read_root=read_root, sessions=vsessions
+                        )
+                        if vstats.verified or vstats.deferred:
+                            logger.info(
+                                f"🔁 push-verify: {vstats.verified} confirmed, "
+                                f"{vstats.deferred} deferred → cold pass"
+                            )
+                        for f in vstats.findings:
+                            logger.error(f"push-verify: {f}")
+                    except Exception as ve:
+                        logger.warning(
+                            f"push-verify skipped ({type(ve).__name__}: {ve})"
+                        )
         finally:
             _push_sem.release()
         if pushed:
