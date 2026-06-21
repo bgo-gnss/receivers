@@ -567,3 +567,101 @@ targets:
         )
         # all inactive -> returns before opening any DB connection
         run_archive_sync_job(config_path=str(cfg))
+
+
+class TestPushExplicit:
+    """push_explicit() — the low-latency write-through used by the download hooks.
+
+    Real rsync into a local dest (host-less target, no SSH): assert files land,
+    catalog rows are written for raw+rinex, scope/exclude filtering holds, and a
+    re-push is an idempotent no-op (download-retry safe).
+    """
+
+    def test_pushes_raw_and_rinex_and_catalogs(self, tmp_path, db_conn):
+        import hashlib
+        import shutil
+
+        if not shutil.which("rsync"):
+            pytest.skip("rsync not available")
+
+        src = tmp_path / "src"
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        raw_rel = "2026/jun/AKUR/15s_24hr/raw/AKUR202606220000a.T02.gz"
+        rnx_rel = "2026/jun/AKUR/15s_24hr/rinex/AKUR1730.26d.Z"
+        raw_payload = b"raw sbf payload"
+        rnx_payload = b"hatanaka rinex payload"
+        for rel, data in ((raw_rel, raw_payload), (rnx_rel, rnx_payload)):
+            f = src / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(data)
+
+        target = _target(
+            src,
+            name="test_target",
+            host="",
+            dest=str(dst),
+            file_categories=("raw", "rinex"),
+        )
+        eng = ArchiveSync(target, conn=db_conn)
+
+        pushed, errors = eng.push_explicit([str(src / raw_rel), str(src / rnx_rel)])
+        assert errors == []
+        assert pushed == 2
+        assert (dst / raw_rel).is_file() and (dst / rnx_rel).is_file()
+
+        with db_conn.cursor() as cur:
+            cur.execute(
+                "SELECT file_category, content_sha256 FROM archive_catalog "
+                "WHERE storage_location='test_target' ORDER BY file_category"
+            )
+            rows = dict(cur.fetchall())
+        assert rows["raw"] == hashlib.sha256(raw_payload).hexdigest()
+        assert rows["rinex"] == hashlib.sha256(rnx_payload).hexdigest()
+
+        # re-push is a clean no-op (raw --ignore-existing, rinex --update unchanged)
+        pushed2, errors2 = eng.push_explicit([str(src / raw_rel), str(src / rnx_rel)])
+        assert errors2 == []
+        assert pushed2 == 0
+
+    def test_filters_scope_and_excludes(self, tmp_path, db_conn):
+        import shutil
+
+        if not shutil.which("rsync"):
+            pytest.skip("rsync not available")
+
+        src = tmp_path / "src"
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        # excluded alias station, an out-of-scope session, and one good file
+        excluded = "2026/jun/DYNA/15s_24hr/raw/DYNA202606220000a.T02.gz"
+        offscope = "2026/jun/AKUR/30s_1hr/raw/AKUR202606220000a.T02.gz"
+        good = "2026/jun/AKUR/15s_24hr/raw/AKUR202606220000a.T02.gz"
+        for rel in (excluded, offscope, good):
+            f = src / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(b"x")
+
+        target = _target(src, name="test_target", host="", dest=str(dst))
+        eng = ArchiveSync(target, conn=db_conn)
+        pushed, errors = eng.push_explicit(
+            [str(src / excluded), str(src / offscope), str(src / good)]
+        )
+        assert errors == []
+        assert pushed == 1  # only the good one
+        assert (dst / good).is_file()
+        assert not (dst / excluded).exists()
+        assert not (dst / offscope).exists()
+
+    def test_nonexistent_and_nonarchive_paths_skipped(self, tmp_path, db_conn):
+        src = tmp_path / "src"
+        dst = tmp_path / "dst"
+        dst.mkdir()
+        target = _target(src, name="test_target", host="", dest=str(dst))
+        eng = ArchiveSync(target, conn=db_conn)
+        # a path that doesn't exist + a path outside the archive tree → no-op, no raise
+        pushed, errors = eng.push_explicit(
+            [str(src / "nope/missing.gz"), "/etc/hostname"]
+        )
+        assert pushed == 0
+        assert errors == []

@@ -395,6 +395,61 @@ def _is_retryable_download(result: Dict[str, Any]) -> bool:
     return any(p in error_msg for p in retryable_patterns)
 
 
+# Push-on-download (write-through to the long-term archive). Cached active sync
+# target, resolved once per process — the scheduler restarts to pick up config
+# changes anyway, so a process-lifetime cache is consistent with everything else.
+_push_target = None
+_push_target_loaded = False
+
+
+def _get_push_target():
+    """Return the active sync target (imo_archive) for push-on-download, or None.
+
+    None = no active archive target → push-on-download is off (the cutover gate).
+    Cached for the process lifetime; failures resolve to None (push disabled).
+    """
+    global _push_target, _push_target_loaded
+    if _push_target_loaded:
+        return _push_target
+    _push_target_loaded = True
+    try:
+        from ..archive import load_sync_config
+
+        _push_target = next((t for t in load_sync_config() if t.active), None)
+    except Exception:
+        _push_target = None
+    return _push_target
+
+
+def _push_to_storage(local_paths, logger) -> None:
+    """Best-effort write-through of just-produced files to the long-term archive.
+
+    Mirrors freshly downloaded/converted files to rawdata immediately (low latency
+    for downstream consumers), then the ``:45`` archive-sync sweep reconciles any
+    miss. Gated on an active archive target. Hard-isolated: NOTHING here may
+    propagate into the download worker — every failure is swallowed and logged.
+    """
+    if not local_paths:
+        return
+    target = _get_push_target()
+    if target is None:
+        return  # no active archive target — cutover not active, push disabled
+    try:
+        from ..archive import ArchiveSync
+        from ..health.database_factory import DatabaseConnectionFactory
+
+        with DatabaseConnectionFactory.connection() as conn:
+            pushed, errors = ArchiveSync(target, conn=conn).push_explicit(
+                list(local_paths)
+            )
+        if pushed:
+            logger.info(f"⤴️  push-storage: {pushed} file(s) → {target.name}")
+        for err in errors:
+            logger.warning(f"push-storage: {err}")
+    except Exception as e:  # never let the push harm the download
+        logger.warning(f"push-storage skipped ({type(e).__name__}: {e})")
+
+
 # Module-level download function for APScheduler serialization
 def _download_station_data_job(
     station_id: str,
@@ -729,6 +784,13 @@ def _download_station_data_job(
             ),
         )
 
+        # Push-on-download: mirror just-downloaded raw to the long-term archive
+        # immediately (low-latency write-through; the :45 sweep reconciles misses).
+        # Best-effort — cannot harm the download. RINEX is pushed separately when
+        # its async conversion completes (below).
+        if status in success_statuses and downloaded_files:
+            _push_to_storage(downloaded_files, logger)
+
         # Run RINEX conversion if enabled and download was successful
         if run_rinex and status in success_statuses:
             raw_files = result.get("downloaded_files", [])
@@ -763,6 +825,14 @@ def _download_station_data_job(
                                     pj.mark_stage_failed(PipelineStage.RINEX, str(exc))
                                 else:
                                     pj.mark_stage_complete(PipelineStage.RINEX)
+                                    # Push-on-download for the RINEX product, now
+                                    # that conversion finished (this callback runs
+                                    # in the main process). Best-effort.
+                                    try:
+                                        out = (f.result() or {}).get("output_files", [])
+                                        _push_to_storage(out, logger)
+                                    except Exception:
+                                        pass
                                 ps.save_job(pj)
                             except Exception:
                                 pass
