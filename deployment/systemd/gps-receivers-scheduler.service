@@ -54,11 +54,16 @@ StandardError=journal
 SyslogIdentifier=gps-scheduler
 
 # Security
+# NOTE: filesystem-sandbox directives (PrivateTmp, ProtectSystem, ProtectHome,
+# ReadWritePaths) are intentionally NOT used here. For a `systemctl --user`
+# service they force a USER NAMESPACE in which root-owned files appear as
+# `nobody` (overflow uid 65534). OpenSSH then rejects /etc/ssh/ssh_config.d/*.conf
+# with "Bad owner or permissions" (its st_uid != 0 check), so rsync-over-ssh to
+# the long-term archive — push-on-download AND the :45 archive-sync — fails with
+# rc=255. The scheduler already runs unprivileged as gpsops; NoNewPrivileges and
+# the resource limits above are kept (they need no mount namespace). See the
+# 2026-06-21 archive-cutover incident.
 NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=false
-ReadWritePaths=/home/gpsops/.cache/gps_receivers /mnt/data/gpsdata /tmp
 
 # Watchdog — DISABLED.
 # WatchdogSec only works when Type=notify AND the application sends
