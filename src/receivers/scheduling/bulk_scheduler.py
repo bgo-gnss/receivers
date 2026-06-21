@@ -400,6 +400,13 @@ def _is_retryable_download(result: Dict[str, Any]) -> bool:
 # changes anyway, so a process-lifetime cache is consistent with everything else.
 _push_target = None
 _push_target_loaded = False
+# Cap concurrent pushes so parallel download workers don't trip rawdata's sshd
+# MaxStartups (manifests as "connection reset/closed"). Download jobs run as
+# threads in the main scheduler process (the RINEX ProcessPool is separate) and
+# the rinex-completion callback also fires here, so one process-level semaphore
+# bounds both raw and rinex pushes globally.
+_PUSH_CONCURRENCY = 4
+_push_sem = _threading.BoundedSemaphore(_PUSH_CONCURRENCY)
 
 
 def _get_push_target():
@@ -438,10 +445,17 @@ def _push_to_storage(local_paths, logger) -> None:
         from ..archive import ArchiveSync
         from ..health.database_factory import DatabaseConnectionFactory
 
-        with DatabaseConnectionFactory.connection() as conn:
-            pushed, errors = ArchiveSync(target, conn=conn).push_explicit(
-                list(local_paths)
-            )
+        # Bound concurrency (sshd MaxStartups) — never block a worker forever.
+        if not _push_sem.acquire(timeout=120):
+            logger.warning("push-storage skipped (push slots busy)")
+            return
+        try:
+            with DatabaseConnectionFactory.connection() as conn:
+                pushed, errors = ArchiveSync(target, conn=conn).push_explicit(
+                    list(local_paths)
+                )
+        finally:
+            _push_sem.release()
         if pushed:
             logger.info(f"⤴️  push-storage: {pushed} file(s) → {target.name}")
         for err in errors:
