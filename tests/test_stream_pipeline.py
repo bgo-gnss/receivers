@@ -18,7 +18,7 @@ class TestPathHelpers:
         # Lowercase d = fleet/SBF canonical, so the daily SBF download supersedes
         # the stream downsample in place (not a .26D.Z vs .26d.Z collision).
         p = daily_15s_target("/data", "GONH", DAY)
-        assert p == Path("/data/2026/jun/GONH/15s_24hr/rinex/GONH1620.26d.Z")
+        assert p == Path("/data/2026/jun/GONH/15s_24hr/rinex/GONH1620.26D.Z")
 
     def test_hourly_sources_globs(self, tmp_path):
         rinex = tmp_path / "2026/jun/GONH/1Hz_1hr/rinex"

@@ -149,15 +149,15 @@ VALUES
 
 -- RINEX observation files (Hatanaka compressed, RINEX 3.04, short naming)
     ('polarx5_15s_24hr_rinex', '15s_24hr', 'rinex', 'polarx5', '1D',
-     '3.04', 'short', true, 'Z', '.d.Z',
+     '3.04', 'short', true, 'Z', '.D.Z',
      '%Y/#b/{station}/15s_24hr/rinex/',
-     '{station}#Rin2d.Z',
+     '{station}#Rin2D.Z',
      'PolaRX5 daily 15s RINEX 3 Hatanaka compressed (short naming)'),
 
     ('polarx5_1hz_1hr_rinex', '1Hz_1hr', 'rinex', 'polarx5', '1H',
-     '3.04', 'short', true, 'Z', '.d.Z',
+     '3.04', 'short', true, 'Z', '.D.Z',
      '%Y/#b/{station}/1Hz_1hr/rinex/',
-     '{station}#Rin2d.Z',
+     '{station}#Rin2D.Z',
      'PolaRX5 hourly 1Hz RINEX 3 Hatanaka compressed (short naming)')
 ON CONFLICT (format_id) DO NOTHING;
 

@@ -35,16 +35,16 @@ def _month(dt: date) -> str:
 def daily_15s_target(archive_base: Path | str, station_id: str, day: date) -> Path:
     """Archive path for a station's decimated daily (15s) RINEX file.
 
-    Daily RINEX uses hour code ``0`` and the fleet-canonical LOWERCASE Hatanaka
-    extension: ``<STA><DOY>0.<yy>d.Z``. Lowercase matters: the authoritative
-    SBF-download 15s RINEX (sbf2rin) uses this exact name, so the stream's
-    real-time downsample writes the same path and the daily SBF download
-    supersedes it in place (rather than the two coexisting as ``.26D.Z`` vs
-    ``.26d.Z`` — which is what happened before this fix).
+    Daily RINEX uses hour code ``0`` and the fleet-canonical UPPERCASE Hatanaka
+    extension: ``<STA><DOY>0.<yy>D.Z``. The case must match the authoritative
+    SBF-download 15s RINEX (sbf2rin → ``converter_base``, which writes ``.YYD.Z``
+    to match IMO's historical archive convention), so the stream's real-time
+    downsample writes the same path and the daily SBF download supersedes it in
+    place (rather than the two coexisting as ``.26D.Z`` vs ``.26d.Z``).
     """
     doy = day.timetuple().tm_yday
     yy = day.year % 100
-    name = f"{station_id}{doy:03d}0.{yy:02d}d.Z"
+    name = f"{station_id}{doy:03d}0.{yy:02d}D.Z"
     return (
         Path(archive_base)
         / f"{day.year}"

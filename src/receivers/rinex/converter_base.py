@@ -639,26 +639,32 @@ class RawToRinexConverter(ABC):
             self.logger.warning("rnx2crx not found, skipping Hatanaka compression")
             return rinex_file
 
-        # Generate output filename (.YYo -> .YYd)
-        hatanaka_suffix = suffix[:-1] + "d"  # e.g., .26o -> .26d
-        hatanaka_file = rinex_file.with_suffix(hatanaka_suffix)
+        # rnx2crx writes lowercase .YYd (its own convention). IMO's long-term
+        # archive on rawdata — and the okada getimorinex.py / GAMIT pipeline that
+        # reads it — expects UPPERCASE .YYD, so rename rnx2crx's output to match.
+        # Lowercase .d.Z broke the okada fetch at the old-rek -> rek_new cutover
+        # (DOY 172, 2026): getimorinex.py requests .D.Z, found no file, and left a
+        # 0-byte download. Keep the whole archive on the historical .D.Z convention.
+        rnx2crx_out = rinex_file.with_suffix(suffix[:-1] + "d")  # what rnx2crx writes
+        # uppercase .YYD = IMO archive convention
+        hatanaka_file = rinex_file.with_suffix(suffix[:-1] + "D")
 
         try:
-            # Run rnx2crx: reads input file, creates output file in same directory
-            # Output filename is automatically .YYd (e.g., .26o -> .26d)
+            # Run rnx2crx: reads input file, creates lowercase .YYd alongside it.
             cmd = [str(rnx2crx), str(rinex_file)]
             self._run_subprocess(cmd, timeout=60)
 
             # rnx2crx creates output file alongside input with changed extension
-            if hatanaka_file.exists() and hatanaka_file.stat().st_size > 0:
-                rinex_file.unlink()  # Remove original .26o file
+            if rnx2crx_out.exists() and rnx2crx_out.stat().st_size > 0:
+                rnx2crx_out.rename(hatanaka_file)  # .YYd -> .YYD (uppercase)
+                rinex_file.unlink()  # Remove original .YYo file
                 self.logger.debug(
                     f"Hatanaka compressed: {rinex_file.name} -> {hatanaka_file.name}"
                 )
                 return hatanaka_file
             else:
                 self.logger.warning(
-                    f"rnx2crx did not create expected output: {hatanaka_file}"
+                    f"rnx2crx did not create expected output: {rnx2crx_out}"
                 )
                 return rinex_file
 
