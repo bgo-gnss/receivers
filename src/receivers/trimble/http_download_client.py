@@ -166,23 +166,41 @@ class NetR9HTTPDownloader:
         # not be promoted to "operator-known-bad" state.
         self.file_outcomes: Dict[str, str] = {}  # filename -> outcome
 
-        # Base path handling for NetR5 CACHEDIR prefix (hybrid approach)
-        # Check if explicit base_path is configured in stations.cfg
+        # CACHEDIR download-prefix handling for NetR5 (hybrid approach). This is
+        # the on-receiver /CACHEDIR<n>/download prefix, NOT the storage root
+        # (/Internal/ vs /External/) — that is `base_path`, consumed by the NetR9
+        # path builder. Keyed as `cachedir_prefix` so the two never collide.
+        # Normally auto-discovered; an explicit value is the rare escape hatch.
         receiver_config = station_config.get("receiver", {})
-        explicit_base_path = receiver_config.get("base_path")
+        explicit_cachedir_prefix = self._explicit_cachedir_prefix(receiver_config)
 
-        if explicit_base_path:
+        if explicit_cachedir_prefix:
             # Explicit configuration - use directly
-            self.base_path = explicit_base_path
+            self.base_path = explicit_cachedir_prefix
             self._base_path_discovered = True
-            self.logger.info(f"Using explicit base_path from config: {self.base_path}")
+            self.logger.info(
+                f"Using explicit CACHEDIR prefix from config: {self.base_path}"
+            )
         else:
             # Auto-discovery mode - will discover on first request
             self.base_path = None
             self._base_path_discovered = False
-            self.logger.debug("Base path will be auto-discovered on first request")
+            self.logger.debug(
+                "CACHEDIR prefix will be auto-discovered on first request"
+            )
 
         self.logger.info(f"Initialized NetR9 HTTP downloader for {self.station_id}")
+
+    @staticmethod
+    def _explicit_cachedir_prefix(receiver_config: Dict[str, Any]) -> Optional[str]:
+        """Explicit NetR5 CACHEDIR download-prefix override, if configured.
+
+        Read from ``cachedir_prefix`` ONLY — never ``base_path``, which is the
+        storage root consumed by the path builder. Keeping them separate is what
+        prevents a station's ``/External/`` storage root from hijacking the
+        CACHEDIR slot. None ⇒ auto-discover the prefix on first request.
+        """
+        return receiver_config.get("cachedir_prefix") or None
 
     def _discover_base_path(self) -> str:
         """Auto-discover base path for NetR5 CACHEDIR prefix.

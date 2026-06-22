@@ -772,6 +772,17 @@ class NetRS(BaseReceiver):
             self.logger.debug(f"Error validating archived file {file_path}: {e}")
             return False
 
+    def _resolve_base_path(self) -> str:
+        """Storage root for remote paths.
+
+        A per-station ``receiver_base_path`` in stations.cfg overrides the global
+        ``[netrs] base_path`` default (``/download/``). Storage root only — the
+        NetR5 CACHEDIR download prefix is a separate ``cachedir_prefix`` key.
+        """
+        return self.station_info.get("receiver", {}).get(
+            "base_path"
+        ) or self.netrs_config.get("base_path", "/download/")
+
     def _generate_file_list(
         self, start: datetime, end: datetime, session: str, **kwargs
     ) -> Tuple[Dict[str, str], Dict[str, str]]:
@@ -813,8 +824,9 @@ class NetRS(BaseReceiver):
         files_dict = {}
         archive_files_dict = {}
 
-        # Get base path and session mapping from config
-        base_path = self.netrs_config.get("base_path", "/download/")
+        # Storage root: a per-station receiver_base_path overrides the global
+        # netrs default (see _resolve_base_path).
+        base_path = self._resolve_base_path()
 
         for file_dt in adjusted_datetime_list:
             # Per-station override in stations.cfg takes precedence over global config
