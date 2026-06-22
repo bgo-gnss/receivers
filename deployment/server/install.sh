@@ -1024,6 +1024,28 @@ systemctl daemon-reload
 systemctl enable --now gps-morning-recovery-report.timer
 ok "Morning recovery report timer installed and enabled (daily 02:00 UTC)"
 
+# Archive-sync health alert timer — runs every 15 min, pushes a passive check
+# result to Icinga (rek-d01.gps.vedur.is!Archive sync) so an archive-sync failure
+# alerts operators while away. Independent of the scheduler so it catches
+# scheduler-down too. Needs the Icinga service object defined server-side to
+# actually notify — see docs/monitoring/archive-sync-alert.md.
+#
+# Installed as a gpsops USER unit (no sudo to manage, credential-light operational
+# account) — same model as gps-receivers-scheduler. Linger (Phase 10) lets the
+# timer fire without an active gpsops session. ExecStart venv path is patched for
+# this install dir.
+ASA_SVC="$USER_UNIT_DIR/gps-archive-sync-alert.service"
+ASA_TIMER="$USER_UNIT_DIR/gps-archive-sync-alert.timer"
+sudo -u "$SERVICE_USER" mkdir -p "$USER_UNIT_DIR"
+sed -e "s|ExecStart=.*/bin/python |ExecStart=$VENV_DIR/bin/python |" \
+    "$INSTALL_DIR/deployment/systemd/gps-archive-sync-alert.service" > "$ASA_SVC"
+install -m 644 "$INSTALL_DIR/deployment/systemd/gps-archive-sync-alert.timer" "$ASA_TIMER"
+chown "$SERVICE_USER:$SERVICE_GROUP" "$ASA_SVC" "$ASA_TIMER"
+chmod 644 "$ASA_SVC" "$ASA_TIMER"
+gpsops_systemctl daemon-reload
+gpsops_systemctl enable --now gps-archive-sync-alert.timer >/dev/null
+ok "Archive-sync alert timer installed as gpsops user unit (every 15 min → Icinga)"
+
 # Logrotate
 if [[ -f "$INSTALL_DIR/deployment/logrotate.d/gps-receivers" ]]; then
     # Patch log path to match this installation

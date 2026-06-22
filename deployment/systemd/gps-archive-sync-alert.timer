@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the GPS archive-sync health alert every 15 minutes
+
+[Timer]
+# 15-min cadence (freshness threshold is 120 min, so exact phase doesn't matter).
+# OnBootSec gives a first reading shortly after boot; Persistent catches up a
+# missed run if the host was down at firing time.
+OnBootSec=3min
+OnUnitActiveSec=15min
+Persistent=true
+
+[Install]
+# User-level timers.target (this is a `systemctl --user` timer owned by gpsops).
+WantedBy=timers.target

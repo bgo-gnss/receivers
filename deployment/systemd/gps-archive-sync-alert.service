@@ -1,0 +1,36 @@
+[Unit]
+# Server-side archive-sync health alert. Runs the Nagios/Icinga check
+# (receivers.monitoring.archive_sync_check) and pushes a PASSIVE check result to
+# Icinga, the IMO's alerting backbone — so an archive-sync failure notifies
+# operators through Icinga while nobody is at a laptop. Independent of the
+# scheduler process, so it still fires (and reports) if the scheduler is down;
+# the pushed --ttl makes Icinga flag the service stale if this timer stops too.
+#
+# This is a USER-LEVEL unit, installed at
+#   ~gpsops/.config/systemd/user/gps-archive-sync-alert.{service,timer}
+# managed by gpsops with NO sudo (same model as gps-receivers-scheduler):
+#   systemctl --user enable --now gps-archive-sync-alert.timer
+#   systemctl --user list-timers gps-archive-sync-alert.timer
+#   journalctl --user-unit gps-archive-sync-alert -n 20
+# Linger (already enabled for gpsops) lets the timer fire without an active
+# session — so no User=/Group= here (a --user unit runs as gpsops by definition).
+#
+# Requires the Icinga service object `rek-d01.gps.vedur.is!Archive sync` to exist
+# on the Icinga server (with notifications + a freshness/staleness threshold) for
+# alerts to actually fire — see docs/monitoring/archive-sync-alert.md. Until then
+# the push logs "Service not found" harmlessly and the journal still records the
+# OK/WARN/CRIT line.
+Description=GPS archive-sync health alert — push passive check to Icinga
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment="LANG=en_US.UTF-8"
+Environment="GPS_CONFIG_PATH=/home/gpsops/.config/gpsconfig"
+# --ttl 3600 = 4x the 15-min cadence: Icinga marks the service stale only after
+# ~4 consecutive missed pushes, tolerating a transient blip without false alarms.
+ExecStart=/home/bgo/git/receivers/venv/bin/python -m receivers.monitoring.archive_sync_check --icinga --icinga-host rek-d01 --ttl 3600
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gps-archive-sync-alert
