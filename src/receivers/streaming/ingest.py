@@ -97,14 +97,17 @@ class BncRinexFile:
 
     @property
     def hatanaka_name(self) -> str:
-        """Canonical archive filename: short, lowercase Hatanaka ``SSSSDDDH.YYd.Z``.
+        """Canonical archive filename: short, UPPERCASE Hatanaka ``SSSSDDDH.YYD.Z``.
 
-        Matches the authoritative SBF/sbf2rin product naming so the stream and
-        download 15s products share one convention regardless of RINEX version.
+        Matches the authoritative SBF/sbf2rin product naming (converter_base
+        writes ``.YYD.Z`` to match IMO's historical archive convention) so the
+        stream and download products share one convention regardless of RINEX
+        version. The intermediate RNX2CRX output stays lowercase ``.YYd`` (see
+        ``_hatanaka_compress``); only the final compressed archive name is upper.
         """
         return (
             f"{self.station}{self.doy:03d}{_hour_letter(self.hour)}"
-            f".{self.year % 100:02d}d.Z"
+            f".{self.year % 100:02d}D.Z"
         )
 
     def archive_path(self, base: Path | str, session_type: str = "1Hz_1hr") -> Path:

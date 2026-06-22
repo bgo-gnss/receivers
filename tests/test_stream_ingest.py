@@ -35,7 +35,7 @@ class TestParse:
         assert f.datetime.month == 6 and f.datetime.day == 11  # doy162/2026 = Jun 11
         assert f.datetime.hour == 0
         # canonical archive name is short + lowercase (fleet/SBF convention)
-        assert f.hatanaka_name == "GONH162a.26d.Z"
+        assert f.hatanaka_name == "GONH162a.26D.Z"
 
     def test_hour_letters(self):
         assert parse_bnc_rinex_name("GONH162b.26O").hour == 1
@@ -47,7 +47,7 @@ class TestParse:
         assert f is not None
         assert (f.station, f.doy, f.hour, f.year) == ("GONH", 167, 7, 2026)
         # normalizes to the SAME short, lowercase archive name as RINEX 2 would
-        assert f.hatanaka_name == "GONH167h.26d.Z"
+        assert f.hatanaka_name == "GONH167h.26D.Z"
         assert f.short_obs_name == "GONH167h.26o"
 
     def test_rinex3_long_name_with_sample_field(self):
@@ -57,7 +57,7 @@ class TestParse:
     def test_archive_path(self):
         f = parse_bnc_rinex_name("GONH162a.26O")
         p = f.archive_path("/data")
-        assert p == Path("/data/2026/jun/GONH/1Hz_1hr/rinex/GONH162a.26d.Z")
+        assert p == Path("/data/2026/jun/GONH/1Hz_1hr/rinex/GONH162a.26D.Z")
 
     def test_invalid_returns_none(self):
         assert parse_bnc_rinex_name("README.txt") is None
@@ -90,7 +90,7 @@ class TestIngest:
         assert res.skipped_current == ["GONH162b.26O"]
         assert res.ingested == ["GONH162a.26O"]
         # archived to the dated path (short, lowercase)
-        dest = tmp_path / "arch/2026/jun/GONH/1Hz_1hr/rinex/GONH162a.26d.Z"
+        dest = tmp_path / "arch/2026/jun/GONH/1Hz_1hr/rinex/GONH162a.26D.Z"
         assert dest.exists()
         # tracker recorded the ingested file
         assert len(tracked) == 1
@@ -113,7 +113,7 @@ class TestIngest:
         )
         res = ing.ingest_dir("GONH", rt, now=now)
         assert res.ingested == ["GONH00ISL_S_20261670700_01H_MO.rnx"]
-        dest = tmp_path / "arch/2026/jun/GONH/1Hz_1hr/rinex/GONH167h.26d.Z"
+        dest = tmp_path / "arch/2026/jun/GONH/1Hz_1hr/rinex/GONH167h.26D.Z"
         assert dest.exists()
         assert len(tracked) == 1 and tracked[0][1] == dest
         # short-name working copies cleaned; long source left in place for BNC
@@ -133,7 +133,7 @@ class TestIngest:
         ing = StreamIngestor(archive_base=tmp_path / "arch", runner=FakeRunner())
         res = ing.ingest_dir("GONH", rt, now=now)
         assert res.ingested == ["GONH00ISL_S_20261670700_01H_MO.rnx"]  # R3 only
-        assert (tmp_path / "arch/2026/jun/GONH/1Hz_1hr/rinex/GONH167h.26d.Z").exists()
+        assert (tmp_path / "arch/2026/jun/GONH/1Hz_1hr/rinex/GONH167h.26D.Z").exists()
 
     def test_ignores_unparseable(self, tmp_path):
         rt = tmp_path / "RT" / "GONH"

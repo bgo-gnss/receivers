@@ -181,8 +181,10 @@ def _delete_obs_sibling(rinex_path: Path) -> None:
     E.g. LFEL1160.26d.Z → deletes LFEL1160.26o.Z in the same directory.
     """
     name = rinex_path.name
-    for preferred, legacy in (("d.Z", "o.Z"), ("d.gz", "o.gz")):
-        if name.endswith(preferred):
+    # Match the Hatanaka type letter case-insensitively: the archive convention
+    # is uppercase .D.Z (converter_base / stream), but tolerate legacy .d.Z too.
+    for preferred, legacy in (("d.z", "o.Z"), ("d.gz", "o.gz")):
+        if name.lower().endswith(preferred):
             obs_path = rinex_path.parent / (name[: -len(preferred)] + legacy)
             if obs_path.exists():
                 try:
