@@ -46,18 +46,25 @@ cp /home/bgo/git/receivers/deployment/systemd/gps-archive-sync-alert.{service,ti
 systemctl --user daemon-reload
 systemctl --user enable --now gps-archive-sync-alert.timer
 
-# inspect:
+# inspect the timer:
 systemctl --user list-timers gps-archive-sync-alert.timer
-journalctl --user-unit gps-archive-sync-alert -n 20
 
-# run the check by hand — Nagios output + exit code, no push:
+# run the check by hand — the no-sudo inspect path (Nagios output + exit code):
 /home/bgo/git/receivers/venv/bin/python -m receivers.monitoring.archive_sync_check
 # …with the Icinga push:
 … archive_sync_check --icinga --icinga-host rek-d01 --ttl 3600
 ```
 
+Prefer the manual run above to see status: gpsops is **not** in the
+`systemd-journal` group, so `journalctl --user-unit gps-archive-sync-alert` is
+not readable as gpsops (it works for an admin/root, or add gpsops to
+`systemd-journal`). The manual `python -m …archive_sync_check` produces the same
+OK/WARN/CRIT line on demand without any journal access.
+
 Linger is already enabled for gpsops (the scheduler relies on it), so the timer
-fires without an active session.
+fires without an active session. WARN/CRIT/UNKNOWN exits do **not** mark the
+systemd unit "failed" (`SuccessExitStatus=1 2 3`) — the alert rides the Icinga
+push, not the unit state.
 
 ## Last mile — Icinga service object (IMO-IT)
 

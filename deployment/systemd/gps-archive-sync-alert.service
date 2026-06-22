@@ -26,6 +26,11 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+# WARN(1)/CRIT(2)/UNKNOWN(3) are valid Nagios outcomes, not unit failures — the
+# alert is delivered via the Icinga push (which happens before exit), so a CRIT
+# must NOT leave the unit in "failed" state (would be a confusing second signal
+# and could trip systemd-level failure handling). Only a real crash is a failure.
+SuccessExitStatus=1 2 3
 Environment="LANG=en_US.UTF-8"
 Environment="GPS_CONFIG_PATH=/home/gpsops/.config/gpsconfig"
 # --ttl 3600 = 4x the 15-min cadence: Icinga marks the service stale only after
