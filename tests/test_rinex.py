@@ -463,6 +463,30 @@ class TestConverterBase:
         )
         assert converter.converter_name == "runpkr00"
 
+    def test_hatanaka_output_renamed_to_uppercase_D(self, tmp_path):
+        """rnx2crx writes lowercase .YYd; the converter must rename it to the
+        IMO archive convention .YYD (uppercase). Regression for the old-rek ->
+        rek_new cutover where lowercase .d.Z broke the okada getimorinex.py fetch.
+        """
+        converter = SBFConverter("ELDC")
+        obs = tmp_path / "ELDC1720.26o"
+        obs.write_text("dummy rinex obs\n")
+
+        def fake_rnx2crx(cmd, timeout=60):
+            # Simulate rnx2crx: read .26o, emit lowercase .26d alongside it.
+            src = Path(cmd[-1])
+            src.with_suffix(".26d").write_text("dummy crinex\n")
+            return Mock(returncode=0, stdout="", stderr="")
+
+        with patch.object(converter, "get_tool_path", return_value=Path("rnx2crx")):
+            with patch.object(converter, "_run_subprocess", side_effect=fake_rnx2crx):
+                out = converter._apply_hatanaka_compression(obs)
+
+        assert out.name == "ELDC1720.26D", f"expected uppercase .26D, got {out.name}"
+        assert out.exists()
+        assert not (tmp_path / "ELDC1720.26d").exists(), "lowercase .26d not renamed"
+        assert not obs.exists(), "original .26o not removed"
+
     def test_conversion_result_structure(self):
         """Test ConversionResult data structure."""
         result = ConversionResult(
