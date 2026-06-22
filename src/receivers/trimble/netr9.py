@@ -813,6 +813,20 @@ class NetR9(BaseReceiver):
             self.logger.debug(f"Error validating archived file {file_path}: {e}")
             return False
 
+    def _resolve_base_path(self) -> str:
+        """Storage root for remote paths (the ``/Internal/`` segment).
+
+        A per-station ``receiver_base_path`` in stations.cfg (mapped to
+        ``station_info['receiver']['base_path']``) takes precedence over the
+        global ``[netr9] base_path`` default — e.g. a station logging to
+        ``/External/`` instead of ``/Internal/``. This is the storage root, NOT
+        the NetR5 CACHEDIR download prefix (that is ``cachedir_prefix``, resolved
+        independently in the HTTP client), so the two URL pieces never collide.
+        """
+        return self.station_info.get("receiver", {}).get(
+            "base_path"
+        ) or self.netr9_config.get("base_path", "/Internal/")
+
     def _generate_file_list(
         self, start: datetime, end: datetime, session: str, **kwargs
     ) -> Tuple[Dict[str, str], Dict[str, str]]:
@@ -854,8 +868,10 @@ class NetR9(BaseReceiver):
         files_dict = {}
         archive_files_dict = {}
 
-        # Get base path and session mapping from config
-        base_path = self.netr9_config.get("base_path", "/Internal/")
+        # Storage root: a per-station receiver_base_path overrides the global
+        # netr9 default (see _resolve_base_path). Same precedence pattern as
+        # session_map / remote_date_format below.
+        base_path = self._resolve_base_path()
 
         for file_dt in adjusted_datetime_list:
             # Get session mapping — per-station override in stations.cfg takes

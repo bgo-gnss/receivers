@@ -176,6 +176,15 @@ def get_station_config(
                 in ["true", "1", "yes"],
                 # Per-station path override (e.g., VARG uses %Y%m/%d since Jan 2026)
                 "remote_date_format": raw_config.get("receiver_remote_date_format", ""),
+                # Per-station storage root override: replaces the receiver-type
+                # default (netr9 /Internal/, netrs /download/) for a station that
+                # logs elsewhere, e.g. AKUR on /External/. Empty ⇒ use the default.
+                "base_path": raw_config.get("receiver_base_path", ""),
+                # Explicit NetR5 CACHEDIR download prefix override. Normally
+                # auto-discovered; this is the rarely-used escape hatch. Distinct
+                # key from base_path (which is the storage root) so the two
+                # path pieces never collide.
+                "cachedir_prefix": raw_config.get("receiver_cachedir_prefix", ""),
             },
             # Connection and timing configuration
             "connection": {
@@ -280,6 +289,8 @@ def resolve_receiver_endpoint(args: Any, station_id: str) -> Optional[Dict[str, 
             "pwd": "",
             "firmware_underscore_pad": False,
             "remote_date_format": "",
+            "base_path": "",
+            "cachedir_prefix": "",
         },
         "connection": {"type": "direct", "timeouts": {}},
         "paths": {

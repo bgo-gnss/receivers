@@ -66,6 +66,8 @@ longitude = -22.654321
 height = 250.55
 receiver_serial = 4103914
 receiver_firmware_version = 5.7.0
+receiver_base_path = /External/
+receiver_cachedir_prefix = /CACHEDIR123/download
 ftp_username = gpsops
 ftp_password = secret
 """
@@ -131,6 +133,24 @@ def test_flat_cfg_keys_visible_at_top_level(fake_gps_config, key, expected):
         f"{key} should propagate from stations.cfg to top-level dict; "
         f"got {cfg.get(key)!r}"
     )
+
+
+def test_per_station_base_path_and_cachedir_prefix_mapped(fake_gps_config):
+    """receiver_base_path / receiver_cachedir_prefix reach the typed receiver dict.
+
+    These are two distinct path pieces that must NOT share a key:
+      * base_path      → storage root (the NetR9/NetRS path builder; /Internal/
+                         vs /External/), consumed by _resolve_base_path().
+      * cachedir_prefix → the NetR5 CACHEDIR download prefix (HTTP client).
+    Mapping them to separate fields is what prevents a station's storage-root
+    override from hijacking the CACHEDIR slot (and vice-versa).
+    """
+    from receivers.config_utils import get_station_config
+
+    cfg = get_station_config("ELDC")
+    assert cfg is not None
+    assert cfg["receiver"]["base_path"] == "/External/"
+    assert cfg["receiver"]["cachedir_prefix"] == "/CACHEDIR123/download"
 
 
 def test_typed_keys_win_over_raw_on_overlap(fake_gps_config):
