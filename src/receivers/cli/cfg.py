@@ -1814,9 +1814,7 @@ def _parse_since(spec: str) -> datetime:
         delta = (
             timedelta(days=n)
             if unit == "d"
-            else timedelta(hours=n)
-            if unit == "h"
-            else timedelta(minutes=n)
+            else timedelta(hours=n) if unit == "h" else timedelta(minutes=n)
         )
         return datetime.now(UTC) - delta
     try:
@@ -2136,19 +2134,29 @@ def cmd_cfg_add_receiver(args) -> int:
         ProbeNotIdentifiedError,
         ProbeUnreachableError,
         ReceiverIdentity,
+        StationProbeResolveError,
         parse_host_port,
         probe_receiver,
+        resolve_station_probe,
         to_subtype_attrs,
     )
 
-    # ---- --probe / --from-file mutual exclusion -------------------------
+    # ---- --probe / --station / --from-file mutual exclusion -------------
     from_file = getattr(args, "from_file", None)
-    if bool(args.probe) == bool(from_file):
+    station = getattr(args, "station", None)
+    if sum(bool(x) for x in (args.probe, station, from_file)) != 1:
         print(
-            "❌ exactly one of --probe or --from-file is required",
+            "❌ exactly one of --probe, --station, or --from-file is required",
             file=sys.stderr,
         )
         return 2
+    if station:
+        try:
+            args.probe = resolve_station_probe(station)
+        except StationProbeResolveError as e:
+            print(f"❌ {e}", file=sys.stderr)
+            return 2
+        print(f"Resolved {station} → {args.probe}")
 
     # ---- --from-file: load identity + defaults from YAML ----------------
     # CLI args take precedence; file fills in only what was not supplied
@@ -2284,7 +2292,9 @@ def cmd_cfg_add_receiver(args) -> int:
                 host,
                 port,
                 probe_type=args.probe_type,
-                station_id_hint=args.station_hint,
+                # --station resolves credentials from that station's cfg; fall
+                # back to the explicit --station-hint for bench/warehouse intake.
+                station_id_hint=station or args.station_hint,
             )
         except ProbeUnreachableError as e:
             print(f"❌ {e}", file=sys.stderr)
@@ -3154,8 +3164,10 @@ def cmd_cfg_update_device(args) -> int:
         ProbeError,
         ProbeNotIdentifiedError,
         ProbeUnreachableError,
+        StationProbeResolveError,
         parse_host_port,
         probe_receiver,
+        resolve_station_probe,
     )
 
     if not args.field:
@@ -3165,7 +3177,21 @@ def cmd_cfg_update_device(args) -> int:
         )
         return 2
 
-    # ---- Parse probe target ---------------------------------------------
+    # ---- Resolve probe target (--probe HOST or --station SID) ------------
+    if bool(args.probe) == bool(args.station):
+        print(
+            "❌ pass exactly one of --probe HOST[:PORT] or --station SID",
+            file=sys.stderr,
+        )
+        return 2
+    if args.station:
+        try:
+            args.probe = resolve_station_probe(args.station)
+        except StationProbeResolveError as e:
+            print(f"❌ {e}", file=sys.stderr)
+            return 2
+        print(f"Resolved {args.station} → {args.probe}")
+
     try:
         host, port = parse_host_port(args.probe)
     except ValueError as e:
@@ -3183,6 +3209,10 @@ def cmd_cfg_update_device(args) -> int:
             probe_type=args.probe_type,
             tcp_username=args.username,
             tcp_password=args.password,
+            # With --station, let the extractor pull that station's stored
+            # tcp_username/tcp_password from stations.cfg (so an authenticated
+            # PolaRX5 probes without re-passing --username/--password).
+            station_id_hint=args.station,
         )
     except (ProbeUnreachableError, ProbeNotIdentifiedError, ProbeError) as e:
         print(f"❌ {e}", file=sys.stderr)
@@ -4030,7 +4060,16 @@ Examples:
         metavar="HOST[:PORT]",
         help=(
             "Receiver host/IP, optionally with explicit port. Mutually "
-            "exclusive with --from-file; one of the two is required."
+            "exclusive with --station/--from-file; one of the three is required."
+        ),
+    )
+    add_rx.add_argument(
+        "--station",
+        metavar="SID",
+        help=(
+            "Deployed station ID — resolves router_ip:receiver_controlport from "
+            "stations.cfg (disambiguates port-forwarded stations sharing a "
+            "router IP). Mutually exclusive with --probe/--from-file."
         ),
     )
     add_rx.add_argument(
@@ -4682,8 +4721,15 @@ Examples:
     upd.add_argument(
         "--probe",
         metavar="HOST[:PORT]",
-        required=True,
-        help="Receiver IP/host (with optional port).",
+        help="Receiver IP/host (with optional port). Mutually exclusive with "
+        "--station; one of the two is required.",
+    )
+    upd.add_argument(
+        "--station",
+        metavar="SID",
+        help="Deployed station ID — resolves router_ip:receiver_controlport from "
+        "stations.cfg (handles port-forwarded stations sharing a router IP). "
+        "Mutually exclusive with --probe.",
     )
     upd.add_argument(
         "--probe-type",
@@ -5423,11 +5469,14 @@ Examples:
     rm.add_argument(
         "--probe",
         metavar="HOST[:PORT]",
+        nargs="?",
+        const="@station",
         help=(
             "Auto-extract the new modem's identity (serial/model/mac/"
             "manufacturer/subtype) live from the Teltonika router at HOST via "
-            "the RutOS REST API. Explicit --new-* / --mac / etc. override "
-            "probed values. Credentials from receivers.cfg [teltonika]."
+            "the RutOS REST API. Pass --probe with no value to probe --station's "
+            "router_ip from stations.cfg. Explicit --new-* / --mac / etc. "
+            "override probed values. Credentials from receivers.cfg [teltonika]."
         ),
     )
     rm.add_argument(
@@ -5599,11 +5648,14 @@ Examples:
     rs.add_argument(
         "--probe",
         metavar="HOST[:PORT]",
+        nargs="?",
+        const="@station",
         help=(
             "Auto-extract the SIM identity (ip/iccid/provider) live from the "
-            "Teltonika router at HOST via the RutOS REST API. Explicit --ip / "
-            "--serial / --provider override probed values. Credentials from "
-            "receivers.cfg [teltonika]."
+            "Teltonika router at HOST via the RutOS REST API. Pass --probe with "
+            "no value to probe --station's router_ip from stations.cfg. Explicit "
+            "--ip / --serial / --provider override probed values. Credentials "
+            "from receivers.cfg [teltonika]."
         ),
     )
     rs.add_argument(
@@ -6349,6 +6401,25 @@ def _probe_telemetry_or_exit(args):
     if not host:
         return None
     import sys
+
+    # `--probe` with no value (const "@station") → resolve the target station's
+    # router_ip from stations.cfg (router-level probe, no receiver port needed).
+    if host == "@station":
+        from ..cfg.device_probe import (
+            StationProbeResolveError,
+            resolve_station_probe,
+        )
+
+        station = getattr(args, "station", None)
+        if not station:
+            print("❌ --probe with no value requires --station SID", file=sys.stderr)
+            raise SystemExit(2)
+        try:
+            host = resolve_station_probe(station, router_only=True)
+        except StationProbeResolveError as exc:
+            print(f"❌ {exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
+        print(f"Resolved {station} → router {host}")
 
     from ..cfg.telemetry_probe import (
         ProbeAuthError,
