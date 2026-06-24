@@ -923,7 +923,20 @@ Examples:
     parser.add_argument(
         "--ensure-port-forward",
         action="store_true",
-        help="Auto-add the control_port-1 → receiver:28783 TLS forward on the router.",
+        help="Auto-add the TLS-port → receiver:28783 forward on the router (needs router API).",
+    )
+    parser.add_argument(
+        "--tls-port",
+        type=int,
+        metavar="PORT",
+        help="Router port that forwards to receiver:28783 (default: control_port-1). "
+        "The post-upgrade reconnect uses this; it is verified by a TLS handshake.",
+    )
+    parser.add_argument(
+        "--i-confirm-tls-lifeline",
+        action="store_true",
+        help="Operator override: I have verified the receiver:28783 TLS reconnect path "
+        "works. Only bypasses the lifeline guard — use with extreme care.",
     )
     parser.add_argument(
         "--no-provision",

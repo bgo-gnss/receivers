@@ -133,6 +133,35 @@ def connect_control(
     return sock, True
 
 
+def tls_lifeline_ok(host: str, port: int, *, timeout: float = 5.0) -> bool:
+    """True ONLY if ``host:port`` completes a TLS handshake.
+
+    The post-upgrade reconnect needs the receiver's TLS control interface
+    (:28783) reachable. A bare TCP check is unsafe: on a shared router the
+    ``control_port-1`` port is often a *plaintext* mapping that answers TCP but
+    dies after the upgrade closes plaintext. A successful TLS handshake is proof
+    the path actually reaches a TLS endpoint. (Caveat: a pre-5.7 receiver may not
+    open :28783 until after the upgrade — then this returns False and the caller
+    must confirm the router forward another way, e.g. --i-confirm-tls-lifeline.)
+    """
+    try:
+        raw = socket.create_connection((host, port), timeout=timeout)
+    except OSError:
+        return False
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        ctx.wrap_socket(raw).close()
+        return True
+    except (ssl.SSLError, OSError):
+        try:
+            raw.close()
+        except OSError:
+            pass
+        return False
+
+
 def login(sock: socket.socket, username: str, password: str) -> bool:
     resp = _send(sock, f"login, {username}, {password}")
     return "$R! LogIn" in resp or "IP" in resp and "$R? LogIn" not in resp

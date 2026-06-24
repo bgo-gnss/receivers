@@ -3998,12 +3998,17 @@ def cmd_rec_upgrade_firmware(args) -> int:
                 "(or set [paths] firmware_dir in receivers.cfg)"
             )
             return 1
-        suf = (
-            Path(fw_dir).expanduser()
-            / target_version
-            / "firmware"
-            / f"PolaRx5-{target_version}.suf"
-        )
+        fw_path = Path(fw_dir).expanduser()
+        if fw_path.is_file() and fw_path.suffix == ".suf":
+            # Forgiving: --firmware-dir was pointed straight at the .suf file.
+            suf = fw_path
+            if not target_version:
+                m = re.search(r"(\d+\.\d+\.\d+)", suf.name)
+                target_version = m.group(1) if m else None
+        else:
+            suf = (
+                fw_path / target_version / "firmware" / f"PolaRx5-{target_version}.suf"
+            )
     if not target_version:
         logger.error("could not determine target version — pass --to VERSION")
         return 1
@@ -4051,8 +4056,8 @@ def cmd_rec_upgrade_firmware(args) -> int:
 
     overall_ok = True
     for sid, ip, port in targets:
-        tls_port = port - 1
-        print(f"\n--- {sid}  ({ip}:{port}, TLS via {tls_port}) ---")
+        tls_port = args.tls_port or (port - 1)
+        print(f"\n--- {sid}  ({ip}:{port}, TLS reconnect via {tls_port}) ---")
 
         # current firmware
         cur = None
@@ -4070,8 +4075,15 @@ def cmd_rec_upgrade_firmware(args) -> int:
             print("  ✓ already at target — skipping")
             continue
 
-        # TLS lifeline: the post-upgrade reconnect needs control_port-1 → :28783
-        tls_reachable = _check_port_simple(ip, tls_port)
+        # TLS lifeline: the post-upgrade reconnect needs a router port that
+        # forwards to the receiver's TLS interface (:28783). Verify with a real
+        # TLS HANDSHAKE — a bare TCP check is unsafe (control_port-1 is often a
+        # plaintext mapping that answers TCP but dies once the upgrade closes
+        # plaintext). A pre-5.7 receiver may not open :28783 until after the
+        # flash, so a handshake failure is "unconfirmed", not necessarily "bad".
+        tls_reachable = fw.tls_lifeline_ok(ip, tls_port)
+        if tls_reachable:
+            print(f"  ✓ TLS lifeline confirmed at {ip}:{tls_port} (handshake OK)")
         if args.ensure_port_forward and not tls_reachable:
             lan_ip = _discover_receiver_lan_ip(ip, port)
             if not lan_ip:
@@ -4098,18 +4110,29 @@ def cmd_rec_upgrade_firmware(args) -> int:
                     print(
                         f"  port-forward {tls_port}→{lan_ip}:{fw.RECEIVER_TLS_PORT}: {res.get('created') or res.get('existing') or 'planned'}"
                     )
-                    tls_reachable = not dry_run  # assume present after apply
+                    # A forward now exists, but a pre-5.7 receiver may not open
+                    # :28783 until after the flash — re-verify, else treat the
+                    # forward's presence as the confirmation.
+                    tls_reachable = fw.tls_lifeline_ok(ip, tls_port) or (not dry_run)
                 except Exception as exc:  # noqa: BLE001
                     print(f"  ⚠  TLS port-forward ensure failed: {exc}")
-        if not tls_reachable:
+        lifeline_ok = tls_reachable or getattr(args, "i_confirm_tls_lifeline", False)
+        if not lifeline_ok:
             print(
-                f"  ⚠  TLS lifeline {ip}:{tls_port} NOT reachable — post-upgrade reconnect would fail."
+                f"  ⚠  TLS lifeline UNCONFIRMED at {ip}:{tls_port} — no TLS handshake "
+                "and no router-added forward."
             )
             print(
-                "     Re-run with --ensure-port-forward (or add the forward) before flashing."
+                "     After the flash the receiver goes sis=secure (plaintext closes); "
+                "without a router port → receiver:28783, it is UNREACHABLE → site visit."
+            )
+            print(
+                "     Fix: add the 28783 forward on the router and confirm, pass the "
+                "right --tls-port, or (only if you have verified it yourself) "
+                "--i-confirm-tls-lifeline."
             )
             if not dry_run:
-                print("  ❌ refusing to flash without the TLS lifeline")
+                print("  ❌ refusing to flash without a confirmed TLS lifeline")
                 overall_ok = False
                 continue
 
