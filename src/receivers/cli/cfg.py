@@ -1062,10 +1062,29 @@ def _reconcile_one(
 
     n_written = 0
     n_skipped = 0
-    # --global retargets the cfg write to the gps-config-data repo's stations.cfg
-    # (the source of truth); None → apply_diff/remove_diff use the local config.
-    # Resolved once by the handler (incl. the divergence preflight) and passed in.
-    _global_target = global_target
+    # Write targets: always the local stations.cfg (None → apply_diff/remove_diff
+    # resolve it); with --global, ALSO the gps-config-data repo's stations.cfg
+    # (the source of truth), so one `cfg reconcile … --global --push` run syncs
+    # the local deployed config AND the repo in lockstep. Resolved once by the
+    # handler (incl. the divergence preflight).
+    _write_targets: List[Optional[Path]] = [None]
+    if global_target is not None:
+        _write_targets.append(global_target)
+
+    def _apply_to_targets(_d, _value, **_kw) -> bool:
+        _changed = False
+        for _tgt in _write_targets:
+            if apply_diff(station_id, _d, _value, cfg_path=_tgt, **_kw):
+                _changed = True
+        return _changed
+
+    def _remove_from_targets(_d, **_kw) -> bool:
+        _changed = False
+        for _tgt in _write_targets:
+            if remove_diff(station_id, _d, cfg_path=_tgt, **_kw):
+                _changed = True
+        return _changed
+
     actionable = [d for d in diffs if d.needs_attention]
     canonicalize_on = getattr(args, "canonicalize", False)
     fmt_mismatches = [d for d in diffs if d.format_mismatch] if canonicalize_on else []
@@ -1339,7 +1358,7 @@ def _reconcile_one(
                     )
                 new_value = mapped
             try:
-                changed = apply_diff(station_id, d, new_value, cfg_path=_global_target)
+                changed = _apply_to_targets(d, new_value)
                 if changed:
                     n_written += 1
                     if not silent:
@@ -1389,7 +1408,7 @@ def _reconcile_one(
                     )
                 new_value = mapped
             try:
-                changed = apply_diff(station_id, d, new_value, cfg_path=_global_target)
+                changed = _apply_to_targets(d, new_value)
                 if changed:
                     n_written += 1
                     if not silent:
@@ -1415,13 +1434,7 @@ def _reconcile_one(
                     print(f"     ≈ {d.cfg_key}: {d.cfg_raw!r} → {rx_val!r} (dry-run)")
             else:
                 try:
-                    changed = apply_diff(
-                        station_id,
-                        d,
-                        rx_val,
-                        cfg_path=_global_target,
-                        resolved_by="canonicalize",
-                    )
+                    changed = _apply_to_targets(d, rx_val, resolved_by="canonicalize")
                     if changed:
                         n_written += 1
                         if not silent:
@@ -1448,12 +1461,7 @@ def _reconcile_one(
                         print(f"     ~ {d.cfg_key}: remove {d.cfg_raw!r} (dry-run)")
                 else:
                     try:
-                        changed = remove_diff(
-                            station_id,
-                            d,
-                            cfg_path=_global_target,
-                            resolved_by="canonicalize",
-                        )
+                        changed = _remove_from_targets(d, resolved_by="canonicalize")
                         if changed:
                             n_written += 1
                             if not silent:
@@ -1482,7 +1490,7 @@ def _reconcile_one(
                     break
                 if choice in ("d", "delete", ""):
                     try:
-                        changed = remove_diff(station_id, d, cfg_path=_global_target)
+                        changed = _remove_from_targets(d)
                         if changed:
                             n_written += 1
                             print(f"       ✅ removed {d.cfg_key}")
@@ -1619,11 +1627,6 @@ def cmd_cfg_reconcile(args) -> int:
         except Exception:  # noqa: BLE001
             fields = None  # fall back to all fields
 
-    # Load configs
-    configs = _load_station_configs(station_ids, json_mode=args.json)
-    if not configs:
-        return 1
-
     # Resolve the --global target ONCE up front. This also runs the divergence
     # preflight (require --push, clone even with origin) before any write, so a
     # refusal aborts cleanly with no dirty work-tree.
@@ -1633,6 +1636,28 @@ def cmd_cfg_reconcile(args) -> int:
         global_target = _resolve_global_target(args)
     except _CfgOpErr as exc:
         _progress(f"❌ {exc}", json_mode=args.json)
+        return 1
+
+    # Load configs. When finalizing the repo (--global), read the BASELINE from
+    # the gps-config-data repo (not the local deployed config), so a stale repo
+    # is detected even when the local config was already reconciled. Writes still
+    # go to BOTH local and repo (see _reconcile_one). GPS_CONFIG_PATH is restored
+    # right after the load so cfg_path=None resolves the local stations.cfg again.
+    if global_target is not None:
+        import os as _os
+
+        _orig_cfg_path = _os.environ.get("GPS_CONFIG_PATH")
+        _os.environ["GPS_CONFIG_PATH"] = str(global_target.parent)
+        try:
+            configs = _load_station_configs(station_ids, json_mode=args.json)
+        finally:
+            if _orig_cfg_path is None:
+                _os.environ.pop("GPS_CONFIG_PATH", None)
+            else:
+                _os.environ["GPS_CONFIG_PATH"] = _orig_cfg_path
+    else:
+        configs = _load_station_configs(station_ids, json_mode=args.json)
+    if not configs:
         return 1
 
     # Skip discontinued / inactive stations — probing them is pointless and,
