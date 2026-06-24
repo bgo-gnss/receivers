@@ -639,6 +639,14 @@ Examples:
         "--push", metavar="CONFIG_FILE", help="Push configuration file to receiver"
     )
     mode_group.add_argument(
+        "--tracking",
+        metavar="SPEC",
+        help="Set signal tracking to a constellation spec, e.g. 'gps+glonass' "
+        "(power-save for wind/solar). Pushes ONLY setSignalTracking/setSignalUsage "
+        "+ boot save — never touches marker/mountpoint/sessions, so it's safe on a "
+        "live stream station. Constellations: gps, glonass, galileo, beidou.",
+    )
+    mode_group.add_argument(
         "--check-session",
         metavar="SESSION",
         help="Check whether a logging session is enabled (e.g. status_1hr). "

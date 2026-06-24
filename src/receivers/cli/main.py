@@ -2436,6 +2436,33 @@ def cmd_rec_config(args) -> int:
     if args.extract:
         return _extract_configs(args, targets, logger, tcp_username, tcp_password)
 
+    # Handle --tracking: build an identity-safe signal-tracking config (only
+    # setSignalTracking/setSignalUsage + boot save) and push it via the same path.
+    if getattr(args, "tracking", None):
+        import os as _os
+        import tempfile
+
+        from ..septentrio.tracking import build_tracking_commands
+
+        try:
+            cmds = build_tracking_commands(args.tracking)
+        except ValueError as exc:
+            logger.error(str(exc))
+            return 2
+        tf = tempfile.NamedTemporaryFile(
+            "w", suffix=".txt", prefix="track_", delete=False
+        )
+        tf.write(f"# rec-config --tracking {args.tracking} (identity-safe)\n")
+        tf.write("\n".join(cmds) + "\n")
+        tf.close()
+        args.push = tf.name
+        try:
+            return _push_configs(
+                args, targets, logger, tcp_username, tcp_password, rec_config_dir
+            )
+        finally:
+            _os.unlink(tf.name)
+
     # Handle push mode
     if args.push:
         return _push_configs(
