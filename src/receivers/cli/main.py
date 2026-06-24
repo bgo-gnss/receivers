@@ -17,7 +17,7 @@ import re
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import gtimes.timefunc as gt
 from gtimes.timefunc import currDatetime
@@ -82,7 +82,9 @@ def _validate_station_for_download(
     """
     station_config = get_station_config(station_id)
     if station_config is None:
-        logger.warning(f"⚠️  Station {station_id} not found in configuration - SKIPPING")
+        logger.warning(
+            f"⚠️  Station {station_id} not found in configuration - SKIPPING"
+        )
         return None
 
     try:
@@ -892,7 +894,9 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
             voltage = power.get("voltage")
             if voltage is not None:
                 status = power.get("status", "ok")
-                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                emoji = (
+                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                )
                 metric_lines.append(f"Voltage: {emoji} {voltage:.2f} V")
 
         # Temperature
@@ -901,7 +905,9 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
             value = temp.get("value")
             if value is not None:
                 status = temp.get("status", "ok")
-                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                emoji = (
+                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                )
                 metric_lines.append(f"Temp: {emoji} {value}°C")
 
         # CPU load
@@ -910,7 +916,9 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
             value = cpu.get("value", cpu.get("percent"))
             if value is not None:
                 status = cpu.get("status", "ok")
-                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                emoji = (
+                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                )
                 metric_lines.append(f"CPU: {emoji} {value}%")
 
         # Disk usage
@@ -919,7 +927,9 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
             value = disk.get("usage_percent")
             if value is not None:
                 status = disk.get("status", "ok")
-                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                emoji = (
+                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                )
                 metric_lines.append(f"Disk: {emoji} {value:.0f}%")
 
         if metric_lines:
@@ -931,7 +941,9 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
             total = sats.get("total")
             if total is not None:
                 status = sats.get("status", "ok")
-                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                emoji = (
+                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                )
                 by_const = sats.get("by_constellation", {})
                 const_str = (
                     ", ".join(f"{k}:{v}" for k, v in by_const.items())
@@ -949,7 +961,9 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
             fix_mode = pos.get("fix_mode") or pos.get("fix_type")
             if fix_mode:
                 status = pos.get("status", "ok")
-                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                emoji = (
+                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                )
                 sats_used = pos.get("satellites_used", "")
                 lat = pos.get("latitude")
                 lon = pos.get("longitude")
@@ -1055,7 +1069,9 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
                     status = "warning"
                 else:
                     status = "ok"
-                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                emoji = (
+                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                )
                 label = session_labels.get(session, session)
                 file_parts.append(f"{label}:{emoji}")
         if file_parts:
@@ -1785,7 +1801,9 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
                 tcp = connection["tcp"]
                 status = tcp.get("status", "unknown")
                 host = tcp.get("host", "")
-                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                emoji = (
+                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                )
                 print(f"  tcp: {emoji} {status} ({host})")
 
             # Show port status (always show all ports for consistency, N/A if not configured)
@@ -3927,6 +3945,291 @@ def _rinex_convert_station_period(
     return converted, failed, skipped
 
 
+def _discover_receiver_lan_ip(router_ip: str, control_port: int) -> Optional[str]:
+    """Find the receiver's LAN IP behind the router from the existing control
+    DNAT (src_dport == control_port). Best-effort; returns None if unavailable."""
+    try:
+        from ..cfg.telemetry_probe import list_port_forwards
+
+        for rule in list_port_forwards(router_ip):
+            if str(rule.get("src_dport")) == str(control_port):
+                return rule.get("dest_ip")
+    except Exception as exc:  # noqa: BLE001
+        _logger.debug(f"could not list port-forwards on {router_ip}: {exc}")
+    return None
+
+
+def cmd_rec_upgrade_firmware(args) -> int:
+    """Flash PolaRX5 firmware (stream-download) + chained aftermath. Dry-run default."""
+    import subprocess
+
+    from ..cfg.device_probe import StationProbeResolveError, resolve_station_probe
+    from ..config.receivers_config import get_receivers_config
+    from ..septentrio import firmware_upgrade as fw
+    from ..septentrio.tcp_client import DEFAULT_CONTROL_PORT
+
+    logger = _logger
+    dry_run = not args.no_dry_run
+    rc = get_receivers_config()
+    pc = rc.get_receiver_config("polarx5")
+    tcp_user = pc.get("tcp_username") or None
+    tcp_pwd = pc.get("tcp_password") or None
+    if not tcp_user or not tcp_pwd:
+        logger.error("tcp_username/tcp_password must be set in receivers.cfg [polarx5]")
+        return 1
+    default_port = args.port or int(pc.get("control_port", DEFAULT_CONTROL_PORT))
+
+    # ---- resolve the .suf -------------------------------------------------
+    if args.suf:
+        suf = Path(args.suf).expanduser()
+        m = re.search(r"(\d+\.\d+\.\d+)", suf.name)
+        target_version = args.to or (m.group(1) if m else None)
+    else:
+        target_version = args.to
+        fw_dir = args.firmware_dir or pc.get("firmware_dir")
+        if not fw_dir:
+            try:
+                fw_dir = rc.config.get("paths", "firmware_dir")
+            except Exception:  # noqa: BLE001
+                fw_dir = None
+        if not fw_dir:
+            logger.error(
+                "no firmware dir — pass --suf PATH or --firmware-dir DIR "
+                "(or set [paths] firmware_dir in receivers.cfg)"
+            )
+            return 1
+        suf = (
+            Path(fw_dir).expanduser()
+            / target_version
+            / "firmware"
+            / f"PolaRx5-{target_version}.suf"
+        )
+    if not target_version:
+        logger.error("could not determine target version — pass --to VERSION")
+        return 1
+    if not suf.is_file():
+        logger.error(f"firmware file not found: {suf}")
+        return 1
+    if args.via:
+        logger.warning(
+            "--via stepping is not yet implemented; doing a direct upgrade to %s "
+            "(.suf is a full image, so direct is the documented path)",
+            target_version,
+        )
+
+    # ---- resolve targets (sid, ip, control_port) --------------------------
+    targets: List[Tuple[str, str, int]] = []
+    if args.host:
+        if len(args.stations) > 1:
+            logger.error("--host requires exactly one station label")
+            return 1
+        host, _, p = args.host.partition(":")
+        targets.append(
+            (args.stations[0].strip().upper(), host, int(p) if p else default_port)
+        )
+    else:
+        for sid in [s.strip().upper() for s in args.stations]:
+            try:
+                hp = resolve_station_probe(sid)
+            except StationProbeResolveError as exc:
+                logger.error(f"{sid}: {exc}")
+                continue
+            ip, _, p = hp.partition(":")
+            targets.append((sid, ip, int(p) if p else default_port))
+    if not targets:
+        logger.error("no valid targets")
+        return 1
+
+    suf_sha = fw.sha256_of(suf)
+    suf_size = suf.stat().st_size
+    print(f"\n{'=' * 60}")
+    print(f"Firmware: {suf.name}  → target {target_version}")
+    print(f"  path: {suf}")
+    print(f"  size: {suf_size} bytes   sha256: {suf_sha[:16]}…")
+    print(f"  mode: {'DRY-RUN (no flash)' if dry_run else 'LIVE FLASH'}")
+    print(f"{'=' * 60}")
+
+    overall_ok = True
+    for sid, ip, port in targets:
+        tls_port = port - 1
+        print(f"\n--- {sid}  ({ip}:{port}, TLS via {tls_port}) ---")
+
+        # current firmware
+        cur = None
+        try:
+            sock, _tls = fw.connect_control(ip, port, timeout=args.timeout)
+            try:
+                fw.login(sock, tcp_user, tcp_pwd)
+                cur = fw.read_firmware_version(sock)
+            finally:
+                sock.close()
+        except fw.FirmwareUpgradeError as exc:
+            print(f"  ⚠  could not probe current firmware: {exc}")
+        print(f"  current: {cur or 'unknown'}  →  target: {target_version}")
+        if cur and cur == target_version:
+            print("  ✓ already at target — skipping")
+            continue
+
+        # TLS lifeline: the post-upgrade reconnect needs control_port-1 → :28783
+        tls_reachable = _check_port_simple(ip, tls_port)
+        if args.ensure_port_forward and not tls_reachable:
+            lan_ip = _discover_receiver_lan_ip(ip, port)
+            if not lan_ip:
+                print(
+                    "  ⚠  could not discover receiver LAN IP from router — cannot auto-add TLS forward"
+                )
+            else:
+                try:
+                    from ..cfg.telemetry_probe import ensure_port_forwards
+
+                    res = ensure_port_forwards(
+                        ip,
+                        lan_ip,
+                        [
+                            {
+                                "name": f"{sid}-ctrl-tls",
+                                "src_dport": str(tls_port),
+                                "dest_port": str(fw.RECEIVER_TLS_PORT),
+                                "proto": ["tcp"],
+                            }
+                        ],
+                        dry_run=dry_run,
+                    )
+                    print(
+                        f"  port-forward {tls_port}→{lan_ip}:{fw.RECEIVER_TLS_PORT}: {res.get('created') or res.get('existing') or 'planned'}"
+                    )
+                    tls_reachable = not dry_run  # assume present after apply
+                except Exception as exc:  # noqa: BLE001
+                    print(f"  ⚠  TLS port-forward ensure failed: {exc}")
+        if not tls_reachable:
+            print(
+                f"  ⚠  TLS lifeline {ip}:{tls_port} NOT reachable — post-upgrade reconnect would fail."
+            )
+            print(
+                "     Re-run with --ensure-port-forward (or add the forward) before flashing."
+            )
+            if not dry_run:
+                print("  ❌ refusing to flash without the TLS lifeline")
+                overall_ok = False
+                continue
+
+        if dry_run:
+            print(
+                "  [DRY-RUN] would: exeResetReceiver,Upgrade → stream .suf → reboot → verify on TLS"
+            )
+            aftermath = [
+                s
+                for s, on in (
+                    ("rec-provision", not args.no_provision),
+                    ("update-device --change", not args.no_record),
+                    ("reconcile (local)", not args.no_record),
+                    ("health", True),
+                )
+                if on
+            ]
+            print(f"  [DRY-RUN] would chain: {', '.join(aftermath)}")
+            continue
+
+        if not args.yes:
+            try:
+                ans = (
+                    input(f"  ⚠ FLASH {sid} {cur or '?'}→{target_version}? [y/N] ")
+                    .strip()
+                    .lower()
+                )
+            except EOFError:
+                ans = "n"
+            if ans not in ("y", "yes"):
+                print("  skipped")
+                continue
+
+        # ---- the flash ----
+        try:
+            sock, _tls = fw.connect_control(ip, port, timeout=args.timeout)
+            fw.login(sock, tcp_user, tcp_pwd)
+            print("  flashing — DO NOT interrupt power/connection…")
+
+            def _prog(sent: int, total: int) -> None:
+                pct = (sent * 100) // total if total else 0
+                print(f"\r    {pct:3d}%  ({sent}/{total})", end="", flush=True)
+
+            fw.stream_suf(sock, suf, progress=_prog)
+            print()
+            try:
+                sock.close()
+            except OSError:
+                pass
+            print(
+                f"  streamed; waiting up to {args.reboot_wait}s for reboot + TLS reconnect…"
+            )
+            newver = fw.wait_for_reboot_and_verify(
+                ip,
+                port,
+                username=tcp_user,
+                password=tcp_pwd,
+                expect_version=target_version,
+                reboot_wait_s=args.reboot_wait,
+            )
+            print(f"  ✓ {sid} now on firmware {newver}")
+        except fw.FirmwareUpgradeError as exc:
+            print(f"  ❌ flash failed: {exc}")
+            overall_ok = False
+            continue
+
+        # ---- aftermath (chained existing verbs) ----
+        def _run(label: str, argv: List[str]) -> None:
+            print(f"  → {label}: receivers {' '.join(argv)}")
+            r = subprocess.run([sys.executable, "-m", "receivers.cli.main", *argv])
+            if r.returncode != 0:
+                print(f"    ⚠ {label} returned {r.returncode} — run it manually")
+
+        if not args.no_provision:
+            _run("rec-provision", ["rec-provision", sid])
+        if not args.no_record:
+            _run(
+                "update-device (TOS)",
+                [
+                    "cfg",
+                    "update-device",
+                    "--station",
+                    sid,
+                    "--field",
+                    "firmware_version",
+                    "--change",
+                    "--no-dry-run",
+                ],
+            )
+            _run(
+                "reconcile (local cfg)",
+                [
+                    "cfg",
+                    "reconcile",
+                    sid,
+                    "--field",
+                    "receiver_firmware_version",
+                    "--source",
+                    "receiver",
+                ],
+            )
+            print(
+                "  ℹ when back online, finalize the repo: "
+                f"receivers cfg reconcile {sid} --global --push"
+            )
+        _run("health", ["health", sid])
+
+    return 0 if overall_ok else 1
+
+
+def _check_port_simple(host: str, port: int, timeout: float = 3.0) -> bool:
+    import socket as _socket
+
+    try:
+        with _socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def cmd_rinex(args) -> int:
     """RINEX conversion command - convert raw GPS data to RINEX format."""
     logger = setup_logging(args.loglevel)
@@ -4292,6 +4595,10 @@ def create_parser() -> argparse.ArgumentParser:
                 subparsers_map["rec-config"].set_defaults(func=cmd_rec_config)
             if "rec-provision" in subparsers_map:
                 subparsers_map["rec-provision"].set_defaults(func=cmd_rec_provision)
+            if "rec-upgrade-firmware" in subparsers_map:
+                subparsers_map["rec-upgrade-firmware"].set_defaults(
+                    func=cmd_rec_upgrade_firmware
+                )
             if "rinex" in subparsers_map:
                 subparsers_map["rinex"].set_defaults(func=cmd_rinex)
             if "tools" in subparsers_map:
