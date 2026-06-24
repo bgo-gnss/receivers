@@ -933,10 +933,12 @@ Examples:
         "The post-upgrade reconnect uses this; it is verified by a TLS handshake.",
     )
     parser.add_argument(
-        "--i-confirm-tls-lifeline",
+        "--allow-deployed-flash",
         action="store_true",
-        help="Operator override: I have verified the receiver:28783 TLS reconnect path "
-        "works. Only bypasses the lifeline guard — use with extreme care.",
+        help="Override the bench-only guard. The TCP flash core is EXPERIMENTAL "
+        "(left a deployed receiver in recovery mode) — without --host, a real flash "
+        "is refused unless this is set. Use only once the upgrade-mode handshake is "
+        "hardware-proven.",
     )
     parser.add_argument(
         "--no-provision",

@@ -4141,6 +4141,26 @@ def cmd_rec_upgrade_firmware(args) -> int:
             print(f"  [DRY-RUN] would chain: {', '.join(aftermath)}")
             continue
 
+        # HARD GUARD: the flash core (exeResetReceiver,Upgrade → upgrade-mode
+        # handshake → stream) is NOT yet hardware-proven. On OLAC it left the
+        # receiver in recovery mode needing a manual reboot. So a real flash is
+        # only allowed against a bench/direct receiver (--host) until the
+        # upgrade-mode handshake is validated. For deployed stations, use the
+        # web UI (Admin → Upgrade) — see docs/septentrio/rec-upgrade-firmware-scope.md.
+        if not args.host and not getattr(args, "allow_deployed_flash", False):
+            print(
+                "  ❌ flash refused: the TCP flash core is EXPERIMENTAL / not yet "
+                "hardware-proven (it left OLAC in recovery mode). For a deployed "
+                f"station, flash via the web UI (http://{ip}:80→8060 → Admin → "
+                "Upgrade), then run the cfg reconcile / update-device chain."
+            )
+            print(
+                "     Bench validation only: re-run with --host <ip> on a bench unit "
+                "(or --allow-deployed-flash once the handshake is proven)."
+            )
+            overall_ok = False
+            continue
+
         if not args.yes:
             try:
                 ans = (
