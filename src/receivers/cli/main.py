@@ -4075,22 +4075,17 @@ def cmd_rec_upgrade_firmware(args) -> int:
             print("  ✓ already at target — skipping")
             continue
 
-        # TLS lifeline: the post-upgrade reconnect needs a router port that
-        # forwards to the receiver's TLS interface (:28783). Verify with a real
-        # TLS HANDSHAKE — a bare TCP check is unsafe (control_port-1 is often a
-        # plaintext mapping that answers TCP but dies once the upgrade closes
-        # plaintext). A pre-5.7 receiver may not open :28783 until after the
-        # flash, so a handshake failure is "unconfirmed", not necessarily "bad".
-        tls_reachable = fw.tls_lifeline_ok(ip, tls_port)
-        if tls_reachable:
-            print(f"  ✓ TLS lifeline confirmed at {ip}:{tls_port} (handshake OK)")
-        if args.ensure_port_forward and not tls_reachable:
+        # Post-upgrade reconnect. The web UI sends the SAME `erst, upgrade`
+        # command this verb does, and JONC reconnected with plain reconcile after
+        # a web-UI flash — because a deployed station reboots into its saved boot
+        # config, which keeps plaintext (FTP/TCP) open. So the reconnect tries
+        # PLAINTEXT (control port) first, with TLS at tls_port as a fallback for
+        # the rare sis=secure case. We can't pre-verify plaintext-persistence
+        # (it's post-reboot), so this is informational — not a gate.
+        tls_ok = fw.tls_lifeline_ok(ip, tls_port)
+        if args.ensure_port_forward and not tls_ok:
             lan_ip = _discover_receiver_lan_ip(ip, port)
-            if not lan_ip:
-                print(
-                    "  ⚠  could not discover receiver LAN IP from router — cannot auto-add TLS forward"
-                )
-            else:
+            if lan_ip:
                 try:
                     from ..cfg.telemetry_probe import ensure_port_forwards
 
@@ -4108,37 +4103,30 @@ def cmd_rec_upgrade_firmware(args) -> int:
                         dry_run=dry_run,
                     )
                     print(
-                        f"  port-forward {tls_port}→{lan_ip}:{fw.RECEIVER_TLS_PORT}: {res.get('created') or res.get('existing') or 'planned'}"
+                        f"  TLS forward {tls_port}→{lan_ip}:{fw.RECEIVER_TLS_PORT}: "
+                        f"{res.get('created') or res.get('existing') or 'planned'}"
                     )
-                    # A forward now exists, but a pre-5.7 receiver may not open
-                    # :28783 until after the flash — re-verify, else treat the
-                    # forward's presence as the confirmation.
-                    tls_reachable = fw.tls_lifeline_ok(ip, tls_port) or (not dry_run)
+                    tls_ok = tls_ok or (not dry_run)
                 except Exception as exc:  # noqa: BLE001
                     print(f"  ⚠  TLS port-forward ensure failed: {exc}")
-        lifeline_ok = tls_reachable or getattr(args, "i_confirm_tls_lifeline", False)
-        if not lifeline_ok:
+            else:
+                print("  ⚠  could not discover receiver LAN IP — skipping TLS forward")
+        print(
+            f"  reconnect: plaintext {ip}:{port} first, "
+            f"TLS fallback {ip}:{tls_port} ({'handshake OK' if tls_ok else 'unverified'})"
+        )
+        if not tls_ok:
             print(
-                f"  ⚠  TLS lifeline UNCONFIRMED at {ip}:{tls_port} — no TLS handshake "
-                "and no router-added forward."
+                "  ℹ deployed stations normally keep plaintext across the upgrade "
+                "(saved boot config) — plaintext-first reconnect covers this. If a "
+                "station does NOT, recover via the web UI (port 80→8060) or a 28783 "
+                "forward."
             )
-            print(
-                "     After the flash the receiver goes sis=secure (plaintext closes); "
-                "without a router port → receiver:28783, it is UNREACHABLE → site visit."
-            )
-            print(
-                "     Fix: add the 28783 forward on the router and confirm, pass the "
-                "right --tls-port, or (only if you have verified it yourself) "
-                "--i-confirm-tls-lifeline."
-            )
-            if not dry_run:
-                print("  ❌ refusing to flash without a confirmed TLS lifeline")
-                overall_ok = False
-                continue
 
         if dry_run:
             print(
-                "  [DRY-RUN] would: exeResetReceiver,Upgrade → stream .suf → reboot → verify on TLS"
+                "  [DRY-RUN] would: exeResetReceiver,Upgrade → stream .suf → reboot → "
+                "reconnect (plaintext→TLS) → verify"
             )
             aftermath = [
                 s
@@ -4192,6 +4180,7 @@ def cmd_rec_upgrade_firmware(args) -> int:
                 password=tcp_pwd,
                 expect_version=target_version,
                 reboot_wait_s=args.reboot_wait,
+                tls_port=tls_port,
             )
             print(f"  ✓ {sid} now on firmware {newver}")
         except fw.FirmwareUpgradeError as exc:

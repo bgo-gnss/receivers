@@ -250,16 +250,30 @@ def wait_for_reboot_and_verify(
     expect_version: str,
     reboot_wait_s: int = DEFAULT_REBOOT_WAIT_S,
     poll_every_s: int = 10,
+    tls_port: Optional[int] = None,
 ) -> str:
-    """Poll the TLS port until the receiver answers, then confirm the version."""
+    """Poll for the receiver after the reboot, then confirm the version.
+
+    Tries PLAINTEXT (the control port) first — a deployed station reboots back
+    into its saved boot config, which normally keeps FTP + plaintext TCP open
+    (this is why JONC reconnected with plain reconcile after a web-UI flash; the
+    web UI uses the same ``erst, upgrade`` command). Falls back to TLS only if
+    plaintext stays shut (the sis=secure case, for receivers without a persisted
+    services config).
+    """
+    tls_port = tls_port or (port - 1)
     deadline = time.time() + reboot_wait_s
     last_exc: Optional[Exception] = None
     while time.time() < deadline:
         time.sleep(poll_every_s)
-        try:
-            sock, _ = connect_control(ip, port, force_tls=True, timeout=10)
-        except FirmwareUpgradeError as exc:
-            last_exc = exc
+        sock = None
+        for endpoint, force_tls in ((port, False), (tls_port, True)):
+            try:
+                sock, _ = connect_control(ip, endpoint, force_tls=force_tls, timeout=10)
+                break
+            except FirmwareUpgradeError as exc:
+                last_exc = exc
+        if sock is None:
             continue
         try:
             login(sock, username, password)
@@ -276,6 +290,6 @@ def wait_for_reboot_and_verify(
                 )
             return ver
     raise FirmwareUpgradeError(
-        f"receiver did not return on the TLS port within {reboot_wait_s}s "
-        f"({last_exc or 'no version read'}) — recover via {ip}:{port - 1} (TLS)"
+        f"receiver did not return on {ip}:{port} (plaintext) or :{tls_port} (TLS) "
+        f"within {reboot_wait_s}s ({last_exc or 'no version read'})"
     )

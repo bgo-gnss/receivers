@@ -88,9 +88,18 @@ receivers rec-upgrade-firmware <SID...> --to 5.7.0 [options]
 2. **Stream-download** method (self-contained). `exeFTPUpgrade` not implemented for now.
 3. **Auto-chain the aftermath by default** (`rec-provision` → `cfg update-device --change` →
    `cfg reconcile --global --push` → `health`). `--no-provision`/`--no-record` to opt out.
-4. **Port 28783 IS required** (post-upgrade reconnect lifeline) → **auto-add** the
-   `28783→28783` Teltonika forward as part of pre-flight (reuse `cfg/telemetry_probe`), and
-   verify it landed before sending `exeResetReceiver, Upgrade`.
+4. **Port 28783 is NOT generally required** (corrected after field probing 2026-06-24).
+   The PolaRX5 **web UI sends the same `erst, upgrade, none` command** this verb uses
+   (confirmed in the receiver's `ssn.js`), and JONC reconnected with plain `reconcile`
+   after a web-UI flash. A **deployed** station reboots into its saved boot config, which
+   keeps FTP + plaintext TCP open — so the post-upgrade reconnect tries **plaintext
+   (control port) first**, TLS at `--tls-port` (default control_port-1) only as a fallback.
+   The `sis=secure closes plaintext` case applies to receivers without a persisted services
+   config; for those, recover via the **web UI (80→8060, stays open)** or an explicit 28783
+   forward (`--ensure-port-forward`, needs router API). The earlier hard 28783 gate was a
+   wrong assumption — it's now informational, not a refusal. (`control_port-1` is also NOT a
+   reliable TLS port on shared routers — on 10.4.1.43 it's just the next station's control
+   port — hence `--tls-port`.)
 
 ## Reuses (low new surface)
 - `cfg/device_probe.resolve_station_probe` (SID → ip:control_port) — already built.
