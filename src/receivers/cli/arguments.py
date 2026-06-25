@@ -673,6 +673,33 @@ Examples:
         "(SBF block list, interval, retention, priority, file naming). "
         "Exit code 0 only when all targets match the template.",
     )
+    mode_group.add_argument(
+        "--ntrip-stream",
+        nargs=2,
+        metavar=("NTR", "STATE"),
+        help="Turn an NTRIP server connection on/off, e.g. '--ntrip-stream NTR2 off'. "
+        "STATE: off | on | server | client. Pushes ONLY setNtripSettings + boot save "
+        "(+ setSBFOutput …, none for the feeding stream with --drop-sbf) — identity-safe: "
+        "leaves other mounts / marker / file logging untouched. Disabling keeps the "
+        "connection's caster/credentials/mountpoint, so it's trivially re-enabled.",
+    )
+    mode_group.add_argument(
+        "--disable-mount",
+        metavar="MOUNTPOINT",
+        help="Disable the NTRIP server stream serving MOUNTPOINT by name "
+        "(e.g. '--disable-mount HRIC1') — reads the receiver to resolve the mountpoint "
+        "to its NTRx connection, then sets it off. Add --drop-sbf to also stop the "
+        "SBF stream that fed it.",
+    )
+
+    parser.add_argument(
+        "--drop-sbf",
+        action="store_true",
+        help="With --ntrip-stream/--disable-mount: also disable the SBF output "
+        "stream(s) feeding that connection (setSBFOutput …, none), so the receiver "
+        "stops generating an output that no longer goes anywhere. Does NOT affect "
+        "file logging — the LOG* streams are separate.",
+    )
 
     parser.add_argument(
         "--config-type",
