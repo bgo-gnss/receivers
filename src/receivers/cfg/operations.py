@@ -2681,6 +2681,14 @@ def replace_receiver(
 # ---------------------------------------------------------------------------
 
 
+def _attr_serial(attributes: List[Dict[str, Optional[str]]]) -> Optional[str]:
+    """Pull the ``serial_number`` value out of a ``build_*_attributes`` payload."""
+    for attr in attributes:
+        if attr.get("code") == "serial_number":
+            return attr.get("value")
+    return None
+
+
 def _create_and_join_device(
     w: TOSWriter,
     *,
@@ -2690,12 +2698,29 @@ def _create_and_join_device(
     eff_date: str,
     dry_run: bool,
 ) -> tuple[Optional[int], Any, Any]:
-    """Create a device and open a station join. Returns (id, create, join).
+    """Create (or reuse) a device and open a station join. Returns (id, create, join).
+
+    If a device with the same serial already exists as ``subtype``, it is
+    reused rather than recreated: bench intake often pre-registers (and
+    warehouses) the new hardware in TOS before the field install, and
+    ``create_device(force=False)`` refuses to add a duplicate. In that case the
+    existing device is reparented to the station via
+    :meth:`TOSWriter.move_device` — closes the open warehouse join and opens the
+    station join (Pattern 2), tolerating a parentless device — mirroring how
+    :func:`replace_receiver` skips its warehouse-intake step for an
+    already-registered receiver. Optional intake attributes are left as the
+    device already carries them (the join is what the install is about).
 
     In dry-run the create returns a :class:`DryRunResult` with no id; the
     join is still issued with a ``0`` placeholder child so the preview shows
     both calls (mirrors :func:`replace_receiver`'s warehouse-intake step).
     """
+    existing = w.find_device_by_serial(subtype, _attr_serial(attributes) or "")
+    if existing is not None:
+        device_id = int(existing["id_entity"])
+        join = w.move_device(device_id, station_eid, eff_date)
+        return device_id, existing, join
+
     created = w.create_device(
         entity_subtype=subtype, attributes=attributes, force=False
     )

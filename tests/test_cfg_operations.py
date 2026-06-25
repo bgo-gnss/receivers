@@ -1804,6 +1804,9 @@ def _telemetry_writer(
         return None
 
     w.get_entity_history.side_effect = _hist
+    # By default the NEW device is not yet in TOS (fresh install → create path).
+    # Pre-registered-device tests override this with the existing entity.
+    w.find_device_by_serial.return_value = None
     w.create_device.return_value = {"id_entity": 22000}
     w.create_entity_connection.return_value = {"opened": "ok"}
     w.move_device.return_value = {"closed": "ok", "opened": "ok"}
@@ -1866,6 +1869,40 @@ def test_replace_modem_swaps_old_to_warehouse():
         20771, "status", "bilað", "2026-06-06T12:00:00"
     )
     assert result.tos_changes["plan"]["old_serial"] == "6001254079"
+
+
+def test_replace_modem_reuses_preregistered_device():
+    """New modem already in TOS (bench intake) → reparent, don't duplicate.
+
+    The bench process often registers/warehouses the new router in TOS before
+    the field install. The new device's serial already resolves via
+    find_device_by_serial, so replace_modem must reparent it to the station
+    with move_device instead of calling create_device (which refuses a
+    duplicate). Regression guard for the RIFC swap.
+    """
+    w = _telemetry_writer(
+        old_child_id=20771,
+        old_subtype="modem_gsm",
+        old_attrs=[_attr("serial_number", "6001254079")],
+    )
+    # New modem 6001312345 is already registered as id_entity 20421 (warehoused).
+    w.find_device_by_serial.return_value = {"id_entity": 20421}
+    result = replace_modem(
+        "GSIG",
+        new_serial="6001312345",
+        new_model="Teltonika RUT241",
+        date="2026-06-06",
+        writer=w,
+        dry_run=False,
+    )
+    # No duplicate created for the pre-registered device.
+    w.create_device.assert_not_called()
+    # Old modem (20771) retired to B9 (eid 4) AND new modem (20421) reparented
+    # to the station (eid 4312) — both via move_device.
+    w.move_device.assert_any_call(20771, 4, "2026-06-06T12:00:00")
+    w.move_device.assert_any_call(20421, 4312, "2026-06-06T12:00:00")
+    w.add_maintenance_visit.assert_called_once()
+    assert result.serial == "6001312345"
 
 
 def test_replace_modem_rejects_same_serial():
