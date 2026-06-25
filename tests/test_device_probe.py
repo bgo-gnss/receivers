@@ -323,3 +323,59 @@ def test_probe_error_hierarchy() -> None:
     assert issubclass(ProbeUnreachableError, ProbeError)
     assert issubclass(ProbeNotIdentifiedError, ProbeError)
     assert issubclass(ProbeIncompleteError, ProbeError)
+
+
+# ---------------------------------------------------------------------------
+# resolve_station_probe — SID → host[:port] from stations.cfg
+# ---------------------------------------------------------------------------
+
+
+def _patch_cfg(cfg):
+    return patch("receivers.config_utils.get_station_config", return_value=cfg)
+
+
+def test_resolve_station_probe_receiver() -> None:
+    from receivers.cfg.device_probe import resolve_station_probe
+
+    cfg = {"router": {"ip": "10.4.1.43"}, "receiver": {"controlport": "28787"}}
+    with _patch_cfg(cfg):
+        assert resolve_station_probe("JONC") == "10.4.1.43:28787"
+
+
+def test_resolve_station_probe_router_only() -> None:
+    from receivers.cfg.device_probe import resolve_station_probe
+
+    cfg = {"router": {"ip": "10.4.1.43"}, "receiver": {"controlport": "28787"}}
+    with _patch_cfg(cfg):
+        assert resolve_station_probe("JONC", router_only=True) == "10.4.1.43"
+
+
+def test_resolve_station_probe_default_port() -> None:
+    from receivers.cfg.device_probe import resolve_station_probe
+
+    # No explicit controlport → falls back to the PolaRX5 default 28784.
+    cfg = {"router": {"ip": "10.0.0.5"}, "receiver": {}}
+    with _patch_cfg(cfg):
+        assert resolve_station_probe("XXXX") == "10.0.0.5:28784"
+
+
+def test_resolve_station_probe_unknown_station() -> None:
+    from receivers.cfg.device_probe import (
+        StationProbeResolveError,
+        resolve_station_probe,
+    )
+
+    with _patch_cfg(None):
+        with pytest.raises(StationProbeResolveError):
+            resolve_station_probe("NOPE")
+
+
+def test_resolve_station_probe_no_router_ip() -> None:
+    from receivers.cfg.device_probe import (
+        StationProbeResolveError,
+        resolve_station_probe,
+    )
+
+    with _patch_cfg({"router": {}, "receiver": {"controlport": "28787"}}):
+        with pytest.raises(StationProbeResolveError):
+            resolve_station_probe("PASV")

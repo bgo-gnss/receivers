@@ -146,3 +146,52 @@ def test_push_flag_forwarded(tmp_path):
             _args(global_cfg=True, push=True), "msg", changed=True, dry_run=False
         )
     assert gc.call_args.kwargs.get("push") is True
+
+
+# --- reconcile: --global reads baseline from the repo + restores env -----------
+
+
+def test_reconcile_global_loads_baseline_from_repo(tmp_path, monkeypatch):
+    """With --global, the baseline config is loaded with GPS_CONFIG_PATH pointed
+    at the gps-config-data repo (so a stale repo is detected even when the local
+    config is already current), and the env var is restored afterward."""
+    import os
+
+    from receivers.cli import cfg as cfgmod
+
+    repo = tmp_path / "gps-config-data"
+    repo.mkdir()
+    (repo / "stations.cfg").write_text("[JONC]\n")
+
+    seen = {}
+
+    def fake_load(sids, json_mode=False):
+        seen["during"] = os.environ.get("GPS_CONFIG_PATH")
+        return {}  # empty → handler early-returns before probing
+
+    monkeypatch.setattr(cfgmod, "_load_station_configs", fake_load)
+    monkeypatch.setattr(
+        cfgmod, "_resolve_global_target", lambda a: repo / "stations.cfg"
+    )
+    monkeypatch.setenv("GPS_CONFIG_PATH", "/orig/local/gpsconfig")
+
+    args = SimpleNamespace(
+        list_fields=False,
+        open=False,
+        all=False,
+        station=["JONC"],
+        source="receiver",
+        field=["receiver_firmware_version"],
+        json=False,
+        dry_run=True,
+        auto_fill=False,
+        canonicalize=False,
+        workers=1,
+        global_cfg=True,
+        cfg_path=None,
+        push=False,
+    )
+    cfgmod.cmd_cfg_reconcile(args)
+
+    assert seen["during"] == str(repo), "baseline must load from the repo dir"
+    assert os.environ["GPS_CONFIG_PATH"] == "/orig/local/gpsconfig", "env restored"

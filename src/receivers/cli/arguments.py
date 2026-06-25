@@ -639,6 +639,14 @@ Examples:
         "--push", metavar="CONFIG_FILE", help="Push configuration file to receiver"
     )
     mode_group.add_argument(
+        "--tracking",
+        metavar="SPEC",
+        help="Set signal tracking to a constellation spec, e.g. 'gps+glonass' "
+        "(power-save for wind/solar). Pushes ONLY setSignalTracking/setSignalUsage "
+        "+ boot save — never touches marker/mountpoint/sessions, so it's safe on a "
+        "live stream station. Constellations: gps, glonass, galileo, beidou.",
+    )
+    mode_group.add_argument(
         "--check-session",
         metavar="SESSION",
         help="Check whether a logging session is enabled (e.g. status_1hr). "
@@ -850,6 +858,130 @@ Desk/bench setup (one-shot bootstrap):
     add_host_flags(parser)
     add_verbose_flag(parser)
 
+    return parser
+
+
+def setup_rec_upgrade_firmware_parser(subparsers) -> argparse.ArgumentParser:
+    """Set up the rec-upgrade-firmware subcommand parser."""
+    parser = subparsers.add_parser(
+        "rec-upgrade-firmware",
+        help="Upgrade PolaRX5 firmware (stream-download flash + chained aftermath)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""
+Flash new GNSS firmware onto a Septentrio PolaRX5 over the TCP command port
+(Septentrio "manual download" method), then restore services and record the new
+version. DRY-RUN BY DEFAULT — pass --no-dry-run to actually flash.
+
+What it does per station:
+  1. Resolve router_ip:receiver_controlport from stations.cfg (handles shared-IP
+     / non-standard port-forward stations, e.g. OLAC/KASC on 10.4.1.43).
+  2. Ensure the TLS reconnect lifeline exists: a control_port-1 → receiver:28783
+     DNAT forward on the router (auto-added with --ensure-port-forward). After the
+     flash the receiver reboots into sis=secure — 28784 closes, 28783 is the only
+     way back in.
+  3. Probe current firmware; skip if already at/above target.
+  4. exeResetReceiver,Upgrade → wait "Ready for SUF download" → stream the .suf in
+     binary → receiver verifies + reboots.
+  5. Reconnect over TLS, confirm the new version (lif,Identification).
+  6. Chain the aftermath (unless suppressed): rec-provision (restore sis/shs/FTP)
+     → cfg update-device --change (TOS) → cfg reconcile --global --push
+     (stations.cfg + repo) → health.
+
+⚠ A botched flash with the 28783 forward missing needs a physical site visit.
+   Validate on a BENCH receiver (--host 192.168.3.1) before deployed stations.
+
+Examples:
+  receivers rec-upgrade-firmware OLAC --to 5.7.0                 # dry-run plan
+  receivers rec-upgrade-firmware OLAC --to 5.7.0 --ensure-port-forward --no-dry-run
+  receivers rec-upgrade-firmware KASC --suf /path/PolaRx5-5.7.0.suf --no-dry-run
+  receivers rec-upgrade-firmware BENCH --host 192.168.3.1 --to 5.7.0 --no-dry-run
+        """,
+    )
+    parser.add_argument("stations", metavar="STATIONS", nargs="+", help="Station ID(s)")
+    src = parser.add_mutually_exclusive_group(required=True)
+    src.add_argument(
+        "--to",
+        metavar="VERSION",
+        help="Target firmware version (resolves .suf from --firmware-dir)",
+    )
+    src.add_argument(
+        "--suf", metavar="PATH", help="Explicit .suf firmware file (overrides --to)"
+    )
+    parser.add_argument(
+        "--firmware-dir",
+        metavar="DIR",
+        help="Root holding <version>/firmware/PolaRx5-<version>.suf "
+        "(default: receivers.cfg [paths] firmware_dir).",
+    )
+    parser.add_argument(
+        "--via",
+        metavar="V1,V2",
+        help="Explicit stepped path before --to (default: direct; .suf is a full image).",
+    )
+    parser.add_argument(
+        "--host",
+        metavar="HOST[:PORT]",
+        help="Bench/manual host override (skips stations.cfg).",
+    )
+    parser.add_argument(
+        "--no-dry-run",
+        action="store_true",
+        help="Actually flash. Without it, validates the plan and sends nothing.",
+    )
+    parser.add_argument(
+        "--ensure-port-forward",
+        action="store_true",
+        help="Auto-add the TLS-port → receiver:28783 forward on the router (needs router API).",
+    )
+    parser.add_argument(
+        "--tls-port",
+        type=int,
+        metavar="PORT",
+        help="Router port that forwards to receiver:28783 (default: control_port-1). "
+        "The post-upgrade reconnect uses this; it is verified by a TLS handshake.",
+    )
+    parser.add_argument(
+        "--allow-deployed-flash",
+        action="store_true",
+        help="Override the bench-only guard. The TCP flash core is EXPERIMENTAL "
+        "(left a deployed receiver in recovery mode) — without --host, a real flash "
+        "is refused unless this is set. Use only once the upgrade-mode handshake is "
+        "hardware-proven.",
+    )
+    parser.add_argument(
+        "--no-provision",
+        action="store_true",
+        help="Skip the chained rec-provision step.",
+    )
+    parser.add_argument(
+        "--no-record",
+        action="store_true",
+        help="Skip the chained TOS/cfg recording steps.",
+    )
+    parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Skip the pre-flash confirmation prompt.",
+    )
+    parser.add_argument(
+        "--port", type=int, metavar="PORT", help="Override control port."
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=15.0,
+        metavar="SECONDS",
+        help="Connect timeout (default 15).",
+    )
+    parser.add_argument(
+        "--reboot-wait",
+        type=int,
+        default=240,
+        metavar="SECONDS",
+        help="Max wait for the receiver to return after flashing (default 240).",
+    )
+    add_verbose_flag(parser)
     return parser
 
 
@@ -1130,6 +1262,7 @@ For subcommand help: receivers <command> --help
     setup_validate_parser(subparsers)
     setup_rec_config_parser(subparsers)
     setup_rec_provision_parser(subparsers)
+    setup_rec_upgrade_firmware_parser(subparsers)
     setup_rinex_parser(subparsers)
     setup_tools_parser(subparsers)
 

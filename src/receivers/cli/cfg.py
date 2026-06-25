@@ -1062,10 +1062,29 @@ def _reconcile_one(
 
     n_written = 0
     n_skipped = 0
-    # --global retargets the cfg write to the gps-config-data repo's stations.cfg
-    # (the source of truth); None → apply_diff/remove_diff use the local config.
-    # Resolved once by the handler (incl. the divergence preflight) and passed in.
-    _global_target = global_target
+    # Write targets: always the local stations.cfg (None → apply_diff/remove_diff
+    # resolve it); with --global, ALSO the gps-config-data repo's stations.cfg
+    # (the source of truth), so one `cfg reconcile … --global --push` run syncs
+    # the local deployed config AND the repo in lockstep. Resolved once by the
+    # handler (incl. the divergence preflight).
+    _write_targets: List[Optional[Path]] = [None]
+    if global_target is not None:
+        _write_targets.append(global_target)
+
+    def _apply_to_targets(_d, _value, **_kw) -> bool:
+        _changed = False
+        for _tgt in _write_targets:
+            if apply_diff(station_id, _d, _value, cfg_path=_tgt, **_kw):
+                _changed = True
+        return _changed
+
+    def _remove_from_targets(_d, **_kw) -> bool:
+        _changed = False
+        for _tgt in _write_targets:
+            if remove_diff(station_id, _d, cfg_path=_tgt, **_kw):
+                _changed = True
+        return _changed
+
     actionable = [d for d in diffs if d.needs_attention]
     canonicalize_on = getattr(args, "canonicalize", False)
     fmt_mismatches = [d for d in diffs if d.format_mismatch] if canonicalize_on else []
@@ -1339,7 +1358,7 @@ def _reconcile_one(
                     )
                 new_value = mapped
             try:
-                changed = apply_diff(station_id, d, new_value, cfg_path=_global_target)
+                changed = _apply_to_targets(d, new_value)
                 if changed:
                     n_written += 1
                     if not silent:
@@ -1389,7 +1408,7 @@ def _reconcile_one(
                     )
                 new_value = mapped
             try:
-                changed = apply_diff(station_id, d, new_value, cfg_path=_global_target)
+                changed = _apply_to_targets(d, new_value)
                 if changed:
                     n_written += 1
                     if not silent:
@@ -1415,13 +1434,7 @@ def _reconcile_one(
                     print(f"     ≈ {d.cfg_key}: {d.cfg_raw!r} → {rx_val!r} (dry-run)")
             else:
                 try:
-                    changed = apply_diff(
-                        station_id,
-                        d,
-                        rx_val,
-                        cfg_path=_global_target,
-                        resolved_by="canonicalize",
-                    )
+                    changed = _apply_to_targets(d, rx_val, resolved_by="canonicalize")
                     if changed:
                         n_written += 1
                         if not silent:
@@ -1448,12 +1461,7 @@ def _reconcile_one(
                         print(f"     ~ {d.cfg_key}: remove {d.cfg_raw!r} (dry-run)")
                 else:
                     try:
-                        changed = remove_diff(
-                            station_id,
-                            d,
-                            cfg_path=_global_target,
-                            resolved_by="canonicalize",
-                        )
+                        changed = _remove_from_targets(d, resolved_by="canonicalize")
                         if changed:
                             n_written += 1
                             if not silent:
@@ -1482,7 +1490,7 @@ def _reconcile_one(
                     break
                 if choice in ("d", "delete", ""):
                     try:
-                        changed = remove_diff(station_id, d, cfg_path=_global_target)
+                        changed = _remove_from_targets(d)
                         if changed:
                             n_written += 1
                             print(f"       ✅ removed {d.cfg_key}")
@@ -1619,11 +1627,6 @@ def cmd_cfg_reconcile(args) -> int:
         except Exception:  # noqa: BLE001
             fields = None  # fall back to all fields
 
-    # Load configs
-    configs = _load_station_configs(station_ids, json_mode=args.json)
-    if not configs:
-        return 1
-
     # Resolve the --global target ONCE up front. This also runs the divergence
     # preflight (require --push, clone even with origin) before any write, so a
     # refusal aborts cleanly with no dirty work-tree.
@@ -1633,6 +1636,28 @@ def cmd_cfg_reconcile(args) -> int:
         global_target = _resolve_global_target(args)
     except _CfgOpErr as exc:
         _progress(f"❌ {exc}", json_mode=args.json)
+        return 1
+
+    # Load configs. When finalizing the repo (--global), read the BASELINE from
+    # the gps-config-data repo (not the local deployed config), so a stale repo
+    # is detected even when the local config was already reconciled. Writes still
+    # go to BOTH local and repo (see _reconcile_one). GPS_CONFIG_PATH is restored
+    # right after the load so cfg_path=None resolves the local stations.cfg again.
+    if global_target is not None:
+        import os as _os
+
+        _orig_cfg_path = _os.environ.get("GPS_CONFIG_PATH")
+        _os.environ["GPS_CONFIG_PATH"] = str(global_target.parent)
+        try:
+            configs = _load_station_configs(station_ids, json_mode=args.json)
+        finally:
+            if _orig_cfg_path is None:
+                _os.environ.pop("GPS_CONFIG_PATH", None)
+            else:
+                _os.environ["GPS_CONFIG_PATH"] = _orig_cfg_path
+    else:
+        configs = _load_station_configs(station_ids, json_mode=args.json)
+    if not configs:
         return 1
 
     # Skip discontinued / inactive stations — probing them is pointless and,
@@ -1814,9 +1839,7 @@ def _parse_since(spec: str) -> datetime:
         delta = (
             timedelta(days=n)
             if unit == "d"
-            else timedelta(hours=n)
-            if unit == "h"
-            else timedelta(minutes=n)
+            else timedelta(hours=n) if unit == "h" else timedelta(minutes=n)
         )
         return datetime.now(UTC) - delta
     try:
@@ -2136,19 +2159,29 @@ def cmd_cfg_add_receiver(args) -> int:
         ProbeNotIdentifiedError,
         ProbeUnreachableError,
         ReceiverIdentity,
+        StationProbeResolveError,
         parse_host_port,
         probe_receiver,
+        resolve_station_probe,
         to_subtype_attrs,
     )
 
-    # ---- --probe / --from-file mutual exclusion -------------------------
+    # ---- --probe / --station / --from-file mutual exclusion -------------
     from_file = getattr(args, "from_file", None)
-    if bool(args.probe) == bool(from_file):
+    station = getattr(args, "station", None)
+    if sum(bool(x) for x in (args.probe, station, from_file)) != 1:
         print(
-            "❌ exactly one of --probe or --from-file is required",
+            "❌ exactly one of --probe, --station, or --from-file is required",
             file=sys.stderr,
         )
         return 2
+    if station:
+        try:
+            args.probe = resolve_station_probe(station)
+        except StationProbeResolveError as e:
+            print(f"❌ {e}", file=sys.stderr)
+            return 2
+        print(f"Resolved {station} → {args.probe}")
 
     # ---- --from-file: load identity + defaults from YAML ----------------
     # CLI args take precedence; file fills in only what was not supplied
@@ -2284,7 +2317,9 @@ def cmd_cfg_add_receiver(args) -> int:
                 host,
                 port,
                 probe_type=args.probe_type,
-                station_id_hint=args.station_hint,
+                # --station resolves credentials from that station's cfg; fall
+                # back to the explicit --station-hint for bench/warehouse intake.
+                station_id_hint=station or args.station_hint,
             )
         except ProbeUnreachableError as e:
             print(f"❌ {e}", file=sys.stderr)
@@ -3154,8 +3189,10 @@ def cmd_cfg_update_device(args) -> int:
         ProbeError,
         ProbeNotIdentifiedError,
         ProbeUnreachableError,
+        StationProbeResolveError,
         parse_host_port,
         probe_receiver,
+        resolve_station_probe,
     )
 
     if not args.field:
@@ -3165,7 +3202,21 @@ def cmd_cfg_update_device(args) -> int:
         )
         return 2
 
-    # ---- Parse probe target ---------------------------------------------
+    # ---- Resolve probe target (--probe HOST or --station SID) ------------
+    if bool(args.probe) == bool(args.station):
+        print(
+            "❌ pass exactly one of --probe HOST[:PORT] or --station SID",
+            file=sys.stderr,
+        )
+        return 2
+    if args.station:
+        try:
+            args.probe = resolve_station_probe(args.station)
+        except StationProbeResolveError as e:
+            print(f"❌ {e}", file=sys.stderr)
+            return 2
+        print(f"Resolved {args.station} → {args.probe}")
+
     try:
         host, port = parse_host_port(args.probe)
     except ValueError as e:
@@ -3183,6 +3234,10 @@ def cmd_cfg_update_device(args) -> int:
             probe_type=args.probe_type,
             tcp_username=args.username,
             tcp_password=args.password,
+            # With --station, let the extractor pull that station's stored
+            # tcp_username/tcp_password from stations.cfg (so an authenticated
+            # PolaRX5 probes without re-passing --username/--password).
+            station_id_hint=args.station,
         )
     except (ProbeUnreachableError, ProbeNotIdentifiedError, ProbeError) as e:
         print(f"❌ {e}", file=sys.stderr)
@@ -4030,7 +4085,16 @@ Examples:
         metavar="HOST[:PORT]",
         help=(
             "Receiver host/IP, optionally with explicit port. Mutually "
-            "exclusive with --from-file; one of the two is required."
+            "exclusive with --station/--from-file; one of the three is required."
+        ),
+    )
+    add_rx.add_argument(
+        "--station",
+        metavar="SID",
+        help=(
+            "Deployed station ID — resolves router_ip:receiver_controlport from "
+            "stations.cfg (disambiguates port-forwarded stations sharing a "
+            "router IP). Mutually exclusive with --probe/--from-file."
         ),
     )
     add_rx.add_argument(
@@ -4682,8 +4746,15 @@ Examples:
     upd.add_argument(
         "--probe",
         metavar="HOST[:PORT]",
-        required=True,
-        help="Receiver IP/host (with optional port).",
+        help="Receiver IP/host (with optional port). Mutually exclusive with "
+        "--station; one of the two is required.",
+    )
+    upd.add_argument(
+        "--station",
+        metavar="SID",
+        help="Deployed station ID — resolves router_ip:receiver_controlport from "
+        "stations.cfg (handles port-forwarded stations sharing a router IP). "
+        "Mutually exclusive with --probe.",
     )
     upd.add_argument(
         "--probe-type",
@@ -5423,11 +5494,14 @@ Examples:
     rm.add_argument(
         "--probe",
         metavar="HOST[:PORT]",
+        nargs="?",
+        const="@station",
         help=(
             "Auto-extract the new modem's identity (serial/model/mac/"
             "manufacturer/subtype) live from the Teltonika router at HOST via "
-            "the RutOS REST API. Explicit --new-* / --mac / etc. override "
-            "probed values. Credentials from receivers.cfg [teltonika]."
+            "the RutOS REST API. Pass --probe with no value to probe --station's "
+            "router_ip from stations.cfg. Explicit --new-* / --mac / etc. "
+            "override probed values. Credentials from receivers.cfg [teltonika]."
         ),
     )
     rm.add_argument(
@@ -5599,11 +5673,14 @@ Examples:
     rs.add_argument(
         "--probe",
         metavar="HOST[:PORT]",
+        nargs="?",
+        const="@station",
         help=(
             "Auto-extract the SIM identity (ip/iccid/provider) live from the "
-            "Teltonika router at HOST via the RutOS REST API. Explicit --ip / "
-            "--serial / --provider override probed values. Credentials from "
-            "receivers.cfg [teltonika]."
+            "Teltonika router at HOST via the RutOS REST API. Pass --probe with "
+            "no value to probe --station's router_ip from stations.cfg. Explicit "
+            "--ip / --serial / --provider override probed values. Credentials "
+            "from receivers.cfg [teltonika]."
         ),
     )
     rs.add_argument(
@@ -6349,6 +6426,25 @@ def _probe_telemetry_or_exit(args):
     if not host:
         return None
     import sys
+
+    # `--probe` with no value (const "@station") → resolve the target station's
+    # router_ip from stations.cfg (router-level probe, no receiver port needed).
+    if host == "@station":
+        from ..cfg.device_probe import (
+            StationProbeResolveError,
+            resolve_station_probe,
+        )
+
+        station = getattr(args, "station", None)
+        if not station:
+            print("❌ --probe with no value requires --station SID", file=sys.stderr)
+            raise SystemExit(2)
+        try:
+            host = resolve_station_probe(station, router_only=True)
+        except StationProbeResolveError as exc:
+            print(f"❌ {exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
+        print(f"Resolved {station} → router {host}")
 
     from ..cfg.telemetry_probe import (
         ProbeAuthError,

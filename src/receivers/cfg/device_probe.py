@@ -107,6 +107,47 @@ def parse_host_port(probe_arg: str) -> Tuple[str, Optional[int]]:
         raise ValueError(f"--probe port must be an integer, got {port_str!r}") from e
 
 
+class StationProbeResolveError(ValueError):
+    """Raised when a station ID can't be resolved to a probe target."""
+
+
+def resolve_station_probe(station_id: str, *, router_only: bool = False) -> str:
+    """Resolve a deployed station's probe target (``host[:port]``) from stations.cfg.
+
+    Lets the probe-by-IP cfg verbs (``update-device``, ``add-receiver``,
+    ``replace-modem``, ``replace-sim``) address a station by its 4-char ID
+    instead of a raw IP. Crucially this disambiguates **port-forwarded stations
+    that share a router IP** — e.g. JONC/KASC/OLAC/TANC all on ``10.4.1.43``,
+    each reachable on its own ``receiver_controlport``.
+
+    - receiver probes (default): returns ``router_ip:receiver_controlport``.
+    - router probes (``router_only=True``, telemetry/RutOS): returns just
+      ``router_ip`` — the RutOS REST API uses its own port and credentials.
+
+    Raises ``StationProbeResolveError`` if the station is unknown or has no
+    ``router_ip`` (e.g. a passive station with no direct connection).
+    """
+    from ..config_utils import get_station_config
+
+    cfg = get_station_config(station_id, silent=True)
+    if not cfg:
+        raise StationProbeResolveError(
+            f"station {station_id!r} not found in stations.cfg (or has no direct "
+            "connection) — pass --probe HOST[:PORT] instead"
+        )
+    router = cfg.get("router") or {}
+    host = router.get("ip") or cfg.get("router_ip") or cfg.get("ip_address")
+    if not host:
+        raise StationProbeResolveError(
+            f"no router_ip for {station_id!r} in stations.cfg — pass --probe instead"
+        )
+    if router_only:
+        return str(host)
+    receiver = cfg.get("receiver") or {}
+    port = receiver.get("controlport") or cfg.get("receiver_controlport") or "28784"
+    return f"{host}:{port}"
+
+
 # ---------------------------------------------------------------------------
 # Per-protocol strategies
 # ---------------------------------------------------------------------------
