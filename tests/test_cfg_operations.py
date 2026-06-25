@@ -31,6 +31,7 @@ from receivers.cfg.operations import (
     replace_modem,
     replace_receiver,
     replace_sim,
+    set_device_attribute,
     show_visit,
     update_visit,
 )
@@ -2177,3 +2178,181 @@ def test_parse_attr_pairs_rejects_empty_code():
 
     with _pytest.raises(ValueError, match="empty attribute code"):
         _parse_attr_pairs(["=value"])
+
+
+# ---------------------------------------------------------------------------
+# set_device_attribute — single attribute on an existing device, no swap
+# ---------------------------------------------------------------------------
+
+
+def _sim_writer(*, open_values=None, child_id=21582):
+    """Telemetry writer mock with an open sim_card and configurable attr values."""
+    w = _telemetry_writer(
+        old_child_id=child_id,
+        old_subtype="sim_card",
+        old_attrs=[_attr("ip_address", "10.6.1.227")],
+    )
+    w.get_attribute_values.return_value = open_values if open_values is not None else []
+    w.get_open_parent_join.return_value = {"time_from": "2026-06-24T12:00:00"}
+    w.add_attribute_value.return_value = {"id_attribute_value": 5}
+    w.upsert_attribute_value.return_value = {"id_attribute_value": 5}
+    return w
+
+
+def test_set_attr_adds_missing_attribute():
+    """No open value → POST a new one dated from the device install."""
+    w = _sim_writer(open_values=[])
+    r = set_device_attribute(
+        "RIFC",
+        subtype="sim_card",
+        code="phone_number",
+        value="+3548372739",
+        writer=w,
+        dry_run=False,
+    )
+    w.add_attribute_value.assert_called_once_with(
+        21582, "phone_number", "+3548372739", "2026-06-24T12:00:00"
+    )
+    w.upsert_attribute_value.assert_not_called()
+    w.transition_attribute_value.assert_not_called()
+    assert r.tos_changes["mode"] == "add"
+    assert r.tos_changes["plan"]["old_value"] is None
+
+
+def test_set_attr_explicit_date_overrides_install():
+    """--date sets the new period's date_from instead of the install date."""
+    w = _sim_writer(open_values=[])
+    set_device_attribute(
+        "RIFC",
+        subtype="sim_card",
+        code="phone_number",
+        value="+3548372739",
+        date="2026-06-20T12:00:00",
+        writer=w,
+        dry_run=False,
+    )
+    w.add_attribute_value.assert_called_once_with(
+        21582, "phone_number", "+3548372739", "2026-06-20T12:00:00"
+    )
+
+
+def test_set_attr_noop_when_value_matches():
+    """Open value already equals → no write."""
+    w = _sim_writer(
+        open_values=[
+            {
+                "value": "+3548372739",
+                "date_to": None,
+                "date_from": "2026-06-24T12:00:00",
+                "id_attribute_value": 5,
+            },
+        ]
+    )
+    r = set_device_attribute(
+        "RIFC",
+        subtype="sim_card",
+        code="phone_number",
+        value="+3548372739",
+        writer=w,
+        dry_run=False,
+    )
+    assert r.tos_changes["mode"] == "noop"
+    w.add_attribute_value.assert_not_called()
+    w.upsert_attribute_value.assert_not_called()
+    w.transition_attribute_value.assert_not_called()
+
+
+def test_set_attr_differs_requires_intent():
+    """Open value differs and no --change/--correct → refuse."""
+    w = _sim_writer(
+        open_values=[
+            {
+                "value": "+3540000000",
+                "date_to": None,
+                "date_from": "2026-06-24T12:00:00",
+                "id_attribute_value": 5,
+            },
+        ]
+    )
+    with pytest.raises(CfgOperationError, match="--correct"):
+        set_device_attribute(
+            "RIFC",
+            subtype="sim_card",
+            code="phone_number",
+            value="+3548372739",
+            writer=w,
+            dry_run=False,
+        )
+
+
+def test_set_attr_correct_patches_in_place():
+    """--correct on a differing value → Pattern 1 upsert (no transition)."""
+    w = _sim_writer(
+        open_values=[
+            {
+                "value": "+3540000000",
+                "date_to": None,
+                "date_from": "2026-06-24T12:00:00",
+                "id_attribute_value": 5,
+            },
+        ]
+    )
+    r = set_device_attribute(
+        "RIFC",
+        subtype="sim_card",
+        code="phone_number",
+        value="+3548372739",
+        correct=True,
+        writer=w,
+        dry_run=False,
+    )
+    w.upsert_attribute_value.assert_called_once_with(
+        21582, "phone_number", "+3548372739", "2026-06-24T12:00:00"
+    )
+    w.transition_attribute_value.assert_not_called()
+    assert r.tos_changes["mode"] == "correct"
+
+
+def test_set_attr_change_transitions():
+    """--change on a differing value → Pattern 2 transition (records history)."""
+    w = _sim_writer(
+        open_values=[
+            {
+                "value": "+3540000000",
+                "date_to": None,
+                "date_from": "2026-06-24T12:00:00",
+                "id_attribute_value": 5,
+            },
+        ]
+    )
+    r = set_device_attribute(
+        "RIFC",
+        subtype="sim_card",
+        code="phone_number",
+        value="+3548372739",
+        change=True,
+        date="2026-06-25",
+        writer=w,
+        dry_run=False,
+    )
+    assert w.transition_attribute_value.call_args.args[:3] == (
+        21582,
+        "phone_number",
+        "+3548372739",
+    )
+    w.upsert_attribute_value.assert_not_called()
+    assert r.tos_changes["mode"] == "change"
+
+
+def test_set_attr_no_open_device_raises():
+    """No open child of the subtype → clear error."""
+    w = _telemetry_writer(old_child_id=None)
+    with pytest.raises(CfgOperationError, match="No open sim_card"):
+        set_device_attribute(
+            "RIFC",
+            subtype="sim_card",
+            code="phone_number",
+            value="+3548372739",
+            writer=w,
+            dry_run=False,
+        )
