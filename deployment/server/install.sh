@@ -469,8 +469,20 @@ fi
 # Install packages as bgo (bgo owns the venv)
 sudo -u "$ADMIN_USER" "$VENV_DIR/bin/pip" install --upgrade pip setuptools wheel -q
 
-# Always install receivers first — this resolves the git-URL pins in
-# pyproject.toml for gtimes/gps_parser/tostools (the production path).
+# Force a clean re-resolve of the git-pinned siblings. pip skips re-fetching a
+# direct-URL (git) dependency when its installed VERSION already satisfies the
+# requirement — so bumping a pin to a new COMMIT at the SAME version (e.g.
+# tostools ba36022->adaa495, both 0.6.1) silently would NOT install, leaving the
+# venv on stale code. Uninstalling them first makes the receivers install below
+# fetch each pin fresh from pyproject.toml. Skipped in --dev, where the editable
+# installs override these anyway.
+if ! $FLAG_DEV; then
+    sudo -u "$ADMIN_USER" "$VENV_DIR/bin/pip" uninstall -y -q \
+        gtimes gps_parser tostools 2>/dev/null || true
+fi
+
+# Install receivers — this resolves the git-URL pins in pyproject.toml for
+# gtimes/gps_parser/tostools (the production path).
 sudo -u "$ADMIN_USER" "$VENV_DIR/bin/pip" install -e "$INSTALL_DIR" -q
 
 if $FLAG_DEV; then
