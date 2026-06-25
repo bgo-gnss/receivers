@@ -82,9 +82,7 @@ def _validate_station_for_download(
     """
     station_config = get_station_config(station_id)
     if station_config is None:
-        logger.warning(
-            f"⚠️  Station {station_id} not found in configuration - SKIPPING"
-        )
+        logger.warning(f"⚠️  Station {station_id} not found in configuration - SKIPPING")
         return None
 
     try:
@@ -894,9 +892,7 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
             voltage = power.get("voltage")
             if voltage is not None:
                 status = power.get("status", "ok")
-                emoji = (
-                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
-                )
+                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
                 metric_lines.append(f"Voltage: {emoji} {voltage:.2f} V")
 
         # Temperature
@@ -905,9 +901,7 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
             value = temp.get("value")
             if value is not None:
                 status = temp.get("status", "ok")
-                emoji = (
-                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
-                )
+                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
                 metric_lines.append(f"Temp: {emoji} {value}°C")
 
         # CPU load
@@ -916,9 +910,7 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
             value = cpu.get("value", cpu.get("percent"))
             if value is not None:
                 status = cpu.get("status", "ok")
-                emoji = (
-                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
-                )
+                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
                 metric_lines.append(f"CPU: {emoji} {value}%")
 
         # Disk usage
@@ -927,9 +919,7 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
             value = disk.get("usage_percent")
             if value is not None:
                 status = disk.get("status", "ok")
-                emoji = (
-                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
-                )
+                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
                 metric_lines.append(f"Disk: {emoji} {value:.0f}%")
 
         if metric_lines:
@@ -941,9 +931,7 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
             total = sats.get("total")
             if total is not None:
                 status = sats.get("status", "ok")
-                emoji = (
-                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
-                )
+                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
                 by_const = sats.get("by_constellation", {})
                 const_str = (
                     ", ".join(f"{k}:{v}" for k, v in by_const.items())
@@ -961,9 +949,7 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
             fix_mode = pos.get("fix_mode") or pos.get("fix_type")
             if fix_mode:
                 status = pos.get("status", "ok")
-                emoji = (
-                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
-                )
+                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
                 sats_used = pos.get("satellites_used", "")
                 lat = pos.get("latitude")
                 lon = pos.get("longitude")
@@ -1069,9 +1055,7 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
                     status = "warning"
                 else:
                     status = "ok"
-                emoji = (
-                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
-                )
+                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
                 label = session_labels.get(session, session)
                 file_parts.append(f"{label}:{emoji}")
         if file_parts:
@@ -1801,9 +1785,7 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
                 tcp = connection["tcp"]
                 status = tcp.get("status", "unknown")
                 host = tcp.get("host", "")
-                emoji = (
-                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
-                )
+                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
                 print(f"  tcp: {emoji} {status} ({host})")
 
             # Show port status (always show all ports for consistency, N/A if not configured)
@@ -2463,6 +2445,13 @@ def cmd_rec_config(args) -> int:
         finally:
             _os.unlink(tf.name)
 
+    # Handle --ntrip-stream / --disable-mount: identity-safe NTRIP server on/off
+    # (+ optional --drop-sbf), pushed via the same temp-file path as --tracking.
+    if getattr(args, "ntrip_stream", None) or getattr(args, "disable_mount", None):
+        return _ntrip_stream_configs(
+            args, targets, logger, tcp_username, tcp_password, rec_config_dir
+        )
+
     # Handle push mode
     if args.push:
         return _push_configs(
@@ -2504,6 +2493,107 @@ def cmd_rec_config(args) -> int:
         return _audit_session(args, targets, logger, tcp_username, tcp_password)
 
     return 0
+
+
+def _ntrip_stream_configs(
+    args, targets, logger, tcp_username, tcp_password, rec_config_dir
+) -> int:
+    """Turn an NTRIP server connection on/off, identity-safe (+ optional --drop-sbf).
+
+    Per target: when the mountpoint must be resolved (``--disable-mount``) or the
+    feeding SBF stream dropped (``--drop-sbf``), the receiver's current config is
+    read first; otherwise the connection/state come straight from
+    ``--ntrip-stream``. The resulting setNtripSettings (+ setSBFOutput none + boot
+    save) commands are pushed through the normal :func:`_push_configs` path so
+    they honour ``--dry-run`` / ``--no-save``.
+    """
+    import os as _os
+    import tempfile
+
+    from ..septentrio.ntrip import (
+        build_ntrip_stream_commands,
+        parse_ntrip_mounts,
+        sbf_streams_for_conn,
+    )
+    from ..septentrio.tcp_client import PolaRX5TCPClient
+
+    drop_sbf = getattr(args, "drop_sbf", False)
+    need_read = bool(args.disable_mount) or drop_sbf
+    overall = 0
+
+    for station_id, ip, port in targets:
+        config_text = ""
+        if need_read:
+            try:
+                client = PolaRX5TCPClient(
+                    ip,
+                    station_id,
+                    port,
+                    timeout=getattr(args, "timeout", 30),
+                    username=tcp_username,
+                    password=tcp_password,
+                )
+                config_text = client.extract_config("Current")
+                client.disconnect()
+            except Exception as exc:  # noqa: BLE001 — surface as a per-target error
+                logger.error(f"{station_id}: could not read config for NTRIP: {exc}")
+                overall = 1
+                continue
+            if not config_text:
+                logger.error(f"{station_id}: empty config — cannot resolve NTRIP")
+                overall = 1
+                continue
+
+        # Resolve connection + desired state.
+        if args.disable_mount:
+            mounts = parse_ntrip_mounts(config_text)
+            conn = mounts.get(args.disable_mount)
+            if not conn:
+                logger.error(
+                    f"{station_id}: mountpoint {args.disable_mount!r} not found "
+                    f"(known: {sorted(mounts) or 'none'})"
+                )
+                overall = 1
+                continue
+            state = "off"
+            logger.info(f"{station_id}: {args.disable_mount} → {conn}")
+        else:
+            conn, state = args.ntrip_stream[0], args.ntrip_stream[1]
+
+        drop_streams = sbf_streams_for_conn(config_text, conn) if drop_sbf else []
+        try:
+            cmds = build_ntrip_stream_commands(
+                conn, state, drop_sbf_streams=drop_streams
+            )
+        except ValueError as exc:
+            logger.error(f"{station_id}: {exc}")
+            overall = 1
+            continue
+
+        tf = tempfile.NamedTemporaryFile(
+            "w", suffix=".txt", prefix="ntrip_", delete=False
+        )
+        tf.write(
+            f"# rec-config ntrip {conn}={state} "
+            f"(mount={args.disable_mount or '-'}, drop_sbf={drop_streams or '-'})\n"
+        )
+        tf.write("\n".join(cmds) + "\n")
+        tf.close()
+        args.push = tf.name
+        try:
+            rc = _push_configs(
+                args,
+                [(station_id, ip, port)],
+                logger,
+                tcp_username,
+                tcp_password,
+                rec_config_dir,
+            )
+            overall = overall or rc
+        finally:
+            _os.unlink(tf.name)
+
+    return overall
 
 
 def _extract_configs(
