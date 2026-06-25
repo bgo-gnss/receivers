@@ -3067,6 +3067,130 @@ def replace_sim(
     return result
 
 
+def set_device_attribute(
+    station_id: str,
+    *,
+    subtype: str,
+    code: str,
+    value: str,
+    date: Optional[str] = None,
+    change: bool = False,
+    correct: bool = False,
+    dry_run: bool = True,
+    writer: Optional[TOSWriter] = None,
+) -> OperationResult:
+    """Set ONE attribute on a station's open ``subtype`` device — no full swap.
+
+    The swap verbs (``replace-sim``/``replace-modem``/``replace-receiver``) only
+    create or replace a whole device; there was no way to add or correct a single
+    attribute on a device already in TOS (e.g. record a ``phone_number`` on an
+    existing ``sim_card`` after MSISDN discovery, where ``replace-sim``'s same-IP
+    guard correctly refuses a duplicate). This fills that gap.
+
+    Behaviour by current state of ``code`` on the open device:
+
+    - **No open value** → ADD it (Pattern 3 POST), dated from the device's
+      install (its open parent join ``time_from``) or ``date`` when given. No
+      intent needed — purely additive.
+    - **Open value already equals** ``value`` → no-op.
+    - **Open value differs** → intent REQUIRED (same model as ``cfg
+      update-device``): ``correct`` = Pattern 1 in-place PATCH (the recorded
+      value was wrong; no history); ``change`` = Pattern 2 transition (close the
+      open period at ``date`` and open a new one; records history).
+
+    Args:
+        station_id: 4-char marker.
+        subtype: TOS device subtype to target (``sim_card``, ``modem_gsm``,
+            ``gnss_receiver``, ``antenna`` …) — the station's OPEN child of that
+            subtype is used.
+        code: Attribute code (e.g. ``phone_number``).
+        value: New value.
+        date: Effective date. For an add, the new period's ``date_from`` (default
+            the device install date). For a ``change`` transition, the cut date
+            (default now).
+        change / correct: Intent for the differing-value case (mutually
+            exclusive; ignored for add / no-op).
+        dry_run / writer: As :func:`replace_sim`.
+
+    Returns:
+        :class:`OperationResult` with ``operation="set-attr"``; the plan/mode
+        live in ``tos_changes``.
+    """
+    if change and correct:
+        raise CfgOperationError("set-attr: pass at most one of --change / --correct.")
+
+    w = _resolve_writer(writer, dry_run)
+    station_eid = _resolve_station(w, station_id)
+    device_id = _find_open_child(w, station_eid, subtype)
+    if device_id is None:
+        raise CfgOperationError(
+            f"No open {subtype} child for {station_id} — add the device first "
+            f"(e.g. a cfg replace-* / add-* verb) before setting attributes on it."
+        )
+
+    existing = w.get_attribute_values(device_id, code)
+    open_vals = [a for a in existing if a.get("date_to") is None]
+    current = (
+        max(open_vals, key=lambda a: a.get("date_from") or "") if open_vals else None
+    )
+
+    result = OperationResult(
+        operation="set-attr",
+        station_id=station_id,
+        date=date,
+        tos_changes={
+            "plan": {
+                "subtype": subtype,
+                "device_id": device_id,
+                "code": code,
+                "old_value": current.get("value") if current else None,
+                "new_value": value,
+            }
+        },
+        dry_run=dry_run,
+    )
+
+    if current is None:
+        # Pattern 3 — attribute not set yet; add it dated from device install.
+        if date:
+            date_from = _visit_default_time(date)
+        else:
+            join = w.get_open_parent_join(device_id) or {}
+            date_from = join.get("time_from") or _visit_default_time(None)
+        result.tos_changes["mode"] = "add"
+        result.tos_changes["write"] = w.add_attribute_value(
+            device_id, code, value, date_from
+        )
+        return result
+
+    if (current.get("value") or "") == value:
+        result.tos_changes["mode"] = "noop"
+        return result
+
+    if not (change or correct):
+        raise CfgOperationError(
+            f"{code} on {station_id}'s {subtype} is already "
+            f"{current.get('value')!r} (open since {current.get('date_from')}). "
+            f"Pass --correct (recorded value was wrong → fix in place, no history) "
+            f"or --change (it genuinely changed → new period, records history)."
+        )
+
+    if correct:
+        result.tos_changes["mode"] = "correct"
+        result.tos_changes["write"] = w.upsert_attribute_value(
+            device_id,
+            code,
+            value,
+            current.get("date_from") or _visit_default_time(date),
+        )
+    else:
+        result.tos_changes["mode"] = "change"
+        result.tos_changes["write"] = w.transition_attribute_value(
+            device_id, code, value, _visit_default_time(date)
+        )
+    return result
+
+
 def _station_router_ip(
     station_id: str,
     cfg_path: Optional[Path] = None,

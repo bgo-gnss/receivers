@@ -5788,6 +5788,84 @@ Examples:
     _add_global_flags(rs, swap_warning=True)
     rs.set_defaults(func=cmd_cfg_replace_sim)
 
+    # ---- set-attr (single attribute on an existing device) --------------
+    sa = cfg_subparsers.add_parser(
+        "set-attr",
+        help="Set ONE attribute on a station's open device — no full swap",
+        description=(
+            "Add or correct a single attribute on the station's OPEN device of a "
+            "given subtype (sim_card, modem_gsm, gnss_receiver, antenna …) — for "
+            "when the device is already in TOS and you just need to set one value "
+            "(e.g. a phone_number on a sim_card after MSISDN discovery, where "
+            "replace-sim's same-IP guard refuses a duplicate). Value-driven (no "
+            "probe). Dry-run by default."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Record the discovered MSISDN on RIFC's existing SIM (adds it, no swap):
+  receivers cfg set-attr --station RIFC --subtype sim_card \\
+      --field phone_number --value +3548372739 --no-dry-run
+
+  # Fix a wrong value in place (no history):
+  receivers cfg set-attr --station GSIG --subtype sim_card \\
+      --field provider --value Siminn --correct --no-dry-run
+
+  # It genuinely changed → new period from --date (records history):
+  receivers cfg set-attr --station GSIG --subtype modem_gsm \\
+      --field io_type --value "Ethernet+RS232" --change --date 2026-06-20 --no-dry-run
+""",
+    )
+    sa.add_argument(
+        "--station", required=True, metavar="MARKER", help="4-char RINEX marker."
+    )
+    sa.add_argument(
+        "--subtype",
+        required=True,
+        help="TOS device subtype whose OPEN child on the station is targeted "
+        "(e.g. sim_card, modem_gsm, gnss_receiver, antenna).",
+    )
+    sa.add_argument(
+        "--field",
+        required=True,
+        metavar="CODE",
+        help="Attribute code to set (e.g. phone_number, provider, comment).",
+    )
+    sa.add_argument("--value", required=True, help="New attribute value.")
+    sa.add_argument(
+        "--date",
+        metavar="YYYY-MM-DD[THH:MM:SS]",
+        help="Effective date. For a new attribute → the period's date_from "
+        "(default: the device's install date). For --change → the transition "
+        "date (default: now). Bare date → noon.",
+    )
+    # Intent — only consulted when an open value already EXISTS and differs.
+    # A first-time add or a no-op needs no intent.
+    sa_intent = sa.add_mutually_exclusive_group(required=False)
+    sa_intent.add_argument(
+        "--change",
+        action="store_true",
+        help="Differing value genuinely CHANGED → Pattern 2 transition (close "
+        "open period at --date, open new — records history).",
+    )
+    sa_intent.add_argument(
+        "--correct",
+        action="store_true",
+        help="Recorded value was WRONG → Pattern 1 in-place PATCH (keep dates, "
+        "no history).",
+    )
+    sa.add_argument(
+        "--no-dry-run",
+        action="store_true",
+        help="Commit the write; without this flag the plan is shown only.",
+    )
+    sa.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a structured JSON summary instead of plain text.",
+    )
+    sa.set_defaults(func=cmd_cfg_set_attr)
+
     # ---- ensure-port-forwards (Teltonika router DNAT) -------------------
     epf = cfg_subparsers.add_parser(
         "ensure-port-forwards",
@@ -6144,6 +6222,14 @@ def _print_result_summary(result, *, json_output: bool, dry_run: bool) -> None:
     if result.operation == "delete-join":
         bits.append(f"id_connection={result.tos_changes.get('id_connection')}")
     print(" ".join(bits))
+    if result.operation == "set-attr":
+        plan = result.tos_changes.get("plan") or {}
+        mode = result.tos_changes.get("mode", "?")
+        print(
+            f"   {plan.get('subtype')} (eid={plan.get('device_id')}) "
+            f"{plan.get('code')}: {plan.get('old_value')!r} → "
+            f"{plan.get('new_value')!r}  [{mode}]"
+        )
     if result.cfg_changes:
         print(f"   stations.cfg updates: {result.cfg_changes}")
     elif not dry_run and result.operation == "install":
@@ -6706,6 +6792,29 @@ def cmd_cfg_replace_sim(args) -> int:
         changed=bool(result.cfg_changes),
         dry_run=dry_run,
     )
+    return 0
+
+
+def cmd_cfg_set_attr(args) -> int:
+    """``cfg set-attr`` — set ONE attribute on a station's open <subtype> device."""
+    from ..cfg.operations import CfgOperationError, set_device_attribute
+
+    dry_run = not args.no_dry_run
+    try:
+        result = set_device_attribute(
+            args.station,
+            subtype=args.subtype,
+            code=args.field,
+            value=args.value,
+            date=_normalise_date_arg(args.date),
+            change=args.change,
+            correct=args.correct,
+            dry_run=dry_run,
+        )
+    except CfgOperationError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        return 1
+    _print_result_summary(result, json_output=args.json, dry_run=dry_run)
     return 0
 
 
