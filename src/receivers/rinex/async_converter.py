@@ -499,10 +499,14 @@ def _create_converter(
     naming = NamingConvention.SHORT if naming_str == "short" else NamingConvention.LONG
     apply_header: bool = rinex_config.get("apply_header_corrections", True)
 
-    # For Trimble receivers, prefer native Docker converter when configured
+    # For Trimble receivers, prefer native Docker converter when configured.
+    # NetRS is deliberately excluded: its L2 is codeless, so the native RINEX 3
+    # output codes the L2 range as C2D, which GAMIT cannot map to P2 (all data
+    # is deleted with "no P2 range"). NetRS is handled separately below — pinned
+    # to RINEX 2.11 via teqc so P2 is preserved.
     use_native = rinex_config.get("use_native_trimble", False)
     trimble_cls = TrimbleConverter
-    if use_native and ("netr9" in receiver_type or "netrs" in receiver_type):
+    if use_native and "netr9" in receiver_type:
         try:
             from ..rinex.trimble_native_converter import TrimbleNativeConverter
 
@@ -540,10 +544,20 @@ def _create_converter(
         )
         return converter, ".T02*"
     elif "netrs" in receiver_type:
-        converter = trimble_cls(
+        # NetRS L2 is codeless: native RINEX 3 codes the L2 range as C2D, which
+        # GAMIT deletes ("no P2 range"). Convert via teqc to RINEX 2.11 so the
+        # L2 range stays P2. Configurable via [rinex] netrs_rinex_version (default
+        # 2); RINEX 2 forces SHORT naming (e.g. SSSSDDD0.YYd.Z, as GAMIT expects).
+        netrs_version = version_map.get(
+            int(rinex_config.get("netrs_rinex_version", 2)), RinexVersion.RINEX_2
+        )
+        netrs_naming = (
+            NamingConvention.SHORT if netrs_version == RinexVersion.RINEX_2 else naming
+        )
+        converter = TrimbleConverter(
             station_id=station_id,
-            rinex_version=rinex_version,
-            naming_convention=naming,
+            rinex_version=netrs_version,
+            naming_convention=netrs_naming,
             apply_header_corrections=apply_header,
             loglevel=logging.INFO,
             session_type=session_type,
