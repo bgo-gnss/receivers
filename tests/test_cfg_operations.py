@@ -32,6 +32,7 @@ from receivers.cfg.operations import (
     replace_receiver,
     replace_sim,
     set_device_attribute,
+    share_device,
     show_visit,
     update_visit,
 )
@@ -54,6 +55,8 @@ def _writer_mock(**spec) -> MagicMock:
     w.find_location_by_name.return_value = None
     w.get_entity_history.return_value = None
     w.get_open_parent_join.return_value = None
+    w.get_open_parent_joins.return_value = []
+    w.create_entity_connection.return_value = {"id": 30001}
     w.move_device.return_value = {"closed": "ok", "opened": "ok"}
     w.add_maintenance_visit.return_value = {
         "id_maintenance": 9999,
@@ -2356,3 +2359,140 @@ def test_set_attr_no_open_device_raises():
             writer=w,
             dry_run=False,
         )
+
+
+# ---------------------------------------------------------------------------
+# share_device — joint-location additive second join
+# ---------------------------------------------------------------------------
+
+
+def _shared_modem(id_entity: int = 21528, serial: str = "6003840342") -> dict:
+    """A registered modem_gsm device payload (find_device_by_serial shape)."""
+    return {
+        "id_entity": id_entity,
+        "code_entity_subtype": "modem_gsm",
+        "attributes": [
+            {
+                "code": "serial_number",
+                "value": serial,
+                "date_from": "2026-06-03T00:00:00",
+                "date_to": None,
+            },
+            {
+                "code": "model",
+                "value": "Teltonika RUT200",
+                "date_from": "2026-06-03T00:00:00",
+                "date_to": None,
+            },
+        ],
+    }
+
+
+def test_share_device_raises_when_device_not_registered():
+    w = _writer_mock(find_station_by_marker=4378)
+    w.find_device_by_serial.return_value = None
+    with pytest.raises(CfgOperationError, match="register it on its primary"):
+        share_device("KRIV", subtype="modem_gsm", serial="6003840342", writer=w)
+    w.create_entity_connection.assert_not_called()
+
+
+def test_share_device_opens_additive_join_and_keeps_other_open():
+    """Device open under the seismic station (5469) → KRIV gets a SECOND join,
+    the seismic join is never touched."""
+    w = _writer_mock(find_station_by_marker=4378)
+    w.find_device_by_serial.return_value = _shared_modem()
+    w.get_open_parent_joins.return_value = [
+        {"id": 28838, "id_entity_parent": 5469, "time_from": "2026-06-03T11:46:00"}
+    ]
+    result = share_device(
+        "KRIV",
+        subtype="modem_gsm",
+        serial="6003840342",
+        date="2026-06-03T11:46:00",
+        writer=w,
+        dry_run=False,
+    )
+    # exactly one additive join, to KRIV's eid, time_to left open
+    w.create_entity_connection.assert_called_once_with(
+        id_parent=4378,
+        id_child=21528,
+        time_from="2026-06-03T11:46:00",
+        time_to=None,
+    )
+    # never a move/patch/close of the seismic join
+    w.move_device.assert_not_called()
+    w.patch_entity_connection.assert_not_called()
+    assert result.operation == "share-device"
+    assert result.tos_changes["plan"]["shared_with_parents"] == [5469]
+
+
+def test_share_device_is_idempotent_when_already_joined():
+    """A join to the target station is already open → no-op."""
+    w = _writer_mock(find_station_by_marker=4378)
+    w.find_device_by_serial.return_value = _shared_modem()
+    w.get_open_parent_joins.return_value = [
+        {"id": 28838, "id_entity_parent": 5469, "time_from": "2026-06-03T11:46:00"},
+        {"id": 28900, "id_entity_parent": 4378, "time_from": "2026-06-03T11:46:00"},
+    ]
+    result = share_device("KRIV", subtype="modem_gsm", serial="6003840342", writer=w)
+    w.create_entity_connection.assert_not_called()
+    w.add_maintenance_visit.assert_not_called()
+    assert result.tos_changes["join"]["skipped"] == "already open"
+
+
+def test_share_device_writes_vitjun_by_default():
+    w = _writer_mock(find_station_by_marker=4378)
+    w.find_device_by_serial.return_value = _shared_modem()
+    w.get_open_parent_joins.return_value = [
+        {"id": 28838, "id_entity_parent": 5469, "time_from": "2026-06-03T11:46:00"}
+    ]
+    result = share_device("KRIV", subtype="modem_gsm", serial="6003840342", writer=w)
+    w.add_maintenance_visit.assert_called_once()
+    assert result.vitjun_id == 9999
+
+
+def test_share_device_dry_run_writes_no_cfg(cfg_file):
+    w = _writer_mock(find_station_by_marker=4378)
+    w.find_device_by_serial.return_value = _shared_modem()
+    result = share_device(
+        "HRAC",
+        subtype="modem_gsm",
+        serial="6003840342",
+        router_type="Teltonika",
+        writer=w,
+        dry_run=True,
+        cfg_path=cfg_file,
+    )
+    assert result.cfg_changes == {}
+    assert "router_type = Teltonika" not in cfg_file.read_text()
+
+
+def test_share_device_live_sets_router_type_cfg(cfg_file):
+    w = _writer_mock(find_station_by_marker=4378)
+    w.find_device_by_serial.return_value = _shared_modem()
+    result = share_device(
+        "HRAC",
+        subtype="modem_gsm",
+        serial="6003840342",
+        router_type="Teltonika",
+        writer=w,
+        dry_run=False,
+        cfg_path=cfg_file,
+    )
+    assert result.cfg_changes == {"router_type": "Teltonika"}
+    assert "router_type = Teltonika" in cfg_file.read_text()
+
+
+def test_share_device_sim_serial_lookup_uses_iccid():
+    w = _writer_mock(find_station_by_marker=4378)
+    w.find_device_by_serial.return_value = {
+        "id_entity": 21999,
+        "code_entity_subtype": "sim_card",
+        "attributes": [],
+    }
+    w.get_open_parent_joins.return_value = [
+        {"id": 28838, "id_entity_parent": 5469, "time_from": "2026-06-03T11:46:00"}
+    ]
+    share_device("KRIV", subtype="sim_card", serial="89354010140101091517", writer=w)
+    w.find_device_by_serial.assert_called_once_with("sim_card", "89354010140101091517")
+    w.create_entity_connection.assert_called_once()

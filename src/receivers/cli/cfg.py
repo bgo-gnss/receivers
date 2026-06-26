@@ -5620,6 +5620,18 @@ Examples:
         help="Override the stations.cfg location.",
     )
     rm.add_argument(
+        "--shared",
+        action="store_true",
+        help=(
+            "Joint-location shared device: instead of swapping, open an "
+            "ADDITIVE second station join to an EXISTING modem (one physical "
+            "router serving two co-located stations, e.g. a GPS + seismic "
+            "site). Never closes/moves the other station's join; skips "
+            "retire/create/attr-write. Idempotent. The device must already be "
+            "registered (probe/--new-serial identifies it)."
+        ),
+    )
+    rm.add_argument(
         "--no-dry-run",
         action="store_true",
         help="Commit the writes.",
@@ -5774,6 +5786,17 @@ Examples:
         "--cfg-path",
         dest="cfg_path",
         help="Override the stations.cfg location.",
+    )
+    rs.add_argument(
+        "--shared",
+        action="store_true",
+        help=(
+            "Joint-location shared SIM: instead of swapping, open an ADDITIVE "
+            "second station join to an EXISTING sim_card (one SIM serving two "
+            "co-located stations). Never closes/moves the other station's "
+            "join; skips create/attr-write. Idempotent. Identified by ICCID "
+            "(--probe or --serial)."
+        ),
     )
     rs.add_argument(
         "--no-dry-run",
@@ -6591,7 +6614,9 @@ def cmd_cfg_replace_modem(args) -> int:
     # Explicit flag wins over the probed value (operator override).
     new_serial = args.new_serial or (probe.router_serial if probe else None)
     new_model = args.new_model or (probe.router_model if probe else None)
-    if not new_serial or not new_model:
+    # --shared only needs the serial (it joins an EXISTING device, never
+    # creates one); a full swap needs the model too.
+    if not new_serial or (not new_model and not args.shared):
         missing = "serial" if not new_serial else "model"
         print(
             f"❌ modem {missing} unknown — pass --new-{missing} or use --probe "
@@ -6600,6 +6625,40 @@ def cmd_cfg_replace_modem(args) -> int:
         )
         return 2
 
+    # Joint-location shared device: open an additive second join instead of a
+    # Pattern-2 swap (never closes the co-located station's join).
+    if args.shared:
+        from ..cfg.operations import share_device
+
+        try:
+            _cfg_path = _resolve_global_target(args) or (
+                Path(args.cfg_path) if args.cfg_path else None
+            )
+            result = share_device(
+                args.station,
+                subtype="modem_gsm",
+                serial=new_serial,
+                date=_normalise_date_arg(args.date),
+                router_type=args.router_type,
+                vitjun=args.vitjun,
+                participants=args.participants or "",
+                dry_run=dry_run,
+                cfg_path=_cfg_path,
+            )
+        except CfgOperationError as exc:
+            print(f"❌ {exc}", file=sys.stderr)
+            return 1
+        _print_result_summary(result, json_output=args.json, dry_run=dry_run)
+        _maybe_commit_global(
+            args,
+            f"stations({args.station}): cfg replace-modem --shared",
+            changed=bool(result.cfg_changes),
+            dry_run=dry_run,
+        )
+        return 0
+
+    # Non-shared path: the validation above guarantees a model for a real swap.
+    assert new_model is not None
     try:
         _cfg_path = _resolve_global_target(args) or (
             Path(args.cfg_path) if args.cfg_path else None
@@ -6747,6 +6806,49 @@ def cmd_cfg_replace_sim(args) -> int:
         return 2
 
     probe = _probe_telemetry_or_exit(args)
+
+    # Joint-location shared SIM: open an additive second join to the EXISTING
+    # sim_card (identified by ICCID) instead of creating a new one. No new IP
+    # is required — we're not minting a SIM, just attaching the existing one.
+    if args.shared:
+        from ..cfg.operations import share_device
+
+        serial = args.serial or (probe.sim_iccid if probe else None)
+        if not serial:
+            print(
+                "❌ SIM serial/ICCID unknown — pass --serial or use --probe "
+                "against a reachable router.",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            _cfg_path = _resolve_global_target(args) or (
+                Path(args.cfg_path) if args.cfg_path else None
+            )
+            result = share_device(
+                args.station,
+                subtype="sim_card",
+                serial=serial,
+                date=_normalise_date_arg(args.date),
+                router_ip=args.ip or (probe.sim_ip_address if probe else None),
+                update_cfg_ip=args.update_cfg_ip,
+                vitjun=args.vitjun,
+                participants=args.participants or "",
+                dry_run=dry_run,
+                cfg_path=_cfg_path,
+            )
+        except CfgOperationError as exc:
+            print(f"❌ {exc}", file=sys.stderr)
+            return 1
+        _print_result_summary(result, json_output=args.json, dry_run=dry_run)
+        _maybe_commit_global(
+            args,
+            f"stations({args.station}): cfg replace-sim --shared",
+            changed=bool(result.cfg_changes),
+            dry_run=dry_run,
+        )
+        return 0
+
     ip_address = args.ip or (probe.sim_ip_address if probe else None)
     if not ip_address:
         print(

@@ -3067,6 +3067,185 @@ def replace_sim(
     return result
 
 
+def _entity_marker(writer: TOSWriter, eid: int) -> str:
+    """Best-effort 4-char marker for an entity id, falling back to ``str(eid)``.
+
+    Used only for human-readable vitjun text — never for control flow — so a
+    read failure degrades to the numeric id rather than raising.
+    """
+    try:
+        hist = writer.get_entity_history(eid)
+    except Exception:  # noqa: BLE001 — display-only, never fatal
+        return str(eid)
+    if isinstance(hist, dict):
+        for attr in hist.get("attributes", []):
+            if attr.get("code") == "marker" and attr.get("value"):
+                return str(attr["value"])
+    return str(eid)
+
+
+def share_device(
+    station_id: str,
+    *,
+    subtype: str,
+    serial: str,
+    date: Optional[str] = None,
+    router_type: Optional[str] = None,
+    router_ip: Optional[str] = None,
+    update_cfg_ip: bool = False,
+    vitjun: Optional[str] = None,
+    write_vitjun: bool = True,
+    participants: str = "",
+    dry_run: bool = True,
+    writer: Optional[TOSWriter] = None,
+    cfg_path: Optional[Path] = None,
+) -> OperationResult:
+    """Open a SECOND concurrent station join for an already-registered device.
+
+    Joint-location case: one physical box (e.g. a telemetry router or its SIM)
+    serves two co-located stations — a GPS station and the seismic station it
+    shares a site with. The device is registered in TOS once (under whichever
+    station first recorded it); this adds an **additive** open parent join so
+    it also belongs to ``station_id``, **without closing or moving any
+    existing join**. Contrast :func:`replace_modem` / :func:`replace_sim`,
+    which do a single-parent Pattern-2 *move* (close old + open new) — running
+    those on a shared device would detach the co-located station.
+
+    Behaviour:
+
+      1. Resolve the device by ``serial`` (subtype-filtered). It MUST already
+         exist — this verb never creates hardware or (re)writes its attributes;
+         the canonical attributes stay as the primary registration set them.
+      2. Idempotent: if a join to ``station_id`` is already open, no-op.
+      3. Otherwise issue the single write — an additive open join
+         ``station_id → device`` at ``date`` (``time_to=None``). Every other
+         open join (the co-located station's) is left untouched.
+      4. Optional vitjun on ``station_id`` documenting the shared install.
+      5. stations.cfg: ``router_type`` (modem) / ``router_ip`` (SIM, only with
+         ``update_cfg_ip``) as for the replace verbs.
+
+    .. warning::
+
+       This deliberately relaxes the TOS "at most one open parent per child"
+       invariant. A *future* swap of the shared device via
+       :func:`replace_modem` / :func:`replace_sim` resolves the open join via
+       :meth:`TOSWriter.get_open_parent_join` (latest ``time_from`` wins) and
+       could close the wrong station's join. Retiring a shared device safely
+       (closing only one station's join) is a follow-up — see the receivers
+       todos. For now, ``share_device`` only ever *adds* a join.
+
+    Args:
+        station_id: 4-char marker of the station to also attach the device to.
+        subtype: TOS device subtype, e.g. ``"modem_gsm"`` / ``"sim_card"``.
+        serial: The existing device's ``serial_number`` (router serial for a
+            modem, ICCID for a SIM) — the lookup key.
+        date: When the device began serving this station. Default now; bare
+            date → noon. Mirror the co-located station's join time_from for a
+            clean joint record.
+        router_type: stations.cfg ``router_type`` to set (modem case).
+        router_ip / update_cfg_ip: stations.cfg ``router_ip`` to set (SIM
+            case) — only written when ``update_cfg_ip`` is True (cfg router_ip
+            is often a DNS hostname, not a literal IP).
+        vitjun: Override the auto-derived vitjun text.
+        write_vitjun: Write a vitjun on the station (default True).
+        participants: Comma-separated emails for the vitjun.
+        dry_run / writer / cfg_path: As :func:`replace_modem`.
+
+    Returns:
+        :class:`OperationResult` with ``operation="share-device"``.
+    """
+    w = _resolve_writer(writer, dry_run)
+    station_eid = _resolve_station(w, station_id)
+    eff_date = _visit_default_time(date)
+
+    dev = w.find_device_by_serial(subtype, serial)
+    if dev is None:
+        raise CfgOperationError(
+            f"No {subtype} with serial {serial!r} found in TOS. `--shared` adds "
+            f"a second station join to an EXISTING device — register it on its "
+            f"primary station first (cfg add-receiver / replace-modem / "
+            f"replace-sim without --shared) before sharing it here."
+        )
+    device_id = int(dev["id_entity"])
+
+    # Every currently-open parent join. A shared device legitimately has the
+    # co-located station open — we must never close it.
+    open_joins = w.get_open_parent_joins(device_id)
+    already = [j for j in open_joins if j.get("id_entity_parent") == station_eid]
+    other_parents: List[int] = [
+        int(p)
+        for j in open_joins
+        if (p := j.get("id_entity_parent")) is not None and p != station_eid
+    ]
+
+    result = OperationResult(
+        operation="share-device",
+        station_id=station_id,
+        serial=serial,
+        date=eff_date,
+        tos_changes={
+            "plan": {
+                "subtype": subtype,
+                "device_id": device_id,
+                "station_eid": station_eid,
+                "shared_with_parents": other_parents,
+            }
+        },
+        dry_run=dry_run,
+    )
+
+    # Idempotent: a join to THIS station is already open → nothing to do.
+    if already:
+        result.tos_changes["join"] = {
+            "skipped": "already open",
+            "id": already[0].get("id"),
+            "time_from": already[0].get("time_from"),
+        }
+        return result
+
+    # The single write: an ADDITIVE open join station → device. Never closes
+    # or moves any existing join (the co-located station's join stays open).
+    join = w.create_entity_connection(
+        id_parent=station_eid,
+        id_child=device_id,
+        time_from=eff_date,
+        time_to=None,
+    )
+    result.tos_changes["join"] = join
+
+    # Optional vitjun on THIS station documenting the shared install.
+    if write_vitjun:
+        shared_note = (
+            f" (deilt með stöð {_entity_marker(w, other_parents[0])})"
+            if other_parents
+            else ""
+        )
+        work = vitjun or (
+            f"Bætti við sameiginlegu tæki: {subtype} {serial}{shared_note}"
+        )
+        vit = w.add_maintenance_visit(
+            station_eid,
+            start_time=eff_date,
+            maintenance_type="on_site",
+            participants=participants,
+            reasons=["change"],
+            work=work,
+        )
+        result.tos_changes["vitjun"] = vit
+        result.vitjun_id = vit.get("id_maintenance")
+
+    # stations.cfg: router_type (modem) / router_ip (SIM, only with intent).
+    updates: Dict[str, Optional[str]] = {}
+    if router_type:
+        updates["router_type"] = router_type
+    if update_cfg_ip and router_ip:
+        updates["router_ip"] = router_ip
+    if updates and not dry_run:
+        target_cfg = _resolve_cfg_path(cfg_path)
+        result.cfg_changes = _apply_cfg_updates(target_cfg, station_id, updates)
+    return result
+
+
 def set_device_attribute(
     station_id: str,
     *,
