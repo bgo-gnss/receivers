@@ -475,6 +475,12 @@ class ReceiversConfig:
             "apply_header_corrections": True,
             "use_tos_for_historical": True,
             "use_native_trimble": False,  # Requires Docker setup
+            # NetRS receivers track L2 codeless, so native RINEX 3 conversion
+            # emits the L2 range coded C2D, which GAMIT cannot map to P2 (every
+            # observation is deleted with "no P2 range"). Pin NetRS to RINEX 2.11
+            # (teqc) so the L2 range stays P2. Bound to receiver type: a station
+            # upgraded off NetRS automatically returns to the default version.
+            "netrs_rinex_version": 2,
         }
 
         try:

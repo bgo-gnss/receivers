@@ -203,6 +203,69 @@ class TestCreateConverter:
         assert converter is not None
         assert ext == ".T00*"
 
+    @patch("receivers.rinex.TrimbleConverter")
+    def test_netrs_pinned_to_rinex2_short(self, mock_trimble):
+        """NetRS is pinned to RINEX 2.11 + SHORT naming even when the global
+        default_version is 3 — its codeless L2 (C2D) has no P2 in RINEX 3, which
+        GAMIT deletes. Bound to receiver type, not station."""
+        from receivers.rinex import NamingConvention, RinexVersion
+
+        mock_trimble.return_value = MagicMock()
+        _create_converter(
+            "BLEI",
+            "netrs",
+            {
+                "default_version": 3,
+                "default_naming": "short",
+                "apply_header_corrections": True,
+            },
+            MagicMock(),
+        )
+        _, kwargs = mock_trimble.call_args
+        assert kwargs["rinex_version"] == RinexVersion.RINEX_2
+        assert kwargs["naming_convention"] == NamingConvention.SHORT
+
+    @patch("receivers.rinex.trimble_native_converter.TrimbleNativeConverter")
+    @patch("receivers.rinex.TrimbleConverter")
+    def test_netrs_ignores_native_trimble(self, mock_trimble, mock_native):
+        """use_native_trimble must NOT route NetRS to the native RINEX 3
+        converter — that is the regression that broke GAMIT processing."""
+        mock_trimble.return_value = MagicMock()
+        mock_native.is_available.return_value = True
+        _create_converter(
+            "BLEI",
+            "netrs",
+            {
+                "default_version": 3,
+                "default_naming": "short",
+                "use_native_trimble": True,
+                "apply_header_corrections": True,
+            },
+            MagicMock(),
+        )
+        mock_trimble.assert_called_once()
+        mock_native.assert_not_called()
+
+    @patch("receivers.rinex.TrimbleConverter")
+    def test_netrs_version_override(self, mock_trimble):
+        """An explicit netrs_rinex_version override is honoured (escape hatch)."""
+        from receivers.rinex import RinexVersion
+
+        mock_trimble.return_value = MagicMock()
+        _create_converter(
+            "BLEI",
+            "netrs",
+            {
+                "default_version": 3,
+                "default_naming": "short",
+                "netrs_rinex_version": 3,
+                "apply_header_corrections": True,
+            },
+            MagicMock(),
+        )
+        _, kwargs = mock_trimble.call_args
+        assert kwargs["rinex_version"] == RinexVersion.RINEX_3
+
     @patch("receivers.rinex.LeicaConverter")
     def test_g10_creates_leica_converter(self, mock_leica):
         """G10 receivers get LeicaConverter with .m00.gz extension."""
