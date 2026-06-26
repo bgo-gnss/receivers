@@ -133,6 +133,21 @@ class ReceiversConfig:
         except (configparser.NoSectionError, configparser.NoOptionError):
             return None
 
+    def get_tos_corrections_repo(self) -> Optional[str]:
+        """Return the configured gps-tos-corrections clone path, or None.
+
+        Read from ``[paths] tos_corrections_repo`` in receivers.cfg — the local
+        clone where TOS triage/correction files live (shared with tostools,
+        which resolves the same key via ``archive.tos_corrections_dir``).
+        Returns ``None`` when unset so the caller can apply the
+        ``$TOS_TRIAGE_DIR`` → built-in-default fallback chain.
+        """
+        try:
+            value = self.config.get("paths", "tos_corrections_repo")
+            return value.strip() or None
+        except (configparser.NoSectionError, configparser.NoOptionError):
+            return None
+
     def get_prepath(self) -> str:
         """DEPRECATED: Use get_data_prepath() instead.
 
