@@ -2388,6 +2388,141 @@ def _validate_marker_match(
     )
 
 
+@dataclass
+class ArchiveReceiverDate:
+    """Result of deriving a receiver install date from the RINEX archive.
+
+    Attributes:
+        install_date: ISO datetime (``…T00:00:00``) of the current physical
+            receiver's first appearance — ready to pass as ``replace_receiver``'s
+            ``date``.
+        current_type / current_serial: The current archive receiver's identity.
+        tail_units: Distinct physical units (``(date, type, serial)``) installed
+            after the TOS-open receiver's start — the *unrecorded* changes. A
+            length > 1 is what the guard refuses on.
+        timeline: Human-readable per-segment lines for display.
+    """
+
+    install_date: str
+    current_type: Optional[str]
+    current_serial: Optional[str]
+    tail_units: List[tuple]
+    timeline: List[str]
+
+
+def archive_receiver_install_date(
+    station_id: str,
+    *,
+    writer: Optional[TOSWriter] = None,
+    dry_run: bool = True,
+    archive_root: Optional[str] = None,
+) -> ArchiveReceiverDate:
+    """Derive the current receiver's install date for ``station_id`` from the archive.
+
+    Builds the station's receiver timeline from archived RINEX headers
+    (:func:`tostools.receiver_timeline.build_receiver_timeline`) and returns the
+    current physical receiver's install date
+    (:func:`current_receiver_install_date` — coalesces firmware-only bumps).
+
+    **Multi-segment guard.** Collapses the timeline to distinct physical units
+    (type + serial, firmware ignored) and counts those installed *after* the
+    receiver currently open in TOS — i.e. the swaps not yet recorded. If more
+    than one such unit exists, a single ``replace-receiver`` cannot record them
+    faithfully (it would collapse the intermediate unit and mis-date the old
+    receiver's end), so this raises :class:`CfgOperationError` with the timeline.
+    The operator reconstructs oldest-first, or passes ``--date`` to override.
+
+    Args:
+        station_id: 4-char marker.
+        writer / dry_run: TOS reader for the current-open-receiver cutoff (read
+            only; never writes).
+        archive_root: Override the cold-archive root (default
+            ``cold_archive_prepath()``).
+
+    Returns:
+        :class:`ArchiveReceiverDate`.
+
+    Raises:
+        CfgOperationError: no archived RINEX for the station, or >1 unrecorded
+            receiver change (multi-segment guard).
+    """
+    from tostools.receiver_timeline import (
+        _same_unit,
+        build_receiver_timeline,
+        current_install,
+        current_receiver_install_date,
+    )
+
+    timeline = build_receiver_timeline(station_id, root=archive_root)
+    if not timeline:
+        raise CfgOperationError(
+            f"No archived RINEX found for {station_id} — cannot derive an install "
+            f"date from the archive. Pass --date explicitly."
+        )
+
+    # Collapse to distinct physical units in install order (firmware bumps fold
+    # into the unit they belong to).
+    units: List[Any] = []
+    for seg in timeline:
+        if units and _same_unit(units[-1].header.key, seg.header.key):
+            continue
+        units.append(seg)
+
+    # Cutoff = the receiver currently open in TOS (what's already recorded).
+    # Units installed strictly after it are the unrecorded swaps.
+    w = _resolve_writer(writer, dry_run)
+    station_eid = _resolve_station(w, station_id)
+    old_id = _find_open_gnss_receiver_child(w, station_eid)
+    cutoff: Optional[str] = None
+    if old_id is not None:
+        open_join = w.get_open_parent_join(old_id)
+        if open_join and open_join.get("time_from"):
+            cutoff = str(open_join["time_from"])[:10]  # YYYY-MM-DD
+
+    if cutoff is not None:
+        tail = [u for u in units if u.start.isoformat() > cutoff]
+    else:
+        tail = units  # nothing recorded in TOS → every archive unit is unrecorded
+
+    cur = current_install(timeline)
+    inst = current_receiver_install_date(timeline)
+
+    timeline_lines = [
+        f"{s.start.isoformat()} → {s.end.isoformat()}  "
+        f"{s.header.rtype} sn {s.header.serial} fw {s.header.firmware}"
+        for s in timeline
+    ]
+
+    if len(tail) > 1:
+        tail_lines = "\n  ".join(
+            f"{u.start.isoformat()}  {u.header.rtype}  sn {u.header.serial}"
+            for u in tail
+        )
+        raise CfgOperationError(
+            f"{station_id}: the RINEX archive shows {len(tail)} receiver changes "
+            f"not yet in TOS (since {cutoff or 'station start'}):\n  {tail_lines}\n"
+            f"A single replace-receiver would record only the latest and mis-date "
+            f"the rest. Reconstruct the timeline with one replace-receiver per "
+            f"change (oldest first, --date each), or pass --date to override this "
+            f"guard for a single swap."
+        )
+
+    base = inst or (cur.start if cur else None)
+    if base is None:  # pragma: no cover — timeline non-empty implies cur set
+        raise CfgOperationError(
+            f"{station_id}: could not resolve a current receiver from the archive."
+        )
+    return ArchiveReceiverDate(
+        install_date=f"{base.isoformat()}T00:00:00",
+        current_type=cur.header.rtype if cur else None,
+        current_serial=cur.header.serial if cur else None,
+        tail_units=[
+            (u.start.isoformat(), u.header.rtype, u.header.serial) for u in tail
+        ],
+        timeline=timeline_lines,
+    )
+
+
 def replace_receiver(
     station_id: str,
     new_type: str,

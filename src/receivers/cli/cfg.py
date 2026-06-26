@@ -5419,6 +5419,30 @@ step in isolation, or just --no-dry-run after eyeballing the args.
         help="Override the stations.cfg location.",
     )
     rr.add_argument(
+        "--date-from-archive",
+        dest="date_from_archive",
+        action="store_true",
+        help=(
+            "Derive --date from the RINEX archive instead of passing it: builds "
+            "the station's receiver timeline (tostools build_receiver_timeline) "
+            "and uses the current unit's install date "
+            "(current_receiver_install_date — coalesces firmware-only bumps). "
+            "REFUSES with the timeline if the archive shows MORE THAN ONE "
+            "receiver change not yet in TOS (a single swap can't record those — "
+            "reconstruct oldest-first, or pass --date to override). Mutually "
+            "exclusive with --date."
+        ),
+    )
+    rr.add_argument(
+        "--archive-root",
+        dest="archive_root",
+        metavar="PATH",
+        help=(
+            "Override the cold-archive root for --date-from-archive "
+            "(default: tostools cold_archive_prepath())."
+        ),
+    )
+    rr.add_argument(
         "--warehouse",
         dest="warehouse",
         metavar="LOCATION_NAME",
@@ -6461,10 +6485,36 @@ def cmd_cfg_replace_receiver(args) -> int:
 
     from ..cfg.operations import (
         CfgOperationError,
+        archive_receiver_install_date,
         replace_receiver,
     )
 
     dry_run = not args.no_dry_run
+
+    # Resolve the install date. --date-from-archive derives it from the RINEX
+    # timeline (with the multi-segment guard) instead of taking --date.
+    date_arg = _normalise_date_arg(args.date)
+    if getattr(args, "date_from_archive", False):
+        if args.date:
+            print("❌ pass only one of --date or --date-from-archive.", file=sys.stderr)
+            return 2
+        try:
+            derived = archive_receiver_install_date(
+                args.station,
+                dry_run=dry_run,
+                archive_root=getattr(args, "archive_root", None),
+            )
+        except CfgOperationError as exc:
+            print(f"❌ {exc}", file=sys.stderr)
+            return 1
+        date_arg = derived.install_date
+        print(
+            f"   📅 install date from archive: {date_arg} "
+            f"({derived.current_type} sn {derived.current_serial})"
+        )
+        for line in derived.timeline:
+            print(f"      {line}")
+
     try:
         _cfg_path = _resolve_global_target(args) or (
             Path(args.cfg_path) if args.cfg_path else None
@@ -6472,7 +6522,7 @@ def cmd_cfg_replace_receiver(args) -> int:
         result = replace_receiver(
             args.station,
             args.new_type,
-            date=_normalise_date_arg(args.date),
+            date=date_arg,
             host=args.host,
             new_serial=args.new_serial,
             new_model=args.new_model,

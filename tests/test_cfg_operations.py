@@ -24,6 +24,7 @@ from receivers.cfg.operations import (
     _validate_marker_match,
     _visit_default_time,
     add_visit,
+    archive_receiver_install_date,
     delete_join,
     delete_visit,
     list_visits,
@@ -2356,3 +2357,119 @@ def test_set_attr_no_open_device_raises():
             writer=w,
             dry_run=False,
         )
+
+
+# ---------------------------------------------------------------------------
+# archive_receiver_install_date — date-from-archive + multi-segment guard
+# ---------------------------------------------------------------------------
+
+
+def _seg(start: str, end: str, rtype: str, serial: str, fw=None):
+    """Build a tostools ReceiverSegment for timeline fixtures."""
+    from datetime import date as _date
+
+    from tostools.receiver_timeline import ReceiverHeader, ReceiverSegment
+
+    return ReceiverSegment(
+        _date.fromisoformat(start),
+        _date.fromisoformat(end),
+        ReceiverHeader(serial=serial, rtype=rtype, firmware=fw),
+    )
+
+
+def _patch_timeline(monkeypatch, timeline):
+    import tostools.receiver_timeline as rt
+
+    monkeypatch.setattr(rt, "build_receiver_timeline", lambda *a, **k: timeline)
+
+
+def _archive_writer(monkeypatch, *, open_receiver_id, cutoff):
+    """Writer mock + patched _find_open_gnss_receiver_child for the cutoff."""
+    import receivers.cfg.operations as ops
+
+    w = _writer_mock(find_station_by_marker=4378)
+    monkeypatch.setattr(
+        ops, "_find_open_gnss_receiver_child", lambda writer, eid: open_receiver_id
+    )
+    if open_receiver_id is not None:
+        w.get_open_parent_join.return_value = {"time_from": cutoff} if cutoff else None
+    return w
+
+
+def test_archive_install_date_refuses_multi_segment(monkeypatch):
+    """KRIV's exact case: Trimble → interim PolaRX5 → current PolaRX5, none in TOS."""
+    _patch_timeline(
+        monkeypatch,
+        [
+            _seg("2009-10-21", "2021-03-02", "TRIMBLE NETRS", "4539258382"),
+            _seg("2021-03-03", "2021-05-24", "SEPT POLARX5", "3235697", "5.4.0"),
+            _seg("2021-05-25", "2026-06-25", "SEPT POLARX5", "3070340", "5.4.0"),
+        ],
+    )
+    w = _archive_writer(
+        monkeypatch, open_receiver_id=4976, cutoff="2009-10-21T00:00:00"
+    )
+    with pytest.raises(CfgOperationError, match="2 receiver changes not yet in TOS"):
+        archive_receiver_install_date("KRIV", writer=w)
+
+
+def test_archive_install_date_single_unrecorded_returns_date(monkeypatch):
+    _patch_timeline(
+        monkeypatch,
+        [
+            _seg("2009-10-21", "2021-05-24", "TRIMBLE NETRS", "4539258382"),
+            _seg("2021-05-25", "2026-06-25", "SEPT POLARX5", "3070340", "5.4.0"),
+        ],
+    )
+    w = _archive_writer(
+        monkeypatch, open_receiver_id=4976, cutoff="2009-10-21T00:00:00"
+    )
+    r = archive_receiver_install_date("KRIV", writer=w)
+    assert r.install_date == "2021-05-25T00:00:00"
+    assert r.current_serial == "3070340"
+    assert len(r.tail_units) == 1
+
+
+def test_archive_install_date_coalesces_firmware_bump(monkeypatch):
+    """A firmware bump on the SAME unit is not a receiver change."""
+    _patch_timeline(
+        monkeypatch,
+        [
+            _seg("2009-10-21", "2021-05-24", "TRIMBLE NETRS", "4539258382"),
+            _seg("2021-05-25", "2023-01-01", "SEPT POLARX5", "3070340", "5.3.0"),
+            _seg("2023-01-02", "2026-06-25", "SEPT POLARX5", "3070340", "5.4.0"),
+        ],
+    )
+    w = _archive_writer(
+        monkeypatch, open_receiver_id=4976, cutoff="2009-10-21T00:00:00"
+    )
+    r = archive_receiver_install_date("KRIV", writer=w)
+    # install date back-coalesces the fw bump to the unit's first appearance
+    assert r.install_date == "2021-05-25T00:00:00"
+    assert len(r.tail_units) == 1
+
+
+def test_archive_install_date_cutoff_excludes_recorded_units(monkeypatch):
+    """If the interim unit is already in TOS (cutoff after it), only the current
+    one is unrecorded → single swap is fine."""
+    _patch_timeline(
+        monkeypatch,
+        [
+            _seg("2009-10-21", "2021-03-02", "TRIMBLE NETRS", "4539258382"),
+            _seg("2021-03-03", "2021-05-24", "SEPT POLARX5", "3235697", "5.4.0"),
+            _seg("2021-05-25", "2026-06-25", "SEPT POLARX5", "3070340", "5.4.0"),
+        ],
+    )
+    w = _archive_writer(
+        monkeypatch, open_receiver_id=5001, cutoff="2021-03-03T00:00:00"
+    )
+    r = archive_receiver_install_date("KRIV", writer=w)
+    assert r.install_date == "2021-05-25T00:00:00"
+    assert len(r.tail_units) == 1
+
+
+def test_archive_install_date_raises_on_empty_timeline(monkeypatch):
+    _patch_timeline(monkeypatch, [])
+    w = _archive_writer(monkeypatch, open_receiver_id=None, cutoff=None)
+    with pytest.raises(CfgOperationError, match="No archived RINEX"):
+        archive_receiver_install_date("KRIV", writer=w)
