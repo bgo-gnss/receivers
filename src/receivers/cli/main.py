@@ -3851,6 +3851,29 @@ def _create_rinex_converter(
             )
         raw_extension = ".T02*"  # Match .T02 and .T02.gz
     elif "netrs" in receiver_type:
+        # NetRS L2 is codeless: RINEX 3 codes the L2 range as C2D, which GAMIT
+        # cannot map to P2 (all data deleted with "no P2 range"). Pin NetRS to
+        # RINEX 2.11 unless the user explicitly passed --version. Bound to
+        # receiver type — same rule as the scheduler path (_create_converter).
+        # Making RINEX 3 for a NetRS requires an explicit --version 3.
+        if getattr(args, "rinex_version", None) is None:
+            from ..rinex import NamingConvention, RinexVersion
+
+            _vmap = {
+                2: RinexVersion.RINEX_2,
+                3: RinexVersion.RINEX_3,
+                4: RinexVersion.RINEX_4,
+            }
+            rinex_version = _vmap.get(
+                int((rinex_config or {}).get("netrs_rinex_version", 2)),
+                RinexVersion.RINEX_2,
+            )
+            if rinex_version == RinexVersion.RINEX_2:
+                naming_convention = NamingConvention.SHORT
+            logger.info(
+                f"{station_id}: NetRS pinned to RINEX {rinex_version.value} "
+                "(pass --version 3 to override)"
+            )
         if use_native_trimble:
             if not TrimbleNativeConverter.is_available():
                 logger.error("Native Trimble converter not available")
