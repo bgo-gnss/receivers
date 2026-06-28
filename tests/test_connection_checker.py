@@ -99,6 +99,10 @@ rtt min/avg/max/mdev = 2.345/2.456/2.567/0.089 ms
         assert results["protocol"].accessible is True
         # probed exactly once (the fallback), reused for Level 2 (no double-check)
         assert m_http.call_count == 1
+        # ping reclassified as reachable so the verdict isn't falsely CRITICAL
+        assert results["router_ping"].status == HealthStatus.OK
+        assert results["router_ping"].accessible is True
+        assert results["router_ping"].details.get("icmp_blocked") is True
 
     def test_check_all_levels_truly_down_still_skips(self):
         """Ping fails AND the data port is closed: fail_fast still short-circuits

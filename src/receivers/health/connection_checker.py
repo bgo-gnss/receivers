@@ -120,10 +120,23 @@ class ConnectionChecker:
                 )
                 return results
             # Reachable on the data port despite ping failure — the router
-            # blocks ICMP. Continue with the normal checks; reuse this probe.
+            # blocks ICMP. Reclassify the ping result as reachable (OK) with an
+            # icmp_blocked flag so the station is not falsely flagged offline /
+            # CRITICAL downstream (build_health_status feeds every connection
+            # status into the verdict; the netr9/netrs HTTP-extraction gate keys
+            # off router_ping.accessible). The original ping failure is preserved
+            # in details. Then continue with the normal checks; reuse this probe.
             self.logger.info(
                 f"{self.station_id}: ICMP ping failed but HTTP port {http_port} "
-                "is open — router blocks ping, continuing with port checks"
+                "is open — router blocks ping, treating as reachable"
+            )
+            ping_details = dict(results["router_ping"].details or {})
+            ping_details.update({"icmp_blocked": True, "reachable_via": "http_port"})
+            results["router_ping"] = ConnectionStatus(
+                status=HealthStatus.OK,
+                accessible=True,
+                error_message="ICMP blocked; reachable via data port",
+                details=ping_details,
             )
             results["http_port"] = fallback
 
