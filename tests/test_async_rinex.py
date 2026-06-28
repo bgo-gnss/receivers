@@ -226,12 +226,14 @@ class TestCreateConverter:
         assert kwargs["naming_convention"] == NamingConvention.SHORT
 
     @patch("receivers.rinex.trimble_native_converter.TrimbleNativeConverter")
-    @patch("receivers.rinex.TrimbleConverter")
-    def test_netrs_ignores_native_trimble(self, mock_trimble, mock_native):
-        """use_native_trimble must NOT route NetRS to the native RINEX 3
-        converter — that is the regression that broke GAMIT processing."""
-        mock_trimble.return_value = MagicMock()
+    def test_netrs_uses_native_at_rinex2(self, mock_native):
+        """When Docker is available, NetRS uses the NATIVE converter but at
+        RINEX 2 (not 3). The teqc TrimbleConverter path produces no output for
+        NetRS .T00, so native is required; RINEX 2 keeps the L2 range as P2."""
+        from receivers.rinex import RinexVersion
+
         mock_native.is_available.return_value = True
+        mock_native.return_value = MagicMock()
         _create_converter(
             "BLEI",
             "netrs",
@@ -243,8 +245,9 @@ class TestCreateConverter:
             },
             MagicMock(),
         )
-        mock_trimble.assert_called_once()
-        mock_native.assert_not_called()
+        mock_native.assert_called_once()
+        _, kwargs = mock_native.call_args
+        assert kwargs["rinex_version"] == RinexVersion.RINEX_2
 
     @patch("receivers.rinex.TrimbleConverter")
     def test_netrs_version_override(self, mock_trimble):
