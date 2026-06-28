@@ -499,14 +499,16 @@ def _create_converter(
     naming = NamingConvention.SHORT if naming_str == "short" else NamingConvention.LONG
     apply_header: bool = rinex_config.get("apply_header_corrections", True)
 
-    # For Trimble receivers, prefer native Docker converter when configured.
-    # NetRS is deliberately excluded: its L2 is codeless, so the native RINEX 3
-    # output codes the L2 range as C2D, which GAMIT cannot map to P2 (all data
-    # is deleted with "no P2 range"). NetRS is handled separately below — pinned
-    # to RINEX 2.11 via teqc so P2 is preserved.
+    # For Trimble receivers, prefer the native Docker converter when configured.
+    # NetRS is included: the native converter handles both NetR9 and NetRS. NetRS
+    # is pinned to RINEX 2 below (not 3) because its codeless L2 codes as C2D in
+    # RINEX 3, which GAMIT cannot map to P2; at RINEX 2 the native converter emits
+    # a proper P2. (The teqc TrimbleConverter path does NOT produce output for
+    # NetRS .T00 here, so we must use the native converter — same as the manual
+    # `receivers rinex` path.)
     use_native = rinex_config.get("use_native_trimble", False)
     trimble_cls = TrimbleConverter
-    if use_native and "netr9" in receiver_type:
+    if use_native and ("netr9" in receiver_type or "netrs" in receiver_type):
         try:
             from ..rinex.trimble_native_converter import TrimbleNativeConverter
 
@@ -545,16 +547,17 @@ def _create_converter(
         return converter, ".T02*"
     elif "netrs" in receiver_type:
         # NetRS L2 is codeless: native RINEX 3 codes the L2 range as C2D, which
-        # GAMIT deletes ("no P2 range"). Convert via teqc to RINEX 2.11 so the
-        # L2 range stays P2. Configurable via [rinex] netrs_rinex_version (default
-        # 2); RINEX 2 forces SHORT naming (e.g. SSSSDDD0.YYd.Z, as GAMIT expects).
+        # GAMIT deletes ("no P2 range"). Convert to RINEX 2 (native converter) so
+        # the L2 range stays P2. Use trimble_cls (the native converter when Docker
+        # is available — the teqc path produces no .T00 output here). Configurable
+        # via [rinex] netrs_rinex_version (default 2); RINEX 2 forces SHORT naming.
         netrs_version = version_map.get(
             int(rinex_config.get("netrs_rinex_version", 2)), RinexVersion.RINEX_2
         )
         netrs_naming = (
             NamingConvention.SHORT if netrs_version == RinexVersion.RINEX_2 else naming
         )
-        converter = TrimbleConverter(
+        converter = trimble_cls(
             station_id=station_id,
             rinex_version=netrs_version,
             naming_convention=netrs_naming,
