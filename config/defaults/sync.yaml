@@ -42,3 +42,31 @@ targets:
     cutover: "2026-06-22T00:00:00"
 
     # overlap_minutes: 5          # optional per-target override
+
+  # --- EPOS dissemination (RINEX3 long names -> EPOS files server) ----------
+  # Phase 1 / T1 (tracer bullet). Converts archived RINEX to RINEX 3.04 with long
+  # IGS names (a capability the legacy epos-gnss library lacks) and pushes to the
+  # EPOS files server. Keep inactive until the pipeline (T2-T8) is built + verified;
+  # run T1 with `--force --dest-override /tmp/epos_stage` for a pre-stage check.
+  # Design: docs/architecture/epos-dissemination-plan.md
+  - name: epos
+    active: false
+    tier: dissemination           # derived, regenerable, format-converted
+
+    # Real dest is the EPOS files server (confirm host/path + secret model, plan
+    # open decision #4). Placeholder below; override with --dest-override for T1.
+    host: ""                      # empty => local dest (staging / tests)
+    user: epos
+    dest: /tmp/epos_stage
+
+    source_root: /mnt/data/gpsdata
+    sessions: [15s_24hr]
+    exclude_stations: [DYNA, HRNC, HAUR]
+
+    # Converted-output cache, keyed on hash(source content_sha256 + TOS fingerprint)
+    convert_cache_dir: ~/.cache/gps_receivers/epos_convert
+
+    format:
+      rinex_version: 3
+      naming: long
+      country_code: ISL

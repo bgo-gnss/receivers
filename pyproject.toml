@@ -187,6 +187,9 @@ warn_unused_ignores = true
 module = [
     "progressbar2.*",
     "gps_parser.*",
+    "tostools.*",
+    "psycopg2.*",
+    "pyproj.*",
 ]
 ignore_missing_imports = true
 

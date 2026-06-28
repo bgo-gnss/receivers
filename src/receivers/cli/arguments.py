@@ -1331,4 +1331,9 @@ For subcommand help: receivers <command> --help
     # archive-verify (re-hash archived files + local↔archive cross-check)
     create_archive_verify_parser(subparsers)
 
+    # epos-disseminate (RINEX3 long-name dissemination to the EPOS files server)
+    from .epos_disseminate import create_epos_disseminate_parser
+
+    create_epos_disseminate_parser(subparsers)
+
     return parser
