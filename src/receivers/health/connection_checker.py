@@ -97,28 +97,39 @@ class ConnectionChecker:
             self.logger.debug(f"Ping failed for {self.station_id}, retrying once...")
             results["router_ping"] = self.check_ping(count=5, timeout=2)
 
-        # If ping failed and fail_fast enabled, skip remaining slow checks
+        # If ping failed, don't immediately give up: some routers/firewalls
+        # block ICMP while the data ports stay open and data keeps flowing
+        # (e.g. ISAF — ping 100% loss but HTTP/FTP open, daily files arriving).
+        # Probe the HTTP port as a fallback before declaring the host down,
+        # mirroring the download path's ICMP-blocked fallback
+        # (see trimble/netrs.py, netr9.py). Only when BOTH ping and the data
+        # port fail do we honour fail_fast and skip the rest.
         if fail_fast and not results["router_ping"].accessible:
-            self.logger.debug(
-                f"Ping retry failed for {self.station_id}, skipping port checks (fail_fast)"
+            fallback = self.check_http_port(http_port)
+            if not fallback.accessible:
+                self.logger.debug(
+                    f"Ping retry failed for {self.station_id} and HTTP port "
+                    f"{http_port} unreachable, skipping port checks (fail_fast)"
+                )
+                results["http_port"] = fallback
+                results["protocol"] = ConnectionStatus(
+                    status=HealthStatus.CRITICAL,
+                    accessible=False,
+                    error_message="Skipped: host unreachable (ping + HTTP failed)",
+                    details={"type": protocol_type, "skipped": True},
+                )
+                return results
+            # Reachable on the data port despite ping failure — the router
+            # blocks ICMP. Continue with the normal checks; reuse this probe.
+            self.logger.info(
+                f"{self.station_id}: ICMP ping failed but HTTP port {http_port} "
+                "is open — router blocks ping, continuing with port checks"
             )
-            # Mark other levels as unreachable without attempting
-            results["http_port"] = ConnectionStatus(
-                status=HealthStatus.CRITICAL,
-                accessible=False,
-                error_message="Skipped: host unreachable (ping failed)",
-                details={"port": http_port, "skipped": True},
-            )
-            results["protocol"] = ConnectionStatus(
-                status=HealthStatus.CRITICAL,
-                accessible=False,
-                error_message="Skipped: host unreachable (ping failed)",
-                details={"type": protocol_type, "skipped": True},
-            )
-            return results
+            results["http_port"] = fallback
 
-        # Level 2: HTTP port test
-        results["http_port"] = self.check_http_port(http_port)
+        # Level 2: HTTP port test (skip if already probed during ping fallback)
+        if "http_port" not in results:
+            results["http_port"] = self.check_http_port(http_port)
 
         # Level 3: Protocol-specific test
         if protocol_port is None:
