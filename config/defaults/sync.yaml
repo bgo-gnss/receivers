@@ -43,30 +43,45 @@ targets:
 
     # overlap_minutes: 5          # optional per-target override
 
-  # --- EPOS dissemination (RINEX3 long names -> EPOS files server) ----------
-  # Phase 1 / T1 (tracer bullet). Converts archived RINEX to RINEX 3.04 with long
-  # IGS names (a capability the legacy epos-gnss library lacks) and pushes to the
-  # EPOS files server. Keep inactive until the pipeline (T2-T8) is built + verified;
-  # run T1 with `--force --dest-override /tmp/epos_stage` for a pre-stage check.
-  # Design: docs/architecture/epos-dissemination-plan.md
+  # --- EPOS dissemination (RINEX long names -> EPOS files server) -----------
+  # Converts archived RINEX/raw to the EPOS file format and pushes to the EPOS
+  # files server, indexing into the EPOS gnss-europe DB. Keep inactive until the
+  # pipeline is verified end-to-end; run with `--force --dest-override <dir>` for a
+  # pre-stage check. Design: docs/architecture/epos-dissemination-plan.md
   - name: epos
     active: false
     tier: dissemination           # derived, regenerable, format-converted
 
-    # Real dest is the EPOS files server (confirm host/path + secret model, plan
-    # open decision #4). Placeholder below; override with --dest-override for T1.
+    # Real dest is the EPOS files server (confirm host/path + secret model).
     host: ""                      # empty => local dest (staging / tests)
     user: epos
     dest: /tmp/epos_stage
 
     source_root: /mnt/data/gpsdata
-    sessions: [15s_24hr]
+    sessions: [15s_24hr]          # phase 1: 15s_24hr only (per-session format later)
     exclude_stations: [DYNA, HRNC, HAUR]
 
     # Converted-output cache, keyed on hash(source content_sha256 + TOS fingerprint)
     convert_cache_dir: ~/.cache/gps_receivers/epos_convert
 
+    # --- Format policy (the source of truth for naming/compression/layout) ---
     format:
-      rinex_version: 3
-      naming: long
+      # Model B: ship the source's RINEX version UNCHANGED (never R2<->R3); each
+      # version gets its own naming + packaging. EPOS accepts both.
+      preserve_source_version: true
       country_code: ISL
+      set_header_from_tos: true   # rewrite the header from TOS before push
+
+      rinex2:                     # RINEX2 sources -> short names
+        naming: short             # SSSS0DDF.YYt
+        hatanaka: true            # -> .YYd
+        compression: Z            # -> SSSS0DDF.YYd.Z  (legacy convention; needs `compress`)
+      rinex3:                     # RINEX3 sources (incl. raw -> R3) -> long names
+        naming: long              # SSSS00CCC_R_..._MO
+        hatanaka: true            # -> .crx
+        compression: gz           # -> ..._MO.crx.gz
+
+      # Dest layout (gtimes datepathlist tokens + {station}; mirrors the legacy
+      # archive tree). %Y=year, #b=lowercase 3-letter month.
+      dir_template:      "%Y/#b/{station}/15s_24hr/rinex/"
+      filename_template: "{name}"

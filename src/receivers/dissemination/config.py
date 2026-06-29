@@ -1,12 +1,10 @@
 """Dissemination target config — the ``tier: dissemination`` rows of sync.yaml.
 
 Reuses the same ``sync.yaml`` file and parsing helpers as
-:mod:`receivers.archive.config`, but a dissemination target carries the extra
-metadata the convert+rename stage needs (country code, RINEX version/naming,
-the convert cache dir) that an archive (as-is rsync) target does not.
-
-T1 keeps this minimal — enough to drive the tracer bullet for one (station,
-date). Later tickets add the TOS include-filter and per-target format spec.
+:mod:`receivers.archive.config`, but a dissemination target carries a declarative
+:class:`DisseminationFormat` (the source of truth for naming / compression /
+layout — Model B per-version policy + dest templates) that an archive (as-is
+rsync) target does not.
 """
 
 from __future__ import annotations
@@ -31,6 +29,70 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_COUNTRY_CODE = "ISL"
 DEFAULT_CACHE_DIR = "~/.cache/gps_receivers/epos_convert"
+# Mirror the legacy EPOS archive tree by default (gtimes datepathlist tokens +
+# {station}; %Y=year, #b=lowercase 3-letter month).
+DEFAULT_DIR_TEMPLATE = "%Y/#b/{station}/15s_24hr/rinex/"
+DEFAULT_FILENAME_TEMPLATE = "{name}"
+
+
+@dataclass(frozen=True)
+class VersionPolicy:
+    """Per-RINEX-version naming + packaging policy for a dissemination target."""
+
+    naming: str  # 'short' (RINEX2 SSSS0DDF.YYt) or 'long' (RINEX3 IGS)
+    hatanaka: bool  # True → CRINEX (.crx / R2 .YYd); False → obs (.rnx / R2 .YYo)
+    compression: str  # 'gz' | 'Z' | 'none'
+
+    @staticmethod
+    def from_dict(raw: dict, *, default_naming: str, default_compression: str):
+        raw = raw or {}
+        return VersionPolicy(
+            naming=raw.get("naming", default_naming),
+            hatanaka=bool(raw.get("hatanaka", True)),
+            compression=raw.get("compression", default_compression),
+        )
+
+
+@dataclass(frozen=True)
+class DisseminationFormat:
+    """The declarative format policy for a dissemination target (from sync.yaml).
+
+    Model B: the source's RINEX version is preserved (never R2↔R3 converted); each
+    version gets its own naming + packaging (``rinex2``/``rinex3``). The dest layout
+    is two gtimes-templated strings.
+    """
+
+    preserve_source_version: bool = True
+    country_code: str = DEFAULT_COUNTRY_CODE
+    set_header_from_tos: bool = True
+    rinex2: VersionPolicy = field(
+        default_factory=lambda: VersionPolicy("short", True, "Z")
+    )
+    rinex3: VersionPolicy = field(
+        default_factory=lambda: VersionPolicy("long", True, "gz")
+    )
+    dir_template: str = DEFAULT_DIR_TEMPLATE
+    filename_template: str = DEFAULT_FILENAME_TEMPLATE
+
+    def policy_for(self, rinex_version: int) -> VersionPolicy:
+        return self.rinex2 if rinex_version == 2 else self.rinex3
+
+    @staticmethod
+    def from_dict(raw: dict) -> DisseminationFormat:
+        raw = raw or {}
+        return DisseminationFormat(
+            preserve_source_version=bool(raw.get("preserve_source_version", True)),
+            country_code=raw.get("country_code", DEFAULT_COUNTRY_CODE),
+            set_header_from_tos=bool(raw.get("set_header_from_tos", True)),
+            rinex2=VersionPolicy.from_dict(
+                raw.get("rinex2", {}), default_naming="short", default_compression="Z"
+            ),
+            rinex3=VersionPolicy.from_dict(
+                raw.get("rinex3", {}), default_naming="long", default_compression="gz"
+            ),
+            dir_template=raw.get("dir_template", DEFAULT_DIR_TEMPLATE),
+            filename_template=raw.get("filename_template", DEFAULT_FILENAME_TEMPLATE),
+        )
 
 
 @dataclass(frozen=True)
@@ -38,7 +100,7 @@ class DisseminationTarget:
     """One ``tier: dissemination`` destination (e.g. the EPOS files server).
 
     Mirrors the shape of :class:`receivers.archive.config.SyncTarget` for the
-    transport fields, and adds the convert/rename metadata.
+    transport fields, and carries the declarative :class:`DisseminationFormat`.
     """
 
     name: str
@@ -55,18 +117,13 @@ class DisseminationTarget:
 
     sessions: tuple[str, ...]
     exclude_stations: frozenset[str]
-
-    country_code: str = DEFAULT_COUNTRY_CODE
-    """3-char IGS country code for the long name (ISL for Iceland)."""
-
-    rinex_version: int = 3
-    naming: str = "long"
+    format: DisseminationFormat = field(default_factory=DisseminationFormat)
     convert_cache_dir: str = DEFAULT_CACHE_DIR
     """Where converted outputs are cached, keyed on
     ``hash(source content_sha256 + TOS-metadata fingerprint)``."""
 
     cutover: Optional[datetime] = None
-    """Optional watermark floor (unused by the T1 single-file path)."""
+    """Optional watermark floor (unused by the single-file path)."""
 
     tier: str = "dissemination"
 
@@ -84,7 +141,6 @@ class DisseminationTarget:
 
 def _build_target(raw: dict) -> DisseminationTarget:
     name = raw["name"]
-    fmt = raw.get("format", {}) or {}
     cutover = None
     if raw.get("cutover") is not None:
         cutover = _parse_cutover(raw["cutover"], name)
@@ -97,9 +153,7 @@ def _build_target(raw: dict) -> DisseminationTarget:
         source_root=raw["source_root"],
         sessions=tuple(raw.get("sessions", ())),
         exclude_stations=frozenset(raw.get("exclude_stations", ())),
-        country_code=fmt.get("country_code", DEFAULT_COUNTRY_CODE),
-        rinex_version=int(fmt.get("rinex_version", 3)),
-        naming=fmt.get("naming", "long"),
+        format=DisseminationFormat.from_dict(raw.get("format", {})),
         convert_cache_dir=raw.get("convert_cache_dir", DEFAULT_CACHE_DIR),
         cutover=cutover,
     )

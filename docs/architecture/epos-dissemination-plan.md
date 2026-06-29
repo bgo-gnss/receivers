@@ -158,6 +158,31 @@ Scheduled `epos-disseminate` at `:45` alongside archive sync; double-gated
 
 ---
 
+## Format policy — declarative in sync.yaml (Model B, 2026-06-29)
+
+The format/naming/compression/layout policy lives in the target's `format:` block
+(`DisseminationFormat`), not in code:
+
+- **Model B — preserve source version.** The source's RINEX version is shipped
+  unchanged (never R2↔R3 converted); version is detected from the obs **content**
+  (`detect_rinex_version`), not the filename. (Discovery: the local archive's
+  legacy-short-named `.26d.gz` files are actually RINEX 3.04 content.)
+- **Per-version policy** (`rinex2`/`rinex3` → `VersionPolicy{naming, hatanaka,
+  compression}`): R3→long `.crx.gz`, R2→short `.YYd.Z` (legacy `compress`). EPOS
+  accepts both, naming differs by version.
+- **Pipeline:** convert → cached canonical *plain obs* (version-preserving; R3 via
+  `gfzrnx -vo {version}`, R2 via rename-only, never up/down-converted) → set-header
+  → QC on the obs → `package()` (Hatanaka `RNX2CRX` + `gzip`/`compress`) → push.
+  `published_name()` derives the final name; md5checksum on the packaged file,
+  md5uncompressed on the obs.
+- **Layout:** `dir_template` + `filename_template` (gtimes datepathlist tokens +
+  `{station}`), default mirrors the legacy tree `%Y/#b/{station}/15s_24hr/rinex/`.
+  `engine.relative_dir()` renders it; the indexer stores `/files/<rel>`.
+- Phase 1 = `15s_24hr` only; per-session format blocks are a later extension.
+
+Validated live: RHOF raw→R3 `RHOF00ISL_R_..._MO.crx.gz` (valid CRINEX 3.0) under
+`2026/may/RHOF/15s_24hr/rinex/`, header from TOS, QC pass, indexed. 54 tests.
+
 ## set-header-from-TOS ✅ (2026-06-28)
 
 The converted R3 header is now rewritten from TOS before caching/QC, so the

@@ -44,7 +44,11 @@ _GPS_TOOLS_BIN_FALLBACK = Path(__file__).resolve().parents[4] / "gps-tools" / "b
 
 
 class ConvertError(RuntimeError):
-    """A convert step (decompress / CRX2RNX / gfzrnx) failed."""
+    """A convert step (decompress / CRX2RNX / gfzrnx / packaging) failed."""
+
+
+# Raw extensions handled by the raw→rinex fallback (Trimble only in this build).
+_TRIMBLE_RAW = (".t02", ".t00")
 
 
 def resolve_tool(name: str) -> str:
@@ -82,10 +86,15 @@ def _run(cmd: list[str], *, timeout: int = 300) -> subprocess.CompletedProcess:
 
 @dataclass
 class ConvertResult:
-    """Outcome of one convert call."""
+    """Outcome of one convert call — the cached canonical *plain obs* file.
 
-    output_path: Path
-    long_name: str
+    Packaging (Hatanaka / compression) and the published filename are applied
+    separately by :func:`package` / :func:`published_name`, per the version policy.
+    """
+
+    output_path: Path  # cached plain RINEX obs (.rnx for R3, .YYo for R2)
+    obs_name: str
+    rinex_version: int  # the SOURCE's version, preserved (Model B)
     cached: bool  # True if served from cache (no work done)
     source_path: Path
 
@@ -150,51 +159,210 @@ def long_rinex3_name(
     )
 
 
-def _run_rinex_chain(source_path: Path, out_path: Path) -> None:
-    """Decompress → un-Hatanaka → gfzrnx R3, writing ``out_path`` atomically.
+def _obs_to_crinex_name(name: str) -> str:
+    """Inverse of :func:`_crinex_to_obs_name`: obs → CRINEX (.rnx→.crx, .YYo→.YYd)."""
+    if name.endswith(".rnx"):
+        return name[:-4] + ".crx"
+    if name.endswith(".RNX"):
+        return name[:-4] + ".CRX"
+    last = name[-1]
+    if last == "o":
+        return name[:-1] + "d"
+    if last == "O":
+        return name[:-1] + "D"
+    raise ConvertError(f"cannot derive CRINEX name from obs {name!r}")
 
-    ``source_path`` is any RINEX (plain/gz/Z, Hatanaka or not, R2 or R3). The
-    output filename is ``out_path.name`` (the long IGS name).
+
+def detect_rinex_version(obs_path: Path) -> int:
+    """The major RINEX version (2 or 3) from a plain obs file's first header line."""
+    with open(obs_path, encoding="utf-8", errors="ignore") as fh:
+        first = fh.readline()
+    try:
+        return int(float(first[:9].strip()))
+    except ValueError as exc:
+        raise ConvertError(f"no RINEX version in {obs_path.name}: {first!r}") from exc
+
+
+def _to_plain_obs(src: Path, tmpdir: Path) -> Path:
+    """Decompress (.gz/.Z) and un-Hatanaka ``src`` into a plain obs in ``tmpdir``."""
+    stripped, was_compressed = _strip_compression(src.name)
+    if was_compressed:
+        dec = tmpdir / stripped
+        with open(dec, "wb") as fh:
+            proc = subprocess.run(
+                ["gzip", "-dc", str(src)], stdout=fh, stderr=subprocess.PIPE
+            )
+        if proc.returncode != 0:
+            raise ConvertError(f"decompress {src.name}: {proc.stderr.decode().strip()}")
+    else:
+        dec = tmpdir / src.name
+        if dec != src:
+            shutil.copy2(src, dec)
+
+    if _is_hatanaka(dec.name):
+        crx2rnx = resolve_tool("CRX2RNX")
+        _run([crx2rnx, "-f", str(dec)])
+        obs = tmpdir / _crinex_to_obs_name(dec.name)
+        if not obs.is_file():
+            raise ConvertError(f"CRX2RNX produced no {obs.name}")
+        return obs
+    return dec
+
+
+def _short_obs_name(station: str, observation_dt: datetime, country_code: str) -> str:
+    namer = RinexNamer(station, RinexVersion.RINEX_2, country_code=country_code)
+    return namer.generate_filename(
+        observation_dt, convention=NamingConvention.SHORT, file_type="o"
+    )
+
+
+def _canonical_obs(
+    plain_obs: Path,
+    station: str,
+    observation_dt: datetime,
+    version: int,
+    naming: str,
+    country_code: str,
+    tmpdir: Path,
+) -> tuple[Path, str]:
+    """Rename/normalise ``plain_obs`` to the policy's canonical obs name.
+
+    R3 long → gfzrnx ``-vo {version}`` (version PRESERVED — Model B never up/down-
+    converts) writing the long IGS name. R2 short → plain rename, no gfzrnx (so the
+    R2 product is byte-for-byte the source obs, never touched by a version pass).
     """
+    if naming == "long":
+        obs_name = long_rinex3_name(station, observation_dt, country_code=country_code)
+        out = tmpdir / obs_name
+        gfzrnx = resolve_tool("gfzrnx")
+        _run(
+            [
+                gfzrnx,
+                "-finp",
+                str(plain_obs),
+                "-fout",
+                str(out),
+                "-vo",
+                str(version),
+                "-f",
+            ]
+        )
+        if not out.is_file():
+            raise ConvertError(f"gfzrnx produced no {obs_name}")
+        return out, obs_name
+
+    obs_name = _short_obs_name(station, observation_dt, country_code)
+    out = tmpdir / obs_name
+    if out != plain_obs:
+        shutil.move(str(plain_obs), str(out))
+    return out, obs_name
+
+
+def convert_for_dissemination(
+    source_path: Path,
+    station: str,
+    observation_dt: datetime,
+    *,
+    fmt,
+    cache_dir: Path,
+    tos_fingerprint: str = "",
+    set_header: bool = False,
+) -> ConvertResult:
+    """Produce the cached canonical plain obs for dissemination (Model B).
+
+    The source's RINEX version is preserved; naming follows ``fmt`` (R2→short,
+    R3→long). Output is cached under ``cache_dir/<key>/`` keyed on
+    :func:`cache_key` (content + TOS fingerprint). Packaging (Hatanaka/compression)
+    is applied later by :func:`package`. ``set_header`` rewrites the header from TOS.
+    """
+    source_path = Path(source_path)
+    is_raw = any(e in source_path.name.lower() for e in _TRIMBLE_RAW + (".sbf",))
+
+    key = cache_key(source_path, tos_fingerprint)
+    out_dir = cache_dir.expanduser() / key
+    if out_dir.is_dir():
+        existing = [p for p in out_dir.iterdir() if p.is_file()]
+        if existing:
+            obs = existing[0]
+            logger.info("convert cache hit %s → %s", source_path.name, obs.name)
+            return ConvertResult(
+                obs, obs.name, detect_rinex_version(obs), True, source_path
+            )
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     import tempfile
 
     with tempfile.TemporaryDirectory(prefix="epos_convert_") as tmp:
         tmpdir = Path(tmp)
-
-        # 1. decompress (.gz/.Z → CRINEX or obs). gzip(1) handles both.
-        stripped, was_compressed = _strip_compression(source_path.name)
-        if was_compressed:
-            decompressed = tmpdir / stripped
-            with open(decompressed, "wb") as fh:
-                proc = subprocess.run(
-                    ["gzip", "-dc", str(source_path)], stdout=fh, stderr=subprocess.PIPE
-                )
-            if proc.returncode != 0:
-                raise ConvertError(
-                    f"decompress {source_path.name}: {proc.stderr.decode().strip()}"
-                )
+        if is_raw:
+            decoded = _decode_trimble_raw(source_path, station, observation_dt, tmpdir)
+            plain = _to_plain_obs(decoded, tmpdir)
         else:
-            decompressed = tmpdir / source_path.name
-            shutil.copy2(source_path, decompressed)
+            plain = _to_plain_obs(source_path, tmpdir)
+        version = detect_rinex_version(plain)
+        naming = fmt.policy_for(version).naming
+        canon, obs_name = _canonical_obs(
+            plain, station, observation_dt, version, naming, fmt.country_code, tmpdir
+        )
+        final_obs = out_dir / obs_name
+        shutil.move(str(canon), str(final_obs))
 
-        # 2. un-Hatanaka (CRINEX → RINEX obs) if needed.
-        if _is_hatanaka(decompressed.name):
-            crx2rnx = resolve_tool("CRX2RNX")
-            _run([crx2rnx, "-f", str(decompressed)])
-            obs_path = tmpdir / _crinex_to_obs_name(decompressed.name)
-            if not obs_path.is_file():
-                raise ConvertError(f"CRX2RNX produced no {obs_path.name}")
-        else:
-            obs_path = decompressed
+    if set_header:
+        set_header_from_tos(final_obs, station, observation_dt)
+    logger.info(
+        "converted %s → %s (RINEX %d)", source_path.name, final_obs.name, version
+    )
+    return ConvertResult(final_obs, obs_name, version, False, source_path)
 
-        # 3. → R3 + long name.
-        gfzrnx = resolve_tool("gfzrnx")
-        tmp_out = tmpdir / out_path.name
-        _run([gfzrnx, "-finp", str(obs_path), "-fout", str(tmp_out), "-vo", "3", "-f"])
-        if not tmp_out.is_file():
-            raise ConvertError(f"gfzrnx produced no {out_path.name}")
 
-        shutil.move(str(tmp_out), str(out_path))
+def published_name(obs_name: str, policy) -> str:
+    """The published filename for an obs name under a :class:`VersionPolicy`."""
+    name = _obs_to_crinex_name(obs_name) if policy.hatanaka else obs_name
+    ext = {"gz": ".gz", "Z": ".Z", "none": ""}.get(policy.compression, ".gz")
+    return name + ext
+
+
+def package(obs_path: Path, policy, out_dir: Path) -> Path:
+    """Hatanaka-compress (optional) + compress an obs into the published file.
+
+    Returns the published path in ``out_dir``, leaving the cached plain obs
+    untouched. Idempotent: if the published file already exists it is returned
+    as-is (so a cache-hit convert doesn't re-package). ``Z`` uses the system
+    ``compress`` (available on rek_new). Works in an internal temp dir so it never
+    clobbers the source obs even when ``out_dir`` is the obs's own directory.
+    """
+    import tempfile
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    final = out_dir / published_name(obs_path.name, policy)
+    if final.is_file():
+        return final
+
+    with tempfile.TemporaryDirectory(prefix="epos_pkg_") as tmp:
+        work = Path(tmp) / obs_path.name
+        shutil.copy2(obs_path, work)
+
+        if policy.hatanaka:
+            rnx2crx = resolve_tool("RNX2CRX")
+            _run([rnx2crx, "-f", str(work)])
+            crx = work.parent / _obs_to_crinex_name(work.name)
+            if not crx.is_file():
+                raise ConvertError(f"RNX2CRX produced no {crx.name}")
+            work = crx
+
+        if policy.compression == "gz":
+            _run(["gzip", "-f", str(work)])
+            work = Path(str(work) + ".gz")
+        elif policy.compression == "Z":
+            compress = resolve_tool("compress")
+            _run([compress, "-f", str(work)])
+            work = Path(str(work) + ".Z")
+
+        if not work.is_file():
+            raise ConvertError(f"packaging produced no {work.name}")
+        shutil.move(str(work), str(final))
+    return final
 
 
 def set_header_from_tos(
@@ -223,112 +391,6 @@ def set_header_from_tos(
     except Exception as exc:  # noqa: BLE001 - never fail the convert on a TOS glitch
         logger.warning("set-header-from-TOS failed for %s: %s", station, exc)
         return False
-
-
-def convert_to_rinex3_long(
-    source_path: Path,
-    station: str,
-    observation_dt: datetime,
-    *,
-    country_code: str = "ISL",
-    data_frequency: str = "15S",
-    file_period: str = "01D",
-    cache_dir: Path,
-    tos_fingerprint: str = "",
-    set_header: bool = False,
-) -> ConvertResult:
-    """Convert ``source_path`` (archived RINEX) to RINEX 3.04 with a long IGS name.
-
-    Returns a :class:`ConvertResult`; the output lives under ``cache_dir`` keyed
-    on :func:`cache_key` so an unchanged (content, TOS-metadata) pair converts
-    once. With ``set_header`` the cached product's header is rewritten from TOS
-    (and ``tos_fingerprint`` must reflect that metadata so the cache invalidates
-    on a later correction).
-    """
-    source_path = Path(source_path)
-    long_name = long_rinex3_name(
-        station,
-        observation_dt,
-        country_code=country_code,
-        data_frequency=data_frequency,
-        file_period=file_period,
-    )
-
-    key = cache_key(source_path, tos_fingerprint)
-    out_dir = cache_dir.expanduser() / key
-    out_path = out_dir / long_name
-    if out_path.is_file():
-        logger.info("convert cache hit %s → %s", source_path.name, long_name)
-        return ConvertResult(out_path, long_name, cached=True, source_path=source_path)
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    _run_rinex_chain(source_path, out_path)
-    if set_header:
-        set_header_from_tos(out_path, station, observation_dt)
-    logger.info("converted %s → %s", source_path.name, long_name)
-    return ConvertResult(out_path, long_name, cached=False, source_path=source_path)
-
-
-# Raw extensions handled by the raw→rinex fallback (Trimble only in this build).
-_TRIMBLE_RAW = (".t02", ".t00")
-
-
-def convert_raw_to_rinex3_long(
-    raw_path: Path,
-    station: str,
-    observation_dt: datetime,
-    *,
-    country_code: str = "ISL",
-    data_frequency: str = "15S",
-    file_period: str = "01D",
-    cache_dir: Path,
-    tos_fingerprint: str = "",
-    set_header: bool = False,
-) -> ConvertResult:
-    """Convert an archived **raw** file to RINEX 3.04 with a long IGS name.
-
-    The fallback when no archived RINEX exists: decode the raw with the existing
-    receivers converter (Trimble ``.T02``/``.T00`` → RINEX 2 via runpkr00+teqc),
-    then run the shared chain to the long-name R3 product. Cache key is on the
-    raw source. Septentrio ``.sbf`` is not wired here yet (current production is
-    Trimble for the raw-only stations).
-    """
-    raw_path = Path(raw_path)
-    name_l = raw_path.name.lower()
-    if not any(ext in name_l for ext in _TRIMBLE_RAW):
-        raise ConvertError(
-            f"raw→rinex supports only Trimble T02/T00 in this build; got {raw_path.name}"
-        )
-
-    long_name = long_rinex3_name(
-        station,
-        observation_dt,
-        country_code=country_code,
-        data_frequency=data_frequency,
-        file_period=file_period,
-    )
-    key = cache_key(raw_path, tos_fingerprint)
-    out_dir = cache_dir.expanduser() / key
-    out_path = out_dir / long_name
-    if out_path.is_file():
-        logger.info("convert cache hit (raw) %s → %s", raw_path.name, long_name)
-        return ConvertResult(out_path, long_name, cached=True, source_path=raw_path)
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    import tempfile
-
-    with tempfile.TemporaryDirectory(prefix="epos_raw_") as tmp:
-        tmpdir = Path(tmp)
-        decoded = _decode_trimble_raw(raw_path, station, observation_dt, tmpdir)
-        # Normalise whatever the decoder produced (native R3 .gz, or legacy R2 .crx)
-        # through the shared chain to our canonical plain-.rnx long name.
-        _run_rinex_chain(decoded, out_path)
-    if set_header:
-        set_header_from_tos(out_path, station, observation_dt)
-
-    logger.info("converted (raw) %s → %s", raw_path.name, long_name)
-    return ConvertResult(out_path, long_name, cached=False, source_path=raw_path)
 
 
 def _decode_trimble_raw(

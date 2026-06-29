@@ -22,8 +22,9 @@ from typing import Any, Callable, Optional
 from .config import DisseminationTarget
 from .convert import (
     ConvertError,
-    convert_raw_to_rinex3_long,
-    convert_to_rinex3_long,
+    convert_for_dissemination,
+    package,
+    published_name,
 )
 from .qc_gate import qc_check
 from .tos_access import session_fingerprint
@@ -68,6 +69,8 @@ class DisseminateResult:
     qc_passed: Optional[bool] = None  # None = gate not run (no session provider)
     qc_message: str = ""
     dest: Optional[str] = None
+    relative_path: Optional[str] = None  # dest-relative path of the published file
+    rinex_version: Optional[int] = None
     message: str = ""
     errors: list[str] = field(default_factory=list)
 
@@ -159,15 +162,40 @@ class EposDisseminate:
             return dest
         return f"{self.target.user}@{self.target.host}:{dest}"
 
-    def _push(self, local_file: Path) -> bool:
-        """rsync one converted file to the dest dir. Returns True if transferred."""
-        dest = self._dest_base.rstrip("/") + "/"
-        # Local dest: ensure the dir exists (remote dirs are the server's job).
-        if not self.target.host and not self.dry_run:
-            os.makedirs(self.dest_override or self.target.dest, exist_ok=True)
-        cmd = ["rsync", "-a", "--itemize-changes"]
+    def relative_dir(self, station: str, d: date) -> str:
+        """Render the format's ``dir_template`` (gtimes tokens + {station}) for d."""
+        import gtimes.timefunc as gt
+
+        template = self.target.format.dir_template.replace("{station}", station.upper())
+        # gtimes resolves date tokens (%Y, #b, …); '1D' frequency for a daily file.
+        rendered = gt.datepathlist(
+            template, "1D", datelist=[datetime(d.year, d.month, d.day)]
+        )
+        return rendered[0].strip("/") if rendered else ""
+
+    def _push(self, local_file: Path, rel_dir: str) -> bool:
+        """rsync ``local_file`` into ``<dest>/<rel_dir>/``. Returns True if transferred.
+
+        Creates the destination directory (local: os.makedirs; remote: rsync
+        ``--mkpath``). The published filename is ``local_file.name``.
+        """
+        base = (
+            self.dest_override if self.dest_override is not None else self.target.dest
+        )
+        rel_dir = rel_dir.strip("/")
+        full_dir = (
+            f"{base.rstrip('/')}/{rel_dir}/" if rel_dir else base.rstrip("/") + "/"
+        )
+
+        cmd = ["rsync", "-a", "--itemize-changes", "--mkpath"]
         if self.dry_run:
             cmd.append("--dry-run")
+        if not self.target.host:
+            if not self.dry_run:
+                os.makedirs(full_dir, exist_ok=True)
+            dest = full_dir
+        else:
+            dest = f"{self.target.user}@{self.target.host}:{full_dir}"
         cmd += [str(local_file), dest]
         logger.info(
             "rsync %s → %s%s",
@@ -178,7 +206,6 @@ class EposDisseminate:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if proc.returncode != 0:
             raise ConvertError(f"rsync rc={proc.returncode}: {proc.stderr.strip()}")
-        # itemize prints a line per changed file; empty ⇒ nothing transferred.
         return any(
             ln[:1] in "<>" for ln in proc.stdout.splitlines() if len(ln.split()) == 2
         )
@@ -216,41 +243,35 @@ class EposDisseminate:
         do_set_header = self.set_header and session is not None
         fingerprint = session_fingerprint(session) if do_set_header else ""
 
+        # Convert to the cached canonical plain obs (Model B: version preserved).
+        src = source if source is not None else raw_source
+        assert src is not None
         try:
-            if source is not None:
-                conv = convert_to_rinex3_long(
-                    source,
-                    station.upper(),
-                    obs_dt,
-                    country_code=self.target.country_code,
-                    cache_dir=self.target.cache_path,
-                    tos_fingerprint=fingerprint,
-                    set_header=do_set_header,
-                )
-            else:
-                assert raw_source is not None
-                conv = convert_raw_to_rinex3_long(
-                    raw_source,
-                    station.upper(),
-                    obs_dt,
-                    country_code=self.target.country_code,
-                    cache_dir=self.target.cache_path,
-                    tos_fingerprint=fingerprint,
-                    set_header=do_set_header,
-                )
+            conv = convert_for_dissemination(
+                src,
+                station.upper(),
+                obs_dt,
+                fmt=self.target.format,
+                cache_dir=self.target.cache_path,
+                tos_fingerprint=fingerprint,
+                set_header=do_set_header,
+            )
         except ConvertError as exc:
             result.message = f"convert failed: {exc}"
             result.errors.append(str(exc))
             return result
 
-        result.long_name = conv.long_name
+        policy = self.target.format.policy_for(conv.rinex_version)
+        pub_name = published_name(conv.obs_name, policy)
+        rel_dir = self.relative_dir(station, d)
+        result.long_name = pub_name
         result.cached = conv.cached
-        result.artifact_path = str(conv.output_path)
+        result.rinex_version = conv.rinex_version
         result.dest = self._dest_base
+        result.relative_path = f"{rel_dir}/{pub_name}" if rel_dir else pub_name
 
-        # Header-QC gate: never push a file whose header disagrees with TOS on a
-        # semantic field. Skipped (qc_passed stays None) when no session provider
-        # is wired. Reuses the session fetched above (no second TOS round-trip).
+        # Header-QC gate: verify the plain obs header vs TOS before packaging/push.
+        # Reuses the session fetched above (no second TOS round-trip).
         if self.session_provider is not None:
             verdict = qc_check(conv.output_path, session)
             result.qc_passed = verdict.passed
@@ -262,10 +283,14 @@ class EposDisseminate:
         else:
             logger.debug("QC gate skipped for %s (no TOS session provider)", station)
 
+        # Package (Hatanaka/compression per policy) into the cache dir (persists for
+        # indexing + reuse), then push into the layout dir.
         try:
-            transferred = self._push(conv.output_path)
+            published = package(conv.output_path, policy, conv.output_path.parent)
+            result.artifact_path = str(published)
+            transferred = self._push(published, rel_dir)
         except ConvertError as exc:
-            result.message = f"push failed: {exc}"
+            result.message = f"package/push failed: {exc}"
             result.errors.append(str(exc))
             return result
 
@@ -277,5 +302,5 @@ class EposDisseminate:
             else ("pushed" if transferred else "up-to-date")
         )
         cache_note = " (cached)" if conv.cached else ""
-        result.message = f"{verb} {conv.long_name}{cache_note}"
+        result.message = f"{verb} {pub_name}{cache_note}"
         return result

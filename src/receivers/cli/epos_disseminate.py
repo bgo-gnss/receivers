@@ -150,7 +150,8 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
             try:
                 from ..dissemination import index_rinex_file
 
-                rel = f"/files/{result.station}/{result.long_name}"
+                # EPOS portal stores paths under /files/ + the dest-relative layout.
+                rel = f"/files/{result.relative_path}"
                 indexed_id = index_rinex_file(
                     conn,
                     Path(result.artifact_path),
@@ -158,7 +159,7 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
                     datetime(d.year, d.month, d.day),
                     relative_path=rel,
                     session=(target.sessions[0] if target.sessions else "15s_24hr"),
-                    rinex_version=target.rinex_version,
+                    rinex_version=result.rinex_version or 3,
                 )
             except Exception as exc:  # noqa: BLE001 - index must not fail the push
                 logger.warning("rinex_file index failed: %s", exc)

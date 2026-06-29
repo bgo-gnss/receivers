@@ -190,6 +190,7 @@ module = [
     "tostools.*",
     "psycopg2.*",
     "pyproj.*",
+    "gtimes.*",
 ]
 ignore_missing_imports = true
 

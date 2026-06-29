@@ -12,14 +12,18 @@ from pathlib import Path
 import pytest
 
 from receivers.dissemination.config import (
+    DisseminationFormat,
     DisseminationTarget,
+    VersionPolicy,
     load_dissemination_config,
 )
 from receivers.dissemination.convert import (
     _crinex_to_obs_name,
     _is_hatanaka,
+    _obs_to_crinex_name,
     _strip_compression,
     cache_key,
+    published_name,
     resolve_tool,
 )
 from receivers.dissemination.engine import EposDisseminate
@@ -43,7 +47,6 @@ def _target(tmp_root, **over):
         source_root=str(tmp_root / "archive"),
         sessions=("15s_24hr",),
         exclude_stations=frozenset({"DYNA", "HRNC", "HAUR"}),
-        country_code="ISL",
         convert_cache_dir=str(tmp_root / "cache"),
     )
     base.update(over)
@@ -75,18 +78,30 @@ targets:
     exclude_stations: [DYNA]
     convert_cache_dir: ~/.cache/epos
     format:
-      rinex_version: 3
-      naming: long
+      preserve_source_version: true
       country_code: ISL
+      rinex2:
+        naming: short
+        hatanaka: true
+        compression: Z
+      rinex3:
+        naming: long
+        hatanaka: true
+        compression: gz
+      dir_template: "%Y/#b/{station}/15s_24hr/rinex/"
 """
         )
         targets = load_dissemination_config(cfg)
         assert [t.name for t in targets] == ["epos"]  # archive tier filtered out
         t = targets[0]
         assert t.active is True
-        assert t.country_code == "ISL"
-        assert t.rinex_version == 3
-        assert t.naming == "long"
+        assert t.format.country_code == "ISL"
+        assert t.format.preserve_source_version is True
+        assert t.format.policy_for(3).naming == "long"
+        assert t.format.policy_for(3).compression == "gz"
+        assert t.format.policy_for(2).naming == "short"
+        assert t.format.policy_for(2).compression == "Z"
+        assert t.format.dir_template.startswith("%Y")
         assert "DYNA" in t.exclude_stations
 
     def test_missing_file_returns_empty(self, tmp_path):
@@ -149,6 +164,34 @@ class TestConvertHelpers:
         k_fp = cache_key(f, "tos-fingerprint-v1")
         assert k_empty != k_fp  # header correction (new fingerprint) ⇒ new cache slot
         assert cache_key(f, "tos-fingerprint-v1") == k_fp  # deterministic
+
+    @pytest.mark.parametrize(
+        "obs,crinex",
+        [
+            ("STAT00ISL_R_..._MO.rnx", "STAT00ISL_R_..._MO.crx"),
+            ("FIM21280.26o", "FIM21280.26d"),
+            ("FIM21280.26O", "FIM21280.26D"),
+        ],
+    )
+    def test_obs_to_crinex_name(self, obs, crinex):
+        assert _obs_to_crinex_name(obs) == crinex
+
+    def test_published_name_per_policy(self):
+        # R3 long, Hatanaka + gz
+        r3 = VersionPolicy(naming="long", hatanaka=True, compression="gz")
+        assert (
+            published_name("RHOF00ISL_R_20261280000_01D_15S_MO.rnx", r3)
+            == "RHOF00ISL_R_20261280000_01D_15S_MO.crx.gz"
+        )
+        # R2 short, Hatanaka + .Z (legacy)
+        r2 = VersionPolicy(naming="short", hatanaka=True, compression="Z")
+        assert published_name("FIM21280.26o", r2) == "FIM21280.26d.Z"
+        # plain obs, no hatanaka, gz
+        plain = VersionPolicy(naming="long", hatanaka=False, compression="gz")
+        assert published_name("X.rnx", plain) == "X.rnx.gz"
+        # no compression
+        none = VersionPolicy(naming="long", hatanaka=False, compression="none")
+        assert published_name("X.rnx", none) == "X.rnx"
 
     def test_resolve_tool_missing(self):
         with pytest.raises(Exception):
@@ -393,60 +436,60 @@ def _tools_available() -> bool:
 
 _SAMPLE = Path.home() / "tmp/gpsdata/2026/may/FIM2/15s_24hr/rinex/FIM21280.26d.gz"
 
+# The local archive's "*.26d.gz" 15s files are RINEX 3.04 content (Hatanaka) with
+# legacy short names — detect-from-content yields version 3 → long-name .crx.gz.
+_PUBLISHED = "FIM200ISL_R_20261280000_01D_15S_MO.crx.gz"
+_LAYOUT = "2026/may/FIM2/15s_24hr/rinex"
+
 
 @pytest.mark.skipif(
     not (_tools_available() and _SAMPLE.is_file()),
     reason="needs gps-tools binaries and a real archived RINEX sample",
 )
 class TestEndToEnd:
-    def test_convert_produces_valid_rinex3_long_name(self, tmp_path):
-        from receivers.dissemination.convert import convert_to_rinex3_long
+    def test_convert_produces_canonical_obs(self, tmp_path):
+        from receivers.dissemination.convert import convert_for_dissemination
 
-        res = convert_to_rinex3_long(
+        res = convert_for_dissemination(
             _SAMPLE,
             "FIM2",
             datetime(2026, 5, 8),
-            country_code="ISL",
+            fmt=DisseminationFormat(),
             cache_dir=tmp_path / "cache",
         )
-        assert res.long_name == "FIM200ISL_R_20261280000_01D_15S_MO.rnx"
+        assert res.obs_name == "FIM200ISL_R_20261280000_01D_15S_MO.rnx"
+        assert res.rinex_version == 3
         assert res.output_path.is_file()
         assert res.cached is False
-        # RINEX 3.04 header line.
         first = res.output_path.read_text(errors="replace").splitlines()[0]
         assert "3.04" in first and "RINEX VERSION" in first
 
     def test_second_convert_is_cache_hit(self, tmp_path):
-        from receivers.dissemination.convert import convert_to_rinex3_long
+        from receivers.dissemination.convert import convert_for_dissemination
 
-        kw = dict(country_code="ISL", cache_dir=tmp_path / "cache")
-        first = convert_to_rinex3_long(_SAMPLE, "FIM2", datetime(2026, 5, 8), **kw)
-        second = convert_to_rinex3_long(_SAMPLE, "FIM2", datetime(2026, 5, 8), **kw)
+        kw = dict(fmt=DisseminationFormat(), cache_dir=tmp_path / "cache")
+        first = convert_for_dissemination(_SAMPLE, "FIM2", datetime(2026, 5, 8), **kw)
+        second = convert_for_dissemination(_SAMPLE, "FIM2", datetime(2026, 5, 8), **kw)
         assert first.cached is False
         assert second.cached is True
-
-    def test_run_one_pushes_to_local_dest(self, tmp_path):
-        (tmp_path / "archive" / "2026" / "may" / "FIM2" / "15s_24hr" / "rinex").mkdir(
-            parents=True
-        )
-        # symlink the real sample into the synthetic archive layout
-        link = tmp_path / "archive/2026/may/FIM2/15s_24hr/rinex/FIM21280.26d.gz"
-        os.symlink(_SAMPLE, link)
-        eng = EposDisseminate(_target(tmp_path))
-        r = eng.run_one("FIM2", date(2026, 5, 8))
-        assert r.ok is True
-        assert r.long_name == "FIM200ISL_R_20261280000_01D_15S_MO.rnx"
-        staged = tmp_path / "stage" / r.long_name
-        assert staged.is_file()
 
     def _archive_with_sample(self, tmp_path):
         rinex_dir = tmp_path / "archive/2026/may/FIM2/15s_24hr/rinex"
         rinex_dir.mkdir(parents=True)
         os.symlink(_SAMPLE, rinex_dir / "FIM21280.26d.gz")
 
+    def test_run_one_publishes_crx_gz_in_layout(self, tmp_path):
+        self._archive_with_sample(tmp_path)
+        eng = EposDisseminate(_target(tmp_path))  # no provider → set-header off
+        r = eng.run_one("FIM2", date(2026, 5, 8))
+        assert r.ok is True
+        assert r.long_name == _PUBLISHED
+        assert r.rinex_version == 3
+        assert r.relative_path == f"{_LAYOUT}/{_PUBLISHED}"
+        assert (tmp_path / "stage" / _LAYOUT / _PUBLISHED).is_file()
+
     def test_qc_gate_passes_then_pushes(self, tmp_path):
         self._archive_with_sample(tmp_path)
-        # The converted header carries MARKER NAME FIM2 (from the source file).
         provider = lambda station, dt: {"marker": "FIM2"}  # noqa: E731
         eng = EposDisseminate(
             _target(tmp_path), session_provider=provider, set_header=False
@@ -454,7 +497,7 @@ class TestEndToEnd:
         r = eng.run_one("FIM2", date(2026, 5, 8))
         assert r.qc_passed is True
         assert r.ok is True
-        assert (tmp_path / "stage" / r.long_name).is_file()
+        assert (tmp_path / "stage" / _LAYOUT / r.long_name).is_file()
 
     def test_qc_gate_blocks_on_marker_mismatch(self, tmp_path):
         self._archive_with_sample(tmp_path)
@@ -466,9 +509,8 @@ class TestEndToEnd:
         assert r.qc_passed is False
         assert r.ok is False
         assert "QC gate failed" in r.message
-        # Nothing pushed when the gate fails.
         assert not (tmp_path / "stage").exists() or not list(
-            (tmp_path / "stage").iterdir()
+            (tmp_path / "stage").rglob("*.gz")
         )
 
 
@@ -583,24 +625,54 @@ def _native_trimble_available() -> bool:
     reason="needs the trm2rinex Docker image and a real archived Trimble .T02 sample",
 )
 class TestRawFallback:
-    def test_raw_t02_converts_to_rinex3_long(self, tmp_path):
-        from receivers.dissemination.convert import convert_raw_to_rinex3_long
+    def test_raw_t02_converts_to_r3_obs(self, tmp_path):
+        from receivers.dissemination.convert import convert_for_dissemination
 
-        res = convert_raw_to_rinex3_long(
-            _RAW_SAMPLE, "RHOF", datetime(2026, 5, 8), cache_dir=tmp_path / "cache"
+        res = convert_for_dissemination(
+            _RAW_SAMPLE,
+            "RHOF",
+            datetime(2026, 5, 8),
+            fmt=DisseminationFormat(),
+            cache_dir=tmp_path / "cache",
         )
-        assert res.long_name == "RHOF00ISL_R_20261280000_01D_15S_MO.rnx"
+        assert res.obs_name == "RHOF00ISL_R_20261280000_01D_15S_MO.rnx"
+        assert res.rinex_version == 3
         assert res.output_path.is_file()
         first = res.output_path.read_text(errors="replace").splitlines()[0]
         assert "3.04" in first and "RINEX VERSION" in first
 
     def test_engine_prefers_rinex_else_raw(self, tmp_path):
-        # Only raw present → engine falls back to the raw path.
+        # Only raw present → engine falls back to the raw path, publishes .crx.gz.
         raw_dir = tmp_path / "archive/2026/may/RHOF/15s_24hr/raw"
         raw_dir.mkdir(parents=True)
         os.symlink(_RAW_SAMPLE, raw_dir / _RAW_SAMPLE.name)
         eng = EposDisseminate(_target(tmp_path))  # no QC provider
         r = eng.run_one("RHOF", date(2026, 5, 8))
         assert r.ok is True
-        assert r.long_name == "RHOF00ISL_R_20261280000_01D_15S_MO.rnx"
-        assert (tmp_path / "stage" / r.long_name).is_file()
+        assert r.long_name == "RHOF00ISL_R_20261280000_01D_15S_MO.crx.gz"
+        layout = "2026/may/RHOF/15s_24hr/rinex"
+        assert (tmp_path / "stage" / layout / r.long_name).is_file()
+
+
+# --------------------------------------------------------------------------- packaging (.Z, guarded)
+def _compress_available() -> bool:
+    import shutil as _sh
+
+    return _sh.which("compress") is not None
+
+
+@pytest.mark.skipif(
+    not _compress_available(), reason="needs the `compress` tool for .Z"
+)
+class TestPackagingZ:
+    def test_package_unix_compress(self, tmp_path):
+        # Exercise the legacy .Z compression path (no Hatanaka, so no valid-RINEX
+        # requirement — this isolates the `compress` step).
+        from receivers.dissemination.convert import package
+
+        policy = VersionPolicy(naming="short", hatanaka=False, compression="Z")
+        obs = tmp_path / "FIM21280.26o"
+        obs.write_bytes(b"     2.11           OBSERVATION DATA\nbody\n")
+        pub = package(obs, policy, tmp_path / "out")
+        assert pub.name == "FIM21280.26o.Z"
+        assert pub.is_file()
