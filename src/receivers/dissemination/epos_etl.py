@@ -29,8 +29,46 @@ from .tos_access import (
 
 logger = logging.getLogger("receivers.dissemination.etl")
 
-# TOS device subtypes carried into EPOS as station items (legacy whitelist).
-WHITELISTED_ITEMS = ("antenna", "receiver", "radome", "monument")
+# TOS device subtypes carried into EPOS as station items. NB the receiver subtype
+# is 'gnss_receiver' in TOS (not 'receiver').
+WHITELISTED_ITEMS = ("antenna", "gnss_receiver", "radome", "monument")
+
+# TOS device-attribute code → EPOS controlled-vocabulary attribute name, per TOS
+# subtype. Codes not listed here have no EPOS attribute and are dropped (owner,
+# comment, date_start, GPS-flag, …). The EPOS `attribute` table is a fixed-id
+# vocabulary (1=antenna_type … 26); we resolve the id by name at runtime.
+_ATTR_MAP: dict[str, dict[str, str]] = {
+    "antenna": {
+        "model": "antenna_type",
+        "serial_number": "serial_number",
+        "antenna_height": "height",
+        "antenna_reference_point": "antenna_reference_point",
+    },
+    "gnss_receiver": {
+        "model": "receiver_type",
+        "serial_number": "serial_number",
+        "firmware_version": "firmware_version",
+        "software_version": "software_version",
+    },
+    "radome": {
+        "model": "radome_type",
+        "serial_number": "serial_number",
+    },
+    "monument": {
+        "monument_height": "height",
+        "serial_number": "serial_number",
+    },
+}
+
+# EPOS attribute names whose value_numeric must reference a *_type.id — enforced by
+# the schema's trg_set_{antenna,receiver,radome}_filter triggers. Maps the EPOS
+# attribute name → the reference table to resolve the IGS model string against (by
+# its `name` column).
+_TYPE_RESOLVE: dict[str, str] = {
+    "antenna_type": "antenna_type",
+    "receiver_type": "receiver_type",
+    "radome_type": "radome_type",
+}
 
 # ECEF (ITRF2008-ish) target CRS used by the legacy script for station x/y/z.
 _GEOCENT_CRS = "+proj=geocent +ellps=GRS80 +units=m +no_defs"
@@ -62,14 +100,44 @@ def _tos_get(client: Any, endpoint: str) -> Any:
 
 
 def _clear_station_items(cur, id_station: int) -> None:
-    """Delete this station's items + item_attributes + joins (surgical re-sync)."""
+    """Delete this station's items + item_attributes + joins (surgical re-sync).
+
+    The filter_{antenna,radome,receiver} rows (written by the schema triggers and
+    FK-referencing item_attribute, no ON DELETE CASCADE) must go first.
+    """
     cur.execute("SELECT id_item FROM station_item WHERE id_station = %s", (id_station,))
     item_ids = [r[0] for r in cur.fetchall()]
     if not item_ids:
         return
+    cur.execute("SELECT id FROM item_attribute WHERE id_item = ANY(%s)", (item_ids,))
+    ia_ids = [r[0] for r in cur.fetchall()]
+    if ia_ids:
+        for ftab in ("filter_antenna", "filter_radome", "filter_receiver"):
+            cur.execute(
+                f"DELETE FROM {ftab} WHERE id_item_attribute = ANY(%s)", (ia_ids,)
+            )
     cur.execute("DELETE FROM item_attribute WHERE id_item = ANY(%s)", (item_ids,))
     cur.execute("DELETE FROM station_item WHERE id_station = %s", (id_station,))
     cur.execute("DELETE FROM item WHERE id = ANY(%s)", (item_ids,))
+
+
+def _attribute_id(cur, epos_name: str) -> Optional[int]:
+    """Resolve an EPOS controlled-vocabulary attribute id by name (seeded table)."""
+    cur.execute("SELECT id FROM attribute WHERE name = %s", (epos_name,))
+    row = cur.fetchone()
+    return int(row[0]) if row else None
+
+
+def _resolve_type_id(cur, table: str, igs_name: Optional[str]) -> Optional[int]:
+    """Resolve an IGS model string to a {antenna,receiver,radome}_type.id by name.
+
+    ``table`` comes only from the trusted :data:`_TYPE_RESOLVE` map (not user input).
+    """
+    if not igs_name:
+        return None
+    cur.execute(f"SELECT id FROM {table} WHERE name = %s", (igs_name,))
+    row = cur.fetchone()
+    return int(row[0]) if row else None
 
 
 def _monument_values(child_history: dict[str, Any]) -> dict[str, Any]:
@@ -83,11 +151,12 @@ def _monument_values(child_history: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def upsert_station(conn, station: dict[str, Any], client: Any) -> str:
+def upsert_station(conn, station: dict[str, Any], client: Any) -> tuple[str, int]:
     """Upsert one EPOS station (metadata + device-history items) in a transaction.
 
-    Returns the marker. Raises on a hard failure (the caller records it and the
-    transaction for this station is rolled back; other stations are unaffected).
+    Returns ``(outcome, n_items)`` where outcome is "inserted"/"updated". Raises on
+    a hard failure (the caller records it and rolls back this station's
+    transaction; other stations are unaffected).
     """
     attrs = station["attributes"]
 
@@ -231,13 +300,10 @@ def upsert_station(conn, station: dict[str, Any], client: Any) -> str:
             cur.execute("ROLLBACK TO SAVEPOINT contact_sp")
             logger.debug("contact upsert skipped for %s: %s", marker, exc)
 
-        # Items: clear this station's items, then repopulate from history.
-        # Guarded by a SAVEPOINT — the EPOS schema enforces a CONTROLLED
-        # VOCABULARY (attribute ids 1=antenna_type … with a trigger that resolves
-        # antenna/receiver/radome model strings to *_type.id in value_numeric).
-        # The legacy code-based attribute insert does NOT satisfy that, so until
-        # the TOS→EPOS-vocab mapping is built, an item failure rolls back ONLY the
-        # items and the station-core metadata still commits. See plan T5b.
+        # Items: clear this station's items, then repopulate from history via the
+        # EPOS controlled-vocabulary mapping (_populate_items). SAVEPOINT-guarded so
+        # an unexpected schema-trigger failure rolls back ONLY the items and the
+        # station-core metadata still commits.
         _clear_station_items(cur, id_station)
         n_items = 0
         items_error: Optional[str] = None
@@ -249,33 +315,29 @@ def upsert_station(conn, station: dict[str, Any], client: Any) -> str:
             cur.execute("ROLLBACK TO SAVEPOINT items_sp")
             items_error = str(exc).splitlines()[0]
             n_items = 0
-            logger.warning(
-                "items skipped for %s (needs EPOS vocab mapping, T5b): %s",
-                marker,
-                items_error,
-            )
+            logger.warning("items skipped for %s: %s", marker, items_error)
 
     conn.commit()
-    logger.info(
-        "ETL %s %s (%d items)", marker, "inserted" if was_insert else "updated", n_items
-    )
-    return "inserted" if was_insert else "updated"
+    outcome = "inserted" if was_insert else "updated"
+    logger.info("ETL %s %s (%d items)", marker, outcome, n_items)
+    return outcome, n_items
 
 
 def _populate_items(cur, id_station: int, resolved_children: list) -> int:
     """Insert item/station_item/item_attribute rows for a station's device history.
 
-    NOTE: writes ``item_attribute`` with the raw TOS attribute code as the
-    attribute name and ``value_numeric=None`` — the legacy shape. The EPOS schema
-    trigger on ``attribute.id=1`` (antenna_type) rejects this, so this is expected
-    to fail until T5b maps TOS attributes onto the EPOS controlled vocabulary and
-    resolves model strings to ``*_type.id``. Kept faithful so the gap is explicit.
+    Maps each TOS device attribute onto the EPOS controlled vocabulary
+    (:data:`_ATTR_MAP`) and, for the trigger-controlled type attributes, resolves
+    the IGS model string to ``*_type.id`` in ``value_numeric``
+    (:data:`_TYPE_RESOLVE`). Unmapped TOS codes are dropped; an unresolved model is
+    logged and that one attribute skipped (so the station's other items still load
+    rather than tripping the schema trigger).
     """
     n_items = 0
     for child, ch in resolved_children:
-        id_item_type = get_or_create(
-            cur, "item_type", {"name": ch["code_entity_subtype"]}
-        )
+        subtype = ch["code_entity_subtype"]
+        code_map = _ATTR_MAP.get(subtype, {})
+        id_item_type = get_or_create(cur, "item_type", {"name": subtype})
         id_item = insert_row(
             cur,
             "item",
@@ -297,7 +359,26 @@ def _populate_items(cur, id_station: int, resolved_children: list) -> int:
             },
         )
         for ca in ch.get("attributes", []):
-            id_attribute = get_or_create(cur, "attribute", {"name": ca["code"]})
+            epos_name = code_map.get(ca.get("code"))
+            if not epos_name:
+                continue  # TOS code with no EPOS vocabulary slot
+            id_attribute = _attribute_id(cur, epos_name)
+            if id_attribute is None:
+                logger.warning("EPOS attribute %r not in vocabulary", epos_name)
+                continue
+            value_numeric = None
+            if epos_name in _TYPE_RESOLVE:
+                value_numeric = _resolve_type_id(
+                    cur, _TYPE_RESOLVE[epos_name], ca.get("value")
+                )
+                if value_numeric is None:
+                    logger.warning(
+                        "%s %r not in %s reference — skipping attribute",
+                        epos_name,
+                        ca.get("value"),
+                        _TYPE_RESOLVE[epos_name],
+                    )
+                    continue  # avoid the trg_set_*_filter NOT-NULL trigger
             insert_row(
                 cur,
                 "item_attribute",
@@ -308,7 +389,7 @@ def _populate_items(cur, id_station: int, resolved_children: list) -> int:
                     "date_to": ca.get("date_to"),
                     "value_varchar": ca.get("value"),
                     "value_date": None,
-                    "value_numeric": None,
+                    "value_numeric": value_numeric,
                 },
             )
         n_items += 1
@@ -372,8 +453,9 @@ def run_etl(
     for station in eligible:
         marker = (get_attribute_value(station["attributes"], "marker") or "").upper()
         try:
-            outcome = upsert_station(conn, station, client)
+            outcome, n_items = upsert_station(conn, station, client)
             result.stations += 1
+            result.items += n_items
             if outcome == "inserted":
                 result.inserted += 1
             else:

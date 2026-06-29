@@ -100,16 +100,21 @@ transactional upsert (no global TRUNCATE), TOSClient reads, `pyproj.Transformer`
 xyz, SAVEPOINT-guarded contact + items. Tested live (TOS) → `gnss_europe_local` for
 RHOF/AKUR/FIHO: **station-core idempotent** (3 inserted → 3 updated, no dupes).
 
-**⚠️ T5b — item/device-history ETL is NET-NEW, not a faithful port.** Primary-source
-finding: the EPOS GNSS schema is newer than the legacy script. `attribute` is a
-**controlled vocabulary** (fixed ids 1=antenna_type … 26) and a **trigger**
-(`trg_set_antenna_filter`, on `id_attribute=1`) requires antenna/receiver/radome
-attrs to resolve the model string → `*_type.id` in `value_numeric`
-(e.g. "TRM57971.00"→301). Legacy `tosToDatabase.py` inserts `value_numeric=NULL` +
-creates attribute rows from raw TOS codes → would FAIL here. So T5b must map TOS
-device attrs → the EPOS vocab + resolve model→type-id. Items are currently
-SAVEPOINT-skipped (station-core still commits), logged. **Open:** does prod match
-this dev schema (is the legacy container actually writing items)? — needs prod read.
+**T5b — item/device-history vocab ETL ✅ BUILT (2026-06-29).** The EPOS GNSS schema
+is newer than the legacy script: `attribute` is a **controlled vocabulary** (fixed
+ids 1=antenna_type … 26) and triggers `trg_set_{antenna,receiver,radome}_filter`
+(on `id_attribute` 1/2/3) require the model string to resolve to `*_type.id` in
+`value_numeric` (e.g. "TRM57971.00"→301), writing `filter_*` rows. Built in
+`epos_etl`: `_ATTR_MAP` (TOS device-attr code → EPOS vocab name, per subtype — and
+the receiver subtype is **`gnss_receiver`**, not `receiver`), `_TYPE_RESOLVE`
+(antenna/receiver/radome → resolve the IGS name against `*_type.name`), `_attribute_id`
+(resolve EPOS id by name), `_resolve_type_id`. `_clear_station_items` now drops
+`filter_*` rows first (FK, no CASCADE). Unmapped TOS codes dropped; an unresolved
+model is logged + that attribute skipped (won't trip the trigger). Harness DB seeded
+with `attribute` (26) + `antenna/receiver/radome_type` reference data (prod already
+has these). Verified live RHOF/AKUR/FIHO: 19 items / 70 item_attributes, types
+resolved, filter_* auto-created, idempotent. **Open:** does prod match this dev
+schema — needs prod read access to confirm.
 
 Original spec —
 Populate station/coordinates/monument/bedrock/geological/contact/device-history into

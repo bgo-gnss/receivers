@@ -43,21 +43,25 @@ targets:
 
     # overlap_minutes: 5          # optional per-target override
 
-  # --- EPOS dissemination (RINEX long names -> EPOS files server) -----------
-  # Converts archived RINEX/raw to the EPOS file format and pushes to the EPOS
-  # files server, indexing into the EPOS gnss-europe DB. Keep inactive until the
-  # pipeline is verified end-to-end; run with `--force --dest-override <dir>` for a
-  # pre-stage check. Design: docs/architecture/epos-dissemination-plan.md
+  # --- EPOS dissemination (rawdata/ananas -> EPOS files server) ------------
+  # Reads the long-term archive (short-named throughout: RINEX2 before the
+  # 2026-06-22 cutover, RINEX3 after) and ships a per-version product: R3 content
+  # -> long .crx.gz, R2 content -> short .YYd.Z (version detected from CONTENT, not
+  # the always-short filename). Indexes into the EPOS gnss-europe DB. Keep inactive
+  # until the EPOS server + [epos_db] are wired and parity-verified; run with
+  # `--force --dest-override <dir>` to pre-stage. Design:
+  # docs/architecture/epos-dissemination-plan.md
   - name: epos
     active: false
     tier: dissemination           # derived, regenerable, format-converted
 
-    # Real dest is the EPOS files server (confirm host/path + secret model).
-    host: ""                      # empty => local dest (staging / tests)
+    # EPOS files server (CONFIRM host/path + secret model before activating).
+    host: epos-portal.vedur.is
     user: epos
-    dest: /tmp/epos_stage
+    dest: /mnt/epos_01/gps
 
-    source_root: /mnt/data/gpsdata
+    # The ananas long-term archive, read-only mount on rek-d01 (CONFIRM mount).
+    source_root: /mnt_data/rawgpsdata
     sessions: [15s_24hr]          # phase 1: 15s_24hr only (per-session format later)
     exclude_stations: [DYNA, HRNC, HAUR]
 

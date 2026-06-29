@@ -582,6 +582,93 @@ class TestEposDbHelpers:
             conn.close()
 
 
+class TestVocabMapping:
+    def test_receiver_subtype_is_gnss_receiver(self):
+        from receivers.dissemination.epos_etl import _ATTR_MAP, WHITELISTED_ITEMS
+
+        assert "gnss_receiver" in WHITELISTED_ITEMS
+        assert "receiver" not in WHITELISTED_ITEMS  # TOS uses gnss_receiver
+        assert _ATTR_MAP["gnss_receiver"]["model"] == "receiver_type"
+        assert _ATTR_MAP["antenna"]["model"] == "antenna_type"
+        assert _ATTR_MAP["radome"]["model"] == "radome_type"
+
+    def test_type_resolve_covers_trigger_attributes(self):
+        from receivers.dissemination.epos_etl import _TYPE_RESOLVE
+
+        # The schema triggers fire on antenna_type/receiver_type/radome_type.
+        assert set(_TYPE_RESOLVE) == {"antenna_type", "receiver_type", "radome_type"}
+
+
+@pytest.mark.skipif(
+    not _local_epos_db_available(),
+    reason="needs the local gnss_europe_local harness DB (seeded vocab + type tables)",
+)
+class TestItemVocabETL:
+    def test_populate_items_resolves_types_and_fires_triggers(self):
+        from datetime import datetime as _dt
+
+        from receivers.dissemination import epos_db
+        from receivers.dissemination.epos_etl import _populate_items
+
+        conn = epos_db.connect(_local_epos_db_ov())
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SAVEPOINT t")
+                sid = epos_db.insert_row(cur, "station", {"name": "T", "marker": "TST"})
+                children = [
+                    (
+                        {"time_from": _dt(2021, 1, 1), "time_to": None},
+                        {
+                            "code_entity_subtype": "antenna",
+                            "id_entity": 1,
+                            "attributes": [
+                                {"code": "model", "value": "ASH701945C_M"},
+                                {"code": "serial_number", "value": "S1"},
+                            ],
+                        },
+                    ),
+                    (
+                        {"time_from": _dt(2021, 1, 1), "time_to": None},
+                        {
+                            "code_entity_subtype": "gnss_receiver",
+                            "id_entity": 2,
+                            "attributes": [
+                                {"code": "model", "value": "TRIMBLE NETR9"},
+                                {"code": "firmware_version", "value": "4.6"},
+                            ],
+                        },
+                    ),
+                ]
+                n = _populate_items(cur, sid, children)
+                assert n == 2
+                # Scope all checks to THIS station's items (the harness DB may hold
+                # committed fleet data from other ETL runs).
+                scoped = (
+                    "SELECT ia.value_varchar, ia.value_numeric FROM item_attribute ia "
+                    "JOIN station_item si ON si.id_item = ia.id_item "
+                    "WHERE si.id_station = %s AND ia.id_attribute = %s"
+                )
+                # antenna_type resolved to value_numeric (the trigger requires it)
+                cur.execute(scoped, (sid, 1))
+                assert cur.fetchone() == ("ASH701945C_M", 52)
+                # the trigger wrote a filter_antenna row for this item_attribute
+                cur.execute(
+                    "SELECT count(*) FROM filter_antenna fa "
+                    "JOIN item_attribute ia ON ia.id = fa.id_item_attribute "
+                    "JOIN station_item si ON si.id_item = ia.id_item "
+                    "WHERE si.id_station = %s",
+                    (sid,),
+                )
+                assert cur.fetchone()[0] == 1
+                # serial_number (id 5) carries no value_numeric
+                cur.execute(scoped, (sid, 5))
+                assert cur.fetchone()[1] is None
+                cur.execute("ROLLBACK TO SAVEPOINT t")
+        finally:
+            conn.rollback()
+            conn.close()
+
+
 class TestRinexMd5s:
     def test_plain_rinex_md5s_equal(self, tmp_path):
         from receivers.dissemination.rinex_index import rinex_md5s
