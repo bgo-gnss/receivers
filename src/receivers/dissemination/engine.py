@@ -141,12 +141,19 @@ class EposDisseminate:
         Trimble ``.T02``/``.T00`` (any compression). Septentrio ``.sbf`` is found
         too, but the converter for it is not wired yet (handled at convert time).
         """
+        # The raw dir holds a whole month (``%Y/#b/{station}/.../raw/``), so the
+        # glob MUST be constrained to the requested day — the raw filename embeds
+        # the observation date as ``YYYYMMDD`` (e.g. ``AKUR202606280000a.T02.gz``,
+        # or underscore-padded ``AKUR______202606280000a.T02``). Without this
+        # filter, ``sorted(...)[0]`` returns the month's earliest file and we would
+        # publish the wrong day's data under the requested day's name.
+        ymd = d.strftime("%Y%m%d")
         for session in self.target.sessions or ("15s_24hr",):
             raw_dir = self._station_session_dir(station, d, session) / "raw"
             if not raw_dir.is_dir():
                 continue
             for pattern in ("*.T02*", "*.T00*", "*.t02*", "*.t00*", "*.sbf*"):
-                hits = sorted(raw_dir.glob(pattern))
+                hits = sorted(p for p in raw_dir.glob(pattern) if ymd in p.name)
                 if hits:
                     return hits[0]
         return None

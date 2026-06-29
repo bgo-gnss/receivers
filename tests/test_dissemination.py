@@ -741,6 +741,45 @@ class TestRawFallback:
         assert (tmp_path / "stage" / layout / r.long_name).is_file()
 
 
+# --------------------------------------------------------------------------- raw-source date matching
+class TestFindRawSource:
+    """Regression: the raw dir holds a whole month, so find_raw_source MUST
+    match the requested day, not just return the directory's earliest file."""
+
+    def _make_raw(self, tmp_path, *names):
+        raw_dir = tmp_path / "archive/2026/jun/AKUR/15s_24hr/raw"
+        raw_dir.mkdir(parents=True)
+        for n in names:
+            (raw_dir / n).write_bytes(b"dummy")
+        return raw_dir
+
+    def test_picks_date_matching_file_in_multi_day_dir(self, tmp_path):
+        self._make_raw(
+            tmp_path,
+            "AKUR202606010000a.T02.gz",  # earliest — the old bug returned this
+            "AKUR202606270000a.T02.gz",
+            "AKUR202606280000a.T02.gz",  # the one we want
+        )
+        eng = EposDisseminate(_target(tmp_path))
+        got = eng.find_raw_source("AKUR", date(2026, 6, 28))
+        assert got is not None and got.name == "AKUR202606280000a.T02.gz"
+
+    def test_matches_underscore_padded_netr5_name(self, tmp_path):
+        self._make_raw(
+            tmp_path,
+            "AKUR______202606010000a.T02",
+            "AKUR______202606280000a.T02",
+        )
+        eng = EposDisseminate(_target(tmp_path))
+        got = eng.find_raw_source("AKUR", date(2026, 6, 28))
+        assert got is not None and got.name == "AKUR______202606280000a.T02"
+
+    def test_returns_none_when_day_absent(self, tmp_path):
+        self._make_raw(tmp_path, "AKUR202606010000a.T02.gz")
+        eng = EposDisseminate(_target(tmp_path))
+        assert eng.find_raw_source("AKUR", date(2026, 6, 28)) is None
+
+
 # --------------------------------------------------------------------------- packaging (.Z, guarded)
 def _compress_available() -> bool:
     import shutil as _sh
