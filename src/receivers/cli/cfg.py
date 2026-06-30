@@ -2484,6 +2484,63 @@ def cmd_cfg_add_receiver(args) -> int:
                 print(
                     f"Connected to location {args.location!r} (connection id={conn_id})"
                 )
+
+    # ---- Triage-file substitution (parity with `tos device add`) ------------
+    # Drop the freshly-created id_entity into a waiting join triage file so the
+    # add-receiver → `tos audit apply` handoff needs no manual id copy-paste.
+    triage = getattr(args, "triage", None)
+    placeholder = getattr(args, "placeholder", None)
+    if triage is not None or placeholder is not None:
+        if triage is None or placeholder is None:
+            print("--triage and --placeholder must be used together", file=sys.stderr)
+            return 2
+    if triage is not None and placeholder is not None:
+        if dry_run or id_entity is None:
+            if not args.json:
+                print(
+                    f"Triage update skipped: dry-run / no real id_entity "
+                    f"(use --no-dry-run to substitute <{placeholder}> in {triage}).",
+                    file=sys.stderr,
+                )
+        else:
+            from tostools.tos import _substitute_id_in_triage
+
+            try:
+                result = _substitute_id_in_triage(triage, placeholder, id_entity)
+            except OSError as exc:
+                print(f"Could not read triage file {triage}: {exc}", file=sys.stderr)
+                return 1
+            if result["count"] == 0:
+                print(
+                    f"Triage update: placeholder {result['token']!r} not found "
+                    f"in {triage} (no changes written).",
+                    file=sys.stderr,
+                )
+            elif not args.json:
+                n = result["count"]
+                print(
+                    f"Updated {triage}: {result['token']} → {id_entity} "
+                    f"({n} replacement{'s' if n != 1 else ''})"
+                )
+
+    # ---- Creation audit log (gps-tos-corrections) ---------------------------
+    # Symmetric with `tos device delete --commit`: record the creation so
+    # additions leave a corrections-repo trail like deletions do.
+    if getattr(args, "commit", False) and not dry_run and id_entity is not None:
+        from tostools.tos import audit_log_device_creation
+
+        audit = audit_log_device_creation(
+            id_entity,
+            subtype=merged["subtype"],
+            serial=merged["serial"],
+            model=igs_model,
+            location=args.location,
+            date_start=date_start,
+            source="receivers cfg add-receiver",
+            note=getattr(args, "note", None),
+        )
+        if audit.get("logged") and not args.json:
+            print(f"--commit: creation logged → {audit.get('log')}")
     return 0
 
 
@@ -4201,6 +4258,39 @@ Examples:
         "--json",
         action="store_true",
         help="Emit a structured JSON summary instead of plain text.",
+    )
+    add_rx.add_argument(
+        "--triage",
+        default=None,
+        help=(
+            "After a live (--no-dry-run) creation, substitute the returned "
+            "id_entity into a triage file in-place (parity with `tos device "
+            "add`). Requires --placeholder. Resolves cwd-safely under the "
+            "gps-tos-corrections repo, e.g. --triage bald/bald_join.txt."
+        ),
+    )
+    add_rx.add_argument(
+        "--placeholder",
+        default=None,
+        help=(
+            "Token to substitute in the --triage file; the match is the "
+            "angle-bracketed form '<TOKEN>'. Required when --triage is given."
+        ),
+    )
+    add_rx.add_argument(
+        "--commit",
+        action="store_true",
+        help=(
+            "After a live creation, append a record to "
+            "additions/device_additions.jsonl in gps-tos-corrections and "
+            "git-commit it (audit trail, symmetric with deletions/). "
+            "Best-effort; never fails the create."
+        ),
+    )
+    add_rx.add_argument(
+        "--note",
+        default=None,
+        help="Free-text reason stored in the --commit creation record.",
     )
     add_rx.set_defaults(func=cmd_cfg_add_receiver)
 
