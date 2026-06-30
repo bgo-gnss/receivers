@@ -2544,6 +2544,44 @@ def cmd_cfg_add_receiver(args) -> int:
     return 0
 
 
+def _audit_log_op_creations(result, *, source: str, note) -> None:
+    """Audit-log every device an add-antenna/add-monument op created (--commit).
+
+    Reads the create responses + attribute lists the operation stored in
+    ``result.tos_changes`` and appends one record per created device to
+    ``additions/device_additions.jsonl`` via tostools ``audit_log_device_creation``
+    (symmetric with ``cfg add-receiver --commit`` / ``tos device add --commit``).
+    Best-effort; a logging/git failure warns but never fails the create.
+    """
+    from tostools.tos import audit_log_device_creation
+
+    changes = result.tos_changes
+    for create_key, attrs_key, subtype in (
+        ("antenna_create", "antenna_attributes", "antenna"),
+        ("radome_create", "radome_attributes", "radome"),
+        ("monument_create", "monument_attributes", "monument"),
+    ):
+        resp = changes.get(create_key)
+        if not isinstance(resp, dict):
+            continue
+        mid = resp.get("id_entity")
+        if mid is None:
+            continue
+        attrs = changes.get(attrs_key) or []
+        vals = {a.get("code"): a.get("value") for a in attrs if isinstance(a, dict)}
+        audit = audit_log_device_creation(
+            int(mid),
+            subtype=subtype,
+            serial=vals.get("serial_number"),
+            model=vals.get("model"),
+            date_start=vals.get("date_start"),
+            source=source,
+            note=note,
+        )
+        if audit.get("logged"):
+            print(f"--commit: creation logged → dev {mid} ({subtype})")
+
+
 # ---------------------------------------------------------------------------
 # cmd_cfg_add_antenna — create an antenna (+radome) in TOS and join to a station
 # ---------------------------------------------------------------------------
@@ -2651,6 +2689,10 @@ def cmd_cfg_add_antenna(args) -> int:
                 f"  + radome {args.radome} "
                 f"(serial={result.tos_changes.get('radome_serial')})"
             )
+    if getattr(args, "commit", False) and not result.dry_run:
+        _audit_log_op_creations(
+            result, source="receivers cfg add-antenna", note=getattr(args, "note", None)
+        )
     return 0
 
 
@@ -2702,6 +2744,7 @@ def cmd_cfg_add_monument(args) -> int:
             owner=owner,
             date_start=args.date_start,
             comment=args.comment,
+            model=getattr(args, "model", None),
             force=args.force,
             dry_run=dry_run,
         )
@@ -2739,6 +2782,12 @@ def cmd_cfg_add_monument(args) -> int:
         print(
             f"Monument @ {result.station_id}: serial={result.serial}{synth} "
             f"height={args.height} date_start={result.date}{suffix}"
+        )
+    if getattr(args, "commit", False) and not result.dry_run:
+        _audit_log_op_creations(
+            result,
+            source="receivers cfg add-monument",
+            note=getattr(args, "note", None),
         )
     return 0
 
@@ -4400,6 +4449,21 @@ Examples:
         action="store_true",
         help="Emit a structured JSON summary instead of plain text.",
     )
+    add_ant.add_argument(
+        "--commit",
+        action="store_true",
+        help=(
+            "After a live creation, append a record per created device "
+            "(antenna + radome) to additions/device_additions.jsonl in "
+            "gps-tos-corrections and git-commit it (audit trail, symmetric with "
+            "deletions/). Best-effort; never fails the create."
+        ),
+    )
+    add_ant.add_argument(
+        "--note",
+        default=None,
+        help="Free-text reason stored in the --commit creation record(s).",
+    )
     add_ant.set_defaults(func=cmd_cfg_add_antenna)
 
     # ---- add-monument ----------------------------------------------------
@@ -4409,9 +4473,9 @@ Examples:
         description=(
             "Create a 'monument' device entity in TOS and join it to a station. "
             "The monument carries the antenna_height (mark → ARP) offset; TOS "
-            "keeps one per height epoch. Monuments have no model and can't be "
-            "probed — an unknown serial gets a synthetic "
-            "'monument-<STID>-<YYYYMMDD>' placeholder. Defaults to dry-run."
+            "keeps one per height epoch. Monuments can't be probed — an unknown "
+            "serial gets a synthetic 'monument-<STID>-<YYYYMMDD>' placeholder, "
+            "and the mark type goes in --model (free text). Defaults to dry-run."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
@@ -4441,6 +4505,14 @@ Examples:
         help=(
             "Monument serial. Omit when unknown — a synthetic "
             "'monument-<STID>-<YYYYMMDD>' placeholder is generated."
+        ),
+    )
+    add_mon.add_argument(
+        "--model",
+        help=(
+            "Physical mark type (free text), e.g. 'GPS stál-fjórfótur' (steel "
+            "quadripod), 'GPS stál-staur' (steel post), 'steyptur stöpull' "
+            "(concrete pillar). Omit when the mark type is unknown."
         ),
     )
     add_mon.add_argument(
@@ -4487,6 +4559,21 @@ Examples:
         "--json",
         action="store_true",
         help="Emit a structured JSON summary instead of plain text.",
+    )
+    add_mon.add_argument(
+        "--commit",
+        action="store_true",
+        help=(
+            "After a live creation, append a record to "
+            "additions/device_additions.jsonl in gps-tos-corrections and "
+            "git-commit it (audit trail, symmetric with deletions/). "
+            "Best-effort; never fails the create."
+        ),
+    )
+    add_mon.add_argument(
+        "--note",
+        default=None,
+        help="Free-text reason stored in the --commit creation record.",
     )
     add_mon.set_defaults(func=cmd_cfg_add_monument)
 

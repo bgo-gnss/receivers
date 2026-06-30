@@ -119,3 +119,41 @@ def test_add_monument_defaults_date_to_station_date_start():
     r = add_monument(w, station_id="VOTT")
     assert r.date == "2026-05-01T00:00:00"
     assert r.serial == "monument-VOTT-20260501"
+
+
+def test_audit_log_op_creations_writes_model(tmp_path):
+    """--commit path: _audit_log_op_creations logs each created device (with its
+    model) to additions/device_additions.jsonl. Mirrors add-receiver --commit."""
+    import json as _json
+    from unittest.mock import patch
+
+    from tostools import tos as tosmod
+
+    from receivers.cli.cfg import _audit_log_op_creations
+
+    repo = tmp_path / "corrections"
+    repo.mkdir()
+
+    class _R:
+        tos_changes = {
+            "monument_create": {"id_entity": 21609},
+            "monument_attributes": [
+                {"code": "serial_number", "value": "monument-HAFC-20210309"},
+                {"code": "model", "value": "GPS stál-fjórfótur"},
+                {"code": "date_start", "value": "2021-03-09T12:00:00"},
+            ],
+        }
+
+    with (
+        patch.object(tosmod, "_git_commit_file", return_value=False),
+        patch("tostools.archive.tos_corrections_dir", return_value=repo),
+    ):
+        _audit_log_op_creations(_R(), source="receivers cfg add-monument", note="HAFC")
+
+    rec = _json.loads(
+        (repo / "additions" / "device_additions.jsonl").read_text().strip()
+    )
+    assert rec["subtype"] == "monument"
+    assert rec["model"] == "GPS stál-fjórfótur"
+    assert rec["id_entity"] == 21609
+    assert rec["source"] == "receivers cfg add-monument"
