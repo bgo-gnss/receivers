@@ -828,6 +828,27 @@ class TestEposHeaderFinalize:
         assert epos_marker_name("rhof", 3, "isl") == "RHOF00ISL"
         assert epos_marker_name("RHOF", 2, "ISL") == "RHOF"  # 4-char for R2
 
+    def test_marker_name_monument_and_country_from_config(self):
+        # monument + country are config-driven (not hardcoded 00ISL), and the
+        # MARKER NAME must match the long filename (both read the same knobs).
+        from datetime import datetime
+
+        from receivers.dissemination.convert import (
+            epos_marker_name,
+            long_rinex3_name,
+        )
+
+        assert epos_marker_name("RHOF", 3, "NOR", "05") == "RHOF05NOR"
+        name = long_rinex3_name(
+            "RHOF", datetime(2026, 6, 28), country_code="NOR", monument_number="05"
+        )
+        assert name.startswith("RHOF05NOR_")
+
+    def test_format_policy_reads_monument(self):
+        fmt = DisseminationFormat.from_dict({"monument_number": "07"})
+        assert fmt.monument_number == "07"
+        assert DisseminationFormat.from_dict({}).monument_number == "00"
+
     def test_finalize_r3_updates_and_inserts(self, tmp_path):
         from receivers.dissemination.convert import finalize_epos_header
 

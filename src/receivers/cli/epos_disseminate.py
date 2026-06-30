@@ -116,6 +116,7 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
             args.station,
             out_dir,
             country_code=target.format.country_code,
+            monument_number=target.format.monument_number,
             include_date=args.sitelog_dated,
         )
         if path is None:

@@ -85,6 +85,11 @@ class DisseminationFormat:
     """RINEX 3 long-name file-period token (``01D`` daily). Config knob so the
     naming is not a hardcoded assumption in the convert code."""
 
+    monument_number: str = "00"
+    """2-digit monument number in the 9-char station ID (``RHOF``**00**``ISL``),
+    used for both the long filename and the MARKER NAME header. In config for now;
+    becomes a per-station TOS attribute later (do NOT hardcode it in the code)."""
+
     observer: str = "GNSSatIMO"
     """OBSERVER value written into disseminated headers (EPOS 4.1.7 requires a
     generic team name / email, not personal initials). ``@``→``at`` already
@@ -114,6 +119,7 @@ class DisseminationFormat:
             filename_template=raw.get("filename_template", DEFAULT_FILENAME_TEMPLATE),
             sample=int(sample_raw) if sample_raw is not None else None,
             file_period=raw.get("file_period", "01D"),
+            monument_number=str(raw.get("monument_number", "00")),
             observer=raw.get("observer", "GNSSatIMO"),
             agency=raw.get("agency", "Vedurstofa Islands"),
         )

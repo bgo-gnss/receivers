@@ -146,9 +146,15 @@ def long_rinex3_name(
     country_code: str = "ISL",
     data_frequency: str = "15S",
     file_period: str = "01D",
+    monument_number: str = "00",
 ) -> str:
     """The RINEX 3 long IGS filename for this station/epoch (e.g. ``...MO.rnx``)."""
-    namer = RinexNamer(station, RinexVersion.RINEX_3, country_code=country_code)
+    namer = RinexNamer(
+        station,
+        RinexVersion.RINEX_3,
+        country_code=country_code,
+        monument_number=monument_number,
+    )
     return namer.generate_filename(
         observation_dt,
         convention=NamingConvention.LONG,
@@ -269,6 +275,7 @@ def _canonical_obs(
     *,
     sample: Optional[int] = None,
     file_period: str = "01D",
+    monument_number: str = "00",
 ) -> tuple[Path, str]:
     """Rename/normalise ``plain_obs`` to the policy's canonical obs name.
 
@@ -291,6 +298,7 @@ def _canonical_obs(
             country_code=country_code,
             data_frequency=data_frequency,
             file_period=file_period,
+            monument_number=monument_number,
         )
         out = tmpdir / obs_name
         cmd = [gfzrnx, "-finp", str(plain_obs), "-fout", str(out), "-vo", str(version)]
@@ -383,6 +391,7 @@ def convert_for_dissemination(
             tmpdir,
             sample=getattr(fmt, "sample", None),
             file_period=getattr(fmt, "file_period", "01D"),
+            monument_number=getattr(fmt, "monument_number", "00"),
         )
         final_obs = out_dir / obs_name
         shutil.move(str(canon), str(final_obs))
@@ -397,6 +406,7 @@ def convert_for_dissemination(
             station,
             version,
             country_code=fmt.country_code,
+            monument_number=getattr(fmt, "monument_number", "00"),
             domes=domes,
             observer=getattr(fmt, "observer", ""),
             agency=getattr(fmt, "agency", ""),
@@ -407,15 +417,19 @@ def convert_for_dissemination(
     return ConvertResult(final_obs, obs_name, version, False, source_path)
 
 
-def epos_marker_name(station: str, version: int, country_code: str) -> str:
+def epos_marker_name(
+    station: str, version: int, country_code: str, monument_number: str = "00"
+) -> str:
     """EPOS MARKER NAME: 9-char ID for RINEX 3 (``RHOF00ISL``), 4-char for R2.
 
     Per EPOS 4.1.7 — "the 9-character station ID (4-character for RINEX 2 data)
-    must be found in the MARKER NAME field". Monument number defaults to ``00``
-    (the IMO convention, same as the long filename).
+    must be found in the MARKER NAME field". ``monument_number`` and
+    ``country_code`` come from config (will become per-station TOS attributes);
+    the 9-char ID here MUST match the long filename's, so both read the same knobs.
     """
     sid = station.upper()
-    return f"{sid}00{country_code.upper()}" if version >= 3 else sid
+    mon = str(monument_number)[:2].rjust(2, "0")
+    return f"{sid}{mon}{country_code.upper()}" if version >= 3 else sid
 
 
 def _set_header_records(rinex_file: Path, records: dict[str, str]) -> None:
@@ -451,6 +465,7 @@ def finalize_epos_header(
     version: int,
     *,
     country_code: str,
+    monument_number: str = "00",
     domes: str = "",
     observer: str = "",
     agency: str = "",
@@ -466,7 +481,9 @@ def finalize_epos_header(
     try:
         sid = station.upper()
         records = {
-            "MARKER NAME": epos_marker_name(sid, version, country_code),
+            "MARKER NAME": epos_marker_name(
+                sid, version, country_code, monument_number
+            ),
             "MARKER NUMBER": (domes or sid).strip(),
         }
         if observer or agency:
