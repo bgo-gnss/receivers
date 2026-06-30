@@ -1428,6 +1428,57 @@ class TestReactiveJob:
         assert ok is True
         assert len(eng.calls) == 3  # today + 2 back
 
+    def test_historical_changed_sweeps_from_cutover(self, tmp_path):
+        # A CHANGED with no bound (affected_floor None = historical correction) must
+        # reach back to cutover even when backfill_days is smaller than the
+        # cutover→today gap — else a deep-historical correction is detected but its
+        # date never re-pushed.
+        from receivers.dissemination.job import _build_reactive_actions
+        from receivers.dissemination.reactive import (
+            CHANGED,
+            StationChange,
+            StationState,
+        )
+
+        class _Res:
+            ok = True
+            cached = True
+            artifact_path = None
+            relative_path = None
+            station = "RHOF"
+            file_date = date(2026, 6, 30)
+            rinex_version = 3
+
+        class _Engine:
+            def __init__(self):
+                self.calls = []
+
+            def run_one(self, station, d):
+                self.calls.append((station, d))
+                return _Res()
+
+        eng = _Engine()
+
+        class _T:
+            cutover = date(2026, 6, 20)  # 10 days before today
+            format = type("F", (), {"country_code": "ISL", "monument_number": "00"})()
+
+        actions = _build_reactive_actions(
+            _T(),
+            session_provider=None,
+            epos_conn=None,
+            engine_factory=lambda _t: eng,
+            sitelogs_dir=str(tmp_path),
+            backfill_days=2,  # would only reach 2 days back without the extension
+            today=date(2026, 6, 30),
+        )
+        ch = StationChange(
+            "RHOF", CHANGED, StationState("o", True, {}), StationState("n", True, {})
+        )
+        assert actions.disseminate(ch) is True
+        assert len(eng.calls) == 11  # cutover (06-20) .. today (06-30) inclusive
+        assert eng.calls[-1][1] == date(2026, 6, 20)
+
     def test_build_actions_refresh_raises_without_conn(self, tmp_path):
         from receivers.dissemination.job import _build_reactive_actions
 
@@ -1671,3 +1722,145 @@ class TestExactAffectedRange:
         }
         store.save({"RHOF": StationState("fp", True, comps)})
         assert store.load()["RHOF"].components == comps
+
+
+# ----------------------------------------------- history-wide reactive detection (T6 interim)
+class TestHistoryFingerprint:
+    def _dh(self, hist_height=-0.007):
+        # A closed historical antenna period (the one a retro-correction touches)
+        # followed by the current open period — distinct sessions, so editing the
+        # closed one leaves the *current* session (and its fingerprint) untouched.
+        return [
+            {
+                "time_from": datetime(2010, 1, 1),
+                "time_to": datetime(2015, 1, 1),
+                "antenna": {
+                    "model": "TRM1",
+                    "serial_number": "a1",
+                    "antenna_height": hist_height,
+                },
+            },
+            {
+                "time_from": datetime(2015, 1, 1),
+                "time_to": None,
+                "antenna": {
+                    "model": "TRM2",
+                    "serial_number": "a2",
+                    "antenna_height": 0.05,
+                },
+            },
+        ]
+
+    def test_empty_history_is_empty_fingerprint(self):
+        from receivers.dissemination.tos_access import history_fingerprint
+
+        assert history_fingerprint([]) == ""
+
+    def test_stable_16_hex_over_open_period(self):
+        # An open (time_to=None) current session must not crash — the digest-then-
+        # sort design avoids the (date_from, date_to) tuple comparison (DYNC bug).
+        from receivers.dissemination.tos_access import history_fingerprint
+
+        fp = history_fingerprint(self._dh(), marker="RHOF")
+        assert fp == history_fingerprint(self._dh(), marker="RHOF")  # stable
+        assert len(fp) == 16
+
+    def test_session_order_independent(self):
+        from receivers.dissemination.tos_access import history_fingerprint
+
+        dh = self._dh()
+        assert history_fingerprint(dh, marker="R") == history_fingerprint(
+            list(reversed(dh)), marker="R"
+        )
+
+    def test_datetime_and_iso_string_dates_hash_equal(self):
+        # device_history carries period dates as datetime OR ISO string; both forms
+        # must fingerprint identically (normalized through _to_dt).
+        from receivers.dissemination.tos_access import history_fingerprint
+
+        dt = [
+            {
+                "time_from": datetime(2015, 1, 1),
+                "time_to": None,
+                "antenna": {"model": "X", "serial_number": "s", "antenna_height": 0.0},
+            }
+        ]
+        iso = [
+            {
+                "time_from": "2015-01-01T00:00:00",
+                "time_to": None,
+                "antenna": {"model": "X", "serial_number": "s", "antenna_height": 0.0},
+            }
+        ]
+        assert history_fingerprint(dt) == history_fingerprint(iso)
+
+    def test_period_date_and_marker_changes_reflected(self):
+        from receivers.dissemination.tos_access import history_fingerprint
+
+        dh = self._dh()
+        # closing the current period (date_to None → a date) changes the fingerprint
+        closed = [dict(dh[0]), {**dh[1], "time_to": datetime(2020, 1, 1)}]
+        assert history_fingerprint(dh) != history_fingerprint(closed)
+        # station-scope marker / domes changes are folded in too
+        assert history_fingerprint(dh, marker="RHOF") != history_fingerprint(
+            dh, marker="XXXX"
+        )
+        assert history_fingerprint(dh, domes="A") != history_fingerprint(dh, domes="B")
+
+    def test_historical_closed_session_change_is_detected(self):
+        # The actual fix: a retro-correction to a CLOSED historical period is invisible
+        # to current-session-only detection, but the history-wide fingerprint catches
+        # it → CHANGED; and because the current period is untouched, affected_floor
+        # returns None ⇒ the sweep re-iterates the full window (cache gates the dates).
+        from receivers.dissemination.qc_gate import select_session
+        from receivers.dissemination.reactive import (
+            CHANGED,
+            StationState,
+            affected_floor,
+            classify,
+        )
+        from receivers.dissemination.tos_access import (
+            history_fingerprint,
+            reactive_components,
+            session_fingerprint,
+        )
+
+        dh_old = self._dh(-0.007)
+        dh_new = self._dh(-0.009)  # closed-period antenna_height corrected
+        today = datetime(2026, 6, 27)
+
+        # current-session-only detection MISSES it (the bug we're closing):
+        assert session_fingerprint(
+            select_session(dh_old, today)
+        ) == session_fingerprint(select_session(dh_new, today))
+        # history-wide detection CATCHES it:
+        fp_old = history_fingerprint(dh_old, marker="RHOF")
+        fp_new = history_fingerprint(dh_new, marker="RHOF")
+        assert fp_old != fp_new
+
+        comps_old = reactive_components(dh_old, today, marker="RHOF")
+        comps_new = reactive_components(dh_new, today, marker="RHOF")
+        ch = classify(
+            "RHOF",
+            StationState(fp_old, True, comps_old),
+            StationState(fp_new, True, comps_new),
+        )
+        assert ch.kind == CHANGED
+        assert affected_floor(ch) is None  # purely historical ⇒ full window
+
+    def test_make_fingerprint_fn_uses_history(self):
+        # The production reader builds StationState from history_fn (not the current
+        # session) + the EPOS marker set + components_fn.
+        from receivers.dissemination.reactive import make_fingerprint_fn
+
+        fn = make_fingerprint_fn(
+            lambda sid, when: "deadbeef",
+            {"RHOF"},
+            components_fn=lambda sid, when: {"marker": {"fp": "m", "since": None}},
+        )
+        st = fn("rhof")
+        assert st.fingerprint == "deadbeef"
+        assert st.in_epos is True
+        assert st.components == {"marker": {"fp": "m", "since": None}}
+        # no history reader ⇒ empty fingerprint, still tracked
+        assert make_fingerprint_fn(None, set())("ZZZZ").fingerprint == ""

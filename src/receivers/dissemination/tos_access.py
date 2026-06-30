@@ -281,6 +281,102 @@ def reactive_components(
     return components
 
 
+def history_fingerprint(
+    device_history: list[dict[str, Any]],
+    *,
+    marker: str = "",
+    domes: str = "",
+) -> str:
+    """A stable hash over the header-relevant TOS fields of the *whole* history.
+
+    Unlike :func:`session_fingerprint` (current session only), this folds in every
+    session's header devices *and* its [time_from, time_to) period, so a retroactive
+    correction to a **closed historical** session changes the fingerprint and the
+    reactive detector classifies the station CHANGED. That closes the
+    historical-session detection gap: current-session-only detection left an edit to
+    a closed period invisible, so the affected historical files were never re-pushed.
+
+    The convert cache (keyed per observation date on :func:`session_fingerprint`)
+    still re-renders only the dates that actually differ; and when the change is
+    purely historical (current-period components unchanged),
+    :func:`receivers.dissemination.reactive.affected_floor` returns None ⇒ the
+    sweep re-iterates the full backfill window and the cache gates the exact dates.
+
+    Each session is sub-hashed independently (its normalized period + device fields)
+    and the digests combined via a **sorted list of hex strings** — so there is no
+    ``(date_from, date_to)`` tuple comparison, which would crash ``str < None`` on
+    the always-open current period (the DYNC bug, tostools 66d2ad2). Period dates
+    are normalized through :func:`_to_dt` so a datetime and its ISO-string form hash
+    identically across reads. Empty string for an empty history (parity with
+    :func:`session_fingerprint`).
+
+    Interim boundary: mirrors :func:`session_fingerprint`'s field set, which omits
+    ``monument_height`` — so a historical *monument-only* correction still goes
+    undetected (DELTA H = antenna_ecc + monument_height). Fixing that touches the
+    per-date cache key too and is deferred to the full per-period diff.
+    """
+    import hashlib
+    import json
+
+    if not device_history:
+        return ""
+
+    def dev(d: Any, keys: tuple[str, ...]) -> dict[str, Any]:
+        d = d or {}
+        return {k: d.get(k) for k in keys}
+
+    digests: list[str] = []
+    for session in device_history:
+        start = _to_dt(session.get("time_from"))
+        end = _to_dt(session.get("time_to"))
+        rel: dict[str, Any] = {
+            "from": start.isoformat() if start else None,
+            "to": end.isoformat() if end else None,
+        }
+        for key, fields in _COMPONENT_FIELDS.items():
+            rel[key] = dev(session.get(key), fields)
+        blob = json.dumps(rel, sort_keys=True, default=str).encode()
+        digests.append(hashlib.sha256(blob).hexdigest())
+
+    combined = {"marker": marker, "domes": domes, "sessions": sorted(digests)}
+    blob = json.dumps(combined, sort_keys=True, default=str).encode()
+    return hashlib.sha256(blob).hexdigest()[:16]
+
+
+def make_history_fn(client: Any = None):
+    """Build ``station, when -> history_fingerprint`` reading TOS device_history.
+
+    Production wiring for reactive *detection* (history-wide, so retroactive edits
+    to closed sessions are caught). Returns "" on any TOS failure — preserving the
+    pre-existing transient-failure behaviour (the old session-provider path produced
+    an empty fingerprint too); a flake on one station at worst triggers one wasted
+    re-push that the next clean scan settles, never a lost change.
+    """
+
+    def fn(station: str, when: datetime) -> str:
+        nonlocal client
+        try:
+            if client is None:
+                from tostools.api.tos_client import TOSClient
+
+                client = TOSClient()
+            meta = client.get_complete_station_metadata(station)
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 - TOS failure ⇒ "" (re-checked next scan)
+            logger.warning("reactive history lookup failed for %s: %s", station, exc)
+            return ""
+        if not meta:
+            return ""
+        return history_fingerprint(
+            meta.get("device_history", []) or [],
+            marker=(meta.get("marker") or station).upper(),
+            domes=(meta.get("iers_domes_number") or "").strip(),
+        )
+
+    return fn
+
+
 def make_components_fn(client: Any = None):
     """Build ``station, when -> reactive_components`` reading TOS device_history.
 

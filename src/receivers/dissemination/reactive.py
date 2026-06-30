@@ -12,10 +12,14 @@ re-push over the affected date range, ``in_epos`` on→backfill / off→stop-onl
 consumes :class:`StationChange` records.
 
 Fingerprint semantics:
-- The fingerprint is :func:`tos_access.session_fingerprint` over the *current*
-  device session — it already covers exactly the header-affecting fields
-  (marker / domes / receiver / antenna / radome), so a change here is precisely a
-  change that alters the disseminated RINEX header.
+- The fingerprint is :func:`tos_access.history_fingerprint` over the *whole* device
+  history — every session's header-affecting fields (marker / domes / receiver /
+  antenna / radome) plus its period dates. So a change anywhere, including a
+  retroactive correction to a closed historical session, alters the fingerprint and
+  is detected as CHANGED. (Current-session-only detection used to miss closed-period
+  edits, so their historical files were never re-pushed.) The per-component
+  ``components`` (current period only) still bound the re-disseminate *range*; a
+  purely historical change leaves them unchanged ⇒ full-window re-push, cache-gated.
 - ``in_epos`` is the station's EPOS-eligibility flag (TOS ``in_network_epos`` +
   minimum requirements), tracked separately so on/off transitions are explicit.
 """
@@ -180,7 +184,7 @@ class FingerprintStore:
 
 
 def make_fingerprint_fn(
-    session_provider: Optional[Callable[..., Optional[dict]]],
+    history_fn: Optional[Callable[..., str]],
     epos_markers_set: set[str],
     *,
     at: Optional[datetime] = None,
@@ -188,26 +192,29 @@ def make_fingerprint_fn(
 ) -> Callable[[str], Optional[StationState]]:
     """Build the production ``station → StationState`` reader from TOS.
 
-    The fingerprint is :func:`tos_access.session_fingerprint` over the station's
-    *current* device session (the one covering ``at``, default now); ``in_epos`` is
-    membership in the EPOS-eligible marker set. A station with no current session
-    gets an empty fingerprint (still tracked, so an install later reads as CHANGED).
+    The fingerprint is :func:`tos_access.history_fingerprint` over the station's
+    *whole* device history (not just the current session), so a retroactive TOS
+    correction to a closed historical period is detected as CHANGED — see that
+    function for the historical-session detection rationale. ``in_epos`` is
+    membership in the EPOS-eligible marker set. A station with no history gets an
+    empty fingerprint (still tracked, so an install later reads as CHANGED).
 
     ``components_fn`` (``station, when -> components``, e.g.
-    :func:`tos_access.make_components_fn`) supplies the per-component state used by
-    :func:`affected_floor` to bound a CHANGED station's re-disseminate range. When
-    omitted, components are empty and the range falls back to the full window.
+    :func:`tos_access.make_components_fn`) supplies the per-component (current-period)
+    state used by :func:`affected_floor` to bound a CHANGED station's re-disseminate
+    range. When omitted, components are empty and the range falls back to the full
+    window. (A purely historical change leaves the current-period components
+    unchanged ⇒ ``affected_floor`` → None ⇒ full window, which is exactly what we
+    want for a closed-period edit.)
     """
-    from .tos_access import session_fingerprint
-
     when = at or datetime.now()
 
     def fn(station: str) -> Optional[StationState]:
         sid = station.upper()
-        session = session_provider(sid, when) if session_provider else None
+        fingerprint = history_fn(sid, when) if history_fn else ""
         components = components_fn(sid, when) if components_fn else {}
         return StationState(
-            fingerprint=session_fingerprint(session),
+            fingerprint=fingerprint,
             in_epos=sid in epos_markers_set,
             components=components,
         )

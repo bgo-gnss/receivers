@@ -276,15 +276,21 @@ def run_epos_reactive_job(
     scan_markers = sorted(set(m.upper() for m in markers) | set(store.load().keys()))
 
     if fingerprint_fn is None:
+        # Detection reads the whole device history (history-wide fingerprint), so a
+        # retroactive correction to a closed historical session is caught; the
+        # session_provider above stays for QC/acting. Separate TOS read from the
+        # components reader, but the net read count per station is unchanged.
+        history_fn = None
         components_fn = None
         try:
-            from .tos_access import make_components_fn
+            from .tos_access import make_components_fn, make_history_fn
 
+            history_fn = make_history_fn()
             components_fn = make_components_fn()
         except Exception:
-            logger.exception("epos-reactive: components reader init failed")
+            logger.exception("epos-reactive: reactive readers init failed")
         fingerprint_fn = make_fingerprint_fn(
-            session_provider,
+            history_fn,
             set(m.upper() for m in markers),
             at=datetime(end.year, end.month, end.day),
             components_fn=components_fn,
@@ -371,13 +377,25 @@ def _build_reactive_actions(
             raise RuntimeError(f"metadata ETL errors: {'; '.join(res.errors)}")
 
     def disseminate(change: StationChange) -> bool:
-        from .reactive import affected_floor
+        from .reactive import CHANGED, affected_floor
 
         station = change.station
         floor_from = affected_floor(change)
-        dates = _reactive_date_range(
-            target, today, backfill_days, floor_from=floor_from
-        )
+        # A CHANGED with no bound is a historical (closed-period) correction whose
+        # affected date is unknown — it could be anywhere in the disseminated
+        # history. The default lookback (today − backfill_days) would miss a
+        # correction older than that, so extend the window back to cutover (the
+        # earliest disseminated date); the convert cache still re-renders only the
+        # dates that actually differ. No cutover ⇒ fall back to backfill_days (a
+        # documented interim limit — deep-historical reach then needs the full
+        # per-period diff). NEW/ACTIVATED keep the plain backfill window.
+        eff_backfill = backfill_days
+        if change.kind == CHANGED and floor_from is None:
+            cutover = getattr(target, "cutover", None)
+            cutover_date = cutover.date() if isinstance(cutover, datetime) else cutover
+            if cutover_date is not None:
+                eff_backfill = max(backfill_days, (today - cutover_date).days)
+        dates = _reactive_date_range(target, today, eff_backfill, floor_from=floor_from)
         pushed = cached = skipped = 0
         for d in dates:
             result = engine.run_one(station, d)
