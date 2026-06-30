@@ -89,3 +89,19 @@ targets:
       # archive tree). %Y=year, #b=lowercase 3-letter month.
       dir_template:      "%Y/#b/{station}/15s_24hr/rinex/"
       filename_template: "{name}"
+
+      # --- Naming / header policy knobs (C4/C5; do NOT hardcode in code) -------
+      # Optional on-the-fly decimation to this sampling interval (s) before
+      # packaging — e.g. 30 for the conventional EPOS 30s daily product. Unset
+      # (null) ships the source rate unchanged; phase 1 keeps 15s (EPOS accepts
+      # it). Dissemination-boundary only; never touches the archive.
+      sample:            null
+      file_period:       "01D"      # RINEX3 long-name file-period token (daily)
+      # 2-digit monument number in the 9-char id (RHOF`00`ISL), used for both the
+      # long filename AND the MARKER NAME header so they never diverge. Config for
+      # now; becomes a per-station TOS attribute later.
+      monument_number:   "00"
+      # OBSERVER / AGENCY written into disseminated headers (EPOS 4.1.7 wants a
+      # generic team name, not personal initials).
+      observer:          "GNSSatIMO"
+      agency:            "Vedurstofa Islands"

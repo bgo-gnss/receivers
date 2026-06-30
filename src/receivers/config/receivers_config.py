@@ -148,6 +148,20 @@ class ReceiversConfig:
         except (configparser.NoSectionError, configparser.NoOptionError):
             return None
 
+    def get_sitelogs_repo(self) -> Optional[str]:
+        """Return the configured gps-sitelogs clone path, or None.
+
+        Read from ``[paths] sitelogs_repo`` in receivers.cfg — the local clone
+        where generated IGS/M3G site logs are committed for EPOS dissemination.
+        Returns ``None`` when unset so the caller can apply the built-in default
+        (``~/git/gps-sitelogs``). Mirrors :meth:`get_tos_corrections_repo`.
+        """
+        try:
+            value = self.config.get("paths", "sitelogs_repo")
+            return value.strip() or None
+        except (configparser.NoSectionError, configparser.NoOptionError):
+            return None
+
     def get_prepath(self) -> str:
         """DEPRECATED: Use get_data_prepath() instead.
 

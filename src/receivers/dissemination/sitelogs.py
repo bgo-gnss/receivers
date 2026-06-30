@@ -21,6 +21,28 @@ from typing import Any, Optional
 
 logger = logging.getLogger("receivers.dissemination.sitelogs")
 
+# Where the gps-sitelogs clone lives when [paths] sitelogs_repo is unset.
+DEFAULT_SITELOGS_REPO = "~/git/gps-sitelogs"
+
+
+def resolve_sitelogs_repo(override: Optional[str] = None) -> Path:
+    """Return the gps-sitelogs working-tree directory.
+
+    Precedence: explicit ``override`` → receivers.cfg ``[paths] sitelogs_repo``
+    → :data:`DEFAULT_SITELOGS_REPO` (``~/git/gps-sitelogs``). Mirrors
+    :func:`receivers.cfg.global_sync.resolve_global_repo`, but does not validate
+    the tree (callers create it / commit into it). The path is expanduser'd.
+    """
+    raw = override
+    if not raw:
+        try:
+            from ..config.receivers_config import ReceiversConfig
+
+            raw = ReceiversConfig().get_sitelogs_repo()
+        except Exception:  # noqa: BLE001 — config absent/unreadable → default
+            raw = None
+    return Path(raw or DEFAULT_SITELOGS_REPO).expanduser()
+
 
 def generate_site_log(
     station: str,
