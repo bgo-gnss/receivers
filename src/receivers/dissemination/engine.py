@@ -262,6 +262,7 @@ class EposDisseminate:
                 cache_dir=self.target.cache_path,
                 tos_fingerprint=fingerprint,
                 set_header=do_set_header,
+                domes=(session or {}).get("domes", ""),
             )
         except ConvertError as exc:
             result.message = f"convert failed: {exc}"

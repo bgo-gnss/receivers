@@ -152,6 +152,7 @@ def session_fingerprint(session: Optional[dict[str, Any]]) -> str:
 
     rel = {
         "marker": session.get("marker"),
+        "domes": session.get("domes"),
         "receiver": dev(
             session.get("gnss_receiver"),
             ("model", "serial_number", "firmware_version"),
@@ -193,6 +194,9 @@ def make_session_provider(client: Any = None):
             return None
         # compare_rinex_to_tos reads session["marker"]; it lives at station level.
         session.setdefault("marker", (meta.get("marker") or station).upper())
+        # DOMES is station-level too — carried so the header finalizer can write it
+        # into MARKER NUMBER (EPOS 4.1.7). Empty when the station has no DOMES.
+        session.setdefault("domes", (meta.get("iers_domes_number") or "").strip())
         return session
 
     return provider

@@ -337,6 +337,7 @@ def convert_for_dissemination(
     cache_dir: Path,
     tos_fingerprint: str = "",
     set_header: bool = False,
+    domes: str = "",
 ) -> ConvertResult:
     """Produce the cached canonical plain obs for dissemination (Model B).
 
@@ -388,10 +389,91 @@ def convert_for_dissemination(
 
     if set_header:
         set_header_from_tos(final_obs, station, observation_dt)
+        # EPOS-specific header finalization (4.1.7) that the general TOS corrector
+        # does not do: 9-char MARKER NAME (R3), DOMES in MARKER NUMBER, generic
+        # OBSERVER/AGENCY. Done here so the cached product is EPOS-complete.
+        finalize_epos_header(
+            final_obs,
+            station,
+            version,
+            country_code=fmt.country_code,
+            domes=domes,
+            observer=getattr(fmt, "observer", ""),
+            agency=getattr(fmt, "agency", ""),
+        )
     logger.info(
         "converted %s → %s (RINEX %d)", source_path.name, final_obs.name, version
     )
     return ConvertResult(final_obs, obs_name, version, False, source_path)
+
+
+def epos_marker_name(station: str, version: int, country_code: str) -> str:
+    """EPOS MARKER NAME: 9-char ID for RINEX 3 (``RHOF00ISL``), 4-char for R2.
+
+    Per EPOS 4.1.7 — "the 9-character station ID (4-character for RINEX 2 data)
+    must be found in the MARKER NAME field". Monument number defaults to ``00``
+    (the IMO convention, same as the long filename).
+    """
+    sid = station.upper()
+    return f"{sid}00{country_code.upper()}" if version >= 3 else sid
+
+
+def _set_header_records(rinex_file: Path, records: dict[str, str]) -> None:
+    """Update-or-insert fixed-column header records ``{label: value(cols 1-60)}``.
+
+    RINEX header lines are ``value[1:60] + label[61:80]``. Existing records with a
+    matching label are rewritten; any not present are inserted just before
+    ``END OF HEADER`` (in dict order). Idempotent.
+    """
+    lines = rinex_file.read_text().splitlines(keepends=True)
+    out: list[str] = []
+    applied: set[str] = set()
+    for line in lines:
+        label = line[60:80].strip() if len(line) >= 61 else ""
+        if label == "END OF HEADER":
+            for lbl, val in records.items():
+                if lbl not in applied:
+                    out.append(f"{val:<60}{lbl:<20}\n")
+                    applied.add(lbl)
+            out.append(line)
+            continue
+        if label in records and label not in applied:
+            out.append(f"{records[label]:<60}{label:<20}\n")
+            applied.add(label)
+            continue
+        out.append(line)
+    rinex_file.write_text("".join(out))
+
+
+def finalize_epos_header(
+    rinex_file: Path,
+    station: str,
+    version: int,
+    *,
+    country_code: str,
+    domes: str = "",
+    observer: str = "",
+    agency: str = "",
+) -> None:
+    """Write the EPOS-mandated marker / observer header records (4.1.7).
+
+    - MARKER NAME  ← 9-char ID (R3) / 4-char (R2)
+    - MARKER NUMBER ← DOMES when known, else the 4-char ID
+    - OBSERVER / AGENCY ← generic team name + agency (never personal initials)
+
+    Best-effort like :func:`set_header_from_tos`; the QC gate is the safety net.
+    """
+    try:
+        sid = station.upper()
+        records = {
+            "MARKER NAME": epos_marker_name(sid, version, country_code),
+            "MARKER NUMBER": (domes or sid).strip(),
+        }
+        if observer or agency:
+            records["OBSERVER / AGENCY"] = f"{observer:<20}{agency:<40}"
+        _set_header_records(rinex_file, records)
+    except Exception as exc:  # noqa: BLE001 - never fail convert on a header write
+        logger.warning("EPOS header finalize failed for %s: %s", station, exc)
 
 
 def published_name(obs_name: str, policy) -> str:

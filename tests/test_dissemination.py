@@ -229,13 +229,15 @@ class TestEngineSourceResolution:
 
 # --------------------------------------------------------------------------- QC gate (pure)
 def _write_min_header(
-    path: Path, marker: str, *, xyz: str = "", receiver: str = ""
+    path: Path, marker: str, *, xyz: str = "", receiver: str = "", number: str = ""
 ) -> Path:
     """Write a minimal RINEX-3 header file (enough for extract_header_info)."""
     lines = [
         "     3.04           OBSERVATION DATA    M (MIXED)           RINEX VERSION / TYPE",
         f"{marker:<60}MARKER NAME",
     ]
+    if number:
+        lines.append(f"{number:<60}MARKER NUMBER")
     if receiver:
         lines.append(f"{receiver:<60}REC # / TYPE / VERS")
     if xyz:
@@ -298,6 +300,27 @@ class TestQCGate:
         bad.write_text("not a rinex file\n")
         v = qc_check(bad, {"marker": "FIM2"})
         assert v.passed is False
+
+    def test_epos_9char_marker_accepted(self, tmp_path):
+        # EPOS 4.1.7: 9-char MARKER NAME whose 4-char prefix is the TOS marker
+        # must NOT be flagged as a mismatch.
+        f = _write_min_header(tmp_path / "h.rnx", "FIM200ISL")
+        v = qc_check(f, {"marker": "FIM2"})
+        assert v.passed is True
+        assert "marker" not in v.blocking
+        assert v.matches.get("marker") == "FIM200ISL"
+
+    def test_domes_match_passes_mismatch_blocks(self, tmp_path):
+        # DOMES present in TOS → MARKER NUMBER must equal it.
+        ok = _write_min_header(tmp_path / "ok.rnx", "FIM200ISL", number="10222M001")
+        v = qc_check(ok, {"marker": "FIM2", "domes": "10222M001"})
+        assert v.passed is True
+        assert v.matches.get("domes") == "10222M001"
+
+        bad = _write_min_header(tmp_path / "bad.rnx", "FIM200ISL", number="FIM2")
+        v = qc_check(bad, {"marker": "FIM2", "domes": "10222M001"})
+        assert v.passed is False
+        assert "domes" in v.blocking
 
 
 # --------------------------------------------------------------------------- EPOS filter (offline)
@@ -741,14 +764,92 @@ class TestRawFallback:
         assert (tmp_path / "stage" / layout / r.long_name).is_file()
 
 
+# --------------------------------------------------------------------------- EPOS header finalization (C1/C2)
+class TestEposHeaderFinalize:
+    """C1/C2: 9-char MARKER NAME (R3), DOMES in MARKER NUMBER, generic OBSERVER."""
+
+    def _header(self, tmp_path, *, marker="RHOF", number=None, observer="BGO/HMF"):
+        lines = [
+            "     3.04           OBSERVATION DATA    M (MIXED)"
+            "           RINEX VERSION / TYPE\n",
+            f"{marker:<60}MARKER NAME\n",
+        ]
+        if number is not None:
+            lines.append(f"{number:<60}MARKER NUMBER\n")
+        lines.append(f"{observer:<20}{'Old Agency':<40}OBSERVER / AGENCY\n")
+        lines.append(" " * 60 + "END OF HEADER\n")
+        p = tmp_path / "x.rnx"
+        p.write_text("".join(lines))
+        return p
+
+    def _records(self, path):
+        recs = {}
+        for line in path.read_text().splitlines():
+            label = line[60:80].strip()
+            if label:
+                recs[label] = line[:60]
+        return recs
+
+    def test_marker_name_9char_for_r3(self):
+        from receivers.dissemination.convert import epos_marker_name
+
+        assert epos_marker_name("RHOF", 3, "ISL") == "RHOF00ISL"
+        assert epos_marker_name("rhof", 3, "isl") == "RHOF00ISL"
+        assert epos_marker_name("RHOF", 2, "ISL") == "RHOF"  # 4-char for R2
+
+    def test_finalize_r3_updates_and_inserts(self, tmp_path):
+        from receivers.dissemination.convert import finalize_epos_header
+
+        # MARKER NUMBER absent + personal-initials OBSERVER (the FIHO/RHOF case)
+        p = self._header(tmp_path, marker="RHOF", number=None, observer="BGO/HMF")
+        finalize_epos_header(
+            p,
+            "RHOF",
+            3,
+            country_code="ISL",
+            domes="10216M001",
+            observer="GNSSatIMO",
+            agency="Vedurstofa Islands",
+        )
+        recs = self._records(p)
+        assert recs["MARKER NAME"].strip() == "RHOF00ISL"
+        assert recs["MARKER NUMBER"].strip() == "10216M001"  # inserted
+        assert recs["OBSERVER / AGENCY"][:20].strip() == "GNSSatIMO"
+        assert recs["OBSERVER / AGENCY"][20:].strip() == "Vedurstofa Islands"
+
+    def test_finalize_no_domes_falls_back_to_4char_number(self, tmp_path):
+        from receivers.dissemination.convert import finalize_epos_header
+
+        p = self._header(tmp_path, marker="ABCD", number="ABCD")
+        finalize_epos_header(p, "ABCD", 3, country_code="ISL", domes="")
+        assert self._records(p)["MARKER NUMBER"].strip() == "ABCD"
+
+    def test_finalize_is_idempotent(self, tmp_path):
+        from receivers.dissemination.convert import finalize_epos_header
+
+        p = self._header(tmp_path, number="10216M001")
+        kw = dict(
+            country_code="ISL",
+            domes="10216M001",
+            observer="GNSSatIMO",
+            agency="Vedurstofa Islands",
+        )
+        finalize_epos_header(p, "RHOF", 3, **kw)
+        first = p.read_text()
+        finalize_epos_header(p, "RHOF", 3, **kw)
+        assert p.read_text() == first
+
+
 # --------------------------------------------------------------------------- sampling / config-driven naming
 class TestSamplingConfig:
     """C4/C5: sampling + naming knobs come from the format policy, and the
     frequency token is derived from the file's INTERVAL, not a hardcoded default."""
 
     def _write_header(self, tmp_path, interval=None):
-        lines = ["     3.04           OBSERVATION DATA    M (MIXED)"
-                 "           RINEX VERSION / TYPE\n"]
+        lines = [
+            "     3.04           OBSERVATION DATA    M (MIXED)"
+            "           RINEX VERSION / TYPE\n"
+        ]
         if interval is not None:
             lines.append(f"{interval:10.3f}".ljust(60) + "INTERVAL\n")
         lines.append(" " * 60 + "END OF HEADER\n")
@@ -775,7 +876,7 @@ class TestSamplingConfig:
         from receivers.dissemination.convert import _resolve_data_frequency
 
         f15 = self._write_header(tmp_path, 15.0)
-        assert _resolve_data_frequency(f15, sample=30) == "30S"   # config override wins
+        assert _resolve_data_frequency(f15, sample=30) == "30S"  # config override wins
         assert _resolve_data_frequency(f15, sample=None) == "15S"  # else INTERVAL
         f_none = self._write_header(tmp_path, None)
         assert _resolve_data_frequency(f_none, sample=None) == "15S"  # logged fallback

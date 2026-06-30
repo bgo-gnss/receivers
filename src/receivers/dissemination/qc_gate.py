@@ -29,7 +29,10 @@ logger = logging.getLogger("receivers.dissemination.qc")
 
 # Discrepancy keys that compare_rinex_to_tos emits ONLY on a genuine mismatch.
 # (receiver/antenna are emitted unconditionally → excluded; set-header handles them.)
-DEFAULT_BLOCKING_FIELDS = frozenset({"marker", "antenna_height", "coordinates"})
+# ``domes`` is added by this gate (EPOS 4.1.7), not by compare_rinex_to_tos.
+DEFAULT_BLOCKING_FIELDS = frozenset(
+    {"marker", "domes", "antenna_height", "coordinates"}
+)
 
 
 @dataclass
@@ -114,7 +117,30 @@ def qc_check(
     result = compare_rinex_to_tos(
         rinex_info, tos_session, loglevel=loglevel, coord_tolerance=coord_tolerance_m
     )
-    discrepancies = result.get("discrepancies", {})
+    discrepancies = dict(result.get("discrepancies", {}))
+    matches = dict(result.get("matches", {}))
+
+    # EPOS 4.1.7: the RINEX 3 MARKER NAME is the 9-char station ID whose 4-char
+    # prefix is the TOS marker. compare_rinex_to_tos only knows the 4-char marker,
+    # so it flags the 9-char form as a mismatch — it isn't one.
+    marker_disc = discrepancies.get("marker")
+    if isinstance(marker_disc, dict):
+        rnx = str(marker_disc.get("rinex", "")).strip().upper()
+        tos = str(marker_disc.get("tos", "")).strip().upper()
+        if len(rnx) == 9 and rnx[:4] == tos:
+            discrepancies.pop("marker")
+            matches["marker"] = rnx
+
+    # EPOS 4.1.7: the DOMES (when TOS has one) must be in MARKER NUMBER. The header
+    # finalizer writes it; the gate verifies it (catches cfg data errors / drops).
+    tos_domes = str(tos_session.get("domes") or "").strip().upper()
+    if tos_domes:
+        rnx_number = str(rinex_info.get("MARKER NUMBER") or "").strip().upper()
+        if rnx_number == tos_domes:
+            matches["domes"] = tos_domes
+        else:
+            discrepancies["domes"] = {"rinex": rnx_number, "tos": tos_domes}
+
     blocking = {k: v for k, v in discrepancies.items() if k in blocking_fields}
 
     if blocking:
@@ -126,6 +152,6 @@ def qc_check(
         blocking=blocking,
         discrepancies=discrepancies,
         missing_tos=result.get("missing_tos", []),
-        matches=result.get("matches", {}),
+        matches=matches,
         message=msg,
     )

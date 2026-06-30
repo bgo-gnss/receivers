@@ -85,6 +85,14 @@ class DisseminationFormat:
     """RINEX 3 long-name file-period token (``01D`` daily). Config knob so the
     naming is not a hardcoded assumption in the convert code."""
 
+    observer: str = "GNSSatIMO"
+    """OBSERVER value written into disseminated headers (EPOS 4.1.7 requires a
+    generic team name / email, not personal initials). ``@``→``at`` already
+    applied by convention."""
+
+    agency: str = "Vedurstofa Islands"
+    """AGENCY value written into disseminated headers (paired with OBSERVER)."""
+
     def policy_for(self, rinex_version: int) -> VersionPolicy:
         return self.rinex2 if rinex_version == 2 else self.rinex3
 
@@ -106,6 +114,8 @@ class DisseminationFormat:
             filename_template=raw.get("filename_template", DEFAULT_FILENAME_TEMPLATE),
             sample=int(sample_raw) if sample_raw is not None else None,
             file_period=raw.get("file_period", "01D"),
+            observer=raw.get("observer", "GNSSatIMO"),
+            agency=raw.get("agency", "Vedurstofa Islands"),
         )
 
 
