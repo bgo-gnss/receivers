@@ -178,6 +178,78 @@ def scan(
     return changes
 
 
+@dataclass
+class ReactiveActions:
+    """The side-effecting callbacks the orchestrator dispatches (injectable).
+
+    Production wires these to the metadata ETL, the dissemination sweep over the
+    affected range, and site-log generation; tests pass fakes. Each returns/raises
+    so the orchestrator can mark a station succeeded (→ advance the store) only when
+    its whole action chain worked.
+    """
+
+    refresh_metadata: Callable[[str], None]
+    """Re-run the TOS→EPOS station ETL for a (re)activated / changed station."""
+    disseminate: Callable[[StationChange], bool]
+    """Re-disseminate the affected range; True on success. NEW/ACTIVATED ⇒ backfill
+    from install, CHANGED ⇒ the header-affected range (cache auto-invalidates)."""
+    regenerate_sitelog: Callable[[str], None]
+    """Regenerate + (later) submit the IGS/M3G site log."""
+    stop: Callable[[str], None]
+    """Stop-only on DEACTIVATED — mark inactive, never purge EPOS rows."""
+
+
+def run_reactive_sync(
+    markers: list[str],
+    fingerprint_fn: Callable[[str], Optional[StationState]],
+    store: FingerprintStore,
+    actions: ReactiveActions,
+) -> dict[str, int]:
+    """Scan → act on each changed station → advance the store. Never raises out.
+
+    A station advances in the store only when its full action chain succeeds, so a
+    transient failure is retried on the next scan rather than silently lost.
+    """
+    changes = scan(markers, fingerprint_fn, store)
+    summary = {
+        NEW: 0,
+        CHANGED: 0,
+        ACTIVATED: 0,
+        DEACTIVATED: 0,
+        UNCHANGED: 0,
+        "failed": 0,
+    }
+    succeeded: set[str] = set()
+    for ch in changes:
+        summary[ch.kind] = summary.get(ch.kind, 0) + 1
+        if not ch.actionable:
+            continue
+        try:
+            if ch.kind == DEACTIVATED:
+                actions.stop(ch.station)
+            else:
+                actions.refresh_metadata(ch.station)
+                if not actions.disseminate(ch):
+                    raise RuntimeError("dissemination reported failure")
+                actions.regenerate_sitelog(ch.station)
+            succeeded.add(ch.station)
+        except Exception:
+            logger.exception("reactive: action failed for %s (%s)", ch.station, ch.kind)
+            summary["failed"] += 1
+    advance(store, changes, succeeded)
+    logger.info(
+        "reactive sweep: new=%d changed=%d activated=%d deactivated=%d "
+        "unchanged=%d failed=%d",
+        summary[NEW],
+        summary[CHANGED],
+        summary[ACTIVATED],
+        summary[DEACTIVATED],
+        summary[UNCHANGED],
+        summary["failed"],
+    )
+    return summary
+
+
 def advance(
     store: FingerprintStore,
     changes: list[StationChange],

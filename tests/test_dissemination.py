@@ -1167,3 +1167,68 @@ class TestReactiveDetection:
         after = store.load()
         assert after["RHOF"].fingerprint == "newR"
         assert after["FIHO"].fingerprint == "old"
+
+
+class TestReactiveOrchestrator:
+    def _st(self, fp, in_epos=True):
+        from receivers.dissemination.reactive import StationState
+
+        return StationState(fingerprint=fp, in_epos=in_epos)
+
+    def test_dispatches_per_kind_and_advances_on_success(self, tmp_path):
+        from receivers.dissemination.reactive import (
+            FingerprintStore,
+            ReactiveActions,
+            run_reactive_sync,
+        )
+
+        store = FingerprintStore(tmp_path / "s.json")
+        # RHOF: changed (prev fp differs), AKUR: new (no prev), FIHO: deactivated
+        store.save({"RHOF": self._st("old"), "FIHO": self._st("f", True)})
+        current = {
+            "RHOF": self._st("newR"),
+            "AKUR": self._st("newA"),
+            "FIHO": self._st("f", False),  # in_epos on→off
+        }
+        calls = {"refresh": [], "disseminate": [], "sitelog": [], "stop": []}
+        actions = ReactiveActions(
+            refresh_metadata=lambda s: calls["refresh"].append(s),
+            disseminate=lambda ch: calls["disseminate"].append((ch.station, ch.kind))
+            or True,
+            regenerate_sitelog=lambda s: calls["sitelog"].append(s),
+            stop=lambda s: calls["stop"].append(s),
+        )
+        summary = run_reactive_sync(
+            ["RHOF", "AKUR", "FIHO"], lambda s: current[s], store, actions
+        )
+        assert summary["changed"] == 1 and summary["new"] == 1
+        assert summary["deactivated"] == 1 and summary["failed"] == 0
+        assert set(calls["refresh"]) == {"RHOF", "AKUR"}  # not the deactivated one
+        assert calls["stop"] == ["FIHO"]
+        assert set(calls["sitelog"]) == {"RHOF", "AKUR"}
+        # all three actions succeeded → store advanced
+        after = store.load()
+        assert after["RHOF"].fingerprint == "newR"
+        assert after["AKUR"].fingerprint == "newA"
+        assert after["FIHO"].in_epos is False
+
+    def test_failed_action_does_not_advance(self, tmp_path):
+        from receivers.dissemination.reactive import (
+            FingerprintStore,
+            ReactiveActions,
+            run_reactive_sync,
+        )
+
+        store = FingerprintStore(tmp_path / "s.json")
+        store.save({"RHOF": self._st("old")})
+        actions = ReactiveActions(
+            refresh_metadata=lambda s: None,
+            disseminate=lambda ch: False,  # report failure
+            regenerate_sitelog=lambda s: None,
+            stop=lambda s: None,
+        )
+        summary = run_reactive_sync(
+            ["RHOF"], lambda s: self._st("newR"), store, actions
+        )
+        assert summary["failed"] == 1
+        assert store.load()["RHOF"].fingerprint == "old"  # NOT advanced → retried
