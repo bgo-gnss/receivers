@@ -1232,3 +1232,149 @@ class TestReactiveOrchestrator:
         )
         assert summary["failed"] == 1
         assert store.load()["RHOF"].fingerprint == "old"  # NOT advanced → retried
+
+
+# --------------------------------------------------------------------------- reactive production wiring (T6)
+class TestReactiveJob:
+    def _active_cfg(self, tmp_path, extra=""):
+        cfg = tmp_path / "sync.yaml"
+        cfg.write_text(
+            "targets:\n"
+            "  - name: epos\n"
+            "    tier: dissemination\n"
+            "    active: true\n"
+            '    host: ""\n'
+            "    user: epos\n"
+            "    dest: /tmp/epos_stage\n"
+            "    source_root: /mnt/data/gpsdata\n"
+            "    sessions: [15s_24hr]\n" + extra
+        )
+        return cfg
+
+    def test_date_range_floored_at_cutover(self):
+        from receivers.dissemination.job import _reactive_date_range
+
+        class _T:
+            cutover = datetime(2026, 6, 22)
+
+        dates = _reactive_date_range(_T(), date(2026, 6, 30), 365)
+        assert dates[0] == date(2026, 6, 30) and dates[-1] == date(2026, 6, 22)
+        assert len(dates) == 9
+
+    def test_date_range_bounded_window_no_cutover(self):
+        from receivers.dissemination.job import _reactive_date_range
+
+        class _T:
+            cutover = None
+
+        dates = _reactive_date_range(_T(), date(2026, 6, 30), 3)
+        assert dates == [date(2026, 6, 30 - k) for k in range(4)]
+
+    def test_no_active_target_is_noop(self, tmp_path):
+        from receivers.dissemination.job import run_epos_reactive_job
+
+        cfg = tmp_path / "sync.yaml"
+        cfg.write_text(
+            "targets:\n  - name: epos\n    tier: dissemination\n"
+            "    active: false\n    dest: /tmp/x\n    source_root: /x\n"
+        )
+        s = run_epos_reactive_job(config_path=str(cfg), markers=["RHOF"], no_qc=True)
+        assert s["new"] == 0 and s["failed"] == 0
+
+    def test_job_scans_store_union_for_deactivation(self, tmp_path):
+        """A station that left the EPOS marker set is still detected (DEACTIVATED)."""
+        from receivers.dissemination.job import run_epos_reactive_job
+        from receivers.dissemination.reactive import (
+            FingerprintStore,
+            ReactiveActions,
+            StationState,
+        )
+
+        store_path = tmp_path / "state.json"
+        FingerprintStore(store_path).save(
+            {"FIHO": StationState("f", True), "RHOF": StationState("old", True)}
+        )
+        # Current EPOS markers: RHOF still in, AKUR new, FIHO dropped out.
+        cur = {
+            "RHOF": StationState("newR", True),
+            "AKUR": StationState("newA", True),
+            "FIHO": StationState("f", False),
+        }
+        calls = {"refresh": [], "disseminate": [], "sitelog": [], "stop": []}
+        actions = ReactiveActions(
+            refresh_metadata=lambda s: calls["refresh"].append(s),
+            disseminate=lambda ch: calls["disseminate"].append((ch.station, ch.kind))
+            or True,
+            regenerate_sitelog=lambda s: calls["sitelog"].append(s),
+            stop=lambda s: calls["stop"].append(s),
+        )
+        s = run_epos_reactive_job(
+            config_path=str(self._active_cfg(tmp_path)),
+            no_qc=True,
+            markers=["RHOF", "AKUR"],
+            state_path=str(store_path),
+            fingerprint_fn=lambda sid: cur[sid],
+            actions=actions,
+        )
+        assert s["new"] == 1 and s["changed"] == 1 and s["deactivated"] == 1
+        assert calls["stop"] == ["FIHO"]  # detected despite leaving the marker set
+        assert set(calls["refresh"]) == {"AKUR", "RHOF"}
+
+    def test_build_actions_disseminate_loops_range(self, tmp_path):
+        from receivers.dissemination.job import _build_reactive_actions
+        from receivers.dissemination.reactive import NEW, StationChange
+
+        class _Res:
+            ok = True
+            cached = False
+            artifact_path = None
+            relative_path = None
+            station = "RHOF"
+            file_date = date(2026, 6, 30)
+            rinex_version = 3
+
+        class _Engine:
+            def __init__(self):
+                self.calls = []
+
+            def run_one(self, station, d):
+                self.calls.append((station, d))
+                return _Res()
+
+        eng = _Engine()
+
+        class _T:
+            cutover = None
+            format = type("F", (), {"country_code": "ISL", "monument_number": "00"})()
+
+        actions = _build_reactive_actions(
+            _T(),
+            session_provider=None,
+            epos_conn=None,
+            engine_factory=lambda _t: eng,
+            sitelogs_dir=str(tmp_path),
+            backfill_days=2,
+            today=date(2026, 6, 30),
+        )
+        ok = actions.disseminate(StationChange("RHOF", NEW, None, None))
+        assert ok is True
+        assert len(eng.calls) == 3  # today + 2 back
+
+    def test_build_actions_refresh_raises_without_conn(self, tmp_path):
+        from receivers.dissemination.job import _build_reactive_actions
+
+        class _T:
+            cutover = None
+            format = type("F", (), {"country_code": "ISL", "monument_number": "00"})()
+
+        actions = _build_reactive_actions(
+            _T(),
+            session_provider=None,
+            epos_conn=None,
+            engine_factory=lambda _t: object(),
+            sitelogs_dir=str(tmp_path),
+            backfill_days=1,
+            today=date(2026, 6, 30),
+        )
+        with pytest.raises(RuntimeError):
+            actions.refresh_metadata("RHOF")

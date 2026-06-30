@@ -104,14 +104,39 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
     if args.refresh_metadata:
         return _cmd_refresh_metadata(args)
 
+    # --reactive: TOS-fingerprint diff sweep — re-ETL / re-disseminate / stop the
+    # stations whose TOS metadata or EPOS eligibility changed since the last run.
+    if args.reactive:
+        from ..dissemination.job import _open_epos_conn, run_epos_reactive_job
+
+        summary = run_epos_reactive_job(
+            config_path=args.config,
+            target_name=args.target,
+            backfill_days=args.reactive_backfill_days,
+            no_qc=args.no_qc,
+            state_path=args.state_path,
+            sitelogs_dir=args.sitelog_dir,
+            epos_conn_factory=_open_epos_conn,
+        )
+        if args.json:
+            print(json.dumps(summary, indent=2))
+        else:
+            print(
+                "reactive sweep: "
+                f"new={summary['new']} changed={summary['changed']} "
+                f"activated={summary['activated']} deactivated={summary['deactivated']} "
+                f"unchanged={summary['unchanged']} failed={summary['failed']}"
+            )
+        return 0 if not summary.get("failed") else 1
+
     # --sitelog: generate the IGS/M3G site log for --station from TOS (C6/T7).
     if args.sitelog:
         if not args.station:
             print("--sitelog requires --station")
             return 1
-        from ..dissemination.sitelogs import generate_site_log
+        from ..dissemination.sitelogs import generate_site_log, resolve_sitelogs_repo
 
-        out_dir = Path(args.sitelog_dir) if args.sitelog_dir else Path(".")
+        out_dir = resolve_sitelogs_repo(args.sitelog_dir)
         path = generate_site_log(
             args.station,
             out_dir,
@@ -234,7 +259,8 @@ def create_epos_disseminate_parser(subparsers) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--sitelog-dir",
-        help="Output directory for --sitelog (default: cwd; a gps-sitelogs working tree in production)",
+        help="Output directory for --sitelog (default: the gps-sitelogs repo from "
+        "receivers.cfg [paths] sitelogs_repo, else ~/git/gps-sitelogs)",
     )
     parser.add_argument(
         "--sitelog-dated",
@@ -246,6 +272,24 @@ def create_epos_disseminate_parser(subparsers) -> argparse.ArgumentParser:
         action="store_true",
         help="Run the TOS→EPOS station metadata ETL (for --station, or all EPOS "
         "stations) and exit — no file pipeline",
+    )
+    parser.add_argument(
+        "--reactive",
+        action="store_true",
+        help="Run the reactive TOS-fingerprint sweep: re-ETL / re-disseminate / "
+        "stop the stations whose TOS metadata or EPOS eligibility changed (T6)",
+    )
+    parser.add_argument(
+        "--reactive-backfill-days",
+        type=int,
+        default=365,
+        help="Backfill window (days) re-disseminated for a changed/activated "
+        "station in --reactive mode (default 365; cache makes re-runs cheap)",
+    )
+    parser.add_argument(
+        "--state-path",
+        help="Path to the reactive fingerprint store JSON "
+        "(default: ~/.cache/gps_receivers/epos_reactive_state.json)",
     )
     parser.add_argument(
         "--no-qc",

@@ -133,7 +133,7 @@ class FingerprintStore:
 
 
 def make_fingerprint_fn(
-    session_provider: Callable[..., Optional[dict]],
+    session_provider: Optional[Callable[..., Optional[dict]]],
     epos_markers_set: set[str],
     *,
     at: Optional[datetime] = None,

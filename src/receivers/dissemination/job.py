@@ -150,3 +150,263 @@ def run_epos_disseminate_job(
         summary["failed"],
     )
     return summary
+
+
+# --------------------------------------------------------------------------- #
+# Reactive sweep (T6) — TOS-fingerprint diff → re-ETL / re-disseminate / stop  #
+# --------------------------------------------------------------------------- #
+
+
+def _reactive_date_range(target: Any, today: date, backfill_days: int) -> list[date]:
+    """Daily dates to (re-)disseminate for a changed/activated station.
+
+    Floor = ``max(target.cutover, today - backfill_days)``. We re-run the whole
+    window and let the convert-cache (keyed on source hash + TOS fingerprint)
+    decide which dates actually re-render — a header change re-renders exactly the
+    affected dates, an unchanged date is a cheap cache hit. Exact-affected-range
+    targeting (using the changed attribute's date_from/date_to) is a later
+    refinement that needs the detection layer to carry the range.
+    """
+    floor = today - timedelta(days=max(0, backfill_days))
+    cutover = getattr(target, "cutover", None)
+    if cutover is not None:
+        cutover_date = cutover.date() if isinstance(cutover, datetime) else cutover
+        if cutover_date > floor:
+            floor = cutover_date
+    n = (today - floor).days
+    return [today - timedelta(days=k) for k in range(n + 1)]
+
+
+def run_epos_reactive_job(
+    config_path: Optional[str] = None,
+    target_name: Optional[str] = None,
+    backfill_days: int = 365,
+    no_qc: bool = False,
+    *,
+    today: Optional[date] = None,
+    state_path: Optional[str] = None,
+    markers: Optional[list[str]] = None,
+    engine_factory: Any = None,
+    epos_conn_factory: Any = None,
+    sitelogs_dir: Optional[str] = None,
+    fingerprint_fn: Any = None,
+    actions: Any = None,
+) -> dict[str, int]:
+    """Reactive TOS-fingerprint sweep for EPOS dissemination. Never raises.
+
+    Scans every currently-eligible EPOS station *plus* every station already in
+    the fingerprint store (so a station that dropped out of EPOS is detected as
+    DEACTIVATED), classifies each, and dispatches the production actions:
+
+    - NEW / ACTIVATED / CHANGED → re-ETL metadata, re-disseminate the backfill
+      window, regenerate + commit the site log.
+    - DEACTIVATED → stop-only (keep EPOS rows; just stop pushing).
+
+    Mirrors :func:`run_epos_disseminate_job`: every collaborator is injectable so
+    the whole sweep is offline-testable, and a station advances in the store only
+    when its full action chain succeeds (transient failures retry next sweep).
+    Returns the :func:`receivers.dissemination.reactive.run_reactive_sync` summary.
+    """
+    from .config import load_dissemination_config
+    from .reactive import (
+        DEFAULT_STATE_PATH,
+        FingerprintStore,
+        make_fingerprint_fn,
+        run_reactive_sync,
+    )
+
+    empty = {
+        "new": 0,
+        "changed": 0,
+        "activated": 0,
+        "deactivated": 0,
+        "unchanged": 0,
+        "failed": 0,
+    }
+
+    try:
+        targets = load_dissemination_config(Path(config_path) if config_path else None)
+    except Exception:
+        logger.exception("epos-reactive: failed to load sync.yaml")
+        return empty
+    if target_name:
+        targets = [t for t in targets if t.name == target_name]
+    active = [t for t in targets if t.active]
+    if not active:
+        logger.info("epos-reactive: no active dissemination target — nothing to do")
+        return empty
+    target = active[0]
+
+    store = FingerprintStore(state_path or DEFAULT_STATE_PATH)
+    end = today or date.today()
+
+    # Live QC + fingerprint session provider (shared between detection + acting).
+    session_provider = None
+    if not no_qc:
+        try:
+            from .tos_access import make_session_provider
+
+            session_provider = make_session_provider()
+        except Exception:
+            logger.exception("epos-reactive: session provider init failed")
+
+    # Currently-eligible markers (TOS EPOS filter).
+    if markers is None:
+        try:
+            from .tos_access import epos_markers
+
+            markers = epos_markers()
+        except Exception:
+            logger.exception("epos-reactive: EPOS station lookup failed")
+            return empty
+
+    # Scan = current markers ∪ previously-seen stations, so a station that left
+    # the EPOS set is still classified (→ DEACTIVATED) rather than silently lost.
+    scan_markers = sorted(set(m.upper() for m in markers) | set(store.load().keys()))
+
+    if fingerprint_fn is None:
+        fingerprint_fn = make_fingerprint_fn(
+            session_provider,
+            set(m.upper() for m in markers),
+            at=datetime(end.year, end.month, end.day),
+        )
+
+    # EPOS DB connection (for metadata ETL + file indexing); best-effort.
+    epos_conn = None
+    if epos_conn_factory is not None:
+        try:
+            epos_conn = epos_conn_factory()
+        except Exception:  # noqa: BLE001
+            epos_conn = None
+    elif actions is None:
+        epos_conn = _open_epos_conn()
+
+    try:
+        if actions is None:
+            actions = _build_reactive_actions(
+                target,
+                session_provider=session_provider,
+                epos_conn=epos_conn,
+                engine_factory=engine_factory,
+                sitelogs_dir=sitelogs_dir,
+                backfill_days=backfill_days,
+                today=end,
+            )
+        return run_reactive_sync(scan_markers, fingerprint_fn, store, actions)
+    finally:
+        if epos_conn is not None:
+            try:
+                epos_conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def _open_epos_conn() -> Any:
+    """Open the EPOS DB connection ([epos_db] / EPOS_DB_* env), or None."""
+    try:
+        from . import epos_db
+
+        return epos_db.connect()
+    except Exception as exc:  # noqa: BLE001 - DB optional; metadata/index steps skip
+        logger.warning("epos-reactive: no EPOS DB connection (%s)", exc)
+        return None
+
+
+def _build_reactive_actions(
+    target: Any,
+    *,
+    session_provider: Any,
+    epos_conn: Any,
+    engine_factory: Any,
+    sitelogs_dir: Optional[str],
+    backfill_days: int,
+    today: date,
+) -> Any:
+    """Wire the production :class:`ReactiveActions` for one target.
+
+    Closures capture the live engine / EPOS DB / site-log repo. Each callback
+    raises on a hard failure so the orchestrator keeps the station unadvanced and
+    retries it next sweep; best-effort steps (indexing) swallow their own errors.
+    """
+    from .engine import EposDisseminate
+    from .reactive import ReactiveActions, StationChange
+    from .sitelogs import commit_site_log, generate_site_log, resolve_sitelogs_repo
+
+    if engine_factory is None:
+
+        def engine_factory(tgt):
+            return EposDisseminate(tgt, session_provider=session_provider)
+
+    engine = engine_factory(target)
+    sitelog_repo = resolve_sitelogs_repo(sitelogs_dir)
+
+    def refresh_metadata(station: str) -> None:
+        if epos_conn is None:
+            raise RuntimeError(
+                "EPOS DB connection unavailable — cannot refresh metadata"
+            )
+        from .epos_etl import run_etl
+
+        res = run_etl(epos_conn, markers=[station.upper()])
+        if res.errors:
+            raise RuntimeError(f"metadata ETL errors: {'; '.join(res.errors)}")
+
+    def disseminate(change: StationChange) -> bool:
+        station = change.station
+        dates = _reactive_date_range(target, today, backfill_days)
+        pushed = cached = skipped = 0
+        for d in dates:
+            result = engine.run_one(station, d)
+            if not result.ok:
+                skipped += 1
+                continue
+            if result.cached:
+                cached += 1
+            else:
+                pushed += 1
+            _index_pushed(epos_conn, target, result)
+        logger.info(
+            "epos-reactive %s (%s): %d dates — pushed=%d cached=%d skipped=%d",
+            station,
+            change.kind,
+            len(dates),
+            pushed,
+            cached,
+            skipped,
+        )
+        # Success = the window ran to completion. Individual QC-blocked / data-less
+        # dates are logged and skipped (not a station-level failure) — a stuck
+        # historical file must not pin the station's fingerprint forever.
+        return True
+
+    def regenerate_sitelog(station: str) -> None:
+        path = generate_site_log(
+            station,
+            sitelog_repo,
+            country_code=target.format.country_code,
+            monument_number=target.format.monument_number,
+        )
+        if path is None:
+            raise RuntimeError(f"site-log generation produced nothing for {station}")
+        try:
+            commit_site_log(
+                sitelog_repo, path, f"{station.upper()}: refresh site log (reactive)"
+            )
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 - commit is best-effort (no repo ⇒ skip)
+            logger.warning(
+                "epos-reactive: site-log commit skipped for %s: %s", station, exc
+            )
+
+    def stop(station: str) -> None:
+        # Stop-only: the station is simply absent from future marker sweeps, so it
+        # stops being disseminated. EPOS rows are intentionally NOT purged.
+        logger.info("epos-reactive: %s deactivated — stop-only (rows kept)", station)
+
+    return ReactiveActions(
+        refresh_metadata=refresh_metadata,
+        disseminate=disseminate,
+        regenerate_sitelog=regenerate_sitelog,
+        stop=stop,
+    )
