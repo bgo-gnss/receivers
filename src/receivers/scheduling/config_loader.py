@@ -357,6 +357,8 @@ def merge_with_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
         "archive_reconciler",
         "integrity_checker",
         "archive_verify",
+        "epos_disseminate",
+        "epos_reactive",
         "load_monitoring",
         "bootstrap",
     ]:
