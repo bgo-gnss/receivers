@@ -1106,3 +1106,64 @@ class TestPackagingZ:
         pub = package(obs, policy, tmp_path / "out")
         assert pub.name == "FIM21280.26o.Z"
         assert pub.is_file()
+
+
+# --------------------------------------------------------------------------- reactive detection (T6)
+class TestReactiveDetection:
+    def _st(self, fp, in_epos=True):
+        from receivers.dissemination.reactive import StationState
+
+        return StationState(fingerprint=fp, in_epos=in_epos)
+
+    def test_classify_state_machine(self):
+        from receivers.dissemination.reactive import (
+            ACTIVATED,
+            CHANGED,
+            DEACTIVATED,
+            NEW,
+            UNCHANGED,
+            classify,
+        )
+
+        # first sight of an EPOS station → NEW (backfill)
+        assert classify("A", None, self._st("f1")).kind == NEW
+        # header-affecting change while in EPOS → CHANGED
+        assert classify("A", self._st("f1"), self._st("f2")).kind == CHANGED
+        # same fingerprint → UNCHANGED
+        assert classify("A", self._st("f1"), self._st("f1")).kind == UNCHANGED
+        # in_epos off→on (known before) → ACTIVATED
+        assert classify("A", self._st("f1", False), self._st("f1")).kind == ACTIVATED
+        # in_epos on→off → DEACTIVATED (stop-only)
+        assert classify("A", self._st("f1"), self._st("f1", False)).kind == DEACTIVATED
+        # never in epos → UNCHANGED
+        assert classify("A", None, self._st("f1", False)).kind == UNCHANGED
+
+    def test_store_roundtrip_and_atomic(self, tmp_path):
+        from receivers.dissemination.reactive import FingerprintStore
+
+        store = FingerprintStore(tmp_path / "state.json")
+        assert store.load() == {}
+        store.save({"RHOF": self._st("abc"), "FIHO": self._st("def", False)})
+        back = store.load()
+        assert back["RHOF"].fingerprint == "abc"
+        assert back["FIHO"].in_epos is False
+
+    def test_scan_and_advance_only_succeeded(self, tmp_path):
+        from receivers.dissemination.reactive import (
+            CHANGED,
+            FingerprintStore,
+            advance,
+            scan,
+        )
+
+        store = FingerprintStore(tmp_path / "s.json")
+        store.save({"RHOF": self._st("old"), "FIHO": self._st("old")})
+        current = {"RHOF": self._st("newR"), "FIHO": self._st("newF")}
+        changes = scan(["RHOF", "FIHO"], lambda s: current[s], store)
+        kinds = {c.station: c.kind for c in changes}
+        assert kinds == {"RHOF": CHANGED, "FIHO": CHANGED}
+        # only RHOF's action succeeded → FIHO keeps old fp (retried next scan)
+        advance(store, changes, succeeded={"RHOF"})
+        after = store.load()
+        assert after["RHOF"].fingerprint == "newR"
+        assert after["FIHO"].fingerprint == "old"
