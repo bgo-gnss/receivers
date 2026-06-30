@@ -24,10 +24,10 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict, dataclass
-from datetime import datetime
+from dataclasses import asdict, dataclass, field
+from datetime import date, datetime
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger("receivers.dissemination.reactive")
 
@@ -40,6 +40,11 @@ class StationState:
 
     fingerprint: str
     in_epos: bool
+    components: dict[str, dict[str, Any]] = field(default_factory=dict)
+    """Per-component ``{name: {"fp", "since"}}`` (marker + each header device), for
+    the exact-affected-range diff. Empty when no components reader is wired (the
+    range then falls back to the full backfill window). Not part of change
+    *detection* — :func:`classify` uses ``fingerprint`` only."""
 
 
 # Change kinds (the state-machine outcomes).
@@ -96,6 +101,47 @@ def classify(
     return StationChange(station, UNCHANGED, prev, cur)
 
 
+# Device components are period-scoped: a change to one affects only that device's
+# current period. ``marker`` (station scope) affects the whole history.
+_DEVICE_COMPONENTS = ("gnss_receiver", "antenna", "radome")
+
+
+def affected_floor(change: StationChange) -> Optional[date]:
+    """Earliest date a CHANGED station's metadata change affects — or None.
+
+    None means "no usable bound, re-disseminate the full backfill window" — used for
+    NEW/ACTIVATED (backfill from install), a station-scope marker/domes change (the
+    whole history shifts), or when component data is missing.
+
+    Otherwise diffs the old vs new per-component fingerprints: a device whose
+    fingerprint changed affects only its current period, so the floor is that
+    device's ``since`` date; with several devices changed it is the earliest
+    ``since``. The convert-cache still re-renders only the dates that actually
+    differ — this just stops the sweep from iterating dates that *cannot* have
+    changed, and never narrows below a real change (a changed device with no known
+    ``since`` falls back to the full window)."""
+    if change.kind != CHANGED or change.old is None or change.new is None:
+        return None
+    old_c = change.old.components or {}
+    new_c = change.new.components or {}
+    if not new_c:
+        return None
+    if old_c.get("marker", {}).get("fp") != new_c.get("marker", {}).get("fp"):
+        return None
+    sinces: list[date] = []
+    for key in _DEVICE_COMPONENTS:
+        if old_c.get(key, {}).get("fp") == new_c.get(key, {}).get("fp"):
+            continue
+        since = new_c.get(key, {}).get("since")
+        if not since:
+            return None  # changed device with no known period ⇒ no safe bound
+        try:
+            sinces.append(date.fromisoformat(since))
+        except ValueError:
+            return None
+    return min(sinces) if sinces else None
+
+
 class FingerprintStore:
     """JSON-file persistence of ``{station: StationState}``.
 
@@ -119,6 +165,7 @@ class FingerprintStore:
             sid: StationState(
                 fingerprint=str(d.get("fingerprint", "")),
                 in_epos=bool(d.get("in_epos", False)),
+                components=d.get("components") or {},
             )
             for sid, d in raw.items()
         }
@@ -137,6 +184,7 @@ def make_fingerprint_fn(
     epos_markers_set: set[str],
     *,
     at: Optional[datetime] = None,
+    components_fn: Optional[Callable[..., dict[str, dict[str, Any]]]] = None,
 ) -> Callable[[str], Optional[StationState]]:
     """Build the production ``station → StationState`` reader from TOS.
 
@@ -144,16 +192,24 @@ def make_fingerprint_fn(
     *current* device session (the one covering ``at``, default now); ``in_epos`` is
     membership in the EPOS-eligible marker set. A station with no current session
     gets an empty fingerprint (still tracked, so an install later reads as CHANGED).
+
+    ``components_fn`` (``station, when -> components``, e.g.
+    :func:`tos_access.make_components_fn`) supplies the per-component state used by
+    :func:`affected_floor` to bound a CHANGED station's re-disseminate range. When
+    omitted, components are empty and the range falls back to the full window.
     """
     from .tos_access import session_fingerprint
 
     when = at or datetime.now()
 
     def fn(station: str) -> Optional[StationState]:
-        session = session_provider(station.upper(), when) if session_provider else None
+        sid = station.upper()
+        session = session_provider(sid, when) if session_provider else None
+        components = components_fn(sid, when) if components_fn else {}
         return StationState(
             fingerprint=session_fingerprint(session),
-            in_epos=station.upper() in epos_markers_set,
+            in_epos=sid in epos_markers_set,
+            components=components,
         )
 
     return fn

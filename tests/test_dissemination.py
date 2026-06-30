@@ -1519,3 +1519,155 @@ class TestRawDecodeDispatch:
             tmp_path / "AKUR202606270000a.T02", "AKUR", datetime(2026, 6, 27), tmp_path
         )
         assert calls == ["trimble"]
+
+
+# --------------------------------------------------------------------------- exact-affected-range (T6 refinement)
+class TestExactAffectedRange:
+    def _dh(self):
+        # antenna stable since 2012; receiver firmware updated 2026-05-18.
+        return [
+            {
+                "time_from": datetime(2012, 8, 28),
+                "time_to": None,
+                "antenna": {
+                    "model": "TRM57971.00",
+                    "serial_number": "a",
+                    "antenna_height": -0.007,
+                },
+            },
+            {
+                "time_from": datetime(2012, 8, 28),
+                "time_to": datetime(2026, 5, 18),
+                "gnss_receiver": {
+                    "model": "NETR9",
+                    "serial_number": "s",
+                    "firmware_version": "4.50",
+                },
+            },
+            {
+                "time_from": datetime(2026, 5, 18),
+                "time_to": None,
+                "gnss_receiver": {
+                    "model": "NETR9",
+                    "serial_number": "s",
+                    "firmware_version": "4.60",
+                },
+            },
+        ]
+
+    def test_reactive_components_picks_current_period(self):
+        from receivers.dissemination.tos_access import reactive_components
+
+        c = reactive_components(
+            self._dh(), datetime(2026, 6, 27), marker="RHOF", domes="D"
+        )
+        # receiver's CURRENT period starts at the firmware-update date.
+        assert c["gnss_receiver"]["since"] == "2026-05-18"
+        assert c["antenna"]["since"] == "2012-08-28"
+        assert c["marker"]["since"] is None
+        assert c["radome"]["since"] is None  # no radome session
+
+    def test_affected_floor_device_change_uses_device_since(self):
+        from receivers.dissemination.reactive import (
+            CHANGED,
+            StationChange,
+            StationState,
+            affected_floor,
+        )
+        from receivers.dissemination.tos_access import reactive_components
+
+        old = reactive_components(
+            [
+                {
+                    "time_from": datetime(2012, 8, 28),
+                    "time_to": None,
+                    "gnss_receiver": {
+                        "model": "NETR9",
+                        "serial_number": "s",
+                        "firmware_version": "4.50",
+                    },
+                },
+                {
+                    "time_from": datetime(2012, 8, 28),
+                    "time_to": None,
+                    "antenna": {
+                        "model": "TRM57971.00",
+                        "serial_number": "a",
+                        "antenna_height": -0.007,
+                    },
+                },
+            ],
+            datetime(2026, 5, 1),
+            marker="RHOF",
+            domes="D",
+        )
+        new = reactive_components(
+            self._dh(), datetime(2026, 6, 27), marker="RHOF", domes="D"
+        )
+        ch = StationChange(
+            "RHOF", CHANGED, StationState("o", True, old), StationState("n", True, new)
+        )
+        assert affected_floor(ch) == date(2026, 5, 18)
+
+    def test_affected_floor_marker_change_is_whole_history(self):
+        from receivers.dissemination.reactive import (
+            CHANGED,
+            StationChange,
+            StationState,
+            affected_floor,
+        )
+        from receivers.dissemination.tos_access import reactive_components
+
+        old = reactive_components(
+            self._dh(), datetime(2026, 6, 27), marker="RHOF", domes="D"
+        )
+        new = reactive_components(
+            self._dh(), datetime(2026, 6, 27), marker="XXXX", domes="D"
+        )
+        ch = StationChange(
+            "RHOF", CHANGED, StationState("o", True, old), StationState("n", True, new)
+        )
+        assert affected_floor(ch) is None  # whole history
+
+    def test_affected_floor_new_and_no_components_are_none(self):
+        from receivers.dissemination.reactive import (
+            CHANGED,
+            NEW,
+            StationChange,
+            StationState,
+            affected_floor,
+        )
+
+        assert (
+            affected_floor(StationChange("S", NEW, None, StationState("n", True, {})))
+            is None
+        )
+        # CHANGED but no component data -> no bound.
+        ch = StationChange(
+            "S", CHANGED, StationState("o", True, {}), StationState("n", True, {})
+        )
+        assert affected_floor(ch) is None
+
+    def test_date_range_honours_floor_from(self):
+        from receivers.dissemination.job import _reactive_date_range
+
+        class _T:
+            cutover = None
+
+        full = _reactive_date_range(_T(), date(2026, 6, 27), 365)
+        tight = _reactive_date_range(
+            _T(), date(2026, 6, 27), 365, floor_from=date(2026, 5, 18)
+        )
+        assert len(full) == 366 and len(tight) == 41
+        assert tight[0] == date(2026, 6, 27) and tight[-1] == date(2026, 5, 18)
+
+    def test_components_round_trip_through_store(self, tmp_path):
+        from receivers.dissemination.reactive import FingerprintStore, StationState
+
+        store = FingerprintStore(tmp_path / "s.json")
+        comps = {
+            "gnss_receiver": {"fp": "abc", "since": "2026-05-18"},
+            "marker": {"fp": "m", "since": None},
+        }
+        store.save({"RHOF": StationState("fp", True, comps)})
+        assert store.load()["RHOF"].components == comps

@@ -157,15 +157,22 @@ def run_epos_disseminate_job(
 # --------------------------------------------------------------------------- #
 
 
-def _reactive_date_range(target: Any, today: date, backfill_days: int) -> list[date]:
+def _reactive_date_range(
+    target: Any,
+    today: date,
+    backfill_days: int,
+    *,
+    floor_from: Optional[date] = None,
+) -> list[date]:
     """Daily dates to (re-)disseminate for a changed/activated station.
 
-    Floor = ``max(target.cutover, today - backfill_days)``. We re-run the whole
-    window and let the convert-cache (keyed on source hash + TOS fingerprint)
-    decide which dates actually re-render — a header change re-renders exactly the
-    affected dates, an unchanged date is a cheap cache hit. Exact-affected-range
-    targeting (using the changed attribute's date_from/date_to) is a later
-    refinement that needs the detection layer to carry the range.
+    Floor = ``max(target.cutover, today - backfill_days, floor_from)``. The base
+    window (cutover / backfill_days) caps how far back we ever go; ``floor_from``
+    (from :func:`reactive.affected_floor`) tightens it to the period a CHANGED
+    station's metadata change actually affects — e.g. a firmware update only needs
+    re-dissemination from that firmware's install date, not the whole year. The
+    convert-cache still gates which dates re-render; this just stops the sweep from
+    iterating dates that cannot have changed.
     """
     floor = today - timedelta(days=max(0, backfill_days))
     cutover = getattr(target, "cutover", None)
@@ -173,6 +180,10 @@ def _reactive_date_range(target: Any, today: date, backfill_days: int) -> list[d
         cutover_date = cutover.date() if isinstance(cutover, datetime) else cutover
         if cutover_date > floor:
             floor = cutover_date
+    if floor_from is not None and floor_from > floor:
+        floor = floor_from
+    if floor > today:
+        return []
     n = (today - floor).days
     return [today - timedelta(days=k) for k in range(n + 1)]
 
@@ -265,10 +276,18 @@ def run_epos_reactive_job(
     scan_markers = sorted(set(m.upper() for m in markers) | set(store.load().keys()))
 
     if fingerprint_fn is None:
+        components_fn = None
+        try:
+            from .tos_access import make_components_fn
+
+            components_fn = make_components_fn()
+        except Exception:
+            logger.exception("epos-reactive: components reader init failed")
         fingerprint_fn = make_fingerprint_fn(
             session_provider,
             set(m.upper() for m in markers),
             at=datetime(end.year, end.month, end.day),
+            components_fn=components_fn,
         )
 
     # EPOS DB connection (for metadata ETL + file indexing); best-effort.
@@ -352,8 +371,13 @@ def _build_reactive_actions(
             raise RuntimeError(f"metadata ETL errors: {'; '.join(res.errors)}")
 
     def disseminate(change: StationChange) -> bool:
+        from .reactive import affected_floor
+
         station = change.station
-        dates = _reactive_date_range(target, today, backfill_days)
+        floor_from = affected_floor(change)
+        dates = _reactive_date_range(
+            target, today, backfill_days, floor_from=floor_from
+        )
         pushed = cached = skipped = 0
         for d in dates:
             result = engine.run_one(station, d)

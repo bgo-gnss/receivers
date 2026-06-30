@@ -200,6 +200,116 @@ def session_fingerprint(session: Optional[dict[str, Any]]) -> str:
     return hashlib.sha256(blob).hexdigest()[:16]
 
 
+# Header-affecting device components and the fields that go into each component's
+# fingerprint. ``marker`` is station-scoped (a change affects the whole history);
+# the device components are period-scoped (a change affects only that device's
+# current period). Mirrors :func:`session_fingerprint`'s field selection.
+_COMPONENT_FIELDS: dict[str, tuple[str, ...]] = {
+    "gnss_receiver": ("model", "serial_number", "firmware_version"),
+    "antenna": ("model", "serial_number", "antenna_height"),
+    "radome": ("model",),
+}
+
+
+def _to_dt(value: Any) -> Optional[datetime]:
+    """Coerce a TOS date (datetime or ISO string) to datetime, or None."""
+    if value is None or isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "").strip()[:19])
+    except ValueError:
+        return None
+
+
+def _latest_covering(
+    device_history: list[dict[str, Any]], when: datetime, device_key: str
+) -> Optional[dict[str, Any]]:
+    """The session covering ``when`` that carries ``device_key`` with the latest
+    ``time_from`` (the device's *current* period). None if no session covers it.
+
+    Per-device (not the merged :func:`select_session`): a firmware update opens a
+    new receiver session with a recent ``time_from``, which is exactly the floor of
+    the date range that change affects."""
+    best: Optional[dict[str, Any]] = None
+    best_from: Optional[datetime] = None
+    for session in device_history:
+        if not session.get(device_key):
+            continue
+        start = _to_dt(session.get("time_from"))
+        end = _to_dt(session.get("time_to"))
+        if start is not None and when < start:
+            continue
+        if end is not None and when >= end:
+            continue
+        if best_from is None or (start is not None and start > best_from):
+            best, best_from = session, start
+    return best
+
+
+def reactive_components(
+    device_history: list[dict[str, Any]],
+    when: datetime,
+    *,
+    marker: str = "",
+    domes: str = "",
+) -> dict[str, dict[str, Any]]:
+    """Per-component state for the reactive range diff.
+
+    Returns ``{component: {"fp": <hash>, "since": <ISO date|None>}}`` for ``marker``
+    (station-scoped, no ``since``) and each header device. ``fp`` lets the reactive
+    layer detect *which* component changed; ``since`` (the device's current-period
+    ``time_from``) is the floor of the date range that component's change affects.
+    """
+    import hashlib
+    import json
+
+    def _hash(obj: Any) -> str:
+        blob = json.dumps(obj, sort_keys=True, default=str).encode()
+        return hashlib.sha256(blob).hexdigest()[:16]
+
+    components: dict[str, dict[str, Any]] = {
+        "marker": {"fp": _hash({"marker": marker, "domes": domes}), "since": None}
+    }
+    for key, fields in _COMPONENT_FIELDS.items():
+        session = _latest_covering(device_history, when, key)
+        device = (session or {}).get(key) or {}
+        start = _to_dt(session.get("time_from")) if session else None
+        components[key] = {
+            "fp": _hash({f: device.get(f) for f in fields}),
+            "since": start.date().isoformat() if start else None,
+        }
+    return components
+
+
+def make_components_fn(client: Any = None):
+    """Build ``station, when -> reactive_components`` reading TOS device_history.
+
+    Production wiring for the reactive range diff. Returns empty components on any
+    TOS failure (the floor logic then falls back to the full backfill window)."""
+
+    def fn(station: str, when: datetime) -> dict[str, dict[str, Any]]:
+        nonlocal client
+        try:
+            if client is None:
+                from tostools.api.tos_client import TOSClient
+
+                client = TOSClient()
+            meta = client.get_complete_station_metadata(station)
+        except Exception as exc:  # noqa: BLE001 - TOS failure ⇒ empty (full window)
+            logger.warning("reactive components lookup failed for %s: %s", station, exc)
+            return {}
+        if not meta:
+            return {}
+        return reactive_components(
+            meta.get("device_history", []) or [],
+            when,
+            marker=(meta.get("marker") or station).upper(),
+            domes=(meta.get("iers_domes_number") or "").strip(),
+        )
+
+    return fn
+
+
 def make_session_provider(client: Any = None):
     """Build a QC session provider ``(station, observation_dt) -> session|None``.
 
