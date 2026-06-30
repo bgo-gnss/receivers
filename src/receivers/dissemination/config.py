@@ -74,12 +74,24 @@ class DisseminationFormat:
     dir_template: str = DEFAULT_DIR_TEMPLATE
     filename_template: str = DEFAULT_FILENAME_TEMPLATE
 
+    sample: Optional[int] = None
+    """Decimate the disseminated obs to this sampling interval (seconds) before
+    packaging — e.g. ``30`` for the conventional EPOS 30s daily product. ``None``
+    (default) ships the source rate unchanged. Dissemination-boundary only; the
+    archive is never touched. The RINEX 3 long-name frequency token follows this
+    when set, otherwise it is derived from the file's actual ``INTERVAL``."""
+
+    file_period: str = "01D"
+    """RINEX 3 long-name file-period token (``01D`` daily). Config knob so the
+    naming is not a hardcoded assumption in the convert code."""
+
     def policy_for(self, rinex_version: int) -> VersionPolicy:
         return self.rinex2 if rinex_version == 2 else self.rinex3
 
     @staticmethod
     def from_dict(raw: dict) -> DisseminationFormat:
         raw = raw or {}
+        sample_raw = raw.get("sample")
         return DisseminationFormat(
             preserve_source_version=bool(raw.get("preserve_source_version", True)),
             country_code=raw.get("country_code", DEFAULT_COUNTRY_CODE),
@@ -92,6 +104,8 @@ class DisseminationFormat:
             ),
             dir_template=raw.get("dir_template", DEFAULT_DIR_TEMPLATE),
             filename_template=raw.get("filename_template", DEFAULT_FILENAME_TEMPLATE),
+            sample=int(sample_raw) if sample_raw is not None else None,
+            file_period=raw.get("file_period", "01D"),
         )
 
 

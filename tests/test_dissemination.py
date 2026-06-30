@@ -741,6 +741,55 @@ class TestRawFallback:
         assert (tmp_path / "stage" / layout / r.long_name).is_file()
 
 
+# --------------------------------------------------------------------------- sampling / config-driven naming
+class TestSamplingConfig:
+    """C4/C5: sampling + naming knobs come from the format policy, and the
+    frequency token is derived from the file's INTERVAL, not a hardcoded default."""
+
+    def _write_header(self, tmp_path, interval=None):
+        lines = ["     3.04           OBSERVATION DATA    M (MIXED)"
+                 "           RINEX VERSION / TYPE\n"]
+        if interval is not None:
+            lines.append(f"{interval:10.3f}".ljust(60) + "INTERVAL\n")
+        lines.append(" " * 60 + "END OF HEADER\n")
+        p = tmp_path / "x.rnx"
+        p.write_text("".join(lines))
+        return p
+
+    def test_detect_interval(self, tmp_path):
+        from receivers.dissemination.convert import detect_interval
+
+        assert detect_interval(self._write_header(tmp_path, 15.0)) == 15.0
+        assert detect_interval(self._write_header(tmp_path, 30.0)) == 30.0
+        assert detect_interval(self._write_header(tmp_path, None)) is None
+
+    def test_frequency_token(self):
+        from receivers.dissemination.convert import _frequency_token
+
+        assert _frequency_token(15) == "15S"
+        assert _frequency_token(30) == "30S"
+        assert _frequency_token(1) == "01S"
+        assert _frequency_token(5) == "05S"
+
+    def test_resolve_data_frequency_prefers_config_then_interval(self, tmp_path):
+        from receivers.dissemination.convert import _resolve_data_frequency
+
+        f15 = self._write_header(tmp_path, 15.0)
+        assert _resolve_data_frequency(f15, sample=30) == "30S"   # config override wins
+        assert _resolve_data_frequency(f15, sample=None) == "15S"  # else INTERVAL
+        f_none = self._write_header(tmp_path, None)
+        assert _resolve_data_frequency(f_none, sample=None) == "15S"  # logged fallback
+
+    def test_format_policy_reads_sample_and_period(self):
+        fmt = DisseminationFormat.from_dict(
+            {"sample": 30, "file_period": "01D", "country_code": "ISL"}
+        )
+        assert fmt.sample == 30
+        assert fmt.file_period == "01D"
+        # default: no decimation, source rate preserved
+        assert DisseminationFormat.from_dict({}).sample is None
+
+
 # --------------------------------------------------------------------------- raw-source date matching
 class TestFindRawSource:
     """Regression: the raw dir holds a whole month, so find_raw_source MUST

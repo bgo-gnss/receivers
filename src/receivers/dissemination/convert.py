@@ -30,7 +30,7 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from ..rinex.converter_base import NamingConvention, RinexVersion
 from ..rinex.rinex_namer import RinexNamer
@@ -183,6 +183,48 @@ def detect_rinex_version(obs_path: Path) -> int:
         raise ConvertError(f"no RINEX version in {obs_path.name}: {first!r}") from exc
 
 
+def detect_interval(obs_path: Path) -> Optional[float]:
+    """The observation sampling interval (seconds) from the ``INTERVAL`` header.
+
+    Returns ``None`` when the (optional) INTERVAL record is absent — callers fall
+    back to the configured ``sample`` or a logged default rather than guessing.
+    """
+    with open(obs_path, encoding="utf-8", errors="ignore") as fh:
+        for line in fh:
+            label = line[60:].strip()
+            if label.startswith("INTERVAL"):
+                try:
+                    return float(line[:10])
+                except ValueError:
+                    return None
+            if label.startswith("END OF HEADER"):
+                break
+    return None
+
+
+def _frequency_token(interval_seconds: float) -> str:
+    """RINEX 3 long-name data-frequency token, e.g. 15 → ``15S``, 1 → ``01S``."""
+    return f"{int(round(interval_seconds)):02d}S"
+
+
+def _resolve_data_frequency(plain_obs: Path, sample: Optional[int]) -> str:
+    """Frequency token: the config ``sample`` override, else the file's INTERVAL.
+
+    Never invents a rate silently — if neither is known we log and fall back to
+    ``15S`` (the legacy default) so the filename is at least deterministic, but
+    the warning flags that the source had no INTERVAL record.
+    """
+    if sample is not None:
+        return _frequency_token(sample)
+    interval = detect_interval(plain_obs)
+    if interval is not None:
+        return _frequency_token(interval)
+    logger.warning(
+        "no INTERVAL in %s and no configured sample — naming as 15S", plain_obs.name
+    )
+    return "15S"
+
+
 def _to_plain_obs(src: Path, tmpdir: Path) -> Path:
     """Decompress (.gz/.Z) and un-Hatanaka ``src`` into a plain obs in ``tmpdir``."""
     stripped, was_compressed = _strip_compression(src.name)
@@ -224,17 +266,46 @@ def _canonical_obs(
     naming: str,
     country_code: str,
     tmpdir: Path,
+    *,
+    sample: Optional[int] = None,
+    file_period: str = "01D",
 ) -> tuple[Path, str]:
     """Rename/normalise ``plain_obs`` to the policy's canonical obs name.
 
     R3 long → gfzrnx ``-vo {version}`` (version PRESERVED — Model B never up/down-
-    converts) writing the long IGS name. R2 short → plain rename, no gfzrnx (so the
-    R2 product is byte-for-byte the source obs, never touched by a version pass).
+    converts) writing the long IGS name, with the data-frequency token derived from
+    the obs (config ``sample`` override else the file's INTERVAL). R2 short → plain
+    rename, no gfzrnx, so the R2 product is byte-for-byte the source obs.
+
+    When ``sample`` is set the obs is decimated to that interval via ``gfzrnx -smp``
+    (both versions) — this is the only case the R2 product is rewritten, and it is
+    the dissemination-boundary 30s-product path, never the archive.
     """
+    data_frequency = _resolve_data_frequency(plain_obs, sample)
+    gfzrnx = resolve_tool("gfzrnx")
+
     if naming == "long":
-        obs_name = long_rinex3_name(station, observation_dt, country_code=country_code)
+        obs_name = long_rinex3_name(
+            station,
+            observation_dt,
+            country_code=country_code,
+            data_frequency=data_frequency,
+            file_period=file_period,
+        )
         out = tmpdir / obs_name
-        gfzrnx = resolve_tool("gfzrnx")
+        cmd = [gfzrnx, "-finp", str(plain_obs), "-fout", str(out), "-vo", str(version)]
+        if sample is not None:
+            cmd += ["-smp", str(sample)]
+        cmd.append("-f")
+        _run(cmd)
+        if not out.is_file():
+            raise ConvertError(f"gfzrnx produced no {obs_name}")
+        return out, obs_name
+
+    obs_name = _short_obs_name(station, observation_dt, country_code)
+    out = tmpdir / obs_name
+    if sample is not None:
+        # Decimate the R2 product too (the only case it is not byte-for-byte).
         _run(
             [
                 gfzrnx,
@@ -244,15 +315,14 @@ def _canonical_obs(
                 str(out),
                 "-vo",
                 str(version),
+                "-smp",
+                str(sample),
                 "-f",
             ]
         )
         if not out.is_file():
             raise ConvertError(f"gfzrnx produced no {obs_name}")
         return out, obs_name
-
-    obs_name = _short_obs_name(station, observation_dt, country_code)
-    out = tmpdir / obs_name
     if out != plain_obs:
         shutil.move(str(plain_obs), str(out))
     return out, obs_name
@@ -303,7 +373,15 @@ def convert_for_dissemination(
         version = detect_rinex_version(plain)
         naming = fmt.policy_for(version).naming
         canon, obs_name = _canonical_obs(
-            plain, station, observation_dt, version, naming, fmt.country_code, tmpdir
+            plain,
+            station,
+            observation_dt,
+            version,
+            naming,
+            fmt.country_code,
+            tmpdir,
+            sample=getattr(fmt, "sample", None),
+            file_period=getattr(fmt, "file_period", "01D"),
         )
         final_obs = out_dir / obs_name
         shutil.move(str(canon), str(final_obs))
