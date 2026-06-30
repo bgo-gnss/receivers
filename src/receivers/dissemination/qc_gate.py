@@ -52,15 +52,41 @@ class QCVerdict:
 def read_header_info(
     rinex_file: Path, loglevel: int = logging.WARNING
 ) -> dict[str, str]:
-    """Read ``rinex_file`` and return the extracted header-label → value dict.
+    """Read ``rinex_file``'s header and return the label → value dict.
 
-    Returns an empty dict if the header can't be read (no END OF HEADER, etc.).
+    Streams only the header (up to ``END OF HEADER``) rather than slurping the
+    whole file: at QC time ``rinex_file`` is the freshly-written plain RINEX obs,
+    which for a daily 15s file is 20 MB+, while we need only the ~few-KB header.
+    The old path (``read_rinex_header`` → ``read_text_file``) read the entire file
+    with a strict UTF-8 decode and a broad ``except → None``, so the multi-MB slurp
+    was both wasteful and a needless transient-failure point — a momentary glitch
+    on one of 60+ stations in a sweep would silently fail QC for a valid file.
+    Decode is tolerant (``errors='ignore'``), matching the downstream parser.
+
+    Returns an empty dict if the header can't be read (no ``END OF HEADER`` / I/O
+    error) — the caller treats that as a QC failure.
     """
-    from tostools.rinex.reader import extract_header_info, read_rinex_header
+    from tostools.rinex.reader import extract_header_info
 
-    header_data = read_rinex_header(rinex_file, loglevel=loglevel)
-    if not header_data:
+    path = Path(rinex_file)
+    lines: list[str] = []
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                lines.append(line)
+                if "END OF HEADER" in line:
+                    break
+            else:
+                logger.warning("no END OF HEADER in %s", path.name)
+                return {}
+    except OSError as exc:
+        logger.warning("could not read header of %s: %s", path.name, exc)
         return {}
+
+    header_data = {
+        "header": "".join(lines),
+        "rinex file": [str(path.parent), path.name],
+    }
     info: dict[str, str] = extract_header_info(header_data, loglevel=loglevel)
     return info
 

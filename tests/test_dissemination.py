@@ -27,7 +27,11 @@ from receivers.dissemination.convert import (
     resolve_tool,
 )
 from receivers.dissemination.engine import EposDisseminate
-from receivers.dissemination.qc_gate import qc_check, select_session
+from receivers.dissemination.qc_gate import (
+    qc_check,
+    read_header_info,
+    select_session,
+)
 from receivers.dissemination.tos_access import (
     epos_markers,
     get_attribute_value,
@@ -1400,3 +1404,39 @@ class TestReactiveJob:
         )
         with pytest.raises(RuntimeError):
             actions.refresh_metadata("RHOF")
+
+
+class TestReadHeaderInfo:
+    def test_streams_header_only_and_parses(self, tmp_path):
+        rnx = tmp_path / "X.rnx"
+        rnx.write_text(
+            "     3.04           OBSERVATION DATA    M                   "
+            "RINEX VERSION / TYPE\n"
+            "ABCD00ISL                                                   MARKER NAME\n"
+            "        1.0760        0.0000        0.0000                  "
+            "ANTENNA: DELTA H/E/N\n"
+            "                                                            END OF HEADER\n"
+            + ("> body line that must NOT be needed\n" * 1000)
+        )
+        info = read_header_info(rnx)
+        assert info["MARKER NAME"] == "ABCD00ISL"
+        assert info["ANTENNA: DELTA H/E/N"].split()[0] == "1.0760"
+
+    def test_missing_end_of_header_returns_empty(self, tmp_path):
+        rnx = tmp_path / "bad.rnx"
+        rnx.write_text("     3.04           OBSERVATION DATA\nno terminator here\n")
+        assert read_header_info(rnx) == {}
+
+    def test_tolerant_of_non_utf8_bytes(self, tmp_path):
+        rnx = tmp_path / "latin.rnx"
+        rnx.write_bytes(
+            b"     3.04           OBSERVATION DATA    M                   "
+            b"RINEX VERSION / TYPE\n"
+            b"Beneditk \xf3feigsson                                         OBSERVER\n"
+            b"                                                            END OF HEADER\n"
+        )
+        # strict UTF-8 would raise; tolerant read must still find the header.
+        assert read_header_info(rnx).get("MARKER NAME") == ""  # parsed, no crash
+
+    def test_missing_file_returns_empty(self, tmp_path):
+        assert read_header_info(tmp_path / "nope.rnx") == {}
