@@ -285,5 +285,114 @@ the provenance engine.
 
 ---
 
+## EPOS-GNSS Guidelines compliance (v Sept 12, 2025)
+
+Reviewed against *Guidelines for EPOS-GNSS Stations, Data Suppliers, and Station
+Metadata Maintainers* (C. Bruyninx, https://doi.org/10.60888/EPOS-GNSS-Guidelines-Station).
+Only the parts our **dissemination software** controls are tracked here — §4 (data flow /
+format / headers) and the software-side of §3 (header correction, recovered-file resubmit).
+The physical-station requirements (§2 antenna/monument/calibration/co-location) and the
+operational responsibilities (DQMS monitoring, on-site action) belong to the IMO
+station-operator / data-supplier role, not this code.
+
+### Compliance matrix
+
+| Guideline | Requirement | Status | Action |
+|-----------|-------------|--------|--------|
+| 4.1.4 | RINEX generated from receiver native files | ✅ | native Trimble convert / archive RINEX |
+| **4.1.5** | R3+ mandatory; R2 historical-only; **no R2→R3**; no repeated switching | ✅ **design win** | Model B (ship source version unchanged, single cutover) — document, don't change |
+| 4.1.6 | Hatanaka + gzip (.Z allowed for R2) | ✅ | R3 `.crx.gz`, R2 `.d.Z` |
+| 4.1.6 | "Use RINEX 2 / 3+ naming conventions" — **case** | ⚠️ **unresolved** | spec is contradictory (§4 table shows `.yyD.Z` uppercase D, silent on station case; IGS/EPN practice = all-lowercase). Our output `RHOF1280.26d.Z` is a hybrid matching neither. **Verify vs the EPOS/EPN portal (decision #4) — do NOT pick a case in code.** |
+| 4.1.7 | 9-char station ID in MARKER NAME (R3); 4-char (R2) | ⚠️ **gap** | we write 4-char `RHOF` for R3 → must write `RHOF00ISL` (9-char) for R3, keep 4-char for R2 |
+| 4.1.7 | DOMES in MARKER NUMBER when available | ⚠️ **gap** | passthrough from `stations.cfg rinex_marker_number`; FIHO shows `FIHO`, not its TOS DOMES `10222M001` |
+| 4.1.7 | REC / ANT (radome NONE) from IGS names | ✅ | set-header-from-TOS writes IGS names |
+| 4.1.7 | OBSERVER/AGENCY = generic team names, `@`→`at` | ⚠️ **gap** | header carries personal initials (`BGO/HMF`, `GV/DP`) from `rinex_observer` |
+| 4.1.7 | Headers show equipment change at actual time | ✅ | retro re-push (cache key folds TOS fingerprint) |
+| 4.1.9 | SNR observables included | ✅ | S1/S2/S5 present |
+| 2.1.5 | Eccentricity (E/N/H) ≤1mm, header matches site log | ✅ | ARP from TOS; QC gate blocks on antenna_height mismatch |
+| 4.1.3 | daily file, 30s = minimal standard product | ✅ (15s allowed) | EPOS accepts 15s; **optional** on-the-fly 30s product (see below) |
+| 3.2 | metadata maintained in M3G (site logs), ≤1 business day | ❌ **T7 = mandatory** | site-log generation + M3G submission; reframes T7 from optional to required |
+| 3.1.2 | check + react to DQMS alarms (gnssquality-epos.oma.be) | — operational | data-supplier responsibility; our internal QC ≠ EPOS DQMS — note, no code |
+| 4.1.7 | RINEX 4: DOI / license / PID (strongly recommended) | — future | we ship 3.04; revisit if/when R4 |
+
+### Work items
+
+**C1 — TOS-authoritative marker fields (4.1.7).** set-header-from-TOS must *own* the
+marker fields, which it currently leaves untouched:
+- MARKER NAME ← 9-char ID for R3 (`{marker}{monument}{country}`, already built for the
+  filename), 4-char for R2.
+- MARKER NUMBER ← TOS DOMES when present, else the 4-char ID (matches the cfg rule:
+  DOMES when the station has one, 4-char only when it genuinely doesn't).
+- Location: extend `dissemination/convert.py set_header_from_tos` (tostools
+  `correct_rinex_from_tos`) to set the marker fields, not just REC/ANT/coords.
+
+**C2 — OBSERVER/AGENCY genericisation (4.1.7).** Force a generic team name / email
+(`@`→`at`) at dissemination instead of passing through `rinex_observer` initials.
+Source for the generic value: config (see C5), not hardcoded.
+
+**C3 — General QC check owns the header conventions.** Extend `dissemination/qc_gate.py`
+(today blocks marker / antenna_height / coordinates) to also validate, at the same
+severity tier:
+- MARKER NUMBER == TOS DOMES when TOS has one (catches FIHO-style cfg data errors
+  *and* any conversion drop);
+- MARKER NAME is the 9-char ID (R3) / 4-char (R2);
+- OBSERVER/AGENCY is generic (no personal initials / raw `@`).
+The QC gate is the safety net; C1/C2 are the corrective writers.
+
+**C4 — Optional on-the-fly 30s product (`30s_24hr`), config-toggled (4.1.3).** EPOS
+accepts 15s, so this is opt-in. Mechanism is small — `gfzrnx` (already in the chain)
+decimates via `-smp 30`:
+- add a `sample` field to the format policy (see C5); when set, pass `-smp {sample}` to
+  the existing `gfzrnx` call (`convert.py:238`) and emit the matching frequency token
+  (`…_01D_30S_…`);
+- the R2 short path currently does a plain rename (no gfzrnx) — decimating R2 needs to
+  route it through gfzrnx too;
+- label/layout (`30s_24hr` dir or session) is expressed declaratively via the existing
+  `dir_template` / `filename_template`. **NOT on the archive — dissemination-boundary only.**
+
+**C5 — Move hardcoded naming assumptions into the config scheme.** The naming knobs are
+currently hardcoded defaults, not config-driven:
+- `convert.py:142 long_rinex3_name(data_frequency="15S", file_period="01D")` and the
+  underlying `gtimes.rinex3_filename` / `rinex/rinex_namer.py` all default
+  `data_frequency="15S"` — so the filename asserts `15S` regardless of the file's real
+  `INTERVAL` (a latent mis-naming bug if a source isn't 15s).
+- `VersionPolicy` (`dissemination/config.py`) carries only `naming/hatanaka/compression`.
+
+  Fix direction (leverages the **already-declarative `sync.yaml` `format:` block** — the
+  same mechanism that defines how to push, per Model B):
+  - the `sync.yaml` target/format policy is the source of truth for the push, including
+    `country_code`, `file_period`, `sample`/`data_frequency`, and per-version naming;
+  - **derive the sampling token from the actual `INTERVAL`** (content) rather than a
+    default, with the config value as an explicit override — the name must never lie
+    about the rate;
+  - thread these through `VersionPolicy`/`DisseminationFormat` → `convert.py` instead of
+    relying on function-signature defaults.
+
+**C6 — Site logs → M3G is mandatory (3.2), elevates T7.** EPOS's canonical station
+metadata lives in **M3G** (site logs), to be updated within one business day of a change.
+Our T5 ETL feeds the *data-node* DB (`gnss-europe`, the discovery side); M3G is a separate,
+required deliverable. So T7 (site-log generation via `tos sitelog` + M3G submission) is a
+core requirement, and the T6 reactive sweep should drive M3G updates — not only the node DB.
+
+**C7 — Data hygiene (separate from the pipeline).** `stations.cfg rinex_marker_number`
+is wrong for stations that *have* a DOMES (FIHO=`FIHO` should be `10222M001`; AKUR=`AKUR`),
+and `rinex_observer` carries personal initials fleet-wide. TOS-authoritative headers (C1)
++ QC (C3) make the disseminated product correct regardless, but the cfg should be cleaned
+so the source archive is also correct.
+
+### Severity / sequencing
+
+- **Before any `active:true` cutover:** C1, C2, C3 (header conventions + QC), and the
+  decision #4 portal naming check (4.1.6 case).
+- **Optional / toggleable:** C4 (30s product), gated by config — no behaviour change
+  unless enabled.
+- **Refactor that unblocks C2/C4 cleanly:** C5 (config-drive the naming knobs).
+- **Parallel track:** C6 (M3G/site logs, = T6/T7), C7 (cfg hygiene), DQMS monitoring
+  (operational, non-code).
+
+---
+
 *Cross-ref: `.interrogate-epos-dissemination.md`, `epos-gnss-port-analysis.md`,
-[[1781867391-data-dissemination-archive-sync-design]]. Created: 2026-06-28.*
+EPOS-GNSS Guidelines (https://doi.org/10.60888/EPOS-GNSS-Guidelines-Station),
+[[1781867391-data-dissemination-archive-sync-design]]. Created: 2026-06-28; compliance
+review added 2026-06-30.*
