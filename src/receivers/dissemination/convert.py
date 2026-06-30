@@ -360,7 +360,17 @@ def convert_for_dissemination(
     key = cache_key(source_path, tos_fingerprint)
     out_dir = cache_dir.expanduser() / key
     if out_dir.is_dir():
-        existing = [p for p in out_dir.iterdir() if p.is_file()]
+        # The cache dir holds the canonical PLAIN obs (.rnx / .YYo). The engine also
+        # packages the published file (.crx.gz / .YYd.Z) into this same dir for reuse,
+        # so a cache hit must select the plain obs — never a compressed/Hatanaka
+        # packaged artifact (which detect_rinex_version can't read).
+        existing = [
+            p
+            for p in out_dir.iterdir()
+            if p.is_file()
+            and not _strip_compression(p.name)[1]
+            and not _is_hatanaka(p.name)
+        ]
         if existing:
             obs = existing[0]
             logger.info("convert cache hit %s → %s", source_path.name, obs.name)

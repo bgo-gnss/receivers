@@ -197,6 +197,40 @@ class TestConvertHelpers:
         with pytest.raises(Exception):
             resolve_tool("definitely-not-a-real-tool-xyz")
 
+    def test_cache_hit_returns_plain_obs_not_packaged(self, tmp_path):
+        # The cache dir holds BOTH the plain obs and the packaged .crx.gz (the
+        # engine packages into the same dir). A cache hit must return the plain
+        # obs — picking the gzipped artifact made detect_rinex_version choke.
+        from receivers.dissemination.config import DisseminationFormat
+        from receivers.dissemination.convert import (
+            cache_key,
+            convert_for_dissemination,
+        )
+
+        src = tmp_path / "RHOF1790.26D.Z"
+        src.write_bytes(b"arbitrary source bytes")
+        cache = tmp_path / "cache"
+        keydir = cache / cache_key(src, "")
+        keydir.mkdir(parents=True)
+        plain = keydir / "RHOF00ISL_R_20261790000_01D_15S_MO.rnx"
+        plain.write_text(
+            "     3.04           OBSERVATION DATA    M (MIXED)"
+            "           RINEX VERSION / TYPE\n" + " " * 60 + "END OF HEADER\n"
+        )
+        (keydir / "RHOF00ISL_R_20261790000_01D_15S_MO.crx.gz").write_bytes(
+            b"\x1f\x8b\x08 not a rinex file"
+        )
+        res = convert_for_dissemination(
+            src,
+            "RHOF",
+            datetime(2026, 6, 28),
+            fmt=DisseminationFormat(),
+            cache_dir=cache,
+        )
+        assert res.cached is True
+        assert res.obs_name.endswith(".rnx")
+        assert res.rinex_version == 3
+
 
 # --------------------------------------------------------------------------- engine (no tools)
 class TestEngineSourceResolution:
@@ -762,6 +796,74 @@ class TestRawFallback:
         assert r.long_name == "RHOF00ISL_R_20261280000_01D_15S_MO.crx.gz"
         layout = "2026/may/RHOF/15s_24hr/rinex"
         assert (tmp_path / "stage" / layout / r.long_name).is_file()
+
+
+# --------------------------------------------------------------------------- dissemination sweep job (T8)
+class TestDisseminateJob:
+    def _active_cfg(self, tmp_path):
+        cfg = tmp_path / "sync.yaml"
+        cfg.write_text(
+            """
+targets:
+  - name: epos
+    tier: dissemination
+    active: true
+    host: ""
+    user: epos
+    dest: /tmp/epos_stage
+    source_root: /mnt/data/gpsdata
+    sessions: [15s_24hr]
+"""
+        )
+        return cfg
+
+    def test_no_active_target_is_noop(self, tmp_path):
+        from receivers.dissemination.job import run_epos_disseminate_job
+
+        cfg = tmp_path / "sync.yaml"
+        cfg.write_text(
+            "targets:\n  - name: epos\n    tier: dissemination\n"
+            "    active: false\n    dest: /tmp/x\n    source_root: /x\n"
+        )
+        s = run_epos_disseminate_job(config_path=str(cfg), markers=["RHOF"], no_qc=True)
+        assert s["stations"] == 0
+
+    def test_sweep_counts_outcomes(self, tmp_path):
+        from receivers.dissemination.job import run_epos_disseminate_job
+
+        class _Res:
+            def __init__(self, ok, cached):
+                self.ok, self.cached = ok, cached
+                self.artifact_path = None
+                self.relative_path = None
+                self.station = "X"
+                self.file_date = date(2026, 6, 28)
+                self.rinex_version = 3
+
+        class _Engine:
+            def __init__(self):
+                self.calls = []
+
+            def run_one(self, station, d):
+                self.calls.append((station, d))
+                # RHOF pushes, FIHO is cached, AKUR has nothing (skip)
+                return {
+                    "RHOF": _Res(True, False),
+                    "FIHO": _Res(True, True),
+                    "AKUR": _Res(False, False),
+                }[station]
+
+        eng = _Engine()
+        s = run_epos_disseminate_job(
+            config_path=str(self._active_cfg(tmp_path)),
+            days_back=2,
+            no_qc=True,
+            today=date(2026, 6, 28),
+            markers=["RHOF", "FIHO", "AKUR"],
+            engine_factory=lambda _t: eng,
+        )
+        assert s == {"stations": 3, "pushed": 2, "cached": 2, "skipped": 2, "failed": 0}
+        assert len(eng.calls) == 6  # 3 stations x 2 days
 
 
 # --------------------------------------------------------------------------- site logs (C6/T7)

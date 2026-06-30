@@ -2269,6 +2269,7 @@ class BulkDownloadScheduler:
         self._schedule_archive_reconciler()
         self._schedule_integrity_checker()
         self._schedule_archive_sync()
+        self._schedule_epos_disseminate()
         self._schedule_archive_verify()
         self._schedule_morning_recovery()
         self._schedule_stream_capture()
@@ -2609,6 +2610,42 @@ class BulkDownloadScheduler:
         )
 
         self.logger.info(f"Scheduled archive sync ({base_trigger.description})")
+
+    def _schedule_epos_disseminate(self) -> None:
+        """Schedule the EPOS dissemination sweep (T8).
+
+        Disseminates a trailing window of daily files for every EPOS-eligible
+        station to the active dissemination target and indexes each pushed file.
+        Double-gated and inert by default: ``epos_disseminate.enabled`` in
+        scheduler.yaml AND ``active: true`` on a dissemination target in sync.yaml.
+        Runs on the backfill executor, after the archive-sync window.
+        """
+        cfg = self.yaml_config.get("epos_disseminate", {})
+        if not cfg.get("enabled", False):
+            self.logger.info("EPOS dissemination disabled in config")
+            return
+
+        from ..dissemination.job import run_epos_disseminate_job
+
+        schedule = cfg.get("schedule", ":50")
+        days_back = cfg.get("days_back", 3)
+        no_qc = cfg.get("no_qc", False)
+        base_trigger = parse_schedule(schedule)
+
+        self.scheduler.add_job(
+            func=run_epos_disseminate_job,
+            trigger=base_trigger.trigger_type,
+            kwargs={"days_back": days_back, "no_qc": no_qc},
+            id="epos_disseminate",
+            replace_existing=True,
+            max_instances=1,
+            executor="backfill",
+            **base_trigger.trigger_kwargs,
+        )
+
+        self.logger.info(
+            f"Scheduled EPOS dissemination ({base_trigger.description})"
+        )
 
     def _schedule_archive_verify(self) -> None:
         """Schedule periodic archive read-back verification.
