@@ -1440,3 +1440,40 @@ class TestReadHeaderInfo:
 
     def test_missing_file_returns_empty(self, tmp_path):
         assert read_header_info(tmp_path / "nope.rnx") == {}
+
+
+class TestRawDecodeDispatch:
+    """The raw fallback routes Septentrio .sbf to sbf2rin, Trimble .T02 to trm2rinex."""
+
+    def test_sbf_routes_to_sbf_decoder(self, tmp_path, monkeypatch):
+        from receivers.dissemination import convert as conv_mod
+
+        calls = []
+        monkeypatch.setattr(
+            conv_mod, "_decode_sbf_raw", lambda *a, **k: calls.append("sbf")
+        )
+        monkeypatch.setattr(
+            conv_mod, "_decode_trimble_raw", lambda *a, **k: calls.append("trimble")
+        )
+        conv_mod._decode_raw(
+            tmp_path / "HUSM202606270000a.sbf.gz",
+            "HUSM",
+            datetime(2026, 6, 27),
+            tmp_path,
+        )
+        assert calls == ["sbf"]
+
+    def test_t02_routes_to_trimble_decoder(self, tmp_path, monkeypatch):
+        from receivers.dissemination import convert as conv_mod
+
+        calls = []
+        monkeypatch.setattr(
+            conv_mod, "_decode_sbf_raw", lambda *a, **k: calls.append("sbf")
+        )
+        monkeypatch.setattr(
+            conv_mod, "_decode_trimble_raw", lambda *a, **k: calls.append("trimble")
+        )
+        conv_mod._decode_raw(
+            tmp_path / "AKUR202606270000a.T02", "AKUR", datetime(2026, 6, 27), tmp_path
+        )
+        assert calls == ["trimble"]

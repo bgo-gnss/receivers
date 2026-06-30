@@ -385,7 +385,7 @@ def convert_for_dissemination(
     with tempfile.TemporaryDirectory(prefix="epos_convert_") as tmp:
         tmpdir = Path(tmp)
         if is_raw:
-            decoded = _decode_trimble_raw(source_path, station, observation_dt, tmpdir)
+            decoded = _decode_raw(source_path, station, observation_dt, tmpdir)
             plain = _to_plain_obs(decoded, tmpdir)
         else:
             plain = _to_plain_obs(source_path, tmpdir)
@@ -580,6 +580,21 @@ def set_header_from_tos(
         return False
 
 
+def _decode_raw(
+    raw_path: Path, station: str, observation_dt: datetime, out_dir: Path
+) -> Path:
+    """Decode an archived raw file to RINEX, dispatching by receiver type.
+
+    Septentrio ``.sbf``/``.sbf.gz`` → sbf2rin; Trimble ``.T02``/``.T00`` → the
+    Trimble native converter. Routing by extension keeps the raw fallback working
+    for the whole fleet (Septentrio is the majority — a Trimble-only fallback was
+    useless for it).
+    """
+    if ".sbf" in raw_path.name.lower():
+        return _decode_sbf_raw(raw_path, station, observation_dt, out_dir)
+    return _decode_trimble_raw(raw_path, station, observation_dt, out_dir)
+
+
 def _decode_trimble_raw(
     raw_path: Path, station: str, observation_dt: datetime, out_dir: Path
 ) -> Path:
@@ -623,4 +638,32 @@ def _decode_trimble_raw(
         raise ConvertError(
             f"Trimble decode failed for {raw_path.name}: {result.message}"
         )
+    return Path(result.rinex_file)
+
+
+def _decode_sbf_raw(
+    raw_path: Path, station: str, observation_dt: datetime, out_dir: Path
+) -> Path:
+    """Decode a Septentrio ``.sbf``/``.sbf.gz`` to a RINEX 3 file in ``out_dir``.
+
+    Uses ``sbf2rin`` (RxTools) via :class:`receivers.rinex.sbf_converter.SBFConverter`
+    — Septentrio is the dominant receiver type in the fleet, so the raw fallback
+    must cover it (the Trimble decoder rejects ``.sbf``). Emits a plain RINEX obs
+    (no Hatanaka); ``_to_plain_obs`` normalises it. No header corrections here —
+    the QC gate verifies and set-header runs downstream.
+    """
+    from ..rinex.sbf_converter import SBFConverter
+
+    conv = SBFConverter(
+        station,
+        rinex_version=RinexVersion.RINEX_3,
+        apply_header_corrections=False,
+        apply_hatanaka=False,
+        loglevel=logging.WARNING,
+    )
+    result = conv.convert_file(
+        raw_path, output_dir=out_dir, observation_date=observation_dt
+    )
+    if not result.success or not result.rinex_file:
+        raise ConvertError(f"SBF decode failed for {raw_path.name}: {result.message}")
     return Path(result.rinex_file)
