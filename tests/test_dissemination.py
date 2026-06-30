@@ -764,6 +764,37 @@ class TestRawFallback:
         assert (tmp_path / "stage" / layout / r.long_name).is_file()
 
 
+# --------------------------------------------------------------------------- site logs (C6/T7)
+class TestSiteLogs:
+    def test_generate_returns_none_without_metadata(self, tmp_path):
+        from receivers.dissemination.sitelogs import generate_site_log
+
+        class _Empty:
+            def get_complete_station_metadata(self, sid):
+                return {}
+
+        assert generate_site_log("RHOF", tmp_path, client=_Empty()) is None
+
+    def test_commit_site_log_commits_then_noops(self, tmp_path):
+        import subprocess
+
+        from receivers.dissemination.sitelogs import commit_site_log
+
+        repo = tmp_path / "gps-sitelogs"
+        repo.mkdir()
+        for cmd in (
+            ["git", "-C", str(repo), "init", "-q"],
+            ["git", "-C", str(repo), "config", "user.email", "t@t"],
+            ["git", "-C", str(repo), "config", "user.name", "t"],
+        ):
+            subprocess.run(cmd, check=True)
+        log = repo / "RHOF00ISL.log"
+        log.write_text("site log v1\n")
+        assert commit_site_log(repo, log, "add RHOF") is True
+        # unchanged → nothing to commit
+        assert commit_site_log(repo, log, "noop") is False
+
+
 # --------------------------------------------------------------------------- EPOS header finalization (C1/C2)
 class TestEposHeaderFinalize:
     """C1/C2: 9-char MARKER NAME (R3), DOMES in MARKER NUMBER, generic OBSERVER."""

@@ -104,6 +104,26 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
     if args.refresh_metadata:
         return _cmd_refresh_metadata(args)
 
+    # --sitelog: generate the IGS/M3G site log for --station from TOS (C6/T7).
+    if args.sitelog:
+        if not args.station:
+            print("--sitelog requires --station")
+            return 1
+        from ..dissemination.sitelogs import generate_site_log
+
+        out_dir = Path(args.sitelog_dir) if args.sitelog_dir else Path(".")
+        path = generate_site_log(
+            args.station,
+            out_dir,
+            country_code=target.format.country_code,
+            include_date=args.sitelog_dated,
+        )
+        if path is None:
+            print(f"Site log generation failed for {args.station} (see log).")
+            return 1
+        print(f"✅ site log: {path}")
+        return 0
+
     if not args.station or not args.date:
         print(
             "--station and --date are required "
@@ -205,6 +225,20 @@ def create_epos_disseminate_parser(subparsers) -> argparse.ArgumentParser:
         "--list-stations",
         action="store_true",
         help="List EPOS-eligible stations from TOS (in_network_epos + min attrs) and exit",
+    )
+    parser.add_argument(
+        "--sitelog",
+        action="store_true",
+        help="Generate the IGS/M3G site log for --station from TOS (C6/T7)",
+    )
+    parser.add_argument(
+        "--sitelog-dir",
+        help="Output directory for --sitelog (default: cwd; a gps-sitelogs working tree in production)",
+    )
+    parser.add_argument(
+        "--sitelog-dated",
+        action="store_true",
+        help="Use the dated M3G filename form (<9char>_<YYYYMMDD>.log)",
     )
     parser.add_argument(
         "--refresh-metadata",
