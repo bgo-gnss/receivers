@@ -65,15 +65,29 @@ def read_header_info(
     return info
 
 
+# Device groups TOS keeps in separate, overlapping device-history sessions.
+_DEVICE_KEYS = ("gnss_receiver", "antenna", "radome", "monument")
+
+
 def select_session(
     device_history: list[dict[str, Any]], observation_dt: datetime
 ) -> Optional[dict[str, Any]]:
-    """Pick the ``device_history`` session covering ``observation_dt``.
+    """Merge the device complement covering ``observation_dt`` into one session.
 
     A session matches when ``time_from <= observation_dt < time_to`` (an open
     ``time_to`` of None means "still current"). Returns None if nothing covers
     the date.
+
+    TOS splits the receiver / antenna / radome / monument into **separate,
+    overlapping** device-history sessions, so on any given date each device type
+    lives in a different session. Returning the first match alone would yield an
+    incomplete picture (e.g. monument-only for RHOF) — the header-QC gate and the
+    reactive/cache fingerprint (:func:`tos_access.session_fingerprint`) would then
+    miss receiver/antenna/radome changes. So every covering session is merged,
+    taking each device key from its covering session (first match wins on the rare
+    same-type overlap).
     """
+    covering = []
     for session in device_history:
         start = session.get("time_from")
         end = session.get("time_to")
@@ -81,8 +95,16 @@ def select_session(
             continue
         if end is not None and observation_dt >= end:
             continue
-        return session
-    return None
+        covering.append(session)
+    if not covering:
+        return None
+    merged = dict(covering[0])
+    for session in covering[1:]:
+        for key in _DEVICE_KEYS:
+            value = session.get(key)
+            if value is not None and not merged.get(key):
+                merged[key] = value
+    return merged
 
 
 def qc_check(

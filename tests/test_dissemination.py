@@ -295,6 +295,28 @@ class TestQCGate:
         assert select_session(history, datetime(2026, 5, 8))["marker"] == "CUR"
         assert select_session(history, datetime(2019, 1, 1)) is None
 
+    def test_select_session_merges_concurrent_device_sessions(self):
+        # TOS splits receiver / antenna / monument into separate overlapping
+        # sessions; select_session must merge the device complement covering the
+        # date so the fingerprint/QC see the full picture (not e.g. monument-only).
+        history = [
+            {
+                "time_from": datetime(2001, 7, 19),
+                "time_to": None,
+                "monument": {"monument_height": 1.014},
+            },
+            {
+                "time_from": datetime(2012, 8, 28),
+                "time_to": None,
+                "antenna": {"model": "TRM57971.00"},
+                "gnss_receiver": {"model": "TRIMBLE NETR9"},
+            },
+        ]
+        merged = select_session(history, datetime(2026, 6, 27))
+        assert merged["monument"]["monument_height"] == 1.014
+        assert merged["antenna"]["model"] == "TRM57971.00"
+        assert merged["gnss_receiver"]["model"] == "TRIMBLE NETR9"
+
     def test_no_session_fails(self, tmp_path):
         f = _write_min_header(tmp_path / "h.rnx", "FIM2")
         v = qc_check(f, None)
