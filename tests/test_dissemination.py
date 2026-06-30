@@ -414,6 +414,48 @@ class TestEposFilter:
         assert is_epos_flagged(_station("A", epos="TRUE")) is True
         assert is_epos_flagged(_station("A", epos="false")) is False
 
+    def test_is_epos_flagged_requires_active_period(self):
+        # KRAC-shape: in_network_epos=true but a closed (here zero-duration) period
+        # -> NOT currently in EPOS.
+        closed = {
+            "attributes": [
+                {
+                    "code": "in_network_epos",
+                    "value": "true",
+                    "date_from": "2023-10-23T00:00:00",
+                    "date_to": "2023-10-23T00:00:00",
+                }
+            ]
+        }
+        assert is_epos_flagged(closed, at="2026-06-30T00:00:00") is False
+
+        # Open period (date_to None) is active.
+        open_period = {
+            "attributes": [
+                {
+                    "code": "in_network_epos",
+                    "value": "true",
+                    "date_from": "2023-10-23T00:00:00",
+                    "date_to": None,
+                }
+            ]
+        }
+        assert is_epos_flagged(open_period, at="2026-06-30T00:00:00") is True
+
+        # date_to in the future is still active; in the past is not.
+        future = {
+            "attributes": [
+                {
+                    "code": "in_network_epos",
+                    "value": "true",
+                    "date_from": "2023-01-01T00:00:00",
+                    "date_to": "2030-01-01T00:00:00",
+                }
+            ]
+        }
+        assert is_epos_flagged(future, at="2026-06-30T00:00:00") is True
+        assert is_epos_flagged(future, at="2031-06-30T00:00:00") is False
+
     def test_missing_required_attributes(self):
         assert missing_required_attributes(_station("A")) == []
         miss = missing_required_attributes(_station("A", drop=("bedrock_type", "name")))

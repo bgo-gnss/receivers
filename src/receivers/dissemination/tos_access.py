@@ -48,10 +48,44 @@ def get_attribute_value(attributes: list[dict[str, Any]], code: str) -> Optional
     return None
 
 
-def is_epos_flagged(station: dict[str, Any]) -> bool:
-    """True if the station's ``in_network_epos`` attribute is the string 'true'."""
-    val = get_attribute_value(station.get("attributes", []), "in_network_epos")
-    return val is not None and val.lower() == "true"
+def _attribute_active_at(attr: dict[str, Any], when: str) -> bool:
+    """True if ``attr``'s [date_from, date_to) period covers the instant ``when``.
+
+    Dates are TOS ISO strings (``YYYY-MM-DDTHH:MM:SS``) or None (open). ``when`` is
+    an ISO string, so plain string comparison is correct (same fixed-width format).
+    A closed period (date_to in the past — including the zero-duration
+    ``date_from == date_to`` data-entry artifact) is NOT active.
+    """
+    date_from = attr.get("date_from")
+    date_to = attr.get("date_to")
+    if date_from is not None and when < date_from:
+        return False
+    if date_to is not None and when >= date_to:
+        return False
+    return True
+
+
+def is_epos_flagged(station: dict[str, Any], *, at: Optional[str] = None) -> bool:
+    """True if the station is **currently** in EPOS.
+
+    Requires an ``in_network_epos = 'true'`` attribute whose period is *currently
+    active* (open ``date_to``, or ``date_to`` in the future). A station whose only
+    ``in_network_epos = true`` attribute is a closed/expired period — e.g. KRAC's
+    zero-duration ``2023-10-23 → 2023-10-23`` artifact — is NOT in EPOS and must not
+    be disseminated. ``at`` (ISO string, default now) makes the check testable.
+    """
+    when = at or datetime.now().isoformat()
+    for attr in station.get("attributes", []) or []:
+        if attr.get("code") != "in_network_epos":
+            continue
+        value = attr.get("value")
+        if (
+            value is not None
+            and value.lower() == "true"
+            and _attribute_active_at(attr, when)
+        ):
+            return True
+    return False
 
 
 def missing_required_attributes(
