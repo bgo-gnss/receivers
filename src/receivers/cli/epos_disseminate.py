@@ -142,7 +142,7 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
             out_dir,
             country_code=target.format.country_code,
             monument_number=target.format.monument_number,
-            include_date=args.sitelog_dated,
+            include_date=not args.sitelog_plain,
         )
         if path is None:
             print(f"Site log generation failed for {args.station} (see log).")
@@ -263,9 +263,10 @@ def create_epos_disseminate_parser(subparsers) -> argparse.ArgumentParser:
         "receivers.cfg [paths] sitelogs_repo, else ~/git/gps-sitelogs)",
     )
     parser.add_argument(
-        "--sitelog-dated",
+        "--sitelog-plain",
         action="store_true",
-        help="Use the dated M3G filename form (<9char>_<YYYYMMDD>.log)",
+        help="Write the plain <9CHAR>.log instead of the default dated M3G form "
+        "(<9char>_<YYYYMMDD>.log with §0 Previous Site Log chaining)",
     )
     parser.add_argument(
         "--refresh-metadata",

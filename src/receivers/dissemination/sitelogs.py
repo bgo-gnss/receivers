@@ -44,6 +44,119 @@ def resolve_sitelogs_repo(override: Optional[str] = None) -> Path:
     return Path(raw or DEFAULT_SITELOGS_REPO).expanduser()
 
 
+def _agency_dict(info: Any) -> dict[str, Any]:
+    """AgencyInfo → the plain dict :func:`generate_igs_site_log` renders (§11/§12)."""
+    return {
+        "name_lines": [ln for ln in (info.english_name, info.department_en) if ln],
+        "abbrev": info.abbrev,
+        "address": list(info.address),
+        "contact_name": info.contact_name,
+        "phone": info.phone,
+        "email": info.email,
+    }
+
+
+def _station_role_orgs(client: Any, meta: dict[str, Any]) -> dict[str, str]:
+    """The station's contact-role → organization map from raw TOS contacts.
+
+    Reads ``get_contacts(id_entity)`` (raw rows) rather than the processed
+    ``meta['contact']`` dict — the processed view keeps one contact per bucket and
+    its 'eigandi' substring match cannot distinguish *Eigandi stöðvar* (station
+    owner) from *Eigandi gagna* (data owner). Best-effort: any failure → empty map
+    (the IMO defaults then apply).
+    """
+    roles: dict[str, str] = {}
+    try:
+        rows = client.get_contacts(meta.get("id_entity")) or []
+    except Exception as exc:  # noqa: BLE001 - roles are enrichment, not required
+        logger.warning("site log: contact-role lookup failed: %s", exc)
+        return roles
+    for row in rows:
+        role = f"{row.get('role_is') or ''} {row.get('role') or ''}".lower()
+        org = (row.get("organization") or row.get("name") or "").strip()
+        if not org:
+            continue
+        if "eigandi gagna" in role or "data_owner" in role or "data owner" in role:
+            roles.setdefault("data_owner", org)
+        elif "eigandi" in role or "owner" in role:
+            roles.setdefault("owner", org)
+        elif "rekstrar" in role or "operator" in role or "tengili" in role:
+            roles.setdefault("operator", org)
+    return roles
+
+
+def resolve_sitelog_agencies(
+    client: Any, meta: dict[str, Any], resolver: Any = None
+) -> dict[str, Any]:
+    """Role-guided §11/§12/§13 agency data (TOS roles = who, agencies.yaml = render).
+
+    - §11 On-Site POC        ← operator/Tengiliður role, else the IMO default.
+    - §12 Responsible Agency ← owner role — only when it differs from §11.
+    - §13 Primary DC         ← data-owner role, else the IMO default;
+      Secondary DC           ← owner (when ≠ primary); URL ← agencies.yaml default.
+
+    Unknown-org fallbacks keep the log renderable: an owner org missing from
+    agencies.yaml is emitted by its raw TOS name (never dropped silently).
+    """
+    from .agencies import AgencyResolver
+
+    if resolver is None:
+        resolver = AgencyResolver.load()
+    roles = _station_role_orgs(client, meta)
+
+    poc_info = resolver.resolve(roles.get("operator")) or resolver.operator_default()
+    dc_info = (
+        resolver.resolve(roles.get("data_owner")) or resolver.data_center_default()
+    )
+    owner_org = roles.get("owner") or ""
+    owner_info = resolver.resolve(owner_org)
+
+    agencies: dict[str, Any] = {
+        "poc": _agency_dict(poc_info) if poc_info else None,
+        "responsible": None,
+        "data_center": {
+            "primary": dc_info.dc_label if dc_info else "",
+            "secondary": "",
+            "url": resolver.url_default(),
+        },
+    }
+    # §12 only when the responsible (owner) agency differs from the §11 contact.
+    poc_org = poc_info.org if poc_info else ""
+    if owner_org and owner_org != poc_org:
+        agencies["responsible"] = (
+            _agency_dict(owner_info) if owner_info else {"name_lines": [owner_org]}
+        )
+    # §13 secondary = the owner, when it isn't already the primary data center.
+    dc_org = dc_info.org if dc_info else ""
+    if owner_org and owner_org != dc_org:
+        agencies["data_center"]["secondary"] = (
+            owner_info.dc_label if owner_info else owner_org
+        )
+    return agencies
+
+
+def find_previous_site_log(out_dir: Path, nine_char: str, current_date: str) -> str:
+    """The latest dated site log for ``nine_char`` older than ``current_date``.
+
+    The M3G convention is a dated series (``rhof00isl_20240827.log``); §0
+    "Previous Site Log" chains each log to its predecessor. Lexicographic sort ==
+    chronological for ``YYYYMMDD`` names; the current date's own file is excluded
+    so a same-day regeneration doesn't reference itself. Empty string when no
+    prior log exists (first log in the series).
+    """
+    prefix = nine_char.lower()
+    current_name = f"{prefix}_{current_date}.log"
+    try:
+        names = sorted(
+            p.name
+            for p in Path(out_dir).glob(f"{prefix}_*.log")
+            if p.name < current_name
+        )
+    except OSError:
+        return ""
+    return names[-1] if names else ""
+
+
 def generate_site_log(
     station: str,
     out_dir: Path,
@@ -51,17 +164,23 @@ def generate_site_log(
     client: Any = None,
     country_code: str = "ISL",
     monument_number: str = "00",
-    include_date: bool = False,
+    include_date: bool = True,
     custom_date: Optional[str] = None,
+    agency_resolver: Any = None,
     loglevel: int = logging.WARNING,
 ) -> Optional[Path]:
     """Render the IGS site log for ``station`` from TOS into ``out_dir``.
 
     Returns the written path, or None when TOS has no usable metadata (logged).
     ``client`` is an injectable ``TOSClient`` (defaults to a fresh one) so tests
-    run offline. ``include_date``/``custom_date`` pick the dated M3G filename
-    form (``<9char>_<YYYYMMDD>.log``) vs the plain ``<9char>.log``.
+    run offline. The M3G dated filename form (``rhof00isl_20240827.log``) is the
+    default — §0 "Previous Site Log" chains to the latest prior dated log found
+    in ``out_dir``; pass ``include_date=False`` for the plain ``RHOF00ISL.log``.
+    ``agency_resolver`` (default: load agencies.yaml) drives §11/§12/§13 via
+    :func:`resolve_sitelog_agencies`.
     """
+    from datetime import datetime
+
     from tostools.core.site_log import (
         export_site_log_to_file,
         generate_igs_site_log,
@@ -83,8 +202,23 @@ def generate_site_log(
         logger.warning("site log: no TOS metadata for %s", sid)
         return None
 
+    # Previous-log chaining (§0): the latest prior dated file in the archive dir.
+    mon = str(monument_number)[:2].rjust(2, "0")
+    nine_char = f"{sid}{mon}{country_code.upper()}"
+    date_str = custom_date or datetime.now().strftime("%Y%m%d")
+    previous = find_previous_site_log(Path(out_dir), nine_char, date_str)
+
     device_sessions = meta.get("device_history", []) or []
-    content = generate_igs_site_log(meta, device_sessions, loglevel=loglevel)
+    agencies = resolve_sitelog_agencies(client, meta, agency_resolver)
+    content = generate_igs_site_log(
+        meta,
+        device_sessions,
+        loglevel=loglevel,
+        country_code=country_code,
+        monument_number=monument_number,
+        agencies=agencies,
+        previous_site_log=previous,
+    )
     if not content:
         logger.warning("site log: generator produced nothing for %s", sid)
         return None

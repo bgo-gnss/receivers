@@ -63,6 +63,9 @@ class AgencyInfo:
     phone: str = ""
     email: str = ""
     url: str = ""
+    dc_label: str = ""
+    """Short label used in site-log §13 Data Center fields (defaults to ``abbrev``;
+    NATT overrides — the user-facing short name is NATT, not the EN abbrev NSII)."""
 
 
 class AgencyResolver:
@@ -125,6 +128,7 @@ class AgencyResolver:
                 phone=str(d.get("phone", "")),
                 email=str(d.get("email", "")),
                 url=str(d.get("url", "")),
+                dc_label=str(d.get("dc_label") or d.get("abbrev", "")),
             )
         defaults = {k: str(v) for k, v in (raw.get("defaults") or {}).items()}
         return cls(agencies, defaults)

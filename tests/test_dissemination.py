@@ -2008,3 +2008,186 @@ class TestAgencyWiring:
         assert history_fingerprint(
             dh, owner_org="Veðurstofa Íslands"
         ) != history_fingerprint(dh, owner_org="Landmælingar Íslands")
+
+
+class TestSitelogAgencies:
+    """Role-guided §11/§12/§13 assembly (TOS roles = who, agencies.yaml = render)."""
+
+    class _Client:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def get_contacts(self, entity_id):
+            return self._rows
+
+    def _resolver(self):
+        from receivers.dissemination.agencies import AgencyResolver
+
+        raw = {
+            "defaults": {
+                "operator_agency": "Veðurstofa Íslands",
+                "data_center_agency": "Veðurstofa Íslands",
+                "url": "https://en.vedur.is",
+            },
+            "agencies": dict(TestAgencyResolver.RAW["agencies"]),
+        }
+        raw["agencies"]["Landmælingar Íslands"] = {
+            **raw["agencies"]["Landmælingar Íslands"],
+            "dc_label": "NATT",
+        }
+        return AgencyResolver.from_dict(raw)
+
+    def _row(self, role_is, org):
+        return {"role_is": role_is, "organization": org}
+
+    def test_imo_owned_station_all_imo(self):
+        from receivers.dissemination.sitelogs import resolve_sitelog_agencies
+
+        client = self._Client([self._row("Eigandi stöðvar", "Veðurstofa Íslands")])
+        ag = resolve_sitelog_agencies(client, {"id_entity": 1}, self._resolver())
+        assert ag["poc"]["abbrev"] == "IMO"  # operator absent → IMO default
+        assert ag["responsible"] is None  # owner == POC → §12 empty
+        assert ag["data_center"] == {
+            "primary": "IMO",
+            "secondary": "",
+            "url": "https://en.vedur.is",
+        }
+
+    def test_natt_owned_imo_operated(self):
+        from receivers.dissemination.sitelogs import resolve_sitelog_agencies
+
+        client = self._Client([self._row("Eigandi stöðvar", "Landmælingar Íslands")])
+        ag = resolve_sitelog_agencies(client, {"id_entity": 1}, self._resolver())
+        assert ag["poc"]["abbrev"] == "IMO"  # IMO operates by default
+        assert ag["responsible"]["abbrev"] == "NSII"  # owner ≠ POC → §12 NATT
+        assert ag["data_center"]["primary"] == "IMO"
+        assert ag["data_center"]["secondary"] == "NATT"  # dc_label, not NSII
+
+    def test_owner_operated_station_poc_is_owner(self):
+        # AKUR-like: TOS operator role = the owner agency itself → §11 renders it
+        # (roles guide; fixing the POC means fixing the TOS role).
+        from receivers.dissemination.sitelogs import resolve_sitelog_agencies
+
+        client = self._Client(
+            [
+                self._row("Eigandi stöðvar", "Landmælingar Íslands"),
+                self._row("Rekstraraðili stöðvar", "Landmælingar Íslands"),
+            ]
+        )
+        ag = resolve_sitelog_agencies(client, {"id_entity": 1}, self._resolver())
+        assert ag["poc"]["abbrev"] == "NSII"
+        assert ag["responsible"] is None  # owner == POC
+        assert ag["data_center"]["secondary"] == "NATT"
+
+    def test_data_owner_role_distinguished_from_station_owner(self):
+        # 'Eigandi gagna' must NOT be swallowed by the 'eigandi' owner match.
+        from receivers.dissemination.sitelogs import resolve_sitelog_agencies
+
+        client = self._Client(
+            [
+                self._row("Eigandi stöðvar", "Landmælingar Íslands"),
+                self._row("Eigandi gagna", "Veðurstofa Íslands"),
+            ]
+        )
+        ag = resolve_sitelog_agencies(client, {"id_entity": 1}, self._resolver())
+        assert ag["data_center"]["primary"] == "IMO"  # from the data-owner role
+        assert ag["responsible"]["abbrev"] == "NSII"  # owner stays the station owner
+
+    def test_unknown_owner_org_falls_back_to_raw_name(self):
+        from receivers.dissemination.sitelogs import resolve_sitelog_agencies
+
+        client = self._Client([self._row("Eigandi stöðvar", "Óþekkt Stofnun")])
+        ag = resolve_sitelog_agencies(client, {"id_entity": 1}, self._resolver())
+        assert ag["responsible"] == {"name_lines": ["Óþekkt Stofnun"]}
+        assert ag["data_center"]["secondary"] == "Óþekkt Stofnun"
+
+    def test_contacts_failure_yields_imo_defaults(self):
+        from receivers.dissemination.sitelogs import resolve_sitelog_agencies
+
+        class _Boom:
+            def get_contacts(self, entity_id):
+                raise RuntimeError("tos down")
+
+        ag = resolve_sitelog_agencies(_Boom(), {"id_entity": 1}, self._resolver())
+        assert ag["poc"]["abbrev"] == "IMO"
+        assert ag["responsible"] is None
+        assert ag["data_center"]["primary"] == "IMO"
+
+
+class TestSitelogDatedSeries:
+    """M3G dated filenames (rhof00isl_YYYYMMDD.log) + §0 Previous Site Log chain."""
+
+    class _Client:
+        """Minimal TOS client: full-enough metadata + no contact roles."""
+
+        def get_complete_station_metadata(self, sid):
+            return {
+                "id_entity": 1,
+                "marker": "rhof",
+                "name": "Raufarhöfn",
+                "iers_domes_number": "10216M001",
+                "date_start": "2001-07-19T00:00:00",
+                "lat": 66.46,
+                "lon": -15.95,
+                "altitude": 78.8,
+                "device_history": [],
+            }
+
+        def get_contacts(self, entity_id):
+            return []
+
+    def test_find_previous_site_log_orders_and_excludes_current(self, tmp_path):
+        from receivers.dissemination.sitelogs import find_previous_site_log
+
+        for name in (
+            "rhof00isl_20240101.log",
+            "rhof00isl_20240827.log",
+            "rhof00isl_20260701.log",  # the current date's own file
+            "akur00isl_20250101.log",  # other station — ignored
+        ):
+            (tmp_path / name).write_text("x")
+        assert (
+            find_previous_site_log(tmp_path, "RHOF00ISL", "20260701")
+            == "rhof00isl_20240827.log"
+        )
+        # no prior logs → empty (first in series); missing dir → empty
+        assert find_previous_site_log(tmp_path, "ELDC00ISL", "20260701") == ""
+        assert find_previous_site_log(tmp_path / "nope", "RHOF00ISL", "20260701") == ""
+
+    def test_generate_writes_dated_name_and_chains_previous(self, tmp_path):
+        from receivers.dissemination.agencies import AgencyResolver
+        from receivers.dissemination.sitelogs import generate_site_log
+
+        resolver = AgencyResolver.from_dict(TestAgencyResolver.RAW)
+        p1 = generate_site_log(
+            "RHOF",
+            tmp_path,
+            client=self._Client(),
+            custom_date="20240827",
+            agency_resolver=resolver,
+        )
+        assert p1 is not None and p1.name == "rhof00isl_20240827.log"
+        assert "Previous Site Log        :\n" in p1.read_text()  # first in series
+
+        p2 = generate_site_log(
+            "RHOF",
+            tmp_path,
+            client=self._Client(),
+            custom_date="20241011",
+            agency_resolver=resolver,
+        )
+        assert p2 is not None and p2.name == "rhof00isl_20241011.log"
+        assert "Previous Site Log        : rhof00isl_20240827.log" in p2.read_text()
+
+    def test_plain_name_still_available(self, tmp_path):
+        from receivers.dissemination.agencies import AgencyResolver
+        from receivers.dissemination.sitelogs import generate_site_log
+
+        p = generate_site_log(
+            "RHOF",
+            tmp_path,
+            client=self._Client(),
+            include_date=False,
+            agency_resolver=AgencyResolver.from_dict(TestAgencyResolver.RAW),
+        )
+        assert p is not None and p.name == "RHOF00ISL.log"
