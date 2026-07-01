@@ -90,7 +90,9 @@ def resolve_sitelog_agencies(
 ) -> dict[str, Any]:
     """Role-guided §11/§12/§13 agency data (TOS roles = who, agencies.yaml = render).
 
-    - §11 On-Site POC        ← operator/Tengiliður role, else the IMO default.
+    - §11 On-Site POC        ← always the IMO default: IMO runs the network and
+      disseminates the data, so it is the on-site/data point of contact even when
+      TOS records another org as Rekstraraðili (that upkeep role belongs in §12).
     - §12 Responsible Agency ← owner role — only when it differs from §11.
     - §13 Primary DC         ← data-owner role, else the IMO default;
       Secondary DC           ← owner (when ≠ primary); URL ← agencies.yaml default.
@@ -104,7 +106,7 @@ def resolve_sitelog_agencies(
         resolver = AgencyResolver.load()
     roles = _station_role_orgs(client, meta)
 
-    poc_info = resolver.resolve(roles.get("operator")) or resolver.operator_default()
+    poc_info = resolver.operator_default()
     dc_info = (
         resolver.resolve(roles.get("data_owner")) or resolver.data_center_default()
     )

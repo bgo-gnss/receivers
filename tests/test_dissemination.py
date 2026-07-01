@@ -61,8 +61,7 @@ def _target(tmp_root, **over):
 class TestConfig:
     def test_loads_only_dissemination_tier(self, tmp_path):
         cfg = tmp_path / "sync.yaml"
-        cfg.write_text(
-            """
+        cfg.write_text("""
 targets:
   - name: imo_archive
     tier: archive
@@ -93,8 +92,7 @@ targets:
         hatanaka: true
         compression: gz
       dir_template: "%Y/#b/{station}/15s_24hr/rinex/"
-"""
-        )
+""")
         targets = load_dissemination_config(cfg)
         assert [t.name for t in targets] == ["epos"]  # archive tier filtered out
         t = targets[0]
@@ -870,8 +868,7 @@ class TestRawFallback:
 class TestDisseminateJob:
     def _active_cfg(self, tmp_path):
         cfg = tmp_path / "sync.yaml"
-        cfg.write_text(
-            """
+        cfg.write_text("""
 targets:
   - name: epos
     tier: dissemination
@@ -881,8 +878,7 @@ targets:
     dest: /tmp/epos_stage
     source_root: /mnt/data/gpsdata
     sessions: [15s_24hr]
-"""
-        )
+""")
         return cfg
 
     def test_no_active_target_is_noop(self, tmp_path):
@@ -1937,9 +1933,7 @@ class TestAgencyResolver:
         from receivers.dissemination.agencies import AgencyResolver
 
         p = tmp_path / "agencies.yaml"
-        p.write_text(
-            textwrap.dedent(
-                """
+        p.write_text(textwrap.dedent("""
                 defaults: {url: "https://x"}
                 agencies:
                   "Org A":
@@ -1948,9 +1942,7 @@ class TestAgencyResolver:
                     observer: "GNSSatA"
                     agency_label: "A"
                     address: "Single Line"
-                """
-            )
-        )
+                """))
         a = AgencyResolver.load(p).resolve("Org A")
         assert a.english_name == "A EN"
         assert a.address == ("Single Line",)  # scalar promoted to 1-tuple
@@ -2063,9 +2055,9 @@ class TestSitelogAgencies:
         assert ag["data_center"]["primary"] == "IMO"
         assert ag["data_center"]["secondary"] == "NATT"  # dc_label, not NSII
 
-    def test_owner_operated_station_poc_is_owner(self):
-        # AKUR-like: TOS operator role = the owner agency itself → §11 renders it
-        # (roles guide; fixing the POC means fixing the TOS role).
+    def test_owner_operated_station_poc_stays_imo(self):
+        # AKUR-like: TOS records the owner as Rekstraraðili too, but §11 is the
+        # disseminating agency (IMO) regardless — the owner belongs in §12.
         from receivers.dissemination.sitelogs import resolve_sitelog_agencies
 
         client = self._Client(
@@ -2075,8 +2067,8 @@ class TestSitelogAgencies:
             ]
         )
         ag = resolve_sitelog_agencies(client, {"id_entity": 1}, self._resolver())
-        assert ag["poc"]["abbrev"] == "NSII"
-        assert ag["responsible"] is None  # owner == POC
+        assert ag["poc"]["abbrev"] == "IMO"
+        assert ag["responsible"]["abbrev"] == "NSII"  # owner ≠ §11 → §12 NATT
         assert ag["data_center"]["secondary"] == "NATT"
 
     def test_data_owner_role_distinguished_from_station_owner(self):
