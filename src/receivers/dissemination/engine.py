@@ -17,9 +17,12 @@ import subprocess
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from .config import DisseminationTarget
+
+if TYPE_CHECKING:
+    from .agencies import AgencyResolver
 from .convert import (
     ConvertError,
     convert_for_dissemination,
@@ -86,6 +89,7 @@ class EposDisseminate:
         dest_override: Optional[str] = None,
         session_provider: Optional[SessionProvider] = None,
         set_header: bool = True,
+        agency_resolver: Optional[AgencyResolver] = None,
     ) -> None:
         self.target = target
         self.dry_run = dry_run
@@ -96,6 +100,31 @@ class EposDisseminate:
         # provider to fingerprint the TOS metadata for the cache key). Tests pass
         # set_header=False to stay offline.
         self.set_header = set_header
+        # Per-station RINEX OBSERVER/AGENCY come from the station's TOS owner org via
+        # agencies.yaml (falling back to the target's format defaults). Loaded once;
+        # injectable for tests. A missing agencies.yaml → empty resolver → defaults.
+        if agency_resolver is None:
+            from .agencies import AgencyResolver
+
+            agency_resolver = AgencyResolver.load()
+        self.agency_resolver = agency_resolver
+
+    def _resolve_observer_agency(self, session: Optional[dict]) -> tuple[str, str]:
+        """(OBSERVER, AGENCY) for the RINEX header.
+
+        The RINEX AGENCY is the *responsible* agency — the station **owner** (EPOS
+        model) — so we resolve `agencies.yaml` on the owner org attached to the session
+        (`owner_org`). Unknown org / no session ⇒ the target's format defaults
+        (`fmt.observer` / `fmt.agency`), so behaviour is unchanged when the resolver has
+        no entry.
+        """
+        fmt = self.target.format
+        default = (getattr(fmt, "observer", ""), getattr(fmt, "agency", ""))
+        owner_org = (session or {}).get("owner_org") if session else None
+        info = self.agency_resolver.resolve(owner_org)
+        if info is None:
+            return default
+        return (info.observer or default[0], info.agency_label or default[1])
 
     # ---- source resolution -------------------------------------------------
 
@@ -250,6 +279,11 @@ class EposDisseminate:
         do_set_header = self.set_header and session is not None
         fingerprint = session_fingerprint(session) if do_set_header else ""
 
+        # Per-station RINEX OBSERVER/AGENCY from the station's TOS owner agency
+        # (agencies.yaml), else the target's format defaults. owner_org is folded
+        # into session_fingerprint, so a re-designation re-renders the cached header.
+        observer, agency = self._resolve_observer_agency(session)
+
         # Convert to the cached canonical plain obs (Model B: version preserved).
         src = source if source is not None else raw_source
         assert src is not None
@@ -263,6 +297,8 @@ class EposDisseminate:
                 tos_fingerprint=fingerprint,
                 set_header=do_set_header,
                 domes=(session or {}).get("domes", ""),
+                observer=observer,
+                agency=agency,
             )
         except ConvertError as exc:
             result.message = f"convert failed: {exc}"

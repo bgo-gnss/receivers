@@ -346,6 +346,8 @@ def convert_for_dissemination(
     tos_fingerprint: str = "",
     set_header: bool = False,
     domes: str = "",
+    observer: str = "",
+    agency: str = "",
 ) -> ConvertResult:
     """Produce the cached canonical plain obs for dissemination (Model B).
 
@@ -418,8 +420,10 @@ def convert_for_dissemination(
             country_code=fmt.country_code,
             monument_number=getattr(fmt, "monument_number", "00"),
             domes=domes,
-            observer=getattr(fmt, "observer", ""),
-            agency=getattr(fmt, "agency", ""),
+            # Per-station agency (resolved from TOS owner org) overrides the format
+            # default; empty ⇒ fall back to the format's observer/agency.
+            observer=observer or getattr(fmt, "observer", ""),
+            agency=agency or getattr(fmt, "agency", ""),
         )
     logger.info(
         "converted %s → %s (RINEX %d)", source_path.name, final_obs.name, version

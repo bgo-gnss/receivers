@@ -1954,3 +1954,57 @@ class TestAgencyResolver:
         a = AgencyResolver.load(p).resolve("Org A")
         assert a.english_name == "A EN"
         assert a.address == ("Single Line",)  # scalar promoted to 1-tuple
+
+
+class TestAgencyWiring:
+    """agencies.yaml → per-station RINEX OBSERVER/AGENCY + owner_org in fingerprints."""
+
+    def _engine(self):
+        from receivers.dissemination.agencies import AgencyResolver
+        from receivers.dissemination.engine import EposDisseminate
+
+        fmt = type("F", (), {"observer": "GNSSatIMO", "agency": "Vedurstofa Islands"})()
+        tgt = type("T", (), {"format": fmt})()
+        return EposDisseminate(
+            tgt, agency_resolver=AgencyResolver.from_dict(TestAgencyResolver.RAW)
+        )
+
+    def test_owner_org_resolves_to_agency(self):
+        eng = self._engine()
+        assert eng._resolve_observer_agency({"owner_org": "Landmælingar Íslands"}) == (
+            "GNSSatNATT",
+            "NATT",
+        )
+        assert eng._resolve_observer_agency({"owner_org": "Veðurstofa Íslands"}) == (
+            "GNSSatIMO",
+            "Vedurstofa Islands",
+        )
+
+    def test_unknown_org_and_no_session_fall_back_to_format_defaults(self):
+        eng = self._engine()
+        assert eng._resolve_observer_agency({"owner_org": "Nope"}) == (
+            "GNSSatIMO",
+            "Vedurstofa Islands",
+        )
+        assert eng._resolve_observer_agency(None) == ("GNSSatIMO", "Vedurstofa Islands")
+
+    def test_owner_org_in_session_and_history_fingerprints(self):
+        from receivers.dissemination.tos_access import (
+            history_fingerprint,
+            session_fingerprint,
+        )
+
+        base = {"marker": "RHOF", "domes": "D", "owner_org": "Veðurstofa Íslands"}
+        assert session_fingerprint(base) != session_fingerprint(
+            {**base, "owner_org": "Landmælingar Íslands"}
+        )
+        dh = [
+            {
+                "time_from": datetime(2015, 1, 1),
+                "time_to": None,
+                "antenna": {"model": "A"},
+            }
+        ]
+        assert history_fingerprint(
+            dh, owner_org="Veðurstofa Íslands"
+        ) != history_fingerprint(dh, owner_org="Landmælingar Íslands")

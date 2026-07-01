@@ -187,6 +187,7 @@ def session_fingerprint(session: Optional[dict[str, Any]]) -> str:
     rel = {
         "marker": session.get("marker"),
         "domes": session.get("domes"),
+        "owner_org": session.get("owner_org"),
         "receiver": dev(
             session.get("gnss_receiver"),
             ("model", "serial_number", "firmware_version"),
@@ -286,6 +287,7 @@ def history_fingerprint(
     *,
     marker: str = "",
     domes: str = "",
+    owner_org: str = "",
 ) -> str:
     """A stable hash over the header-relevant TOS fields of the *whole* history.
 
@@ -338,7 +340,12 @@ def history_fingerprint(
         blob = json.dumps(rel, sort_keys=True, default=str).encode()
         digests.append(hashlib.sha256(blob).hexdigest())
 
-    combined = {"marker": marker, "domes": domes, "sessions": sorted(digests)}
+    combined = {
+        "marker": marker,
+        "domes": domes,
+        "owner_org": owner_org,
+        "sessions": sorted(digests),
+    }
     blob = json.dumps(combined, sort_keys=True, default=str).encode()
     return hashlib.sha256(blob).hexdigest()[:16]
 
@@ -372,6 +379,10 @@ def make_history_fn(client: Any = None):
             meta.get("device_history", []) or [],
             marker=(meta.get("marker") or station).upper(),
             domes=(meta.get("iers_domes_number") or "").strip(),
+            owner_org=(
+                ((meta.get("contact") or {}).get("owner") or {}).get("organization")
+                or ""
+            ).strip(),
         )
 
     return fn
@@ -437,6 +448,13 @@ def make_session_provider(client: Any = None):
         # DOMES is station-level too — carried so the header finalizer can write it
         # into MARKER NUMBER (EPOS 4.1.7). Empty when the station has no DOMES.
         session.setdefault("domes", (meta.get("iers_domes_number") or "").strip())
+        # Owner organization (station-level) drives the per-station RINEX
+        # OBSERVER/AGENCY via agencies.yaml. Folded into session_fingerprint so a
+        # re-designation (e.g. Landmælingar→NATT) re-renders the cached header.
+        owner_org = (
+            ((meta.get("contact") or {}).get("owner") or {}).get("organization") or ""
+        ).strip()
+        session.setdefault("owner_org", owner_org)
         return session
 
     return provider
