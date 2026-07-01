@@ -189,12 +189,20 @@ class TestTOSAdapter:
         s["device_history"][1].pop("monument")
         assert tos_adapter.current_antenna_height(s) == "0.0830"
 
-    def test_radome_missing_entity_is_none(self):
-        # No radome entity in the session = MISSING DATA (db85cbd) — distinct
-        # from a radome entity with a blank model, which means "TOS actively
-        # recorded that no radome is fitted" and returns "NONE".
+    def test_radome_absent_with_antenna_means_none_fitted(self):
+        # TOS models "no radome fitted" by ABSENCE of the radome entity (the
+        # intake flow creates one only for a real radome code). With an
+        # antenna registered, absence is an active "no radome" → "NONE",
+        # matching the cfg-side literal NONE (the ODDF case).
         s = self._station_with_two_sessions()
         s["device_history"][1].pop("radome")
+        assert tos_adapter.current_radome_model(s) == "NONE"
+
+    def test_radome_absent_without_antenna_is_missing_data(self):
+        # No antenna either → truly incomplete TOS; nothing can be inferred.
+        s = self._station_with_two_sessions()
+        s["device_history"][1].pop("radome")
+        s["device_history"][1].pop("antenna")
         assert tos_adapter.current_radome_model(s) is None
 
     def test_radome_entity_with_blank_model_is_none_string(self):
