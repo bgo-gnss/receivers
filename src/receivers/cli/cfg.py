@@ -1113,7 +1113,13 @@ def _reconcile_one(
                 f"\n   {len(cfg_placeholders)} placeholder value(s) to remove: {keys} (dry-run)"
             )
         if not silent and tos_fillable_list:
-            keys = ", ".join(d.cfg_key for d in tos_fillable_list)
+            # Annotate fields where TOS is not truly empty but holds a
+            # placeholder (synthetic serial = recorded-as-unknown) — pushing
+            # the cfg value there is usually wrong (see interactive prompt).
+            keys = ", ".join(
+                f"{d.cfg_key}(TOS=unknown)" if d.tos_placeholder else d.cfg_key
+                for d in tos_fillable_list
+            )
             print(
                 f"\n   {len(tos_fillable_list)} field(s) with cfg value but TOS empty: {keys} (use C to populate)"
             )
@@ -1512,14 +1518,44 @@ def _reconcile_one(
         for d in tos_fillable_list:
             print(f"\n     ↑ {d.label} ({d.cfg_key})")
             print(f"       cfg: {d.cfg_value!r}")
-            print("       TOS: [no value — use C to populate]")
-            print("       [C]push-cfg-to-TOS · [k]eep · [q]uit")
+            if d.tos_placeholder:
+                # TOS holds a synthetic placeholder (e.g. antenna-ODDF-20230706):
+                # the device EXISTS and its serial is recorded-as-UNKNOWN. Very
+                # different from "no value" — the cfg value may belong to a
+                # PREVIOUS device, so pushing it blindly would mislabel the
+                # current one. Offer the cfg-side unknown-marker instead.
+                print(f"       TOS: recorded as UNKNOWN (placeholder {d.tos_raw!r})")
+                print(
+                    "       ⚠ push C only if the cfg value truly belongs to the "
+                    "CURRENT device"
+                )
+                print(
+                    "       [z]set cfg = '0000000000' (unknown) · "
+                    "[C]push-cfg-to-TOS · [k]eep · [q]uit"
+                )
+            else:
+                print("       TOS: [no value — use C to populate]")
+                print("       [C]push-cfg-to-TOS · [k]eep · [q]uit")
             try:
                 raw = input("       > ").strip()
             except EOFError:
                 break
             if raw in ("q", "quit"):
                 break
+            if raw == "z" and d.tos_placeholder:
+                # Translate TOS's "unknown" into the cfg convention (all-zeros,
+                # the fleet-wide unknown-serial marker) — deliberately bypassing
+                # cfg_format: writing a value normalize() strips is the point.
+                try:
+                    changed = _apply_to_targets(d, "0000000000")
+                    if changed:
+                        n_written += 1
+                        print(f"       ✅ wrote {d.cfg_key} = '0000000000' to cfg")
+                    else:
+                        print("       ⏭  cfg unchanged")
+                except Exception as exc:  # noqa: BLE001
+                    print(f"       ❌ cfg write failed: {exc}")
+                continue
             if raw == "C":
                 cfg_val = d.cfg_value
                 assert cfg_val is not None  # guaranteed by _is_tos_fillable

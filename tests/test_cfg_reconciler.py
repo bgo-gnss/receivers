@@ -189,9 +189,17 @@ class TestTOSAdapter:
         s["device_history"][1].pop("monument")
         assert tos_adapter.current_antenna_height(s) == "0.0830"
 
-    def test_radome_default_none(self):
+    def test_radome_missing_entity_is_none(self):
+        # No radome entity in the session = MISSING DATA (db85cbd) — distinct
+        # from a radome entity with a blank model, which means "TOS actively
+        # recorded that no radome is fitted" and returns "NONE".
         s = self._station_with_two_sessions()
         s["device_history"][1].pop("radome")
+        assert tos_adapter.current_radome_model(s) is None
+
+    def test_radome_entity_with_blank_model_is_none_string(self):
+        s = self._station_with_two_sessions()
+        s["device_history"][1]["radome"] = {"model": "", "serial_number": "r1"}
         assert tos_adapter.current_radome_model(s) == "NONE"
 
     def test_coordinates(self):
@@ -411,6 +419,100 @@ class TestCompareStation:
         )
         assert diffs[0].suggestion == "4103914"
         assert diffs[0].suggestion_source == "receiver"
+
+
+class TestTOSPlaceholder:
+    """TOS synthetic serials must surface as "recorded-as-unknown", not "no value".
+
+    The ODDF case: TOS antenna serial is the synthetic ``antenna-ODDF-20230706``
+    (TOS's encoding of "unknown") while cfg still carries the PREVIOUS antenna's
+    real serial. Rendering TOS as "[no value — use C to populate]" invites
+    pushing the stale cfg serial onto the new device; ``tos_placeholder`` lets
+    the prompt distinguish the two cases and offer the cfg-side unknown-marker
+    (``0000000000``) instead.
+    """
+
+    def _tos(self, ant_serial):
+        return {
+            "device_history": [
+                {
+                    "time_from": "2025-04-02",
+                    "time_to": None,
+                    "antenna": {
+                        "model": "SEPPOLANT_X_MF",
+                        "serial_number": ant_serial,
+                        "antenna_height": 0.661,
+                    },
+                }
+            ]
+        }
+
+    def test_synthetic_tos_serial_sets_tos_placeholder(self):
+        cfg = {"antenna_serial": "60243B0067"}  # the OLD antenna's real serial
+        diffs = compare_station(
+            "ODDF",
+            cfg,
+            None,
+            self._tos("antenna-ODDF-20230706"),
+            fields=["antenna_serial"],
+            queried_sources={"cfg", "tos"},
+        )
+        d = diffs[0]
+        assert d.tos_value is None  # normalized away, as before
+        assert d.tos_raw == "antenna-ODDF-20230706"  # ...but the raw survives
+        assert d.tos_placeholder is True
+
+    def test_truly_absent_tos_value_is_not_placeholder(self):
+        cfg = {"antenna_serial": "60243B0067"}
+        tos = {
+            "device_history": [
+                {"time_from": "2025-04-02", "time_to": None}  # no antenna at all
+            ]
+        }
+        diffs = compare_station(
+            "ODDF",
+            cfg,
+            None,
+            tos,
+            fields=["antenna_serial"],
+            queried_sources={"cfg", "tos"},
+        )
+        d = diffs[0]
+        assert d.tos_value is None
+        assert d.tos_raw is None
+        assert d.tos_placeholder is False
+
+    def test_real_tos_serial_is_not_placeholder(self):
+        cfg = {"antenna_serial": "60243B0067"}
+        diffs = compare_station(
+            "ODDF",
+            cfg,
+            None,
+            self._tos("60243B0067"),
+            fields=["antenna_serial"],
+            queried_sources={"cfg", "tos"},
+        )
+        d = diffs[0]
+        assert d.tos_value == "60243B0067"
+        assert d.tos_raw == "60243B0067"
+        assert d.tos_placeholder is False
+
+    def test_cfg_zeros_vs_tos_synthetic_agree(self):
+        # Both conventions mean "unknown" (cfg all-zeros ≡ TOS synthetic): both
+        # normalize to None → NO_DATA. The load-bearing property is that this
+        # is NOT flagged as a conflict and NOT offered as TOS-fillable.
+        cfg = {"antenna_serial": "0000000000"}
+        diffs = compare_station(
+            "ODDF",
+            cfg,
+            None,
+            self._tos("antenna-ODDF-20230706"),
+            fields=["antenna_serial"],
+            queried_sources={"cfg", "tos"},
+        )
+        d = diffs[0]
+        assert d.verdict == Verdict.NO_DATA
+        assert not d.needs_attention
 
 
 # ---------------------------------------------------------------------------

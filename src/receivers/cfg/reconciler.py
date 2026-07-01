@@ -47,6 +47,7 @@ class FieldDiff:
     suggestion_source: Optional[str] = None  # "receiver", "tos", "agree"
     note: Optional[str] = None
     cfg_raw: Optional[str] = None  # raw value from stations.cfg, for display only
+    tos_raw: Optional[str] = None  # raw value from TOS, for display only
 
     @property
     def cfg_key(self) -> str:
@@ -69,6 +70,19 @@ class FieldDiff:
         from stations.cfg rather than kept or written to.
         """
         return self.cfg_raw is not None and self.cfg_value is None
+
+    @property
+    def tos_placeholder(self) -> bool:
+        """TOS holds a raw value that normalizes to None (a known placeholder).
+
+        True when TOS carries e.g. a synthetic device serial
+        (``antenna-ODDF-20230706`` — TOS's encoding of "serial unknown") that
+        ``spec.normalize`` strips to ``None``. Semantically very different
+        from "TOS has no value": the device EXISTS and its serial is
+        recorded-as-unknown, so blindly pushing the cfg value into TOS is
+        usually wrong (the cfg value may belong to a previous device).
+        """
+        return self.tos_raw is not None and self.tos_value is None
 
     @property
     def format_mismatch(self) -> bool:
@@ -269,9 +283,12 @@ def compare_station(
                 )
 
         tos_val: Optional[str] = None
+        tos_raw: Optional[str] = None
         if "tos" in sources and spec.tos_extract is not None and tos_data is not None:
             try:
-                tos_val = spec.normalize(spec.tos_extract(tos_data))
+                extracted = spec.tos_extract(tos_data)
+                tos_raw = str(extracted).strip() if extracted is not None else None
+                tos_val = spec.normalize(extracted)
             except Exception as exc:  # noqa: BLE001
                 logger.debug(
                     "[%s] tos extract for %s failed: %s", station_id, spec.cfg_key, exc
@@ -359,6 +376,7 @@ def compare_station(
                 suggestion_source=suggestion_source,
                 note=note,
                 cfg_raw=cfg_raw,
+                tos_raw=tos_raw,
             )
         )
     return diffs
