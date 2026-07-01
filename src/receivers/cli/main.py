@@ -2445,6 +2445,50 @@ def cmd_rec_config(args) -> int:
         finally:
             _os.unlink(tf.name)
 
+    # Handle --set-antenna: push the reconciled antenna identity from
+    # stations.cfg into each receiver (identity-safe: setAntennaOffset + boot
+    # save only). Values are PER-STATION, so unlike --tracking each target
+    # gets its own generated config file.
+    if getattr(args, "set_antenna", False):
+        import os as _os
+        import tempfile
+
+        from ..septentrio.antenna import build_antenna_commands_from_station_config
+
+        worst = 0
+        for target in targets:
+            station_id = target[0]
+            station_config = get_station_config(station_id)
+            if station_config is None:
+                logger.error(
+                    f"[{station_id}] not in stations.cfg — --set-antenna reads "
+                    "the reconciled antenna fields from cfg (no bench mode)"
+                )
+                worst = max(worst, 1)
+                continue
+            try:
+                cmds = build_antenna_commands_from_station_config(station_config)
+            except ValueError as exc:
+                logger.error(f"[{station_id}] {exc}")
+                worst = max(worst, 2)
+                continue
+            logger.info(f"[{station_id}] antenna push: {cmds[0]}")
+            tf = tempfile.NamedTemporaryFile(
+                "w", suffix=".txt", prefix=f"antenna_{station_id}_", delete=False
+            )
+            tf.write(f"# rec-config --set-antenna {station_id} (identity-safe)\n")
+            tf.write("\n".join(cmds) + "\n")
+            tf.close()
+            args.push = tf.name
+            try:
+                rc = _push_configs(
+                    args, [target], logger, tcp_username, tcp_password, rec_config_dir
+                )
+                worst = max(worst, rc)
+            finally:
+                _os.unlink(tf.name)
+        return worst
+
     # Handle --ntrip-stream / --disable-mount: identity-safe NTRIP server on/off
     # (+ optional --drop-sbf), pushed via the same temp-file path as --tracking.
     if getattr(args, "ntrip_stream", None) or getattr(args, "disable_mount", None):

@@ -647,6 +647,17 @@ Examples:
         "live stream station. Constellations: gps, glonass, galileo, beidou.",
     )
     mode_group.add_argument(
+        "--set-antenna",
+        action="store_true",
+        help="Push the station's reconciled antenna identity (type/radome/serial/"
+        "offsets from stations.cfg) into the receiver — ONLY setAntennaOffset + "
+        "boot save, identity-safe. Closes the loop after `cfg reconcile`: RINEX "
+        "ANT # / TYPE headers echo the RECEIVER's configured antenna, so after a "
+        "swap the box keeps emitting the old antenna until this push. Unknown "
+        "serial (cfg zeros) is pushed as '0000000000'. Per-station values — each "
+        "station gets its own push. Septentrio PolaRx5 only.",
+    )
+    mode_group.add_argument(
         "--check-session",
         metavar="SESSION",
         help="Check whether a logging session is enabled (e.g. status_1hr). "
