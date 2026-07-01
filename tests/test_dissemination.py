@@ -1864,3 +1864,93 @@ class TestHistoryFingerprint:
         assert st.components == {"marker": {"fp": "m", "since": None}}
         # no history reader ⇒ empty fingerprint, still tracked
         assert make_fingerprint_fn(None, set())("ZZZZ").fingerprint == ""
+
+
+# ----------------------------------------------- agency reference data (agencies.yaml)
+class TestAgencyResolver:
+    RAW = {
+        "defaults": {
+            "operator_agency": "Veðurstofa Íslands",
+            "data_center_agency": "Veðurstofa Íslands",
+            "url": "https://en.vedur.is",
+        },
+        "agencies": {
+            "Veðurstofa Íslands": {
+                "english_name": "Icelandic Meteorological Office",
+                "abbrev": "IMO",
+                "abbrev_is": "VÍ",
+                "observer": "GNSSatIMO",
+                "agency_label": "Vedurstofa Islands",
+                "email": "gnss-epos@vedur.is",
+                "address": ["Bústaðarvegur 7-9", "105 Reykjavík", "Iceland"],
+                "contact_name": "GNSS Operator",
+            },
+            "Landmælingar Íslands": {
+                "english_name": "Natural Science Institute of Iceland",
+                "abbrev": "NSII",
+                "abbrev_is": "NATT",
+                "observer": "GNSSatNATT",
+                "agency_label": "NATT",
+                "email": "gnss@natt.is",
+            },
+        },
+    }
+
+    def test_from_dict_resolves_both_languages(self):
+        from receivers.dissemination.agencies import AgencyResolver
+
+        r = AgencyResolver.from_dict(self.RAW)
+        imo = r.resolve("Veðurstofa Íslands")
+        assert imo.abbrev == "IMO" and imo.observer == "GNSSatIMO"
+        assert imo.address == ("Bústaðarvegur 7-9", "105 Reykjavík", "Iceland")
+        natt = r.resolve("Landmælingar Íslands")
+        assert natt.english_name == "Natural Science Institute of Iceland"
+        assert natt.abbrev == "NSII" and natt.abbrev_is == "NATT"
+        assert natt.observer == "GNSSatNATT" and natt.agency_label == "NATT"
+
+    def test_unknown_and_blank_and_strip(self):
+        from receivers.dissemination.agencies import AgencyResolver
+
+        r = AgencyResolver.from_dict(self.RAW)
+        assert r.resolve("Nope") is None
+        assert r.resolve(None) is None
+        assert r.resolve("  Veðurstofa Íslands  ").abbrev == "IMO"  # stripped
+
+    def test_defaults_resolve_to_imo(self):
+        from receivers.dissemination.agencies import AgencyResolver
+
+        r = AgencyResolver.from_dict(self.RAW)
+        assert r.operator_default().abbrev == "IMO"
+        assert r.data_center_default().abbrev == "IMO"
+        assert r.url_default() == "https://en.vedur.is"
+
+    def test_missing_file_is_empty_resolver(self, tmp_path):
+        from receivers.dissemination.agencies import AgencyResolver
+
+        r = AgencyResolver.load(tmp_path / "nope.yaml")
+        assert r.resolve("Veðurstofa Íslands") is None
+        assert r.operator_default() is None and r.url_default() == ""
+
+    def test_load_from_file_and_scalar_address(self, tmp_path):
+        import textwrap
+
+        from receivers.dissemination.agencies import AgencyResolver
+
+        p = tmp_path / "agencies.yaml"
+        p.write_text(
+            textwrap.dedent(
+                """
+                defaults: {url: "https://x"}
+                agencies:
+                  "Org A":
+                    english_name: "A EN"
+                    abbrev: "A"
+                    observer: "GNSSatA"
+                    agency_label: "A"
+                    address: "Single Line"
+                """
+            )
+        )
+        a = AgencyResolver.load(p).resolve("Org A")
+        assert a.english_name == "A EN"
+        assert a.address == ("Single Line",)  # scalar promoted to 1-tuple
