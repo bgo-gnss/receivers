@@ -338,6 +338,10 @@ def submit_to_m3g(
     from .m3g_client import M3GClient, M3GError  # noqa: F401 — re-exported
 
     sid = station.upper()
+    mon = str(monument_number)[:2].rjust(2, "0")
+    nine_char = (
+        f"{sid}{mon}{country_code.upper()}"  # e.g. RHOF00ISL — M3G's station key
+    )
     result = M3GSubmissionResult(station=sid, validated=False, dry_run=dry_run)
 
     # 1. Obtain the site log text — render or read.
@@ -381,7 +385,8 @@ def submit_to_m3g(
             return result
 
     # 3. Upload as a draft. In dry_run the PUT is not sent (default: safe).
-    ur = client.upload_sitelog(sid, content, dry_run=dry_run)
+    #    M3G's upload-sitelog ?id= requires the full 9-char station ID.
+    ur = client.upload_sitelog(nine_char, content, dry_run=dry_run)
     result.upload = ur
     result.uploaded = ur.ok
     if not ur.ok:
