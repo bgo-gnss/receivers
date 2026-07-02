@@ -277,9 +277,10 @@ def commit_site_log(repo_dir: Path, site_log: Path, message: str) -> bool:
     return True
 
 
-# M3G submission — see :func:`submit_to_m3g` (and :class:`M3GClient`). Uploads save
-# a draft only; publication is a manual web-UI step (no API endpoint exists).
-# Tracked as C6 in docs/architecture/epos-dissemination-plan.md.
+# M3G submission — see :func:`submit_to_m3g` (and :class:`M3GClient`). The
+# upload-sitelog API publishes directly (no draft state); submit_to_m3g's
+# dry_run default (validate-only) is the safety gate. Tracked as C6 in
+# docs/architecture/epos-dissemination-plan.md.
 
 
 @dataclass
@@ -308,13 +309,14 @@ def submit_to_m3g(
     endpoint: Optional[str] = None,
     skip_validation: bool = False,
 ) -> M3GSubmissionResult:
-    """Submit a station's site log to M3G: validate, then upload as a **draft**.
+    """Submit a station's site log to M3G: validate, then publish.
 
     This is the local verb for the M3G submission step (EPOS §3.2). It renders
     the site log (unless ``site_log_path`` points at an existing file), validates
-    it against the M3G network rules, and uploads it as a draft via the M3G
-    API. Publishing the draft is a **manual web-UI step** — M3G exposes no API
-    endpoint for publication, so final control always stays with the operator.
+    it against the M3G network rules, and publishes it via the M3G API. **The
+    M3G ``upload-sitelog`` API publishes directly — there is no draft state**,
+    so this is the real publish trigger. The ``dry_run`` default (True) keeps it
+    validate-only; pass ``dry_run=False`` to actually publish.
 
     Args:
         station: 4-char station id (e.g. ``RHOF``).
@@ -326,11 +328,11 @@ def submit_to_m3g(
             otherwise, resolving endpoint/token from config/env.
         network: M3G network short name for validation (default ``EPOS``).
         country_code, monument_number: Render-time filename/form params.
-        dry_run: When True (default), validate only — the upload PUT is **not**
-            sent. Pass False to actually push the draft.
+        dry_run: When True (default), validate only — the publish PUT is **not**
+            sent. Pass False to actually publish to M3G.
         endpoint: M3G endpoint URL or alias (``prod``/``test``). None → config.
-        skip_validation: Skip the validate step (e.g. re-uploading a known-good
-            log). Implies ``dry_run`` is the only gate on the upload.
+        skip_validation: Skip the validate step (e.g. re-publishing a known-good
+            log). Implies ``dry_run`` is the only gate on the publish.
 
     Returns an :class:`M3GSubmissionResult`. Raises :class:`M3GError` only on
     unrecoverable failures (no token, network down, 401).
@@ -384,8 +386,9 @@ def submit_to_m3g(
             )
             return result
 
-    # 3. Upload as a draft. In dry_run the PUT is not sent (default: safe).
-    #    M3G's upload-sitelog ?id= requires the full 9-char station ID.
+    # 3. Publish to M3G. In dry_run the PUT is not sent (default: safe).
+    #    M3G's upload-sitelog ?id= requires the full 9-char station ID,
+    #    and publishes directly (no draft state on the API path).
     ur = client.upload_sitelog(nine_char, content, dry_run=dry_run)
     result.upload = ur
     result.uploaded = ur.ok

@@ -2,16 +2,17 @@
 
 Exposes the M3G submission step (EPOS §3.2) as a standalone verb:
 
-- ``receivers m3g submit --station RHOF``  → validate + upload as a **draft**
-- ``receivers m3g validate --station RHOF`` → validate only (no upload, no token)
-- ``receivers m3g diff --station RHOF``     → diff the local site log vs the live M3G draft
+- ``receivers m3g submit --station RHOF``   → validate only (dry run, no publish)
+- ``receivers m3g submit --station RHOF --publish`` → validate + **publish** to M3G
+- ``receivers m3g validate --station RHOF``  → validate only (no token, no publish)
+- ``receivers m3g diff --station RHOF``     → diff the local site log vs the live M3G version
 
-**Publishing is manual by design**: M3G exposes no API endpoint to publish a
-draft (the "Submit saved draft for publication" button is web-UI-only). This
-verb only ever creates or updates a draft; final publication stays an operator
-click in the M3G portal. After a successful upload the CLI prints the web-UI
-draft URL — the yellow post-upload "Alert(s)" banners (e.g. "Please check the
-'Identification' section") are only visible there, not via the API.
+**The M3G ``upload-sitelog`` API publishes directly** — there is no draft state
+on the API path (the web UI's "Save all to draft" → "Submit saved draft for
+publication" workflow is for manual form-editing only). So ``--publish`` is the
+real publish trigger; without it the command only validates. The pre-upload
+``validate`` call is the gate: a site log that fails M3G/EPOS validation is
+never published.
 
 See docs/architecture/epos-dissemination-plan.md (C6/T7).
 """
@@ -94,16 +95,16 @@ def cmd_m3g_validate(args: argparse.Namespace) -> int:
 
 
 def cmd_m3g_submit(args: argparse.Namespace) -> int:
-    """Validate + upload a site log to M3G as a draft (publishing is manual)."""
+    """Validate + publish a site log to M3G (``--publish`` triggers the actual PUT)."""
     from ..dissemination.m3g_client import M3GError
     from ..dissemination.sitelogs import submit_to_m3g
 
     sid = args.station.upper()
-    dry_run = not args.submit
+    dry_run = not args.publish
     site_log_path = Path(args.file) if args.file else None
 
     action = (
-        "DRY RUN (validate only)" if dry_run else "SUBMIT (validate + upload draft)"
+        "DRY RUN (validate only)" if dry_run else "PUBLISH (validate + publish to M3G)"
     )
     print(f"M3G {action} for {sid} (endpoint resolved from --m3g-endpoint/config)…")
 
@@ -127,12 +128,12 @@ def cmd_m3g_submit(args: argparse.Namespace) -> int:
     if result.validation is not None:
         _print_validation(result.validation)
         if not result.validated:
-            print("\n⚠️  upload skipped — fix the validation errors above first.")
+            print("\n⚠️  publish skipped — fix the validation errors above first.")
             return 1
     elif args.skip_validation:
         print("   (validation skipped via --skip-validation)")
 
-    # 2. Upload phase
+    # 2. Publish phase — note: the M3G upload-sitelog API PUBLISHES directly.
     ur = result.upload
     if ur is None:
         # validate-only path or a skip (e.g. generation failed)
@@ -141,17 +142,17 @@ def cmd_m3g_submit(args: argparse.Namespace) -> int:
         return 0 if result.validated else 1
 
     if ur.dry_run:
-        print(f"\n✅ DRY RUN complete — draft NOT uploaded for {sid}.")
-        print("   Pass --submit to validate + upload as a draft.")
+        print(f"\n✅ DRY RUN complete — site log NOT published for {sid}.")
+        print("   Pass --publish to validate + publish to M3G.")
         return 0
 
     if not ur.ok:
         print(
-            f"\n❌ upload FAILED for {sid}: {ur.error or 'HTTP ' + str(ur.status_code)}"
+            f"\n❌ publish FAILED for {sid}: {ur.error or 'HTTP ' + str(ur.status_code)}"
         )
         return 1
 
-    print(f"\n✅ draft uploaded for {sid} (HTTP {ur.status_code}).")
+    print(f"\n✅ PUBLISHED to M3G for {sid} (HTTP {ur.status_code}).")
     if ur.md5_sitelog:
         print(f"   md5:      {ur.md5_sitelog}")
     if ur.sitelog_name:
@@ -159,12 +160,10 @@ def cmd_m3g_submit(args: argparse.Namespace) -> int:
     if ur.date_update:
         print(f"   updated:  {ur.date_update}")
 
-    # The critical handoff: post-upload alerts (yellow banners) are web-UI-only.
-    print("\n   🔔 Review the draft + post-upload alerts (not available via API):")
+    # The post-upload yellow 'Alert(s)' banners are web-UI-only (not in the API
+    # response). Print the station URL so the operator can review them.
+    print("\n   🔔 Review the station + post-upload alerts (not available via API):")
     print(f"      {ur.draft_url}")
-    print(
-        "   Then click 'Submit saved draft for publication' in the M3G portal to publish."
-    )
     return 0
 
 
@@ -211,21 +210,22 @@ def cmd_m3g_diff(args: argparse.Namespace) -> int:
 def create_m3g_parser(subparsers) -> argparse.ArgumentParser:
     parser = subparsers.add_parser(
         "m3g",
-        help="M3G site-log submission (validate / upload draft / diff).",
+        help="M3G site-log submission (validate / publish / diff).",
         description=(
-            "M3G (gnss-metadata.eu) site-log submission. Uploads save a DRAFT "
-            "only — publishing is a manual web-UI step (no M3G API endpoint "
-            "exists for publication). The post-upload 'Alert(s)' banners are "
-            "web-UI-only; the CLI prints the draft URL to review them."
+            "M3G (gnss-metadata.eu) site-log submission. The M3G upload-sitelog "
+            "API PUBLISHES directly — there is no draft state on the API path. "
+            "`m3g submit` is dry-run (validate only) by default; pass --publish "
+            "to publish. The pre-upload validate is the gate: a site log that "
+            "fails M3G/EPOS validation is never published."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
             "  receivers m3g validate --station RHOF          # check against EPOS rules\n"
             "  receivers m3g submit --station RHOF           # dry run: validate only\n"
-            "  receivers m3g submit --station RHOF --submit   # validate + upload draft\n"
-            "  receivers m3g submit --station RHOF --submit --m3g-endpoint test\n"
-            "  receivers m3g diff --station RHOF              # local vs live M3G draft\n"
+            "  receivers m3g submit --station RHOF --publish  # validate + publish to M3G\n"
+            "  receivers m3g submit --station RHOF --publish --m3g-endpoint test\n"
+            "  receivers m3g diff --station RHOF              # local vs live M3G version\n"
         ),
     )
     m3g_sub = parser.add_subparsers(
@@ -260,13 +260,14 @@ def create_m3g_parser(subparsers) -> argparse.ArgumentParser:
 
     # submit
     p_sub = m3g_sub.add_parser(
-        "submit", help="Validate + upload a site log as an M3G draft"
+        "submit", help="Validate + (with --publish) publish a site log to M3G"
     )
     add_common(p_sub)
     p_sub.add_argument(
-        "--submit",
+        "--publish",
         action="store_true",
-        help="Actually upload the draft (default: dry run / validate only)",
+        help="Publish to M3G (default: dry run / validate only). NOTE: the M3G API "
+        "publishes directly — there is no draft state.",
     )
     p_sub.add_argument(
         "--country-code", default="ISL", help="Country code (default: ISL)"

@@ -7,14 +7,15 @@ thin HTTP client over the M3G REST API (v1.3/v1.4):
 - :meth:`M3GClient.validate_sitelog` → ``PUT /sitelog/validate-sitelog``
   (checks the site log against a network's rules, e.g. EPOS). No auth.
 - :meth:`M3GClient.upload_sitelog` → ``PUT /sitelog/upload-sitelog?id=…``
-  (uploads the site log text; **saves it as a draft**). Requires the
+  (uploads the site log text; **publishes it directly**). Requires the
   agency's *Application Access Token* (bearer).
 
-**There is no API endpoint to publish/submit a draft for publication.** That
-step is web-UI-only by M3G's design (the "Submit saved draft for publication"
-button). So this client can only ever create or update a draft — final
-publication stays a manual click in the M3G portal, which is exactly the
-control the operator wants.
+**The ``upload-sitelog`` API publishes directly** — there is no draft state
+on the API path. The web UI's "Save all to draft" → "Submit saved draft for
+publication" workflow is for manual form-editing only; the API bypasses it.
+So :meth:`upload_sitelog` is the real publish trigger. The pre-upload
+:meth:`validate_sitelog` call is the gate: a site log that fails M3G/EPOS
+validation is never published.
 
 Credential resolution order (highest wins):
 1. Constructor arg ``token``
@@ -399,13 +400,13 @@ class M3GClient:
         *,
         dry_run: bool = True,
     ) -> UploadResult:
-        """Upload a site log as a **draft** (``PUT /sitelog/upload-sitelog?id=…``).
+        """Publish a site log to M3G (``PUT /sitelog/upload-sitelog?id=…``).
 
         Requires the agency application access token. In ``dry_run`` mode
         (default) the request is **not** sent — only validation feedback would
         have been gathered; the operator must pass ``dry_run=False`` to
-        actually push the draft. Publishing the draft is a separate manual
-        web-UI step with no API equivalent.
+        actually publish. **The M3G API publishes directly — there is no draft
+        state**, so a non-dry-run call makes the content live immediately.
 
         Returns an :class:`UploadResult`.
         """

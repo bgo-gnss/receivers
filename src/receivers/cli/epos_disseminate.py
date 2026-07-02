@@ -129,10 +129,10 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
             )
         return 0 if not summary.get("failed") else 1
 
-    # --sitelog / --submit-m3g: generate (+ optionally submit) the site log (C6/T7).
-    if args.sitelog or args.submit_m3g:
+    # --sitelog / --publish-m3g: generate (+ optionally publish) the site log (C6/T7).
+    if args.sitelog or args.publish_m3g:
         if not args.station:
-            print("--sitelog/--submit-m3g requires --station")
+            print("--sitelog/--publish-m3g requires --station")
             return 1
         from ..dissemination.sitelogs import (
             generate_site_log,
@@ -153,13 +153,13 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
             return 1
         print(f"✅ site log: {path}")
 
-        if not args.submit_m3g:
+        if not args.publish_m3g:
             return 0
 
-        # --submit-m3g: validate + upload as an M3G draft.
+        # --publish-m3g: validate + publish to M3G (the API publishes directly).
         from ..dissemination.m3g_client import M3GError
 
-        dry_run = not args.submit_m3g  # --submit-m3g gates the actual PUT
+        dry_run = False  # --publish-m3g means: actually publish
         # Reuse the standalone m3g submit flow but feed the just-written path.
         try:
             result = submit_to_m3g(
@@ -180,20 +180,17 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
         if result.validation is not None:
             _print_validation(result.validation)
             if not result.validated:
-                print("\n⚠️  upload skipped — fix the validation errors above first.")
+                print("\n⚠️  publish skipped — fix the validation errors above first.")
                 return 1
         ur = result.upload
-        if ur is not None and ur.dry_run:
-            print(f"\n✅ M3G DRY RUN complete — draft NOT uploaded for {args.station}.")
-            print("   Pass --submit-m3g to upload as a draft.")
-        elif ur is not None and ur.ok:
-            print(f"\n✅ M3G draft uploaded for {args.station}.")
+        if ur is not None and ur.ok:
+            print(f"\n✅ M3G PUBLISHED for {args.station}.")
             if ur.sitelog_name:
                 print(f"   filename: {ur.sitelog_name}")
-            print(f"   🔔 review + publish: {ur.draft_url}")
+            print(f"   🔔 review + alerts: {ur.draft_url}")
         elif ur is not None:
             print(
-                f"\n❌ M3G upload failed: {ur.error or 'HTTP ' + str(ur.status_code)}"
+                f"\n❌ M3G publish failed: {ur.error or 'HTTP ' + str(ur.status_code)}"
             )
             return 1
         return 0
@@ -317,15 +314,15 @@ def create_epos_disseminate_parser(subparsers) -> argparse.ArgumentParser:
         "(<9char>_<YYYYMMDD>.log with §0 Previous Site Log chaining)",
     )
     parser.add_argument(
-        "--submit-m3g",
+        "--publish-m3g",
         action="store_true",
-        help="After --sitelog, validate + upload the site log to M3G as a DRAFT "
-        "(publishing stays a manual web-UI step). Implies --sitelog. "
-        "Endpoint/token from --m3g-endpoint / [m3g] in database.cfg.",
+        help="After --sitelog, validate + PUBLISH the site log to M3G. The M3G API "
+        "publishes directly (no draft state). Implies --sitelog. Validation runs "
+        "first and blocks on errors. Endpoint/token from --m3g-endpoint / [m3g].",
     )
     parser.add_argument(
         "--m3g-endpoint",
-        help="M3G endpoint URL or alias (prod/test). Used with --submit-m3g.",
+        help="M3G endpoint URL or alias (prod/test). Used with --publish-m3g.",
     )
     parser.add_argument(
         "--m3g-network",
