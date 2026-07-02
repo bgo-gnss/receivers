@@ -103,6 +103,7 @@ class RinexNamer:
         country_code: str = "ISL",
         uppercase_station: bool = True,
         loglevel: int = logging.INFO,
+        monument_number: str = "00",
     ):
         """Initialize RINEX namer.
 
@@ -113,11 +114,14 @@ class RinexNamer:
             uppercase_station: Use uppercase station ID in long filenames (default: True)
                                Note: IGS convention is lowercase, but we default to uppercase
             loglevel: Logging level
+            monument_number: 2-digit monument number for the 9-char long-name ID
+                             (default "00"; will become a per-station TOS attribute)
         """
         self.station_id = station_id.upper()[:4].ljust(4)  # Ensure 4 chars
         self.rinex_version = rinex_version
         self.country_code = country_code.upper()[:3]
         self.uppercase_station = uppercase_station
+        self.monument_number = str(monument_number)[:2].rjust(2, "0")
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.logger.setLevel(loglevel)
 
@@ -242,6 +246,7 @@ class RinexNamer:
             file_period=file_period,
             data_frequency=data_frequency,
             file_type=file_type,
+            monument_number=self.monument_number,
         )
 
         # gtimes produces lowercase station ID per IGS convention

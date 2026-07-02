@@ -128,10 +128,12 @@ def _build_target(raw: dict, default_overlap: int) -> SyncTarget:
 
 
 def load_sync_config(config_path: Path | None = None) -> list[SyncTarget]:
-    """Load all sync targets from ``sync.yaml``.
+    """Load the ``tier: archive`` sync targets from ``sync.yaml``.
 
-    Returns an empty list when the file is absent (sync simply does nothing).
-    Raises ``RuntimeError`` if PyYAML is unavailable and a config exists.
+    ``tier: dissemination`` targets in the same file are ignored here — they
+    belong to :func:`receivers.dissemination.config.load_dissemination_config`
+    (the two loaders share one sync.yaml). Returns an empty list when the file is
+    absent. Raises ``RuntimeError`` if PyYAML is unavailable and a config exists.
     """
     path = config_path or _default_config_path()
     if not path.is_file():
@@ -143,4 +145,8 @@ def load_sync_config(config_path: Path | None = None) -> list[SyncTarget]:
     with open(path) as fh:
         doc = yaml.safe_load(fh) or {}
     default_overlap = int(doc.get("overlap_minutes", DEFAULT_OVERLAP_MINUTES))
-    return [_build_target(t, default_overlap) for t in doc.get("targets", [])]
+    return [
+        _build_target(t, default_overlap)
+        for t in doc.get("targets", [])
+        if t.get("tier", "archive") != "dissemination"
+    ]

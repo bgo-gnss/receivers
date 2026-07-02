@@ -647,6 +647,17 @@ Examples:
         "live stream station. Constellations: gps, glonass, galileo, beidou.",
     )
     mode_group.add_argument(
+        "--set-antenna",
+        action="store_true",
+        help="Push the station's reconciled antenna identity (type/radome/serial/"
+        "offsets from stations.cfg) into the receiver — ONLY setAntennaOffset + "
+        "boot save, identity-safe. Closes the loop after `cfg reconcile`: RINEX "
+        "ANT # / TYPE headers echo the RECEIVER's configured antenna, so after a "
+        "swap the box keeps emitting the old antenna until this push. Unknown "
+        "serial (cfg zeros) is pushed as '0000000000'. Per-station values — each "
+        "station gets its own push. Septentrio PolaRx5 only.",
+    )
+    mode_group.add_argument(
         "--check-session",
         metavar="SESSION",
         help="Check whether a logging session is enabled (e.g. status_1hr). "
@@ -1330,5 +1341,10 @@ For subcommand help: receivers <command> --help
     create_archive_sync_parser(subparsers)
     # archive-verify (re-hash archived files + local↔archive cross-check)
     create_archive_verify_parser(subparsers)
+
+    # epos-disseminate (RINEX3 long-name dissemination to the EPOS files server)
+    from .epos_disseminate import create_epos_disseminate_parser
+
+    create_epos_disseminate_parser(subparsers)
 
     return parser

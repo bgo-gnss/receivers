@@ -656,6 +656,7 @@ def add_antenna(
         rad_serial = synthetic_serial("radome", station_id, eff_date)
         rad_attrs = build_required_attributes(rad_serial, igs_radome, owner, eff_date)
         result.tos_changes["radome_serial"] = rad_serial
+        result.tos_changes["radome_attributes"] = rad_attrs
         rad_resp = w.create_device("radome", rad_attrs, force=force)
         result.tos_changes["radome_create"] = rad_resp
         rad_id = rad_resp.get("id_entity") if isinstance(rad_resp, dict) else None
@@ -685,6 +686,7 @@ def add_monument(
     owner: str = "Jarðeðlismælihópur",
     date_start: Optional[str] = None,
     comment: Optional[str] = None,
+    model: Optional[str] = None,
     force: bool = False,
     dry_run: bool = True,
 ) -> OperationResult:
@@ -694,7 +696,8 @@ def add_monument(
     point); TOS keeps one per height epoch. Like :func:`add_antenna` it can't be
     probed — identity is operator-supplied and the serial defaults to a synthetic
     ``monument-<STID>-<YYYYMMDD>`` placeholder (the fleet convention, e.g.
-    ``monument-REYK-19980913``). Monuments have **no model**.
+    ``monument-REYK-19980913``). The ``model`` (physical mark type, e.g.
+    ``"GPS stál-fjórfótur"``) is optional free text — omit when unknown.
 
     Args:
         writer: A configured :class:`TOSWriter`, or ``None`` to build one in
@@ -757,6 +760,7 @@ def add_monument(
         date_start=eff_date,
         monument_height=height,
         comment=comment,
+        model=model,
     )
 
     result = OperationResult(

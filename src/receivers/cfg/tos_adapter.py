@@ -59,20 +59,34 @@ def current_antenna_serial(station: Dict[str, Any]) -> Optional[str]:
 
 
 def current_radome_model(station: Dict[str, Any]) -> Optional[str]:
-    """Return current radome model, or ``None`` if TOS has no radome entity.
+    """Return current radome model; TOS models "no radome fitted" by ABSENCE.
 
-    Distinguishes two cases:
-    - TOS has a radome entity whose model is blank/NONE → return ``"NONE"``
-      (TOS actively recorded that no radome is fitted).
-    - TOS has no radome entity at all → return ``None``
-      (missing data, not the same as "no radome").
+    TOS deliberately has no radome entity when no radome is fitted — the
+    intake flow (``cfg add-antenna --radome NONE``) creates a radome device
+    only for a real radome code. So absence is only "missing data" when the
+    session lacks an ANTENNA too; with an antenna present, absence is an
+    active "no radome" statement (the cfg-side spelling of the same fact is
+    the literal ``NONE``). Three cases:
+
+    - session has a radome entity → its model (blank model → ``"NONE"``,
+      TOS explicitly recorded no-radome on the entity).
+    - session has an antenna but NO radome entity → ``"NONE"``
+      (registered antenna, no radome fitted). Makes cfg ``NONE`` compare as
+      agreement, and a real cfg radome code (e.g. ``SCIS``) surface as a
+      CONFLICT — someone should register the radome — instead of a
+      "TOS-fillable" gap that ``C`` cannot fill anyway (there is no radome
+      entity to patch; the push would fail on resolve_entity_id).
+    - session has neither antenna nor radome → ``None`` (truly incomplete
+      TOS; nothing can be inferred).
     """
     session = current_session(station)
     if not session:
         return None
     radome = session.get("radome")
     if not isinstance(radome, dict):
-        # No radome entity connected in TOS — missing data, not "no radome"
+        if isinstance(session.get("antenna"), dict):
+            # Registered antenna, no radome entity → active "no radome".
+            return "NONE"
         return None
     val = radome.get("model")
     if val is None or val == "":

@@ -1113,7 +1113,13 @@ def _reconcile_one(
                 f"\n   {len(cfg_placeholders)} placeholder value(s) to remove: {keys} (dry-run)"
             )
         if not silent and tos_fillable_list:
-            keys = ", ".join(d.cfg_key for d in tos_fillable_list)
+            # Annotate fields where TOS is not truly empty but holds a
+            # placeholder (synthetic serial = recorded-as-unknown) — pushing
+            # the cfg value there is usually wrong (see interactive prompt).
+            keys = ", ".join(
+                f"{d.cfg_key}(TOS=unknown)" if d.tos_placeholder else d.cfg_key
+                for d in tos_fillable_list
+            )
             print(
                 f"\n   {len(tos_fillable_list)} field(s) with cfg value but TOS empty: {keys} (use C to populate)"
             )
@@ -1512,14 +1518,44 @@ def _reconcile_one(
         for d in tos_fillable_list:
             print(f"\n     ↑ {d.label} ({d.cfg_key})")
             print(f"       cfg: {d.cfg_value!r}")
-            print("       TOS: [no value — use C to populate]")
-            print("       [C]push-cfg-to-TOS · [k]eep · [q]uit")
+            if d.tos_placeholder:
+                # TOS holds a synthetic placeholder (e.g. antenna-ODDF-20230706):
+                # the device EXISTS and its serial is recorded-as-UNKNOWN. Very
+                # different from "no value" — the cfg value may belong to a
+                # PREVIOUS device, so pushing it blindly would mislabel the
+                # current one. Offer the cfg-side unknown-marker instead.
+                print(f"       TOS: recorded as UNKNOWN (placeholder {d.tos_raw!r})")
+                print(
+                    "       ⚠ push C only if the cfg value truly belongs to the "
+                    "CURRENT device"
+                )
+                print(
+                    "       [z]set cfg = '0000000000' (unknown) · "
+                    "[C]push-cfg-to-TOS · [k]eep · [q]uit"
+                )
+            else:
+                print("       TOS: [no value — use C to populate]")
+                print("       [C]push-cfg-to-TOS · [k]eep · [q]uit")
             try:
                 raw = input("       > ").strip()
             except EOFError:
                 break
             if raw in ("q", "quit"):
                 break
+            if raw == "z" and d.tos_placeholder:
+                # Translate TOS's "unknown" into the cfg convention (all-zeros,
+                # the fleet-wide unknown-serial marker) — deliberately bypassing
+                # cfg_format: writing a value normalize() strips is the point.
+                try:
+                    changed = _apply_to_targets(d, "0000000000")
+                    if changed:
+                        n_written += 1
+                        print(f"       ✅ wrote {d.cfg_key} = '0000000000' to cfg")
+                    else:
+                        print("       ⏭  cfg unchanged")
+                except Exception as exc:  # noqa: BLE001
+                    print(f"       ❌ cfg write failed: {exc}")
+                continue
             if raw == "C":
                 cfg_val = d.cfg_value
                 assert cfg_val is not None  # guaranteed by _is_tos_fillable
@@ -2484,7 +2520,102 @@ def cmd_cfg_add_receiver(args) -> int:
                 print(
                     f"Connected to location {args.location!r} (connection id={conn_id})"
                 )
+
+    # ---- Triage-file substitution (parity with `tos device add`) ------------
+    # Drop the freshly-created id_entity into a waiting join triage file so the
+    # add-receiver → `tos audit apply` handoff needs no manual id copy-paste.
+    triage = getattr(args, "triage", None)
+    placeholder = getattr(args, "placeholder", None)
+    if triage is not None or placeholder is not None:
+        if triage is None or placeholder is None:
+            print("--triage and --placeholder must be used together", file=sys.stderr)
+            return 2
+    if triage is not None and placeholder is not None:
+        if dry_run or id_entity is None:
+            if not args.json:
+                print(
+                    f"Triage update skipped: dry-run / no real id_entity "
+                    f"(use --no-dry-run to substitute <{placeholder}> in {triage}).",
+                    file=sys.stderr,
+                )
+        else:
+            from tostools.tos import _substitute_id_in_triage
+
+            try:
+                result = _substitute_id_in_triage(triage, placeholder, id_entity)
+            except OSError as exc:
+                print(f"Could not read triage file {triage}: {exc}", file=sys.stderr)
+                return 1
+            if result["count"] == 0:
+                print(
+                    f"Triage update: placeholder {result['token']!r} not found "
+                    f"in {triage} (no changes written).",
+                    file=sys.stderr,
+                )
+            elif not args.json:
+                n = result["count"]
+                print(
+                    f"Updated {triage}: {result['token']} → {id_entity} "
+                    f"({n} replacement{'s' if n != 1 else ''})"
+                )
+
+    # ---- Creation audit log (gps-tos-corrections) ---------------------------
+    # Symmetric with `tos device delete --commit`: record the creation so
+    # additions leave a corrections-repo trail like deletions do.
+    if getattr(args, "commit", False) and not dry_run and id_entity is not None:
+        from tostools.tos import audit_log_device_creation
+
+        audit = audit_log_device_creation(
+            id_entity,
+            subtype=merged["subtype"],
+            serial=merged["serial"],
+            model=igs_model,
+            location=args.location,
+            date_start=date_start,
+            source="receivers cfg add-receiver",
+            note=getattr(args, "note", None),
+        )
+        if audit.get("logged") and not args.json:
+            print(f"--commit: creation logged → {audit.get('log')}")
     return 0
+
+
+def _audit_log_op_creations(result, *, source: str, note) -> None:
+    """Audit-log every device an add-antenna/add-monument op created (--commit).
+
+    Reads the create responses + attribute lists the operation stored in
+    ``result.tos_changes`` and appends one record per created device to
+    ``additions/device_additions.jsonl`` via tostools ``audit_log_device_creation``
+    (symmetric with ``cfg add-receiver --commit`` / ``tos device add --commit``).
+    Best-effort; a logging/git failure warns but never fails the create.
+    """
+    from tostools.tos import audit_log_device_creation
+
+    changes = result.tos_changes
+    for create_key, attrs_key, subtype in (
+        ("antenna_create", "antenna_attributes", "antenna"),
+        ("radome_create", "radome_attributes", "radome"),
+        ("monument_create", "monument_attributes", "monument"),
+    ):
+        resp = changes.get(create_key)
+        if not isinstance(resp, dict):
+            continue
+        mid = resp.get("id_entity")
+        if mid is None:
+            continue
+        attrs = changes.get(attrs_key) or []
+        vals = {a.get("code"): a.get("value") for a in attrs if isinstance(a, dict)}
+        audit = audit_log_device_creation(
+            int(mid),
+            subtype=subtype,
+            serial=vals.get("serial_number"),
+            model=vals.get("model"),
+            date_start=vals.get("date_start"),
+            source=source,
+            note=note,
+        )
+        if audit.get("logged"):
+            print(f"--commit: creation logged → dev {mid} ({subtype})")
 
 
 # ---------------------------------------------------------------------------
@@ -2594,6 +2725,10 @@ def cmd_cfg_add_antenna(args) -> int:
                 f"  + radome {args.radome} "
                 f"(serial={result.tos_changes.get('radome_serial')})"
             )
+    if getattr(args, "commit", False) and not result.dry_run:
+        _audit_log_op_creations(
+            result, source="receivers cfg add-antenna", note=getattr(args, "note", None)
+        )
     return 0
 
 
@@ -2645,6 +2780,7 @@ def cmd_cfg_add_monument(args) -> int:
             owner=owner,
             date_start=args.date_start,
             comment=args.comment,
+            model=getattr(args, "model", None),
             force=args.force,
             dry_run=dry_run,
         )
@@ -2682,6 +2818,12 @@ def cmd_cfg_add_monument(args) -> int:
         print(
             f"Monument @ {result.station_id}: serial={result.serial}{synth} "
             f"height={args.height} date_start={result.date}{suffix}"
+        )
+    if getattr(args, "commit", False) and not result.dry_run:
+        _audit_log_op_creations(
+            result,
+            source="receivers cfg add-monument",
+            note=getattr(args, "note", None),
         )
     return 0
 
@@ -4202,6 +4344,39 @@ Examples:
         action="store_true",
         help="Emit a structured JSON summary instead of plain text.",
     )
+    add_rx.add_argument(
+        "--triage",
+        default=None,
+        help=(
+            "After a live (--no-dry-run) creation, substitute the returned "
+            "id_entity into a triage file in-place (parity with `tos device "
+            "add`). Requires --placeholder. Resolves cwd-safely under the "
+            "gps-tos-corrections repo, e.g. --triage bald/bald_join.txt."
+        ),
+    )
+    add_rx.add_argument(
+        "--placeholder",
+        default=None,
+        help=(
+            "Token to substitute in the --triage file; the match is the "
+            "angle-bracketed form '<TOKEN>'. Required when --triage is given."
+        ),
+    )
+    add_rx.add_argument(
+        "--commit",
+        action="store_true",
+        help=(
+            "After a live creation, append a record to "
+            "additions/device_additions.jsonl in gps-tos-corrections and "
+            "git-commit it (audit trail, symmetric with deletions/). "
+            "Best-effort; never fails the create."
+        ),
+    )
+    add_rx.add_argument(
+        "--note",
+        default=None,
+        help="Free-text reason stored in the --commit creation record.",
+    )
     add_rx.set_defaults(func=cmd_cfg_add_receiver)
 
     # ---- add-antenna -----------------------------------------------------
@@ -4310,6 +4485,21 @@ Examples:
         action="store_true",
         help="Emit a structured JSON summary instead of plain text.",
     )
+    add_ant.add_argument(
+        "--commit",
+        action="store_true",
+        help=(
+            "After a live creation, append a record per created device "
+            "(antenna + radome) to additions/device_additions.jsonl in "
+            "gps-tos-corrections and git-commit it (audit trail, symmetric with "
+            "deletions/). Best-effort; never fails the create."
+        ),
+    )
+    add_ant.add_argument(
+        "--note",
+        default=None,
+        help="Free-text reason stored in the --commit creation record(s).",
+    )
     add_ant.set_defaults(func=cmd_cfg_add_antenna)
 
     # ---- add-monument ----------------------------------------------------
@@ -4319,9 +4509,9 @@ Examples:
         description=(
             "Create a 'monument' device entity in TOS and join it to a station. "
             "The monument carries the antenna_height (mark → ARP) offset; TOS "
-            "keeps one per height epoch. Monuments have no model and can't be "
-            "probed — an unknown serial gets a synthetic "
-            "'monument-<STID>-<YYYYMMDD>' placeholder. Defaults to dry-run."
+            "keeps one per height epoch. Monuments can't be probed — an unknown "
+            "serial gets a synthetic 'monument-<STID>-<YYYYMMDD>' placeholder, "
+            "and the mark type goes in --model (free text). Defaults to dry-run."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
@@ -4351,6 +4541,14 @@ Examples:
         help=(
             "Monument serial. Omit when unknown — a synthetic "
             "'monument-<STID>-<YYYYMMDD>' placeholder is generated."
+        ),
+    )
+    add_mon.add_argument(
+        "--model",
+        help=(
+            "Physical mark type (free text), e.g. 'GPS stál-fjórfótur' (steel "
+            "quadripod), 'GPS stál-staur' (steel post), 'steyptur stöpull' "
+            "(concrete pillar). Omit when the mark type is unknown."
         ),
     )
     add_mon.add_argument(
@@ -4397,6 +4595,21 @@ Examples:
         "--json",
         action="store_true",
         help="Emit a structured JSON summary instead of plain text.",
+    )
+    add_mon.add_argument(
+        "--commit",
+        action="store_true",
+        help=(
+            "After a live creation, append a record to "
+            "additions/device_additions.jsonl in gps-tos-corrections and "
+            "git-commit it (audit trail, symmetric with deletions/). "
+            "Best-effort; never fails the create."
+        ),
+    )
+    add_mon.add_argument(
+        "--note",
+        default=None,
+        help="Free-text reason stored in the --commit creation record.",
     )
     add_mon.set_defaults(func=cmd_cfg_add_monument)
 

@@ -212,6 +212,27 @@ def get_default_config() -> Dict[str, Any]:
             "schedule": ":45",
             "max_age_minutes": 120,
         },
+        # EPOS dissemination sweep (T8): disseminate a trailing window of daily
+        # files for every EPOS station to the active sync.yaml dissemination
+        # target. Double-gated and inert by default — this flag AND a dissemination
+        # target with active: true in sync.yaml. Runs after the archive-sync window.
+        "epos_disseminate": {
+            "enabled": False,
+            "schedule": ":50",
+            "days_back": 3,
+            "no_qc": False,
+        },
+        # EPOS reactive sweep (T6): daily TOS-fingerprint diff that re-ETLs /
+        # re-disseminates / stops only the stations whose TOS metadata or EPOS
+        # eligibility changed. Same double gate as the sweep (this flag AND an
+        # active dissemination target). backfill_days bounds the re-push window
+        # for a changed/activated station (the convert-cache keeps re-runs cheap).
+        "epos_reactive": {
+            "enabled": False,
+            "schedule": "06:30",
+            "backfill_days": 365,
+            "no_qc": False,
+        },
         # Periodic archive integrity: re-hash archived files vs
         # archive_catalog.content_sha256 (read-back) + local cross-check.
         # Disabled by default. read_root must point at the archive's read-only
@@ -336,6 +357,8 @@ def merge_with_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
         "archive_reconciler",
         "integrity_checker",
         "archive_verify",
+        "epos_disseminate",
+        "epos_reactive",
         "load_monitoring",
         "bootstrap",
     ]:
