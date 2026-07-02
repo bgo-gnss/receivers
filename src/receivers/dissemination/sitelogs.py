@@ -180,13 +180,16 @@ def generate_site_log(
     in ``out_dir``; pass ``include_date=False`` for the plain ``RHOF00ISL.log``.
     ``agency_resolver`` (default: load agencies.yaml) drives §11/§12/§13 via
     :func:`resolve_sitelog_agencies`.
+
+    Rendering is the proven legacy ``tostools.legacy`` generator — the single
+    renderer whose output is byte-parity with the M3G exportlog form; the TOS
+    metadata fetched here feeds the agency-role resolution, while the renderer
+    reads its own device sessions via the legacy metadata pipeline.
     """
     from datetime import datetime
 
-    from tostools.core.site_log import (
-        export_site_log_to_file,
-        generate_igs_site_log,
-    )
+    from tostools.core.site_log import export_site_log_to_file
+    from tostools.legacy.gps_metadata_functions import site_log as render_site_log
     from tostools.tosGPS import generate_igs_sitelog_filename
 
     sid = station.upper()
@@ -210,17 +213,19 @@ def generate_site_log(
     date_str = custom_date or datetime.now().strftime("%Y%m%d")
     previous = find_previous_site_log(Path(out_dir), nine_char, date_str)
 
-    device_sessions = meta.get("device_history", []) or []
     agencies = resolve_sitelog_agencies(client, meta, agency_resolver)
-    content = generate_igs_site_log(
-        meta,
-        device_sessions,
-        loglevel=loglevel,
-        country_code=country_code,
-        monument_number=monument_number,
-        agencies=agencies,
-        previous_site_log=previous,
-    )
+    try:
+        content = render_site_log(
+            sid,
+            loglevel=loglevel,
+            previous_log=previous,
+            agencies=agencies,
+            monument_number=mon,
+            country_code=country_code.upper(),
+        )
+    except Exception as exc:  # noqa: BLE001 - renderer/TOS failure ⇒ skip (logged)
+        logger.warning("site log: renderer failed for %s: %s", sid, exc)
+        return None
     if not content:
         logger.warning("site log: generator produced nothing for %s", sid)
         return None

@@ -2159,7 +2159,7 @@ class TestSitelogDatedSeries:
             agency_resolver=resolver,
         )
         assert p1 is not None and p1.name == "rhof00isl_20240827.log"
-        assert "Previous Site Log        :\n" in p1.read_text()  # first in series
+        assert "Previous Site Log       : \n" in p1.read_text()  # first in series (empty; M3G keeps trailing space)
 
         p2 = generate_site_log(
             "RHOF",
@@ -2169,7 +2169,7 @@ class TestSitelogDatedSeries:
             agency_resolver=resolver,
         )
         assert p2 is not None and p2.name == "rhof00isl_20241011.log"
-        assert "Previous Site Log        : rhof00isl_20240827.log" in p2.read_text()
+        assert "Previous Site Log       : rhof00isl_20240827.log" in p2.read_text()
 
     def test_plain_name_still_available(self, tmp_path):
         from receivers.dissemination.agencies import AgencyResolver
