@@ -1933,7 +1933,8 @@ class TestAgencyResolver:
         from receivers.dissemination.agencies import AgencyResolver
 
         p = tmp_path / "agencies.yaml"
-        p.write_text(textwrap.dedent("""
+        p.write_text(
+            textwrap.dedent("""
                 defaults: {url: "https://x"}
                 agencies:
                   "Org A":
@@ -1942,7 +1943,8 @@ class TestAgencyResolver:
                     observer: "GNSSatA"
                     agency_label: "A"
                     address: "Single Line"
-                """))
+                """)
+        )
         a = AgencyResolver.load(p).resolve("Org A")
         assert a.english_name == "A EN"
         assert a.address == ("Single Line",)  # scalar promoted to 1-tuple
@@ -2159,7 +2161,9 @@ class TestSitelogDatedSeries:
             agency_resolver=resolver,
         )
         assert p1 is not None and p1.name == "rhof00isl_20240827.log"
-        assert "Previous Site Log       : \n" in p1.read_text()  # first in series (empty; M3G keeps trailing space)
+        assert (
+            "Previous Site Log       : \n" in p1.read_text()
+        )  # first in series (empty; M3G keeps trailing space)
 
         p2 = generate_site_log(
             "RHOF",
@@ -2183,3 +2187,214 @@ class TestSitelogDatedSeries:
             agency_resolver=AgencyResolver.from_dict(TestAgencyResolver.RAW),
         )
         assert p is not None and p.name == "RHOF00ISL.log"
+
+
+class _FakeResponse:
+    """Minimal stand-in for requests.Response used by M3GClient tests."""
+
+    def __init__(self, status_code, body=None, text=""):
+        self.status_code = status_code
+        self._body = body
+        self.text = text
+        self.content = (
+            __import__("json").dumps(body).encode()
+            if body is not None
+            else text.encode()
+        )
+
+    def json(self):
+        if self._body is None:
+            raise ValueError("no JSON body")
+        return self._body
+
+    @property
+    def ok(self):
+        return self.status_code < 400
+
+
+class TestM3GClient:
+    """M3G API client: validate (auth-free) + upload-as-draft (auth)."""
+
+    def _client(self, monkeypatch, responses):
+        """Build an M3GClient whose requests.put returns canned responses in order."""
+        import receivers.dissemination.m3g_client as mod
+
+        calls = {"list": []}
+
+        class _Req:
+            def __getattr__(self, _):
+                return lambda *a, **k: self._do(a, k)
+
+            def _do(self, args, kwargs):
+                calls["list"].append((args, kwargs))
+                return responses.pop(0)
+
+            RequestException = type("RequestException", (Exception,), {})
+
+        monkeypatch.setattr(mod, "requests", _Req())
+        c = mod.M3GClient(endpoint="https://gnss-metadata.eu/v1", token="tok")
+        return c, calls
+
+    def test_validate_ok_on_200(self, monkeypatch):
+        c, _ = self._client(monkeypatch, [_FakeResponse(200, {"id": "RHOF00ISL"})])
+        vr = c.validate_sitelog("content", network="EPOS")
+        assert vr.ok is True
+        assert vr.status_code == 200
+        assert vr.errors == []
+
+    def test_validate_422_collects_errors_and_blocks(self, monkeypatch):
+        body = [{"field": "siteName", "message": "required"}]
+        c, _ = self._client(monkeypatch, [_FakeResponse(422, body)])
+        vr = c.validate_sitelog("bad", network="EPOS")
+        assert vr.ok is False
+        assert len(vr.errors) == 1
+        assert vr.errors[0]["field"] == "siteName"
+
+    def test_upload_dry_run_does_not_send(self, monkeypatch):
+        c, calls = self._client(monkeypatch, [])  # no responses — must not call
+        ur = c.upload_sitelog("RHOF00ISL", "content", dry_run=True)
+        assert ur.ok is True and ur.dry_run is True
+        assert calls["list"] == []  # no HTTP call made
+
+    def test_upload_success_parses_links_and_md5(self, monkeypatch):
+        body = {
+            "id": "RHOF00ISL",
+            "md5Sitelog": "abc123",
+            "sitelogName": "rhof00isl_20260702.log",
+            "preparedDate": "2026-07-02T00:00Z",
+            "dateUpdate": "2026-07-02T14:00Z",
+            "_links": {
+                "self": {
+                    "href": "https://gnss-metadata.eu/v1/sitelog/view?id=RHOF00ISL"
+                },
+            },
+        }
+        c, _ = self._client(monkeypatch, [_FakeResponse(200, body)])
+        ur = c.upload_sitelog("RHOF00ISL", "content", dry_run=False)
+        assert ur.ok is True
+        assert ur.md5_sitelog == "abc123"
+        assert ur.sitelog_name == "rhof00isl_20260702.log"
+        assert "self" in ur.links
+        # draft URL derived from the self link's host
+        assert "gnss-metadata.eu/sitelog/modify" in ur.draft_url
+        assert "station=RHOF00ISL" in ur.draft_url
+
+    def test_upload_401_raises(self, monkeypatch):
+        from receivers.dissemination.m3g_client import M3GError
+
+        c, _ = self._client(monkeypatch, [_FakeResponse(401, {"message": "no"})])
+        import pytest
+
+        with pytest.raises(M3GError):
+            c.upload_sitelog("RHOF00ISL", "content", dry_run=False)
+
+    def test_token_resolution_env_var(self, monkeypatch):
+        import receivers.dissemination.m3g_client as mod
+
+        monkeypatch.setenv("M3G_TOKEN", "envtok")
+        assert mod._resolve_token(None) == "envtok"
+
+    def test_token_missing_raises_on_upload(self, monkeypatch):
+        import receivers.dissemination.m3g_client as mod
+
+        monkeypatch.delenv("M3G_TOKEN", raising=False)
+        monkeypatch.setattr(mod, "_find_database_cfg", lambda cfg=None: None)
+        c = mod.M3GClient(endpoint="prod")  # no token anywhere
+        import pytest
+
+        with pytest.raises(mod.M3GError):
+            c.upload_sitelog("RHOF00ISL", "x", dry_run=False)
+
+    def test_endpoint_alias_resolution(self, monkeypatch):
+        import receivers.dissemination.m3g_client as mod
+
+        assert mod._resolve_endpoint("prod") == mod.DEFAULT_M3G_ENDPOINT
+        assert mod._resolve_endpoint("test") == mod.TEST_M3G_ENDPOINT
+        assert mod._resolve_endpoint("https://custom/v2") == "https://custom/v2"
+
+
+class TestSubmitToM3G:
+    """submit_to_m3g: the validate-then-upload-as-draft flow."""
+
+    class _MockClient:
+        def __init__(self, validate_ok=True, upload_ok=True):
+            self._v_ok = validate_ok
+            self._u_ok = upload_ok
+            self.validate_calls = []
+            self.upload_calls = []
+
+        def validate_sitelog(self, content, *, network="EPOS"):
+            self.validate_calls.append((content, network))
+            from receivers.dissemination.m3g_client import ValidationResult
+
+            return ValidationResult(
+                ok=self._v_ok,
+                network=network,
+                status_code=200 if self._v_ok else 422,
+                messages=[] if self._v_ok else [{"field": "x", "message": "bad"}],
+            )
+
+        def upload_sitelog(self, sid, content, *, dry_run=True):
+            self.upload_calls.append((sid, content, dry_run))
+            from receivers.dissemination.m3g_client import UploadResult
+
+            return UploadResult(
+                ok=self._u_ok,
+                station_id=sid,
+                status_code=200 if self._u_ok else 500,
+                dry_run=dry_run,
+                md5_sitelog="abc" if self._u_ok else None,
+                sitelog_name="rhof00isl_20260702.log" if self._u_ok else None,
+                links={"self": "https://gnss-metadata.eu/v1/sitelog/view?id=RHOF00ISL"}
+                if self._u_ok
+                else {},
+                error=None if self._u_ok else "boom",
+            )
+
+    def test_dry_run_validates_but_does_not_upload(self, tmp_path):
+        from receivers.dissemination.sitelogs import submit_to_m3g
+
+        sl = tmp_path / "rhof00isl_20260702.log"
+        sl.write_text("sitelog content")
+        mc = self._MockClient()
+        r = submit_to_m3g("RHOF", site_log_path=sl, client=mc, dry_run=True)
+        assert r.validated is True
+        assert len(mc.validate_calls) == 1
+        assert len(mc.upload_calls) == 1
+        assert mc.upload_calls[0][2] is True  # dry_run=True
+        assert r.uploaded is True  # dry-run upload reports ok=True
+
+    def test_submit_uploads_after_validation(self, tmp_path):
+        from receivers.dissemination.sitelogs import submit_to_m3g
+
+        sl = tmp_path / "rhof00isl_20260702.log"
+        sl.write_text("content")
+        mc = self._MockClient()
+        r = submit_to_m3g("RHOF", site_log_path=sl, client=mc, dry_run=False)
+        assert r.validated is True
+        assert mc.upload_calls[0][2] is False  # actually sent
+        assert r.uploaded is True
+
+    def test_validation_failure_blocks_upload(self, tmp_path):
+        from receivers.dissemination.sitelogs import submit_to_m3g
+
+        sl = tmp_path / "rhof00isl_20260702.log"
+        sl.write_text("bad")
+        mc = self._MockClient(validate_ok=False)
+        r = submit_to_m3g("RHOF", site_log_path=sl, client=mc, dry_run=False)
+        assert r.validated is False
+        assert r.uploaded is False
+        assert len(mc.upload_calls) == 0  # never reached upload
+        assert r.skipped is not None and "validation" in r.skipped.lower()
+
+    def test_skip_validation_proceeds_to_upload(self, tmp_path):
+        from receivers.dissemination.sitelogs import submit_to_m3g
+
+        sl = tmp_path / "rhof00isl_20260702.log"
+        sl.write_text("content")
+        mc = self._MockClient()
+        r = submit_to_m3g(
+            "RHOF", site_log_path=sl, client=mc, dry_run=False, skip_validation=True
+        )
+        assert len(mc.validate_calls) == 0
+        assert r.uploaded is True

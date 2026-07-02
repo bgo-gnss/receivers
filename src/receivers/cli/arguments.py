@@ -1347,4 +1347,9 @@ For subcommand help: receivers <command> --help
 
     create_epos_disseminate_parser(subparsers)
 
+    # m3g (M3G site-log submission: validate / upload draft / diff)
+    from .m3g import create_m3g_parser
+
+    create_m3g_parser(subparsers)
+
     return parser
