@@ -145,3 +145,53 @@ def test_unparsable_path_skipped(db_conn, tmp_path):
     )
     assert stats.skipped == 1
     assert stats.touched == 0
+
+
+# ---- _push_reindex glue (the `rinex --fix-headers --push --reindex` entry) ---
+class TestPushReindexGlue:
+    """The flag entry point wires args + staged paths into reindex_files."""
+
+    def test_no_flag_prints_hint_only(self, capsys):
+        import types
+
+        from receivers.cli.main import _push_reindex
+
+        args = types.SimpleNamespace(reindex=False, catalog_host=None)
+        # No DB touched; must not raise and must point at the reindex verb.
+        _push_reindex(
+            args, ["/whatever"], root="/tmp/x",
+            storage_location="imo_archive", dest_prefix="~/gpsdata",
+        )
+        out = capsys.readouterr().out
+        assert "archive-reindex" in out
+        assert "archive-sync --status" not in out
+
+    def test_flag_reindexes_staged_file(self, db_conn, tmp_path, capsys):
+        import types
+
+        from receivers.cli.main import _push_reindex
+
+        _seed_row(db_conn, REL, "0" * 64)          # stale row
+        _seed_gz(tmp_path, REL, b"pushed corrected payload" * 50)
+        args = types.SimpleNamespace(reindex=True, catalog_host=None)  # localhost
+        _push_reindex(
+            args, [str(tmp_path / REL)], root=str(tmp_path),
+            storage_location=LOC, dest_prefix="~/gpsdata",
+        )
+        out = capsys.readouterr().out
+        assert "reindexed archive_catalog" in out
+        assert "1 updated" in out
+        # Row now holds the real hash, not the stale zeros.
+        assert _catalog_sha(db_conn, "eldc_a.sbf") != "0" * 64
+
+    def test_flag_missing_storage_location_skips(self, capsys):
+        import types
+
+        from receivers.cli.main import _push_reindex
+
+        args = types.SimpleNamespace(reindex=True, catalog_host=None)
+        _push_reindex(
+            args, ["/whatever"], root="/tmp/x",
+            storage_location=None, dest_prefix=None,
+        )
+        assert "no archive storage_location" in capsys.readouterr().out
