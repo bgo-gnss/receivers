@@ -4643,6 +4643,15 @@ def cmd_rinex(args) -> int:
                 + (f"would_fix={summary.get('would_fix', 0)} clean={summary.get('clean', summary.get('skipped', 0))} " if dry_run else f"fixed={summary['fixed']} skipped={summary['skipped']} ")
                 + f"errors={summary['errors']}"
             )
+            if summary["errors"]:
+                # Show the first few error details so the operator can diagnose
+                # without digging into the full log.
+                _errs = [
+                    d for d in summary.get("details", []) if d.get("error")
+                ]
+                for d in _errs[:5]:
+                    fname = Path(d["file"]).name if d.get("file") else "?"
+                    print(f"    ⚠ {fname}: {d['error']}")
             total_fixed += summary["fixed"]
             total_skipped += summary["skipped"]
             total_errors += summary["errors"]
