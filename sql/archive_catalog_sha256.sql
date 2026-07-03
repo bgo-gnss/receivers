@@ -14,6 +14,9 @@
 --     so a header rewrite changes the hash.
 
 -- (1) One station's RINEX rows: hash + size + path + freshness -----------------
+\set station 'RHOF'
+\set session '15s_24hr'
+
 SELECT canonical_key,
        compression,
        file_size,
@@ -56,3 +59,4 @@ SELECT storage_location, file_category, session_type,
 FROM archive_catalog
 GROUP BY storage_location, file_category, session_type
 ORDER BY storage_location, file_category, session_type;
+
