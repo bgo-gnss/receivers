@@ -4559,15 +4559,17 @@ def cmd_rinex(args) -> int:
             logger.error("No date range specified. Use -s/--start, -e/--end, or -d/--days")
             return 1
 
-    # Print progress info (always visible, not dependent on log level)
-    print(f"RINEX conversion for {len(stations)} station(s)")
-    print(
-        f"Date range: {start_time.strftime('%Y-%m-%d')} to {end_time.strftime('%Y-%m-%d')}"
-    )
-    print(f"RINEX version: {rinex_version.value}, Naming: {naming_str}")
-    logger.info(f"RINEX conversion for {len(stations)} stations")
-    logger.info(f"Date range: {start_time} to {end_time}")
-    logger.info(f"RINEX version: {rinex_version.value}, Naming: {naming_str}")
+    # Print progress info (always visible, not dependent on log level).
+    # Skip when --fix-headers — it prints its own header below.
+    if not getattr(args, "fix_headers", False):
+        print(f"RINEX conversion for {len(stations)} station(s)")
+        print(
+            f"Date range: {start_time.strftime('%Y-%m-%d')} to {end_time.strftime('%Y-%m-%d')}"
+        )
+        print(f"RINEX version: {rinex_version.value}, Naming: {naming_str}")
+        logger.info(f"RINEX conversion for {len(stations)} stations")
+        logger.info(f"Date range: {start_time} to {end_time}")
+        logger.info(f"RINEX version: {rinex_version.value}, Naming: {naming_str}")
 
     # --fix-headers: in-place TOS header correction of archived RINEX (no
     # re-conversion). Walks the RINEX archive, not raw files, so it has its own
@@ -4645,14 +4647,14 @@ def cmd_rinex(args) -> int:
                 + f"errors={summary['errors']}"
             )
             if summary["errors"]:
-                # Show the first few error details so the operator can diagnose
-                # without digging into the full log.
-                _errs = [
-                    d for d in summary.get("details", []) if d.get("error")
-                ]
-                for d in _errs[:5]:
-                    fname = Path(d["file"]).name if d.get("file") else "?"
-                    print(f"    ⚠ {fname}: {d['error']}")
+                # Group errors by message — avoid printing the same error 27 times.
+                _by_err: dict[str, int] = {}
+                for d in summary.get("details", []):
+                    if d.get("error"):
+                        _by_err[d["error"]] = _by_err.get(d["error"], 0) + 1
+                print("   Errors:")
+                for msg, cnt in sorted(_by_err.items(), key=lambda kv: -kv[1]):
+                    print(f"      {msg}: {cnt} file(s)")
             total_fixed += summary.get("would_fix", summary.get("fixed", 0))
             total_skipped += summary.get("clean", summary.get("skipped", 0))
             total_errors += summary["errors"]
