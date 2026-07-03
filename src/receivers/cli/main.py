@@ -4621,11 +4621,28 @@ def cmd_rinex(args) -> int:
         total_fixed = 0
         total_skipped = 0
         total_errors = 0
+        # Staged files actually written by the corrector this run — the ONLY
+        # files --push should transfer (not the whole accumulating work-dir).
+        staged_fixed: list[str] = []
         # Shared TOS cache — 1 call per station across all files/dates.
         from ..dissemination.tos_access import TOSSesionCache
 
         tos_cache = TOSSesionCache()
         _dry_run = getattr(args, "dry_run", False)
+        # Resolve the staging work-dir once (None disables staging → fix in place).
+        _work_dir = (
+            Path(args.work_dir).expanduser() if getattr(args, "work_dir", "") else None
+        )
+        # --clean: empty the accumulating work-dir before staging so it holds
+        # only this run's files. Never touches the source archive or dry-runs.
+        if getattr(args, "clean", False) and _work_dir is not None and not _dry_run:
+            import shutil
+
+            if _work_dir.exists():
+                removed = sum(1 for _ in _work_dir.rglob("*") if _.is_file())
+                shutil.rmtree(_work_dir)
+                print(f"🧹 --clean: emptied staging work-dir {_work_dir} ({removed} file(s))")
+            _work_dir.mkdir(parents=True, exist_ok=True)
         for station_id in stations:
             print(f"\nProcessing: {station_id}")
             summary = fix_headers_station(
@@ -4636,7 +4653,7 @@ def cmd_rinex(args) -> int:
                 archive_old=getattr(args, "archive_old", False),
                 dry_run=_dry_run,
                 all_files=all_mode,
-                work_dir=Path(args.work_dir).expanduser() if getattr(args, "work_dir", "") else None,
+                work_dir=_work_dir,
                 source_dir=Path(_source_dir) if _source_dir else None,
                 tos_cache=tos_cache,
                 loglevel=args.loglevel,
@@ -4658,6 +4675,12 @@ def cmd_rinex(args) -> int:
             total_fixed += summary.get("would_fix", summary.get("fixed", 0))
             total_skipped += summary.get("clean", summary.get("skipped", 0))
             total_errors += summary["errors"]
+            # Collect the staged paths the corrector actually wrote (d["fixed"]
+            # is out-is-not-None from correct_rinex_from_tos). Never populated on
+            # a dry-run (no files written), so --push stays a no-op there.
+            staged_fixed.extend(
+                d["file"] for d in summary.get("details", []) if d.get("fixed")
+            )
         print(
             f"\nSummary: {'would_fix' if _dry_run else '✅'} {total_fixed} "
             f"{'(dry-run)' if _dry_run else 'fixed'}, "
@@ -4665,69 +4688,104 @@ def cmd_rinex(args) -> int:
             f"❌ {total_errors} errors"
         )
 
-        # --push: rsync the staged work-dir back to the rawdata archive.
-        # Uses the archive target from sync.yaml (gpsops@rawdata.vedur.is:~/gpsdata)
-        # — the sole writer to the long-term archive. Rsync --checksum means
-        # only changed header blocks (~10 KB) transfer per file.
+        # --push: rsync ONLY the files this run actually rewrote back to the
+        # rawdata archive (gpsops@rawdata.vedur.is:~/gpsdata) — the sole writer
+        # to the long-term archive. Transferring an explicit --files-from list
+        # (instead of the whole accumulating work-dir) means:
+        #   • nothing to push when 0 files were fixed → skip entirely
+        #   • no full-tree checksum walk (rsync still block-deltas each listed
+        #     file, so only the ~10 KB changed header transfers)
+        #   • stale files from earlier runs are never re-pushed
         if getattr(args, "push", False) and not _dry_run:
+            if not staged_fixed:
+                print("\n⏭️  --push: 0 files fixed this run — nothing to push")
+                return 0 if total_errors == 0 else 1
+
             import subprocess
             import time
 
-            _work = Path(getattr(args, "work_dir", "") or "~/tmp/rinex_fixes").expanduser()
-            if not _work.exists():
-                print("\n⚠️  --push: work-dir does not exist — nothing to push")
-            else:
-                # Find the archive target's rsync destination.
-                _archive_dest = None
+            _work = _work_dir or Path("~/tmp/rinex_fixes").expanduser()
+            # Map each written file to its work-dir-relative path (what rsync
+            # --files-from needs to recreate the mirror layout under dest). A
+            # path outside _work (e.g. --work-dir '' fixes in place) can't be
+            # pushed coherently — skip it.
+            _rel_files: list[str] = []
+            for _f in staged_fixed:
                 try:
-                    from ..archive.config import load_sync_config
+                    _rel_files.append(str(Path(_f).relative_to(_work)))
+                except ValueError:
+                    continue
+            if not _rel_files:
+                print("\n⚠️  --push: fixed files are not under the work-dir "
+                      "(staging disabled?) — cannot push")
+                return 0 if total_errors == 0 else 1
 
-                    for t in load_sync_config():
-                        if getattr(t, "tier", None) == "archive":
-                            dest = t.dest
-                            if t.host:
-                                _archive_dest = f"{t.user}@{t.host}:{dest}"
-                            else:
-                                _archive_dest = dest
-                            break
-                except Exception:  # noqa: BLE001
-                    pass
-                if not _archive_dest:
-                    print("\n⚠️  --push: no archive tier target in sync.yaml — cannot push")
-                else:
-                    _archive_dest = _archive_dest.rstrip("/") + "/"
-                    _src = str(_work).rstrip("/") + "/"
-                    print(f"\n🚀 Pushing staged fixes to archive…")
-                    print(f"   {_src} → {_archive_dest}")
-                    t0 = time.monotonic()
-                    try:
-                        # --exclude=rinex_archive keeps local backups out of
-                        # the archive; --no-owner/group avoids permission noise.
-                        proc = subprocess.run(
-                            ["rsync", "-av", "--checksum",
-                             "--exclude", "rinex_archive",
-                             "--no-owner", "--no-group",
-                             _src, _archive_dest],
-                            capture_output=True,
-                            text=True,
-                            timeout=3600,
-                        )
-                        # Print only files transferred, skip directory lines
-                        for line in proc.stdout.splitlines():
-                            s = line.strip()
-                            if s and not s.endswith("/") and "sent " not in s:
-                                print(f"   → {s}")
-                        dt = time.monotonic() - t0
-                        print(f"   Push complete ({dt:.1f}s, exit={proc.returncode}).")
-                        if proc.returncode == 0:
-                            print("   ⚠️  sha256 checksums may be stale — run")
-                            print("      `receivers archive-sync --status` to verify.")
+            # Find the archive target's rsync destination.
+            _archive_dest = None
+            try:
+                from ..archive.config import load_sync_config
+
+                for t in load_sync_config():
+                    if getattr(t, "tier", None) == "archive":
+                        dest = t.dest
+                        if t.host:
+                            _archive_dest = f"{t.user}@{t.host}:{dest}"
                         else:
-                            print(f"   ⚠️  rsync exit code {proc.returncode}.")
-                    except subprocess.TimeoutExpired:
-                        print("   ⚠️  rsync timed out — push may be incomplete.")
-                    except FileNotFoundError:
-                        print("   ⚠️  rsync not found on PATH — cannot push.")
+                            _archive_dest = dest
+                        break
+            except Exception:  # noqa: BLE001
+                pass
+            if not _archive_dest:
+                print("\n⚠️  --push: no archive tier target in sync.yaml — cannot push")
+                return 0 if total_errors == 0 else 1
+
+            _archive_dest = _archive_dest.rstrip("/") + "/"
+            _src = str(_work).rstrip("/") + "/"
+            # Write the explicit file list to a temp manifest for --files-from.
+            import tempfile
+
+            _listf = tempfile.NamedTemporaryFile(
+                "w", suffix=".rsync-files", delete=False, encoding="utf-8"
+            )
+            try:
+                _listf.write("\n".join(_rel_files) + "\n")
+                _listf.close()
+                print(f"\n🚀 Pushing {len(_rel_files)} fixed file(s) to archive…")
+                print(f"   {_src} → {_archive_dest}")
+                t0 = time.monotonic()
+                try:
+                    # --no-owner/group avoids permission noise; only the listed
+                    # files are considered, so no whole-tree scan.
+                    proc = subprocess.run(
+                        ["rsync", "-av",
+                         "--files-from", _listf.name,
+                         "--no-owner", "--no-group",
+                         _src, _archive_dest],
+                        capture_output=True,
+                        text=True,
+                        timeout=3600,
+                    )
+                    # Print only files transferred, skip directory lines
+                    for line in proc.stdout.splitlines():
+                        s = line.strip()
+                        if s and not s.endswith("/") and "sent " not in s:
+                            print(f"   → {s}")
+                    dt = time.monotonic() - t0
+                    print(f"   Push complete ({dt:.1f}s, exit={proc.returncode}).")
+                    if proc.returncode == 0:
+                        print("   ⚠️  sha256 checksums may be stale — run")
+                        print("      `receivers archive-sync --status` to verify.")
+                    else:
+                        print(f"   ⚠️  rsync exit code {proc.returncode}.")
+                except subprocess.TimeoutExpired:
+                    print("   ⚠️  rsync timed out — push may be incomplete.")
+                except FileNotFoundError:
+                    print("   ⚠️  rsync not found on PATH — cannot push.")
+            finally:
+                try:
+                    Path(_listf.name).unlink()
+                except OSError:
+                    pass
         return 0 if total_errors == 0 else 1
 
     # Track results

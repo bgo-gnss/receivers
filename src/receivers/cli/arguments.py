@@ -1217,10 +1217,18 @@ Examples:
     mode_group.add_argument(
         "--push",
         action="store_true",
-        help="With --fix-headers --work-dir: after fixing, rsync the staged files "
-        "back to the source archive. Uses --checksum so only changed header "
-        "blocks are transferred (not the entire multi-MB file). Prints an "
-        "rsync summary when done.",
+        help="With --fix-headers --work-dir: after fixing, rsync ONLY the files "
+        "rewritten this run back to the source archive (skipped entirely when 0 "
+        "files were fixed). rsync block-deltas each file, so only the changed "
+        "header (~10 KB) is transferred, not the whole multi-MB file.",
+    )
+
+    mode_group.add_argument(
+        "--clean",
+        action="store_true",
+        help="With --fix-headers: empty the staging work-dir before staging so it "
+        "holds only this run's files (the work-dir otherwise accumulates across "
+        "runs). No effect on the source archive or on --dry-run.",
     )
 
     mode_group.add_argument(
