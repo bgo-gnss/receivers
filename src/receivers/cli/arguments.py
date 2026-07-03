@@ -1219,8 +1219,9 @@ Examples:
         action="store_true",
         help="With --fix-headers --work-dir: after fixing, rsync ONLY the files "
         "rewritten this run back to the source archive (skipped entirely when 0 "
-        "files were fixed). rsync block-deltas each file, so only the changed "
-        "header (~10 KB) is transferred, not the whole multi-MB file.",
+        "files were fixed) via an explicit file list — no whole-tree scan. Note "
+        "each fixed file transfers in full: a header change rewrites the "
+        "Hatanaka/.Z compressed stream, so rsync block-deltas save nothing here.",
     )
 
     mode_group.add_argument(
