@@ -78,3 +78,31 @@ def test_clean_files_dont_trigger_flush(fake_files, tmp_path):
     batches = []
     _run(tmp_path, flush_fn=lambda b: batches.append(len(b)), flush_every=2)
     assert batches == []  # 0 fixed → nothing to flush
+
+
+def test_summary_shows_value_change_and_preservation(monkeypatch, tmp_path, capsys):
+    """The run summary prints the old→new transition and a preservation count,
+    while per-file preservation logs stay quiet (DEBUG)."""
+    files = [f"{tmp_path}/F{i}.26D.Z" for i in range(4)]
+    monkeypatch.setattr(hf, "discover_all_rinex_files", lambda *a, **k: list(files))
+
+    def fake_fix(f, station, **k):
+        # First 2 regenerable, last 2 preserved to rinex_org.
+        idx = int(str(f).split("/F")[1].split(".")[0])
+        preserved = idx >= 2
+        return {
+            "file": str(f), "fixed": True,
+            "changed_labels": ["ANTENNA: DELTA H/E/N"],
+            "changes": {"ANTENNA: DELTA H/E/N": ("1.0070", "1.0140")},
+            "preserved_org": f"{f}.org" if preserved else None,
+            "preserve_reason": "raw absent for RHOF 20250901" if preserved else None,
+        }
+
+    monkeypatch.setattr(hf, "fix_headers_in_file", fake_fix)
+    _run(tmp_path, flush_fn=lambda b: None, flush_every=100)
+    out = capsys.readouterr().out
+    assert "1.0070 → 1.0140" in out                      # value change shown
+    assert "2 un-regenerable original(s) preserved" in out  # summarized count
+    assert "raw absent" in out                            # reason collapsed
+    # No per-file spam in captured stdout (those are logger.debug now).
+    assert "before header fix" not in out
