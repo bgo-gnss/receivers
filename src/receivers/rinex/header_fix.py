@@ -207,7 +207,7 @@ def fix_headers_in_file(
     result["changed_labels"] = sorted(discrepant_labels)
 
     if dry_run:
-        logger.info(
+        logger.debug(
             "[DRY RUN] %s: would fix %d field(s): %s",
             source_path.name,
             len(discrepant_labels),
@@ -251,7 +251,7 @@ def fix_headers_in_file(
         result["error"] = f"in-place corrector failed: {exc}"
         return result
 
-    logger.info(
+    logger.debug(
         "%s: fixed %d field(s): %s",
         fix_target.name,
         len(discrepant_labels),
@@ -452,4 +452,15 @@ def fix_headers_station(
     if dry_run:
         summary.setdefault("would_fix", 0)
         summary["clean"] = summary.pop("skipped", 0)
+
+    # Grouped summary — which fields were flagged, and how many files each.
+    _by_field: dict[str, int] = {}
+    for d in summary.get("details", []):
+        for lbl in d.get("changed_labels", []):
+            _by_field[lbl] = _by_field.get(lbl, 0) + 1
+    if _by_field:
+        print("   Fields flagged:")
+        for lbl, cnt in sorted(_by_field.items(), key=lambda kv: -kv[1]):
+            print(f"      {lbl}: {cnt} file(s)")
+
     return summary
