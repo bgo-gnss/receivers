@@ -147,12 +147,12 @@ def _read_header_info(rinex_file: Path, loglevel: int) -> dict[str, str]:
 
         rheader = read_rinex_header(rinex_file, loglevel=loglevel)
         if not rheader or "header" not in rheader:
-            logger.warning("no header read from %s", rinex_file.name)
+            logger.debug("no header read from %s", rinex_file.name)
             return {}
         info = extract_header_info(rheader, loglevel=loglevel)
         return info or {}
     except Exception as exc:  # noqa: BLE001
-        logger.warning("header read failed for %s: %s", rinex_file.name, exc)
+        logger.debug("header read failed for %s: %s", rinex_file.name, exc)
         return {}
 
 
@@ -233,7 +233,7 @@ def fix_headers_in_file(
     )
     discrepant_labels = set(comparison.get("corrections", {}).keys())
     if not discrepant_labels:
-        logger.info("%s: header agrees with TOS — no fix needed", source_path.name)
+        logger.debug("%s: header agrees with TOS — no fix needed", source_path.name)
         return result
 
     # Filter out formatting-noise fields (the validator flags receiver/antenna

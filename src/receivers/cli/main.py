@@ -4890,14 +4890,20 @@ def cmd_rinex(args) -> int:
                 + f"errors={summary['errors']}"
             )
             if summary["errors"]:
-                # Group errors by message — avoid printing the same error 27 times.
-                _by_err: dict[str, int] = {}
+                # Group errors by message (printed ONCE at the end, not per file
+                # during the run), and list the affected filenames so the
+                # unreadable/no-TOS files are actionable for follow-up.
+                _by_err: dict[str, list[str]] = {}
                 for d in summary.get("details", []):
                     if d.get("error"):
-                        _by_err[d["error"]] = _by_err.get(d["error"], 0) + 1
+                        name = Path(d.get("file", "?")).name
+                        _by_err.setdefault(d["error"], []).append(name)
                 print("   Errors:")
-                for msg, cnt in sorted(_by_err.items(), key=lambda kv: -kv[1]):
-                    print(f"      {msg}: {cnt} file(s)")
+                for msg, names in sorted(_by_err.items(), key=lambda kv: -len(kv[1])):
+                    print(f"      {msg}: {len(names)} file(s)")
+                    shown = ", ".join(sorted(names)[:20])
+                    more = f" … (+{len(names) - 20} more)" if len(names) > 20 else ""
+                    print(f"         {shown}{more}")
             total_fixed += summary.get("would_fix", summary.get("fixed", 0))
             total_skipped += summary.get("clean", summary.get("skipped", 0))
             total_errors += summary["errors"]
