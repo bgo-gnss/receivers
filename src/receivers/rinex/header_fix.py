@@ -177,6 +177,33 @@ def fix_headers_in_file(
     if not discrepant_labels:
         logger.info("%s: header agrees with TOS — no fix needed", source_path.name)
         return result
+
+    # Filter out formatting-noise fields (the validator flags receiver/antenna
+    # string fields unconditionally — same values, different format). Only real
+    # value discrepancies (marker, antenna_height, coordinates) justify a fix.
+    # Mirrors the QC gate's DEFAULT_BLOCKING_FIELDS logic.
+    discrepancy_keys = set(comparison.get("discrepancies", {}).keys())
+    real_keys = discrepancy_keys & {"marker", "antenna_height", "coordinates"}
+    if not real_keys:
+        logger.debug(
+            "%s: formatting-only discrepancies (%s) — skipping",
+            source_path.name,
+            ", ".join(sorted(discrepancy_keys)),
+        )
+        return result
+    # Keep only labels that correspond to real discrepancies.
+    # Map: antenna_height→ANTENNA: DELTA H/E/N, marker→MARKER NAME, coordinates→APPROX POSITION XYZ
+    _key_label = {
+        "antenna_height": "ANTENNA: DELTA H/E/N",
+        "marker": "MARKER NAME",
+        "coordinates": "APPROX POSITION XYZ",
+    }
+    real_labels = {label for key, label in _key_label.items() if key in real_keys}
+    # Intersect with the corrections labels (only fix if the validator also
+    # produced a correction for that field — it usually does).
+    discrepant_labels = real_labels & discrepant_labels
+    if not discrepant_labels:
+        return result
     result["changed_labels"] = sorted(discrepant_labels)
 
     if dry_run:
