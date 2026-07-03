@@ -4665,40 +4665,40 @@ def cmd_rinex(args) -> int:
             f"❌ {total_errors} errors"
         )
 
-        # --push: rsync the staged work-dir back to the source archive.
-        # Uses --checksum so rsync only transfers the changed header blocks
-        # (~10 KB) per file, not the full 3 MB RINEX body.
+        # --push: rsync the staged work-dir back to the rawdata archive.
+        # Uses the archive target from sync.yaml (gpsops@rawdata.vedur.is:~/gpsdata)
+        # — the sole writer to the long-term archive. Rsync --checksum means
+        # only changed header blocks (~10 KB) transfer per file.
         if getattr(args, "push", False) and not _dry_run:
             import subprocess
             import time
-            import tempfile
 
             _work = Path(getattr(args, "work_dir", "") or "~/tmp/rinex_fixes").expanduser()
             if not _work.exists():
                 print("\n⚠️  --push: work-dir does not exist — nothing to push")
-            elif not _source_dir:
-                print("\n⚠️  --push: no source archive path configured")
             else:
-                _dest = _source_dir.rstrip("/") + "/"
-                _src = str(_work).rstrip("/") + "/"
-                # Check writability before launching (avoids the wall of
-                # "Read-only file system" rsync errors on laptop NFS).
-                _writable = True
+                # Find the archive target's rsync destination.
+                _archive_dest = None
                 try:
-                    _probe = Path(_source_dir) / ".fix_header_push_probe"
-                    _probe.write_text("x")
-                    _probe.unlink()
-                except OSError:
-                    _writable = False
-                if not _writable:
-                    print(
-                        f"\n⚠️  --push: destination {_source_dir} is read-only. "
-                        f"Push manually from a writable host:\n"
-                        f"   rsync -av --checksum {_src} <writable-host>:{_dest}"
-                    )
+                    from ..archive.config import load_sync_config
+
+                    for t in load_sync_config():
+                        if getattr(t, "tier", None) == "archive":
+                            dest = t.dest
+                            if t.host:
+                                _archive_dest = f"{t.user}@{t.host}:{dest}"
+                            else:
+                                _archive_dest = dest
+                            break
+                except Exception:  # noqa: BLE001
+                    pass
+                if not _archive_dest:
+                    print("\n⚠️  --push: no archive tier target in sync.yaml — cannot push")
                 else:
-                    print(f"\n🚀 Pushing staged fixes back to archive…")
-                    print(f"   {_src} → {_dest}")
+                    _archive_dest = _archive_dest.rstrip("/") + "/"
+                    _src = str(_work).rstrip("/") + "/"
+                    print(f"\n🚀 Pushing staged fixes to archive…")
+                    print(f"   {_src} → {_archive_dest}")
                     t0 = time.monotonic()
                     try:
                         # --exclude=rinex_archive keeps local backups out of
@@ -4707,30 +4707,23 @@ def cmd_rinex(args) -> int:
                             ["rsync", "-av", "--checksum",
                              "--exclude", "rinex_archive",
                              "--no-owner", "--no-group",
-                             _src, _dest],
+                             _src, _archive_dest],
                             capture_output=True,
                             text=True,
                             timeout=3600,
                         )
-                        # Print only the summary line, not every directory
+                        # Print only files transferred, skip directory lines
                         for line in proc.stdout.splitlines():
                             s = line.strip()
                             if s and not s.endswith("/") and "sent " not in s:
-                                print(f"   {s}")
-                        # Always print the transfer summary
-                        for line in proc.stderr.splitlines():
-                            if "total size" in line or "speedup" in line:
-                                continue
-                            s = line.strip()
-                            if s:
-                                print(f"   {s}")
+                                print(f"   → {s}")
                         dt = time.monotonic() - t0
                         print(f"   Push complete ({dt:.1f}s, exit={proc.returncode}).")
                         if proc.returncode == 0:
                             print("   ⚠️  sha256 checksums may be stale — run")
                             print("      `receivers archive-sync --status` to verify.")
                         else:
-                            print(f"   ⚠️  rsync exit code {proc.returncode} — some files may not have transferred.")
+                            print(f"   ⚠️  rsync exit code {proc.returncode}.")
                     except subprocess.TimeoutExpired:
                         print("   ⚠️  rsync timed out — push may be incomplete.")
                     except FileNotFoundError:
