@@ -1233,6 +1233,24 @@ Examples:
     )
 
     mode_group.add_argument(
+        "--reindex",
+        action="store_true",
+        help="With --fix-headers --push: after the push, re-hash each pushed file "
+        "and update its archive_catalog.content_sha256 (the header rewrite "
+        "changes the hash, so the catalog row would otherwise be stale and the "
+        "integrity verify would flag it). Targets the catalog host from "
+        "--catalog-host (default gps_health per database.cfg).",
+    )
+    mode_group.add_argument(
+        "--catalog-host",
+        default=None,
+        metavar="HOST",
+        help="gps_health host for --reindex (e.g. pgdev.vedur.is for the "
+        "production catalog). Default: database.cfg host (localhost on a laptop "
+        "— which is the dev catalog, NOT production).",
+    )
+
+    mode_group.add_argument(
         "--dry-run",
         action="store_true",
         help="Show what would be done without making changes",
@@ -1400,11 +1418,17 @@ For subcommand help: receivers <command> --help
     create_health_query_parser(subparsers)
 
     # archive-sync (batch delta push to the long-term archive gateway)
-    from .archive_sync import create_archive_sync_parser, create_archive_verify_parser
+    from .archive_sync import (
+        create_archive_reindex_parser,
+        create_archive_sync_parser,
+        create_archive_verify_parser,
+    )
 
     create_archive_sync_parser(subparsers)
     # archive-verify (re-hash archived files + local↔archive cross-check)
     create_archive_verify_parser(subparsers)
+    # archive-reindex (refresh catalog sha256 after out-of-band file edits)
+    create_archive_reindex_parser(subparsers)
 
     # epos-disseminate (RINEX3 long-name dissemination to the EPOS files server)
     from .epos_disseminate import create_epos_disseminate_parser

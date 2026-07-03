@@ -215,6 +215,137 @@ def cmd_archive_verify(args: argparse.Namespace) -> int:
     return 1 if (stats.mismatched or stats.local_divergent) else 0
 
 
+def cmd_archive_reindex(args: argparse.Namespace) -> int:
+    """Re-hash files in a staging mirror and refresh their archive_catalog rows.
+
+    For files modified out-of-band (e.g. ``rinex --fix-headers --push``): the
+    archive bytes changed but the catalog still holds the pre-edit
+    content_sha256. Point ``--dir`` at the staging mirror that was pushed (its
+    bytes are identical to what landed on the archive) and this upserts the
+    correct hash. Laptop-friendly — no archive mount needed.
+    """
+    import os
+
+    from ..archive import load_sync_config, reindex_files
+
+    root = str(Path(args.dir).expanduser())
+    if not os.path.isdir(root):
+        print(f"❌ --dir not a directory: {root}")
+        return 2
+
+    # Resolve the archive target for storage_location + dest prefix.
+    config_path = Path(args.config) if args.config else None
+    targets = load_sync_config(config_path)
+    target = next(
+        (t for t in targets if t.name == args.storage_location),
+        next((t for t in targets if getattr(t, "tier", None) == "archive"), None),
+    )
+    if target is None:
+        print("❌ no archive target in sync.yaml (need storage_location + dest)")
+        return 2
+    dest_prefix = args.dest_prefix or target.dest
+
+    # Collect files under the mirror (skip *_archive backup dirs).
+    files: list[str] = []
+    for dirpath, _dirs, names in os.walk(root):
+        if f"{os.sep}rinex_archive{os.sep}" in dirpath + os.sep:
+            continue
+        for n in names:
+            files.append(os.path.join(dirpath, n))
+    if not files:
+        print(f"⚠️  no files under {root}")
+        return 0
+
+    if not args.host:
+        print("⚠️  --host not set → writing to the DEFAULT gps_health "
+              "(localhost = DEV catalog on a laptop, NOT production).")
+        print("   Pass --host pgdev.vedur.is to update the production catalog.")
+
+    conn = _get_conn(args.host, required=True)
+    try:
+        stats = reindex_files(
+            conn,
+            files,
+            root=root,
+            storage_location=target.name,
+            dest_prefix=dest_prefix,
+            dry_run=args.dry_run,
+            only_existing=args.only_existing,
+        )
+    finally:
+        if conn is not None:
+            conn.close()
+
+    if args.json:
+        print(json.dumps(stats.to_dict(), indent=2))
+    else:
+        host_label = args.host or "localhost"
+        verb = "would reindex" if args.dry_run else "reindexed"
+        print(
+            f"↻ {verb} archive_catalog ({target.name} on {host_label}): "
+            f"{stats.updated} updated, {stats.inserted} inserted, "
+            f"{stats.unchanged} unchanged"
+            + (f", {stats.skipped_new} skipped (no prior row)" if stats.skipped_new else "")
+            + (f", {stats.skipped} unparsable" if stats.skipped else "")
+        )
+        for msg in stats.errors[:50]:
+            print(f"   ⚠ {msg}")
+    return 1 if stats.errors else 0
+
+
+def create_archive_reindex_parser(subparsers) -> argparse.ArgumentParser:
+    parser = subparsers.add_parser(
+        "archive-reindex",
+        help="Refresh archive_catalog content_sha256 for out-of-band file edits",
+        description=(
+            "Re-hash the files in a staging mirror (the --work-dir that "
+            "`rinex --fix-headers --push` pushed from) and upsert their "
+            "archive_catalog rows, so the catalog matches the edited archive "
+            "bytes and the integrity verify stops flagging them. Runs from a "
+            "laptop; pass --host pgdev.vedur.is for the production catalog."
+        ),
+    )
+    parser.add_argument(
+        "--dir",
+        required=True,
+        help="Staging mirror root (archive layout YYYY/mon/STA/session/cat/FILE), "
+        "e.g. ~/tmp/rinex_fixes",
+    )
+    parser.add_argument(
+        "--storage-location",
+        default="imo_archive",
+        help="archive_catalog.storage_location to write (default: imo_archive)",
+    )
+    parser.add_argument(
+        "--dest-prefix",
+        help="Archive dest prefix for file_path (default: target.dest from sync.yaml)",
+    )
+    parser.add_argument(
+        "--host",
+        help="gps_health host (pgdev.vedur.is for production; default: database.cfg, "
+        "which is localhost/DEV on a laptop)",
+    )
+    parser.add_argument(
+        "--config", help="Path to sync.yaml (default: GPS_CONFIG_PATH/sync.yaml)"
+    )
+    parser.add_argument(
+        "--only-existing",
+        action="store_true",
+        help="Only repair rows that already exist (skip inserts) — fix known-stale "
+        "sha256 without expanding catalog coverage to previously-uncataloged files",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Classify + report without writing catalog rows",
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON results"
+    )
+    parser.set_defaults(func=cmd_archive_reindex)
+    return parser
+
+
 def create_archive_verify_parser(subparsers) -> argparse.ArgumentParser:
     parser = subparsers.add_parser(
         "archive-verify",

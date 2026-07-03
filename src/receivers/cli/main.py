@@ -4446,6 +4446,71 @@ def _check_port_simple(host: str, port: int, timeout: float = 3.0) -> bool:
         return False
 
 
+def _push_reindex(
+    args,
+    files: list[str],
+    *,
+    root: str,
+    storage_location: Optional[str],
+    dest_prefix: Optional[str],
+) -> None:
+    """After a --fix-headers --push, refresh archive_catalog.content_sha256.
+
+    A header rewrite changes content_sha256 (it is over decompressed content),
+    so every pushed file's catalog row is now stale and the integrity verify
+    would flag it. With --reindex we re-hash the pushed (staged) files and
+    upsert the rows on the catalog host; without it we just point the user at
+    the reindex verb instead of the old (useless-here) `archive-sync --status`.
+    """
+    if not getattr(args, "reindex", False):
+        print("   ↻ catalog sha256 for these files is now stale. Refresh with:")
+        print(f"        receivers archive-reindex --dir {root} \\")
+        print("          --host pgdev.vedur.is        # production catalog")
+        print("      or re-run this command with --reindex --catalog-host pgdev.vedur.is")
+        return
+
+    if not storage_location or not dest_prefix:
+        print("   ⚠️  --reindex: no archive storage_location/dest resolved — skipped")
+        return
+
+    catalog_host = getattr(args, "catalog_host", None)
+    if not catalog_host:
+        print("   ⚠️  --reindex: --catalog-host not set → writing to the DEFAULT")
+        print("      gps_health (localhost = DEV catalog on a laptop, NOT production).")
+        print("      Pass --catalog-host pgdev.vedur.is to update the production catalog.")
+
+    from ..archive import reindex_files
+    from ..db.connection import get_connection
+
+    conn = None
+    try:
+        conn = get_connection(host_override=catalog_host)
+        stats = reindex_files(
+            conn,
+            files,
+            root=root,
+            storage_location=storage_location,
+            dest_prefix=dest_prefix,
+        )
+        host_label = catalog_host or "localhost"
+        print(
+            f"   ↻ reindexed archive_catalog on {host_label}: "
+            f"{stats.updated} updated, {stats.inserted} inserted, "
+            f"{stats.unchanged} unchanged"
+            + (f", {stats.skipped} unparsable" if stats.skipped else "")
+        )
+        for msg in stats.errors[:5]:
+            print(f"      ⚠️  {msg}")
+    except Exception as exc:  # noqa: BLE001 — best-effort, never fail the push
+        print(f"   ⚠️  --reindex failed: {type(exc).__name__}: {exc}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
 def cmd_rinex(args) -> int:
     """RINEX conversion command - convert raw GPS data to RINEX format."""
     logger = setup_logging(args.loglevel)
@@ -4722,12 +4787,16 @@ def cmd_rinex(args) -> int:
 
             # Find the archive target's rsync destination.
             _archive_dest = None
+            _archive_name = None   # storage_location for the catalog
+            _archive_destpath = None  # dest path (no host) → catalog file_path prefix
             try:
                 from ..archive.config import load_sync_config
 
                 for t in load_sync_config():
                     if getattr(t, "tier", None) == "archive":
                         dest = t.dest
+                        _archive_name = t.name
+                        _archive_destpath = dest
                         if t.host:
                             _archive_dest = f"{t.user}@{t.host}:{dest}"
                         else:
@@ -4773,8 +4842,13 @@ def cmd_rinex(args) -> int:
                     dt = time.monotonic() - t0
                     print(f"   Push complete ({dt:.1f}s, exit={proc.returncode}).")
                     if proc.returncode == 0:
-                        print("   ⚠️  sha256 checksums may be stale — run")
-                        print("      `receivers archive-sync --status` to verify.")
+                        _push_reindex(
+                            args,
+                            [str(_work / r) for r in _rel_files],
+                            root=str(_work),
+                            storage_location=_archive_name,
+                            dest_prefix=_archive_destpath,
+                        )
                     else:
                         print(f"   ⚠️  rsync exit code {proc.returncode}.")
                 except subprocess.TimeoutExpired:
