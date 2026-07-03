@@ -78,7 +78,7 @@ def archive_old_file(
             i += 1
     try:
         shutil.move(str(rinex_file), str(dest))
-        logger.info("archived %s → %s", rinex_file.name, dest)
+        logger.debug("archived %s → %s", rinex_file.name, dest)
         return dest
     except OSError as exc:
         logger.warning("archive-old failed for %s: %s", rinex_file, exc)

@@ -4669,36 +4669,72 @@ def cmd_rinex(args) -> int:
         # Uses --checksum so rsync only transfers the changed header blocks
         # (~10 KB) per file, not the full 3 MB RINEX body.
         if getattr(args, "push", False) and not _dry_run:
+            import subprocess
+            import time
+            import tempfile
+
             _work = Path(getattr(args, "work_dir", "") or "~/tmp/rinex_fixes").expanduser()
             if not _work.exists():
                 print("\n⚠️  --push: work-dir does not exist — nothing to push")
             elif not _source_dir:
                 print("\n⚠️  --push: no source archive path configured")
             else:
-                import subprocess
-                import time
-
                 _dest = _source_dir.rstrip("/") + "/"
                 _src = str(_work).rstrip("/") + "/"
-                print(f"\n🚀 Pushing staged fixes back to archive…")
-                print(f"   {_src} → {_dest}")
-                t0 = time.monotonic()
+                # Check writability before launching (avoids the wall of
+                # "Read-only file system" rsync errors on laptop NFS).
+                _writable = True
                 try:
-                    proc = subprocess.run(
-                        ["rsync", "-av", "--checksum", "--no-owner", "--no-group",
-                         _src, _dest],
-                        capture_output=False,
-                        text=True,
-                        timeout=3600,
+                    _probe = Path(_source_dir) / ".fix_header_push_probe"
+                    _probe.write_text("x")
+                    _probe.unlink()
+                except OSError:
+                    _writable = False
+                if not _writable:
+                    print(
+                        f"\n⚠️  --push: destination {_source_dir} is read-only. "
+                        f"Push manually from a writable host:\n"
+                        f"   rsync -av --checksum {_src} <writable-host>:{_dest}"
                     )
-                    dt = time.monotonic() - t0
-                    print(f"   Push complete ({dt:.1f}s, exit={proc.returncode}).")
-                    print("   ⚠️  sha256 checksums in archive_catalog may be stale — run")
-                    print("      `receivers archive-sync --status` to verify.")
-                except subprocess.TimeoutExpired:
-                    print("   ⚠️  rsync timed out — push may be incomplete.")
-                except FileNotFoundError:
-                    print("   ⚠️  rsync not found on PATH — cannot push.")
+                else:
+                    print(f"\n🚀 Pushing staged fixes back to archive…")
+                    print(f"   {_src} → {_dest}")
+                    t0 = time.monotonic()
+                    try:
+                        # --exclude=rinex_archive keeps local backups out of
+                        # the archive; --no-owner/group avoids permission noise.
+                        proc = subprocess.run(
+                            ["rsync", "-av", "--checksum",
+                             "--exclude", "rinex_archive",
+                             "--no-owner", "--no-group",
+                             _src, _dest],
+                            capture_output=True,
+                            text=True,
+                            timeout=3600,
+                        )
+                        # Print only the summary line, not every directory
+                        for line in proc.stdout.splitlines():
+                            s = line.strip()
+                            if s and not s.endswith("/") and "sent " not in s:
+                                print(f"   {s}")
+                        # Always print the transfer summary
+                        for line in proc.stderr.splitlines():
+                            if "total size" in line or "speedup" in line:
+                                continue
+                            s = line.strip()
+                            if s:
+                                print(f"   {s}")
+                        dt = time.monotonic() - t0
+                        print(f"   Push complete ({dt:.1f}s, exit={proc.returncode}).")
+                        if proc.returncode == 0:
+                            print("   ⚠️  sha256 checksums may be stale — run")
+                            print("      `receivers archive-sync --status` to verify.")
+                        else:
+                            print(f"   ⚠️  rsync exit code {proc.returncode} — some files may not have transferred.")
+                    except subprocess.TimeoutExpired:
+                        print("   ⚠️  rsync timed out — push may be incomplete.")
+                    except FileNotFoundError:
+                        print("   ⚠️  rsync not found on PATH — cannot push.")
         return 0 if total_errors == 0 else 1
 
     # Track results
