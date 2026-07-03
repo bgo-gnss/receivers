@@ -76,6 +76,26 @@ class TestCheckRegenerable:
         r = check_regenerable(rnx, DATE, station_id="RHOF")
         assert not r.regenerable
 
+    def test_hourly_matches_only_same_hour(self, tmp_path):
+        # HOURLY session: a raw for a DIFFERENT hour must NOT count as
+        # regenerable (day-only match would falsely accept it → data loss).
+        rnx = _make_rinex(tmp_path)
+        _put_raw(tmp_path, "RHOF202606210000a.sbf.gz")  # hour 00, not 14
+        hour14 = datetime(2026, 6, 21, 14)
+        r = check_regenerable(
+            rnx, hour14, station_id="RHOF", session_type="1Hz_1hr"
+        )
+        assert not r.regenerable  # hour 14's raw is absent
+
+    def test_hourly_regenerable_when_same_hour_present(self, tmp_path):
+        rnx = _make_rinex(tmp_path)
+        _put_raw(tmp_path, "RHOF202606211400a.sbf.gz")  # hour 14
+        hour14 = datetime(2026, 6, 21, 14)
+        r = check_regenerable(
+            rnx, hour14, station_id="RHOF", session_type="1Hz_1hr"
+        )
+        assert r.regenerable
+
 
 class TestPreserveOriginal:
     def test_copies_to_rinex_org_permanent(self, tmp_path):

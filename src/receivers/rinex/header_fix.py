@@ -151,6 +151,7 @@ def fix_headers_in_file(
     dry_run: bool = False,
     work_dir: Optional[Path] = None,
     source_base: Optional[Path] = None,
+    session_type: Optional[str] = None,
     tos_cache: Any = None,
     loglevel: int = logging.INFO,
 ) -> dict:
@@ -284,7 +285,10 @@ def fix_headers_in_file(
     #     to overwrite — never risk an irreplaceable file.
     from .raw_presence import check_regenerable
 
-    regen = check_regenerable(source_path, observation_date, station_id=station_id)
+    regen = check_regenerable(
+        source_path, observation_date,
+        station_id=station_id, session_type=session_type,
+    )
     result["regenerable"] = regen.regenerable
     if not regen.regenerable:
         preserved = preserve_original_file(fix_target)
@@ -497,6 +501,7 @@ def fix_headers_station(
             dry_run=dry_run,
             work_dir=work_dir,
             source_base=source_base,
+            session_type=session,
             tos_cache=tos_cache,
             loglevel=loglevel,
         )

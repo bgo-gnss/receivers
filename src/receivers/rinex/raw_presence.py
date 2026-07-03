@@ -72,19 +72,28 @@ def check_regenerable(
     observation_date,
     *,
     station_id: str,
+    session_type: Optional[str] = None,
 ) -> RegenerabilityResult:
     """Decide whether ``rinex_file`` can be regenerated from an archived raw file.
 
     Looks in the ``raw/`` sibling directory for a raw file whose name carries the
-    same ``YYYYMMDD`` as ``observation_date`` (raw files are date-stamped, e.g.
+    same date stamp as ``observation_date`` (raw files are date-stamped, e.g.
     ``RHOF202606210000a.T02.gz``). Returns regenerable only when such a file
     exists AND its format is recognised.
+
+    Granularity is set by ``session_type``: an HOURLY session (``…1hr``) must
+    match ``YYYYMMDDHH`` — a daily/day-only match would falsely accept a raw for
+    a DIFFERENT hour of the same day and skip preservation (data-loss direction).
+    A daily session matches ``YYYYMMDD``. When ``session_type`` is None we assume
+    daily (the only granularity fix-headers currently parses); hourly callers
+    MUST pass it.
     """
     raw_dir = _raw_sibling_dir(Path(rinex_file))
     if not raw_dir.is_dir():
         return RegenerabilityResult(False, f"no raw/ dir alongside {rinex_file.name}")
 
-    date_tag = observation_date.strftime("%Y%m%d")
+    hourly = bool(session_type and "1hr" in session_type.lower())
+    date_tag = observation_date.strftime("%Y%m%d%H" if hourly else "%Y%m%d")
     # Raw files for the day: name contains the date tag (station prefix + stamp).
     candidates = [
         p for p in raw_dir.iterdir()
