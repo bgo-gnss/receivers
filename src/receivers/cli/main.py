@@ -4670,6 +4670,14 @@ def cmd_rinex(args) -> int:
         # Default source dir: read from sync.yaml's first dissemination target's
         # source_root (same field the EPOS disseminator uses). Falls back to
         # data_prepath from receivers.cfg if sync.yaml is unavailable.
+        #
+        # NB: on the laptop this source_root (the dissemination target,
+        # /mnt_data/rawgpsdata) is the read-only NFS mount of the SAME ananas
+        # store the --push writes to (rawdata:~/gpsdata is a disk on ananas). So
+        # fix-headers ROUND-TRIPS the archive: read ananas via NFS → fix → push
+        # ananas via the rawdata gateway. This is not a bookkeeping bug; the
+        # archive target's own source_root (/mnt/data/gpsdata) is rek-d01's local
+        # collection root, a rek-d01-only field this laptop path does not use.
         _source_dir = getattr(args, "source_dir", None)
         if not _source_dir:
             try:
