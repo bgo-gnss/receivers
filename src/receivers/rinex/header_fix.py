@@ -85,6 +85,39 @@ def archive_old_file(
         return None
 
 
+def preserve_original_file(rinex_file: Path) -> Optional[Path]:
+    """COPY an un-regenerable original to a permanent ``rinex_org/`` sibling.
+
+    Unlike :func:`archive_old_file` (a dated, deletable backup), this is the
+    durable preservation of a RINEX that CANNOT be regenerated (no convertible
+    raw) — copied, not moved, and never auto-deleted. Pushed to the archive
+    alongside the corrected file so the irreplaceable original survives on
+    ananas before the in-place header rewrite overwrites ``rinex/``::
+
+        …/rinex/RHOF1800.26D.Z  →  …/rinex_org/RHOF1800.26D.Z
+
+    Idempotent: if the org copy already exists (a prior run preserved it), it is
+    left as-is and returned. Returns the org path, or None on failure.
+    """
+    rinex_file = Path(rinex_file)
+    if not rinex_file.is_file():
+        return None
+    parent = rinex_file.parent  # .../rinex
+    org_dir = parent.parent / f"{parent.name}_org"
+    dest = org_dir / rinex_file.name
+    if dest.exists():
+        logger.debug("rinex_org already holds %s — keeping", rinex_file.name)
+        return dest
+    try:
+        org_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(rinex_file), str(dest))
+        logger.info("preserved un-regenerable original → %s", dest)
+        return dest
+    except OSError as exc:
+        logger.error("rinex_org preservation FAILED for %s: %s", rinex_file, exc)
+        return None
+
+
 def _read_header_info(rinex_file: Path, loglevel: int) -> dict[str, str]:
     """Read a (possibly compressed) RINEX header → ``label → value`` dict.
 
@@ -143,6 +176,8 @@ def fix_headers_in_file(
         "fixed": False,
         "changed_labels": [],
         "archived": None,
+        "preserved_org": None,
+        "regenerable": None,
         "error": None,
     }
     if not source_path.is_file():
@@ -234,6 +269,32 @@ def fix_headers_in_file(
         if archived is not None:
             shutil.copy2(archived, fix_target)
             result["archived"] = str(archived)
+
+    # 4.5 SAFETY NET: a RINEX is only safe to overwrite in place if it is
+    #     REGENERABLE — i.e. a convertible raw file still exists on the archive.
+    #     Raw absent, OR raw present in an unrecognised format, means this RINEX
+    #     is the sole surviving copy of the observation. Preserve the untouched
+    #     original to a permanent rinex_org/ sibling (pushed to ananas) BEFORE
+    #     the rewrite. Checked against the SOURCE archive's raw/ sibling
+    #     (source_path), not the work_dir copy. If preservation fails we REFUSE
+    #     to overwrite — never risk an irreplaceable file.
+    from .raw_presence import check_regenerable
+
+    regen = check_regenerable(source_path, observation_date, station_id=station_id)
+    result["regenerable"] = regen.regenerable
+    if not regen.regenerable:
+        preserved = preserve_original_file(fix_target)
+        if preserved is None:
+            result["error"] = (
+                f"un-regenerable ({regen.reason}) and rinex_org preservation "
+                f"failed — refusing to overwrite"
+            )
+            return result
+        result["preserved_org"] = str(preserved)
+        logger.warning(
+            "%s: %s — preserved original → %s before header fix",
+            source_path.name, regen.reason, preserved,
+        )
 
     # 5. Rewrite only the discrepant fields in place (corrector handles
     #    compression + Hatanaka internally).

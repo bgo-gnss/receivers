@@ -4689,6 +4689,11 @@ def cmd_rinex(args) -> int:
         # Staged files actually written by the corrector this run — the ONLY
         # files --push should transfer (not the whole accumulating work-dir).
         staged_fixed: list[str] = []
+        # rinex_org preservations for un-regenerable originals (no convertible
+        # raw). Pushed to the archive alongside the fixes so the irreplaceable
+        # original survives on ananas; NOT reindexed (distinct file_category,
+        # own canonical_key — kept out of the rinex-row reindex for now).
+        preserved_orgs: list[str] = []
         # Shared TOS cache — 1 call per station across all files/dates.
         from ..dissemination.tos_access import TOSSesionCache
 
@@ -4746,6 +4751,11 @@ def cmd_rinex(args) -> int:
             staged_fixed.extend(
                 d["file"] for d in summary.get("details", []) if d.get("fixed")
             )
+            preserved_orgs.extend(
+                d["preserved_org"]
+                for d in summary.get("details", [])
+                if d.get("preserved_org")
+            )
         print(
             f"\nSummary: {'would_fix' if _dry_run else '✅'} {total_fixed} "
             f"{'(dry-run)' if _dry_run else 'fixed'}, "
@@ -4785,6 +4795,16 @@ def cmd_rinex(args) -> int:
                       "(staging disabled?) — cannot push")
                 return 0 if total_errors == 0 else 1
 
+            # Also push rinex_org/ preservations (un-regenerable originals) so
+            # the irreplaceable copy reaches ananas before the fix overwrites it.
+            _org_rel: list[str] = []
+            for _f in preserved_orgs:
+                try:
+                    _org_rel.append(str(Path(_f).relative_to(_work)))
+                except ValueError:
+                    continue
+            _push_rel = _rel_files + _org_rel
+
             # Find the archive target's rsync destination.
             _archive_dest = None
             _archive_name = None   # storage_location for the catalog
@@ -4817,9 +4837,14 @@ def cmd_rinex(args) -> int:
                 "w", suffix=".rsync-files", delete=False, encoding="utf-8"
             )
             try:
-                _listf.write("\n".join(_rel_files) + "\n")
+                _listf.write("\n".join(_push_rel) + "\n")
                 _listf.close()
-                print(f"\n🚀 Pushing {len(_rel_files)} fixed file(s) to archive…")
+                _org_note = (
+                    f" + {len(_org_rel)} rinex_org preservation(s)" if _org_rel else ""
+                )
+                print(
+                    f"\n🚀 Pushing {len(_rel_files)} fixed file(s){_org_note} to archive…"
+                )
                 print(f"   {_src} → {_archive_dest}")
                 t0 = time.monotonic()
                 try:
