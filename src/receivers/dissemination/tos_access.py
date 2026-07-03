@@ -458,3 +458,98 @@ def make_session_provider(client: Any = None):
         return session
 
     return provider
+
+
+class TOSSesionCache:
+    """Cached TOS session provider — 1 TOS API call per station.
+
+    Wraps :func:`gps_metadata` / :class:`TOSClient` with an in-memory cache:
+    ``device_history`` and station-level metadata are fetched once and reused
+    for every observation date. The cache lives for the life of the instance
+    (typically one process / one CLI invocation).
+
+    Use this for any fleet-wide sweep that queries the same station across
+    many dates — ``receivers rinex --fix-headers``, header-QC gate, EPOS
+    dissemination, site-log generation, fleet integrity checks.
+
+    Example::
+
+        cache = TOSSesionCache()
+        for doy in range(1, 366):
+            session = cache.get_session("RHOF", datetime(2026,1,1) + timedelta(doy-1))
+            if session:
+                ...
+    """
+
+    def __init__(self, client: Any = None) -> None:
+        self._client = client
+        self._device_history: dict[str, list[dict[str, Any]]] = {}
+        self._metadata: dict[str, dict[str, Any]] = {}
+
+    def _ensure_station(self, station: str) -> bool:
+        """Fill the cache for ``station`` if not already cached. Returns True
+        on success, False when TOS has no data / the lookup failed."""
+        sid = station.upper()
+        if sid in self._device_history:
+            return True
+        try:
+            if self._client is None:
+                from tostools.api.tos_client import TOSClient
+
+                self._client = TOSClient()
+            meta = self._client.get_complete_station_metadata(sid)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("TOS session cache: lookup failed for %s: %s", sid, exc)
+            return False
+        if not meta:
+            logger.debug("TOS session cache: no metadata for %s", sid)
+            return False
+        self._device_history[sid] = meta.get("device_history", []) or []
+        self._metadata[sid] = meta
+        return True
+
+    def get_session(
+        self, station: str, observation_dt: datetime
+    ) -> Optional[dict[str, Any]]:
+        """Return the TOS device session covering ``observation_dt``.
+
+        Fetches from TOS only on the first call for this station. Returns None
+        when no session covers the date or TOS is unreachable — callers should
+        treat that as "no coverage, skip" (fail-safe).
+
+        The returned session is augmented with station-level fields (``marker``,
+        ``domes``, ``owner_org`` — same as :func:`make_session_provider`).
+        """
+        sid = station.upper()
+        if not self._ensure_station(sid):
+            return None
+        meta = self._metadata.get(sid, {})
+        history = self._device_history.get(sid, [])
+        session = select_session(history, observation_dt)
+        if session is None:
+            return None
+        # compare_rinex_to_tos reads session["marker"] — it lives at station level.
+        session.setdefault("marker", (meta.get("marker") or sid).upper())
+        session.setdefault(
+            "domes", (meta.get("iers_domes_number") or "").strip()
+        )
+        owner_org = (
+            ((meta.get("contact") or {}).get("owner") or {}).get("organization")
+            or ""
+        ).strip()
+        session.setdefault("owner_org", owner_org)
+        return session
+
+    def get_metadata(self, station: str) -> Optional[dict[str, Any]]:
+        """Return the raw station metadata dict (marker, domes, contacts, etc.).
+
+        Cached — 1 TOS call per station. Useful for consumers that need
+        station-level fields beyond the device session."""
+        sid = station.upper()
+        if not self._ensure_station(sid):
+            return None
+        return self._metadata.get(sid)
+
+    @property
+    def station_count(self) -> int:
+        return len(self._device_history)

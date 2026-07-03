@@ -6,6 +6,9 @@ discrepant header fields** in place — no SBF re-conversion. This is the
 field-selective counterpart to ``--validate-only``: validate finds the
 mismatches, ``--fix-headers`` fixes exactly those.
 
+TOS efficiency: uses :class:`TOSSesionCache` — 1 API call per station, not
+per-file. The device history is cached and reused for every observation date.
+
 Reuses the legacy TOS/RINEX stack end-to-end — no header-editing logic is
 duplicated here:
 
@@ -103,33 +106,6 @@ def _read_header_info(rinex_file: Path, loglevel: int) -> dict[str, str]:
         return {}
 
 
-def _fetch_tos_session(
-    station_id: str,
-    observation_date: datetime,
-    loglevel: int,
-) -> Optional[dict]:
-    """Fetch the TOS device session covering ``observation_date`` for the station.
-
-    Reuses :func:`tostools.gps_metadata_qc.gps_metadata` (TOS fetch) +
-    :func:`receivers.dissemination.qc_gate.select_session` (merge covering
-    sessions — TOS splits receiver/antenna/radome/monument into overlapping
-    sessions, so a single date's complement is a merge). Returns None when no
-    session covers the date.
-    """
-    try:
-        from tostools.gps_metadata_qc import URL_REST_TOS, gps_metadata
-
-        from ..dissemination.qc_gate import select_session
-
-        station_data = gps_metadata(station_id, URL_REST_TOS, loglevel=loglevel)
-        if not station_data:
-            return None
-        device_history = station_data.get("device_history", []) or []
-        if not device_history:
-            return None
-        return select_session(device_history, observation_date)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("TOS session fetch failed for %s: %s", station_id, exc)
         return None
 
 
@@ -142,6 +118,7 @@ def fix_headers_in_file(
     dry_run: bool = False,
     work_dir: Optional[Path] = None,
     source_base: Optional[Path] = None,
+    tos_cache: Any = None,
     loglevel: int = logging.INFO,
 ) -> dict:
     """Fix the discrepant TOS header fields of one RINEX file.
@@ -150,6 +127,9 @@ def fix_headers_in_file(
     ``work_dir`` (preserving the archive-relative path from ``source_base``)
     and fixed there — the original source file is never touched. The copy
     only happens on a real write (not dry_run).
+
+    ``tos_cache`` is a :class:`TOSSesionCache` (or compatible) providing
+    ``.get_session(station, datetime)`` — avoids per-file TOS API calls.
 
     Returns a summary dict: ``{file, fixed, changed_labels, archived, error}``.
     """
@@ -180,7 +160,11 @@ def fix_headers_in_file(
     if not rinex_info:
         result["error"] = "could not read RINEX header"
         return result
-    tos_session = _fetch_tos_session(station_id, observation_date, loglevel)
+    if tos_cache is None:
+        from ..dissemination.tos_access import TOSSesionCache
+
+        tos_cache = TOSSesionCache()
+    tos_session = tos_cache.get_session(station_id, observation_date)
     if tos_session is None:
         result["error"] = "no TOS session covers this date"
         return result
@@ -339,6 +323,7 @@ def fix_headers_station(
     all_files: bool = False,
     work_dir: Optional[Path] = None,
     source_dir: Optional[Path] = None,
+    tos_cache: Any = None,
     loglevel: int = logging.INFO,
 ) -> dict:
     """Run ``--fix-headers`` across a station's archived RINEX.
@@ -346,6 +331,11 @@ def fix_headers_station(
     When ``work_dir`` is given, files are discovered from ``source_dir``
     (or ``data_prepath``) and COPIED to a mirror path under ``work_dir``
     before fixing — the source archive (read-only NFS) is never touched.
+
+    ``tos_cache`` is a shared :class:`TOSSesionCache` (or compatible).
+    When None a fresh one is created — but passing one from the fleet sweep
+    (one call to ``fix_headers_station`` per station) means only 1 TOS call
+    per station total, regardless of how many files are processed.
     After fixing, print an rsync command to push the staged fixes back.
 
     Returns ``{station, scanned, fixed, skipped, errors, details: [...]}``.
@@ -380,6 +370,12 @@ def fix_headers_station(
             f"(source archive NOT modified — push back with rsync)"
         )
 
+    # One TOS call per station (cached device_history), not per file.
+    if tos_cache is None:
+        from ..dissemination.tos_access import TOSSesionCache
+
+        tos_cache = TOSSesionCache()
+
     for f in files:
         r = fix_headers_in_file(
             f,
@@ -388,6 +384,7 @@ def fix_headers_station(
             dry_run=dry_run,
             work_dir=work_dir,
             source_base=source_base,
+            tos_cache=tos_cache,
             loglevel=loglevel,
         )
         summary["details"].append(r)

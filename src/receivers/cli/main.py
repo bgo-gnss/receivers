@@ -4619,6 +4619,10 @@ def cmd_rinex(args) -> int:
         total_fixed = 0
         total_skipped = 0
         total_errors = 0
+        # Shared TOS cache — 1 call per station across all files/dates.
+        from ..dissemination.tos_access import TOSSesionCache
+
+        tos_cache = TOSSesionCache()
         for station_id in stations:
             print(f"\nProcessing: {station_id}")
             summary = fix_headers_station(
@@ -4631,6 +4635,7 @@ def cmd_rinex(args) -> int:
                 all_files=all_mode,
                 work_dir=Path(args.work_dir) if getattr(args, "work_dir", None) else None,
                 source_dir=Path(_source_dir) if _source_dir else None,
+                tos_cache=tos_cache,
                 loglevel=args.loglevel,
             )
             print(
