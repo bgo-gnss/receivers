@@ -427,6 +427,8 @@ def fix_headers_station(
     work_dir: Optional[Path] = None,
     source_dir: Optional[Path] = None,
     tos_cache: Any = None,
+    flush_fn: Any = None,
+    flush_every: int = 0,
     loglevel: int = logging.INFO,
 ) -> dict:
     """Run ``--fix-headers`` across a station's archived RINEX.
@@ -439,7 +441,13 @@ def fix_headers_station(
     When None a fresh one is created — but passing one from the fleet sweep
     (one call to ``fix_headers_station`` per station) means only 1 TOS call
     per station total, regardless of how many files are processed.
-    After fixing, print an rsync command to push the staged fixes back.
+
+    Incremental durability: when ``flush_every > 0`` and ``flush_fn`` is given,
+    ``flush_fn(batch_details)`` is called every ``flush_every`` **fixed** files
+    (and once for the remainder at the end). The caller uses it to push+reindex
+    that batch immediately, so an interruption loses at most one batch's work
+    instead of the whole run (a re-run then skips already-pushed files, whose
+    headers now match TOS). Never invoked on a dry-run.
 
     Returns ``{station, scanned, fixed, skipped, errors, details: [...]}``.
     """
@@ -493,6 +501,12 @@ def fix_headers_station(
     except ImportError:
         pbar = files
 
+    # Incremental push batching: flush every ``flush_every`` fixed files so an
+    # interruption loses at most one batch (never on a dry-run).
+    _do_flush = bool(not dry_run and flush_fn is not None and flush_every > 0)
+    _pending: list[dict] = []
+    _pending_fixed = 0
+
     for f in pbar:
         r = fix_headers_in_file(
             f,
@@ -516,6 +530,15 @@ def fix_headers_station(
                 summary["fixed"] += 1
         else:
             summary["skipped"] += 1
+        # Accumulate fixed/preserved files and flush a batch when it fills.
+        if _do_flush and (r.get("fixed") or r.get("preserved_org")):
+            _pending.append(r)
+            if r.get("fixed"):
+                _pending_fixed += 1
+            if _pending_fixed >= flush_every:
+                flush_fn(_pending)
+                _pending = []
+                _pending_fixed = 0
         # Update progress bar postfix every file (cheap — just dict assignment).
         if hasattr(pbar, "set_postfix"):
             pbar.set_postfix(
@@ -524,6 +547,9 @@ def fix_headers_station(
                 err=summary["errors"],
                 refresh=False,
             )
+    # Flush the final partial batch.
+    if _do_flush and _pending:
+        flush_fn(_pending)
     # On dry_run, "skipped" in the CLI output means "no discrepancy", so
     # rename for clarity.
     if dry_run:

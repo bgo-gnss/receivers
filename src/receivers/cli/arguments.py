@@ -1252,6 +1252,16 @@ Examples:
         "--catalog-host (default gps_health per database.cfg).",
     )
     mode_group.add_argument(
+        "--push-batch",
+        type=int,
+        default=100,
+        metavar="N",
+        help="With --fix-headers --push: push+reindex every N fixed files instead "
+        "of once at the end, so an interruption loses at most one batch (a re-run "
+        "skips already-pushed files — their headers now match TOS). Default: 100. "
+        "Use a large value to push once at the end.",
+    )
+    mode_group.add_argument(
         "--catalog-host",
         default=None,
         metavar="HOST",
