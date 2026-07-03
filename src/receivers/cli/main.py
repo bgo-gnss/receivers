@@ -4553,8 +4553,11 @@ def cmd_rinex(args) -> int:
             end_time = start_time + timedelta(days=1)
 
     if not start_time:
-        logger.error("No date range specified. Use -s/--start, -e/--end, or -d/--days")
-        return 1
+        if getattr(args, "fix_headers", False) and getattr(args, "all", False):
+            pass  # --fix-headers --all scans the entire archive, no date needed
+        else:
+            logger.error("No date range specified. Use -s/--start, -e/--end, or -d/--days")
+            return 1
 
     # Print progress info (always visible, not dependent on log level)
     print(f"RINEX conversion for {len(stations)} station(s)")
@@ -4572,11 +4575,26 @@ def cmd_rinex(args) -> int:
     if getattr(args, "fix_headers", False):
         from ..rinex.header_fix import fix_headers_station
 
-        print(
-            f"Fix-headers mode: rewriting discrepant TOS header fields in place "
-            f"(archive_old={getattr(args, 'archive_old', False)}, "
-            f"dry_run={getattr(args, 'dry_run', False)})"
-        )
+        all_mode = getattr(args, "all", False)
+        if all_mode:
+            print(
+                f"Fix-headers mode (--all): scanning ENTIRE archive for "
+                f"{len(stations)} station(s), session={args.session}, "
+                f"archive_old={getattr(args, 'archive_old', False)}, "
+                f"dry_run={getattr(args, 'dry_run', True)}"
+            )
+        else:
+            if not start_time:
+                logger.error(
+                    "No date range specified. Use -s/--start, -e/--end, -d/--days, "
+                    "or --all to scan the entire archive."
+                )
+                return 1
+            print(
+                f"Fix-headers mode: rewriting discrepant TOS header fields in place "
+                f"(archive_old={getattr(args, 'archive_old', False)}, "
+                f"dry_run={getattr(args, 'dry_run', False)})"
+            )
         total_fixed = 0
         total_skipped = 0
         total_errors = 0
@@ -4585,10 +4603,11 @@ def cmd_rinex(args) -> int:
             summary = fix_headers_station(
                 station_id,
                 args.session,
-                start_time,
-                end_time,
+                start_time or datetime(2000, 1, 1),
+                end_time or datetime.now(),
                 archive_old=getattr(args, "archive_old", False),
                 dry_run=getattr(args, "dry_run", False),
+                all_files=all_mode,
                 loglevel=args.loglevel,
             )
             print(

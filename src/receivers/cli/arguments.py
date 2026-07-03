@@ -1175,7 +1175,18 @@ Examples:
         "in place (no SBF re-conversion). Walks the RINEX archive for the "
         "station/session/date-range; for each file, compares the header to TOS "
         "via the legacy validator and rewrites only the fields that actually "
-        "differ. Combine with --archive-old to keep the pre-fix file.",
+        "differ. Combine with --archive-old to keep the pre-fix file. "
+        "Use --all to scan the entire archive (all years/months) — no date "
+        "range needed.",
+    )
+
+    mode_group.add_argument(
+        "--all",
+        action="store_true",
+        help="With --fix-headers: scan the ENTIRE RINEX archive (all years/months) "
+        "for the station/session. No date range needed — discovers all files "
+        "under <data_prepath>/YYYY/mon/<STA>/<session>/rinex/ and fixes any "
+        "whose headers disagree with TOS.",
     )
 
     mode_group.add_argument(

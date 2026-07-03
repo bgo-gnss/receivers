@@ -236,6 +236,36 @@ def fix_headers_in_file(
     return result
 
 
+def discover_all_rinex_files(
+    station_id: str,
+    session: str,
+    data_prepath: str,
+) -> list[Path]:
+    """Discover ALL archived RINEX files for a station/session — every year/month.
+
+    Walks ``<data_prepath>/<YYYY>/<mon>/<STA>/<session>/rinex/`` for every
+    year+month that exists on disk. Used by ``--fix-headers --all``.
+    """
+    from tostools.rinex.reader import _parse_daily_rinex_date
+
+    root = Path(data_prepath)
+    if not root.is_dir():
+        return []
+
+    files: list[Path] = []
+    for year_dir in sorted(root.iterdir()):
+        if not year_dir.is_dir() or not year_dir.name.isdigit():
+            continue
+        for month_dir in sorted(year_dir.iterdir()):
+            rinex_dir = month_dir / station_id / session / "rinex"
+            if not rinex_dir.is_dir():
+                continue
+            for p in sorted(rinex_dir.iterdir()):
+                if p.is_file() and (p.name.endswith((".Z", ".gz")) or p.suffix in (".o", ".O")):
+                    files.append(p)
+    return files
+
+
 def discover_rinex_files(
     station_id: str,
     session: str,
@@ -293,9 +323,14 @@ def fix_headers_station(
     *,
     archive_old: bool = False,
     dry_run: bool = False,
+    all_files: bool = False,
     loglevel: int = logging.INFO,
 ) -> dict:
-    """Run ``--fix-headers`` across a station's archived RINEX for a date range.
+    """Run ``--fix-headers`` across a station's archived RINEX.
+
+    When ``all_files`` is True (``--fix-headers --all``) the entire archive
+    is scanned — ``start_time``/``end_time`` are ignored. Otherwise the
+    date-range discovery is used.
 
     Returns ``{station, scanned, fixed, skipped, errors, details: [...]}``.
     """
@@ -304,9 +339,12 @@ def fix_headers_station(
     cfg = get_receivers_config()
     data_prepath = cfg.get_data_prepath()
 
-    files = discover_rinex_files(
-        station_id, session, start_time, end_time, data_prepath
-    )
+    if all_files:
+        files = discover_all_rinex_files(station_id, session, data_prepath)
+    else:
+        files = discover_rinex_files(
+            station_id, session, start_time, end_time, data_prepath
+        )
     summary = {
         "station": station_id,
         "scanned": len(files),
