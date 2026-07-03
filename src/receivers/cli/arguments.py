@@ -1215,6 +1215,15 @@ Examples:
     )
 
     mode_group.add_argument(
+        "--push",
+        action="store_true",
+        help="With --fix-headers --work-dir: after fixing, rsync the staged files "
+        "back to the source archive. Uses --checksum so only changed header "
+        "blocks are transferred (not the entire multi-MB file). Prints an "
+        "rsync summary when done.",
+    )
+
+    mode_group.add_argument(
         "--dry-run",
         action="store_true",
         help="Show what would be done without making changes",

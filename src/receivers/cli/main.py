@@ -4664,6 +4664,41 @@ def cmd_rinex(args) -> int:
             f"{'clean' if _dry_run else '⏭️  skipped'} {total_skipped}, "
             f"❌ {total_errors} errors"
         )
+
+        # --push: rsync the staged work-dir back to the source archive.
+        # Uses --checksum so rsync only transfers the changed header blocks
+        # (~10 KB) per file, not the full 3 MB RINEX body.
+        if getattr(args, "push", False) and not _dry_run:
+            _work = Path(getattr(args, "work_dir", "") or "~/tmp/rinex_fixes").expanduser()
+            if not _work.exists():
+                print("\n⚠️  --push: work-dir does not exist — nothing to push")
+            elif not _source_dir:
+                print("\n⚠️  --push: no source archive path configured")
+            else:
+                import subprocess
+                import time
+
+                _dest = _source_dir.rstrip("/") + "/"
+                _src = str(_work).rstrip("/") + "/"
+                print(f"\n🚀 Pushing staged fixes back to archive…")
+                print(f"   {_src} → {_dest}")
+                t0 = time.monotonic()
+                try:
+                    proc = subprocess.run(
+                        ["rsync", "-av", "--checksum", "--no-owner", "--no-group",
+                         _src, _dest],
+                        capture_output=False,
+                        text=True,
+                        timeout=3600,
+                    )
+                    dt = time.monotonic() - t0
+                    print(f"   Push complete ({dt:.1f}s, exit={proc.returncode}).")
+                    print("   ⚠️  sha256 checksums in archive_catalog may be stale — run")
+                    print("      `receivers archive-sync --status` to verify.")
+                except subprocess.TimeoutExpired:
+                    print("   ⚠️  rsync timed out — push may be incomplete.")
+                except FileNotFoundError:
+                    print("   ⚠️  rsync not found on PATH — cannot push.")
         return 0 if total_errors == 0 else 1
 
     # Track results
