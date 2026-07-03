@@ -33,7 +33,7 @@ import logging
 import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger("receivers.rinex.header_fix")
 
@@ -173,6 +173,9 @@ def fix_headers_in_file(
     source_path = Path(rinex_file)  # the original (may be read-only)
     result: dict = {
         "file": str(source_path),
+        "source": str(source_path),   # archive path (re-read post-push for cleanup)
+        "station": station_id,
+        "observation_date": None,     # set once parsed (below)
         "fixed": False,
         "changed_labels": [],
         "archived": None,
@@ -189,6 +192,7 @@ def fix_headers_in_file(
     if observation_date is None:
         result["error"] = "could not parse observation date from filename"
         return result
+    result["observation_date"] = observation_date
 
     # 1. Read the file's header (handles .Z/.gz) and the TOS session for the date.
     rinex_info = _read_header_info(source_path, loglevel)
@@ -532,3 +536,120 @@ def fix_headers_station(
             print(f"      {lbl}: {cnt} file(s)")
 
     return summary
+
+
+def archive_header_matches_tos(
+    archive_file: Path,
+    station_id: str,
+    observation_date: datetime,
+    *,
+    tos_cache: Any = None,
+    loglevel: int = logging.INFO,
+) -> bool:
+    """Re-read a (pushed) archive RINEX header and confirm it now equals TOS.
+
+    The gate for deleting a rinex_archive pre-fix backup: only once the corrected
+    file **on the archive** actually agrees with TOS (no real
+    marker/antenna_height/coordinates discrepancy) is the backup safe to remove.
+    Conservative — any read failure, stale NFS view, or missing TOS session
+    returns False (keep the backup; the cleanup can be re-run later).
+    """
+    from tostools.rinex.validator import compare_rinex_to_tos
+
+    info = _read_header_info(Path(archive_file), loglevel)
+    if not info:
+        return False
+    if tos_cache is None:
+        from ..dissemination.tos_access import TOSSesionCache
+
+        tos_cache = TOSSesionCache()
+    tos_session = tos_cache.get_session(station_id, observation_date)
+    if tos_session is None:
+        return False
+    comparison = compare_rinex_to_tos(info, tos_session, loglevel=loglevel)
+    real = set(comparison.get("discrepancies", {}).keys()) & {
+        "marker",
+        "antenna_height",
+        "coordinates",
+    }
+    return not real
+
+
+def cleanup_after_push(
+    details: list[dict],
+    *,
+    work_dir: Optional[Path],
+    tos_cache: Any = None,
+    confirm_fn: Any = None,
+    loglevel: int = logging.INFO,
+) -> dict:
+    """Post-push staging cleanup (opt-in via ``--cleanup``). Never touches the
+    archive — only the local staging work-dir.
+
+    For each successfully fixed file:
+      * delete the staged ``rinex/`` obs (durably on the archive after push);
+      * delete its ``rinex_archive/`` pre-fix backup ONLY once the re-read
+        archive header matches TOS (:func:`archive_header_matches_tos`);
+      * NEVER touch ``rinex_org/`` (permanent preservation of un-regenerable
+        originals).
+
+    Returns counts: staged_removed, backups_removed, backups_kept, org_kept,
+    errors[].
+    """
+    stats = {
+        "staged_removed": 0,
+        "backups_removed": 0,
+        "backups_kept": 0,
+        "org_kept": 0,
+        "errors": [],
+    }
+    work = Path(work_dir) if work_dir else None
+    # Injectable for tests; defaults to the live archive-header-vs-TOS re-read.
+    _confirm = confirm_fn
+    if _confirm is None:
+        def _confirm(src, st, od):
+            return archive_header_matches_tos(
+                Path(src), st, od, tos_cache=tos_cache, loglevel=loglevel
+            )
+
+    def _under(p: Path, root: Path) -> bool:
+        try:
+            p.relative_to(root)
+            return True
+        except ValueError:
+            return False
+
+    for d in details:
+        if not d.get("fixed"):
+            continue
+        # 1. Staged rinex/ obs — safe to drop once it is on the archive.
+        staged = Path(d["file"])
+        if work is not None and _under(staged, work) and staged.is_file():
+            try:
+                staged.unlink()
+                stats["staged_removed"] += 1
+            except OSError as exc:
+                stats["errors"].append(f"staged rm {staged}: {exc}")
+
+        # 2. rinex_archive/ backup — gated on archive-header == TOS.
+        archived = d.get("archived")
+        if archived:
+            ap = Path(archived)
+            src = d.get("source")
+            od = d.get("observation_date")
+            st = d.get("station")
+            confirmed = bool(src and od and st and _confirm(src, st, od))
+            if confirmed and ap.is_file():
+                try:
+                    ap.unlink()
+                    stats["backups_removed"] += 1
+                except OSError as exc:
+                    stats["errors"].append(f"backup rm {ap}: {exc}")
+            else:
+                stats["backups_kept"] += 1
+
+        # 3. rinex_org/ — irreplaceable preservation, never auto-deleted.
+        if d.get("preserved_org"):
+            stats["org_kept"] += 1
+
+    return stats

@@ -4511,6 +4511,31 @@ def _push_reindex(
                 pass
 
 
+def _push_cleanup(all_details: list[dict], *, work_dir, tos_cache) -> None:
+    """After push+reindex, tidy the staging work-dir (opt-in via --cleanup).
+
+    Deletes staged rinex/ obs (now on the archive) and TOS-confirmed
+    rinex_archive/ backups; never removes rinex_org/ preservations. Best-effort
+    — never fails the run.
+    """
+    from ..rinex.header_fix import cleanup_after_push
+
+    try:
+        stats = cleanup_after_push(
+            all_details, work_dir=work_dir, tos_cache=tos_cache
+        )
+        print(
+            f"   🧹 cleanup: removed {stats['staged_removed']} staged obs, "
+            f"{stats['backups_removed']} TOS-confirmed backup(s); kept "
+            f"{stats['backups_kept']} unconfirmed backup(s), "
+            f"{stats['org_kept']} rinex_org preservation(s)"
+        )
+        for msg in stats["errors"][:5]:
+            print(f"      ⚠️  {msg}")
+    except Exception as exc:  # noqa: BLE001 — cleanup must never fail the push
+        print(f"   ⚠️  --cleanup failed: {type(exc).__name__}: {exc}")
+
+
 def cmd_rinex(args) -> int:
     """RINEX conversion command - convert raw GPS data to RINEX format."""
     logger = setup_logging(args.loglevel)
@@ -4694,6 +4719,8 @@ def cmd_rinex(args) -> int:
         # original survives on ananas; NOT reindexed (distinct file_category,
         # own canonical_key — kept out of the rinex-row reindex for now).
         preserved_orgs: list[str] = []
+        # All per-file result dicts across stations — fed to --cleanup after push.
+        all_details: list[dict] = []
         # Shared TOS cache — 1 call per station across all files/dates.
         from ..dissemination.tos_access import TOSSesionCache
 
@@ -4756,6 +4783,7 @@ def cmd_rinex(args) -> int:
                 for d in summary.get("details", [])
                 if d.get("preserved_org")
             )
+            all_details.extend(summary.get("details", []))
         print(
             f"\nSummary: {'would_fix' if _dry_run else '✅'} {total_fixed} "
             f"{'(dry-run)' if _dry_run else 'fixed'}, "
@@ -4874,6 +4902,8 @@ def cmd_rinex(args) -> int:
                             storage_location=_archive_name,
                             dest_prefix=_archive_destpath,
                         )
+                        if getattr(args, "cleanup", False):
+                            _push_cleanup(all_details, work_dir=_work, tos_cache=tos_cache)
                     else:
                         print(f"   ⚠️  rsync exit code {proc.returncode}.")
                 except subprocess.TimeoutExpired:

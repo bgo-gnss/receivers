@@ -1233,6 +1233,16 @@ Examples:
     )
 
     mode_group.add_argument(
+        "--cleanup",
+        action="store_true",
+        help="With --fix-headers --push: after a successful push+reindex, delete "
+        "this run's staged rinex/ obs from the work-dir, and delete each "
+        "rinex_archive/ pre-fix backup ONLY once the re-read archive header "
+        "matches TOS (fix confirmed on the archive). rinex_org/ preservations "
+        "(un-regenerable originals) are NEVER auto-deleted. (Distinct from "
+        "--clean, which empties the work-dir BEFORE staging.)",
+    )
+    mode_group.add_argument(
         "--reindex",
         action="store_true",
         help="With --fix-headers --push: after the push, re-hash each pushed file "
