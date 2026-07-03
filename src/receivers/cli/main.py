@@ -4903,9 +4903,13 @@ def cmd_rinex(args) -> int:
                     dt = time.monotonic() - t0
                     print(f"   Push complete ({dt:.1f}s, exit={proc.returncode}).")
                     if proc.returncode == 0:
+                        # Reindex the fixed rinex/ rows (updates) AND the
+                        # rinex_org/ preservations (inserts, distinct
+                        # file_category) so the irreplaceable copy is
+                        # integrity-monitored by archive-verify too.
                         _push_reindex(
                             args,
-                            [str(_work / r) for r in _rel_files],
+                            [str(_work / r) for r in _push_rel],
                             root=str(_work),
                             storage_location=_archive_name,
                             dest_prefix=_archive_destpath,

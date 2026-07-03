@@ -135,6 +135,30 @@ def test_dry_run_writes_nothing(db_conn, tmp_path):
     assert _catalog_sha(db_conn, "eldc_a.sbf") == "0" * 64  # unchanged on disk
 
 
+def test_rinex_org_catalogs_as_distinct_row(db_conn, tmp_path):
+    # A rinex_org preservation shares the rinex file's canonical_key but parses
+    # to file_category='rinex_org' → a SEPARATE catalog row, no collision.
+    rnx_rel = "2026/jun/RHOF/15s_24hr/rinex/RHOF1720.26D.Z"
+    org_rel = "2026/jun/RHOF/15s_24hr/rinex_org/RHOF1720.26D.Z"
+    _, rnx_sha = _seed_gz(tmp_path, rnx_rel, b"fixed content")
+    _, org_sha = _seed_gz(tmp_path, org_rel, b"original content")
+    stats = reindex_files(
+        db_conn, [str(tmp_path / rnx_rel), str(tmp_path / org_rel)],
+        root=str(tmp_path), storage_location=LOC, dest_prefix="~/gpsdata",
+    )
+    assert stats.inserted == 2  # two distinct (file_category) rows
+    with db_conn.cursor() as cur:
+        cur.execute(
+            "SELECT file_category, content_sha256 FROM archive_catalog "
+            "WHERE storage_location=%s AND canonical_key='rhof1720.26d' "
+            "ORDER BY file_category",
+            (LOC,),
+        )
+        rows = {c: s for c, s in cur.fetchall()}
+    assert rows["rinex"] == rnx_sha
+    assert rows["rinex_org"] == org_sha  # preserved original, distinct + monitored
+
+
 def test_unparsable_path_skipped(db_conn, tmp_path):
     # A file not in archive layout can't be parsed to an identity.
     stray = tmp_path / "stray.txt"
