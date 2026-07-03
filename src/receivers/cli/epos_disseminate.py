@@ -129,12 +129,16 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
             )
         return 0 if not summary.get("failed") else 1
 
-    # --sitelog: generate the IGS/M3G site log for --station from TOS (C6/T7).
-    if args.sitelog:
+    # --sitelog / --publish-m3g: generate (+ optionally publish) the site log (C6/T7).
+    if args.sitelog or args.publish_m3g:
         if not args.station:
-            print("--sitelog requires --station")
+            print("--sitelog/--publish-m3g requires --station")
             return 1
-        from ..dissemination.sitelogs import generate_site_log, resolve_sitelogs_repo
+        from ..dissemination.sitelogs import (
+            generate_site_log,
+            resolve_sitelogs_repo,
+            submit_to_m3g,
+        )
 
         out_dir = resolve_sitelogs_repo(args.sitelog_dir)
         path = generate_site_log(
@@ -148,6 +152,47 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
             print(f"Site log generation failed for {args.station} (see log).")
             return 1
         print(f"✅ site log: {path}")
+
+        if not args.publish_m3g:
+            return 0
+
+        # --publish-m3g: validate + publish to M3G (the API publishes directly).
+        from ..dissemination.m3g_client import M3GError
+
+        dry_run = False  # --publish-m3g means: actually publish
+        # Reuse the standalone m3g submit flow but feed the just-written path.
+        try:
+            result = submit_to_m3g(
+                args.station,
+                site_log_path=path,
+                network=args.m3g_network,
+                country_code=target.format.country_code,
+                monument_number=target.format.monument_number,
+                dry_run=dry_run,
+                endpoint=args.m3g_endpoint,
+            )
+        except M3GError as exc:
+            print(f"❌ M3G: {exc}")
+            return 1
+
+        from .m3g import _print_validation
+
+        if result.validation is not None:
+            _print_validation(result.validation)
+            if not result.validated:
+                print("\n⚠️  publish skipped — fix the validation errors above first.")
+                return 1
+        ur = result.upload
+        if ur is not None and ur.ok:
+            print(f"\n✅ M3G PUBLISHED for {args.station}.")
+            if ur.sitelog_name:
+                print(f"   filename: {ur.sitelog_name}")
+            print(f"   🔔 review + alerts: {ur.draft_url}")
+        elif ur is not None:
+            print(
+                f"\n❌ M3G publish failed: {ur.error or 'HTTP ' + str(ur.status_code)}"
+            )
+            return 1
         return 0
 
     if not args.station or not args.date:
@@ -267,6 +312,22 @@ def create_epos_disseminate_parser(subparsers) -> argparse.ArgumentParser:
         action="store_true",
         help="Write the plain <9CHAR>.log instead of the default dated M3G form "
         "(<9char>_<YYYYMMDD>.log with §0 Previous Site Log chaining)",
+    )
+    parser.add_argument(
+        "--publish-m3g",
+        action="store_true",
+        help="After --sitelog, validate + PUBLISH the site log to M3G. The M3G API "
+        "publishes directly (no draft state). Implies --sitelog. Validation runs "
+        "first and blocks on errors. Endpoint/token from --m3g-endpoint / [m3g].",
+    )
+    parser.add_argument(
+        "--m3g-endpoint",
+        help="M3G endpoint URL or alias (prod/test). Used with --publish-m3g.",
+    )
+    parser.add_argument(
+        "--m3g-network",
+        default="EPOS",
+        help="M3G network short name for validation (default: EPOS)",
     )
     parser.add_argument(
         "--refresh-metadata",

@@ -4446,6 +4446,96 @@ def _check_port_simple(host: str, port: int, timeout: float = 3.0) -> bool:
         return False
 
 
+def _push_reindex(
+    args,
+    files: list[str],
+    *,
+    root: str,
+    storage_location: Optional[str],
+    dest_prefix: Optional[str],
+) -> None:
+    """After a --fix-headers --push, refresh archive_catalog.content_sha256.
+
+    A header rewrite changes content_sha256 (it is over decompressed content),
+    so every pushed file's catalog row is now stale and the integrity verify
+    would flag it. With --reindex we re-hash the pushed (staged) files and
+    upsert the rows on the catalog host; without it we just point the user at
+    the reindex verb instead of the old (useless-here) `archive-sync --status`.
+    """
+    if not getattr(args, "reindex", False):
+        print("   ↻ catalog sha256 for these files is now stale. Refresh with:")
+        print(f"        receivers archive-reindex --dir {root} \\")
+        print("          --host pgdev.vedur.is        # production catalog")
+        print("      or re-run this command with --reindex --catalog-host pgdev.vedur.is")
+        return
+
+    if not storage_location or not dest_prefix:
+        print("   ⚠️  --reindex: no archive storage_location/dest resolved — skipped")
+        return
+
+    catalog_host = getattr(args, "catalog_host", None)
+    if not catalog_host:
+        print("   ⚠️  --reindex: --catalog-host not set → writing to the DEFAULT")
+        print("      gps_health (localhost = DEV catalog on a laptop, NOT production).")
+        print("      Pass --catalog-host pgdev.vedur.is to update the production catalog.")
+
+    from ..archive import reindex_files
+    from ..db.connection import get_connection
+
+    conn = None
+    try:
+        conn = get_connection(host_override=catalog_host)
+        stats = reindex_files(
+            conn,
+            files,
+            root=root,
+            storage_location=storage_location,
+            dest_prefix=dest_prefix,
+        )
+        host_label = catalog_host or "localhost"
+        print(
+            f"   ↻ reindexed archive_catalog on {host_label}: "
+            f"{stats.updated} updated, {stats.inserted} inserted, "
+            f"{stats.unchanged} unchanged"
+            + (f", {stats.skipped} unparsable" if stats.skipped else "")
+        )
+        for msg in stats.errors[:5]:
+            print(f"      ⚠️  {msg}")
+    except Exception as exc:  # noqa: BLE001 — best-effort, never fail the push
+        print(f"   ⚠️  --reindex failed: {type(exc).__name__}: {exc}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def _push_cleanup(all_details: list[dict], *, work_dir, tos_cache) -> None:
+    """After push+reindex, tidy the staging work-dir (opt-in via --cleanup).
+
+    Deletes staged rinex/ obs (now on the archive) and TOS-confirmed
+    rinex_archive/ backups; never removes rinex_org/ preservations. Best-effort
+    — never fails the run.
+    """
+    from ..rinex.header_fix import cleanup_after_push
+
+    try:
+        stats = cleanup_after_push(
+            all_details, work_dir=work_dir, tos_cache=tos_cache
+        )
+        print(
+            f"   🧹 cleanup: removed {stats['staged_removed']} staged obs, "
+            f"{stats['backups_removed']} TOS-confirmed backup(s); kept "
+            f"{stats['backups_kept']} unconfirmed backup(s), "
+            f"{stats['org_kept']} rinex_org preservation(s)"
+        )
+        for msg in stats["errors"][:5]:
+            print(f"      ⚠️  {msg}")
+    except Exception as exc:  # noqa: BLE001 — cleanup must never fail the push
+        print(f"   ⚠️  --cleanup failed: {type(exc).__name__}: {exc}")
+
+
 def cmd_rinex(args) -> int:
     """RINEX conversion command - convert raw GPS data to RINEX format."""
     logger = setup_logging(args.loglevel)
@@ -4553,18 +4643,291 @@ def cmd_rinex(args) -> int:
             end_time = start_time + timedelta(days=1)
 
     if not start_time:
-        logger.error("No date range specified. Use -s/--start, -e/--end, or -d/--days")
-        return 1
+        if getattr(args, "fix_headers", False) and getattr(args, "all", False):
+            pass  # --fix-headers --all scans the entire archive, no date needed
+        else:
+            logger.error("No date range specified. Use -s/--start, -e/--end, or -d/--days")
+            return 1
 
-    # Print progress info (always visible, not dependent on log level)
-    print(f"RINEX conversion for {len(stations)} station(s)")
-    print(
-        f"Date range: {start_time.strftime('%Y-%m-%d')} to {end_time.strftime('%Y-%m-%d')}"
-    )
-    print(f"RINEX version: {rinex_version.value}, Naming: {naming_str}")
-    logger.info(f"RINEX conversion for {len(stations)} stations")
-    logger.info(f"Date range: {start_time} to {end_time}")
-    logger.info(f"RINEX version: {rinex_version.value}, Naming: {naming_str}")
+    # Print progress info (always visible, not dependent on log level).
+    # Skip when --fix-headers — it prints its own header below.
+    if not getattr(args, "fix_headers", False):
+        print(f"RINEX conversion for {len(stations)} station(s)")
+        print(
+            f"Date range: {start_time.strftime('%Y-%m-%d')} to {end_time.strftime('%Y-%m-%d')}"
+        )
+        print(f"RINEX version: {rinex_version.value}, Naming: {naming_str}")
+        logger.info(f"RINEX conversion for {len(stations)} stations")
+        logger.info(f"Date range: {start_time} to {end_time}")
+        logger.info(f"RINEX version: {rinex_version.value}, Naming: {naming_str}")
+
+    # --fix-headers: in-place TOS header correction of archived RINEX (no
+    # re-conversion). Walks the RINEX archive, not raw files, so it has its own
+    # dispatch and bypasses the converter flow below.
+    if getattr(args, "fix_headers", False):
+        from ..rinex.header_fix import fix_headers_station
+
+        # Default source dir: read from sync.yaml's first dissemination target's
+        # source_root (same field the EPOS disseminator uses). Falls back to
+        # data_prepath from receivers.cfg if sync.yaml is unavailable.
+        #
+        # NB: on the laptop this source_root (the dissemination target,
+        # /mnt_data/rawgpsdata) is the read-only NFS mount of the SAME ananas
+        # store the --push writes to (rawdata:~/gpsdata is a disk on ananas). So
+        # fix-headers ROUND-TRIPS the archive: read ananas via NFS → fix → push
+        # ananas via the rawdata gateway. This is not a bookkeeping bug; the
+        # archive target's own source_root (/mnt/data/gpsdata) is rek-d01's local
+        # collection root, a rek-d01-only field this laptop path does not use.
+        _source_dir = getattr(args, "source_dir", None)
+        if not _source_dir:
+            try:
+                from ..dissemination import load_dissemination_config
+
+                targets = load_dissemination_config()
+                # Grab the first tier:dissemination target's source_root
+                for t in targets:
+                    if getattr(t, "tier", None) == "dissemination":
+                        src = getattr(t, "source_root", None)
+                        if src:
+                            _source_dir = src
+                            break
+            except Exception:  # noqa: BLE001
+                pass
+        if not _source_dir:
+            _source_dir = str(Path(get_receivers_config().get_data_prepath()))
+
+        all_mode = getattr(args, "all", False)
+        if all_mode:
+            print(
+                f"Fix-headers mode (--all): scanning ENTIRE archive for "
+                f"{len(stations)} station(s), session={args.session}, "
+                f"archive_old={getattr(args, 'archive_old', False)}, "
+                f"dry_run={getattr(args, 'dry_run', True)}"
+            )
+        else:
+            if not start_time:
+                logger.error(
+                    "No date range specified. Use -s/--start, -e/--end, -d/--days, "
+                    "or --all to scan the entire archive."
+                )
+                return 1
+            print(
+                f"Fix-headers mode: rewriting discrepant TOS header fields in place "
+                f"(archive_old={getattr(args, 'archive_old', False)}, "
+                f"dry_run={getattr(args, 'dry_run', False)})"
+            )
+        total_fixed = 0
+        total_skipped = 0
+        total_errors = 0
+        # Staged files actually written by the corrector this run — the ONLY
+        # files --push should transfer (not the whole accumulating work-dir).
+        staged_fixed: list[str] = []
+        # rinex_org preservations for un-regenerable originals (no convertible
+        # raw). Pushed to the archive alongside the fixes so the irreplaceable
+        # original survives on ananas; NOT reindexed (distinct file_category,
+        # own canonical_key — kept out of the rinex-row reindex for now).
+        preserved_orgs: list[str] = []
+        # All per-file result dicts across stations — fed to --cleanup after push.
+        all_details: list[dict] = []
+        # Shared TOS cache — 1 call per station across all files/dates.
+        from ..dissemination.tos_access import TOSSesionCache
+
+        tos_cache = TOSSesionCache()
+        _dry_run = getattr(args, "dry_run", False)
+        # Resolve the staging work-dir once (None disables staging → fix in place).
+        _work_dir = (
+            Path(args.work_dir).expanduser() if getattr(args, "work_dir", "") else None
+        )
+        # --clean: empty the accumulating work-dir before staging so it holds
+        # only this run's files. Never touches the source archive or dry-runs.
+        if getattr(args, "clean", False) and _work_dir is not None and not _dry_run:
+            import shutil
+
+            if _work_dir.exists():
+                removed = sum(1 for _ in _work_dir.rglob("*") if _.is_file())
+                shutil.rmtree(_work_dir)
+                print(f"🧹 --clean: emptied staging work-dir {_work_dir} ({removed} file(s))")
+            _work_dir.mkdir(parents=True, exist_ok=True)
+        for station_id in stations:
+            print(f"\nProcessing: {station_id}")
+            summary = fix_headers_station(
+                station_id,
+                args.session,
+                start_time or datetime(2000, 1, 1),
+                end_time or datetime.now(),
+                archive_old=getattr(args, "archive_old", False),
+                dry_run=_dry_run,
+                all_files=all_mode,
+                work_dir=_work_dir,
+                source_dir=Path(_source_dir) if _source_dir else None,
+                tos_cache=tos_cache,
+                loglevel=args.loglevel,
+            )
+            print(
+                f"  scanned={summary['scanned']} "
+                + (f"would_fix={summary.get('would_fix', 0)} clean={summary.get('clean', summary.get('skipped', 0))} " if _dry_run else f"fixed={summary['fixed']} skipped={summary['skipped']} ")
+                + f"errors={summary['errors']}"
+            )
+            if summary["errors"]:
+                # Group errors by message — avoid printing the same error 27 times.
+                _by_err: dict[str, int] = {}
+                for d in summary.get("details", []):
+                    if d.get("error"):
+                        _by_err[d["error"]] = _by_err.get(d["error"], 0) + 1
+                print("   Errors:")
+                for msg, cnt in sorted(_by_err.items(), key=lambda kv: -kv[1]):
+                    print(f"      {msg}: {cnt} file(s)")
+            total_fixed += summary.get("would_fix", summary.get("fixed", 0))
+            total_skipped += summary.get("clean", summary.get("skipped", 0))
+            total_errors += summary["errors"]
+            # Collect the staged paths the corrector actually wrote (d["fixed"]
+            # is out-is-not-None from correct_rinex_from_tos). Never populated on
+            # a dry-run (no files written), so --push stays a no-op there.
+            staged_fixed.extend(
+                d["file"] for d in summary.get("details", []) if d.get("fixed")
+            )
+            preserved_orgs.extend(
+                d["preserved_org"]
+                for d in summary.get("details", [])
+                if d.get("preserved_org")
+            )
+            all_details.extend(summary.get("details", []))
+        print(
+            f"\nSummary: {'would_fix' if _dry_run else '✅'} {total_fixed} "
+            f"{'(dry-run)' if _dry_run else 'fixed'}, "
+            f"{'clean' if _dry_run else '⏭️  skipped'} {total_skipped}, "
+            f"❌ {total_errors} errors"
+        )
+
+        # --push: rsync ONLY the files this run actually rewrote back to the
+        # rawdata archive (gpsops@rawdata.vedur.is:~/gpsdata) — the sole writer
+        # to the long-term archive. Transferring an explicit --files-from list
+        # (instead of the whole accumulating work-dir) means:
+        #   • nothing to push when 0 files were fixed → skip entirely
+        #   • no full-tree checksum walk (rsync still block-deltas each listed
+        #     file, so only the ~10 KB changed header transfers)
+        #   • stale files from earlier runs are never re-pushed
+        if getattr(args, "push", False) and not _dry_run:
+            if not staged_fixed:
+                print("\n⏭️  --push: 0 files fixed this run — nothing to push")
+                return 0 if total_errors == 0 else 1
+
+            import subprocess
+            import time
+
+            _work = _work_dir or Path("~/tmp/rinex_fixes").expanduser()
+            # Map each written file to its work-dir-relative path (what rsync
+            # --files-from needs to recreate the mirror layout under dest). A
+            # path outside _work (e.g. --work-dir '' fixes in place) can't be
+            # pushed coherently — skip it.
+            _rel_files: list[str] = []
+            for _f in staged_fixed:
+                try:
+                    _rel_files.append(str(Path(_f).relative_to(_work)))
+                except ValueError:
+                    continue
+            if not _rel_files:
+                print("\n⚠️  --push: fixed files are not under the work-dir "
+                      "(staging disabled?) — cannot push")
+                return 0 if total_errors == 0 else 1
+
+            # Also push rinex_org/ preservations (un-regenerable originals) so
+            # the irreplaceable copy reaches ananas before the fix overwrites it.
+            _org_rel: list[str] = []
+            for _f in preserved_orgs:
+                try:
+                    _org_rel.append(str(Path(_f).relative_to(_work)))
+                except ValueError:
+                    continue
+            _push_rel = _rel_files + _org_rel
+
+            # Find the archive target's rsync destination.
+            _archive_dest = None
+            _archive_name = None   # storage_location for the catalog
+            _archive_destpath = None  # dest path (no host) → catalog file_path prefix
+            try:
+                from ..archive.config import load_sync_config
+
+                for t in load_sync_config():
+                    if getattr(t, "tier", None) == "archive":
+                        dest = t.dest
+                        _archive_name = t.name
+                        _archive_destpath = dest
+                        if t.host:
+                            _archive_dest = f"{t.user}@{t.host}:{dest}"
+                        else:
+                            _archive_dest = dest
+                        break
+            except Exception:  # noqa: BLE001
+                pass
+            if not _archive_dest:
+                print("\n⚠️  --push: no archive tier target in sync.yaml — cannot push")
+                return 0 if total_errors == 0 else 1
+
+            _archive_dest = _archive_dest.rstrip("/") + "/"
+            _src = str(_work).rstrip("/") + "/"
+            # Write the explicit file list to a temp manifest for --files-from.
+            import tempfile
+
+            _listf = tempfile.NamedTemporaryFile(
+                "w", suffix=".rsync-files", delete=False, encoding="utf-8"
+            )
+            try:
+                _listf.write("\n".join(_push_rel) + "\n")
+                _listf.close()
+                _org_note = (
+                    f" + {len(_org_rel)} rinex_org preservation(s)" if _org_rel else ""
+                )
+                print(
+                    f"\n🚀 Pushing {len(_rel_files)} fixed file(s){_org_note} to archive…"
+                )
+                print(f"   {_src} → {_archive_dest}")
+                t0 = time.monotonic()
+                try:
+                    # --no-owner/group avoids permission noise; only the listed
+                    # files are considered, so no whole-tree scan.
+                    proc = subprocess.run(
+                        ["rsync", "-av",
+                         "--files-from", _listf.name,
+                         "--no-owner", "--no-group",
+                         _src, _archive_dest],
+                        capture_output=True,
+                        text=True,
+                        timeout=3600,
+                    )
+                    # Print only files transferred, skip directory lines
+                    for line in proc.stdout.splitlines():
+                        s = line.strip()
+                        if s and not s.endswith("/") and "sent " not in s:
+                            print(f"   → {s}")
+                    dt = time.monotonic() - t0
+                    print(f"   Push complete ({dt:.1f}s, exit={proc.returncode}).")
+                    if proc.returncode == 0:
+                        # Reindex the fixed rinex/ rows (updates) AND the
+                        # rinex_org/ preservations (inserts, distinct
+                        # file_category) so the irreplaceable copy is
+                        # integrity-monitored by archive-verify too.
+                        _push_reindex(
+                            args,
+                            [str(_work / r) for r in _push_rel],
+                            root=str(_work),
+                            storage_location=_archive_name,
+                            dest_prefix=_archive_destpath,
+                        )
+                        if getattr(args, "cleanup", False):
+                            _push_cleanup(all_details, work_dir=_work, tos_cache=tos_cache)
+                    else:
+                        print(f"   ⚠️  rsync exit code {proc.returncode}.")
+                except subprocess.TimeoutExpired:
+                    print("   ⚠️  rsync timed out — push may be incomplete.")
+                except FileNotFoundError:
+                    print("   ⚠️  rsync not found on PATH — cannot push.")
+            finally:
+                try:
+                    Path(_listf.name).unlink()
+                except OSError:
+                    pass
+        return 0 if total_errors == 0 else 1
 
     # Track results
     total_converted = 0

@@ -1169,6 +1169,98 @@ Examples:
     )
 
     mode_group.add_argument(
+        "--fix-headers",
+        action="store_true",
+        help="Rewrite discrepant header fields in archived RINEX files to match TOS, "
+        "in place (no SBF re-conversion). Walks the RINEX archive for the "
+        "station/session/date-range; for each file, compares the header to TOS "
+        "via the legacy validator and rewrites only the fields that actually "
+        "differ. Combine with --archive-old to keep the pre-fix file. "
+        "Use --all to scan the entire archive (all years/months) — no date "
+        "range needed.",
+    )
+
+    mode_group.add_argument(
+        "--all",
+        action="store_true",
+        help="With --fix-headers: scan the ENTIRE RINEX archive (all years/months) "
+        "for the station/session. No date range needed — discovers all files "
+        "under <data_prepath>/YYYY/mon/<STA>/<session>/rinex/ and fixes any "
+        "whose headers disagree with TOS.",
+    )
+
+    mode_group.add_argument(
+        "--work-dir",
+        default="~/tmp/rinex_fixes",
+        help="With --fix-headers: write fixed files into this directory instead "
+        "of overwriting the source archive (default: ~/tmp/rinex_fixes). "
+        "Pass an empty string (--work-dir '') to disable staging and fix "
+        "in place (when the archive is writable, e.g. on rek-d01).",
+    )
+
+    mode_group.add_argument(
+        "--source-dir",
+        help="With --fix-headers: discover RINEX files from this directory. "
+        "Defaults to /mnt_data/rawgpsdata if mounted (the IMO global archive), "
+        "otherwise falls back to data_prepath from receivers.cfg.",
+    )
+
+    mode_group.add_argument(
+        "--archive-old",
+        action="store_true",
+        help="With --fix-headers (or re-conversion): move the existing file to a "
+        "parallel <rinex_archive>/<reason>_<date>/ directory (filename "
+        "unchanged) before overwriting. Default without this flag: overwrite "
+        "in place.",
+    )
+
+    mode_group.add_argument(
+        "--push",
+        action="store_true",
+        help="With --fix-headers --work-dir: after fixing, rsync ONLY the files "
+        "rewritten this run back to the source archive (skipped entirely when 0 "
+        "files were fixed) via an explicit file list — no whole-tree scan. Note "
+        "each fixed file transfers in full: a header change rewrites the "
+        "Hatanaka/.Z compressed stream, so rsync block-deltas save nothing here.",
+    )
+
+    mode_group.add_argument(
+        "--clean",
+        action="store_true",
+        help="With --fix-headers: empty the staging work-dir before staging so it "
+        "holds only this run's files (the work-dir otherwise accumulates across "
+        "runs). No effect on the source archive or on --dry-run.",
+    )
+
+    mode_group.add_argument(
+        "--cleanup",
+        action="store_true",
+        help="With --fix-headers --push: after a successful push+reindex, delete "
+        "this run's staged rinex/ obs from the work-dir, and delete each "
+        "rinex_archive/ pre-fix backup ONLY once the re-read archive header "
+        "matches TOS (fix confirmed on the archive). rinex_org/ preservations "
+        "(un-regenerable originals) are NEVER auto-deleted. (Distinct from "
+        "--clean, which empties the work-dir BEFORE staging.)",
+    )
+    mode_group.add_argument(
+        "--reindex",
+        action="store_true",
+        help="With --fix-headers --push: after the push, re-hash each pushed file "
+        "and update its archive_catalog.content_sha256 (the header rewrite "
+        "changes the hash, so the catalog row would otherwise be stale and the "
+        "integrity verify would flag it). Targets the catalog host from "
+        "--catalog-host (default gps_health per database.cfg).",
+    )
+    mode_group.add_argument(
+        "--catalog-host",
+        default=None,
+        metavar="HOST",
+        help="gps_health host for --reindex (e.g. pgdev.vedur.is for the "
+        "production catalog). Default: database.cfg host (localhost on a laptop "
+        "— which is the dev catalog, NOT production).",
+    )
+
+    mode_group.add_argument(
         "--dry-run",
         action="store_true",
         help="Show what would be done without making changes",
@@ -1336,15 +1428,26 @@ For subcommand help: receivers <command> --help
     create_health_query_parser(subparsers)
 
     # archive-sync (batch delta push to the long-term archive gateway)
-    from .archive_sync import create_archive_sync_parser, create_archive_verify_parser
+    from .archive_sync import (
+        create_archive_reindex_parser,
+        create_archive_sync_parser,
+        create_archive_verify_parser,
+    )
 
     create_archive_sync_parser(subparsers)
     # archive-verify (re-hash archived files + local↔archive cross-check)
     create_archive_verify_parser(subparsers)
+    # archive-reindex (refresh catalog sha256 after out-of-band file edits)
+    create_archive_reindex_parser(subparsers)
 
     # epos-disseminate (RINEX3 long-name dissemination to the EPOS files server)
     from .epos_disseminate import create_epos_disseminate_parser
 
     create_epos_disseminate_parser(subparsers)
+
+    # m3g (M3G site-log submission: validate / upload draft / diff)
+    from .m3g import create_m3g_parser
+
+    create_m3g_parser(subparsers)
 
     return parser

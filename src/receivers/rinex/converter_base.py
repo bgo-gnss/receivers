@@ -328,8 +328,18 @@ class RawToRinexConverter(ABC):
                     rinex_file, observation_date
                 )
 
+            # Canonicalize header order via gfzrnx (piece 3: matches the EPOS
+            # path's header order so operational and EPOS files are directly
+            # comparable). Keeps the current filename; gfzrnx rewrites in place.
+            rinex_file = self._canonicalize_rinex(rinex_file, observation_date)
+
             # Rename to final naming convention
             final_file = self._rename_to_convention(rinex_file, observation_date)
+
+            # Apply naming-gated header records (piece 4): long names get a
+            # 9-char MARKER NAME (RHOF00ISL); short names keep the 4-char marker
+            # the converter emitted — safe for GAMIT processing until confirmed.
+            final_file = self._apply_naming_headers(final_file, observation_date)
 
             # Apply compression if needed
             final_file = self._apply_compression(final_file)
@@ -671,6 +681,86 @@ class RawToRinexConverter(ABC):
         except Exception as e:
             self.logger.warning(f"Hatanaka compression failed: {e}")
             return rinex_file
+
+    def _canonicalize_rinex(
+        self, rinex_file: Path, observation_date: datetime
+    ) -> Path:
+        """Run gfzrnx to canonicalize RINEX 3 header order (piece 3).
+
+        Mirrors the EPOS dissemination path's ``gfzrnx -vo {version}`` pass so
+        operational-archive files and EPOS files share identical header ordering.
+        Runs in place: the canonicalized output replaces the input file.
+
+        On failure or if gfzrnx is unavailable, the original file is returned
+        unchanged — canonicalization is best-effort.
+        """
+        rinex_file = Path(rinex_file)
+
+        # Only RINEX 3 benefits from canonicalization (R2 has a different
+        # standard and gfzrnx up-conversion would change the marker convention).
+        if self.rinex_version not in (RinexVersion.RINEX_3, RinexVersion.RINEX_4):
+            return rinex_file
+
+        try:
+            gfzrnx = self.get_tool_path("gfzrnx")
+        except Exception:  # noqa: BLE001
+            self.logger.debug("gfzrnx not available — skipping canonicalization")
+            return rinex_file
+
+        out = rinex_file.with_name(rinex_file.stem + "_gfzrnx" + rinex_file.suffix)
+        version = self.rinex_version.value
+        try:
+            cmd = [str(gfzrnx), "-finp", str(rinex_file), "-fout", str(out),
+                   "-vo", str(version)]
+            self._run_subprocess(cmd, timeout=120)
+        except Exception:  # noqa: BLE001
+            self.logger.debug("gfzrnx run failed — keeping original header order")
+            if out.exists():
+                out.unlink()
+            return rinex_file
+
+        if not out.exists() or out.stat().st_size == 0:
+            self.logger.debug("gfzrnx produced no output — keeping original")
+            return rinex_file
+
+        out.rename(rinex_file)
+        self.logger.debug("gfzrnx canonicalized header for %s", rinex_file.name)
+        return rinex_file
+
+    def _apply_naming_headers(
+        self, rinex_file: Path, observation_date: datetime
+    ) -> Path:
+        """Set naming-gated header records (piece 4).
+
+        Long names → 9-char MARKER NAME (RHOF00ISL) + generic OBSERVER/AGENCY.
+        Short names → keep the 4-char marker the converter emitted (safe for
+        GAMIT until confirmed).
+
+        Uses :func:`_set_header_records` (same logic the EPOS dissemination path
+        uses), imported lazily to avoid a startup-time circular dependency on
+        the dissemination subpackage.
+        """
+        if self.naming_convention != NamingConvention.LONG:
+            return rinex_file
+
+        try:
+            from ..dissemination.convert import epos_marker_name, _set_header_records
+
+            nine_char = epos_marker_name(
+                self.station_id, self.rinex_version.value, "ISL"
+            )
+            _set_header_records(rinex_file, {"MARKER NAME": nine_char})
+            self.logger.debug(
+                "set 9-char MARKER NAME for %s: %s",
+                rinex_file.name,
+                nine_char,
+            )
+        except Exception:  # noqa: BLE001
+            self.logger.debug(
+                "could not apply 9-char marker for %s (dissemination not available)",
+                rinex_file.name,
+            )
+        return rinex_file
 
     def _run_subprocess(
         self,

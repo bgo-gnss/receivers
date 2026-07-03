@@ -16,6 +16,7 @@ Generation itself is self-contained and testable offline with an injected client
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
@@ -180,13 +181,16 @@ def generate_site_log(
     in ``out_dir``; pass ``include_date=False`` for the plain ``RHOF00ISL.log``.
     ``agency_resolver`` (default: load agencies.yaml) drives §11/§12/§13 via
     :func:`resolve_sitelog_agencies`.
+
+    Rendering is the proven legacy ``tostools.legacy`` generator — the single
+    renderer whose output is byte-parity with the M3G exportlog form; the TOS
+    metadata fetched here feeds the agency-role resolution, while the renderer
+    reads its own device sessions via the legacy metadata pipeline.
     """
     from datetime import datetime
 
-    from tostools.core.site_log import (
-        export_site_log_to_file,
-        generate_igs_site_log,
-    )
+    from tostools.core.site_log import export_site_log_to_file
+    from tostools.legacy.gps_metadata_functions import site_log as render_site_log
     from tostools.tosGPS import generate_igs_sitelog_filename
 
     sid = station.upper()
@@ -210,17 +214,19 @@ def generate_site_log(
     date_str = custom_date or datetime.now().strftime("%Y%m%d")
     previous = find_previous_site_log(Path(out_dir), nine_char, date_str)
 
-    device_sessions = meta.get("device_history", []) or []
     agencies = resolve_sitelog_agencies(client, meta, agency_resolver)
-    content = generate_igs_site_log(
-        meta,
-        device_sessions,
-        loglevel=loglevel,
-        country_code=country_code,
-        monument_number=monument_number,
-        agencies=agencies,
-        previous_site_log=previous,
-    )
+    try:
+        content = render_site_log(
+            sid,
+            loglevel=loglevel,
+            previous_log=previous,
+            agencies=agencies,
+            monument_number=mon,
+            country_code=country_code.upper(),
+        )
+    except Exception as exc:  # noqa: BLE001 - renderer/TOS failure ⇒ skip (logged)
+        logger.warning("site log: renderer failed for %s: %s", sid, exc)
+        return None
     if not content:
         logger.warning("site log: generator produced nothing for %s", sid)
         return None
@@ -271,7 +277,121 @@ def commit_site_log(repo_dir: Path, site_log: Path, message: str) -> bool:
     return True
 
 
-# M3G submission (decision #3 — needs the M3G account + API creds / upload path)
-# is intentionally not implemented yet. The generated site log is the artifact M3G
-# ingests; once the account exists this becomes either an M3G-API POST or a commit
-# to the repo M3G pulls from. Tracked as C6 in docs/architecture/epos-dissemination-plan.md.
+# M3G submission — see :func:`submit_to_m3g` (and :class:`M3GClient`). The
+# upload-sitelog API publishes directly (no draft state); submit_to_m3g's
+# dry_run default (validate-only) is the safety gate. Tracked as C6 in
+# docs/architecture/epos-dissemination-plan.md.
+
+
+@dataclass
+class M3GSubmissionResult:
+    """Outcome of :func:`submit_to_m3g` (validate + upload-as-draft)."""
+
+    station: str
+    validated: bool
+    validation: Optional[object] = None  # ValidationResult
+    uploaded: bool = False
+    upload: Optional[object] = None  # UploadResult
+    dry_run: bool = True
+    skipped: Optional[str] = None  # reason when nothing was sent
+
+
+def submit_to_m3g(
+    station: str,
+    *,
+    site_log_path: Optional[Path] = None,
+    out_dir: Optional[Path] = None,
+    client: Any = None,
+    network: str = "EPOS",
+    country_code: str = "ISL",
+    monument_number: str = "00",
+    dry_run: bool = True,
+    endpoint: Optional[str] = None,
+    skip_validation: bool = False,
+) -> M3GSubmissionResult:
+    """Submit a station's site log to M3G: validate, then publish.
+
+    This is the local verb for the M3G submission step (EPOS §3.2). It renders
+    the site log (unless ``site_log_path`` points at an existing file), validates
+    it against the M3G network rules, and publishes it via the M3G API. **The
+    M3G ``upload-sitelog`` API publishes directly — there is no draft state**,
+    so this is the real publish trigger. The ``dry_run`` default (True) keeps it
+    validate-only; pass ``dry_run=False`` to actually publish.
+
+    Args:
+        station: 4-char station id (e.g. ``RHOF``).
+        site_log_path: An existing site log file. When given, rendering is
+            skipped and this file is submitted as-is. When None, the log is
+            generated into ``out_dir`` (default: the gps-sitelogs repo).
+        out_dir: Where to render when ``site_log_path`` is None.
+        client: Injected :class:`M3GClient` (tests). A fresh one is built
+            otherwise, resolving endpoint/token from config/env.
+        network: M3G network short name for validation (default ``EPOS``).
+        country_code, monument_number: Render-time filename/form params.
+        dry_run: When True (default), validate only — the publish PUT is **not**
+            sent. Pass False to actually publish to M3G.
+        endpoint: M3G endpoint URL or alias (``prod``/``test``). None → config.
+        skip_validation: Skip the validate step (e.g. re-publishing a known-good
+            log). Implies ``dry_run`` is the only gate on the publish.
+
+    Returns an :class:`M3GSubmissionResult`. Raises :class:`M3GError` only on
+    unrecoverable failures (no token, network down, 401).
+    """
+    from .m3g_client import M3GClient, M3GError  # noqa: F401 — re-exported
+
+    sid = station.upper()
+    mon = str(monument_number)[:2].rjust(2, "0")
+    nine_char = (
+        f"{sid}{mon}{country_code.upper()}"  # e.g. RHOF00ISL — M3G's station key
+    )
+    result = M3GSubmissionResult(station=sid, validated=False, dry_run=dry_run)
+
+    # 1. Obtain the site log text — render or read.
+    if site_log_path is not None:
+        path = Path(site_log_path)
+        if not path.is_file():
+            result.skipped = f"site log not found: {path}"
+            return result
+    else:
+        out_dir = out_dir or resolve_sitelogs_repo()
+        path = generate_site_log(
+            sid,
+            Path(out_dir),
+            country_code=country_code,
+            monument_number=monument_number,
+        )
+        if path is None:
+            result.skipped = f"site log generation failed for {sid} (see log)"
+            return result
+    content = Path(path).read_text(encoding="utf-8")
+    logger.info("m3g submit %s: site log = %s (%d bytes)", sid, path, len(content))
+
+    if client is None:
+        client = M3GClient(endpoint=endpoint)
+
+    # 2. Validate against the network rules (auth-free; always run unless
+    #    explicitly skipped — it's the gate that catches bad metadata).
+    if not skip_validation:
+        try:
+            vr = client.validate_sitelog(content, network=network)
+        except M3GError as exc:
+            result.skipped = f"validate failed: {exc}"
+            return result
+        result.validation = vr
+        result.validated = vr.ok
+        if not vr.ok:
+            result.skipped = (
+                f"validation against {network} failed "
+                f"({len(vr.errors)} error(s)) — not uploading"
+            )
+            return result
+
+    # 3. Publish to M3G. In dry_run the PUT is not sent (default: safe).
+    #    M3G's upload-sitelog ?id= requires the full 9-char station ID,
+    #    and publishes directly (no draft state on the API path).
+    ur = client.upload_sitelog(nine_char, content, dry_run=dry_run)
+    result.upload = ur
+    result.uploaded = ur.ok
+    if not ur.ok:
+        result.skipped = ur.error or f"upload HTTP {ur.status_code}"
+    return result
