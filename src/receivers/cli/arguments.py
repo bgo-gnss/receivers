@@ -1169,6 +1169,25 @@ Examples:
     )
 
     mode_group.add_argument(
+        "--fix-headers",
+        action="store_true",
+        help="Rewrite discrepant header fields in archived RINEX files to match TOS, "
+        "in place (no SBF re-conversion). Walks the RINEX archive for the "
+        "station/session/date-range; for each file, compares the header to TOS "
+        "via the legacy validator and rewrites only the fields that actually "
+        "differ. Combine with --archive-old to keep the pre-fix file.",
+    )
+
+    mode_group.add_argument(
+        "--archive-old",
+        action="store_true",
+        help="With --fix-headers (or re-conversion): move the existing file to a "
+        "parallel <rinex_archive>/<reason>_<date>/ directory (filename "
+        "unchanged) before overwriting. Default without this flag: overwrite "
+        "in place.",
+    )
+
+    mode_group.add_argument(
         "--dry-run",
         action="store_true",
         help="Show what would be done without making changes",

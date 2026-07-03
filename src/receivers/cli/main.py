@@ -4566,6 +4566,44 @@ def cmd_rinex(args) -> int:
     logger.info(f"Date range: {start_time} to {end_time}")
     logger.info(f"RINEX version: {rinex_version.value}, Naming: {naming_str}")
 
+    # --fix-headers: in-place TOS header correction of archived RINEX (no
+    # re-conversion). Walks the RINEX archive, not raw files, so it has its own
+    # dispatch and bypasses the converter flow below.
+    if getattr(args, "fix_headers", False):
+        from ..rinex.header_fix import fix_headers_station
+
+        print(
+            f"Fix-headers mode: rewriting discrepant TOS header fields in place "
+            f"(archive_old={getattr(args, 'archive_old', False)}, "
+            f"dry_run={getattr(args, 'dry_run', False)})"
+        )
+        total_fixed = 0
+        total_skipped = 0
+        total_errors = 0
+        for station_id in stations:
+            print(f"\nProcessing: {station_id}")
+            summary = fix_headers_station(
+                station_id,
+                args.session,
+                start_time,
+                end_time,
+                archive_old=getattr(args, "archive_old", False),
+                dry_run=getattr(args, "dry_run", False),
+                loglevel=args.loglevel,
+            )
+            print(
+                f"  scanned={summary['scanned']} fixed={summary['fixed']} "
+                f"skipped={summary['skipped']} errors={summary['errors']}"
+            )
+            total_fixed += summary["fixed"]
+            total_skipped += summary["skipped"]
+            total_errors += summary["errors"]
+        print(
+            f"\nSummary: ✅ {total_fixed} fixed, ⏭️  {total_skipped} skipped, "
+            f"❌ {total_errors} errors"
+        )
+        return 0 if total_errors == 0 else 1
+
     # Track results
     total_converted = 0
     total_failed = 0
