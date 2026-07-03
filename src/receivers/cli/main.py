@@ -4575,6 +4575,15 @@ def cmd_rinex(args) -> int:
     if getattr(args, "fix_headers", False):
         from ..rinex.header_fix import fix_headers_station
 
+        # --source-dir default: when running on a host where the global IMO
+        # archive (/mnt_data/rawgpsdata) is mounted, use it — that's the
+        # archive we target >90% of the time. On rek-d01 data_prepath already
+        # IS the archive. On a laptop without the NFS mount, fall back to
+        # data_prepath.
+        _source_dir = getattr(args, "source_dir", None)
+        if not _source_dir and Path("/mnt_data/rawgpsdata").is_dir():
+            _source_dir = "/mnt_data/rawgpsdata"
+
         all_mode = getattr(args, "all", False)
         if all_mode:
             print(
@@ -4609,7 +4618,7 @@ def cmd_rinex(args) -> int:
                 dry_run=getattr(args, "dry_run", False),
                 all_files=all_mode,
                 work_dir=Path(args.work_dir) if getattr(args, "work_dir", None) else None,
-                source_dir=Path(args.source_dir) if getattr(args, "source_dir", None) else None,
+                source_dir=Path(_source_dir) if _source_dir else None,
                 loglevel=args.loglevel,
             )
             print(

@@ -1199,8 +1199,9 @@ Examples:
 
     mode_group.add_argument(
         "--source-dir",
-        help="With --fix-headers: discover RINEX files from this directory "
-        "(default: data_prepath from receivers.cfg).",
+        help="With --fix-headers: discover RINEX files from this directory. "
+        "Defaults to /mnt_data/rawgpsdata if mounted (the IMO global archive), "
+        "otherwise falls back to data_prepath from receivers.cfg.",
     )
 
     mode_group.add_argument(
