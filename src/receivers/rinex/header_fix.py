@@ -140,41 +140,43 @@ def fix_headers_in_file(
     observation_date: Optional[datetime] = None,
     archive_old: bool = False,
     dry_run: bool = False,
+    work_dir: Optional[Path] = None,
+    source_base: Optional[Path] = None,
     loglevel: int = logging.INFO,
 ) -> dict:
-    """Fix the discrepant TOS header fields of one RINEX file in place.
+    """Fix the discrepant TOS header fields of one RINEX file.
+
+    When ``work_dir`` is given, the file is COPIED to a mirror path under
+    ``work_dir`` (preserving the archive-relative path from ``source_base``)
+    and fixed there — the original source file is never touched. The copy
+    only happens on a real write (not dry_run).
 
     Returns a summary dict: ``{file, fixed, changed_labels, archived, error}``.
-
-    The discrepant-field set comes from :func:`compare_rinex_to_tos`'s
-    ``corrections`` dict (only fields that actually differ); the rewrite is
-    :func:`correct_rinex_from_tos` with ``only_fields`` set to that set, so no
-    field that already agrees with TOS is touched.
     """
     from tostools.rinex import correct_rinex_from_tos
     from tostools.rinex.reader import _parse_daily_rinex_date
     from tostools.rinex.validator import compare_rinex_to_tos
 
-    rinex_file = Path(rinex_file)
+    source_path = Path(rinex_file)  # the original (may be read-only)
     result: dict = {
-        "file": str(rinex_file),
+        "file": str(source_path),
         "fixed": False,
         "changed_labels": [],
         "archived": None,
         "error": None,
     }
-    if not rinex_file.is_file():
+    if not source_path.is_file():
         result["error"] = "file not found"
         return result
 
     if observation_date is None:
-        observation_date = _parse_daily_rinex_date(rinex_file.name, station_id)
+        observation_date = _parse_daily_rinex_date(source_path.name, station_id)
     if observation_date is None:
         result["error"] = "could not parse observation date from filename"
         return result
 
     # 1. Read the file's header (handles .Z/.gz) and the TOS session for the date.
-    rinex_info = _read_header_info(rinex_file, loglevel)
+    rinex_info = _read_header_info(source_path, loglevel)
     if not rinex_info:
         result["error"] = "could not read RINEX header"
         return result
@@ -189,36 +191,47 @@ def fix_headers_in_file(
     )
     discrepant_labels = set(comparison.get("corrections", {}).keys())
     if not discrepant_labels:
-        logger.info("%s: header agrees with TOS — no fix needed", rinex_file.name)
+        logger.info("%s: header agrees with TOS — no fix needed", source_path.name)
         return result
     result["changed_labels"] = sorted(discrepant_labels)
 
     if dry_run:
         logger.info(
             "[DRY RUN] %s: would fix %d field(s): %s",
-            rinex_file.name,
+            source_path.name,
             len(discrepant_labels),
             ", ".join(result["changed_labels"]),
         )
         return result
 
-    # 3. Archive the original to a parallel dir if requested (keep filename).
+    # 3. If staging to a work_dir, copy the file from the (possibly read-only)
+    #    source archive into the writable work_dir before any other mutations.
+    fix_target = source_path
+    if work_dir is not None:
+        try:
+            rel = source_path.relative_to(source_base) if source_base else Path(source_path.parent.name) / source_path.name
+        except ValueError:
+            rel = Path(source_path.parent.name) / source_path.name
+        fix_target = Path(work_dir) / rel
+        fix_target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, fix_target)
+        result["file"] = str(fix_target)
+
+    # 4. Archive the original (writable copy) to a parallel dir if requested.
     if archive_old:
-        archived = archive_old_file(rinex_file, reason="fix-headers")
+        archived = archive_old_file(fix_target, reason="fix-headers")
         if archived is not None:
-            # archive_old_file MOVED the original away — copy it back so the
-            # corrector can overwrite in place, leaving the archive copy intact.
-            shutil.copy2(archived, rinex_file)
+            shutil.copy2(archived, fix_target)
             result["archived"] = str(archived)
 
-    # 4. Rewrite only the discrepant fields in place (corrector handles
+    # 5. Rewrite only the discrepant fields in place (corrector handles
     #    compression + Hatanaka internally).
     try:
         out = correct_rinex_from_tos(
-            rinex_file,
+            fix_target,
             station_id,
             observation_date=observation_date,
-            output_file=rinex_file,  # overwrite in place
+            output_file=fix_target,  # overwrite in place
             loglevel=loglevel,
             only_fields=discrepant_labels,
         )
@@ -229,7 +242,7 @@ def fix_headers_in_file(
 
     logger.info(
         "%s: fixed %d field(s): %s",
-        rinex_file.name,
+        fix_target.name,
         len(discrepant_labels),
         ", ".join(result["changed_labels"]),
     )
@@ -324,26 +337,30 @@ def fix_headers_station(
     archive_old: bool = False,
     dry_run: bool = False,
     all_files: bool = False,
+    work_dir: Optional[Path] = None,
+    source_dir: Optional[Path] = None,
     loglevel: int = logging.INFO,
 ) -> dict:
     """Run ``--fix-headers`` across a station's archived RINEX.
 
-    When ``all_files`` is True (``--fix-headers --all``) the entire archive
-    is scanned — ``start_time``/``end_time`` are ignored. Otherwise the
-    date-range discovery is used.
+    When ``work_dir`` is given, files are discovered from ``source_dir``
+    (or ``data_prepath``) and COPIED to a mirror path under ``work_dir``
+    before fixing — the source archive (read-only NFS) is never touched.
+    After fixing, print an rsync command to push the staged fixes back.
 
     Returns ``{station, scanned, fixed, skipped, errors, details: [...]}``.
     """
     from ..config.receivers_config import get_receivers_config
 
     cfg = get_receivers_config()
-    data_prepath = cfg.get_data_prepath()
+    data_prepath = source_dir or Path(cfg.get_data_prepath())
+    source_base = Path(data_prepath) if isinstance(data_prepath, str) else data_prepath
 
     if all_files:
-        files = discover_all_rinex_files(station_id, session, data_prepath)
+        files = discover_all_rinex_files(station_id, session, str(source_base))
     else:
         files = discover_rinex_files(
-            station_id, session, start_time, end_time, data_prepath
+            station_id, session, start_time, end_time, str(source_base)
         )
     summary = {
         "station": station_id,
@@ -357,12 +374,20 @@ def fix_headers_station(
         logger.info("[%s] no archived RINEX files in range", station_id)
         return summary
 
+    if work_dir is not None:
+        print(
+            f"   Staging fixed files into {work_dir} "
+            f"(source archive NOT modified — push back with rsync)"
+        )
+
     for f in files:
         r = fix_headers_in_file(
             f,
             station_id,
             archive_old=archive_old,
             dry_run=dry_run,
+            work_dir=work_dir,
+            source_base=source_base,
             loglevel=loglevel,
         )
         summary["details"].append(r)

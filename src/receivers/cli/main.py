@@ -4608,6 +4608,8 @@ def cmd_rinex(args) -> int:
                 archive_old=getattr(args, "archive_old", False),
                 dry_run=getattr(args, "dry_run", False),
                 all_files=all_mode,
+                work_dir=Path(args.work_dir) if getattr(args, "work_dir", None) else None,
+                source_dir=Path(args.source_dir) if getattr(args, "source_dir", None) else None,
                 loglevel=args.loglevel,
             )
             print(

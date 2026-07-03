@@ -1190,6 +1190,20 @@ Examples:
     )
 
     mode_group.add_argument(
+        "--work-dir",
+        help="With --fix-headers: write fixed files into this directory instead "
+        "of overwriting the source archive. Files are staged in a mirror of "
+        "the archive path (e.g. WORKDIR/2026/jun/RHOF/...). Use when the "
+        "source archive is read-only — fix locally, then push back with rsync.",
+    )
+
+    mode_group.add_argument(
+        "--source-dir",
+        help="With --fix-headers: discover RINEX files from this directory "
+        "(default: data_prepath from receivers.cfg).",
+    )
+
+    mode_group.add_argument(
         "--archive-old",
         action="store_true",
         help="With --fix-headers (or re-conversion): move the existing file to a "
