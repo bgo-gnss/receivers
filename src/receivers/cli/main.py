@@ -4623,6 +4623,7 @@ def cmd_rinex(args) -> int:
         from ..dissemination.tos_access import TOSSesionCache
 
         tos_cache = TOSSesionCache()
+        _dry_run = getattr(args, "dry_run", False)
         for station_id in stations:
             print(f"\nProcessing: {station_id}")
             summary = fix_headers_station(
@@ -4631,7 +4632,7 @@ def cmd_rinex(args) -> int:
                 start_time or datetime(2000, 1, 1),
                 end_time or datetime.now(),
                 archive_old=getattr(args, "archive_old", False),
-                dry_run=getattr(args, "dry_run", False),
+                dry_run=_dry_run,
                 all_files=all_mode,
                 work_dir=Path(args.work_dir).expanduser() if getattr(args, "work_dir", "") else None,
                 source_dir=Path(_source_dir) if _source_dir else None,
@@ -4640,7 +4641,7 @@ def cmd_rinex(args) -> int:
             )
             print(
                 f"  scanned={summary['scanned']} "
-                + (f"would_fix={summary.get('would_fix', 0)} clean={summary.get('clean', summary.get('skipped', 0))} " if dry_run else f"fixed={summary['fixed']} skipped={summary['skipped']} ")
+                + (f"would_fix={summary.get('would_fix', 0)} clean={summary.get('clean', summary.get('skipped', 0))} " if _dry_run else f"fixed={summary['fixed']} skipped={summary['skipped']} ")
                 + f"errors={summary['errors']}"
             )
             if summary["errors"]:
@@ -4652,11 +4653,13 @@ def cmd_rinex(args) -> int:
                 for d in _errs[:5]:
                     fname = Path(d["file"]).name if d.get("file") else "?"
                     print(f"    ⚠ {fname}: {d['error']}")
-            total_fixed += summary["fixed"]
-            total_skipped += summary["skipped"]
+            total_fixed += summary.get("would_fix", summary.get("fixed", 0))
+            total_skipped += summary.get("clean", summary.get("skipped", 0))
             total_errors += summary["errors"]
         print(
-            f"\nSummary: ✅ {total_fixed} fixed, ⏭️  {total_skipped} skipped, "
+            f"\nSummary: {'would_fix' if _dry_run else '✅'} {total_fixed} "
+            f"{'(dry-run)' if _dry_run else 'fixed'}, "
+            f"{'clean' if _dry_run else '⏭️  skipped'} {total_skipped}, "
             f"❌ {total_errors} errors"
         )
         return 0 if total_errors == 0 else 1

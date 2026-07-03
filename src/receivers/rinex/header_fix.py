@@ -403,7 +403,21 @@ def fix_headers_station(
 
         tos_cache = TOSSesionCache()
 
-    for f in files:
+    # Progress bar — shows current file + live counts.
+    try:
+        from tqdm import tqdm
+
+        pbar = tqdm(
+            files,
+            desc=f"  {station_id}",
+            unit="file",
+            ncols=120,
+            postfix={"disc": 0, "clean": 0, "err": 0},
+        )
+    except ImportError:
+        pbar = files
+
+    for f in pbar:
         r = fix_headers_in_file(
             f,
             station_id,
@@ -418,8 +432,6 @@ def fix_headers_station(
         if r.get("error"):
             summary["errors"] += 1
         elif r.get("changed_labels"):
-            # Discrepant — on dry_run the fix hasn't happened yet; on a real
-            # run `fixed` signals whether the write succeeded.
             if dry_run:
                 summary.setdefault("would_fix", 0)
                 summary["would_fix"] += 1
@@ -427,6 +439,14 @@ def fix_headers_station(
                 summary["fixed"] += 1
         else:
             summary["skipped"] += 1
+        # Update progress bar postfix every file (cheap — just dict assignment).
+        if hasattr(pbar, "set_postfix"):
+            pbar.set_postfix(
+                disc=summary.get("would_fix", summary.get("fixed", 0)),
+                clean=summary.get("clean", summary.get("skipped", 0)),
+                err=summary["errors"],
+                refresh=False,
+            )
     # On dry_run, "skipped" in the CLI output means "no discrepancy", so
     # rename for clarity.
     if dry_run:
