@@ -4575,14 +4575,26 @@ def cmd_rinex(args) -> int:
     if getattr(args, "fix_headers", False):
         from ..rinex.header_fix import fix_headers_station
 
-        # --source-dir default: when running on a host where the global IMO
-        # archive (/mnt_data/rawgpsdata) is mounted, use it — that's the
-        # archive we target >90% of the time. On rek-d01 data_prepath already
-        # IS the archive. On a laptop without the NFS mount, fall back to
-        # data_prepath.
+        # Default source dir: read from sync.yaml's first dissemination target's
+        # source_root (same field the EPOS disseminator uses). Falls back to
+        # data_prepath from receivers.cfg if sync.yaml is unavailable.
         _source_dir = getattr(args, "source_dir", None)
-        if not _source_dir and Path("/mnt_data/rawgpsdata").is_dir():
-            _source_dir = "/mnt_data/rawgpsdata"
+        if not _source_dir:
+            try:
+                from ..dissemination import load_dissemination_config
+
+                targets = load_dissemination_config()
+                # Grab the first tier:dissemination target's source_root
+                for t in targets:
+                    if getattr(t, "tier", None) == "dissemination":
+                        src = getattr(t, "source_root", None)
+                        if src:
+                            _source_dir = src
+                            break
+            except Exception:  # noqa: BLE001
+                pass
+        if not _source_dir:
+            _source_dir = str(Path(get_receivers_config().get_data_prepath()))
 
         all_mode = getattr(args, "all", False)
         if all_mode:
