@@ -1191,10 +1191,11 @@ Examples:
 
     mode_group.add_argument(
         "--work-dir",
+        default="~/tmp/rinex_fixes",
         help="With --fix-headers: write fixed files into this directory instead "
-        "of overwriting the source archive. Files are staged in a mirror of "
-        "the archive path (e.g. WORKDIR/2026/jun/RHOF/...). Use when the "
-        "source archive is read-only — fix locally, then push back with rsync.",
+        "of overwriting the source archive (default: ~/tmp/rinex_fixes). "
+        "Pass an empty string (--work-dir '') to disable staging and fix "
+        "in place (when the archive is writable, e.g. on rek-d01).",
     )
 
     mode_group.add_argument(

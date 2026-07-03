@@ -364,7 +364,7 @@ def fix_headers_station(
         logger.info("[%s] no archived RINEX files in range", station_id)
         return summary
 
-    if work_dir is not None:
+    if work_dir is not None and not dry_run:
         print(
             f"   Staging fixed files into {work_dir} "
             f"(source archive NOT modified — push back with rsync)"
