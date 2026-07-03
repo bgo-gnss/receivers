@@ -4639,8 +4639,9 @@ def cmd_rinex(args) -> int:
                 loglevel=args.loglevel,
             )
             print(
-                f"  scanned={summary['scanned']} fixed={summary['fixed']} "
-                f"skipped={summary['skipped']} errors={summary['errors']}"
+                f"  scanned={summary['scanned']} "
+                + (f"would_fix={summary.get('would_fix', 0)} clean={summary.get('clean', summary.get('skipped', 0))} " if dry_run else f"fixed={summary['fixed']} skipped={summary['skipped']} ")
+                + f"errors={summary['errors']}"
             )
             total_fixed += summary["fixed"]
             total_skipped += summary["skipped"]

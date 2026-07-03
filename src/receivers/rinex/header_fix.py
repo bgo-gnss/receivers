@@ -390,8 +390,19 @@ def fix_headers_station(
         summary["details"].append(r)
         if r.get("error"):
             summary["errors"] += 1
-        elif r.get("fixed"):
-            summary["fixed"] += 1
+        elif r.get("changed_labels"):
+            # Discrepant — on dry_run the fix hasn't happened yet; on a real
+            # run `fixed` signals whether the write succeeded.
+            if dry_run:
+                summary.setdefault("would_fix", 0)
+                summary["would_fix"] += 1
+            else:
+                summary["fixed"] += 1
         else:
             summary["skipped"] += 1
+    # On dry_run, "skipped" in the CLI output means "no discrepancy", so
+    # rename for clarity.
+    if dry_run:
+        summary.setdefault("would_fix", 0)
+        summary["clean"] = summary.pop("skipped", 0)
     return summary
