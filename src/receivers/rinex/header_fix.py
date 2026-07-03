@@ -306,6 +306,13 @@ def discover_rinex_files(
     """
     from tostools.rinex.reader import _parse_daily_rinex_date
 
+    # CLI dates from calculate_download_time_range are UTC-aware; TOS sessions
+    # and parsed filenames are naive. Strip tzinfo for consistent comparisons.
+    if start_time.tzinfo is not None:
+        start_time = start_time.replace(tzinfo=None)
+    if end_time.tzinfo is not None:
+        end_time = end_time.replace(tzinfo=None)
+
     files: list[Path] = []
     cur = start_time
     step = timedelta(hours=1) if "1hr" in session.lower() else timedelta(days=1)
