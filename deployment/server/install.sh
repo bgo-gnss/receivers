@@ -10,6 +10,8 @@
 #   sudo bash deployment/server/install.sh --wipe       # Wipe venv + redeploy config
 #   sudo bash deployment/server/install.sh --wipe-all   # Drop DB + delete data + reinstall
 #   sudo bash deployment/server/install.sh --wipe-db    # Drop and recreate database only
+#   sudo bash deployment/server/install.sh --pg-external # Open gps_health to operator laptops
+#                                                        # (dual-write archive_catalog from laptops)
 #
 # Dependency modes:
 #   Default (URL-pinned):  gtimes/gps_parser/tostools resolved from pyproject.toml git URLs
@@ -79,6 +81,12 @@ FLAG_SKIP_DB=false
 FLAG_SKIP_DOCKER=false
 FLAG_SKIP_CONFIG_SYNC=false
 FLAG_ONLY_CONFIG_SYNC=false
+FLAG_PG_EXTERNAL=false
+
+# Subnet allowed to reach gps_health when --pg-external is used. Operators run
+# fix-headers/reindex/archive-rm from laptops on this network and dual-write the
+# archive_catalog to this host. Override: PG_OPERATOR_CIDR=10.x.y.0/24 install.sh
+readonly PG_OPERATOR_CIDR="${PG_OPERATOR_CIDR:-10.170.0.0/16}"
 
 # ── Color helpers ──────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -127,8 +135,9 @@ while [[ $# -gt 0 ]]; do
         --skip-docker)       FLAG_SKIP_DOCKER=true ;;
         --skip-config-sync)  FLAG_SKIP_CONFIG_SYNC=true ;;
         --only-config-sync)  FLAG_ONLY_CONFIG_SYNC=true ;;
+        --pg-external)       FLAG_PG_EXTERNAL=true ;;
         -h|--help)
-            echo "Usage: $0 [--dev] [--wipe] [--wipe-all] [--wipe-db] [--skip-tools] [--skip-db] [--skip-docker]"
+            echo "Usage: $0 [--dev] [--wipe] [--wipe-all] [--wipe-db] [--skip-tools] [--skip-db] [--skip-docker] [--pg-external]"
             echo ""
             echo "  --dev          Editable installs of gtimes/gps_parser/tostools"
             echo "                 (default: URL-pinned from pyproject.toml — production mode)"
@@ -140,6 +149,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --skip-docker       Skip Docker/Grafana setup"
             echo "  --skip-config-sync  Skip config sync timer (use when config is local-only, no git repo)"
             echo "  --only-config-sync  Install/enable config sync timer only, skip all other phases"
+            echo "  --pg-external       Open gps_health to operator laptops (listen_addresses + pg_hba"
+            echo "                      for \$PG_OPERATOR_CIDR, scram auth); restarts postgres if needed"
             exit 0
             ;;
         *) err "Unknown option: $1"; exit 1 ;;
@@ -672,6 +683,57 @@ host    $DB_NAME    $ADMIN_USER     ::1/128             trust" "$PG_HBA"
     else
         ok "pg_hba.conf already configured"
     fi
+fi
+
+# ── External access for operator laptops (--pg-external) ────────────────────
+# Operators (bgo, Hildur, …) run fix-headers/reindex/archive-rm from laptops and
+# dual-write the archive_catalog to THIS host (see receivers.cfg [archive]
+# catalog_hosts). That needs postgres to (a) listen beyond localhost and (b)
+# allow scram auth from the operator subnet. Config only — role PASSWORDS stay
+# under IT control (never in this script), like the mirror .pgpass note above.
+if $FLAG_PG_EXTERNAL; then
+    restart_pg=false
+
+    # (a) listen beyond localhost — via ALTER SYSTEM (postgresql.auto.conf, no
+    # hand-editing of the main conf). Idempotent; needs a RESTART when changed.
+    cur_listen=$(sudo -u postgres psql -tAc "SHOW listen_addresses")
+    if [[ "$cur_listen" != "*" ]]; then
+        sudo -u postgres psql -c "ALTER SYSTEM SET listen_addresses = '*'" >/dev/null
+        restart_pg=true
+        ok "listen_addresses → '*' (was: $cur_listen) — restart required"
+    else
+        ok "listen_addresses already '*'"
+    fi
+
+    # (b) pg_hba host rule for the operator subnet (scram-sha-256), idempotent.
+    PG_HBA=$(sudo -u postgres psql -tAc "SHOW hba_file")
+    HBA_MARK="# GPS operator external access"
+    if ! grep -qF "$HBA_MARK" "$PG_HBA" 2>/dev/null; then
+        cp -a "$PG_HBA" "$PG_HBA.bak.$(date +%Y%m%d%H%M%S)"
+        {
+            echo ""
+            echo "$HBA_MARK ($DB_NAME from $PG_OPERATOR_CIDR — install.sh --pg-external)"
+            echo "host    $DB_NAME    all    $PG_OPERATOR_CIDR    scram-sha-256"
+        } >> "$PG_HBA"
+        systemctl reload postgresql
+        ok "pg_hba.conf: allow $DB_NAME from $PG_OPERATOR_CIDR (scram-sha-256)"
+    else
+        ok "pg_hba.conf external rule already present"
+    fi
+
+    # New passwords use scram (affects future ALTER ROLE ... PASSWORD only).
+    sudo -u postgres psql -c "ALTER SYSTEM SET password_encryption = 'scram-sha-256'" >/dev/null 2>&1 || true
+
+    if $restart_pg; then
+        warn "Restarting postgresql to apply listen_addresses (brief scheduler blip)…"
+        systemctl restart postgresql
+        ok "postgresql restarted — now listening beyond localhost"
+    fi
+
+    warn "Operator ROLE PASSWORDS are NOT set here (credentials stay with IT):"
+    warn "  IT: ALTER ROLE <user> WITH LOGIN PASSWORD '…';  (per operator role)"
+    warn "  Operator laptop: ~/.pgpass line $(hostname -f):5432:$DB_NAME:<user>:<pw>"
+    warn "  Also confirm the network firewall permits tcp/5432 from $PG_OPERATOR_CIDR."
 fi
 
 # Verify connection
