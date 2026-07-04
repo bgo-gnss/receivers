@@ -258,7 +258,7 @@ def fix_headers_in_file(
     # value discrepancies (marker, antenna_height, coordinates) justify a fix.
     # Mirrors the QC gate's DEFAULT_BLOCKING_FIELDS logic.
     discrepancy_keys = set(comparison.get("discrepancies", {}).keys())
-    real_keys = discrepancy_keys & {"marker", "antenna_height", "coordinates"}
+    real_keys = discrepancy_keys & {"marker", "domes", "antenna_height", "coordinates"}
     if not real_keys:
         logger.debug(
             "%s: formatting-only discrepancies (%s) — skipping",
@@ -267,10 +267,12 @@ def fix_headers_in_file(
         )
         return result
     # Keep only labels that correspond to real discrepancies.
-    # Map: antenna_height→ANTENNA: DELTA H/E/N, marker→MARKER NAME, coordinates→APPROX POSITION XYZ
+    # Map: antenna_height→ANTENNA: DELTA H/E/N, marker→MARKER NAME,
+    # domes→MARKER NUMBER, coordinates→APPROX POSITION XYZ
     _key_label = {
         "antenna_height": "ANTENNA: DELTA H/E/N",
         "marker": "MARKER NAME",
+        "domes": "MARKER NUMBER",
         "coordinates": "APPROX POSITION XYZ",
     }
     real_labels = {label for key, label in _key_label.items() if key in real_keys}
@@ -672,6 +674,7 @@ def archive_header_matches_tos(
     comparison = compare_rinex_to_tos(info, tos_session, loglevel=loglevel)
     real = set(comparison.get("discrepancies", {}).keys()) & {
         "marker",
+        "domes",
         "antenna_height",
         "coordinates",
     }
