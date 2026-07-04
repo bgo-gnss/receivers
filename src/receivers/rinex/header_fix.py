@@ -38,6 +38,23 @@ from typing import Any, Optional
 logger = logging.getLogger("receivers.rinex.header_fix")
 
 
+def _rinex_obs_datetime(name: str, station: str) -> Optional[datetime]:
+    """Observation datetime for ANY archived RINEX obs filename, or None.
+
+    The general file-identity parser for fix-headers: delegates to
+    :meth:`RinexNamer.parse_date_hour`, which already handles RINEX 2 daily
+    (session ``0``) AND hourly (session ``a``–``x``) short names and RINEX 3
+    long names (``01D``/``01H``). Daily → 00:00; hourly → the file's hour. This
+    is what lets fix-headers work on 1Hz_1hr (hourly) files, not just daily.
+    """
+    from .rinex_namer import RinexNamer
+
+    d, h = RinexNamer.parse_date_hour(name, station)
+    if d is None:
+        return None
+    return datetime(d.year, d.month, d.day, h or 0)
+
+
 def _fmt_value(v: Any) -> str:
     """Compact display of a header value for the change summary.
 
@@ -207,7 +224,7 @@ def fix_headers_in_file(
         return result
 
     if observation_date is None:
-        observation_date = _parse_daily_rinex_date(source_path.name, station_id)
+        observation_date = _rinex_obs_datetime(source_path.name, station_id)
     if observation_date is None:
         result["error"] = "could not parse observation date from filename"
         return result
@@ -401,8 +418,6 @@ def discover_rinex_files(
     date falls in ``[start_time, end_time)``. Daily session → one file per day
     (matched by DOY in the filename); hourly → one per hour.
     """
-    from tostools.rinex.reader import _parse_daily_rinex_date
-
     # CLI dates from calculate_download_time_range are UTC-aware; TOS sessions
     # and parsed filenames are naive. Strip tzinfo for consistent comparisons.
     if start_time.tzinfo is not None:
@@ -421,12 +436,13 @@ def discover_rinex_files(
             for p in sorted(rinex_dir.iterdir()):
                 if not p.is_file():
                     continue
-                # Filter by the file's own observation date so a dir listing
-                # the whole month doesn't bleed into a one-day run.
-                obs = _parse_daily_rinex_date(p.name, station_id)
+                # Filter by the file's own observation datetime (daily OR hourly,
+                # short OR long name) so a dir listing the whole month doesn't
+                # bleed into a shorter run.
+                obs = _rinex_obs_datetime(p.name, station_id)
                 if obs is None:
-                    # Non-daily-named file (e.g. long-name .crx.gz) — include
-                    # only if we can't tell; the caller will skip on parse fail.
+                    # Unrecognised name — include if it looks like RINEX; the
+                    # caller will surface a parse error per file.
                     if p.name.endswith((".Z", ".gz")) or p.suffix in (".o", ".O"):
                         files.append(p)
                     continue
