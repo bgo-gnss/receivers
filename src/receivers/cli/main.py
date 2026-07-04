@@ -4925,11 +4925,11 @@ def cmd_rinex(args) -> int:
                           "useless as RINEX. To remove from the archive:")
                     print("      ⚠️  CHECK EACH manually first — a large corrupt file may be "
                           "recoverable via regenerate-from-raw (a separate process), not deletion.")
-                    print("      receivers archive-rm --host pgdev.vedur.is \\")
+                    print("      receivers archive-rm --catalog-prod \\")
                     print(f"        --max-size {_cap} \\")
                     print("        --file " + " ".join(rel for rel, _ in sorted(_unreadable)))
                     print("      (dry-run as shown; add --yes to actually delete — only "
-                          f"files ≤{_cap} bytes are removed)")
+                          f"files ≤{_cap} bytes are removed, catalog pruned on both DBs)")
             total_fixed += summary.get("would_fix", summary.get("fixed", 0))
             total_skipped += summary.get("clean", summary.get("skipped", 0))
             total_errors += summary["errors"]
