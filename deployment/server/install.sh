@@ -84,9 +84,12 @@ FLAG_ONLY_CONFIG_SYNC=false
 FLAG_PG_EXTERNAL=false
 
 # Subnet allowed to reach gps_health when --pg-external is used. Operators run
-# fix-headers/reindex/archive-rm from laptops on this network and dual-write the
-# archive_catalog to this host. Override: PG_OPERATOR_CIDR=10.x.y.0/24 install.sh
-readonly PG_OPERATOR_CIDR="${PG_OPERATOR_CIDR:-10.170.0.0/16}"
+# fix-headers/reindex/archive-rm from laptops/servers and dual-write the
+# archive_catalog to this host. Default = the whole IMO internal private range
+# (server subnet 10.170.x + VPN pool 10.250.x etc.) — none of it is reachable
+# from outside IMO, so no in-network restriction is wanted. Tighten if needed:
+# PG_OPERATOR_CIDR=10.250.0.0/16 install.sh --pg-external
+readonly PG_OPERATOR_CIDR="${PG_OPERATOR_CIDR:-10.0.0.0/8}"
 
 # ── Color helpers ──────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
