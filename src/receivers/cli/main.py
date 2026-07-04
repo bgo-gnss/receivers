@@ -4464,51 +4464,40 @@ def _push_reindex(
     """
     if not getattr(args, "reindex", False):
         print("   ↻ catalog sha256 for these files is now stale. Refresh with:")
-        print(f"        receivers archive-reindex --dir {root} \\")
-        print("          --host pgdev.vedur.is        # production catalog")
-        print("      or re-run this command with --reindex --catalog-host pgdev.vedur.is")
+        print(f"        receivers archive-reindex --dir {root}")
+        print("      or re-run this command with --reindex "
+              "(writes ALL [archive] catalog_hosts; --catalog-host overrides).")
         return
 
     if not storage_location or not dest_prefix:
         print("   ⚠️  --reindex: no archive storage_location/dest resolved — skipped")
         return
 
-    catalog_host = getattr(args, "catalog_host", None)
-    if not catalog_host:
-        print("   ⚠️  --reindex: --catalog-host not set → writing to the DEFAULT")
-        print("      gps_health (localhost = DEV catalog on a laptop, NOT production).")
-        print("      Pass --catalog-host pgdev.vedur.is to update the production catalog.")
+    from ..archive import reindex_files_multi, resolve_catalog_hosts
 
-    from ..archive import reindex_files
-    from ..db.connection import get_connection
-
-    conn = None
+    hosts = resolve_catalog_hosts(getattr(args, "catalog_host", None))
+    if hosts == [None]:
+        print("   ⚠️  --reindex: no --catalog-host and no [archive] catalog_hosts "
+              "in receivers.cfg → writing to the DEFAULT gps_health only")
+        print("      (localhost = DEV catalog on a laptop, NOT production). Set "
+              "[archive] catalog_hosts = pgdev.vedur.is, rek-d01.vedur.is.")
     try:
-        conn = get_connection(host_override=catalog_host)
-        stats = reindex_files(
-            conn,
-            files,
-            root=root,
-            storage_location=storage_location,
-            dest_prefix=dest_prefix,
+        results = reindex_files_multi(
+            hosts, files, root=root,
+            storage_location=storage_location, dest_prefix=dest_prefix,
         )
-        host_label = catalog_host or "localhost"
-        print(
-            f"   ↻ reindexed archive_catalog on {host_label}: "
-            f"{stats.updated} updated, {stats.inserted} inserted, "
-            f"{stats.unchanged} unchanged"
-            + (f", {stats.skipped} unparsable" if stats.skipped else "")
-        )
-        for msg in stats.errors[:5]:
-            print(f"      ⚠️  {msg}")
+        for label, stats in results.items():
+            if stats is None:
+                print(f"   ⚠️  reindex FAILED on {label} — catalogs may DIVERGE; re-run.")
+                continue
+            print(
+                f"   ↻ reindexed archive_catalog on {label}: "
+                f"{stats.updated} updated, {stats.inserted} inserted, "
+                f"{stats.unchanged} unchanged"
+                + (f", {stats.skipped} unparsable" if stats.skipped else "")
+            )
     except Exception as exc:  # noqa: BLE001 — best-effort, never fail the push
         print(f"   ⚠️  --reindex failed: {type(exc).__name__}: {exc}")
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:  # noqa: BLE001
-                pass
 
 
 def _push_cleanup(all_details: list[dict], *, work_dir, tos_cache) -> None:

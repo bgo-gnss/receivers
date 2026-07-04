@@ -166,6 +166,71 @@ def reindex_files(
     return stats
 
 
+def resolve_catalog_hosts(override: Optional[str]) -> list:
+    """Resolve which gps_health host(s) an archive-catalog write targets.
+
+    * an explicit ``--catalog-host`` override → just that one host;
+    * else ``[archive] catalog_hosts`` from receivers.cfg (the identical-DB
+      set, e.g. pgdev + rek-d01) → all of them;
+    * else ``[None]`` — the single default connection (database.cfg host, i.e.
+      localhost on a laptop) with a caller-side warning.
+
+    Returns a list whose elements are host strings (or ``None`` for the default).
+    """
+    if override:
+        return [override]
+    try:
+        from ..config.receivers_config import get_receivers_config
+
+        hosts = get_receivers_config().get_catalog_hosts()
+    except Exception:  # noqa: BLE001
+        hosts = []
+    return hosts if hosts else [None]
+
+
+def reindex_files_multi(
+    hosts: list,
+    files: list[str],
+    *,
+    root: str,
+    storage_location: str,
+    dest_prefix: str,
+    dry_run: bool = False,
+    only_existing: bool = False,
+    log: logging.Logger = logger,
+) -> dict:
+    """Reindex ``files`` into EVERY host in ``hosts`` (the identical-catalog set).
+
+    Returns ``{host_label: ReindexStats | None}`` (None = that host errored).
+    Idempotent, so a partial failure is safe to re-run. Callers should surface a
+    per-host failure loudly — a catalog that wrote to one DB but not the other is
+    exactly the divergence this fan-out exists to prevent.
+    """
+    from ..db.connection import get_connection
+
+    results: dict = {}
+    for host in hosts:
+        label = host or "localhost"
+        conn = None
+        try:
+            conn = get_connection(host_override=host)
+            results[label] = reindex_files(
+                conn, files, root=root, storage_location=storage_location,
+                dest_prefix=dest_prefix, dry_run=dry_run, only_existing=only_existing,
+                log=log,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.error("reindex to %s failed: %s", label, exc)
+            results[label] = None
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:  # noqa: BLE001
+                    pass
+    return results
+
+
 def _existing_sha(
     conn, storage_location: str, session_type: str, file_category: str, key: str
 ) -> Optional[str]:

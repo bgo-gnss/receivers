@@ -226,7 +226,7 @@ def cmd_archive_reindex(args: argparse.Namespace) -> int:
     """
     import os
 
-    from ..archive import load_sync_config, reindex_files
+    from ..archive import load_sync_config, reindex_files_multi, resolve_catalog_hosts
 
     root = str(Path(args.dir).expanduser())
     if not os.path.isdir(root):
@@ -256,41 +256,40 @@ def cmd_archive_reindex(args: argparse.Namespace) -> int:
         print(f"⚠️  no files under {root}")
         return 0
 
-    if not args.host:
-        print("⚠️  --host not set → writing to the DEFAULT gps_health "
-              "(localhost = DEV catalog on a laptop, NOT production).")
-        print("   Pass --host pgdev.vedur.is to update the production catalog.")
+    hosts = resolve_catalog_hosts(args.catalog_host)
+    if hosts == [None]:
+        print("⚠️  no --catalog-host and no [archive] catalog_hosts in "
+              "receivers.cfg → writing to the DEFAULT gps_health only (localhost = "
+              "DEV catalog on a laptop, NOT production).")
+        print("   Set [archive] catalog_hosts = pgdev.vedur.is, rek-d01.vedur.is.")
 
-    conn = _get_conn(args.host, required=True)
-    try:
-        stats = reindex_files(
-            conn,
-            files,
-            root=root,
-            storage_location=target.name,
-            dest_prefix=dest_prefix,
-            dry_run=args.dry_run,
-            only_existing=args.only_existing,
-        )
-    finally:
-        if conn is not None:
-            conn.close()
+    results = reindex_files_multi(
+        hosts, files, root=root,
+        storage_location=target.name, dest_prefix=dest_prefix,
+        dry_run=args.dry_run, only_existing=args.only_existing,
+    )
 
     if args.json:
-        print(json.dumps(stats.to_dict(), indent=2))
+        print(json.dumps(
+            {h: (s.to_dict() if s else None) for h, s in results.items()}, indent=2
+        ))
     else:
-        host_label = args.host or "localhost"
         verb = "would reindex" if args.dry_run else "reindexed"
-        print(
-            f"↻ {verb} archive_catalog ({target.name} on {host_label}): "
-            f"{stats.updated} updated, {stats.inserted} inserted, "
-            f"{stats.unchanged} unchanged"
-            + (f", {stats.skipped_new} skipped (no prior row)" if stats.skipped_new else "")
-            + (f", {stats.skipped} unparsable" if stats.skipped else "")
-        )
-        for msg in stats.errors[:50]:
-            print(f"   ⚠ {msg}")
-    return 1 if stats.errors else 0
+        for label, stats in results.items():
+            if stats is None:
+                print(f"⚠️  reindex FAILED on {label} — catalogs may DIVERGE; re-run.")
+                continue
+            print(
+                f"↻ {verb} archive_catalog ({target.name} on {label}): "
+                f"{stats.updated} updated, {stats.inserted} inserted, "
+                f"{stats.unchanged} unchanged"
+                + (f", {stats.skipped_new} skipped (no prior row)" if stats.skipped_new else "")
+                + (f", {stats.skipped} unparsable" if stats.skipped else "")
+            )
+            for msg in stats.errors[:50]:
+                print(f"   ⚠ {msg}")
+    _any_err = any(s is None or s.errors for s in results.values())
+    return 1 if _any_err else 0
 
 
 def cmd_archive_rm(args: argparse.Namespace) -> int:
@@ -354,23 +353,31 @@ def cmd_archive_rm(args: argparse.Namespace) -> int:
     for rel, sz in res.failed:
         print(f"   ❌ FAILED to delete: {rel}")
 
-    # Catalog consistency: after real deletes, drop their catalog rows so the
-    # integrity verify doesn't later flag them missing (file first, then row).
+    # Catalog consistency: after real deletes, drop their catalog rows on EVERY
+    # catalog host (the identical-DB set) so no integrity-verify later flags them
+    # missing (file first, then rows).
     if execute and res.deleted:
-        conn = _get_conn(args.host, required=False)
-        if conn is not None:
+        from ..archive import resolve_catalog_hosts
+        from ..db.connection import get_connection
+
+        for host in resolve_catalog_hosts(args.catalog_host):
+            label = host or "localhost"
+            conn = None
             try:
+                conn = get_connection(host_override=host)
                 n = remove_catalog_rows(
                     conn, target.name, [rel for rel, _ in res.deleted]
                 )
-                print(f"   ↻ removed {n} archive_catalog row(s) on "
-                      f"{args.host or 'localhost'}")
+                print(f"   ↻ removed {n} archive_catalog row(s) on {label}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"   ⚠️  catalog prune FAILED on {label}: {exc}")
             finally:
-                conn.close()
+                if conn is not None:
+                    conn.close()
 
     if not execute and res.would_delete:
         print("\n   → re-run with --yes to actually delete "
-              "(and --host pgdev.vedur.is to prune the catalog).")
+              "(catalog rows are pruned on all [archive] catalog_hosts).")
     if res.skipped_toobig and max_size == 0:
         print("\n   → some files are non-empty; if they are known-bad, re-run "
               "with --max-size <bytes> (bounded) after verifying them.")
@@ -408,8 +415,10 @@ def create_archive_rm_parser(subparsers) -> argparse.ArgumentParser:
         "files, e.g. --max-size 8 for 3-byte truncated RINEX.",
     )
     parser.add_argument(
-        "--host", help="gps_health host for catalog-row pruning after deletion "
-        "(e.g. pgdev.vedur.is). Omit to leave the catalog untouched.",
+        "--catalog-host", help="gps_health host(s) for catalog-row pruning after "
+        "deletion. Overrides [archive] catalog_hosts (which fans out to all, e.g. "
+        "pgdev + rek-d01). This is the CATALOG DB, not the delete target (that is "
+        "the rawdata gateway from sync.yaml).",
     )
     parser.add_argument(
         "--config", help="Path to sync.yaml (default: GPS_CONFIG_PATH/sync.yaml)"
@@ -427,7 +436,8 @@ def create_archive_reindex_parser(subparsers) -> argparse.ArgumentParser:
             "`rinex --fix-headers --push` pushed from) and upsert their "
             "archive_catalog rows, so the catalog matches the edited archive "
             "bytes and the integrity verify stops flagging them. Runs from a "
-            "laptop; pass --host pgdev.vedur.is for the production catalog."
+            "laptop; writes ALL [archive] catalog_hosts (e.g. pgdev + rek-d01) "
+            "so the catalogs stay identical (--catalog-host overrides)."
         ),
     )
     parser.add_argument(
@@ -446,9 +456,10 @@ def create_archive_reindex_parser(subparsers) -> argparse.ArgumentParser:
         help="Archive dest prefix for file_path (default: target.dest from sync.yaml)",
     )
     parser.add_argument(
-        "--host",
-        help="gps_health host (pgdev.vedur.is for production; default: database.cfg, "
-        "which is localhost/DEV on a laptop)",
+        "--catalog-host",
+        help="gps_health host(s) to write. Overrides [archive] catalog_hosts "
+        "(which fans out to all — e.g. pgdev + rek-d01 — so the catalogs stay "
+        "identical). Default: database.cfg host (localhost/DEV on a laptop).",
     )
     parser.add_argument(
         "--config", help="Path to sync.yaml (default: GPS_CONFIG_PATH/sync.yaml)"
