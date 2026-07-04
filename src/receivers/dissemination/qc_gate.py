@@ -186,8 +186,16 @@ def qc_check(
         rnx_number = str(rinex_info.get("MARKER NUMBER") or "").strip().upper()
         if rnx_number == tos_domes:
             matches["domes"] = tos_domes
+            discrepancies.pop("domes", None)
         else:
             discrepancies["domes"] = {"rinex": rnx_number, "tos": tos_domes}
+    else:
+        # No real DOMES: compare_rinex_to_tos still emits a (domes-or-marker)
+        # fallback discrepancy for --fix-headers, but a missing/marker-only
+        # MARKER NUMBER is NOT an EPOS DOMES violation and must not BLOCK QC —
+        # finalize_epos_header sets it in the pipeline. Drop it here.
+        discrepancies.pop("domes", None)
+        matches.pop("domes", None)
 
     blocking = {k: v for k, v in discrepancies.items() if k in blocking_fields}
 

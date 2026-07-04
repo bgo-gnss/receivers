@@ -417,6 +417,34 @@ def make_components_fn(client: Any = None):
     return fn
 
 
+_AGENCY_RESOLVER: Any = None
+
+
+def _resolve_observer_agency(owner_org: str) -> tuple[str, str]:
+    """RINEX ``(observer, agency)`` strings for a TOS owner org via agencies.yaml.
+
+    The resolver is cached (agencies.yaml is static per host). Unknown org →
+    the operator default (IMO); no agencies.yaml deployed → ``("", "")``, which
+    makes ``compare_rinex_to_tos`` skip the observer/agency check entirely (a
+    host without the config simply doesn't correct that field). Never raises.
+    """
+    global _AGENCY_RESOLVER
+    try:
+        if _AGENCY_RESOLVER is None:
+            from .agencies import AgencyResolver
+
+            _AGENCY_RESOLVER = AgencyResolver.load()
+        info = (
+            _AGENCY_RESOLVER.resolve(owner_org) or _AGENCY_RESOLVER.operator_default()
+        )
+    except Exception as exc:  # noqa: BLE001 - agency config is optional infra
+        logger.debug("observer/agency resolution failed for %r: %s", owner_org, exc)
+        return "", ""
+    if info is None:
+        return "", ""
+    return (info.observer or "").strip(), (info.agency_label or "").strip()
+
+
 def make_session_provider(client: Any = None):
     """Build a QC session provider ``(station, observation_dt) -> session|None``.
 
@@ -455,6 +483,13 @@ def make_session_provider(client: Any = None):
             ((meta.get("contact") or {}).get("owner") or {}).get("organization") or ""
         ).strip()
         session.setdefault("owner_org", owner_org)
+        # Observer/agency RINEX strings (agencies.yaml) — feed the validator's
+        # OBSERVER / AGENCY check. Only set when resolvable (else skip the field).
+        observer, agency = _resolve_observer_agency(owner_org)
+        if observer:
+            session.setdefault("observer", observer)
+        if agency:
+            session.setdefault("agency", agency)
         return session
 
     return provider
@@ -530,14 +565,16 @@ class TOSSesionCache:
             return None
         # compare_rinex_to_tos reads session["marker"] — it lives at station level.
         session.setdefault("marker", (meta.get("marker") or sid).upper())
-        session.setdefault(
-            "domes", (meta.get("iers_domes_number") or "").strip()
-        )
+        session.setdefault("domes", (meta.get("iers_domes_number") or "").strip())
         owner_org = (
-            ((meta.get("contact") or {}).get("owner") or {}).get("organization")
-            or ""
+            ((meta.get("contact") or {}).get("owner") or {}).get("organization") or ""
         ).strip()
         session.setdefault("owner_org", owner_org)
+        observer, agency = _resolve_observer_agency(owner_org)
+        if observer:
+            session.setdefault("observer", observer)
+        if agency:
+            session.setdefault("agency", agency)
         return session
 
     def get_metadata(self, station: str) -> Optional[dict[str, Any]]:
