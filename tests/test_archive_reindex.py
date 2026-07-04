@@ -135,6 +135,76 @@ def test_dry_run_writes_nothing(db_conn, tmp_path):
     assert _catalog_sha(db_conn, "eldc_a.sbf") == "0" * 64  # unchanged on disk
 
 
+class TestCatalogHostResolution:
+    def test_override_wins(self):
+        from receivers.archive.reindex import resolve_catalog_hosts
+        assert resolve_catalog_hosts("pgdev.vedur.is") == ["pgdev.vedur.is"]
+
+    def test_config_hosts_used_when_no_override(self, monkeypatch):
+        import receivers.archive.reindex as rx
+
+        class _Cfg:
+            def get_catalog_hosts(self):
+                return ["pgdev.vedur.is", "rek-d01.vedur.is"]
+
+        monkeypatch.setattr(
+            "receivers.config.receivers_config.get_receivers_config", lambda: _Cfg()
+        )
+        assert rx.resolve_catalog_hosts(None) == ["pgdev.vedur.is", "rek-d01.vedur.is"]
+
+    def test_falls_back_to_none_when_unset(self, monkeypatch):
+        import receivers.archive.reindex as rx
+
+        class _Cfg:
+            def get_catalog_hosts(self):
+                return []
+
+        monkeypatch.setattr(
+            "receivers.config.receivers_config.get_receivers_config", lambda: _Cfg()
+        )
+        assert rx.resolve_catalog_hosts(None) == [None]
+
+
+def test_reindex_files_multi_fans_out(monkeypatch, tmp_path):
+    """reindex_files_multi opens a connection per host and reindexes each."""
+    import receivers.archive.reindex as rx
+
+    seen_hosts = []
+    monkeypatch.setattr(
+        "receivers.db.connection.get_connection",
+        lambda host_override=None: seen_hosts.append(host_override) or object(),
+    )
+    monkeypatch.setattr(
+        rx, "reindex_files",
+        lambda conn, files, **kw: rx.ReindexStats(updated=len(files)),
+    )
+    results = rx.reindex_files_multi(
+        ["pgdev.vedur.is", "rek-d01.vedur.is"], ["a", "b"],
+        root="/w", storage_location="imo_archive", dest_prefix="~/gpsdata",
+    )
+    assert seen_hosts == ["pgdev.vedur.is", "rek-d01.vedur.is"]
+    assert set(results) == {"pgdev.vedur.is", "rek-d01.vedur.is"}
+    assert all(s.updated == 2 for s in results.values())
+
+
+def test_reindex_files_multi_records_per_host_failure(monkeypatch):
+    import receivers.archive.reindex as rx
+
+    def _conn(host_override=None):
+        if host_override == "bad.host":
+            raise OSError("refused")
+        return object()
+
+    monkeypatch.setattr("receivers.db.connection.get_connection", _conn)
+    monkeypatch.setattr(rx, "reindex_files", lambda conn, files, **kw: rx.ReindexStats())
+    results = rx.reindex_files_multi(
+        ["good.host", "bad.host"], ["a"],
+        root="/w", storage_location="imo_archive", dest_prefix="~/gpsdata",
+    )
+    assert results["good.host"] is not None
+    assert results["bad.host"] is None  # failure surfaced, not swallowed
+
+
 def test_rinex_org_catalogs_as_distinct_row(db_conn, tmp_path):
     # A rinex_org preservation shares the rinex file's canonical_key but parses
     # to file_category='rinex_org' → a SEPARATE catalog row, no collision.

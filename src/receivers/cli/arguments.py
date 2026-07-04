@@ -1252,6 +1252,16 @@ Examples:
         "--catalog-host (default gps_health per database.cfg).",
     )
     mode_group.add_argument(
+        "--push-batch",
+        type=int,
+        default=100,
+        metavar="N",
+        help="With --fix-headers --push: push+reindex every N fixed files instead "
+        "of once at the end, so an interruption loses at most one batch (a re-run "
+        "skips already-pushed files — their headers now match TOS). Default: 100. "
+        "Use a large value to push once at the end.",
+    )
+    mode_group.add_argument(
         "--catalog-host",
         default=None,
         metavar="HOST",
@@ -1430,6 +1440,7 @@ For subcommand help: receivers <command> --help
     # archive-sync (batch delta push to the long-term archive gateway)
     from .archive_sync import (
         create_archive_reindex_parser,
+        create_archive_rm_parser,
         create_archive_sync_parser,
         create_archive_verify_parser,
     )
@@ -1439,6 +1450,8 @@ For subcommand help: receivers <command> --help
     create_archive_verify_parser(subparsers)
     # archive-reindex (refresh catalog sha256 after out-of-band file edits)
     create_archive_reindex_parser(subparsers)
+    # archive-rm (guarded deletion of empty/bad files from the archive)
+    create_archive_rm_parser(subparsers)
 
     # epos-disseminate (RINEX3 long-name dissemination to the EPOS files server)
     from .epos_disseminate import create_epos_disseminate_parser

@@ -38,6 +38,23 @@ from typing import Any, Optional
 logger = logging.getLogger("receivers.rinex.header_fix")
 
 
+def _fmt_value(v: Any) -> str:
+    """Compact display of a header value for the change summary.
+
+    Floats (and float-like strings) → 4 decimals; sequences → space-joined;
+    everything else → stripped str.
+    """
+    if isinstance(v, float):
+        return f"{v:.4f}"
+    if isinstance(v, (list, tuple)):
+        return " ".join(_fmt_value(x) for x in v)
+    s = str(v).strip()
+    try:
+        return f"{float(s):.4f}"
+    except (ValueError, TypeError):
+        return s
+
+
 def archive_old_file(
     rinex_file: Path,
     *,
@@ -111,7 +128,7 @@ def preserve_original_file(rinex_file: Path) -> Optional[Path]:
     try:
         org_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(str(rinex_file), str(dest))
-        logger.info("preserved un-regenerable original → %s", dest)
+        logger.debug("preserved un-regenerable original → %s", dest)
         return dest
     except OSError as exc:
         logger.error("rinex_org preservation FAILED for %s: %s", rinex_file, exc)
@@ -130,12 +147,12 @@ def _read_header_info(rinex_file: Path, loglevel: int) -> dict[str, str]:
 
         rheader = read_rinex_header(rinex_file, loglevel=loglevel)
         if not rheader or "header" not in rheader:
-            logger.warning("no header read from %s", rinex_file.name)
+            logger.debug("no header read from %s", rinex_file.name)
             return {}
         info = extract_header_info(rheader, loglevel=loglevel)
         return info or {}
     except Exception as exc:  # noqa: BLE001
-        logger.warning("header read failed for %s: %s", rinex_file.name, exc)
+        logger.debug("header read failed for %s: %s", rinex_file.name, exc)
         return {}
 
 
@@ -179,6 +196,7 @@ def fix_headers_in_file(
         "observation_date": None,     # set once parsed (below)
         "fixed": False,
         "changed_labels": [],
+        "changes": {},
         "archived": None,
         "preserved_org": None,
         "regenerable": None,
@@ -215,7 +233,7 @@ def fix_headers_in_file(
     )
     discrepant_labels = set(comparison.get("corrections", {}).keys())
     if not discrepant_labels:
-        logger.info("%s: header agrees with TOS — no fix needed", source_path.name)
+        logger.debug("%s: header agrees with TOS — no fix needed", source_path.name)
         return result
 
     # Filter out formatting-noise fields (the validator flags receiver/antenna
@@ -245,6 +263,14 @@ def fix_headers_in_file(
     if not discrepant_labels:
         return result
     result["changed_labels"] = sorted(discrepant_labels)
+    # Record the actual value transition (old header → TOS) per field, so the
+    # run summary can show e.g. "1.0070 → 1.0140".
+    _disc = comparison.get("discrepancies", {})
+    for key in real_keys:
+        d = _disc.get(key)
+        label = _key_label.get(key)
+        if d and label and label in discrepant_labels:
+            result["changes"][label] = (d.get("rinex"), d.get("tos"))
 
     if dry_run:
         logger.debug(
@@ -299,7 +325,9 @@ def fix_headers_in_file(
             )
             return result
         result["preserved_org"] = str(preserved)
-        logger.warning(
+        result["preserve_reason"] = regen.reason
+        # Per-file detail at DEBUG only — the run summary reports the count.
+        logger.debug(
             "%s: %s — preserved original → %s before header fix",
             source_path.name, regen.reason, preserved,
         )
@@ -427,6 +455,8 @@ def fix_headers_station(
     work_dir: Optional[Path] = None,
     source_dir: Optional[Path] = None,
     tos_cache: Any = None,
+    flush_fn: Any = None,
+    flush_every: int = 0,
     loglevel: int = logging.INFO,
 ) -> dict:
     """Run ``--fix-headers`` across a station's archived RINEX.
@@ -439,7 +469,13 @@ def fix_headers_station(
     When None a fresh one is created — but passing one from the fleet sweep
     (one call to ``fix_headers_station`` per station) means only 1 TOS call
     per station total, regardless of how many files are processed.
-    After fixing, print an rsync command to push the staged fixes back.
+
+    Incremental durability: when ``flush_every > 0`` and ``flush_fn`` is given,
+    ``flush_fn(batch_details)`` is called every ``flush_every`` **fixed** files
+    (and once for the remainder at the end). The caller uses it to push+reindex
+    that batch immediately, so an interruption loses at most one batch's work
+    instead of the whole run (a re-run then skips already-pushed files, whose
+    headers now match TOS). Never invoked on a dry-run.
 
     Returns ``{station, scanned, fixed, skipped, errors, details: [...]}``.
     """
@@ -493,6 +529,12 @@ def fix_headers_station(
     except ImportError:
         pbar = files
 
+    # Incremental push batching: flush every ``flush_every`` fixed files so an
+    # interruption loses at most one batch (never on a dry-run).
+    _do_flush = bool(not dry_run and flush_fn is not None and flush_every > 0)
+    _pending: list[dict] = []
+    _pending_fixed = 0
+
     for f in pbar:
         r = fix_headers_in_file(
             f,
@@ -516,6 +558,15 @@ def fix_headers_station(
                 summary["fixed"] += 1
         else:
             summary["skipped"] += 1
+        # Accumulate fixed/preserved files and flush a batch when it fills.
+        if _do_flush and (r.get("fixed") or r.get("preserved_org")):
+            _pending.append(r)
+            if r.get("fixed"):
+                _pending_fixed += 1
+            if _pending_fixed >= flush_every:
+                flush_fn(_pending)
+                _pending = []
+                _pending_fixed = 0
         # Update progress bar postfix every file (cheap — just dict assignment).
         if hasattr(pbar, "set_postfix"):
             pbar.set_postfix(
@@ -524,21 +575,52 @@ def fix_headers_station(
                 err=summary["errors"],
                 refresh=False,
             )
+    # Flush the final partial batch.
+    if _do_flush and _pending:
+        flush_fn(_pending)
     # On dry_run, "skipped" in the CLI output means "no discrepancy", so
     # rename for clarity.
     if dry_run:
         summary.setdefault("would_fix", 0)
         summary["clean"] = summary.pop("skipped", 0)
 
-    # Grouped summary — which fields were flagged, and how many files each.
+    # Grouped summary — which fields were flagged, how many files, and the
+    # actual value transitions (old header → TOS), e.g. "1.0070 → 1.0140".
     _by_field: dict[str, int] = {}
+    _transitions: dict[str, dict[tuple, int]] = {}
     for d in summary.get("details", []):
         for lbl in d.get("changed_labels", []):
             _by_field[lbl] = _by_field.get(lbl, 0) + 1
+        for lbl, (old, new) in d.get("changes", {}).items():
+            key = (_fmt_value(old), _fmt_value(new))
+            _transitions.setdefault(lbl, {})[key] = (
+                _transitions.setdefault(lbl, {}).get(key, 0) + 1
+            )
     if _by_field:
         print("   Fields flagged:")
         for lbl, cnt in sorted(_by_field.items(), key=lambda kv: -kv[1]):
-            print(f"      {lbl}: {cnt} file(s)")
+            trans = _transitions.get(lbl, {})
+            if len(trans) == 1:
+                (old, new), _cnt = next(iter(trans.items()))
+                print(f"      {lbl}: {cnt} file(s)   {old} → {new}")
+            else:
+                print(f"      {lbl}: {cnt} file(s)")
+                for (old, new), n in sorted(trans.items(), key=lambda kv: -kv[1]):
+                    print(f"         {old} → {new}: {n} file(s)")
+
+    # Un-regenerable preservations — summarized (per-file logs are DEBUG only).
+    _preserved = sum(1 for d in summary.get("details", []) if d.get("preserved_org"))
+    if _preserved:
+        _reasons: dict[str, int] = {}
+        for d in summary.get("details", []):
+            if d.get("preserved_org"):
+                r = str(d.get("preserve_reason", "un-regenerable")).split(" (")[0]
+                # collapse "raw absent for RHOF 20250901" → "raw absent"
+                r = "raw absent" if r.startswith("raw absent") else r
+                r = "no raw/ dir" if r.startswith("no raw/ dir") else r
+                _reasons[r] = _reasons.get(r, 0) + 1
+        detail = ", ".join(f"{n} {r}" for r, n in sorted(_reasons.items(), key=lambda kv: -kv[1]))
+        print(f"   🔒 {_preserved} un-regenerable original(s) preserved to rinex_org ({detail})")
 
     return summary
 

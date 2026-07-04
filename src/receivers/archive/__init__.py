@@ -15,7 +15,18 @@ dormant per-station pipeline task; this is the authoritative host-level feed.
 
 from .config import SyncTarget, load_sync_config
 from .engine import ArchiveSync, SyncRunResult
-from .reindex import ReindexStats, reindex_files
+from .reindex import (
+    ReindexStats,
+    reindex_files,
+    reindex_files_multi,
+    resolve_catalog_hosts,
+)
+from .remove import (
+    RemoveResult,
+    remove_archive_files,
+    remove_catalog_rows,
+    validate_archive_relpath,
+)
 from .verify import VerifyStats, verify_archive_catalog
 
 __all__ = [
@@ -27,4 +38,10 @@ __all__ = [
     "verify_archive_catalog",
     "ReindexStats",
     "reindex_files",
+    "reindex_files_multi",
+    "resolve_catalog_hosts",
+    "RemoveResult",
+    "remove_archive_files",
+    "remove_catalog_rows",
+    "validate_archive_relpath",
 ]

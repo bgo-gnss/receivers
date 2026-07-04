@@ -162,6 +162,24 @@ class ReceiversConfig:
         except (configparser.NoSectionError, configparser.NoOptionError):
             return None
 
+    def get_catalog_hosts(self) -> list[str]:
+        """Return the gps_health hosts the archive_catalog is written to.
+
+        Read from ``[archive] catalog_hosts`` in receivers.cfg — a comma-separated
+        list of gps_health hosts that MUST be kept identical (e.g.
+        ``pgdev.vedur.is, rek-d01.vedur.is``). Archive catalog writes (reindex,
+        archive-rm pruning) fan out to ALL of them so the operational catalog on
+        rek-d01 and the reporting catalog on pgdev never diverge.
+
+        Returns ``[]`` when unset — the caller then falls back to the single
+        default gps_health connection (database.cfg host) and warns.
+        """
+        try:
+            value = self.config.get("archive", "catalog_hosts")
+        except (configparser.NoSectionError, configparser.NoOptionError):
+            return []
+        return [h.strip() for h in value.split(",") if h.strip()]
+
     def get_prepath(self) -> str:
         """DEPRECATED: Use get_data_prepath() instead.
 
