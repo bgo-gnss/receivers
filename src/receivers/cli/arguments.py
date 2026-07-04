@@ -1440,6 +1440,7 @@ For subcommand help: receivers <command> --help
     # archive-sync (batch delta push to the long-term archive gateway)
     from .archive_sync import (
         create_archive_reindex_parser,
+        create_archive_rm_parser,
         create_archive_sync_parser,
         create_archive_verify_parser,
     )
@@ -1449,6 +1450,8 @@ For subcommand help: receivers <command> --help
     create_archive_verify_parser(subparsers)
     # archive-reindex (refresh catalog sha256 after out-of-band file edits)
     create_archive_reindex_parser(subparsers)
+    # archive-rm (guarded deletion of empty/bad files from the archive)
+    create_archive_rm_parser(subparsers)
 
     # epos-disseminate (RINEX3 long-name dissemination to the EPOS files server)
     from .epos_disseminate import create_epos_disseminate_parser

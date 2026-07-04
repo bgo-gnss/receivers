@@ -4904,6 +4904,36 @@ def cmd_rinex(args) -> int:
                     shown = ", ".join(sorted(names)[:20])
                     more = f" … (+{len(names) - 20} more)" if len(names) > 20 else ""
                     print(f"         {shown}{more}")
+                # Unreadable files → suggest the guarded archive-rm verb (dry-run,
+                # inert on copy-paste). Show each file's size and bound the
+                # suggested delete to the largest of them (--max-size), so the
+                # command can never remove anything bigger than what was flagged.
+                # NB: a substantial unreadable file may be corrupt-but-recoverable
+                # via regenerate-from-raw (a DIFFERENT process) — hence the
+                # manual-check warning.
+                _unreadable: list[tuple[str, int]] = []
+                for d in summary.get("details", []):
+                    if not (d.get("error") or "").startswith("could not read RINEX header"):
+                        continue
+                    src = d.get("file", "")
+                    try:
+                        sz = Path(src).stat().st_size
+                        rel = str(Path(src).relative_to(Path(_source_dir)))
+                    except (OSError, ValueError):
+                        continue
+                    _unreadable.append((rel, sz))
+                if _unreadable:
+                    _cap = max(sz for _, sz in _unreadable)
+                    print(f"\n   🗑️  {len(_unreadable)} unreadable file(s) "
+                          f"(size {min(s for _, s in _unreadable)}–{_cap} bytes) — "
+                          "useless as RINEX. To remove from the archive:")
+                    print("      ⚠️  CHECK EACH manually first — a large corrupt file may be "
+                          "recoverable via regenerate-from-raw (a separate process), not deletion.")
+                    print("      receivers archive-rm --host pgdev.vedur.is \\")
+                    print(f"        --max-size {_cap} \\")
+                    print("        --file " + " ".join(rel for rel, _ in sorted(_unreadable)))
+                    print("      (dry-run as shown; add --yes to actually delete — only "
+                          f"files ≤{_cap} bytes are removed)")
             total_fixed += summary.get("would_fix", summary.get("fixed", 0))
             total_skipped += summary.get("clean", summary.get("skipped", 0))
             total_errors += summary["errors"]

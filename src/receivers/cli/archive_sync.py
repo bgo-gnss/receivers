@@ -293,6 +293,131 @@ def cmd_archive_reindex(args: argparse.Namespace) -> int:
     return 1 if stats.errors else 0
 
 
+def cmd_archive_rm(args: argparse.Namespace) -> int:
+    """Guarded deletion of specific files from the long-term archive.
+
+    Dry-run by default; only 0-byte files are eligible unless --allow-nonempty.
+    Built so a wrong invocation is safe (server-side empty re-check, argv-boundary
+    paths, strict layout validation) — so nobody hand-runs rm on rawdata.
+    """
+    from ..archive import (
+        load_sync_config,
+        remove_archive_files,
+        remove_catalog_rows,
+    )
+
+    # Resolve the archive gateway (user@host) + root from the sync target.
+    config_path = Path(args.config) if args.config else None
+    target = next(
+        (t for t in load_sync_config(config_path)
+         if getattr(t, "tier", None) == "archive"),
+        None,
+    )
+    if target is None or not target.host:
+        print("❌ no remote archive tier target in sync.yaml — nothing to delete")
+        return 2
+    ssh_target = f"{target.user}@{target.host}"
+    dest_root = target.dest
+
+    execute = bool(args.yes)
+    max_size = max(0, int(args.max_size))
+
+    # Loud, explicit banner — this is a production deletion path.
+    print("⚠️  ARCHIVE DELETION" + ("" if execute else " (DRY-RUN — nothing removed)"))
+    print(f"   gateway: {ssh_target}:{dest_root}")
+    print(f"   guard:   size ≤ {max_size} bytes" + (" (empty only)" if max_size == 0 else ""))
+    if execute and max_size > 0:
+        print(f"   🛑 --yes with --max-size {max_size}: deleting files up to "
+              f"{max_size} bytes. Verify EACH path manually first.")
+    print(f"   targets ({len(args.file)}):")
+    for rel in args.file:
+        print(f"      {rel}")
+
+    res = remove_archive_files(
+        list(args.file), ssh_target=ssh_target, dest_root=dest_root,
+        max_size=max_size, execute=execute,
+    )
+
+    print()
+    for rel in res.invalid:
+        print(f"   ❌ REFUSED (invalid/unsafe path): {rel}")
+    for rel, sz in res.skipped_toobig:
+        print(f"   ⏭️  SKIP over cap ({sz} bytes > {max_size} — not deleted): {rel}")
+    for rel in res.missing:
+        print(f"   ·  missing (already gone): {rel}")
+    for rel in res.not_file:
+        print(f"   ⏭️  SKIP not-a-regular-file: {rel}")
+    for rel, sz in res.would_delete:
+        print(f"   🅳  would delete ({sz} bytes): {rel}")
+    for rel, sz in res.deleted:
+        print(f"   ✅ DELETED ({sz} bytes): {rel}")
+    for rel, sz in res.failed:
+        print(f"   ❌ FAILED to delete: {rel}")
+
+    # Catalog consistency: after real deletes, drop their catalog rows so the
+    # integrity verify doesn't later flag them missing (file first, then row).
+    if execute and res.deleted:
+        conn = _get_conn(args.host, required=False)
+        if conn is not None:
+            try:
+                n = remove_catalog_rows(
+                    conn, target.name, [rel for rel, _ in res.deleted]
+                )
+                print(f"   ↻ removed {n} archive_catalog row(s) on "
+                      f"{args.host or 'localhost'}")
+            finally:
+                conn.close()
+
+    if not execute and res.would_delete:
+        print("\n   → re-run with --yes to actually delete "
+              "(and --host pgdev.vedur.is to prune the catalog).")
+    if res.skipped_toobig and max_size == 0:
+        print("\n   → some files are non-empty; if they are known-bad, re-run "
+              "with --max-size <bytes> (bounded) after verifying them.")
+    return 0 if res.ok else 1
+
+
+def create_archive_rm_parser(subparsers) -> argparse.ArgumentParser:
+    parser = subparsers.add_parser(
+        "archive-rm",
+        help="Guarded deletion of specific empty/bad files from the archive",
+        description=(
+            "Delete named files from the long-term archive via the rawdata "
+            "gateway — so nobody hand-runs rm on the server. Dry-run by default; "
+            "ONLY 0-byte files are eligible unless --allow-nonempty. Paths are "
+            "validated to the archive layout and passed to the remote shell as "
+            "argv (never interpolated), and emptiness is re-checked server-side "
+            "at delete time."
+        ),
+    )
+    parser.add_argument(
+        "--file", action="extend", nargs="+", required=True, metavar="REL",
+        help="Archive-relative path(s) to delete "
+        "(e.g. 2023/aug/RHOF/15s_24hr/rinex/RHOF2400.23D.Z). Repeatable and "
+        "multi-valued. Explicit only — no globs, directories or recursion.",
+    )
+    parser.add_argument(
+        "--yes", action="store_true",
+        help="Actually delete (default is dry-run). Even with --yes, only files "
+        "within --max-size are removed.",
+    )
+    parser.add_argument(
+        "--max-size", type=int, default=0, metavar="BYTES",
+        help="Delete only files with size ≤ BYTES (server-side re-check). "
+        "Default 0 = empty only. Raise it (bounded) to remove known-tiny broken "
+        "files, e.g. --max-size 8 for 3-byte truncated RINEX.",
+    )
+    parser.add_argument(
+        "--host", help="gps_health host for catalog-row pruning after deletion "
+        "(e.g. pgdev.vedur.is). Omit to leave the catalog untouched.",
+    )
+    parser.add_argument(
+        "--config", help="Path to sync.yaml (default: GPS_CONFIG_PATH/sync.yaml)"
+    )
+    parser.set_defaults(func=cmd_archive_rm)
+    return parser
+
+
 def create_archive_reindex_parser(subparsers) -> argparse.ArgumentParser:
     parser = subparsers.add_parser(
         "archive-reindex",

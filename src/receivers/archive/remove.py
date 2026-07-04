@@ -1,0 +1,191 @@
+"""Guarded deletion of files from the long-term archive (rawdata gateway).
+
+Deleting from the production archive is irreversible, so this is built to make a
+*wrong* invocation safe rather than to trust the caller:
+
+  * **Enumerated explicit paths only** — no globs, no directories, no recursion.
+    Each path must match the strict archive layout (:func:`validate_archive_relpath`);
+    absolute paths, ``..`` and shell metacharacters are rejected up front.
+  * **Argv boundary (the spine):** paths are handed to the remote shell as ARGV
+    (``ssh host bash -s -- "$@"`` with a QUOTED heredoc), never interpolated into
+    a command string, so a filename can never be parsed as code. ``rm --`` blocks
+    option-injection (a name starting with ``-``).
+  * **Server-side size guard:** the file size is re-checked ON THE ARCHIVE at
+    the moment of deletion. Only files with ``size <= max_size`` are eligible;
+    ``max_size`` defaults to **0** (empty only). A file over the cap is SKIPPED,
+    never deleted. Raising the cap (e.g. to remove a known 3-byte truncated
+    file) is a second deliberate act on top of ``execute`` — and it is still
+    BOUNDED, so a large file can never be removed by accident.
+  * **Dry-run is the default** — nothing is deleted unless ``execute=True``.
+
+DO NOT refactor the remote command to f-string a path into it — that
+re-introduces catastrophic shell-injection / wrong-delete risk. The argv
+boundary and the server-side size re-check are the whole point.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+import subprocess
+from dataclasses import dataclass, field
+
+logger = logging.getLogger("receivers.archive.remove")
+audit = logging.getLogger("receivers.audit")
+
+# Strict archive layout: YYYY/mon/STA/session/category/FILE — anchors the delete
+# to a real archive path and (as a secondary defense) admits no shell metachars.
+_RELPATH_RE = re.compile(
+    r"^[0-9]{4}/[a-z]{3}/[A-Z0-9]{2,9}/[0-9A-Za-z_]+/"
+    r"(rinex|raw|rinex_org|rinex_archive)/[A-Za-z0-9][A-Za-z0-9._-]*$"
+)
+
+# Characters never allowed in a target path (defense in depth over the regex).
+_FORBIDDEN = set("*?[]{}~ \t\n\r\\'\"$`;|&<>()!")
+
+
+def validate_archive_relpath(rel: str) -> bool:
+    """True only for a safe, archive-layout-shaped relative path."""
+    if not rel or rel.startswith("/") or ".." in rel:
+        return False
+    if any(c in _FORBIDDEN for c in rel):
+        return False
+    return bool(_RELPATH_RE.match(rel))
+
+
+# Remote script: reads root/empty_only/execute as $1..$3, then the paths as $@.
+# Paths arrive as ARGV — the shell never parses them as code. Quoted heredoc.
+_REMOTE_SCRIPT = r"""
+set -u
+root="$1"; shift
+maxsize="$1"; shift
+execute="$1"; shift
+case "$root" in "~/"*) root="$HOME/${root#\~/}";; "~") root="$HOME";; esac
+for rel in "$@"; do
+  f="$root/$rel"
+  if [ ! -e "$f" ]; then echo "MISSING|$rel|0"; continue; fi
+  if [ ! -f "$f" ]; then echo "SKIP_NOTFILE|$rel|0"; continue; fi
+  sz=$(stat -c %s "$f" 2>/dev/null || echo -1)
+  if [ "$sz" -lt 0 ] || [ "$sz" -gt "$maxsize" ]; then
+    echo "SKIP_TOOBIG|$rel|$sz"; continue
+  fi
+  if [ "$execute" = "1" ]; then
+    if rm -- "$f"; then echo "DELETED|$rel|$sz"; else echo "FAIL|$rel|$sz"; fi
+  else
+    echo "WOULD_DELETE|$rel|$sz"
+  fi
+done
+"""
+
+
+@dataclass
+class RemoveResult:
+    deleted: list = field(default_factory=list)          # (rel, size)
+    would_delete: list = field(default_factory=list)     # (rel, size)
+    skipped_toobig: list = field(default_factory=list)   # (rel, size) over cap
+    missing: list = field(default_factory=list)          # rel
+    not_file: list = field(default_factory=list)         # rel
+    failed: list = field(default_factory=list)           # (rel, size)
+    invalid: list = field(default_factory=list)          # rel
+
+    @property
+    def ok(self) -> bool:
+        return not self.failed and not self.invalid
+
+
+def remove_archive_files(
+    rel_paths: list[str],
+    *,
+    ssh_target: str,
+    dest_root: str,
+    max_size: int = 0,
+    execute: bool = False,
+    timeout: int = 300,
+) -> RemoveResult:
+    """Delete (or dry-run) archive files via the rawdata SSH gateway.
+
+    Args:
+        rel_paths: archive-relative paths (``YYYY/mon/STA/session/cat/FILE``).
+        ssh_target: ``user@host`` for the gateway (from the archive sync target).
+        dest_root: archive root on the gateway (e.g. ``~/gpsdata``).
+        max_size: only delete files with ``size <= max_size`` bytes (server-side
+            re-check). Default 0 = empty only; bounded even when raised.
+        execute: actually delete; False (default) = dry-run.
+    """
+    res = RemoveResult()
+    valid: list[str] = []
+    for rel in rel_paths:
+        if validate_archive_relpath(rel):
+            valid.append(rel)
+        else:
+            res.invalid.append(rel)
+            logger.error("refusing invalid archive path: %r", rel)
+    if not valid:
+        return res
+
+    cmd = [
+        "ssh", "-o", "BatchMode=yes", ssh_target,
+        "bash", "-s", "--",
+        dest_root, str(int(max_size)), "1" if execute else "0",
+        *valid,
+    ]
+    proc = subprocess.run(
+        cmd, input=_REMOTE_SCRIPT, capture_output=True, text=True, timeout=timeout
+    )
+    for line in proc.stdout.splitlines():
+        parts = line.strip().split("|")
+        if len(parts) != 3:
+            continue
+        status, rel, sz_s = parts
+        try:
+            sz = int(sz_s)
+        except ValueError:
+            sz = -1
+        if status == "DELETED":
+            res.deleted.append((rel, sz))
+            audit.info("archive-rm DELETED %s (%d bytes)", rel, sz)
+        elif status == "WOULD_DELETE":
+            res.would_delete.append((rel, sz))
+        elif status == "SKIP_TOOBIG":
+            res.skipped_toobig.append((rel, sz))
+        elif status == "MISSING":
+            res.missing.append(rel)
+        elif status == "SKIP_NOTFILE":
+            res.not_file.append(rel)
+        elif status == "FAIL":
+            res.failed.append((rel, sz))
+            logger.error("archive-rm FAILED to delete %s", rel)
+    if proc.returncode != 0 and not (res.deleted or res.would_delete):
+        logger.error("ssh gateway error (rc=%s): %s", proc.returncode,
+                     proc.stderr.strip()[:200])
+    return res
+
+
+def remove_catalog_rows(conn, storage_location: str, rel_paths: list[str]) -> int:
+    """Delete archive_catalog rows for the given archive-relative paths.
+
+    Called AFTER the files are removed (file first, then catalog row — a
+    missing-file flag is a louder, recoverable failure than a silently
+    uncataloged file). Returns the number of rows deleted.
+    """
+    if conn is None or not rel_paths:
+        return 0
+    from ..utils.canonical_key import canonical_key
+    from .path_parse import parse_archive_path
+
+    removed = 0
+    for rel in rel_paths:
+        parsed = parse_archive_path(rel, "")  # root='' → rel is already relative
+        if parsed is None:
+            continue
+        key = canonical_key(rel.rsplit("/", 1)[-1])
+        with conn.cursor() as cur:
+            cur.execute(
+                """DELETE FROM archive_catalog
+                   WHERE storage_location = %s AND session_type = %s
+                     AND file_category = %s AND canonical_key = %s""",
+                (storage_location, parsed.session_type, parsed.file_category, key),
+            )
+            removed += cur.rowcount
+        conn.commit()
+    return removed
