@@ -1265,9 +1265,16 @@ Examples:
         "--catalog-host",
         default=None,
         metavar="HOST",
-        help="gps_health host for --reindex (e.g. pgdev.vedur.is for the "
-        "production catalog). Default: database.cfg host (localhost on a laptop "
-        "— which is the dev catalog, NOT production).",
+        help="Override the --reindex catalog target with an explicit host (or "
+        "comma-separated hosts, e.g. localhost for a dev test). Default (no flag) "
+        "= database.cfg gps_health; --catalog-prod = the production catalog set.",
+    )
+    mode_group.add_argument(
+        "--catalog-prod",
+        action="store_true",
+        help="With --reindex: write the PRODUCTION catalog set from receivers.cfg "
+        "[archive] catalog_hosts (e.g. rek-d01 + pgdev). Explicit opt-in so a dev "
+        "run stays on the local DB by default.",
     )
 
     mode_group.add_argument(

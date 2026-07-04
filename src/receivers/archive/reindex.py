@@ -166,26 +166,33 @@ def reindex_files(
     return stats
 
 
-def resolve_catalog_hosts(override: Optional[str]) -> list:
+def resolve_catalog_hosts(override: Optional[str] = None, *, prod: bool = False) -> list:
     """Resolve which gps_health host(s) an archive-catalog write targets.
 
-    * an explicit ``--catalog-host`` override → just that one host;
-    * else ``[archive] catalog_hosts`` from receivers.cfg (the identical-DB
-      set, e.g. pgdev + rek-d01) → all of them;
-    * else ``[None]`` — the single default connection (database.cfg host, i.e.
-      localhost on a laptop) with a caller-side warning.
+    Safe-by-default: production is an EXPLICIT opt-in, never a silent config
+    default, so a dev test on a laptop can't accidentally write production.
 
-    Returns a list whose elements are host strings (or ``None`` for the default).
+    * ``override`` (``--catalog-host``, comma-separated allowed) → exactly those
+      hosts (one-off, e.g. ``localhost`` or ``a.vedur.is,b.vedur.is``);
+    * ``prod=True`` (``--catalog-prod``) → the ``[archive] catalog_hosts`` set
+      from receivers.cfg (the identical-DB production set). Returns ``[]`` when
+      that is unset — the caller MUST treat empty as an error (do not fall back
+      to localhost, which would silently write dev instead of prod);
+    * otherwise → ``[None]`` — the single default connection (database.cfg host,
+      i.e. localhost on a laptop / localhost+mirror=pgdev on rek-d01).
+
+    Returns a list of host strings (``None`` = the default connection).
     """
     if override:
-        return [override]
-    try:
-        from ..config.receivers_config import get_receivers_config
+        return [h.strip() for h in override.split(",") if h.strip()]
+    if prod:
+        try:
+            from ..config.receivers_config import get_receivers_config
 
-        hosts = get_receivers_config().get_catalog_hosts()
-    except Exception:  # noqa: BLE001
-        hosts = []
-    return hosts if hosts else [None]
+            return get_receivers_config().get_catalog_hosts()
+        except Exception:  # noqa: BLE001
+            return []
+    return [None]
 
 
 def reindex_files_multi(

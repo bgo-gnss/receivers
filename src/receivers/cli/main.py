@@ -4475,12 +4475,16 @@ def _push_reindex(
 
     from ..archive import reindex_files_multi, resolve_catalog_hosts
 
-    hosts = resolve_catalog_hosts(getattr(args, "catalog_host", None))
-    if hosts == [None]:
-        print("   ⚠️  --reindex: no --catalog-host and no [archive] catalog_hosts "
-              "in receivers.cfg → writing to the DEFAULT gps_health only")
-        print("      (localhost = DEV catalog on a laptop, NOT production). Set "
-              "[archive] catalog_hosts = pgdev.vedur.is, rek-d01.vedur.is.")
+    _prod = getattr(args, "catalog_prod", False)
+    hosts = resolve_catalog_hosts(getattr(args, "catalog_host", None), prod=_prod)
+    if _prod and not hosts:
+        print("   ⚠️  --catalog-prod but [archive] catalog_hosts is unset in "
+              "receivers.cfg — refusing to reindex (would silently hit dev). "
+              "Set catalog_hosts = rek-d01.vedur.is, pgdev.vedur.is.")
+        return
+    if hosts == [None] and not _prod:
+        print("   ↻ reindexing the DEFAULT gps_health (database.cfg). Add "
+              "--catalog-prod to write the production catalog set instead.")
     try:
         results = reindex_files_multi(
             hosts, files, root=root,
