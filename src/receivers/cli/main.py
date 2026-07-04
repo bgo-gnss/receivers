@@ -4820,6 +4820,9 @@ def cmd_rinex(args) -> int:
         from ..dissemination.tos_access import TOSSesionCache
 
         tos_cache = TOSSesionCache()
+        import time as _time
+
+        _t_start = _time.monotonic()  # wall-clock for the run's total in the summary
         _dry_run = getattr(args, "dry_run", False)
         # Resolve the staging work-dir once (None disables staging → fix in place).
         _work_dir = (
@@ -4930,11 +4933,15 @@ def cmd_rinex(args) -> int:
             total_fixed += summary.get("would_fix", summary.get("fixed", 0))
             total_skipped += summary.get("clean", summary.get("skipped", 0))
             total_errors += summary["errors"]
+        _elapsed = _time.monotonic() - _t_start
+        _h, _rem = divmod(int(_elapsed), 3600)
+        _m, _s = divmod(_rem, 60)
+        _dur = (f"{_h}h {_m}m {_s}s" if _h else f"{_m}m {_s}s" if _m else f"{_s}s")
         print(
             f"\nSummary: {'would_fix' if _dry_run else '✅'} {total_fixed} "
             f"{'(dry-run)' if _dry_run else 'fixed'}, "
             f"{'clean' if _dry_run else '⏭️  skipped'} {total_skipped}, "
-            f"❌ {total_errors} errors"
+            f"❌ {total_errors} errors  ⏱  {_dur}"
         )
 
         # Pushing is incremental: fix_headers_station flushed each batch of
