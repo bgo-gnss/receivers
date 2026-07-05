@@ -95,7 +95,7 @@ class DisseminationFormat:
     generic team name / email, not personal initials). ``@``→``at`` already
     applied by convention."""
 
-    agency: str = "Vedurstofa Islands"
+    agency: str = "Icelandic Meteorological Office"
     """AGENCY value written into disseminated headers (paired with OBSERVER)."""
 
     def policy_for(self, rinex_version: int) -> VersionPolicy:
@@ -121,7 +121,7 @@ class DisseminationFormat:
             file_period=raw.get("file_period", "01D"),
             monument_number=str(raw.get("monument_number", "00")),
             observer=raw.get("observer", "GNSSatIMO"),
-            agency=raw.get("agency", "Vedurstofa Islands"),
+            agency=raw.get("agency", "Icelandic Meteorological Office"),
         )
 
 

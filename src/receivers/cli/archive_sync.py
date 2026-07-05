@@ -256,12 +256,12 @@ def cmd_archive_reindex(args: argparse.Namespace) -> int:
         print(f"⚠️  no files under {root}")
         return 0
 
-    hosts = resolve_catalog_hosts(args.catalog_host)
-    if hosts == [None]:
-        print("⚠️  no --catalog-host and no [archive] catalog_hosts in "
-              "receivers.cfg → writing to the DEFAULT gps_health only (localhost = "
-              "DEV catalog on a laptop, NOT production).")
-        print("   Set [archive] catalog_hosts = pgdev.vedur.is, rek-d01.vedur.is.")
+    hosts = resolve_catalog_hosts(args.catalog_host, prod=args.catalog_prod)
+    if args.catalog_prod and not hosts:
+        print("⚠️  --catalog-prod but [archive] catalog_hosts is unset in "
+              "receivers.cfg — refusing (would silently hit dev). Set "
+              "catalog_hosts = rek-d01.vedur.is, pgdev.vedur.is.")
+        return 2
 
     results = reindex_files_multi(
         hosts, files, root=root,
@@ -360,7 +360,12 @@ def cmd_archive_rm(args: argparse.Namespace) -> int:
         from ..archive import resolve_catalog_hosts
         from ..db.connection import get_connection
 
-        for host in resolve_catalog_hosts(args.catalog_host):
+        _prune_hosts = resolve_catalog_hosts(args.catalog_host, prod=args.catalog_prod)
+        if args.catalog_prod and not _prune_hosts:
+            print("   ⚠️  --catalog-prod but no [archive] catalog_hosts — catalog "
+                  "rows NOT pruned (would hit dev). Set catalog_hosts.")
+            _prune_hosts = []
+        for host in _prune_hosts:
             label = host or "localhost"
             conn = None
             try:
@@ -415,10 +420,14 @@ def create_archive_rm_parser(subparsers) -> argparse.ArgumentParser:
         "files, e.g. --max-size 8 for 3-byte truncated RINEX.",
     )
     parser.add_argument(
-        "--catalog-host", help="gps_health host(s) for catalog-row pruning after "
-        "deletion. Overrides [archive] catalog_hosts (which fans out to all, e.g. "
-        "pgdev + rek-d01). This is the CATALOG DB, not the delete target (that is "
-        "the rawdata gateway from sync.yaml).",
+        "--catalog-host", help="Explicit gps_health host(s), comma-separated, for "
+        "catalog-row pruning (default: database.cfg). This is the CATALOG DB, not "
+        "the delete target (that is the rawdata gateway from sync.yaml).",
+    )
+    parser.add_argument(
+        "--catalog-prod", action="store_true",
+        help="Prune catalog rows on the PRODUCTION set ([archive] catalog_hosts). "
+        "Explicit opt-in; default prunes the database.cfg host only.",
     )
     parser.add_argument(
         "--config", help="Path to sync.yaml (default: GPS_CONFIG_PATH/sync.yaml)"
@@ -457,9 +466,13 @@ def create_archive_reindex_parser(subparsers) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--catalog-host",
-        help="gps_health host(s) to write. Overrides [archive] catalog_hosts "
-        "(which fans out to all — e.g. pgdev + rek-d01 — so the catalogs stay "
-        "identical). Default: database.cfg host (localhost/DEV on a laptop).",
+        help="Explicit gps_health host(s) to write, comma-separated (e.g. "
+        "localhost for a dev test). Default (no flag): database.cfg host.",
+    )
+    parser.add_argument(
+        "--catalog-prod", action="store_true",
+        help="Write the PRODUCTION catalog set ([archive] catalog_hosts, e.g. "
+        "rek-d01 + pgdev). Explicit opt-in so a dev run stays local by default.",
     )
     parser.add_argument(
         "--config", help="Path to sync.yaml (default: GPS_CONFIG_PATH/sync.yaml)"

@@ -4475,12 +4475,16 @@ def _push_reindex(
 
     from ..archive import reindex_files_multi, resolve_catalog_hosts
 
-    hosts = resolve_catalog_hosts(getattr(args, "catalog_host", None))
-    if hosts == [None]:
-        print("   ⚠️  --reindex: no --catalog-host and no [archive] catalog_hosts "
-              "in receivers.cfg → writing to the DEFAULT gps_health only")
-        print("      (localhost = DEV catalog on a laptop, NOT production). Set "
-              "[archive] catalog_hosts = pgdev.vedur.is, rek-d01.vedur.is.")
+    _prod = getattr(args, "catalog_prod", False)
+    hosts = resolve_catalog_hosts(getattr(args, "catalog_host", None), prod=_prod)
+    if _prod and not hosts:
+        print("   ⚠️  --catalog-prod but [archive] catalog_hosts is unset in "
+              "receivers.cfg — refusing to reindex (would silently hit dev). "
+              "Set catalog_hosts = rek-d01.vedur.is, pgdev.vedur.is.")
+        return
+    if hosts == [None] and not _prod:
+        print("   ↻ reindexing the DEFAULT gps_health (database.cfg). Add "
+              "--catalog-prod to write the production catalog set instead.")
     try:
         results = reindex_files_multi(
             hosts, files, root=root,
@@ -4816,6 +4820,9 @@ def cmd_rinex(args) -> int:
         from ..dissemination.tos_access import TOSSesionCache
 
         tos_cache = TOSSesionCache()
+        import time as _time
+
+        _t_start = _time.monotonic()  # wall-clock for the run's total in the summary
         _dry_run = getattr(args, "dry_run", False)
         # Resolve the staging work-dir once (None disables staging → fix in place).
         _work_dir = (
@@ -4918,19 +4925,23 @@ def cmd_rinex(args) -> int:
                           "useless as RINEX. To remove from the archive:")
                     print("      ⚠️  CHECK EACH manually first — a large corrupt file may be "
                           "recoverable via regenerate-from-raw (a separate process), not deletion.")
-                    print("      receivers archive-rm --host pgdev.vedur.is \\")
+                    print("      receivers archive-rm --catalog-prod \\")
                     print(f"        --max-size {_cap} \\")
                     print("        --file " + " ".join(rel for rel, _ in sorted(_unreadable)))
                     print("      (dry-run as shown; add --yes to actually delete — only "
-                          f"files ≤{_cap} bytes are removed)")
+                          f"files ≤{_cap} bytes are removed, catalog pruned on both DBs)")
             total_fixed += summary.get("would_fix", summary.get("fixed", 0))
             total_skipped += summary.get("clean", summary.get("skipped", 0))
             total_errors += summary["errors"]
+        _elapsed = _time.monotonic() - _t_start
+        _h, _rem = divmod(int(_elapsed), 3600)
+        _m, _s = divmod(_rem, 60)
+        _dur = (f"{_h}h {_m}m {_s}s" if _h else f"{_m}m {_s}s" if _m else f"{_s}s")
         print(
             f"\nSummary: {'would_fix' if _dry_run else '✅'} {total_fixed} "
             f"{'(dry-run)' if _dry_run else 'fixed'}, "
             f"{'clean' if _dry_run else '⏭️  skipped'} {total_skipped}, "
-            f"❌ {total_errors} errors"
+            f"❌ {total_errors} errors  ⏱  {_dur}"
         )
 
         # Pushing is incremental: fix_headers_station flushed each batch of

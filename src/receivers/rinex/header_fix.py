@@ -30,12 +30,49 @@ parallel-directory move, and the orchestration that threads the legacy pieces.
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger("receivers.rinex.header_fix")
+
+
+def _nominal_interval_seconds(session_type: Optional[str]) -> Optional[float]:
+    """Expected RINEX sampling interval (seconds) for a session type, or None.
+
+    Drives the validator's INTERVAL session-mixing guard: ``15s_24hr`` → 15.0,
+    ``1Hz_1hr`` → 1.0. Unknown / non-rate session types (e.g. ``status_1hr``)
+    return None so the check is skipped rather than guessed.
+    """
+    if not session_type:
+        return None
+    token = str(session_type).split("_")[0].strip().lower()
+    m = re.match(r"^(\d+(?:\.\d+)?)(s|hz)$", token)
+    if not m:
+        return None
+    val = float(m.group(1))
+    if m.group(2) == "hz":
+        return 1.0 / val if val else None
+    return val
+
+
+def _rinex_obs_datetime(name: str, station: str) -> Optional[datetime]:
+    """Observation datetime for ANY archived RINEX obs filename, or None.
+
+    The general file-identity parser for fix-headers: delegates to
+    :meth:`RinexNamer.parse_date_hour`, which already handles RINEX 2 daily
+    (session ``0``) AND hourly (session ``a``–``x``) short names and RINEX 3
+    long names (``01D``/``01H``). Daily → 00:00; hourly → the file's hour. This
+    is what lets fix-headers work on 1Hz_1hr (hourly) files, not just daily.
+    """
+    from .rinex_namer import RinexNamer
+
+    d, h = RinexNamer.parse_date_hour(name, station)
+    if d is None:
+        return None
+    return datetime(d.year, d.month, d.day, h or 0)
 
 
 def _fmt_value(v: Any) -> str:
@@ -155,7 +192,6 @@ def _read_header_info(rinex_file: Path, loglevel: int) -> dict[str, str]:
         logger.debug("header read failed for %s: %s", rinex_file.name, exc)
         return {}
 
-
         return None
 
 
@@ -191,12 +227,13 @@ def fix_headers_in_file(
     source_path = Path(rinex_file)  # the original (may be read-only)
     result: dict = {
         "file": str(source_path),
-        "source": str(source_path),   # archive path (re-read post-push for cleanup)
+        "source": str(source_path),  # archive path (re-read post-push for cleanup)
         "station": station_id,
-        "observation_date": None,     # set once parsed (below)
+        "observation_date": None,  # set once parsed (below)
         "fixed": False,
         "changed_labels": [],
         "changes": {},
+        "flagged": {},  # flag-only mismatches (receiver/antenna): reported, not written
         "archived": None,
         "preserved_org": None,
         "regenerable": None,
@@ -207,7 +244,7 @@ def fix_headers_in_file(
         return result
 
     if observation_date is None:
-        observation_date = _parse_daily_rinex_date(source_path.name, station_id)
+        observation_date = _rinex_obs_datetime(source_path.name, station_id)
     if observation_date is None:
         result["error"] = "could not parse observation date from filename"
         return result
@@ -227,50 +264,82 @@ def fix_headers_in_file(
         result["error"] = "no TOS session covers this date"
         return result
 
-    # 2. compare_rinex_to_tos → corrections = ONLY the discrepant fields.
+    # 2. compare_rinex_to_tos → discrepancies, classified into two groups.
     comparison = compare_rinex_to_tos(
-        rinex_info, tos_session, loglevel=loglevel
+        rinex_info,
+        tos_session,
+        loglevel=loglevel,
+        observation_date=observation_date,
+        expected_interval=_nominal_interval_seconds(session_type),
     )
-    discrepant_labels = set(comparison.get("corrections", {}).keys())
-    if not discrepant_labels:
-        logger.debug("%s: header agrees with TOS — no fix needed", source_path.name)
+    discrepancy_keys = set(comparison.get("discrepancies", {}).keys())
+    _disc = comparison.get("discrepancies", {})
+
+    # CORRECTABLE — authoritative station metadata, safe to rewrite from TOS
+    # (marker, DOMES, antenna DELTA H/E/N, surveyed coordinates, observer/agency).
+    # FLAG_ONLY — reported for review, NEVER auto-rewritten:
+    #   receiver/antenna — the header records the ACTUAL hardware at acquisition;
+    #     TOS device_history is a reconstruction (protect primary evidence).
+    #   filename_marker / time_of_first_obs — a misnamed or misdated file is a
+    #     data problem, not a header field to overwrite (legacy consistency check).
+    _CORRECTABLE = {
+        "marker": "MARKER NAME",
+        "domes": "MARKER NUMBER",
+        "antenna_height": "ANTENNA: DELTA H/E/N",
+        "coordinates": "APPROX POSITION XYZ",
+        "observer_agency": "OBSERVER / AGENCY",
+    }
+    _FLAG_ONLY = {
+        "receiver",
+        "antenna",
+        "filename_marker",
+        "time_of_first_obs",
+        "interval",
+    }
+
+    correctable_keys = discrepancy_keys & _CORRECTABLE.keys()
+    flag_keys = discrepancy_keys & _FLAG_ONLY
+
+    # Record flag-only mismatches for the run summary (never written).
+    for key in sorted(flag_keys):
+        d = _disc.get(key) or {}
+        result["flagged"][key] = (d.get("rinex"), d.get("tos") or d.get("expected"))
+
+    if not correctable_keys:
+        if flag_keys:
+            logger.debug(
+                "%s: flag-only discrepancies (%s) — reported, not fixed",
+                source_path.name,
+                ", ".join(sorted(flag_keys)),
+            )
+        else:
+            logger.debug("%s: header agrees with TOS — no fix needed", source_path.name)
         return result
 
-    # Filter out formatting-noise fields (the validator flags receiver/antenna
-    # string fields unconditionally — same values, different format). Only real
-    # value discrepancies (marker, antenna_height, coordinates) justify a fix.
-    # Mirrors the QC gate's DEFAULT_BLOCKING_FIELDS logic.
-    discrepancy_keys = set(comparison.get("discrepancies", {}).keys())
-    real_keys = discrepancy_keys & {"marker", "antenna_height", "coordinates"}
-    if not real_keys:
-        logger.debug(
-            "%s: formatting-only discrepancies (%s) — skipping",
-            source_path.name,
-            ", ".join(sorted(discrepancy_keys)),
-        )
-        return result
-    # Keep only labels that correspond to real discrepancies.
-    # Map: antenna_height→ANTENNA: DELTA H/E/N, marker→MARKER NAME, coordinates→APPROX POSITION XYZ
-    _key_label = {
-        "antenna_height": "ANTENNA: DELTA H/E/N",
-        "marker": "MARKER NAME",
-        "coordinates": "APPROX POSITION XYZ",
-    }
-    real_labels = {label for key, label in _key_label.items() if key in real_keys}
-    # Intersect with the corrections labels (only fix if the validator also
-    # produced a correction for that field — it usually does).
-    discrepant_labels = real_labels & discrepant_labels
+    # Labels to rewrite = correctable discrepancies the validator also produced a
+    # correction for.
+    corrections_labels = set(comparison.get("corrections", {}).keys())
+    discrepant_labels = {
+        _CORRECTABLE[key] for key in correctable_keys
+    } & corrections_labels
     if not discrepant_labels:
         return result
     result["changed_labels"] = sorted(discrepant_labels)
-    # Record the actual value transition (old header → TOS) per field, so the
-    # run summary can show e.g. "1.0070 → 1.0140".
-    _disc = comparison.get("discrepancies", {})
-    for key in real_keys:
+    # Record the actual value transition (old header → TOS) per field.
+    for key in correctable_keys:
         d = _disc.get(key)
-        label = _key_label.get(key)
+        label = _CORRECTABLE.get(key)
         if d and label and label in discrepant_labels:
             result["changes"][label] = (d.get("rinex"), d.get("tos"))
+
+    # OBSERVER / AGENCY value must be injected — the corrector cannot resolve
+    # agencies.yaml, so pass the receivers-resolved value from the session.
+    extra_corrections: dict = {}
+    if "OBSERVER / AGENCY" in discrepant_labels:
+        extra_corrections["OBSERVER / AGENCY"] = [
+            str(tos_session.get("observer") or "").strip(),
+            str(tos_session.get("agency") or "").strip(),
+        ]
 
     if dry_run:
         logger.debug(
@@ -286,7 +355,11 @@ def fix_headers_in_file(
     fix_target = source_path
     if work_dir is not None:
         try:
-            rel = source_path.relative_to(source_base) if source_base else Path(source_path.parent.name) / source_path.name
+            rel = (
+                source_path.relative_to(source_base)
+                if source_base
+                else Path(source_path.parent.name) / source_path.name
+            )
         except ValueError:
             rel = Path(source_path.parent.name) / source_path.name
         fix_target = Path(work_dir) / rel
@@ -312,8 +385,10 @@ def fix_headers_in_file(
     from .raw_presence import check_regenerable
 
     regen = check_regenerable(
-        source_path, observation_date,
-        station_id=station_id, session_type=session_type,
+        source_path,
+        observation_date,
+        station_id=station_id,
+        session_type=session_type,
     )
     result["regenerable"] = regen.regenerable
     if not regen.regenerable:
@@ -329,7 +404,9 @@ def fix_headers_in_file(
         # Per-file detail at DEBUG only — the run summary reports the count.
         logger.debug(
             "%s: %s — preserved original → %s before header fix",
-            source_path.name, regen.reason, preserved,
+            source_path.name,
+            regen.reason,
+            preserved,
         )
 
     # 5. Rewrite only the discrepant fields in place (corrector handles
@@ -342,6 +419,7 @@ def fix_headers_in_file(
             output_file=fix_target,  # overwrite in place
             loglevel=loglevel,
             only_fields=discrepant_labels,
+            extra_corrections=extra_corrections or None,
         )
         result["fixed"] = out is not None
     except Exception as exc:  # noqa: BLE001
@@ -382,7 +460,9 @@ def discover_all_rinex_files(
             if not rinex_dir.is_dir():
                 continue
             for p in sorted(rinex_dir.iterdir()):
-                if p.is_file() and (p.name.endswith((".Z", ".gz")) or p.suffix in (".o", ".O")):
+                if p.is_file() and (
+                    p.name.endswith((".Z", ".gz")) or p.suffix in (".o", ".O")
+                ):
                     files.append(p)
     return files
 
@@ -401,8 +481,6 @@ def discover_rinex_files(
     date falls in ``[start_time, end_time)``. Daily session → one file per day
     (matched by DOY in the filename); hourly → one per hour.
     """
-    from tostools.rinex.reader import _parse_daily_rinex_date
-
     # CLI dates from calculate_download_time_range are UTC-aware; TOS sessions
     # and parsed filenames are naive. Strip tzinfo for consistent comparisons.
     if start_time.tzinfo is not None:
@@ -421,12 +499,13 @@ def discover_rinex_files(
             for p in sorted(rinex_dir.iterdir()):
                 if not p.is_file():
                     continue
-                # Filter by the file's own observation date so a dir listing
-                # the whole month doesn't bleed into a one-day run.
-                obs = _parse_daily_rinex_date(p.name, station_id)
+                # Filter by the file's own observation datetime (daily OR hourly,
+                # short OR long name) so a dir listing the whole month doesn't
+                # bleed into a shorter run.
+                obs = _rinex_obs_datetime(p.name, station_id)
                 if obs is None:
-                    # Non-daily-named file (e.g. long-name .crx.gz) — include
-                    # only if we can't tell; the caller will skip on parse fail.
+                    # Unrecognised name — include if it looks like RINEX; the
+                    # caller will surface a parse error per file.
                     if p.name.endswith((".Z", ".gz")) or p.suffix in (".o", ".O"):
                         files.append(p)
                     continue
@@ -619,8 +698,30 @@ def fix_headers_station(
                 r = "raw absent" if r.startswith("raw absent") else r
                 r = "no raw/ dir" if r.startswith("no raw/ dir") else r
                 _reasons[r] = _reasons.get(r, 0) + 1
-        detail = ", ".join(f"{n} {r}" for r, n in sorted(_reasons.items(), key=lambda kv: -kv[1]))
-        print(f"   🔒 {_preserved} un-regenerable original(s) preserved to rinex_org ({detail})")
+        detail = ", ".join(
+            f"{n} {r}" for r, n in sorted(_reasons.items(), key=lambda kv: -kv[1])
+        )
+        print(
+            f"   🔒 {_preserved} un-regenerable original(s) preserved to rinex_org ({detail})"
+        )
+
+    # Flag-only fields (receiver / antenna) — reported for review, never written.
+    # These are genuine header↔TOS mismatches you may want to eyeball per station
+    # before deciding whether TOS or the header is right (TOS device_history is a
+    # reconstruction). Not counted as fixed.
+    _flag_by_field: dict[str, int] = {}
+    for d in summary.get("details", []):
+        for key in d.get("flagged") or {}:
+            _flag_by_field[key] = _flag_by_field.get(key, 0) + 1
+    if _flag_by_field:
+        summary["flagged"] = _flag_by_field
+        detail = ", ".join(
+            f"{n} {k}" for k, n in sorted(_flag_by_field.items(), key=lambda kv: -kv[1])
+        )
+        print(
+            f"   ⚑ receiver/antenna mismatches flagged (NOT auto-fixed): {detail} "
+            f"— review with --verbose or dry-run before deciding"
+        )
 
     return summary
 
@@ -654,10 +755,14 @@ def archive_header_matches_tos(
     if tos_session is None:
         return False
     comparison = compare_rinex_to_tos(info, tos_session, loglevel=loglevel)
+    # Only the CORRECTABLE fields gate backup deletion — receiver/antenna are
+    # flag-only (never written), so they must not keep a backup alive forever.
     real = set(comparison.get("discrepancies", {}).keys()) & {
         "marker",
+        "domes",
         "antenna_height",
         "coordinates",
+        "observer_agency",
     }
     return not real
 
@@ -694,6 +799,7 @@ def cleanup_after_push(
     # Injectable for tests; defaults to the live archive-header-vs-TOS re-read.
     _confirm = confirm_fn
     if _confirm is None:
+
         def _confirm(src, st, od):
             return archive_header_matches_tos(
                 Path(src), st, od, tos_cache=tos_cache, loglevel=loglevel

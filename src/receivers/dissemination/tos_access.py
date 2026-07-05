@@ -417,6 +417,69 @@ def make_components_fn(client: Any = None):
     return fn
 
 
+_AGENCY_RESOLVER: Any = None
+
+
+def _resolve_observer_agency(owner_org: str) -> tuple[str, str]:
+    """RINEX ``(observer, agency)`` strings for a TOS owner org via agencies.yaml.
+
+    The resolver is cached (agencies.yaml is static per host). Unknown org →
+    the operator default (IMO); no agencies.yaml deployed → ``("", "")``, which
+    makes ``compare_rinex_to_tos`` skip the observer/agency check entirely (a
+    host without the config simply doesn't correct that field). Never raises.
+    """
+    global _AGENCY_RESOLVER
+    try:
+        if _AGENCY_RESOLVER is None:
+            from .agencies import AgencyResolver
+
+            _AGENCY_RESOLVER = AgencyResolver.load()
+        info = (
+            _AGENCY_RESOLVER.resolve(owner_org) or _AGENCY_RESOLVER.operator_default()
+        )
+    except Exception as exc:  # noqa: BLE001 - agency config is optional infra
+        logger.debug("observer/agency resolution failed for %r: %s", owner_org, exc)
+        return "", ""
+    if info is None:
+        return "", ""
+    return (info.observer or "").strip(), info.rinex_agency
+
+
+def _owner_org_at(contacts: list[dict[str, Any]], when: datetime) -> str:
+    """TOS owner organization (role 'Eigandi stöðvar') active at ``when``.
+
+    Date-scoped by the contact-relationship period (``per_time_from`` /
+    ``per_time_to``), so a station that changed hands (e.g. Landmælingar → NATT)
+    resolves the operator responsible AT the observation date, not the current
+    one — required for correcting OBSERVER / AGENCY on historical files. Falls
+    back to the most recent owner when no relationship covers ``when`` (e.g. an
+    observation predating the first recorded period). ``""`` when there is no
+    owner contact at all.
+    """
+    owners = [
+        c for c in (contacts or []) if "eigandi" in str(c.get("role_is") or "").lower()
+    ]
+    if not owners:
+        return ""
+    when_naive = when.replace(tzinfo=None) if when.tzinfo else when
+    covering: list[tuple[datetime, dict[str, Any]]] = []
+    for c in owners:
+        tf = _to_dt(c.get("per_time_from"))
+        tt = _to_dt(c.get("per_time_to"))
+        if tf is not None and when_naive < tf:
+            continue
+        if tt is not None and when_naive >= tt:
+            continue
+        covering.append((tf or datetime.min, c))
+    if covering:
+        covering.sort(key=lambda x: x[0])
+        pick = covering[-1][1]
+    else:
+        owners.sort(key=lambda c: _to_dt(c.get("per_time_from")) or datetime.min)
+        pick = owners[-1]
+    return str(pick.get("organization") or "").strip()
+
+
 def make_session_provider(client: Any = None):
     """Build a QC session provider ``(station, observation_dt) -> session|None``.
 
@@ -451,10 +514,27 @@ def make_session_provider(client: Any = None):
         # Owner organization (station-level) drives the per-station RINEX
         # OBSERVER/AGENCY via agencies.yaml. Folded into session_fingerprint so a
         # re-designation (e.g. Landmælingar→NATT) re-renders the cached header.
-        owner_org = (
-            ((meta.get("contact") or {}).get("owner") or {}).get("organization") or ""
-        ).strip()
+        # Date-scoped owner org: the operator responsible AT observation_dt, not
+        # the current contact (a station that changed hands must resolve the
+        # historical operator for old files). Falls back to the current owner.
+        try:
+            contacts = client.get_contacts(meta.get("id_entity")) or []
+        except Exception:  # noqa: BLE001 - contacts optional; fall back to current
+            contacts = []
+        owner_org = _owner_org_at(contacts, observation_dt)
+        if not owner_org:
+            owner_org = (
+                ((meta.get("contact") or {}).get("owner") or {}).get("organization")
+                or ""
+            ).strip()
         session.setdefault("owner_org", owner_org)
+        # Observer/agency RINEX strings (agencies.yaml) — feed the validator's
+        # OBSERVER / AGENCY check. Only set when resolvable (else skip the field).
+        observer, agency = _resolve_observer_agency(owner_org)
+        if observer:
+            session.setdefault("observer", observer)
+        if agency:
+            session.setdefault("agency", agency)
         return session
 
     return provider
@@ -485,6 +565,7 @@ class TOSSesionCache:
         self._client = client
         self._device_history: dict[str, list[dict[str, Any]]] = {}
         self._metadata: dict[str, dict[str, Any]] = {}
+        self._contacts: dict[str, list[dict[str, Any]]] = {}
 
     def _ensure_station(self, station: str) -> bool:
         """Fill the cache for ``station`` if not already cached. Returns True
@@ -506,6 +587,11 @@ class TOSSesionCache:
             return False
         self._device_history[sid] = meta.get("device_history", []) or []
         self._metadata[sid] = meta
+        # Raw temporal contacts (per_time_from/to) for date-scoped owner_org.
+        try:
+            self._contacts[sid] = self._client.get_contacts(meta.get("id_entity")) or []
+        except Exception:  # noqa: BLE001 - contacts optional; owner falls back
+            self._contacts[sid] = []
         return True
 
     def get_session(
@@ -530,14 +616,21 @@ class TOSSesionCache:
             return None
         # compare_rinex_to_tos reads session["marker"] — it lives at station level.
         session.setdefault("marker", (meta.get("marker") or sid).upper())
-        session.setdefault(
-            "domes", (meta.get("iers_domes_number") or "").strip()
-        )
-        owner_org = (
-            ((meta.get("contact") or {}).get("owner") or {}).get("organization")
-            or ""
-        ).strip()
+        session.setdefault("domes", (meta.get("iers_domes_number") or "").strip())
+        # Date-scoped owner org (operator responsible AT observation_dt), falling
+        # back to the current contact when no relationship period covers the date.
+        owner_org = _owner_org_at(self._contacts.get(sid) or [], observation_dt)
+        if not owner_org:
+            owner_org = (
+                ((meta.get("contact") or {}).get("owner") or {}).get("organization")
+                or ""
+            ).strip()
         session.setdefault("owner_org", owner_org)
+        observer, agency = _resolve_observer_agency(owner_org)
+        if observer:
+            session.setdefault("observer", observer)
+        if agency:
+            session.setdefault("agency", agency)
         return session
 
     def get_metadata(self, station: str) -> Optional[dict[str, Any]]:

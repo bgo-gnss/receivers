@@ -67,6 +67,18 @@ class AgencyInfo:
     """Short label used in site-log §13 Data Center fields (defaults to ``abbrev``;
     NATT overrides — the user-facing short name is NATT, not the EN abbrev NSII)."""
 
+    @property
+    def rinex_agency(self) -> str:
+        """The RINEX AGENCY string (A40 field). Prefer the full English
+        institutional name for a human-readable header; fall back to the short
+        ``agency_label`` (else ``abbrev``) only when the full name would overflow
+        the 40-char field (e.g. IES's "Institute of Earth Sciences, University of
+        Iceland")."""
+        name = (self.english_name or "").strip()
+        if name and len(name) <= 40:
+            return name
+        return (self.agency_label or self.abbrev or name).strip()
+
 
 class AgencyResolver:
     """Resolve a TOS owner organization → :class:`AgencyInfo` via ``agencies.yaml``.
@@ -139,6 +151,24 @@ class AgencyResolver:
         if not org:
             return None
         return self._by_org.get(org.strip())
+
+    def resolve_by_code(self, code: Optional[str]) -> Optional[AgencyInfo]:
+        """The :class:`AgencyInfo` whose English ``abbrev`` or Icelandic
+        ``abbrev_is`` matches ``code`` (case-insensitive) — the stations.cfg
+        ``station_operator`` key (e.g. ``IMO`` / ``NATT`` / ``IES``). This is the
+        offline join used by the daily convert (no TOS call), the mirror of
+        :meth:`resolve` which keys on the TOS owner-org string. None if
+        unknown/blank."""
+        if not code:
+            return None
+        c = code.strip().upper()
+        for info in self._by_org.values():
+            if c in {
+                (info.abbrev or "").strip().upper(),
+                (info.abbrev_is or "").strip().upper(),
+            }:
+                return info
+        return None
 
     def operator_default(self) -> Optional[AgencyInfo]:
         """§11 On-Site POC default (``defaults.operator_agency`` → its AgencyInfo)."""

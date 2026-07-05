@@ -136,11 +136,17 @@ def test_dry_run_writes_nothing(db_conn, tmp_path):
 
 
 class TestCatalogHostResolution:
-    def test_override_wins(self):
+    def test_override_single(self):
         from receivers.archive.reindex import resolve_catalog_hosts
         assert resolve_catalog_hosts("pgdev.vedur.is") == ["pgdev.vedur.is"]
 
-    def test_config_hosts_used_when_no_override(self, monkeypatch):
+    def test_override_comma_list(self):
+        from receivers.archive.reindex import resolve_catalog_hosts
+        assert resolve_catalog_hosts("a.is, b.is , c.is") == ["a.is", "b.is", "c.is"]
+
+    def test_default_is_local_not_config(self, monkeypatch):
+        """No flag → [None] (database.cfg default), NEVER the config prod set —
+        so a dev run can't silently write production."""
         import receivers.archive.reindex as rx
 
         class _Cfg:
@@ -150,9 +156,25 @@ class TestCatalogHostResolution:
         monkeypatch.setattr(
             "receivers.config.receivers_config.get_receivers_config", lambda: _Cfg()
         )
-        assert rx.resolve_catalog_hosts(None) == ["pgdev.vedur.is", "rek-d01.vedur.is"]
+        assert rx.resolve_catalog_hosts(None) == [None]
 
-    def test_falls_back_to_none_when_unset(self, monkeypatch):
+    def test_prod_uses_config_hosts(self, monkeypatch):
+        import receivers.archive.reindex as rx
+
+        class _Cfg:
+            def get_catalog_hosts(self):
+                return ["rek-d01.vedur.is", "pgdev.vedur.is"]
+
+        monkeypatch.setattr(
+            "receivers.config.receivers_config.get_receivers_config", lambda: _Cfg()
+        )
+        assert rx.resolve_catalog_hosts(None, prod=True) == [
+            "rek-d01.vedur.is", "pgdev.vedur.is"
+        ]
+
+    def test_prod_empty_config_returns_empty_not_localhost(self, monkeypatch):
+        """--catalog-prod with unset catalog_hosts → [] so the caller errors,
+        rather than silently falling back to localhost (dev)."""
         import receivers.archive.reindex as rx
 
         class _Cfg:
@@ -162,7 +184,7 @@ class TestCatalogHostResolution:
         monkeypatch.setattr(
             "receivers.config.receivers_config.get_receivers_config", lambda: _Cfg()
         )
-        assert rx.resolve_catalog_hosts(None) == [None]
+        assert rx.resolve_catalog_hosts(None, prod=True) == []
 
 
 def test_reindex_files_multi_fans_out(monkeypatch, tmp_path):
