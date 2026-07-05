@@ -1777,6 +1777,40 @@ class TestGapBackfill:
                 _backfill_next_station_for_session("1Hz_1hr", max_workers=2)
                 assert mock_backfill.call_count == 2
 
+    def test_enqueue_backfill_upserts_gapped_stations(self):
+        """gap_detection -> backfill self-refill upserts the gapped stations."""
+        from receivers.scheduling.backfill import _enqueue_backfill
+
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        with patch(
+            "receivers.health.database_factory.DatabaseConnectionFactory"
+        ) as mock_db:
+            mock_db.connection.return_value = mock_conn
+            n = _enqueue_backfill("1Hz_1hr", ["THOB", "RHOF", "VONC"], days_back=7)
+
+        assert n == 3
+        # one executemany with a param row per station
+        mock_cursor.executemany.assert_called_once()
+        params = mock_cursor.executemany.call_args.args[1]
+        assert [p[0] for p in params] == ["THOB", "RHOF", "VONC"]
+        assert all(p[1] == "1Hz_1hr" and p[2] == 7 for p in params)
+
+    def test_enqueue_backfill_empty_is_noop(self):
+        """Empty station list does not touch the DB."""
+        from receivers.scheduling.backfill import _enqueue_backfill
+
+        with patch(
+            "receivers.health.database_factory.DatabaseConnectionFactory"
+        ) as mock_db:
+            assert _enqueue_backfill("1Hz_1hr", [], days_back=7) == 0
+            mock_db.connection.assert_not_called()
+
 
 class TestIsRetryableDownload:
     """Tests for _is_retryable_download and _categorize_failure."""

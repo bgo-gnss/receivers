@@ -112,6 +112,60 @@ def _pick_backfill_stations(session_type: str, limit: int, strategy: str) -> lis
             return cur.fetchall()
 
 
+def _enqueue_backfill(session_type: str, station_ids: list, days_back: int) -> int:
+    """Queue stations with detected gaps into backfill_progress (self-refill).
+
+    This is what makes gap_detection -> backfill self-sustaining: the worker
+    only drains the queue, so without this the queue empties once and never
+    refills. Called by the gap-detection job with the stations it found gaps
+    for.
+
+    Semantics (idempotent, safe to call every gap-detection run):
+      * No row yet         -> INSERT a pending row covering the last days_back.
+      * Row completed/failed -> RE-ACTIVATE it (status='pending') and widen its
+        range to cover the gap window.
+      * Row pending/in_progress -> LEFT UNTOUCHED (a backfill is already in
+        flight for it; don't disturb its cursor).
+
+    Returns the number of stations queued/refreshed.
+    """
+    if not station_ids:
+        return 0
+    try:
+        from ..health.database_factory import DatabaseConnectionFactory
+
+        with DatabaseConnectionFactory.connection() as conn:
+            with conn.cursor() as cur:
+                cur.executemany(
+                    """
+                    INSERT INTO backfill_progress
+                        (sid, session_type, backfill_start, next_date,
+                         backfill_end, status)
+                    VALUES (%s, %s, CURRENT_DATE - %s, CURRENT_DATE - %s,
+                            CURRENT_DATE, 'pending')
+                    ON CONFLICT (sid, session_type) DO UPDATE
+                       SET next_date      = LEAST(backfill_progress.next_date,
+                                                  EXCLUDED.next_date),
+                           backfill_start = LEAST(backfill_progress.backfill_start,
+                                                  EXCLUDED.backfill_start),
+                           backfill_end   = GREATEST(backfill_progress.backfill_end,
+                                                     EXCLUDED.backfill_end),
+                           status         = 'pending',
+                           updated_at     = NOW()
+                     WHERE backfill_progress.status IN ('completed', 'failed')
+                    """,
+                    [(sid, session_type, days_back, days_back) for sid in station_ids],
+                )
+        logger.info(
+            f"Backfill enqueue {session_type}: {len(station_ids)} station(s) "
+            f"with gaps queued/refreshed"
+        )
+        return len(station_ids)
+    except Exception as e:
+        logger.warning(f"Backfill enqueue for {session_type} failed: {e}")
+        return 0
+
+
 def _backfill_next_station_for_session(
     session_type: str,
     window_start: int = 25,
