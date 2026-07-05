@@ -590,10 +590,13 @@ grep -q '^GPS_CONFIG_PATH=' /etc/environment 2>/dev/null || \
     echo "GPS_CONFIG_PATH=$CONFIG_DIR" >> /etc/environment
 ok "GPS_CONFIG_PATH=$CONFIG_DIR (profile.d + /etc/environment)"
 
-# Patch database.cfg for local PostgreSQL + mirror
+# Patch database.cfg for local PostgreSQL + mirror. Scope the host/user rewrite
+# to the [postgresql] section ONLY — a global sed would clobber the host/user of
+# any other DB section (e.g. [epos_db] → psql.vedur.is/importer_epos) and point it
+# at the local DB, silently breaking that connection.
 if [[ -f "$CONFIG_DIR/database.cfg" ]]; then
-    sed -i 's/^host\s*=.*/host = localhost/' "$CONFIG_DIR/database.cfg"
-    sed -i "s/^user\s*=.*/user = $SERVICE_USER/" "$CONFIG_DIR/database.cfg"
+    sed -i '/^\[postgresql\]/,/^\[/ s/^host\s*=.*/host = localhost/' "$CONFIG_DIR/database.cfg"
+    sed -i "/^\[postgresql\]/,/^\[/ s/^user\s*=.*/user = $SERVICE_USER/" "$CONFIG_DIR/database.cfg"
     # Mirror writes to external DB (grafana.vedur.is reads from it)
     if ! grep -q '^mirror_host' "$CONFIG_DIR/database.cfg"; then
         sed -i '/^\[postgresql\]/a mirror_host = pgdev.vedur.is' "$CONFIG_DIR/database.cfg"
