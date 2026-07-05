@@ -21,6 +21,14 @@ WorkingDirectory=/home/bgo/git/receivers
 
 Environment="LANG=en_US.UTF-8"
 Environment="GPS_CONFIG_PATH=/home/gpsops/.config/gpsconfig"
+# Skip GSSAPI/Kerberos negotiation on every libpq connect. With the default
+# gssencmode=prefer, each psycopg2.connect() does a KDC DNS-SRV lookup for realm
+# VI.VEDUR.IS and stalls ~2s of CPU before falling back to password auth. Because
+# the health/config paths open a fresh primary + pgdev-mirror connection per
+# station-op (no pooling), a slow KDC turns into a full CPU storm across all
+# workers. Password auth (.pgpass) and SSL are unaffected. See the 2026-07-05
+# GSSAPI/KDC incident (load-20 spikes, downloads + health stalled).
+Environment="PGGSSENCMODE=disable"
 
 # Pipeline scheduler schedules ALL stations from stations.cfg.
 # Worker count is controlled via `scheduler.max_workers` in scheduler.yaml —
