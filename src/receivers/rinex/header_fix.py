@@ -245,16 +245,19 @@ def fix_headers_in_file(
         return result
 
     # 2. compare_rinex_to_tos → discrepancies, classified into two groups.
-    comparison = compare_rinex_to_tos(rinex_info, tos_session, loglevel=loglevel)
+    comparison = compare_rinex_to_tos(
+        rinex_info, tos_session, loglevel=loglevel, observation_date=observation_date
+    )
     discrepancy_keys = set(comparison.get("discrepancies", {}).keys())
     _disc = comparison.get("discrepancies", {})
 
-    # CORRECTABLE — authoritative station metadata, safe to rewrite from TOS.
-    #   coordinates has no corrector value yet (validator emits no XYZ correction),
-    #   so it is inert until one is added — kept here for when it is.
-    # FLAG_ONLY — receiver/antenna: the header records the ACTUAL hardware at
-    #   acquisition; TOS device_history is a reconstruction. A real mismatch is
-    #   REPORTED, never auto-rewritten (protects primary evidence — user decision).
+    # CORRECTABLE — authoritative station metadata, safe to rewrite from TOS
+    # (marker, DOMES, antenna DELTA H/E/N, surveyed coordinates, observer/agency).
+    # FLAG_ONLY — reported for review, NEVER auto-rewritten:
+    #   receiver/antenna — the header records the ACTUAL hardware at acquisition;
+    #     TOS device_history is a reconstruction (protect primary evidence).
+    #   filename_marker / time_of_first_obs — a misnamed or misdated file is a
+    #     data problem, not a header field to overwrite (legacy consistency check).
     _CORRECTABLE = {
         "marker": "MARKER NAME",
         "domes": "MARKER NUMBER",
@@ -262,7 +265,7 @@ def fix_headers_in_file(
         "coordinates": "APPROX POSITION XYZ",
         "observer_agency": "OBSERVER / AGENCY",
     }
-    _FLAG_ONLY = {"receiver", "antenna"}
+    _FLAG_ONLY = {"receiver", "antenna", "filename_marker", "time_of_first_obs"}
 
     correctable_keys = discrepancy_keys & _CORRECTABLE.keys()
     flag_keys = discrepancy_keys & _FLAG_ONLY
@@ -270,7 +273,7 @@ def fix_headers_in_file(
     # Record flag-only mismatches for the run summary (never written).
     for key in sorted(flag_keys):
         d = _disc.get(key) or {}
-        result["flagged"][key] = (d.get("rinex"), d.get("tos"))
+        result["flagged"][key] = (d.get("rinex"), d.get("tos") or d.get("expected"))
 
     if not correctable_keys:
         if flag_keys:
