@@ -78,3 +78,38 @@ def test_del_backup_removes_in_range(tmp_path, monkeypatch):
     )
     assert rc_code == 0
     assert not bak.exists()  # emptied + removed
+
+
+# archive-side backup (remote move) — SSH gateway mocked
+def test_backup_old_archive_files_argv_and_parse(monkeypatch):
+    import receivers.archive.remove as rm
+
+    captured = {}
+
+    def fake_run(cmd, **kw):
+        captured["cmd"] = cmd
+        from types import SimpleNamespace
+
+        rel = "2015/apr/RHOF/15s_24hr/rinex/RHOF0910.15D.Z"
+        return SimpleNamespace(returncode=0, stdout=f"BACKED_UP|{rel}\n", stderr="")
+
+    monkeypatch.setattr(rm.subprocess, "run", fake_run)
+    rel = "2015/apr/RHOF/15s_24hr/rinex/RHOF0910.15D.Z"
+    res = rm.backup_old_archive_files(
+        [rel, "../evil", "abs/../x"],
+        ssh_target="gpsops@rawdata",
+        dest_root="~/gpsdata",
+        execute=True,
+    )
+    assert res.backed_up == [rel]
+    assert "../evil" not in res.backed_up and len(res.invalid) == 2  # rejected
+    # paths passed as ARGV (after the '--'), never interpolated into a string
+    assert rel in captured["cmd"]
+    assert captured["cmd"][:6] == [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "gpsops@rawdata",
+        "bash",
+        "-s",
+    ]

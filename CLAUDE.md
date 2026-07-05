@@ -634,6 +634,33 @@ bgo is in the gpsops group — can read/write gpsops-owned dirs without owning t
 
 **Quick health check**: `ssh gpsops@rek-d01.vedur.is 'receivers health GJAC'`
 
+**Scheduler service (systemd `--user`, owned by gpsops)**: the production scheduler
+runs as a **user-level** unit `gps-receivers-scheduler.service` (installed to
+`~gpsops/.config/systemd/user/`, unit file `deployment/systemd/gps-receivers-scheduler.service`;
+install.sh sets it up). **Linger is enabled** (`loginctl enable-linger gpsops`) so it runs
+with no active gpsops TTY. Manage it **as gpsops, no sudo** — over SSH set
+`XDG_RUNTIME_DIR=/run/user/$(id -u)` first:
+```bash
+systemctl --user restart gps-receivers-scheduler        # canonical restart
+systemctl --user status  gps-receivers-scheduler
+journalctl --user-unit   gps-receivers-scheduler -f     # live logs
+receivers scheduler stop | restart | status | load-status | backfill-status
+```
+- `Restart=always`, `RestartSec=30s` → **never `kill` the process** (systemd respawns in 30s);
+  stop/restart only via `systemctl --user` or `receivers scheduler stop` (graceful, 120s timeout).
+- **`max_workers` in `scheduler.yaml` is the single concurrency knob** — ExecStart has **no
+  `--max-workers` flag** by design, so a CLI override won't match the service. To throttle,
+  edit `max_workers` in **gps-config-data** `scheduler.yaml`, push (sync timer propagates in
+  ~10 min), then `systemctl --user restart`. A local edit on rek-d01 gets reverted by the sync.
+- Caps: `CPUQuota=400%`, `MemoryMax=4G`/`MemoryHigh=3G` (only enforced with the
+  `user@.service.d/delegate.conf` cgroup-delegation drop-in install.sh lays down). The 400%
+  quota is the ~365% CPU ceiling seen under load.
+- A **legacy system-level** `gps-receivers-scheduler.service` was removed by install.sh; if you
+  see it `not-found/failed` under `systemctl` (system scope), that's the removed unit — the live
+  one is the **user** unit above.
+- `load_monitoring` (adaptive concurrency backoff) exists but is **disabled** in scheduler.yaml
+  by default; `receivers scheduler load-status` reports whether it's on.
+
 **Gotcha**: After a PolaRX5 fw upgrade, `sis` resets to `secure` (TLS-only, port 28784 closes).
 Any provisioning changes made on the laptop must be committed to gps-config-data or they will be
 lost on the next `install.sh` run.

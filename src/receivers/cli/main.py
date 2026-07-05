@@ -4003,6 +4003,48 @@ def _create_rinex_converter(
     return converter, raw_extension, station_config
 
 
+def _reconvert_source_root(args, data_prepath: str) -> str:
+    """Raw-source root for the convert path.
+
+    Re-rinexing runs off the PERSISTENT archive via an EXPLICIT ``--source-dir``
+    (e.g. /mnt_data/rawgpsdata); the normal daily convert (no --source-dir) keeps
+    the ephemeral data_prepath. Gated on --source-dir, NOT --work-dir — the latter
+    carries a default (~/tmp/rinex_fixes) that must never switch the daily convert
+    into archive/staging mode.
+    """
+    return str(getattr(args, "source_dir", None) or data_prepath)
+
+
+def _reconvert_output_dir(raw_file: Path, source_root: str, args) -> Path:
+    """Where the converted RINEX lands.
+
+    ``--output-dir`` (flat) wins if set. In RE-RINEX mode (``--source-dir`` given)
+    stage into ``work_dir/<YYYY>/<mon>/<SID>/<session>/rinex/`` (tree preserved
+    from ``source_root``) for a later push — disk-backed ``--work-dir`` default
+    ``~/tmp/rinex_fixes``, not /tmp (tmpfs). Otherwise (daily convert) the sibling
+    ``rinex/`` of the raw dir, in place. Gated on --source-dir so the defaulted
+    --work-dir doesn't stage the daily convert.
+    """
+    if getattr(args, "output_dir", None):
+        return Path(args.output_dir)
+    raw_parent = raw_file.parent
+    in_place = (
+        raw_parent.parent / "rinex"
+        if raw_parent.name == "raw"
+        else raw_parent / "rinex"
+    )
+    if not getattr(args, "source_dir", None):
+        return in_place  # daily convert: write in place to data_prepath
+    work_dir = getattr(args, "work_dir", None)
+    if not work_dir:
+        return in_place
+    try:
+        rel = raw_parent.relative_to(source_root)  # YYYY/mon/SID/session/raw
+        return Path(work_dir).expanduser() / rel.parent / "rinex"
+    except ValueError:
+        return in_place
+
+
 def _backup_existing_rinex_for_date(
     output_dir: Path,
     obs_date: datetime,
@@ -4121,6 +4163,7 @@ def _rinex_convert_station_period(
     try:
         config = get_receivers_config()
         data_prepath = config.get_data_prepath()
+        source_root = _reconvert_source_root(args, data_prepath)
 
         current_date = start_time
         raw_files = []
@@ -4132,12 +4175,7 @@ def _rinex_convert_station_period(
             if "1hr" in args.session.lower():
                 filename = f"{station_id}{current_date.strftime('%Y%m%d%H%M')}*.{raw_extension.lstrip('.')}"
                 raw_dir = (
-                    Path(data_prepath)
-                    / year
-                    / month
-                    / station_id
-                    / args.session
-                    / "raw"
+                    Path(source_root) / year / month / station_id / args.session / "raw"
                 )
                 current_date += timedelta(hours=1)
             else:
@@ -4145,12 +4183,7 @@ def _rinex_convert_station_period(
                     f"{station_id}{current_date.strftime('%Y%m%d')}*{raw_extension}"
                 )
                 raw_dir = (
-                    Path(data_prepath)
-                    / year
-                    / month
-                    / station_id
-                    / args.session
-                    / "raw"
+                    Path(source_root) / year / month / station_id / args.session / "raw"
                 )
                 current_date += timedelta(days=1)
 
@@ -4187,15 +4220,7 @@ def _rinex_convert_station_period(
             return 0, 0, 0
 
         for raw_file in raw_files:
-            if getattr(args, "output_dir", None):
-                output_dir = Path(args.output_dir)
-            else:
-                raw_parent = raw_file.parent
-                if raw_parent.name == "raw":
-                    output_dir = raw_parent.parent / "rinex"
-                else:
-                    output_dir = raw_parent / "rinex"
-
+            output_dir = _reconvert_output_dir(Path(raw_file), source_root, args)
             output_dir.mkdir(parents=True, exist_ok=True)
 
             # Back up the existing RINEX (same obs date) before this re-conversion
@@ -4778,6 +4803,104 @@ def _flush_fixed_batch(
             pass
 
 
+def _push_reconverted(work_dir, args, logger) -> None:
+    """Push re-rinexed files from a --work-dir staging tree back to the archive.
+
+    Archive-side --backup-old (move old ``rinex/FILE`` → ``rinex_bak/FILE`` via the
+    rawdata SSH gateway) runs BEFORE the rsync, preserving the superseded file on
+    the archive. Then rsync the staged tree to the archive tier and reindex.
+    Dry-run supported. Never raises.
+    """
+    import subprocess
+    import tempfile
+
+    work = Path(work_dir).expanduser()
+    staged = [p for p in work.rglob("*") if p.is_file() and p.parent.name == "rinex"]
+    rel: list[str] = []
+    for p in staged:
+        try:
+            rel.append(str(p.relative_to(work)))
+        except ValueError:
+            pass
+    if not rel:
+        print("  push: no staged RINEX files to push")
+        return
+
+    dry = getattr(args, "dry_run", False)
+    full, name, destpath = _resolve_archive_target()
+    if not full:
+        logger.error("push: no archive-tier target in sync.yaml — cannot push")
+        return
+    ssh_target = full.split(":", 1)[0] if ":" in full else None
+
+    # Archive-side backup-old: move the soon-to-be-overwritten archive RINEX to
+    # rinex_bak/ on the archive (before the rsync lands the new file).
+    if getattr(args, "backup_old", False) and ssh_target:
+        from ..archive.remove import backup_old_archive_files
+
+        try:
+            res = backup_old_archive_files(
+                rel, ssh_target=ssh_target, dest_root=destpath or "", execute=not dry
+            )
+            done = res.would_backup if dry else res.backed_up
+            extra = f"  (MISSING={len(res.missing)})" if res.missing else ""
+            print(
+                f"  📦 archive backup-old: {len(done)} file(s) "
+                f"{'(dry-run)' if dry else '→ rinex_bak/'}{extra}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"  ⚠️  archive backup-old failed (gateway): {exc}")
+
+    dest = full.rstrip("/") + "/"
+    src = str(work).rstrip("/") + "/"
+    if dry:
+        print(f"  [DRY RUN] would rsync {len(rel)} file(s) → {dest}")
+        return
+
+    listf = tempfile.NamedTemporaryFile(
+        "w", suffix=".rsync-files", delete=False, encoding="utf-8"
+    )
+    try:
+        listf.write("\n".join(rel) + "\n")
+        listf.close()
+        print(f"  🚀 push: {len(rel)} file(s) → {dest}", flush=True)
+        try:
+            proc = subprocess.run(
+                [
+                    "rsync",
+                    "-av",
+                    "--files-from",
+                    listf.name,
+                    "--no-owner",
+                    "--no-group",
+                    src,
+                    dest,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=3600,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+            print(f"  ⚠️  rsync failed: {exc}")
+            return
+        if proc.returncode != 0:
+            print(f"  ⚠️  rsync exit {proc.returncode}: {proc.stderr.strip()[:200]}")
+            return
+        print(f"  ✓ pushed {len(rel)} file(s)")
+        _push_reindex(
+            args,
+            [str(work / r) for r in rel],
+            root=str(work),
+            storage_location=name,
+            dest_prefix=destpath,
+        )
+    finally:
+        try:
+            Path(listf.name).unlink()
+        except OSError:
+            pass
+
+
 def cmd_rinex(args) -> int:
     """RINEX conversion command - convert raw GPS data to RINEX format."""
     logger = setup_logging(args.loglevel)
@@ -5227,6 +5350,16 @@ def cmd_rinex(args) -> int:
             total_converted += c
             total_failed += f
             total_skipped += s
+
+    # --push: rsync the re-rinexed staging tree back to the archive (archive-side
+    # --backup-old runs first). Only in re-rinex mode (--source-dir + --work-dir).
+    if (
+        getattr(args, "push", False)
+        and getattr(args, "source_dir", None)
+        and getattr(args, "work_dir", None)
+    ):
+        print("\nPushing re-rinexed files to the archive:")
+        _push_reconverted(args.work_dir, args, logger)
 
     # Summary
     print(

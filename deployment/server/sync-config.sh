@@ -36,7 +36,7 @@ NEW_REV=$(git -C "$REPO" rev-parse --short HEAD)
 
 # Files safe to auto-sync.
 # database.cfg is intentionally absent — it holds server-local DB credentials.
-SYNC_FILES=(stations.cfg receivers.cfg scheduler.yaml icinga.cfg station_areas.yaml sync.yaml)
+SYNC_FILES=(stations.cfg receivers.cfg scheduler.yaml icinga.cfg station_areas.yaml sync.yaml agencies.yaml)
 
 CHANGED=()
 for f in "${SYNC_FILES[@]}"; do
