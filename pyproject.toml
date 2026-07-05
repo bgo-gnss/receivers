@@ -45,7 +45,7 @@ dependencies = [
     "sqlalchemy>=2.0.0",
     "psycopg2-binary>=2.9.0",
     "gtimes @ git+https://github.com/bennigo/gtimes@v0.5.1",
-    "tostools @ git+https://github.com/bennigo/tostools@57a573a",
+    "tostools @ git+https://github.com/bennigo/tostools@e923a75",
     "gps-parser @ git+https://github.com/bennigo/gps_parser@93c8ab6",
 ]
 
