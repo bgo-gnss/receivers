@@ -147,6 +147,11 @@ class DisseminationTarget:
 
     sessions: tuple[str, ...]
     exclude_stations: frozenset[str]
+    stations: frozenset[str] = frozenset()
+    """Optional rollout allowlist (upper-cased). When non-empty, the automated
+    sweep disseminates ONLY these markers (intersected with the in_epos set and
+    minus ``exclude_stations``). Empty or absent = all in_epos stations — lets you
+    onboard EPOS one station at a time. The explicit ``--station`` path ignores it."""
     format: DisseminationFormat = field(default_factory=DisseminationFormat)
     convert_cache_dir: str = DEFAULT_CACHE_DIR
     """Where converted outputs are cached, keyed on
@@ -163,6 +168,22 @@ class DisseminationTarget:
         if not self.host:
             return self.dest
         return f"{self.user}@{self.host}:{self.dest}"
+
+    def select_markers(self, markers) -> list[str]:
+        """Filter a discovered in_epos marker list by the rollout allowlist and
+        exclude list (both case-insensitive, order preserved). An empty allowlist
+        means "all" — so this only ever narrows when ``stations`` is set. Applied
+        to the automated sweep only; the explicit ``--station`` path bypasses it.
+        """
+        out = []
+        for m in markers:
+            u = str(m).upper()
+            if self.stations and u not in self.stations:
+                continue
+            if u in self.exclude_stations:
+                continue
+            out.append(m)
+        return out
 
     @property
     def cache_path(self) -> Path:
@@ -182,7 +203,8 @@ def _build_target(raw: dict) -> DisseminationTarget:
         dest=raw["dest"],
         source_root=raw["source_root"],
         sessions=tuple(raw.get("sessions", ())),
-        exclude_stations=frozenset(raw.get("exclude_stations", ())),
+        exclude_stations=frozenset(s.upper() for s in raw.get("exclude_stations", ())),
+        stations=frozenset(s.upper() for s in raw.get("stations", ())),
         format=DisseminationFormat.from_dict(raw.get("format", {})),
         convert_cache_dir=raw.get("convert_cache_dir", DEFAULT_CACHE_DIR),
         cutover=cutover,

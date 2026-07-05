@@ -93,10 +93,24 @@ def run_epos_disseminate_job(
         try:
             from .tos_access import epos_markers
 
-            markers = epos_markers()
+            discovered = epos_markers()
         except Exception:
             logger.exception("epos-disseminate: EPOS station lookup failed")
             return summary
+        # Rollout allowlist (sync.yaml `stations:`): narrow the auto-discovered
+        # in_epos set to the stations being onboarded. Empty/absent = all. NOTE:
+        # applied to the SWEEP only; the explicit --station path passes markers in
+        # and bypasses this. Reactive is intentionally NOT filtered here — its
+        # DEACTIVATED detection keys off the raw marker set (TODO: gate the reactive
+        # disseminate action, not the marker set, when the allowlist grows there).
+        markers = target.select_markers(discovered)
+        if target.stations:
+            logger.info(
+                "epos-disseminate allowlist: %d of %d in_epos stations selected: %s",
+                len(markers),
+                len(discovered),
+                ", ".join(markers) or "(none — check sync.yaml stations: names)",
+            )
 
     if engine_factory is None:
         from .engine import EposDisseminate

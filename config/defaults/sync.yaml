@@ -64,6 +64,13 @@ targets:
     source_root: /mnt_data/rawgpsdata
     sessions: [15s_24hr]          # phase 1: 15s_24hr only (per-session format later)
     exclude_stations: [DYNA, HRNC, HAUR]
+    # Rollout allowlist: the automated sweep disseminates ONLY these markers
+    # (still intersected with the in_epos TOS set, minus exclude_stations). Empty
+    # or absent = all in_epos stations. Onboard EPOS one station at a time by
+    # listing them here, e.g. [RHOF], then grow to [RHOF, FIHO, ...] until every
+    # in_epos station is syncing, then clear it. The explicit `epos-disseminate
+    # --station X` path ignores this list.
+    stations: []
 
     # Converted-output cache, keyed on hash(source content_sha256 + TOS fingerprint)
     convert_cache_dir: ~/.cache/gps_receivers/epos_convert
