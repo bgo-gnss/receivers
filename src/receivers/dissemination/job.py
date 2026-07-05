@@ -214,10 +214,15 @@ def run_epos_reactive_job(
     engine_factory: Any = None,
     epos_conn_factory: Any = None,
     sitelogs_dir: Optional[str] = None,
+    publish_m3g: bool = False,
     fingerprint_fn: Any = None,
     actions: Any = None,
 ) -> dict[str, int]:
     """Reactive TOS-fingerprint sweep for EPOS dissemination. Never raises.
+
+    ``publish_m3g`` (default off) opts a CHANGED site log into auto-publishing to
+    M3G — the "automatic" path; the standalone ``epos-disseminate --publish-m3g``
+    verb is the manual one.
 
     Scans every currently-eligible EPOS station *plus* every station already in
     the fingerprint store (so a station that dropped out of EPOS is detected as
@@ -330,6 +335,7 @@ def run_epos_reactive_job(
                 sitelogs_dir=sitelogs_dir,
                 backfill_days=backfill_days,
                 today=end,
+                publish_m3g=publish_m3g,
             )
         return run_reactive_sync(scan_markers, fingerprint_fn, store, actions)
     finally:
@@ -360,16 +366,23 @@ def _build_reactive_actions(
     sitelogs_dir: Optional[str],
     backfill_days: int,
     today: date,
+    publish_m3g: bool = False,
 ) -> Any:
     """Wire the production :class:`ReactiveActions` for one target.
 
     Closures capture the live engine / EPOS DB / site-log repo. Each callback
     raises on a hard failure so the orchestrator keeps the station unadvanced and
     retries it next sweep; best-effort steps (indexing) swallow their own errors.
+    ``publish_m3g`` opts the site-log action into auto-publishing a changed log to
+    M3G (default off — M3G stays a manual verb until enabled).
     """
     from .engine import EposDisseminate
     from .reactive import ReactiveActions, StationChange
-    from .sitelogs import commit_site_log, generate_site_log, resolve_sitelogs_repo
+    from .sitelogs import (
+        commit_site_log,
+        generate_site_log_if_changed,
+        resolve_sitelogs_repo,
+    )
 
     if engine_factory is None:
 
@@ -436,17 +449,28 @@ def _build_reactive_actions(
         return True
 
     def regenerate_sitelog(station: str) -> None:
-        path = generate_site_log(
+        # Change-gated: render current TOS, write+commit a new dated log ONLY when
+        # the station content changed vs the latest committed one. Unchanged ⇒
+        # no-op (no write, no commit, no M3G) — the reactive job already fetched
+        # TOS, so this piggybacks a cheap render+hash.
+        gate = generate_site_log_if_changed(
             station,
             sitelog_repo,
             country_code=target.format.country_code,
             monument_number=target.format.monument_number,
         )
-        if path is None:
+        if gate is None:
             raise RuntimeError(f"site-log generation produced nothing for {station}")
+        if not gate.changed:
+            logger.info("epos-reactive: site log unchanged for %s — no-op", station)
+            return
+        if gate.path is None:
+            return
         try:
             commit_site_log(
-                sitelog_repo, path, f"{station.upper()}: refresh site log (reactive)"
+                sitelog_repo,
+                gate.path,
+                f"{station.upper()}: site log update (reactive)",
             )
         except (
             Exception
@@ -454,6 +478,22 @@ def _build_reactive_actions(
             logger.warning(
                 "epos-reactive: site-log commit skipped for %s: %s", station, exc
             )
+        if publish_m3g and gate.path is not None:
+            try:
+                from .sitelogs import submit_to_m3g
+
+                submit_to_m3g(
+                    station,
+                    site_log_path=gate.path,
+                    country_code=target.format.country_code,
+                    monument_number=target.format.monument_number,
+                    dry_run=False,
+                )
+                logger.info("epos-reactive: M3G published site log for %s", station)
+            except Exception as exc:  # noqa: BLE001 - M3G publish is best-effort
+                logger.warning(
+                    "epos-reactive: M3G publish failed for %s: %s", station, exc
+                )
 
     def stop(station: str) -> None:
         # Stop-only: the station is simply absent from future marker sweeps, so it

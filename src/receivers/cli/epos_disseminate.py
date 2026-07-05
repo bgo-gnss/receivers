@@ -129,32 +129,74 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
             )
         return 0 if not summary.get("failed") else 1
 
-    # --sitelog / --publish-m3g: generate (+ optionally publish) the site log (C6/T7).
+    # --sitelog / --publish-m3g: change-gated site log (+ optional M3G publish).
+    # The gate renders current TOS and writes a new dated log ONLY when the
+    # station content changed vs the latest committed one — so this verb is safe
+    # to "run on change": unchanged ⇒ no-op (no write, no commit, no M3G).
     if args.sitelog or args.publish_m3g:
         if not args.station:
             print("--sitelog/--publish-m3g requires --station")
             return 1
         from ..dissemination.sitelogs import (
+            commit_site_log,
             generate_site_log,
+            generate_site_log_if_changed,
             resolve_sitelogs_repo,
             submit_to_m3g,
         )
 
         out_dir = resolve_sitelogs_repo(args.sitelog_dir)
-        path = generate_site_log(
+
+        if args.sitelog_plain:
+            # Plain (undated RHOF00ISL.log) is a manual one-off — always written,
+            # not part of the dated series the gate compares.
+            path = generate_site_log(
+                args.station,
+                out_dir,
+                country_code=target.format.country_code,
+                monument_number=target.format.monument_number,
+                include_date=False,
+            )
+            if path is None:
+                print(f"Site log generation failed for {args.station} (see log).")
+                return 1
+            print(f"✅ site log: {path}")
+            return 0
+
+        gate = generate_site_log_if_changed(
             args.station,
             out_dir,
             country_code=target.format.country_code,
             monument_number=target.format.monument_number,
-            include_date=not args.sitelog_plain,
         )
-        if path is None:
+        if gate is None:
             print(f"Site log generation failed for {args.station} (see log).")
             return 1
-        print(f"✅ site log: {path}")
+        if gate.path is None:
+            print(f"Site log write failed for {args.station} (see log).")
+            return 1
+        path = gate.path
+
+        # The gate governs REGENERATION (write + commit only on change). A manual
+        # --publish-m3g is explicit intent, so it publishes the CURRENT log to M3G
+        # even when this run didn't change it (else a log committed on an earlier
+        # run could never be published).
+        if gate.changed:
+            print(f"✅ site log updated: {path}")
+            committed = commit_site_log(
+                out_dir, path, f"sitelog: {args.station} update {path.name}"
+            )
+            print(
+                "   committed to gps-sitelogs"
+                if committed
+                else "   commit: nothing to commit"
+            )
+        else:
+            print(f"✅ site log unchanged for {args.station} ({path.name})")
 
         if not args.publish_m3g:
             return 0
+        print(f"→ publishing {path.name} to M3G")
 
         # --publish-m3g: validate + publish to M3G (the API publishes directly).
         from ..dissemination.m3g_client import M3GError

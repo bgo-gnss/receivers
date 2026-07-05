@@ -160,36 +160,42 @@ def find_previous_site_log(out_dir: Path, nine_char: str, current_date: str) -> 
     return names[-1] if names else ""
 
 
-def generate_site_log(
+def _normalize_sitelog(text: str) -> str:
+    """Content for change-detection: drop the two volatile lines so an unchanged
+    station doesn't look changed every render.
+
+    - ``Date Prepared`` — set to the render date on every run.
+    - ``Previous Site Log`` (§0) — a pointer to the prior dated file, not station
+      content. (``Modified/Added Sections`` is derived from the previous log, so
+      it too is dropped as chain-dependent, not station state.)
+    """
+    skip = ("Date Prepared", "Previous Site Log", "Modified/Added Sections")
+    out = []
+    for line in text.splitlines():
+        label = line.split(":", 1)[0].strip()
+        if any(label.startswith(s) for s in skip):
+            continue
+        out.append(line.rstrip())
+    return "\n".join(out).strip()
+
+
+def _render_sitelog(
     station: str,
     out_dir: Path,
     *,
-    client: Any = None,
-    country_code: str = "ISL",
-    monument_number: str = "00",
-    include_date: bool = True,
-    custom_date: Optional[str] = None,
-    agency_resolver: Any = None,
-    loglevel: int = logging.WARNING,
-) -> Optional[Path]:
-    """Render the IGS site log for ``station`` from TOS into ``out_dir``.
-
-    Returns the written path, or None when TOS has no usable metadata (logged).
-    ``client`` is an injectable ``TOSClient`` (defaults to a fresh one) so tests
-    run offline. The M3G dated filename form (``rhof00isl_20240827.log``) is the
-    default — §0 "Previous Site Log" chains to the latest prior dated log found
-    in ``out_dir``; pass ``include_date=False`` for the plain ``RHOF00ISL.log``.
-    ``agency_resolver`` (default: load agencies.yaml) drives §11/§12/§13 via
-    :func:`resolve_sitelog_agencies`.
-
-    Rendering is the proven legacy ``tostools.legacy`` generator — the single
-    renderer whose output is byte-parity with the M3G exportlog form; the TOS
-    metadata fetched here feeds the agency-role resolution, while the renderer
-    reads its own device sessions via the legacy metadata pipeline.
-    """
+    client: Any,
+    country_code: str,
+    monument_number: str,
+    include_date: bool,
+    custom_date: Optional[str],
+    agency_resolver: Any,
+    loglevel: int,
+) -> Optional[tuple[str, Path]]:
+    """Fetch TOS + render the site-log content and resolve its dated filename,
+    WITHOUT writing. Returns ``(content, out_path)`` or None on any TOS/render
+    failure (logged). Shared by :func:`generate_site_log` and the change-gate."""
     from datetime import datetime
 
-    from tostools.core.site_log import export_site_log_to_file
     from tostools.legacy.gps_metadata_functions import site_log as render_site_log
     from tostools.tosGPS import generate_igs_sitelog_filename
 
@@ -231,8 +237,6 @@ def generate_site_log(
         logger.warning("site log: generator produced nothing for %s", sid)
         return None
 
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
     _subdir, filename = generate_igs_sitelog_filename(
         sid,
         country_code=country_code,
@@ -241,12 +245,139 @@ def generate_site_log(
         custom_date=custom_date,
         create_station_subdir=False,
     )
-    out_path = out_dir / filename
+    return content, Path(out_dir) / filename
+
+
+def _write_sitelog(content: str, out_path: Path, sid: str, loglevel: int) -> Optional[Path]:
+    from tostools.core.site_log import export_site_log_to_file
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     if not export_site_log_to_file(content, str(out_path), sid, loglevel=loglevel):
         logger.warning("site log: export failed for %s → %s", sid, out_path)
         return None
     logger.info("site log written: %s", out_path)
     return out_path
+
+
+def generate_site_log(
+    station: str,
+    out_dir: Path,
+    *,
+    client: Any = None,
+    country_code: str = "ISL",
+    monument_number: str = "00",
+    include_date: bool = True,
+    custom_date: Optional[str] = None,
+    agency_resolver: Any = None,
+    loglevel: int = logging.WARNING,
+) -> Optional[Path]:
+    """Render the IGS site log for ``station`` from TOS into ``out_dir``.
+
+    Returns the written path, or None when TOS has no usable metadata (logged).
+    ``client`` is an injectable ``TOSClient`` (defaults to a fresh one) so tests
+    run offline. The M3G dated filename form (``rhof00isl_20240827.log``) is the
+    default — §0 "Previous Site Log" chains to the latest prior dated log found
+    in ``out_dir``; pass ``include_date=False`` for the plain ``RHOF00ISL.log``.
+    ``agency_resolver`` (default: load agencies.yaml) drives §11/§12/§13 via
+    :func:`resolve_sitelog_agencies`.
+
+    Always writes (no change-gate) — use :func:`generate_site_log_if_changed` to
+    write only when the station content actually changed.
+    """
+    rendered = _render_sitelog(
+        station,
+        out_dir,
+        client=client,
+        country_code=country_code,
+        monument_number=monument_number,
+        include_date=include_date,
+        custom_date=custom_date,
+        agency_resolver=agency_resolver,
+        loglevel=loglevel,
+    )
+    if rendered is None:
+        return None
+    content, out_path = rendered
+    return _write_sitelog(content, out_path, station.upper(), loglevel)
+
+
+@dataclass
+class SitelogGateResult:
+    """Outcome of a change-gated site-log generation."""
+
+    station: str
+    changed: bool
+    path: Optional[Path] = None  # written file (changed) or existing (unchanged)
+    previous: Optional[Path] = None  # the prior latest log compared against
+
+
+def _latest_sitelog(out_dir: Path, nine_char: str) -> Optional[Path]:
+    """The newest dated site log for ``nine_char`` in ``out_dir`` (lexicographic
+    max == chronological for YYYYMMDD names), or None."""
+    prefix = nine_char.lower()
+    try:
+        files = sorted(Path(out_dir).glob(f"{prefix}_*.log"))
+    except OSError:
+        return None
+    return files[-1] if files else None
+
+
+def generate_site_log_if_changed(
+    station: str,
+    out_dir: Path,
+    *,
+    client: Any = None,
+    country_code: str = "ISL",
+    monument_number: str = "00",
+    custom_date: Optional[str] = None,
+    agency_resolver: Any = None,
+    loglevel: int = logging.WARNING,
+) -> Optional[SitelogGateResult]:
+    """Render the site log and write a new dated file ONLY when the station
+    content changed vs the latest committed log.
+
+    Content-hash gate: render current TOS → compare the NORMALIZED render (Date
+    Prepared / §0 pointer stripped) against the normalized latest existing log.
+    Unchanged ⇒ no write (``changed=False``, ``path`` = the existing log).
+    Changed / no prior ⇒ write today's dated file (``changed=True``). Same-day
+    regeneration overwrites that day's file (stable filename), so it's idempotent.
+    Returns None only on a TOS/render failure (the caller skips). The commit /
+    M3G submission are the caller's next steps, gated on ``changed``.
+    """
+    rendered = _render_sitelog(
+        station,
+        out_dir,
+        client=client,
+        country_code=country_code,
+        monument_number=monument_number,
+        include_date=True,
+        custom_date=custom_date,
+        agency_resolver=agency_resolver,
+        loglevel=loglevel,
+    )
+    if rendered is None:
+        return None
+    content, out_path = rendered
+    sid = station.upper()
+    mon = str(monument_number)[:2].rjust(2, "0")
+    nine_char = f"{sid}{mon}{country_code.upper()}"
+    latest = _latest_sitelog(Path(out_dir), nine_char)
+
+    if latest is not None:
+        try:
+            existing = latest.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            existing = ""
+        if _normalize_sitelog(content) == _normalize_sitelog(existing):
+            logger.info(
+                "site log unchanged for %s (vs %s) — no-op", sid, latest.name
+            )
+            return SitelogGateResult(sid, changed=False, path=latest, previous=latest)
+
+    written = _write_sitelog(content, out_path, sid, loglevel)
+    return SitelogGateResult(
+        sid, changed=written is not None, path=written, previous=latest
+    )
 
 
 def commit_site_log(repo_dir: Path, site_log: Path, message: str) -> bool:
