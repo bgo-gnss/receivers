@@ -63,6 +63,45 @@ def _learned_ftp_mode_override(station_id: str) -> Optional[str]:
     return records[0].receiver_value
 
 
+_AGENCY_RESOLVER: Any = None
+
+
+def _resolve_operator_header(station_operator: Optional[str]) -> tuple[str, str]:
+    """RINEX ``(observer, agency)`` for a ``station_operator`` code via agencies.yaml.
+
+    This is the single de-hardcoded source for the header OBSERVER / AGENCY: the
+    cfg ``station_operator`` code (``IMO`` / ``NATT`` / ``IES``) resolves to the
+    generic team observer (``GNSSatIMO`` …) and the operating agency's English
+    name — never the retired personal-initial ``rinex_observer`` / ``rinex_agency``
+    fields. Falls back to IMO (the fleet operator) when the code is missing or
+    unknown, so a station without ``station_operator`` still gets a generic
+    observer, not initials. Never raises (config is optional infra).
+    """
+    global _AGENCY_RESOLVER
+    info = None
+    try:
+        if _AGENCY_RESOLVER is None:
+            from .dissemination.agencies import AgencyResolver
+
+            _AGENCY_RESOLVER = AgencyResolver.load()
+        info = _AGENCY_RESOLVER.resolve_by_code(station_operator)
+        if info is None:
+            info = (
+                _AGENCY_RESOLVER.resolve_by_code("IMO")
+                or _AGENCY_RESOLVER.operator_default()
+            )
+    except Exception as exc:  # noqa: BLE001 - agencies.yaml optional
+        logger.debug(
+            "operator header resolution failed for %r: %s", station_operator, exc
+        )
+    if info is None:
+        return "GNSSatIMO", "Icelandic Meteorological Office"
+    return (
+        (info.observer or "GNSSatIMO").strip(),
+        info.rinex_agency or "Icelandic Meteorological Office",
+    )
+
+
 def get_station_config(
     station_id: str, *, silent: bool = False
 ) -> Optional[Dict[str, Any]]:
@@ -146,6 +185,14 @@ def get_station_config(
         default_compression = config_parser.getDefaultValue("default_compression")
         default_days_back = config_parser.getDefaultValue("default_days_back")
 
+        # Resolve the RINEX OBSERVER / AGENCY from the operating agency
+        # (station_operator → agencies.yaml), NOT the retired personal-initial
+        # rinex_observer/rinex_agency cfg fields. Single source for every consumer
+        # (convert path, corrector config path). Falls back to IMO.
+        _observer, _agency = _resolve_operator_header(
+            raw_config.get("station_operator")
+        )
+
         # Create comprehensive configuration structure
         station_config = {
             # Basic station information
@@ -207,9 +254,11 @@ def get_station_config(
             "rinex": {
                 "marker_name": raw_config.get("rinex_marker_name", station_id),
                 "marker_number": raw_config.get("rinex_marker_number", station_id),
-                "observer": raw_config.get("rinex_observer", "GNSS OPERATOR"),
-                "agency": raw_config.get("rinex_agency", "IMO"),
-                "run_by": raw_config.get("rinex_run_by", ""),
+                # Resolved from station_operator via agencies.yaml (above), not the
+                # retired rinex_observer/rinex_agency personal-initial fields.
+                "observer": _observer,
+                "agency": _agency,
+                "run_by": raw_config.get("rinex_run_by", "") or _observer,
                 "config_valid_from": raw_config.get("rinex_config_valid_from", ""),
             },
             # Antenna information (from teqc configs)
@@ -227,6 +276,7 @@ def get_station_config(
             "station_status": raw_config.get("station_status"),
             "health_check": raw_config.get("health_check"),
             "station_owner": raw_config.get("station_owner"),
+            "station_operator": raw_config.get("station_operator"),
             # Per-station FTP credentials (override anonymous login; used by fw 5.7+)
             "ftp_username": raw_config.get("ftp_username", ""),
             "ftp_password": raw_config.get("ftp_password", ""),
@@ -306,9 +356,9 @@ def resolve_receiver_endpoint(args: Any, station_id: str) -> Optional[Dict[str, 
         "rinex": {
             "marker_name": station_id,
             "marker_number": station_id,
-            "observer": "GNSS OPERATOR",
-            "agency": "IMO",
-            "run_by": "",
+            "observer": "GNSSatIMO",
+            "agency": "Icelandic Meteorological Office",
+            "run_by": "GNSSatIMO",
             "config_valid_from": "",
         },
         "antenna": {
@@ -324,6 +374,7 @@ def resolve_receiver_endpoint(args: Any, station_id: str) -> Optional[Dict[str, 
         "station_status": None,
         "health_check": None,
         "station_owner": None,
+        "station_operator": None,
         "_adhoc": True,
     }
 

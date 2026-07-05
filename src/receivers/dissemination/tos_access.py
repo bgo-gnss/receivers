@@ -442,7 +442,7 @@ def _resolve_observer_agency(owner_org: str) -> tuple[str, str]:
         return "", ""
     if info is None:
         return "", ""
-    return (info.observer or "").strip(), (info.agency_label or "").strip()
+    return (info.observer or "").strip(), info.rinex_agency
 
 
 def _owner_org_at(contacts: list[dict[str, Any]], when: datetime) -> str:
