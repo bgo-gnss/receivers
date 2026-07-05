@@ -1215,6 +1215,18 @@ Examples:
     )
 
     mode_group.add_argument(
+        "--from-archive",
+        action="store_true",
+        help="Re-rinex mode: read raw from the persistent archive (the sync.yaml "
+        "dissemination source_root, e.g. /mnt/rawgpsdata) instead of the ephemeral "
+        "data_prepath, and stage into a ~/tmp work-dir (default "
+        "~/tmp/rinex_reconvert) for a --push back. Equivalent to passing "
+        "--source-dir <archive> explicitly; --source-dir overrides the config path. "
+        "This is the mode selector — the daily convert (no --from-archive/"
+        "--source-dir) is untouched.",
+    )
+
+    mode_group.add_argument(
         "--backup-old",
         action="store_true",
         help="During RE-CONVERSION (re-rinex): before a new RINEX overwrites the "

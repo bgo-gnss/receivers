@@ -4006,13 +4006,35 @@ def _create_rinex_converter(
 def _reconvert_source_root(args, data_prepath: str) -> str:
     """Raw-source root for the convert path.
 
-    Re-rinexing runs off the PERSISTENT archive via an EXPLICIT ``--source-dir``
-    (e.g. /mnt_data/rawgpsdata); the normal daily convert (no --source-dir) keeps
-    the ephemeral data_prepath. Gated on --source-dir, NOT --work-dir — the latter
-    carries a default (~/tmp/rinex_fixes) that must never switch the daily convert
-    into archive/staging mode.
+    Re-rinexing runs off the PERSISTENT archive: ``--source-dir`` (explicit) or
+    ``--from-archive`` (defaults to the sync.yaml dissemination source_root). The
+    normal daily convert (neither flag) keeps the ephemeral data_prepath. Gated on
+    these two flags, NOT --work-dir (which carries a default that must never flip
+    the daily convert into archive/staging mode).
     """
-    return str(getattr(args, "source_dir", None) or data_prepath)
+    src = getattr(args, "source_dir", None)
+    if src:
+        return str(src)
+    if getattr(args, "from_archive", False):
+        try:
+            from ..dissemination import load_dissemination_config
+
+            for t in load_dissemination_config():
+                if getattr(t, "tier", None) == "dissemination":
+                    s = getattr(t, "source_root", None)
+                    if s:
+                        return str(s)
+        except Exception:  # noqa: BLE001
+            pass
+    return str(data_prepath)
+
+
+def _is_rerinex_mode(args) -> bool:
+    """True in re-rinex mode (read archive → stage → push): --source-dir or
+    --from-archive. The daily convert (neither) is unaffected."""
+    return bool(
+        getattr(args, "source_dir", None) or getattr(args, "from_archive", False)
+    )
 
 
 def _reconvert_output_dir(raw_file: Path, source_root: str, args) -> Path:
@@ -4033,7 +4055,7 @@ def _reconvert_output_dir(raw_file: Path, source_root: str, args) -> Path:
         if raw_parent.name == "raw"
         else raw_parent / "rinex"
     )
-    if not getattr(args, "source_dir", None):
+    if not _is_rerinex_mode(args):
         return in_place  # daily convert: write in place to data_prepath
     work_dir = getattr(args, "work_dir", None)
     if not work_dir:
@@ -4904,6 +4926,13 @@ def _push_reconverted(work_dir, args, logger) -> None:
 def cmd_rinex(args) -> int:
     """RINEX conversion command - convert raw GPS data to RINEX format."""
     logger = setup_logging(args.loglevel)
+    # Re-rinex (--from-archive) stages into a dedicated ~/tmp dir rather than the
+    # fix-headers default ~/tmp/rinex_fixes — only when the user didn't set
+    # --work-dir explicitly (i.e. it's still the argparse default).
+    if getattr(args, "from_archive", False) and (
+        getattr(args, "work_dir", "") in ("~/tmp/rinex_fixes", None, "")
+    ):
+        args.work_dir = "~/tmp/rinex_reconvert"
     stations = [s.upper() for s in args.stations]
 
     # Import rinex module
@@ -5355,7 +5384,7 @@ def cmd_rinex(args) -> int:
     # --backup-old runs first). Only in re-rinex mode (--source-dir + --work-dir).
     if (
         getattr(args, "push", False)
-        and getattr(args, "source_dir", None)
+        and _is_rerinex_mode(args)
         and getattr(args, "work_dir", None)
     ):
         print("\nPushing re-rinexed files to the archive:")
