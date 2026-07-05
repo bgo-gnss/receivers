@@ -4006,35 +4006,24 @@ def _create_rinex_converter(
 def _reconvert_source_root(args, data_prepath: str) -> str:
     """Raw-source root for the convert path.
 
-    Re-rinexing runs off the PERSISTENT archive, not the ephemeral data_prepath
-    (a ≤2yr rolling window): use ``--source-dir`` when given, else the sync.yaml
-    dissemination ``source_root`` (the archive) when staging to a ``--work-dir``.
-    The normal daily convert (no --source-dir/--work-dir) keeps data_prepath.
+    Re-rinexing runs off the PERSISTENT archive via an EXPLICIT ``--source-dir``
+    (e.g. /mnt_data/rawgpsdata); the normal daily convert (no --source-dir) keeps
+    the ephemeral data_prepath. Gated on --source-dir, NOT --work-dir — the latter
+    carries a default (~/tmp/rinex_fixes) that must never switch the daily convert
+    into archive/staging mode.
     """
-    src = getattr(args, "source_dir", None)
-    if src:
-        return str(src)
-    if getattr(args, "work_dir", None):
-        try:
-            from ..dissemination import load_dissemination_config
-
-            for t in load_dissemination_config():
-                if getattr(t, "tier", None) == "dissemination":
-                    s = getattr(t, "source_root", None)
-                    if s:
-                        return str(s)
-        except Exception:  # noqa: BLE001
-            pass
-    return str(data_prepath)
+    return str(getattr(args, "source_dir", None) or data_prepath)
 
 
 def _reconvert_output_dir(raw_file: Path, source_root: str, args) -> Path:
     """Where the converted RINEX lands.
 
-    ``--output-dir`` (flat) wins if set. Else, when a ``--work-dir`` is given,
+    ``--output-dir`` (flat) wins if set. In RE-RINEX mode (``--source-dir`` given)
     stage into ``work_dir/<YYYY>/<mon>/<SID>/<session>/rinex/`` (tree preserved
-    from ``source_root``) so the staged tree mirrors the archive for a later
-    push. Otherwise the sibling ``rinex/`` of the raw dir (in-place convert).
+    from ``source_root``) for a later push — disk-backed ``--work-dir`` default
+    ``~/tmp/rinex_fixes``, not /tmp (tmpfs). Otherwise (daily convert) the sibling
+    ``rinex/`` of the raw dir, in place. Gated on --source-dir so the defaulted
+    --work-dir doesn't stage the daily convert.
     """
     if getattr(args, "output_dir", None):
         return Path(args.output_dir)
@@ -4044,12 +4033,14 @@ def _reconvert_output_dir(raw_file: Path, source_root: str, args) -> Path:
         if raw_parent.name == "raw"
         else raw_parent / "rinex"
     )
+    if not getattr(args, "source_dir", None):
+        return in_place  # daily convert: write in place to data_prepath
     work_dir = getattr(args, "work_dir", None)
     if not work_dir:
         return in_place
     try:
         rel = raw_parent.relative_to(source_root)  # YYYY/mon/SID/session/raw
-        return Path(work_dir) / rel.parent / "rinex"
+        return Path(work_dir).expanduser() / rel.parent / "rinex"
     except ValueError:
         return in_place
 
@@ -4823,7 +4814,7 @@ def _push_reconverted(work_dir, args, logger) -> None:
     import subprocess
     import tempfile
 
-    work = Path(work_dir)
+    work = Path(work_dir).expanduser()
     staged = [p for p in work.rglob("*") if p.is_file() and p.parent.name == "rinex"]
     rel: list[str] = []
     for p in staged:
@@ -5361,8 +5352,12 @@ def cmd_rinex(args) -> int:
             total_skipped += s
 
     # --push: rsync the re-rinexed staging tree back to the archive (archive-side
-    # --backup-old runs first). Only meaningful with --work-dir staging.
-    if getattr(args, "push", False) and getattr(args, "work_dir", None):
+    # --backup-old runs first). Only in re-rinex mode (--source-dir + --work-dir).
+    if (
+        getattr(args, "push", False)
+        and getattr(args, "source_dir", None)
+        and getattr(args, "work_dir", None)
+    ):
         print("\nPushing re-rinexed files to the archive:")
         _push_reconverted(args.work_dir, args, logger)
 
