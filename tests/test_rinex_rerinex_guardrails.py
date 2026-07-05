@@ -19,12 +19,12 @@ from unittest.mock import patch
 import pytest
 
 from receivers.cli.main import _staged_rinex_for_date
+from receivers.rinex import SBFConverter
 from receivers.rinex.converter_base import (
     ConversionError,
     NetworkUnavailableError,
     _is_network_error,
 )
-from receivers.rinex import SBFConverter
 
 
 # --------------------------------------------------------------------------- #
@@ -37,7 +37,7 @@ class _NameResolutionError(Exception):
 _NameResolutionError.__name__ = "NameResolutionError"
 
 
-class _ConnErr(Exception):
+class _ConnErr(Exception):  # noqa: N818 — __name__ set to ConnectionError below
     pass
 
 
@@ -83,10 +83,13 @@ def test_convert_file_propagates_network_error(tmp_path):
     produced = tmp_path / "ELDC0010.24o"
     produced.write_text("dummy rinex\n")
 
-    with patch.object(conv, "_run_conversion", return_value=produced), patch.object(
-        conv,
-        "_apply_header_corrections",
-        side_effect=NetworkUnavailableError("TOS down"),
+    with (
+        patch.object(conv, "_run_conversion", return_value=produced),
+        patch.object(
+            conv,
+            "_apply_header_corrections",
+            side_effect=NetworkUnavailableError("TOS down"),
+        ),
     ):
         with pytest.raises(NetworkUnavailableError):
             conv.convert_file(raw, output_dir=tmp_path)
@@ -119,6 +122,26 @@ def test_apply_header_corrections_maps_systemexit(tmp_path):
     with patch("tostools.rinex.correct_rinex_from_tos", _boom):
         with pytest.raises(NetworkUnavailableError):
             conv._apply_header_corrections(rinex, datetime(2024, 1, 1))
+
+
+def test_converter_reuses_one_tos_cache_across_dates(tmp_path):
+    """The converter must pass the SAME run-scoped cache dict on every date so the
+    historical path makes 1 TOS fetch per station, not one per file."""
+    conv = _make_converter(tmp_path)
+    rinex = tmp_path / "ELDC0010.24o"
+    rinex.write_text("dummy\n")
+    seen_ids = []
+
+    def capture(*a, tos_metadata_cache=None, **k):
+        seen_ids.append(id(tos_metadata_cache))
+        return rinex  # truthy → success
+
+    with patch("tostools.rinex.correct_rinex_from_tos", capture):
+        conv._apply_header_corrections(rinex, datetime(2024, 1, 1))
+        conv._apply_header_corrections(rinex, datetime(2024, 1, 2))
+
+    assert None not in seen_ids, "a cache dict must be passed to correct_rinex_from_tos"
+    assert seen_ids[0] == seen_ids[1], "same converter must reuse one cache object"
 
 
 def test_apply_header_corrections_data_noop_returns_zero(tmp_path):

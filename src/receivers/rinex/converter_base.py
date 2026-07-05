@@ -554,6 +554,15 @@ class RawToRinexConverter(ABC):
             # all of these to NetworkUnavailableError so the run aborts cleanly
             # instead of grinding out header-less files (or dying on a raw
             # SystemExit). Genuine data no-ops still fall through to return 0.
+            # Run-scoped cache of the date-independent TOS station payload. The
+            # historical (re-rinex / batch) path fetches gps_metadata(station) — the
+            # same payload for every date — so without this a 365-day re-rinex makes
+            # 365 identical TOS calls and can hammer TOS over. The converter is one
+            # instance per station, so an instance cache = 1 TOS call per station per
+            # run (mirrors fix-headers' TOSSesionCache). Only truthy fetches are
+            # cached (in _get_corrections_from_tos) so a soft miss re-fetches.
+            if not hasattr(self, "_tos_metadata_cache"):
+                self._tos_metadata_cache: dict = {}
             try:
                 result = correct_rinex_from_tos(
                     rinex_file=rinex_file,
@@ -563,6 +572,7 @@ class RawToRinexConverter(ABC):
                     station_config=station_config,
                     loglevel=self.logger.level,
                     extra_corrections=extra,
+                    tos_metadata_cache=self._tos_metadata_cache,
                 )
             except SystemExit as e:
                 raise NetworkUnavailableError(
@@ -832,7 +842,7 @@ class RawToRinexConverter(ABC):
             return rinex_file
 
         try:
-            from ..dissemination.convert import epos_marker_name, _set_header_records
+            from ..dissemination.convert import _set_header_records, epos_marker_name
 
             nine_char = epos_marker_name(
                 self.station_id, self.rinex_version.value, "ISL"
