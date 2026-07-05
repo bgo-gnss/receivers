@@ -113,18 +113,25 @@ class EposDisseminate:
         """(OBSERVER, AGENCY) for the RINEX header.
 
         The RINEX AGENCY is the *responsible* agency — the station **owner** (EPOS
-        model) — so we resolve `agencies.yaml` on the owner org attached to the session
-        (`owner_org`). Unknown org / no session ⇒ the target's format defaults
-        (`fmt.observer` / `fmt.agency`), so behaviour is unchanged when the resolver has
-        no entry.
+        model) — rendered as the full ENGLISH institutional name (EPOS wants English
+        agency names), via :attr:`AgencyInfo.rinex_agency` (falls back to the short
+        form only when the English name overflows the 40-char field). observer/agency
+        are NOT configured in sync.yaml — agencies.yaml owns them: per-station via the
+        TOS owner org, and the IMO entity (``defaults.operator_agency``) as the
+        fallback for an unknown/absent org. The format's code default is a last resort.
         """
         fmt = self.target.format
-        default = (getattr(fmt, "observer", ""), getattr(fmt, "agency", ""))
         owner_org = (session or {}).get("owner_org") if session else None
-        info = self.agency_resolver.resolve(owner_org)
-        if info is None:
-            return default
-        return (info.observer or default[0], info.agency_label or default[1])
+        info = (
+            self.agency_resolver.resolve(owner_org)
+            or self.agency_resolver.default_agency()
+        )
+        if info is not None:
+            return (
+                info.observer or getattr(fmt, "observer", ""),
+                info.rinex_agency or getattr(fmt, "agency", ""),
+            )
+        return (getattr(fmt, "observer", ""), getattr(fmt, "agency", ""))
 
     # ---- source resolution -------------------------------------------------
 
