@@ -80,6 +80,38 @@ def clean_stale_tmp(
     return deleted, sorted(affected)
 
 
+def _pick_backfill_stations(session_type: str, limit: int, strategy: str) -> list:
+    """Pick up to ``limit`` distinct pending stations for a session type.
+
+    ``gap_priority`` orders by fewest archived files (biggest gaps); the
+    default ``round_robin`` orders by least-recently-run. Returns a list of
+    (sid, next_date, backfill_start, backfill_end) tuples (possibly empty).
+    Because the backfill job runs single-instance (max_instances=1), the N
+    returned stations are distinct and processed without cross-tick races.
+    """
+    from ..health.database_factory import DatabaseConnectionFactory
+
+    if strategy == "gap_priority":
+        rows = _pick_station_by_gap_count(session_type, limit=limit)
+        if rows:
+            return rows
+
+    with DatabaseConnectionFactory.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT sid, next_date, backfill_start, backfill_end
+                FROM backfill_progress
+                WHERE session_type = %s
+                  AND status IN ('pending', 'in_progress')
+                ORDER BY last_run ASC NULLS FIRST, sid
+                LIMIT %s
+            """,
+                (session_type, limit),
+            )
+            return cur.fetchall()
+
+
 def _backfill_next_station_for_session(
     session_type: str,
     window_start: int = 25,
@@ -87,11 +119,14 @@ def _backfill_next_station_for_session(
     archiving_mode: str = "bulk",
     run_rinex: bool = False,
     strategy: str = "round_robin",
+    max_workers: int = 1,
 ) -> None:
-    """Pick the next station needing backfill for a given session type.
+    """Backfill up to ``max_workers`` stations concurrently for a session type.
 
     Self-gating: checks datetime.now().minute and returns immediately if
-    outside the configured backfill window.
+    outside the configured backfill window. Each picked station is processed
+    for one day (its cursor advances in backfill_progress); the round-robin
+    ordering cycles the fleet over successive ticks.
 
     Args:
         session_type: Session to backfill ('status_1hr', '1Hz_1hr', '15s_24hr')
@@ -99,7 +134,8 @@ def _backfill_next_station_for_session(
         window_end: Minute of hour when backfill window closes (default 55)
         archiving_mode: 'bulk' (download all then archive) or 'immediate'
         run_rinex: Whether to run RINEX conversion after download
-        strategy: 'round_robin' (legacy, by last_run) or 'gap_priority' (most gaps first)
+        strategy: 'round_robin' (by last_run) or 'gap_priority' (most gaps first)
+        max_workers: How many stations to process concurrently per tick
     """
     # Self-gating: return immediately if outside backfill window
     now_minute = datetime.now().minute
@@ -110,58 +146,51 @@ def _backfill_next_station_for_session(
         )
         return
 
-    # Remove stale partial downloads before picking the next station.
+    # Remove stale partial downloads before picking the next stations.
     # Files left from a killed/timed-out job can't be resumed — cleaning them
     # lets the next attempt start fresh instead of trying a dead FTP resume.
     clean_stale_tmp(session_type)
 
+    use_immediate = archiving_mode != "bulk"
+
+    def _process(row) -> None:
+        station_id, current_dt, backfill_end = row[0], row[1], row[3]
+        logger.info(f"Backfill {session_type}: {station_id} processing {current_dt}")
+        try:
+            has_more = _backfill_station_day_generic(
+                station_id,
+                current_dt,
+                backfill_end,
+                session_type,
+                immediate_archive=use_immediate,
+                run_rinex=run_rinex,
+            )
+            if not has_more:
+                logger.info(f"Backfill {session_type} complete for {station_id}")
+        except Exception as e:
+            # One station's failure must not abort the rest of the batch.
+            logger.error(
+                f"Backfill {session_type} {station_id} error: "
+                f"{type(e).__name__}: {e}"
+            )
+
     try:
-        from ..health.database_factory import DatabaseConnectionFactory
+        limit = max(1, int(max_workers))
+        rows = _pick_backfill_stations(session_type, limit, strategy)
 
-        row = None
-
-        if strategy == "gap_priority":
-            row = _pick_station_by_gap_count(session_type)
-
-        # Fall back to round-robin if gap_priority didn't return a result
-        if row is None:
-            with DatabaseConnectionFactory.connection() as conn:
-                with conn.cursor() as cur:
-                    # Pick station processed least recently for this session type
-                    cur.execute(
-                        """
-                        SELECT sid, next_date, backfill_start, backfill_end
-                        FROM backfill_progress
-                        WHERE session_type = %s
-                          AND status IN ('pending', 'in_progress')
-                        ORDER BY last_run ASC NULLS FIRST, sid
-                        LIMIT 1
-                    """,
-                        (session_type,),
-                    )
-                    row = cur.fetchone()
-
-        if not row:
+        if not rows:
             logger.debug(f"No stations pending backfill for {session_type}")
             return
 
-        station_id = row[0]
-        current_dt = row[1]
-        backfill_end = row[3]
+        if len(rows) == 1:
+            _process(rows[0])
+        else:
+            from concurrent.futures import ThreadPoolExecutor
 
-        logger.info(f"Backfill {session_type}: {station_id} processing {current_dt}")
-        use_immediate = archiving_mode != "bulk"
-        has_more = _backfill_station_day_generic(
-            station_id,
-            current_dt,
-            backfill_end,
-            session_type,
-            immediate_archive=use_immediate,
-            run_rinex=run_rinex,
-        )
-
-        if not has_more:
-            logger.info(f"Backfill {session_type} complete for {station_id}")
+            with ThreadPoolExecutor(
+                max_workers=len(rows), thread_name_prefix=f"bf-{session_type}"
+            ) as ex:
+                list(ex.map(_process, rows))
 
     except ImportError:
         logger.debug("psycopg2 not available - backfill disabled")
@@ -172,19 +201,21 @@ def _backfill_next_station_for_session(
 def _pick_station_by_gap_count(
     session_type: str,
     days_back: int = 30,
-) -> Optional[tuple]:
-    """Pick the pending backfill station with the most gaps in file_tracking.
+    limit: int = 1,
+) -> list:
+    """Pick the ``limit`` pending backfill stations with the most gaps.
 
     Joins backfill_progress (pending/in_progress) with file_tracking to count
-    how many expected files are missing. Returns the station with the largest
-    gap count, falling back to NULL if no data or the query fails.
+    how many expected files are missing, returning the stations with the fewest
+    archived files first (biggest gaps). Returns [] on failure.
 
     Args:
         session_type: Session type to check
         days_back: How many days back to count gaps
+        limit: Max number of stations to return
 
     Returns:
-        Tuple (sid, next_date, backfill_start, backfill_end) or None
+        List of (sid, next_date, backfill_start, backfill_end) tuples.
     """
     try:
         from ..health.database_factory import DatabaseConnectionFactory
@@ -216,16 +247,16 @@ def _pick_station_by_gap_count(
                     SELECT sid, next_date, backfill_start, backfill_end
                     FROM gap_counts
                     ORDER BY archived_count ASC, sid
-                    LIMIT 1
+                    LIMIT %s
                 """,
-                    (session_type, session_type, days_back),
+                    (session_type, session_type, days_back, limit),
                 )
 
-                return cur.fetchone()
+                return cur.fetchall()
 
     except Exception as e:
         logger.debug(f"Gap priority query failed for {session_type}: {e}")
-        return None
+        return []
 
 
 def _backfill_next_station() -> None:
