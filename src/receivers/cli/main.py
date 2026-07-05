@@ -4812,6 +4812,104 @@ def _flush_fixed_batch(
             pass
 
 
+def _push_reconverted(work_dir, args, logger) -> None:
+    """Push re-rinexed files from a --work-dir staging tree back to the archive.
+
+    Archive-side --backup-old (move old ``rinex/FILE`` → ``rinex_bak/FILE`` via the
+    rawdata SSH gateway) runs BEFORE the rsync, preserving the superseded file on
+    the archive. Then rsync the staged tree to the archive tier and reindex.
+    Dry-run supported. Never raises.
+    """
+    import subprocess
+    import tempfile
+
+    work = Path(work_dir)
+    staged = [p for p in work.rglob("*") if p.is_file() and p.parent.name == "rinex"]
+    rel: list[str] = []
+    for p in staged:
+        try:
+            rel.append(str(p.relative_to(work)))
+        except ValueError:
+            pass
+    if not rel:
+        print("  push: no staged RINEX files to push")
+        return
+
+    dry = getattr(args, "dry_run", False)
+    full, name, destpath = _resolve_archive_target()
+    if not full:
+        logger.error("push: no archive-tier target in sync.yaml — cannot push")
+        return
+    ssh_target = full.split(":", 1)[0] if ":" in full else None
+
+    # Archive-side backup-old: move the soon-to-be-overwritten archive RINEX to
+    # rinex_bak/ on the archive (before the rsync lands the new file).
+    if getattr(args, "backup_old", False) and ssh_target:
+        from ..archive.remove import backup_old_archive_files
+
+        try:
+            res = backup_old_archive_files(
+                rel, ssh_target=ssh_target, dest_root=destpath or "", execute=not dry
+            )
+            done = res.would_backup if dry else res.backed_up
+            extra = f"  (MISSING={len(res.missing)})" if res.missing else ""
+            print(
+                f"  📦 archive backup-old: {len(done)} file(s) "
+                f"{'(dry-run)' if dry else '→ rinex_bak/'}{extra}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"  ⚠️  archive backup-old failed (gateway): {exc}")
+
+    dest = full.rstrip("/") + "/"
+    src = str(work).rstrip("/") + "/"
+    if dry:
+        print(f"  [DRY RUN] would rsync {len(rel)} file(s) → {dest}")
+        return
+
+    listf = tempfile.NamedTemporaryFile(
+        "w", suffix=".rsync-files", delete=False, encoding="utf-8"
+    )
+    try:
+        listf.write("\n".join(rel) + "\n")
+        listf.close()
+        print(f"  🚀 push: {len(rel)} file(s) → {dest}", flush=True)
+        try:
+            proc = subprocess.run(
+                [
+                    "rsync",
+                    "-av",
+                    "--files-from",
+                    listf.name,
+                    "--no-owner",
+                    "--no-group",
+                    src,
+                    dest,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=3600,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+            print(f"  ⚠️  rsync failed: {exc}")
+            return
+        if proc.returncode != 0:
+            print(f"  ⚠️  rsync exit {proc.returncode}: {proc.stderr.strip()[:200]}")
+            return
+        print(f"  ✓ pushed {len(rel)} file(s)")
+        _push_reindex(
+            args,
+            [str(work / r) for r in rel],
+            root=str(work),
+            storage_location=name,
+            dest_prefix=destpath,
+        )
+    finally:
+        try:
+            Path(listf.name).unlink()
+        except OSError:
+            pass
+
+
 def cmd_rinex(args) -> int:
     """RINEX conversion command - convert raw GPS data to RINEX format."""
     logger = setup_logging(args.loglevel)
@@ -5261,6 +5359,12 @@ def cmd_rinex(args) -> int:
             total_converted += c
             total_failed += f
             total_skipped += s
+
+    # --push: rsync the re-rinexed staging tree back to the archive (archive-side
+    # --backup-old runs first). Only meaningful with --work-dir staging.
+    if getattr(args, "push", False) and getattr(args, "work_dir", None):
+        print("\nPushing re-rinexed files to the archive:")
+        _push_reconverted(args.work_dir, args, logger)
 
     # Summary
     print(

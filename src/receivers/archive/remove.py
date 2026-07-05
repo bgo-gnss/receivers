@@ -80,13 +80,13 @@ done
 
 @dataclass
 class RemoveResult:
-    deleted: list = field(default_factory=list)          # (rel, size)
-    would_delete: list = field(default_factory=list)     # (rel, size)
-    skipped_toobig: list = field(default_factory=list)   # (rel, size) over cap
-    missing: list = field(default_factory=list)          # rel
-    not_file: list = field(default_factory=list)         # rel
-    failed: list = field(default_factory=list)           # (rel, size)
-    invalid: list = field(default_factory=list)          # rel
+    deleted: list = field(default_factory=list)  # (rel, size)
+    would_delete: list = field(default_factory=list)  # (rel, size)
+    skipped_toobig: list = field(default_factory=list)  # (rel, size) over cap
+    missing: list = field(default_factory=list)  # rel
+    not_file: list = field(default_factory=list)  # rel
+    failed: list = field(default_factory=list)  # (rel, size)
+    invalid: list = field(default_factory=list)  # rel
 
     @property
     def ok(self) -> bool:
@@ -124,9 +124,16 @@ def remove_archive_files(
         return res
 
     cmd = [
-        "ssh", "-o", "BatchMode=yes", ssh_target,
-        "bash", "-s", "--",
-        dest_root, str(int(max_size)), "1" if execute else "0",
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        ssh_target,
+        "bash",
+        "-s",
+        "--",
+        dest_root,
+        str(int(max_size)),
+        "1" if execute else "0",
         *valid,
     ]
     proc = subprocess.run(
@@ -156,8 +163,9 @@ def remove_archive_files(
             res.failed.append((rel, sz))
             logger.error("archive-rm FAILED to delete %s", rel)
     if proc.returncode != 0 and not (res.deleted or res.would_delete):
-        logger.error("ssh gateway error (rc=%s): %s", proc.returncode,
-                     proc.stderr.strip()[:200])
+        logger.error(
+            "ssh gateway error (rc=%s): %s", proc.returncode, proc.stderr.strip()[:200]
+        )
     return res
 
 
@@ -189,3 +197,108 @@ def remove_catalog_rows(conn, storage_location: str, rel_paths: list[str]) -> in
             removed += cur.rowcount
         conn.commit()
     return removed
+
+
+# Remote move: rinex/FILE -> sibling rinex_bak/FILE. Same argv-safe pattern as
+# the delete script — paths arrive as $@, never interpolated. Quoted heredoc.
+_BACKUP_REMOTE_SCRIPT = r"""
+set -u
+root="$1"; shift
+execute="$1"; shift
+case "$root" in "~/"*) root="$HOME/${root#\~/}";; "~") root="$HOME";; esac
+for rel in "$@"; do
+  f="$root/$rel"
+  if [ ! -e "$f" ]; then echo "MISSING|$rel"; continue; fi
+  if [ ! -f "$f" ]; then echo "SKIP_NOTFILE|$rel"; continue; fi
+  dir=$(dirname "$f"); base=$(basename "$f")
+  bakdir="$(dirname "$dir")/rinex_bak"
+  if [ "$execute" = "1" ]; then
+    mkdir -p "$bakdir" || { echo "FAIL|$rel"; continue; }
+    dest="$bakdir/$base"; i=1
+    while [ -e "$dest" ]; do dest="$bakdir/${base}.$i"; i=$((i+1)); done
+    if mv -- "$f" "$dest"; then echo "BACKED_UP|$rel"; else echo "FAIL|$rel"; fi
+  else
+    echo "WOULD_BACKUP|$rel"
+  fi
+done
+"""
+
+
+@dataclass
+class BackupResult:
+    backed_up: list = field(default_factory=list)
+    would_backup: list = field(default_factory=list)
+    missing: list = field(default_factory=list)
+    not_file: list = field(default_factory=list)
+    failed: list = field(default_factory=list)
+    invalid: list = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.failed and not self.invalid
+
+
+def backup_old_archive_files(
+    rel_paths: list[str],
+    *,
+    ssh_target: str,
+    dest_root: str,
+    execute: bool = False,
+    timeout: int = 600,
+) -> BackupResult:
+    """Move existing archive ``rinex/FILE`` to a sibling ``rinex_bak/FILE`` via the
+    rawdata SSH gateway — the archive-side backup for ``--backup-old`` at push
+    time (before a re-rinexed file overwrites it). Dry-run by default; same
+    enumerated-argv, layout-validated safety as :func:`remove_archive_files`.
+    """
+    res = BackupResult()
+    valid: list[str] = []
+    for rel in rel_paths:
+        if validate_archive_relpath(rel):
+            valid.append(rel)
+        else:
+            res.invalid.append(rel)
+            logger.error("refusing invalid archive path: %r", rel)
+    if not valid:
+        return res
+    cmd = [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        ssh_target,
+        "bash",
+        "-s",
+        "--",
+        dest_root,
+        "1" if execute else "0",
+        *valid,
+    ]
+    proc = subprocess.run(
+        cmd,
+        input=_BACKUP_REMOTE_SCRIPT,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    for line in proc.stdout.splitlines():
+        parts = line.strip().split("|")
+        if len(parts) != 2:
+            continue
+        status, rel = parts
+        if status == "BACKED_UP":
+            res.backed_up.append(rel)
+            audit.info("re-rinex archive backup %s -> rinex_bak/", rel)
+        elif status == "WOULD_BACKUP":
+            res.would_backup.append(rel)
+        elif status == "MISSING":
+            res.missing.append(rel)
+        elif status == "SKIP_NOTFILE":
+            res.not_file.append(rel)
+        elif status == "FAIL":
+            res.failed.append(rel)
+            logger.error("re-rinex backup FAILED for %s", rel)
+    if proc.returncode != 0 and not (res.backed_up or res.would_backup):
+        logger.error(
+            "ssh gateway error (rc=%s): %s", proc.returncode, proc.stderr.strip()[:200]
+        )
+    return res
