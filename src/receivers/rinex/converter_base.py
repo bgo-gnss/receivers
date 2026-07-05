@@ -491,6 +491,20 @@ class RawToRinexConverter(ABC):
             except Exception as e:
                 self.logger.debug(f"Could not load station config: {e}")
 
+            # Always inject the resolved OBSERVER / AGENCY. config_utils resolves
+            # it from station_operator → agencies.yaml onto station_config['rinex'];
+            # but correct_rinex_from_tos uses the TOS path for historical dates,
+            # which does NOT emit observer/agency — so without this the converter's
+            # own default ("GNSS Observer / Trimble") would survive on re-rinexed
+            # historical files. Overrides that with GNSSatIMO / the agency name.
+            extra = None
+            if station_config:
+                _rc = station_config.get("rinex", {})
+                _obs = str(_rc.get("observer") or "").strip()
+                _agc = str(_rc.get("agency") or "").strip()
+                if _obs or _agc:
+                    extra = {"OBSERVER / AGENCY": [_obs, _agc]}
+
             # Apply corrections using tostools
             # This function handles the config vs TOS decision internally
             result = correct_rinex_from_tos(
@@ -500,6 +514,7 @@ class RawToRinexConverter(ABC):
                 output_file=rinex_file,  # Overwrite in place
                 station_config=station_config,
                 loglevel=self.logger.level,
+                extra_corrections=extra,
             )
 
             if result is None:
@@ -682,9 +697,7 @@ class RawToRinexConverter(ABC):
             self.logger.warning(f"Hatanaka compression failed: {e}")
             return rinex_file
 
-    def _canonicalize_rinex(
-        self, rinex_file: Path, observation_date: datetime
-    ) -> Path:
+    def _canonicalize_rinex(self, rinex_file: Path, observation_date: datetime) -> Path:
         """Run gfzrnx to canonicalize RINEX 3 header order (piece 3).
 
         Mirrors the EPOS dissemination path's ``gfzrnx -vo {version}`` pass so
@@ -710,8 +723,15 @@ class RawToRinexConverter(ABC):
         out = rinex_file.with_name(rinex_file.stem + "_gfzrnx" + rinex_file.suffix)
         version = self.rinex_version.value
         try:
-            cmd = [str(gfzrnx), "-finp", str(rinex_file), "-fout", str(out),
-                   "-vo", str(version)]
+            cmd = [
+                str(gfzrnx),
+                "-finp",
+                str(rinex_file),
+                "-fout",
+                str(out),
+                "-vo",
+                str(version),
+            ]
             self._run_subprocess(cmd, timeout=120)
         except Exception:  # noqa: BLE001
             self.logger.debug("gfzrnx run failed — keeping original header order")
