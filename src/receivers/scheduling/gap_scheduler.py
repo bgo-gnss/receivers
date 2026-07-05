@@ -99,6 +99,13 @@ def _run_gap_detection_job(
                         f"({total_archived} archived). "
                         f"Missing: {gap_str}"
                     )
+                    # Self-refill: queue the gapped stations so the backfill
+                    # worker actually fills them. Without this, gap_detection
+                    # only reports and the backfill_progress queue drains once
+                    # and never refills.
+                    from .backfill import _enqueue_backfill
+
+                    _enqueue_backfill(session_type, stations_with_gaps, days_back)
                 else:
                     logger.info(
                         f"Gap detection {session_type}: "
