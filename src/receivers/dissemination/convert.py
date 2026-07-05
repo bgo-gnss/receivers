@@ -189,6 +189,63 @@ def detect_rinex_version(obs_path: Path) -> int:
         raise ConvertError(f"no RINEX version in {obs_path.name}: {first!r}") from exc
 
 
+def _obs_complete(obs_path: Path) -> bool:
+    """Cheap completeness check for a cached PLAIN obs.
+
+    A killed convert (before atomic writes were introduced) could leave a
+    truncated obs in the cache dir; cache-hits then served it forever, causing
+    false QC blocks / RNX2CRX "truncated" package failures until a manual clear.
+    This heals such pre-existing poison (and bit-rot) on the hit path.
+
+    Streams to ``END OF HEADER`` with an early exit (never slurps the whole file
+    — obs can be 20 MB and this runs per cache-hit). END OF HEADER is mandatory in
+    every RINEX version, so its presence + a size floor is a false-positive-free
+    signal that the header write completed. It intentionally does NOT try to catch
+    mid-body truncation — that class is prevented by atomic cache writes, not by a
+    cheap scan.
+    """
+    try:
+        # Floor only rejects trivially-tiny garbage; END OF HEADER is the real
+        # signal (a valid header-only obs can be ~150 B).
+        if obs_path.stat().st_size < 100:
+            return False
+        with open(obs_path, encoding="ascii", errors="ignore") as fh:
+            for line in fh:
+                if line[60:].strip().startswith("END OF HEADER"):
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def _packaged_valid(pkg_path: Path) -> bool:
+    """Cheap validity check for a cached PACKAGED artifact (.crx.gz / .YYd.Z).
+
+    Analogue of :func:`_obs_complete` for the reused published file: a size floor,
+    and for gzip a CRC test (``gzip -t``, cheap — checks the trailer without a full
+    decompress to disk). ``.Z`` (Unix compress) has no portable test flag, so it
+    gets the size floor only; the primary defence there is the atomic write.
+    """
+    try:
+        if pkg_path.stat().st_size < 100:
+            return False
+    except OSError:
+        return False
+    if pkg_path.name.lower().endswith(".gz"):
+        try:
+            return (
+                subprocess.run(
+                    ["gzip", "-t", str(pkg_path)],
+                    capture_output=True,
+                    timeout=60,
+                ).returncode
+                == 0
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+    return True
+
+
 def detect_interval(obs_path: Path) -> Optional[float]:
     """The observation sampling interval (seconds) from the ``INTERVAL`` header.
 
@@ -375,16 +432,32 @@ def convert_for_dissemination(
         ]
         if existing:
             obs = existing[0]
-            logger.info("convert cache hit %s → %s", source_path.name, obs.name)
-            return ConvertResult(
-                obs, obs.name, detect_rinex_version(obs), True, source_path
+            if _obs_complete(obs):
+                logger.info("convert cache hit %s → %s", source_path.name, obs.name)
+                return ConvertResult(
+                    obs, obs.name, detect_rinex_version(obs), True, source_path
+                )
+            # Pre-fix poison (or bit-rot): a truncated obs sits in the cache. Evict
+            # the whole key dir (a stale bad file under a different obs_name must not
+            # be served on a later hit) and re-convert.
+            logger.warning(
+                "convert cache POISONED (incomplete obs %s) — evicting %s and re-converting",
+                obs.name,
+                out_dir.name,
             )
+            shutil.rmtree(out_dir, ignore_errors=True)
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
     import tempfile
 
-    with tempfile.TemporaryDirectory(prefix="epos_convert_") as tmp:
+    # Stage in a temp dir on the SAME filesystem as the cache (a sibling of
+    # out_dir, invisible to the hit scanner which only iterates out_dir) so the
+    # final placement is an atomic os.replace — NOT a cross-fs copy. All header
+    # mutation happens on the temp obs BEFORE it is placed, so a kill mid-rewrite
+    # dies in the temp dir and never leaves a partial in the cache.
+    cache_root = cache_dir.expanduser()
+    with tempfile.TemporaryDirectory(dir=cache_root, prefix=".epos_convert_") as tmp:
         tmpdir = Path(tmp)
         if is_raw:
             decoded = _decode_raw(source_path, station, observation_dt, tmpdir)
@@ -405,26 +478,29 @@ def convert_for_dissemination(
             file_period=getattr(fmt, "file_period", "01D"),
             monument_number=getattr(fmt, "monument_number", "00"),
         )
-        final_obs = out_dir / obs_name
-        shutil.move(str(canon), str(final_obs))
 
-    if set_header:
-        set_header_from_tos(final_obs, station, observation_dt)
-        # EPOS-specific header finalization (4.1.7) that the general TOS corrector
-        # does not do: 9-char MARKER NAME (R3), DOMES in MARKER NUMBER, generic
-        # OBSERVER/AGENCY. Done here so the cached product is EPOS-complete.
-        finalize_epos_header(
-            final_obs,
-            station,
-            version,
-            country_code=fmt.country_code,
-            monument_number=getattr(fmt, "monument_number", "00"),
-            domes=domes,
-            # Per-station agency (resolved from TOS owner org) overrides the format
-            # default; empty ⇒ fall back to the format's observer/agency.
-            observer=observer or getattr(fmt, "observer", ""),
-            agency=agency or getattr(fmt, "agency", ""),
-        )
+        if set_header:
+            set_header_from_tos(canon, station, observation_dt)
+            # EPOS-specific header finalization (4.1.7) that the general TOS corrector
+            # does not do: 9-char MARKER NAME (R3), DOMES in MARKER NUMBER, generic
+            # OBSERVER/AGENCY. Done on the temp obs so the placed product is complete.
+            finalize_epos_header(
+                canon,
+                station,
+                version,
+                country_code=fmt.country_code,
+                monument_number=getattr(fmt, "monument_number", "00"),
+                domes=domes,
+                # Per-station agency (resolved from TOS owner org) overrides the
+                # format default; empty ⇒ fall back to the format's observer/agency.
+                observer=observer or getattr(fmt, "observer", ""),
+                agency=agency or getattr(fmt, "agency", ""),
+            )
+
+        # Atomic placement into the cache (canon and out_dir share the filesystem).
+        final_obs = out_dir / obs_name
+        os.replace(str(canon), str(final_obs))
+
     logger.info(
         "converted %s → %s (RINEX %d)", source_path.name, final_obs.name, version
     )
@@ -528,9 +604,17 @@ def package(obs_path: Path, policy, out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     final = out_dir / published_name(obs_path.name, policy)
     if final.is_file():
-        return final
+        if _packaged_valid(final):
+            return final
+        # A partial published artifact from an interrupted package (pre-atomic)
+        # would be reused forever — evict and re-package.
+        logger.warning("packaged cache artifact %s invalid — re-packaging", final.name)
+        final.unlink(missing_ok=True)
 
-    with tempfile.TemporaryDirectory(prefix="epos_pkg_") as tmp:
+    # Temp dir INSIDE out_dir (same filesystem, and a subdir is invisible to the
+    # obs cache-hit scanner) so the final placement is an atomic os.replace, never
+    # a cross-fs copy that a kill could truncate into a reusable partial.
+    with tempfile.TemporaryDirectory(dir=out_dir, prefix=".epos_pkg_") as tmp:
         work = Path(tmp) / obs_path.name
         shutil.copy2(obs_path, work)
 
@@ -552,7 +636,7 @@ def package(obs_path: Path, policy, out_dir: Path) -> Path:
 
         if not work.is_file():
             raise ConvertError(f"packaging produced no {work.name}")
-        shutil.move(str(work), str(final))
+        os.replace(str(work), str(final))
     return final
 
 

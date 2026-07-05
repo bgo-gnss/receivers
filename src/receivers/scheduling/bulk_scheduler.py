@@ -2384,6 +2384,7 @@ class BulkDownloadScheduler:
         schedule = backfill_cfg.get("schedule", "5m")
         sessions = backfill_cfg.get("sessions", ["status_1hr"])
         strategy = backfill_cfg.get("strategy", "round_robin")
+        max_workers = int(backfill_cfg.get("max_workers", 8))
 
         base_trigger = parse_schedule(schedule)
 
@@ -2409,6 +2410,7 @@ class BulkDownloadScheduler:
                     archiving_mode,
                     run_rinex,
                     strategy,
+                    max_workers,
                 ],
                 id=job_id,
                 replace_existing=True,
@@ -2419,7 +2421,8 @@ class BulkDownloadScheduler:
 
         self.logger.info(
             f"Scheduled backfill for {len(sessions)} session types "
-            f"(window :{window_start:02d}-:{window_end:02d}, {base_trigger.description})"
+            f"(window :{window_start:02d}-:{window_end:02d}, {base_trigger.description}, "
+            f"{max_workers} workers/tick)"
         )
 
     def _schedule_gap_detection(self) -> None:

@@ -1553,12 +1553,14 @@ class TestGapBackfill:
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
         # Return station THOB (has fewest archived files → most gaps)
-        mock_cursor.fetchone.return_value = (
-            "THOB",
-            date(2026, 2, 1),
-            date(2026, 1, 1),
-            date(2026, 2, 10),
-        )
+        mock_cursor.fetchall.return_value = [
+            (
+                "THOB",
+                date(2026, 2, 1),
+                date(2026, 1, 1),
+                date(2026, 2, 10),
+            )
+        ]
         mock_conn.__enter__ = MagicMock(return_value=mock_conn)
         mock_conn.__exit__ = MagicMock(return_value=False)
         mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
@@ -1570,11 +1572,11 @@ class TestGapBackfill:
             mock_db.connection.return_value = mock_conn
             result = _pick_station_by_gap_count("15s_24hr")
 
-        assert result is not None
-        assert result[0] == "THOB"
+        assert result
+        assert result[0][0] == "THOB"
 
-    def test_gap_priority_returns_none_on_error(self):
-        """Gap priority gracefully returns None on DB error."""
+    def test_gap_priority_returns_empty_on_error(self):
+        """Gap priority gracefully returns [] on DB error."""
         from receivers.scheduling.backfill import _pick_station_by_gap_count
 
         with patch(
@@ -1583,15 +1585,15 @@ class TestGapBackfill:
             mock_db.connection.side_effect = Exception("db error")
             result = _pick_station_by_gap_count("status_1hr")
 
-        assert result is None
+        assert result == []
 
-    def test_gap_priority_returns_none_when_no_pending(self):
-        """Gap priority returns None when no pending stations."""
+    def test_gap_priority_returns_empty_when_no_pending(self):
+        """Gap priority returns [] when no pending stations."""
         from receivers.scheduling.backfill import _pick_station_by_gap_count
 
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
-        mock_cursor.fetchone.return_value = None
+        mock_cursor.fetchall.return_value = []
         mock_conn.__enter__ = MagicMock(return_value=mock_conn)
         mock_conn.__exit__ = MagicMock(return_value=False)
         mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
@@ -1603,7 +1605,7 @@ class TestGapBackfill:
             mock_db.connection.return_value = mock_conn
             result = _pick_station_by_gap_count("15s_24hr")
 
-        assert result is None
+        assert result == []
 
     def test_strategy_passed_through_schedule(self):
         """Verify strategy parameter is passed from scheduler to backfill job."""
@@ -1637,12 +1639,14 @@ class TestGapBackfill:
                 ) as mock_db,
                 patch(
                     "receivers.scheduling.backfill._pick_station_by_gap_count",
-                    return_value=(
-                        "ELDC",
-                        date(2026, 2, 5),
-                        date(2026, 1, 1),
-                        date(2026, 2, 10),
-                    ),
+                    return_value=[
+                        (
+                            "ELDC",
+                            date(2026, 2, 5),
+                            date(2026, 1, 1),
+                            date(2026, 2, 10),
+                        )
+                    ],
                 ) as mock_gap,
                 patch(
                     "receivers.scheduling.backfill._backfill_station_day_generic",
@@ -1656,8 +1660,8 @@ class TestGapBackfill:
                     strategy="gap_priority",
                 )
 
-                # Verify gap_priority was called
-                mock_gap.assert_called_once_with("status_1hr")
+                # Verify gap_priority was called (with the per-tick worker limit)
+                mock_gap.assert_called_once_with("status_1hr", limit=1)
 
     def test_fallback_to_round_robin(self):
         """When gap_priority returns None, falls back to round-robin."""
@@ -1671,12 +1675,14 @@ class TestGapBackfill:
             mock_conn = MagicMock()
             mock_cursor = MagicMock()
             # Round-robin query returns a station
-            mock_cursor.fetchone.return_value = (
-                "MANA",
-                date(2026, 2, 3),
-                date(2026, 1, 1),
-                date(2026, 2, 10),
-            )
+            mock_cursor.fetchall.return_value = [
+                (
+                    "MANA",
+                    date(2026, 2, 3),
+                    date(2026, 1, 1),
+                    date(2026, 2, 10),
+                )
+            ]
             mock_conn.__enter__ = MagicMock(return_value=mock_conn)
             mock_conn.__exit__ = MagicMock(return_value=False)
             mock_conn.cursor.return_value.__enter__ = MagicMock(
@@ -1690,7 +1696,7 @@ class TestGapBackfill:
                 ) as mock_db,
                 patch(
                     "receivers.scheduling.backfill._pick_station_by_gap_count",
-                    return_value=None,
+                    return_value=[],
                 ) as mock_gap,
                 patch(
                     "receivers.scheduling.backfill._backfill_station_day_generic",
@@ -1704,10 +1710,72 @@ class TestGapBackfill:
                     strategy="gap_priority",
                 )
 
-                # Gap priority tried but returned None
-                mock_gap.assert_called_once_with("15s_24hr")
+                # Gap priority tried but returned [] (empty)
+                mock_gap.assert_called_once_with("15s_24hr", limit=1)
                 # Should fall back to round-robin and still process a station
                 mock_backfill.assert_called_once()
+
+    def test_max_workers_processes_stations_concurrently(self):
+        """max_workers>1 picks and processes that many stations per tick."""
+        from receivers.scheduling.backfill import _backfill_next_station_for_session
+
+        stations = [
+            ("AAAA", date(2026, 2, 1), date(2026, 1, 1), date(2026, 2, 10)),
+            ("BBBB", date(2026, 2, 1), date(2026, 1, 1), date(2026, 2, 10)),
+            ("CCCC", date(2026, 2, 1), date(2026, 1, 1), date(2026, 2, 10)),
+        ]
+        with patch("receivers.scheduling.backfill.datetime") as mock_dt:
+            mock_dt.now.return_value = MagicMock(minute=30)  # inside window
+            with (
+                patch(
+                    "receivers.scheduling.backfill._pick_backfill_stations",
+                    return_value=stations,
+                ) as mock_pick,
+                patch(
+                    "receivers.scheduling.backfill._backfill_station_day_generic",
+                    return_value=False,
+                ) as mock_backfill,
+                patch("receivers.scheduling.backfill.clean_stale_tmp"),
+            ):
+                _backfill_next_station_for_session("1Hz_1hr", max_workers=3)
+
+                # Picked with the configured concurrency
+                mock_pick.assert_called_once_with("1Hz_1hr", 3, "round_robin")
+                # All three stations processed (concurrently)
+                assert mock_backfill.call_count == 3
+                processed = {c.args[0] for c in mock_backfill.call_args_list}
+                assert processed == {"AAAA", "BBBB", "CCCC"}
+
+    def test_one_station_failure_does_not_abort_batch(self):
+        """A single station raising must not stop the others in the batch."""
+        from receivers.scheduling.backfill import _backfill_next_station_for_session
+
+        stations = [
+            ("AAAA", date(2026, 2, 1), date(2026, 1, 1), date(2026, 2, 10)),
+            ("BBBB", date(2026, 2, 1), date(2026, 1, 1), date(2026, 2, 10)),
+        ]
+
+        def _side(station_id, *a, **k):
+            if station_id == "AAAA":
+                raise RuntimeError("boom")
+            return False
+
+        with patch("receivers.scheduling.backfill.datetime") as mock_dt:
+            mock_dt.now.return_value = MagicMock(minute=30)
+            with (
+                patch(
+                    "receivers.scheduling.backfill._pick_backfill_stations",
+                    return_value=stations,
+                ),
+                patch(
+                    "receivers.scheduling.backfill._backfill_station_day_generic",
+                    side_effect=_side,
+                ) as mock_backfill,
+                patch("receivers.scheduling.backfill.clean_stale_tmp"),
+            ):
+                # Must not raise despite AAAA failing
+                _backfill_next_station_for_session("1Hz_1hr", max_workers=2)
+                assert mock_backfill.call_count == 2
 
 
 class TestIsRetryableDownload:

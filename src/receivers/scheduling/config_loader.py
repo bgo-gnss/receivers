@@ -178,6 +178,10 @@ def get_default_config() -> Dict[str, Any]:
             "archiving_mode": "bulk",
             "strategy": "round_robin",
             "sessions": ["status_1hr", "1Hz_1hr", "15s_24hr"],
+            # Stations processed concurrently per tick, per session. The backfill
+            # executor has max(max_workers//5, 5) threads; this fans out within
+            # one job instance so the queue drains in parallel, not one-at-a-time.
+            "max_workers": 8,
         },
         "gap_detection": {
             "enabled": True,
