@@ -10,6 +10,7 @@ import pytest
 from receivers.health.database_factory import (
     _MAX_POOL_CONN,
     DatabaseConnectionFactory,
+    _DualConnection,
     _conn_semaphore,
 )
 
@@ -109,48 +110,128 @@ class TestGetConnection:
                 DatabaseConnectionFactory.get_connection()
 
 
-class TestConnectionContextManager:
-    """Test connection context manager."""
+class _FakePool:
+    """Minimal ThreadedConnectionPool stand-in for tests."""
 
-    def test_context_manager_commits_on_success(self):
-        """Test that context manager commits on successful exit."""
-        mock_conn = MagicMock()
-        with patch.object(
-            DatabaseConnectionFactory, "get_connection", return_value=mock_conn
-        ):
+    def __init__(self, conns=None):
+        self._conns = list(conns) if conns else []
+        self.given = []
+        self.returned = []  # list of (conn, close)
+
+    def getconn(self):
+        conn = self._conns.pop(0) if self._conns else _live_conn()
+        self.given.append(conn)
+        return conn
+
+    def putconn(self, conn, close=False):
+        self.returned.append((conn, close))
+
+    def closeall(self):
+        pass
+
+
+def _live_conn():
+    """A MagicMock connection that passes _ping()."""
+    conn = MagicMock()
+    conn.closed = 0
+    return conn
+
+
+def _dead_conn():
+    """A MagicMock connection that fails _ping() (server dropped it)."""
+    conn = MagicMock()
+    conn.closed = 1
+    return conn
+
+
+class TestConnectionContextManager:
+    """Test the pooled connection context manager."""
+
+    def test_context_manager_commits_and_returns_to_pool(self):
+        """Commits on success and returns the connection to the pool."""
+        mock_conn = _live_conn()
+        pool = _FakePool([mock_conn])
+        with patch.object(DatabaseConnectionFactory, "_primary_pool", return_value=pool), \
+             patch.object(DatabaseConnectionFactory, "_mirror_pool", return_value=None):
             with DatabaseConnectionFactory.connection() as conn:
                 assert conn is mock_conn
-
             mock_conn.commit.assert_called_once()
-            mock_conn.close.assert_called_once()
-            mock_conn.rollback.assert_not_called()
+            # returned to pool, NOT closed (discard=False)
+            assert pool.returned == [(mock_conn, False)]
+            mock_conn.close.assert_not_called()
 
-    def test_context_manager_rollback_on_exception(self):
-        """Test that context manager rolls back on exception."""
-        mock_conn = MagicMock()
-        with patch.object(
-            DatabaseConnectionFactory, "get_connection", return_value=mock_conn
-        ):
+    def test_context_manager_discards_poisoned_on_exception(self):
+        """Rolls back and DISCARDS (close=True) a connection whose op raised."""
+        mock_conn = _live_conn()
+        pool = _FakePool([mock_conn])
+        with patch.object(DatabaseConnectionFactory, "_primary_pool", return_value=pool), \
+             patch.object(DatabaseConnectionFactory, "_mirror_pool", return_value=None):
             with pytest.raises(ValueError):
                 with DatabaseConnectionFactory.connection():
                     raise ValueError("test error")
-
-            mock_conn.rollback.assert_called_once()
-            mock_conn.close.assert_called_once()
+            # rollback is called (pre-ping also rolls back, so >=1)
+            assert mock_conn.rollback.called
             mock_conn.commit.assert_not_called()
+            assert pool.returned == [(mock_conn, True)]  # discarded
 
-    def test_context_manager_always_closes(self):
-        """Test that connection is always closed."""
-        mock_conn = MagicMock()
+    def test_context_manager_returns_even_if_commit_fails(self):
+        """A commit failure still returns/discards the connection (no leak)."""
+        mock_conn = _live_conn()
         mock_conn.commit.side_effect = Exception("commit failed")
-        with patch.object(
-            DatabaseConnectionFactory, "get_connection", return_value=mock_conn
-        ):
+        pool = _FakePool([mock_conn])
+        with patch.object(DatabaseConnectionFactory, "_primary_pool", return_value=pool), \
+             patch.object(DatabaseConnectionFactory, "_mirror_pool", return_value=None):
             with pytest.raises(Exception):
                 with DatabaseConnectionFactory.connection():
                     pass
+            assert pool.returned and pool.returned[0][0] is mock_conn
 
+    def test_pre_ping_discards_dead_connection(self):
+        """A dead pooled connection is discarded; a live one is handed out."""
+        dead = _dead_conn()
+        live = _live_conn()
+        pool = _FakePool([dead, live])
+        with patch.object(DatabaseConnectionFactory, "_primary_pool", return_value=pool), \
+             patch.object(DatabaseConnectionFactory, "_mirror_pool", return_value=None):
+            with DatabaseConnectionFactory.connection() as conn:
+                assert conn is live
+            # dead one was closed-discarded during checkout
+            assert (dead, True) in pool.returned
+            # live one returned normally
+            assert (live, False) in pool.returned
+
+    def test_mirror_yields_dual_connection(self):
+        """With a mirror pool, a _DualConnection is yielded and both returned."""
+        primary = _live_conn()
+        mirror = _live_conn()
+        ppool = _FakePool([primary])
+        mpool = _FakePool([mirror])
+        with patch.object(DatabaseConnectionFactory, "_primary_pool", return_value=ppool), \
+             patch.object(DatabaseConnectionFactory, "_mirror_pool", return_value=mpool), \
+             patch(
+                 "receivers.health.database_factory._load_config_file",
+                 return_value={"mirror_host": "mirror.example.com"},
+             ):
+            with DatabaseConnectionFactory.connection() as conn:
+                assert isinstance(conn, _DualConnection)
+            assert ppool.returned == [(primary, False)]
+            assert mpool.returned == [(mirror, False)]
+
+    def test_connection_string_bypasses_pool(self):
+        """A full-DSN connection is not pooled — opened and closed directly."""
+        mock_conn = MagicMock()
+        with patch.object(
+            DatabaseConnectionFactory, "get_connection", return_value=mock_conn
+        ) as mock_get, \
+             patch.object(DatabaseConnectionFactory, "_primary_pool") as mock_pool:
+            with DatabaseConnectionFactory.connection(
+                connection_string="postgresql://u:p@h/db"
+            ) as conn:
+                assert conn is mock_conn
+            mock_conn.commit.assert_called_once()
             mock_conn.close.assert_called_once()
+            mock_pool.assert_not_called()
+            mock_get.assert_called_once_with(connection_string="postgresql://u:p@h/db")
 
 
 class TestConnectionSemaphore:
@@ -162,37 +243,34 @@ class TestConnectionSemaphore:
 
     def test_semaphore_released_on_success(self):
         """Semaphore is released after successful context manager exit."""
-        mock_conn = MagicMock()
-        with patch.object(
-            DatabaseConnectionFactory, "get_connection", return_value=mock_conn
-        ):
+        pool = _FakePool([_live_conn()])
+        with patch.object(DatabaseConnectionFactory, "_primary_pool", return_value=pool), \
+             patch.object(DatabaseConnectionFactory, "_mirror_pool", return_value=None):
             with DatabaseConnectionFactory.connection():
                 pass
         # If semaphore leaked, subsequent acquires would eventually block.
-        # Quick check: acquire and release immediately.
         assert _conn_semaphore.acquire(timeout=0.1)
         _conn_semaphore.release()
 
     def test_semaphore_released_on_exception(self):
         """Semaphore is released even when the caller raises."""
-        mock_conn = MagicMock()
-        with patch.object(
-            DatabaseConnectionFactory, "get_connection", return_value=mock_conn
-        ):
+        pool = _FakePool([_live_conn()])
+        with patch.object(DatabaseConnectionFactory, "_primary_pool", return_value=pool), \
+             patch.object(DatabaseConnectionFactory, "_mirror_pool", return_value=None):
             with pytest.raises(RuntimeError):
                 with DatabaseConnectionFactory.connection():
                     raise RuntimeError("boom")
         assert _conn_semaphore.acquire(timeout=0.1)
         _conn_semaphore.release()
 
-    def test_semaphore_released_on_connect_failure(self):
-        """Semaphore is released when get_connection() itself fails."""
+    def test_semaphore_released_on_checkout_failure(self):
+        """Semaphore is released when the pool checkout itself fails."""
         with patch.object(
             DatabaseConnectionFactory,
-            "get_connection",
-            side_effect=Exception("connection refused"),
+            "_primary_pool",
+            side_effect=Exception("pool init refused"),
         ):
-            with pytest.raises(Exception, match="connection refused"):
+            with pytest.raises(Exception, match="pool init refused"):
                 with DatabaseConnectionFactory.connection():
                     pass
         assert _conn_semaphore.acquire(timeout=0.1)
