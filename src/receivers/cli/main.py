@@ -3817,9 +3817,14 @@ def _create_rinex_converter(
 
     receiver_type = station_config.get("receiver", {}).get("type", "").lower()
 
-    # Determine if native Trimble converter should be used
-    # CLI --native-trimble overrides config, config overrides default (False)
+    # Determine if native Trimble converter should be used.
+    # CLI --native-trimble wins; then re-rinex mode (feeding the IMO archive)
+    # defaults it on — Trimble raw (.T02/.T00) MUST take the native converter to
+    # emit RINEX 3 (runpkr00+teqc can't), and it is ignored for SBF stations
+    # (they route to SBFConverter below regardless); then config; else off.
     if getattr(args, "native_trimble", False):
+        use_native_trimble = True
+    elif _is_rerinex_mode(args):
         use_native_trimble = True
     elif rinex_config:
         use_native_trimble = rinex_config.get("use_native_trimble", False)
@@ -4116,6 +4121,50 @@ def _backup_existing_rinex_for_date(
     return moved
 
 
+def _staged_rinex_for_date(
+    output_dir: Path,
+    obs_date: datetime,
+    station_id: str,
+    session: str,
+) -> Optional[Path]:
+    """Return a COMPLETE staged RINEX in ``output_dir`` for ``obs_date``, else None.
+
+    Used for idempotent resume: re-running the same re-rinex command skips a date
+    whose output is already staged. "Complete" is cheap but sound because the
+    converter applies TOS header corrections *before* compression, so the final
+    compressed file only exists once conversion fully succeeded — we just confirm
+    the compression magic bytes and a non-trivial size to reject a truncated
+    remnant from a hard kill mid-compression. Matches obs-date via the shared
+    filename parser (naming-agnostic), same as ``_backup_existing_rinex_for_date``.
+    """
+    from ..rinex.header_fix import _rinex_obs_datetime
+
+    if not output_dir.is_dir():
+        return None
+    hourly = "1hr" in (session or "").lower()
+    for p in sorted(output_dir.iterdir()):
+        if not p.is_file():
+            continue
+        d = _rinex_obs_datetime(p.name, station_id)
+        if d is None:
+            continue
+        match = (d == obs_date) if hourly else (d.date() == obs_date.date())
+        if not match:
+            continue
+        try:
+            if p.stat().st_size < 200:
+                return None
+            with open(p, "rb") as fh:
+                magic = fh.read(2)
+        except OSError:
+            return None
+        # .Z (compress) = 1f 9d, .gz = 1f 8b
+        if magic in (b"\x1f\x9d", b"\x1f\x8b"):
+            return p
+        return None
+    return None
+
+
 def _cmd_del_backup(stations, args, start_time, end_time, logger) -> int:
     """Delete the rinex_bak/ backups created by --backup-old.
 
@@ -4177,6 +4226,7 @@ def _rinex_convert_station_period(
         Tuple of (converted, failed, skipped).
     """
     from ..config.receivers_config import get_receivers_config
+    from ..rinex.converter_base import NetworkUnavailableError
 
     converted = 0
     failed = 0
@@ -4241,29 +4291,75 @@ def _rinex_convert_station_period(
                         )
             return 0, 0, 0
 
+        rerinex = _is_rerinex_mode(args)
+        force = getattr(args, "force", False)
+        # Only treat "0 corrections" as a failure when corrections were expected;
+        # --no-header-correction legitimately produces 0.
+        expect_corrections = not getattr(args, "no_header_correction", False)
+
         for raw_file in raw_files:
             output_dir = _reconvert_output_dir(Path(raw_file), source_root, args)
             output_dir.mkdir(parents=True, exist_ok=True)
 
+            try:
+                _obs = converter._extract_date_from_filename(Path(raw_file))
+            except Exception:  # noqa: BLE001
+                _obs = None
+
+            # Idempotent resume: in re-rinex mode, skip a date already staged
+            # (complete) from a previous run unless --force. Lets an interrupted
+            # run (e.g. TOS/network drop) be finished by re-running the SAME
+            # command — done work is not repeated. Skip the backup too.
+            if rerinex and not force and _obs is not None:
+                staged = _staged_rinex_for_date(
+                    output_dir, _obs, station_id, args.session
+                )
+                if staged is not None:
+                    print(f"  ⏭️  {Path(raw_file).name}: already staged ({staged.name})")
+                    logger.info(f"⏭️  {raw_file} already staged as {staged.name}")
+                    skipped += 1
+                    continue
+
             # Back up the existing RINEX (same obs date) before this re-conversion
             # overwrites it — deletable rinex_bak/ copy (opt-in via --backup-old).
-            if getattr(args, "backup_old", False):
-                try:
-                    _obs = converter._extract_date_from_filename(Path(raw_file))
-                except Exception:  # noqa: BLE001
-                    _obs = None
-                if _obs is not None:
-                    _n = _backup_existing_rinex_for_date(
-                        output_dir, _obs, station_id, args.session, logger
-                    )
-                    if _n:
-                        print(f"  📦 backed up {_n} existing file(s) → rinex_bak/")
+            if getattr(args, "backup_old", False) and _obs is not None:
+                _n = _backup_existing_rinex_for_date(
+                    output_dir, _obs, station_id, args.session, logger
+                )
+                if _n:
+                    print(f"  📦 backed up {_n} existing file(s) → rinex_bak/")
 
             result = converter.convert_file(
                 raw_file,
                 output_dir=output_dir,
-                force=getattr(args, "force", False),
+                force=force,
             )
+
+            # Re-rinex feeds the IMO archive: a file that converted but got NO TOS
+            # header corrections is unusable (wrong marker/observer/DOMES). For a
+            # T02→RINEX from raw, corrections are always needed, so 0 here means the
+            # metadata step no-op'd — treat as a failure and DON'T stage it, so a
+            # re-run retries this date. (Network failures already raised above.)
+            if (
+                rerinex
+                and expect_corrections
+                and result.success
+                and result.header_corrections_applied == 0
+            ):
+                if result.rinex_file and Path(result.rinex_file).exists():
+                    try:
+                        Path(result.rinex_file).unlink()
+                    except OSError:
+                        pass
+                print(
+                    f"  ❌ {Path(raw_file).name}: no TOS header corrections applied "
+                    "— not staged (re-run to retry)"
+                )
+                logger.error(
+                    f"❌ {raw_file}: 0 header corrections in re-rinex mode — dropped"
+                )
+                failed += 1
+                continue
 
             if result.success:
                 print(f"  ✅ {raw_file.name} -> {result.rinex_file.name}")
@@ -4288,6 +4384,13 @@ def _rinex_convert_station_period(
                 print(f"  ❌ {raw_file.name}: {result.message}")
                 logger.error(f"❌ {raw_file.name}: {result.message}")
                 failed += 1
+
+    except NetworkUnavailableError:
+        # TOS/network down mid-run — propagate so cmd_rinex aborts the push and
+        # prints the resume hint. Files already staged this run stay put; the
+        # in-progress date left no compressed product (corrections precede
+        # compression), so a re-run of the same command resumes cleanly.
+        raise
 
     except Exception as e:
         logger.error(f"Error processing {station_id}: {e}")
@@ -4635,10 +4738,12 @@ def _push_reindex(
     """
     if not getattr(args, "reindex", False):
         print("   ↻ catalog sha256 for these files is now stale. Refresh with:")
-        print(f"        receivers archive-reindex --dir {root}")
+        print(f"        receivers archive-reindex --dir {root} --catalog-prod")
         print(
-            "      or re-run this command with --reindex "
-            "(writes ALL [archive] catalog_hosts; --catalog-host overrides)."
+            "      or re-run this command with --reindex --catalog-prod "
+            "(writes ALL [archive] catalog_hosts; --catalog-host overrides). "
+            "Without --catalog-prod the reindex writes the local dev gps_health "
+            "only — NOT the production catalog the push just staled."
         )
         return
 
@@ -4976,12 +5081,18 @@ def cmd_rinex(args) -> int:
         config_version = rinex_config.get("default_version", 3)
         rinex_version = version_map.get(config_version, RinexVersion.RINEX_3)
 
-    # Parse output format → apply_hatanaka + compression_format
-    # None means "read from config" (the default)
-    if args.output_format == "legacy":
+    # Parse output format → apply_hatanaka + compression_format.
+    # None means "read from config" (the default) — EXCEPT in re-rinex mode, where
+    # the product is pushed into the IMO archive (Hatanaka .D.Z); default to legacy
+    # so the staged name matches the archive (a .gz would leave both .Z and .gz).
+    # Mode-scoped on purpose: the daily/manual convert keeps its config compression.
+    output_format = args.output_format
+    if output_format is None and _is_rerinex_mode(args):
+        output_format = "legacy"
+    if output_format == "legacy":
         apply_hatanaka = True
         compression_format = CompressionFormat.Z
-    elif args.output_format == "modern":
+    elif output_format == "modern":
         apply_hatanaka = False
         compression_format = CompressionFormat.GZ
     else:
@@ -5297,93 +5408,112 @@ def cmd_rinex(args) -> int:
     # Network-first: -d with multiple stations → period→station ordering
     network_first = reverse_chronological and len(stations) > 1
 
-    if network_first:
-        # Pre-create converters for all stations
-        converters: Dict[str, tuple] = {}
-        for station_id in stations:
-            conv, ext, _ = _create_rinex_converter(
-                station_id,
-                args,
-                rinex_version,
-                apply_hatanaka,
-                compression_format,
-                naming_convention,
-                observation_types,
-                logger,
-                rinex_config,
+    # A TOS/network drop mid-run raises NetworkUnavailableError out of the convert
+    # loop; abort the whole run (don't push a partial batch) and tell the user to
+    # re-run the same command to resume. Already-staged dates are skipped on resume.
+    from ..rinex.converter_base import NetworkUnavailableError
+
+    aborted = False
+    try:
+        if network_first:
+            # Pre-create converters for all stations
+            converters: Dict[str, tuple] = {}
+            for station_id in stations:
+                conv, ext, _ = _create_rinex_converter(
+                    station_id,
+                    args,
+                    rinex_version,
+                    apply_hatanaka,
+                    compression_format,
+                    naming_convention,
+                    observation_types,
+                    logger,
+                    rinex_config,
+                )
+                if conv is not None:
+                    converters[station_id] = (conv, ext)
+                else:
+                    total_skipped += 1
+
+            if not converters:
+                logger.error("No valid stations to convert")
+                return 1
+
+            # Outer: periods (newest first), Inner: stations
+            periods = generate_period_ranges(
+                start_time, end_time, args.session, reverse=True
             )
-            if conv is not None:
-                converters[station_id] = (conv, ext)
-            else:
-                total_skipped += 1
-
-        if not converters:
-            logger.error("No valid stations to convert")
-            return 1
-
-        # Outer: periods (newest first), Inner: stations
-        periods = generate_period_ranges(
-            start_time, end_time, args.session, reverse=True
-        )
-        for period_start, period_end in periods:
-            if args.session == "15s_24hr":
-                logger.info(f"\n--- {period_start.strftime('%Y-%m-%d')} ---")
-            else:
-                logger.info(f"\n--- {period_start.strftime('%Y-%m-%d %H:%M')} ---")
-            for station_id, (conv, ext) in converters.items():
+            for period_start, period_end in periods:
+                if args.session == "15s_24hr":
+                    logger.info(f"\n--- {period_start.strftime('%Y-%m-%d')} ---")
+                else:
+                    logger.info(f"\n--- {period_start.strftime('%Y-%m-%d %H:%M')} ---")
+                for station_id, (conv, ext) in converters.items():
+                    logger.info(f"Processing station: {station_id}")
+                    c, f, s = _rinex_convert_station_period(
+                        station_id,
+                        conv,
+                        ext,
+                        period_start,
+                        period_end,
+                        args,
+                        logger,
+                    )
+                    total_converted += c
+                    total_failed += f
+                    total_skipped += s
+        else:
+            # Station-first: current behavior
+            for station_id in stations:
+                print(f"\nProcessing: {station_id}")
+                logger.info(f"\n{'=' * 60}")
                 logger.info(f"Processing station: {station_id}")
+                logger.info(f"{'=' * 60}")
+
+                conv, ext, _ = _create_rinex_converter(
+                    station_id,
+                    args,
+                    rinex_version,
+                    apply_hatanaka,
+                    compression_format,
+                    naming_convention,
+                    observation_types,
+                    logger,
+                    rinex_config,
+                )
+                if conv is None:
+                    total_skipped += 1
+                    continue
+
                 c, f, s = _rinex_convert_station_period(
                     station_id,
                     conv,
                     ext,
-                    period_start,
-                    period_end,
+                    start_time,
+                    end_time,
                     args,
                     logger,
                 )
                 total_converted += c
                 total_failed += f
                 total_skipped += s
-    else:
-        # Station-first: current behavior
-        for station_id in stations:
-            print(f"\nProcessing: {station_id}")
-            logger.info(f"\n{'=' * 60}")
-            logger.info(f"Processing station: {station_id}")
-            logger.info(f"{'=' * 60}")
-
-            conv, ext, _ = _create_rinex_converter(
-                station_id,
-                args,
-                rinex_version,
-                apply_hatanaka,
-                compression_format,
-                naming_convention,
-                observation_types,
-                logger,
-                rinex_config,
-            )
-            if conv is None:
-                total_skipped += 1
-                continue
-
-            c, f, s = _rinex_convert_station_period(
-                station_id,
-                conv,
-                ext,
-                start_time,
-                end_time,
-                args,
-                logger,
-            )
-            total_converted += c
-            total_failed += f
-            total_skipped += s
+    except NetworkUnavailableError as e:
+        aborted = True
+        print(f"\n🌐 {e}")
+        print(
+            "   Aborting — metadata source unreachable, so the push is skipped to "
+            "avoid staging header-less files.\n"
+            "   Fix connectivity, then re-run the SAME command to resume: "
+            "already-staged dates are skipped, only the unfinished ones convert."
+        )
+        logger.error(f"Re-rinex aborted (network unavailable): {e}")
 
     # --push: rsync the re-rinexed staging tree back to the archive (archive-side
     # --backup-old runs first). Only in re-rinex mode (--source-dir + --work-dir).
+    # Skipped on a network abort — a resumed run pushes once conversion completes.
     if (
-        getattr(args, "push", False)
+        not aborted
+        and getattr(args, "push", False)
         and _is_rerinex_mode(args)
         and getattr(args, "work_dir", None)
     ):

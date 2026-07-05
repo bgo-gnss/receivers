@@ -46,6 +46,40 @@ class NamingConvention(Enum):
     LONG = "long"  # IGS/RINEX 3+ style: SSSS00CCC_R_YYYYDDDHHMM_...
 
 
+def _is_network_error(exc: BaseException) -> bool:
+    """True if ``exc`` looks like a transport/connection failure (DNS, refused,
+    reset, timeout) rather than a data error. Checks the exception-class name so
+    we don't need a hard dependency on ``requests`` here — covers
+    requests.ConnectionError / ConnectTimeout / ReadTimeout / MaxRetryError /
+    NameResolutionError and urllib3's equivalents."""
+    chain = [e for e in (exc, exc.__cause__, exc.__context__) if e]
+    # Any transport-layer OSError (socket.gaierror for DNS, ECONNREFUSED, …)
+    if any(isinstance(e, OSError) for e in chain):
+        return True
+    names = {type(e).__name__ for e in chain}
+    markers = (
+        "ConnectionError",
+        "ConnectTimeout",
+        "ReadTimeout",
+        "Timeout",
+        "MaxRetryError",
+        "NameResolutionError",
+        "NewConnectionError",
+        "gaierror",
+    )
+    return any(any(m in n for m in markers) for n in names)
+
+
+class NetworkUnavailableError(Exception):
+    """TOS/network unreachable during header correction.
+
+    Distinct from a per-file conversion failure: the metadata source is down,
+    not the data. Re-rinex must NOT stage a header-less file, so this propagates
+    out of ``convert_file`` to abort the run cleanly; fixing connectivity and
+    re-running the same command resumes (already-staged files are skipped).
+    """
+
+
 class ConversionError(Exception):
     """Exception raised during RINEX conversion."""
 
@@ -349,6 +383,13 @@ class RawToRinexConverter(ABC):
             result.message = "Conversion successful"
             result.header_corrections_applied = corrections_applied
 
+        except NetworkUnavailableError:
+            # Metadata source down, not a per-file failure — propagate so the run
+            # aborts cleanly and a re-run resumes (the final compressed file is
+            # never written: corrections precede compression, so no header-less
+            # product is staged).
+            raise
+
         except ConversionError as e:
             result.success = False
             result.message = str(e)
@@ -506,16 +547,41 @@ class RawToRinexConverter(ABC):
                     extra = {"OBSERVER / AGENCY": [_obs, _agc]}
 
             # Apply corrections using tostools
-            # This function handles the config vs TOS decision internally
-            result = correct_rinex_from_tos(
-                rinex_file=rinex_file,
-                station_id=self.station_id,
-                observation_date=observation_date,
-                output_file=rinex_file,  # Overwrite in place
-                station_config=station_config,
-                loglevel=self.logger.level,
-                extra_corrections=extra,
-            )
+            # This function handles the config vs TOS decision internally.
+            # tostools.search_station does sys.exit(1) on requests.ConnectionError
+            # (→ SystemExit, a BaseException that skips `except Exception`); a
+            # timeout/other transport error surfaces as a requests/OSError. Convert
+            # all of these to NetworkUnavailableError so the run aborts cleanly
+            # instead of grinding out header-less files (or dying on a raw
+            # SystemExit). Genuine data no-ops still fall through to return 0.
+            try:
+                result = correct_rinex_from_tos(
+                    rinex_file=rinex_file,
+                    station_id=self.station_id,
+                    observation_date=observation_date,
+                    output_file=rinex_file,  # Overwrite in place
+                    station_config=station_config,
+                    loglevel=self.logger.level,
+                    extra_corrections=extra,
+                )
+            except SystemExit as e:
+                raise NetworkUnavailableError(
+                    f"TOS unreachable while correcting {self.station_id} "
+                    f"{observation_date.date()} (network/DNS down)"
+                ) from e
+            except OSError as e:
+                # socket.gaierror (DNS) and other transport errors subclass OSError
+                raise NetworkUnavailableError(
+                    f"TOS unreachable while correcting {self.station_id} "
+                    f"{observation_date.date()}: {e}"
+                ) from e
+            except Exception as e:  # noqa: BLE001 — inspect for transport errors
+                if _is_network_error(e):
+                    raise NetworkUnavailableError(
+                        f"TOS unreachable while correcting {self.station_id} "
+                        f"{observation_date.date()}: {e}"
+                    ) from e
+                raise
 
             if result is None:
                 self.logger.warning(
@@ -527,6 +593,8 @@ class RawToRinexConverter(ABC):
             self.logger.info(f"Applied header corrections for {self.station_id}")
             return 1  # Indicates success
 
+        except NetworkUnavailableError:
+            raise
         except Exception as e:
             self.logger.warning(f"Header correction failed: {e}")
             return 0
