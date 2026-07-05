@@ -4003,6 +4003,57 @@ def _create_rinex_converter(
     return converter, raw_extension, station_config
 
 
+def _reconvert_source_root(args, data_prepath: str) -> str:
+    """Raw-source root for the convert path.
+
+    Re-rinexing runs off the PERSISTENT archive, not the ephemeral data_prepath
+    (a ≤2yr rolling window): use ``--source-dir`` when given, else the sync.yaml
+    dissemination ``source_root`` (the archive) when staging to a ``--work-dir``.
+    The normal daily convert (no --source-dir/--work-dir) keeps data_prepath.
+    """
+    src = getattr(args, "source_dir", None)
+    if src:
+        return str(src)
+    if getattr(args, "work_dir", None):
+        try:
+            from ..dissemination import load_dissemination_config
+
+            for t in load_dissemination_config():
+                if getattr(t, "tier", None) == "dissemination":
+                    s = getattr(t, "source_root", None)
+                    if s:
+                        return str(s)
+        except Exception:  # noqa: BLE001
+            pass
+    return str(data_prepath)
+
+
+def _reconvert_output_dir(raw_file: Path, source_root: str, args) -> Path:
+    """Where the converted RINEX lands.
+
+    ``--output-dir`` (flat) wins if set. Else, when a ``--work-dir`` is given,
+    stage into ``work_dir/<YYYY>/<mon>/<SID>/<session>/rinex/`` (tree preserved
+    from ``source_root``) so the staged tree mirrors the archive for a later
+    push. Otherwise the sibling ``rinex/`` of the raw dir (in-place convert).
+    """
+    if getattr(args, "output_dir", None):
+        return Path(args.output_dir)
+    raw_parent = raw_file.parent
+    in_place = (
+        raw_parent.parent / "rinex"
+        if raw_parent.name == "raw"
+        else raw_parent / "rinex"
+    )
+    work_dir = getattr(args, "work_dir", None)
+    if not work_dir:
+        return in_place
+    try:
+        rel = raw_parent.relative_to(source_root)  # YYYY/mon/SID/session/raw
+        return Path(work_dir) / rel.parent / "rinex"
+    except ValueError:
+        return in_place
+
+
 def _backup_existing_rinex_for_date(
     output_dir: Path,
     obs_date: datetime,
@@ -4121,6 +4172,7 @@ def _rinex_convert_station_period(
     try:
         config = get_receivers_config()
         data_prepath = config.get_data_prepath()
+        source_root = _reconvert_source_root(args, data_prepath)
 
         current_date = start_time
         raw_files = []
@@ -4132,12 +4184,7 @@ def _rinex_convert_station_period(
             if "1hr" in args.session.lower():
                 filename = f"{station_id}{current_date.strftime('%Y%m%d%H%M')}*.{raw_extension.lstrip('.')}"
                 raw_dir = (
-                    Path(data_prepath)
-                    / year
-                    / month
-                    / station_id
-                    / args.session
-                    / "raw"
+                    Path(source_root) / year / month / station_id / args.session / "raw"
                 )
                 current_date += timedelta(hours=1)
             else:
@@ -4145,12 +4192,7 @@ def _rinex_convert_station_period(
                     f"{station_id}{current_date.strftime('%Y%m%d')}*{raw_extension}"
                 )
                 raw_dir = (
-                    Path(data_prepath)
-                    / year
-                    / month
-                    / station_id
-                    / args.session
-                    / "raw"
+                    Path(source_root) / year / month / station_id / args.session / "raw"
                 )
                 current_date += timedelta(days=1)
 
@@ -4187,15 +4229,7 @@ def _rinex_convert_station_period(
             return 0, 0, 0
 
         for raw_file in raw_files:
-            if getattr(args, "output_dir", None):
-                output_dir = Path(args.output_dir)
-            else:
-                raw_parent = raw_file.parent
-                if raw_parent.name == "raw":
-                    output_dir = raw_parent.parent / "rinex"
-                else:
-                    output_dir = raw_parent / "rinex"
-
+            output_dir = _reconvert_output_dir(Path(raw_file), source_root, args)
             output_dir.mkdir(parents=True, exist_ok=True)
 
             # Back up the existing RINEX (same obs date) before this re-conversion
