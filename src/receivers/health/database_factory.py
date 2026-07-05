@@ -64,6 +64,50 @@ _config_cache: Optional[Dict[str, str]] = None
 _MAX_POOL_CONN = 20
 _conn_semaphore = threading.BoundedSemaphore(_MAX_POOL_CONN)
 
+# ── Connection pools ─────────────────────────────────────────────────────────
+# The connection() context manager reuses pooled connections instead of opening
+# a fresh psycopg2.connect() on every call.  Opening a connection is not free
+# (TCP + auth/TLS negotiation), and the health/config paths open one on *every*
+# station-op, so per-op reconnects were a measurable CPU cost (see the 2026-07-05
+# GSSAPI incident — a slow KDC turned per-op reconnects into a CPU storm).
+# Pools are keyed by database name; a separate pool is kept for the mirror host.
+# get_connection() (long-lived singletons, e.g. HealthDatabaseWriter) is
+# intentionally NOT pooled — it manages its own lifecycle.
+_pool_lock = threading.RLock()
+_primary_pools: Dict[str, Any] = {}
+_mirror_pools: Dict[str, Any] = {}
+
+
+def _ping(conn: Any) -> bool:
+    """Cheap liveness pre-ping: True if the connection answers ``SELECT 1``.
+
+    Guards against handing out a pooled connection the server has since dropped
+    (network reset, restart).  Cost is one round-trip — negligible on localhost,
+    and far cheaper than the reconnect it replaces.  Leaves no open transaction.
+    """
+    if getattr(conn, "closed", 0):
+        return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+            cur.fetchone()
+        conn.rollback()
+        return True
+    except Exception:
+        return False
+
+
+def close_all_pools() -> None:
+    """Close and drop every pooled connection (for shutdown / tests)."""
+    with _pool_lock:
+        for pool in list(_primary_pools.values()) + list(_mirror_pools.values()):
+            try:
+                pool.closeall()
+            except Exception:
+                pass
+        _primary_pools.clear()
+        _mirror_pools.clear()
+
 
 def _load_config_file() -> Dict[str, str]:
     """Load PostgreSQL settings from database.cfg.
@@ -305,26 +349,23 @@ class DatabaseConnectionFactory:
         }
 
     @classmethod
-    def _get_mirror_connection(cls, database: Optional[str] = None) -> Optional[Any]:
-        """Create a mirror connection if mirror_host is configured.
+    def _build_mirror_params(
+        cls, database: Optional[str] = None
+    ) -> Optional[tuple]:
+        """Resolve (mirror_host, mirror_params) or None if no mirror configured.
 
-        Returns None if no mirror is configured or connection fails.
-        After a failure, retries after 1 hour (not permanently disabled).
+        Shared by both the direct mirror connection (``_get_mirror_connection``)
+        and the mirror pool.  Returns None when ``mirror_host`` is unset or would
+        mirror to the primary host itself.
         """
-        if cls._mirror_failed_until > _time.monotonic():
-            return None
-
         cfg = _load_config_file()
         mirror_host = cfg.get("mirror_host")
         if not mirror_host:
             return None
 
         params = cls.get_connection_params(database)
-        # Mirror uses same credentials but different host
         if mirror_host == params["host"]:
             return None  # Don't mirror to self
-
-        import psycopg2
 
         mirror_params = {**params, "host": mirror_host}
         mirror_user = cfg.get("mirror_user")
@@ -342,13 +383,28 @@ class DatabaseConnectionFactory:
             # Primary's password is meaningless for a different user on a
             # different server — drop it so ~/.pgpass is consulted.
             mirror_params.pop("password", None)
+        return mirror_host, mirror_params
+
+    @classmethod
+    def _get_mirror_connection(cls, database: Optional[str] = None) -> Optional[Any]:
+        """Create a mirror connection if mirror_host is configured.
+
+        Returns None if no mirror is configured or connection fails.
+        After a failure, retries after 1 hour (not permanently disabled).
+        """
+        if cls._mirror_failed_until > _time.monotonic():
+            return None
+
+        built = cls._build_mirror_params(database)
+        if built is None:
+            return None
+        mirror_host, mirror_params = built
+
+        import psycopg2
+
         try:
             conn = psycopg2.connect(**mirror_params)
-            logger.info(
-                "Mirror connection established: %s -> %s",
-                params["host"],
-                mirror_host,
-            )
+            logger.info("Mirror connection established -> %s", mirror_host)
             return conn
         except Exception as exc:
             cls._mirror_failed_until = _time.monotonic() + 3600  # retry after 1 hour
@@ -358,6 +414,94 @@ class DatabaseConnectionFactory:
                 exc,
             )
             return None
+
+    @classmethod
+    def _primary_pool(cls, database: Optional[str] = None) -> Any:
+        """Lazily create/return the ThreadedConnectionPool for the primary DB."""
+        key = cls.get_connection_params(database)["database"]
+        pool = _primary_pools.get(key)
+        if pool is None:
+            with _pool_lock:
+                pool = _primary_pools.get(key)
+                if pool is None:
+                    from psycopg2 import pool as _pg_pool
+
+                    params = cls.get_connection_params(database)
+                    pool = _pg_pool.ThreadedConnectionPool(
+                        1, _MAX_POOL_CONN, **params
+                    )
+                    _primary_pools[key] = pool
+        return pool
+
+    @classmethod
+    def _mirror_pool(cls, database: Optional[str] = None) -> Optional[Any]:
+        """Lazily create/return the mirror pool, or None if unconfigured/failed.
+
+        Honours the same 1-hour failure cooldown as ``_get_mirror_connection``.
+        """
+        if cls._mirror_failed_until > _time.monotonic():
+            return None
+        built = cls._build_mirror_params(database)
+        if built is None:
+            return None
+        mirror_host, mirror_params = built
+
+        key = cls.get_connection_params(database)["database"]
+        pool = _mirror_pools.get(key)
+        if pool is None:
+            with _pool_lock:
+                pool = _mirror_pools.get(key)
+                if pool is None:
+                    from psycopg2 import pool as _pg_pool
+
+                    try:
+                        pool = _pg_pool.ThreadedConnectionPool(
+                            1, _MAX_POOL_CONN, **mirror_params
+                        )
+                        _mirror_pools[key] = pool
+                        logger.info("Mirror pool established -> %s", mirror_host)
+                    except Exception as exc:
+                        cls._mirror_failed_until = _time.monotonic() + 3600
+                        logger.warning(
+                            "Mirror pool to %s failed (will retry after 1h): %s",
+                            mirror_host,
+                            exc,
+                        )
+                        return None
+        return pool
+
+    @staticmethod
+    def _checkout(pool: Any, ping: bool = True) -> Any:
+        """Borrow a live connection from ``pool``, discarding dead ones.
+
+        Pre-pings up to 3 times; a dead connection is closed (freeing a pool
+        slot so ``getconn`` mints a fresh one) rather than handed to the caller.
+        """
+        import psycopg2
+
+        last_exc: Optional[Exception] = None
+        for _ in range(3):
+            conn = pool.getconn()
+            if not ping or _ping(conn):
+                return conn
+            try:
+                pool.putconn(conn, close=True)  # discard dead connection
+            except Exception as exc:
+                last_exc = exc
+        raise psycopg2.OperationalError(
+            f"no live pooled connection available ({last_exc})"
+        )
+
+    @staticmethod
+    def _return(pool: Any, conn: Any, discard: bool = False) -> None:
+        """Return a connection to ``pool`` (or discard it if poisoned)."""
+        try:
+            pool.putconn(conn, close=discard)
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     @classmethod
     def get_connection(
@@ -405,8 +549,11 @@ class DatabaseConnectionFactory:
     ) -> Generator[Connection, None, None]:
         """Context manager for safe connection lifecycle.
 
-        Commits on success, rolls back on exception, always closes.
-        If mirror_host is configured, both databases are committed/rolled back.
+        Commits on success, rolls back on exception.  Connections are borrowed
+        from a per-database pool (pre-pinged for liveness) and returned on exit
+        rather than opened/closed per call; a connection whose operation raised
+        is discarded instead of returned.  If mirror_host is configured, both
+        databases are committed/rolled back.
 
         Uses a bounded semaphore to limit concurrent connections and prevent
         PostgreSQL ``max_connections`` exhaustion under parallel downloads.
@@ -420,14 +567,58 @@ class DatabaseConnectionFactory:
         """
         _conn_semaphore.acquire()
         try:
-            conn = cls.get_connection(database, connection_string)
+            # Full-DSN path is rare and one-off — not pooled.
+            if connection_string:
+                conn = cls.get_connection(connection_string=connection_string)
+                try:
+                    yield conn
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+                finally:
+                    conn.close()
+                return
+
+            primary_pool = cls._primary_pool(database)
+            mirror_pool = cls._mirror_pool(database)
+            primary = None
+            mirror = None
+            poisoned = False
             try:
-                yield conn
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
+                primary = cls._checkout(primary_pool, ping=True)
+                if mirror_pool is not None:
+                    try:
+                        mirror = cls._checkout(mirror_pool, ping=True)
+                    except Exception as exc:
+                        logger.warning(
+                            "Mirror checkout failed, degrading to primary-only: %s",
+                            exc,
+                        )
+                        mirror = None
+
+                if mirror is not None:
+                    mirror_host = _load_config_file()["mirror_host"]
+                    conn = _DualConnection(primary, mirror, mirror_host)
+                else:
+                    conn = primary
+
+                try:
+                    yield conn
+                    conn.commit()
+                except Exception:
+                    # A failed op may leave the connection mid-transaction —
+                    # discard it rather than return a poisoned connection.
+                    poisoned = True
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    raise
             finally:
-                conn.close()
+                if primary is not None:
+                    cls._return(primary_pool, primary, discard=poisoned)
+                if mirror is not None:
+                    cls._return(mirror_pool, mirror, discard=poisoned)
         finally:
             _conn_semaphore.release()
