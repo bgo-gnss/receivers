@@ -172,3 +172,83 @@ def index_rinex_file(
     conn.commit()
     logger.info("indexed rinex_file %s (id=%s) for %s", file_path.name, rid, marker)
     return rid
+
+
+# Supersede-cleanup: a new R3 long-name product replaces the legacy short-name
+# file the old epos-gnss container pushed for the same day. After a durable
+# push + index of the new file, remove the superseded legacy file (portal + DB).
+# Bounded so a runaway can't delete an unexpectedly-large file; a RINEX daily is
+# single-digit MB.
+_SUPERSEDE_MAX_BYTES = 100 * 1024 * 1024
+
+
+def deindex_rinex_file(conn, name: str) -> list[int]:
+    """Delete the ``rinex_file`` row(s) for the exact ``name`` and return the ids.
+
+    Keyed on ``name`` alone: a short RINEX name (``RHOF1770.26D.Z``) encodes
+    station+year+DOY and is unique, so this targets exactly the superseded legacy
+    row — NOT a DOY glob. Legacy rows carry a dir-only ``relative_path`` that
+    differs from ours, so matching on name (not name+path) is both correct and
+    deliberate here.
+    """
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM rinex_file WHERE name = %s RETURNING id", (name,))
+        ids = [int(r[0]) for r in cur.fetchall()]
+    conn.commit()
+    if ids:
+        logger.info("de-indexed legacy rinex_file %s (ids=%s)", name, ids)
+    return ids
+
+
+def supersede_legacy(
+    conn,
+    *,
+    superseded_name: str,
+    relative_dir: str,
+    ssh_target: str,
+    dest_root: str,
+    dry_run: bool = True,
+) -> dict:
+    """Remove the legacy short-name file replaced by the new long-name product.
+
+    Portal delete via the argv-safe SSH gateway (``remove_archive_files``), then
+    (real runs only) de-index the row. Caller MUST gate on a durable push+index
+    of the NEW file and ``superseded_name != new name`` (the R3-long case) — this
+    function does not re-check that. ``dry_run`` shows intent without touching the
+    portal or DB. Never raises (best-effort cleanup; the product is already live).
+    """
+    from ..archive.remove import remove_archive_files
+
+    rel = (
+        f"{relative_dir.rstrip('/')}/{superseded_name}"
+        if relative_dir
+        else superseded_name
+    )
+    out: dict = {
+        "legacy_rel": rel,
+        "removed": [],
+        "would_remove": [],
+        "skipped": [],
+        "deindexed": [],
+    }
+    try:
+        rm = remove_archive_files(
+            [rel],
+            ssh_target=ssh_target,
+            dest_root=dest_root,
+            max_size=_SUPERSEDE_MAX_BYTES,
+            execute=not dry_run,
+        )
+        out["removed"] = [r for r, _ in rm.deleted]
+        out["would_remove"] = [r for r, _ in rm.would_delete]
+        out["skipped"] = (
+            [r for r, _ in rm.skipped_toobig] + list(rm.missing) + list(rm.invalid)
+        )
+    except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
+        logger.warning("supersede portal delete failed for %s: %s", rel, exc)
+    if not dry_run:
+        try:
+            out["deindexed"] = deindex_rinex_file(conn, superseded_name)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("supersede de-index failed for %s: %s", superseded_name, exc)
+    return out

@@ -74,6 +74,10 @@ class DisseminateResult:
     dest: Optional[str] = None
     relative_path: Optional[str] = None  # dest-relative path of the published file
     rinex_version: Optional[int] = None
+    # Legacy short-name file this long-name product supersedes on the portal (same
+    # day/dir), to be removed after a durable push+index. None when the name is
+    # unchanged (R2-short overwrite) or the source was raw (no legacy RINEX).
+    superseded_name: Optional[str] = None
     message: str = ""
     errors: list[str] = field(default_factory=list)
 
@@ -320,6 +324,15 @@ class EposDisseminate:
         result.rinex_version = conv.rinex_version
         result.dest = self._dest_base
         result.relative_path = f"{rel_dir}/{pub_name}" if rel_dir else pub_name
+
+        # Supersede target: when an R3 long-name product replaces the legacy
+        # short-name file (the old container pushed archived RINEX under its
+        # original short name), record that name so the caller can remove it from
+        # the portal + DB after a durable push+index. Only when the source is an
+        # archive RINEX (not raw) AND the published name actually changed — an
+        # R2-short push keeps the same name (rsync overwrite, nothing to clean).
+        if source is not None and pub_name != Path(source).name:
+            result.superseded_name = Path(source).name
 
         # Header-QC gate: verify the plain obs header vs TOS before packaging/push.
         # Reuses the session fetched above (no second TOS round-trip).

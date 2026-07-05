@@ -257,9 +257,41 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
             finally:
                 conn.close()
 
+    # Supersede-cleanup: an R3 long-name product replaces the legacy short-name
+    # file the old container pushed for the same day. Remove it (portal + DB) —
+    # but ONLY after a durable push+index of the new file (else we'd orphan the
+    # day). In --dry-run we show the intent without touching the portal or DB.
+    # --no-supersede disables; skipped for local-dest (no host) test configs.
+    supersede = None
+    if result.superseded_name and not args.no_supersede and target.host:
+        # result.ok (not result.pushed): a re-run where the new file is already
+        # on the portal is "up-to-date" (transferred=False) but still needs the
+        # legacy removed. result.ok ⟹ push succeeded (file present) + indexed_id
+        # ⟹ row exists, so removing the legacy can't orphan the day.
+        do_it = result.ok and not args.dry_run and indexed_id is not None
+        rel_dir = str(Path(result.relative_path).parent) if result.relative_path else ""
+        conn2 = _epos_conn() if do_it else None
+        try:
+            from ..dissemination import supersede_legacy
+
+            supersede = supersede_legacy(
+                conn2,
+                superseded_name=result.superseded_name,
+                relative_dir=rel_dir,
+                ssh_target=f"{target.user}@{target.host}",
+                dest_root=target.dest,
+                dry_run=not do_it,
+            )
+        except Exception as exc:  # noqa: BLE001 - cleanup must not fail the push
+            logger.warning("supersede-cleanup failed: %s", exc)
+        finally:
+            if conn2 is not None:
+                conn2.close()
+
     if args.json:
         out = _result_dict(result)
         out["indexed_id"] = indexed_id
+        out["supersede"] = supersede
         print(json.dumps(out, indent=2))
     else:
         icon = "✅" if result.ok else "❌"
@@ -275,6 +307,21 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
             print(f"   dest={result.dest}")
         if indexed_id is not None:
             print(f"   indexed rinex_file id={indexed_id}")
+        if supersede is not None:
+            if supersede["removed"]:
+                print(
+                    f"   🧹 superseded legacy {result.superseded_name}: removed from portal"
+                    f" + de-indexed (db ids={supersede['deindexed']})"
+                )
+            elif supersede["would_remove"]:
+                print(
+                    f"   🧹 [dry-run] would supersede legacy {result.superseded_name}:"
+                    f" rm {supersede['would_remove']} + de-index name={result.superseded_name}"
+                )
+            elif supersede["skipped"]:
+                print(
+                    f"   🧹 supersede skipped (missing/too-big): {supersede['skipped']}"
+                )
         for err in result.errors:
             print(f"   ⚠ {err}")
     return 0 if result.ok else 1
@@ -362,6 +409,12 @@ def create_epos_disseminate_parser(subparsers) -> argparse.ArgumentParser:
         "--no-index",
         action="store_true",
         help="Do not index the pushed file into the EPOS rinex_file table",
+    )
+    parser.add_argument(
+        "--no-supersede",
+        action="store_true",
+        help="Do not remove the legacy short-name file the new long-name product "
+        "replaces (portal + DB). Default: remove it after a durable push+index.",
     )
     parser.add_argument(
         "--target", help="Dissemination target name (default: first in sync.yaml)"
