@@ -30,12 +30,32 @@ parallel-directory move, and the orchestration that threads the legacy pieces.
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger("receivers.rinex.header_fix")
+
+
+def _nominal_interval_seconds(session_type: Optional[str]) -> Optional[float]:
+    """Expected RINEX sampling interval (seconds) for a session type, or None.
+
+    Drives the validator's INTERVAL session-mixing guard: ``15s_24hr`` → 15.0,
+    ``1Hz_1hr`` → 1.0. Unknown / non-rate session types (e.g. ``status_1hr``)
+    return None so the check is skipped rather than guessed.
+    """
+    if not session_type:
+        return None
+    token = str(session_type).split("_")[0].strip().lower()
+    m = re.match(r"^(\d+(?:\.\d+)?)(s|hz)$", token)
+    if not m:
+        return None
+    val = float(m.group(1))
+    if m.group(2) == "hz":
+        return 1.0 / val if val else None
+    return val
 
 
 def _rinex_obs_datetime(name: str, station: str) -> Optional[datetime]:
@@ -246,7 +266,11 @@ def fix_headers_in_file(
 
     # 2. compare_rinex_to_tos → discrepancies, classified into two groups.
     comparison = compare_rinex_to_tos(
-        rinex_info, tos_session, loglevel=loglevel, observation_date=observation_date
+        rinex_info,
+        tos_session,
+        loglevel=loglevel,
+        observation_date=observation_date,
+        expected_interval=_nominal_interval_seconds(session_type),
     )
     discrepancy_keys = set(comparison.get("discrepancies", {}).keys())
     _disc = comparison.get("discrepancies", {})
@@ -265,7 +289,13 @@ def fix_headers_in_file(
         "coordinates": "APPROX POSITION XYZ",
         "observer_agency": "OBSERVER / AGENCY",
     }
-    _FLAG_ONLY = {"receiver", "antenna", "filename_marker", "time_of_first_obs"}
+    _FLAG_ONLY = {
+        "receiver",
+        "antenna",
+        "filename_marker",
+        "time_of_first_obs",
+        "interval",
+    }
 
     correctable_keys = discrepancy_keys & _CORRECTABLE.keys()
     flag_keys = discrepancy_keys & _FLAG_ONLY

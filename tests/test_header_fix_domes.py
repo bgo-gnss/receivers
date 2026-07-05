@@ -162,3 +162,13 @@ def test_flagged_receiver_alongside_fixed_domes(monkeypatch, tmp_path):
     assert result["fixed"] is True
     assert captured["only_fields"] == {"MARKER NUMBER"}  # receiver NOT written
     assert result["flagged"]["receiver"] == ("a", "b")
+
+
+# _nominal_interval_seconds — session_type → expected sampling rate
+def test_nominal_interval_seconds():
+    assert hf._nominal_interval_seconds("15s_24hr") == 15.0
+    assert hf._nominal_interval_seconds("1Hz_1hr") == 1.0
+    assert hf._nominal_interval_seconds("30s_24hr") == 30.0
+    assert hf._nominal_interval_seconds("status_1hr") is None
+    assert hf._nominal_interval_seconds(None) is None
+    assert hf._nominal_interval_seconds("") is None
