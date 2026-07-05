@@ -1276,11 +1276,13 @@ Examples:
     mode_group.add_argument(
         "--reindex",
         action="store_true",
-        help="With --fix-headers --push: after the push, re-hash each pushed file "
-        "and update its archive_catalog.content_sha256 (the header rewrite "
-        "changes the hash, so the catalog row would otherwise be stale and the "
-        "integrity verify would flag it). Targets the catalog host from "
-        "--catalog-host (default gps_health per database.cfg).",
+        help="With --push (--fix-headers or re-rinex): after the push, re-hash each "
+        "pushed file and update its archive_catalog.content_sha256 (the rewrite/"
+        "re-convert changes the hash, so the catalog row would otherwise be stale "
+        "and the integrity verify would flag it). Targets the local dev gps_health "
+        "by default; use --catalog-prod for production. Note: passing --catalog-prod "
+        "or --catalog-host ALREADY implies this reindex — so `--push --catalog-prod` "
+        "alone does push + prod-reindex in one command.",
     )
     mode_group.add_argument(
         "--push-batch",
@@ -1303,9 +1305,11 @@ Examples:
     mode_group.add_argument(
         "--catalog-prod",
         action="store_true",
-        help="With --reindex: write the PRODUCTION catalog set from receivers.cfg "
-        "[archive] catalog_hosts (e.g. rek-d01 + pgdev). Explicit opt-in so a dev "
-        "run stays on the local DB by default.",
+        help="Write the PRODUCTION catalog set from receivers.cfg [archive] "
+        "catalog_hosts (e.g. rek-d01 + pgdev). Explicit opt-in so a dev run stays "
+        "on the local DB by default. On a --push run this IMPLIES --reindex, so "
+        "`receivers rinex … --push --catalog-prod` pushes AND refreshes the prod "
+        "catalog in one command (no separate archive-reindex pass to forget).",
     )
 
     mode_group.add_argument(

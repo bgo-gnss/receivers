@@ -4736,14 +4736,23 @@ def _push_reindex(
     upsert the rows on the catalog host; without it we just point the user at
     the reindex verb instead of the old (useless-here) `archive-sync --status`.
     """
-    if not getattr(args, "reindex", False):
-        print("   ↻ catalog sha256 for these files is now stale. Refresh with:")
+    # Naming a catalog TARGET implies the reindex: --catalog-prod (production set)
+    # or --catalog-host (explicit) means "push AND reindex there", folding the
+    # otherwise-forgettable post-push reindex into the same command. Bare
+    # --reindex still reindexes the local dev gps_health.
+    do_reindex = (
+        getattr(args, "reindex", False)
+        or getattr(args, "catalog_prod", False)
+        or bool(getattr(args, "catalog_host", None))
+    )
+    if not do_reindex:
+        print("   ↻ catalog sha256 for these files is now stale. Refresh by")
+        print("      re-running this command with --catalog-prod (push + reindex the")
+        print("      production catalog set in one go), or separately:")
         print(f"        receivers archive-reindex --dir {root} --catalog-prod")
         print(
-            "      or re-run this command with --reindex --catalog-prod "
-            "(writes ALL [archive] catalog_hosts; --catalog-host overrides). "
-            "Without --catalog-prod the reindex writes the local dev gps_health "
-            "only — NOT the production catalog the push just staled."
+            "      (--catalog-prod writes ALL [archive] catalog_hosts; --catalog-host "
+            "overrides; plain --reindex writes the local dev gps_health only)."
         )
         return
 
