@@ -1215,6 +1215,25 @@ Examples:
     )
 
     mode_group.add_argument(
+        "--backup-old",
+        action="store_true",
+        help="During RE-CONVERSION (re-rinex): before a new RINEX overwrites the "
+        "existing one for the same observation date, move the existing file to a "
+        "sibling rinex_bak/ directory (filename unchanged). The _bak name marks it "
+        "a DELETABLE backup — clean it up with --del-backup once you've verified "
+        "the re-rinexed archive. Use when re-rinexing to RINEX3-short (same "
+        "filename as the old RINEX2, so it would overwrite).",
+    )
+
+    mode_group.add_argument(
+        "--del-backup",
+        action="store_true",
+        help="Delete the rinex_bak/ backups (from --backup-old) for the "
+        "station/session/date-range (or --all). Run only after verifying the "
+        "re-rinexed files are good. Dry-run with --dry-run first.",
+    )
+
+    mode_group.add_argument(
         "--push",
         action="store_true",
         help="With --fix-headers --work-dir: after fixing, rsync ONLY the files "

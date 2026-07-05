@@ -4003,6 +4003,101 @@ def _create_rinex_converter(
     return converter, raw_extension, station_config
 
 
+def _backup_existing_rinex_for_date(
+    output_dir: Path,
+    obs_date: datetime,
+    station_id: str,
+    session: str,
+    logger: logging.Logger,
+    dry_run: bool = False,
+) -> int:
+    """Move existing RINEX in ``output_dir`` for ``obs_date`` to a sibling
+    ``rinex_bak/`` (a DELETABLE backup) before a re-conversion overwrites it.
+
+    Matches by observation datetime (date for daily sessions, date+hour for
+    hourly) via the shared filename parser, so it catches the old file whatever
+    its naming (RINEX2-short vs RINEX3-short). Returns the count moved.
+    """
+    import shutil as _sh
+
+    from ..rinex.header_fix import _rinex_obs_datetime
+
+    if not output_dir.is_dir():
+        return 0
+    hourly = "1hr" in (session or "").lower()
+    bak = output_dir.parent / "rinex_bak"
+    moved = 0
+    for p in sorted(output_dir.iterdir()):
+        if not p.is_file():
+            continue
+        d = _rinex_obs_datetime(p.name, station_id)
+        if d is None:
+            continue
+        match = (d == obs_date) if hourly else (d.date() == obs_date.date())
+        if not match:
+            continue
+        if dry_run:
+            logger.info("[DRY RUN] would back up %s -> rinex_bak/", p.name)
+            moved += 1
+            continue
+        bak.mkdir(parents=True, exist_ok=True)
+        dest = bak / p.name
+        i = 1
+        while dest.exists():
+            dest = bak / f"{p.stem}_{i}{p.suffix}"
+            i += 1
+        _sh.move(str(p), str(dest))
+        logger.debug("backed up %s -> %s", p.name, dest)
+        moved += 1
+    return moved
+
+
+def _cmd_del_backup(stations, args, start_time, end_time, logger) -> int:
+    """Delete the rinex_bak/ backups created by --backup-old.
+
+    Walks ``<data_prepath>/YYYY/mon/<SID>/<session>/rinex_bak/`` and removes the
+    backup files in the date range (or all, with --all). Dry-run with --dry-run.
+    Empty rinex_bak/ dirs are removed after.
+    """
+    from ..config.receivers_config import get_receivers_config
+    from ..rinex.header_fix import _rinex_obs_datetime
+
+    data_prepath = Path(get_receivers_config().get_data_prepath())
+    session = args.session
+    all_mode = getattr(args, "all", False)
+    dry = getattr(args, "dry_run", False)
+    total = 0
+    for sid in stations:
+        removed = 0
+        for year_dir in sorted(data_prepath.glob("[12][09][0-9][0-9]")):
+            if not year_dir.is_dir():
+                continue
+            for month_dir in sorted(year_dir.iterdir()):
+                bak = month_dir / sid / session / "rinex_bak"
+                if not bak.is_dir():
+                    continue
+                for p in sorted(bak.iterdir()):
+                    if not p.is_file():
+                        continue
+                    if not all_mode:
+                        d = _rinex_obs_datetime(p.name, sid)
+                        if d is None or not (start_time <= d < end_time):
+                            continue
+                    if dry:
+                        print(f"  [DRY RUN] would delete {p}")
+                    else:
+                        p.unlink()
+                    removed += 1
+                if not dry and bak.is_dir() and not any(bak.iterdir()):
+                    bak.rmdir()
+        print(
+            f"  {sid}: {'would delete' if dry else 'deleted'} {removed} backup file(s)"
+        )
+        total += removed
+    print(f"del-backup: {total} file(s) {'(dry-run)' if dry else 'removed'}")
+    return 0
+
+
 def _rinex_convert_station_period(
     station_id: str,
     converter,
@@ -4074,6 +4169,21 @@ def _rinex_convert_station_period(
         if getattr(args, "dry_run", False):
             for raw_file in raw_files:
                 print(f"  [DRY RUN] Would convert: {raw_file.name}")
+                if getattr(args, "backup_old", False):
+                    raw_parent = Path(raw_file).parent
+                    _od = (
+                        raw_parent.parent / "rinex"
+                        if raw_parent.name == "raw"
+                        else raw_parent / "rinex"
+                    )
+                    try:
+                        _obs = converter._extract_date_from_filename(Path(raw_file))
+                    except Exception:  # noqa: BLE001
+                        _obs = None
+                    if _obs is not None:
+                        _backup_existing_rinex_for_date(
+                            _od, _obs, station_id, args.session, logger, dry_run=True
+                        )
             return 0, 0, 0
 
         for raw_file in raw_files:
@@ -4087,6 +4197,20 @@ def _rinex_convert_station_period(
                     output_dir = raw_parent / "rinex"
 
             output_dir.mkdir(parents=True, exist_ok=True)
+
+            # Back up the existing RINEX (same obs date) before this re-conversion
+            # overwrites it — deletable rinex_bak/ copy (opt-in via --backup-old).
+            if getattr(args, "backup_old", False):
+                try:
+                    _obs = converter._extract_date_from_filename(Path(raw_file))
+                except Exception:  # noqa: BLE001
+                    _obs = None
+                if _obs is not None:
+                    _n = _backup_existing_rinex_for_date(
+                        output_dir, _obs, station_id, args.session, logger
+                    )
+                    if _n:
+                        print(f"  📦 backed up {_n} existing file(s) → rinex_bak/")
 
             result = converter.convert_file(
                 raw_file,
@@ -4465,8 +4589,10 @@ def _push_reindex(
     if not getattr(args, "reindex", False):
         print("   ↻ catalog sha256 for these files is now stale. Refresh with:")
         print(f"        receivers archive-reindex --dir {root}")
-        print("      or re-run this command with --reindex "
-              "(writes ALL [archive] catalog_hosts; --catalog-host overrides).")
+        print(
+            "      or re-run this command with --reindex "
+            "(writes ALL [archive] catalog_hosts; --catalog-host overrides)."
+        )
         return
 
     if not storage_location or not dest_prefix:
@@ -4478,21 +4604,30 @@ def _push_reindex(
     _prod = getattr(args, "catalog_prod", False)
     hosts = resolve_catalog_hosts(getattr(args, "catalog_host", None), prod=_prod)
     if _prod and not hosts:
-        print("   ⚠️  --catalog-prod but [archive] catalog_hosts is unset in "
-              "receivers.cfg — refusing to reindex (would silently hit dev). "
-              "Set catalog_hosts = rek-d01.vedur.is, pgdev.vedur.is.")
+        print(
+            "   ⚠️  --catalog-prod but [archive] catalog_hosts is unset in "
+            "receivers.cfg — refusing to reindex (would silently hit dev). "
+            "Set catalog_hosts = rek-d01.vedur.is, pgdev.vedur.is."
+        )
         return
     if hosts == [None] and not _prod:
-        print("   ↻ reindexing the DEFAULT gps_health (database.cfg). Add "
-              "--catalog-prod to write the production catalog set instead.")
+        print(
+            "   ↻ reindexing the DEFAULT gps_health (database.cfg). Add "
+            "--catalog-prod to write the production catalog set instead."
+        )
     try:
         results = reindex_files_multi(
-            hosts, files, root=root,
-            storage_location=storage_location, dest_prefix=dest_prefix,
+            hosts,
+            files,
+            root=root,
+            storage_location=storage_location,
+            dest_prefix=dest_prefix,
         )
         for label, stats in results.items():
             if stats is None:
-                print(f"   ⚠️  reindex FAILED on {label} — catalogs may DIVERGE; re-run.")
+                print(
+                    f"   ⚠️  reindex FAILED on {label} — catalogs may DIVERGE; re-run."
+                )
                 continue
             print(
                 f"   ↻ reindexed archive_catalog on {label}: "
@@ -4514,9 +4649,7 @@ def _push_cleanup(all_details: list[dict], *, work_dir, tos_cache) -> None:
     from ..rinex.header_fix import cleanup_after_push
 
     try:
-        stats = cleanup_after_push(
-            all_details, work_dir=work_dir, tos_cache=tos_cache
-        )
+        stats = cleanup_after_push(all_details, work_dir=work_dir, tos_cache=tos_cache)
         print(
             f"   🧹 cleanup: removed {stats['staged_removed']} staged obs, "
             f"{stats['backups_removed']} TOS-confirmed backup(s); kept "
@@ -4600,9 +4733,19 @@ def _flush_fixed_batch(
         t0 = time.monotonic()
         try:
             proc = subprocess.run(
-                ["rsync", "-av", "--files-from", listf.name,
-                 "--no-owner", "--no-group", src, dest],
-                capture_output=True, text=True, timeout=3600,
+                [
+                    "rsync",
+                    "-av",
+                    "--files-from",
+                    listf.name,
+                    "--no-owner",
+                    "--no-group",
+                    src,
+                    dest,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=3600,
             )
         except subprocess.TimeoutExpired:
             print("   ⚠️  batch rsync timed out — not durable, will retry on re-run")
@@ -4612,13 +4755,18 @@ def _flush_fixed_batch(
             return {"pushed": 0}
         dt = time.monotonic() - t0
         if proc.returncode != 0:
-            print(f"   ⚠️  batch rsync exit {proc.returncode} ({dt:.0f}s): "
-                  f"{proc.stderr.strip()[:200]}")
+            print(
+                f"   ⚠️  batch rsync exit {proc.returncode} ({dt:.0f}s): "
+                f"{proc.stderr.strip()[:200]}"
+            )
             return {"pushed": 0}
         print(f"   ✓ pushed {len(rel_fixed)} file(s) in {dt:.0f}s")
         _push_reindex(
-            args, [str(work / r) for r in push_rel], root=str(work),
-            storage_location=archive_name, dest_prefix=archive_destpath,
+            args,
+            [str(work / r) for r in push_rel],
+            root=str(work),
+            storage_location=archive_name,
+            dest_prefix=archive_destpath,
         )
         if getattr(args, "cleanup", False):
             _push_cleanup(batch_details, work_dir=work, tos_cache=tos_cache)
@@ -4740,8 +4888,15 @@ def cmd_rinex(args) -> int:
         if getattr(args, "fix_headers", False) and getattr(args, "all", False):
             pass  # --fix-headers --all scans the entire archive, no date needed
         else:
-            logger.error("No date range specified. Use -s/--start, -e/--end, or -d/--days")
+            logger.error(
+                "No date range specified. Use -s/--start, -e/--end, or -d/--days"
+            )
             return 1
+
+    # --del-backup: remove the rinex_bak/ backups (from --backup-old) once the
+    # re-rinexed archive is verified. Its own dispatch — no conversion.
+    if getattr(args, "del_backup", False):
+        return _cmd_del_backup(stations, args, start_time, end_time, logger)
 
     # Print progress info (always visible, not dependent on log level).
     # Skip when --fix-headers — it prints its own header below.
@@ -4836,7 +4991,9 @@ def cmd_rinex(args) -> int:
             if _work_dir.exists():
                 removed = sum(1 for _ in _work_dir.rglob("*") if _.is_file())
                 shutil.rmtree(_work_dir)
-                print(f"🧹 --clean: emptied staging work-dir {_work_dir} ({removed} file(s))")
+                print(
+                    f"🧹 --clean: emptied staging work-dir {_work_dir} ({removed} file(s))"
+                )
             _work_dir.mkdir(parents=True, exist_ok=True)
         # --push setup: resolve the archive target ONCE and build the batch
         # flush closure so fixes push INCREMENTALLY (every --push-batch fixed
@@ -4849,7 +5006,9 @@ def cmd_rinex(args) -> int:
         if getattr(args, "push", False) and not _dry_run:
             _adest, _aname, _adestpath = _resolve_archive_target()
             if not _adest:
-                logger.error("--push: no archive tier target in sync.yaml — cannot push")
+                logger.error(
+                    "--push: no archive tier target in sync.yaml — cannot push"
+                )
                 return 1
             if _work_dir is None:
                 logger.error("--push needs a staging --work-dir (staging is disabled)")
@@ -4858,8 +5017,12 @@ def cmd_rinex(args) -> int:
 
             def _flush_fn(batch_details, _a=_adest, _n=_aname, _p=_adestpath):
                 return _flush_fixed_batch(
-                    batch_details, args=args, work_dir=_work_dir,
-                    archive_dest=_a, archive_name=_n, archive_destpath=_p,
+                    batch_details,
+                    args=args,
+                    work_dir=_work_dir,
+                    archive_dest=_a,
+                    archive_name=_n,
+                    archive_destpath=_p,
                     tos_cache=tos_cache,
                 )
 
@@ -4882,7 +5045,11 @@ def cmd_rinex(args) -> int:
             )
             print(
                 f"  scanned={summary['scanned']} "
-                + (f"would_fix={summary.get('would_fix', 0)} clean={summary.get('clean', summary.get('skipped', 0))} " if _dry_run else f"fixed={summary['fixed']} skipped={summary['skipped']} ")
+                + (
+                    f"would_fix={summary.get('would_fix', 0)} clean={summary.get('clean', summary.get('skipped', 0))} "
+                    if _dry_run
+                    else f"fixed={summary['fixed']} skipped={summary['skipped']} "
+                )
                 + f"errors={summary['errors']}"
             )
             if summary["errors"]:
@@ -4909,7 +5076,9 @@ def cmd_rinex(args) -> int:
                 # manual-check warning.
                 _unreadable: list[tuple[str, int]] = []
                 for d in summary.get("details", []):
-                    if not (d.get("error") or "").startswith("could not read RINEX header"):
+                    if not (d.get("error") or "").startswith(
+                        "could not read RINEX header"
+                    ):
                         continue
                     src = d.get("file", "")
                     try:
@@ -4920,23 +5089,32 @@ def cmd_rinex(args) -> int:
                     _unreadable.append((rel, sz))
                 if _unreadable:
                     _cap = max(sz for _, sz in _unreadable)
-                    print(f"\n   🗑️  {len(_unreadable)} unreadable file(s) "
-                          f"(size {min(s for _, s in _unreadable)}–{_cap} bytes) — "
-                          "useless as RINEX. To remove from the archive:")
-                    print("      ⚠️  CHECK EACH manually first — a large corrupt file may be "
-                          "recoverable via regenerate-from-raw (a separate process), not deletion.")
+                    print(
+                        f"\n   🗑️  {len(_unreadable)} unreadable file(s) "
+                        f"(size {min(s for _, s in _unreadable)}–{_cap} bytes) — "
+                        "useless as RINEX. To remove from the archive:"
+                    )
+                    print(
+                        "      ⚠️  CHECK EACH manually first — a large corrupt file may be "
+                        "recoverable via regenerate-from-raw (a separate process), not deletion."
+                    )
                     print("      receivers archive-rm --catalog-prod \\")
                     print(f"        --max-size {_cap} \\")
-                    print("        --file " + " ".join(rel for rel, _ in sorted(_unreadable)))
-                    print("      (dry-run as shown; add --yes to actually delete — only "
-                          f"files ≤{_cap} bytes are removed, catalog pruned on both DBs)")
+                    print(
+                        "        --file "
+                        + " ".join(rel for rel, _ in sorted(_unreadable))
+                    )
+                    print(
+                        "      (dry-run as shown; add --yes to actually delete — only "
+                        f"files ≤{_cap} bytes are removed, catalog pruned on both DBs)"
+                    )
             total_fixed += summary.get("would_fix", summary.get("fixed", 0))
             total_skipped += summary.get("clean", summary.get("skipped", 0))
             total_errors += summary["errors"]
         _elapsed = _time.monotonic() - _t_start
         _h, _rem = divmod(int(_elapsed), 3600)
         _m, _s = divmod(_rem, 60)
-        _dur = (f"{_h}h {_m}m {_s}s" if _h else f"{_m}m {_s}s" if _m else f"{_s}s")
+        _dur = f"{_h}h {_m}m {_s}s" if _h else f"{_m}m {_s}s" if _m else f"{_s}s"
         print(
             f"\nSummary: {'would_fix' if _dry_run else '✅'} {total_fixed} "
             f"{'(dry-run)' if _dry_run else 'fixed'}, "
