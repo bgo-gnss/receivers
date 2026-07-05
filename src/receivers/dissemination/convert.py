@@ -528,8 +528,15 @@ def _set_header_records(rinex_file: Path, records: dict[str, str]) -> None:
     RINEX header lines are ``value[1:60] + label[61:80]``. Existing records with a
     matching label are rewritten; any not present are inserted just before
     ``END OF HEADER`` (in dict order). Idempotent.
+
+    Uses latin-1 for the whole-file round-trip: it is byte-preserving (0-255 map
+    bijectively to U+0000-00FF), so a stray non-ASCII byte in the OBSERVATION data
+    survives untouched instead of being mangled by the platform default codec —
+    which would otherwise corrupt a data line and make the downstream RNX2CRX
+    Hatanaka packaging fail ("ERROR when reading line N"). Header edits are ASCII,
+    a latin-1 subset, so they round-trip identically.
     """
-    lines = rinex_file.read_text().splitlines(keepends=True)
+    lines = rinex_file.read_text(encoding="latin-1").splitlines(keepends=True)
     out: list[str] = []
     applied: set[str] = set()
     for line in lines:
@@ -546,7 +553,7 @@ def _set_header_records(rinex_file: Path, records: dict[str, str]) -> None:
             applied.add(label)
             continue
         out.append(line)
-    rinex_file.write_text("".join(out))
+    rinex_file.write_text("".join(out), encoding="latin-1")
 
 
 def finalize_epos_header(

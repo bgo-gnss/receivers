@@ -152,6 +152,13 @@ class AgencyResolver:
             return None
         return self._by_org.get(org.strip())
 
+    def default_agency(self) -> Optional[AgencyInfo]:
+        """Fallback :class:`AgencyInfo` for a station with no resolvable owner org —
+        IMO, which owns and operates the fleet (``defaults.operator_agency``). Drives
+        the RINEX OBSERVER/AGENCY default, so both come from agencies.yaml (English
+        name via :attr:`AgencyInfo.rinex_agency`), not a sync.yaml literal."""
+        return self.resolve(self._defaults.get("operator_agency"))
+
     def resolve_by_code(self, code: Optional[str]) -> Optional[AgencyInfo]:
         """The :class:`AgencyInfo` whose English ``abbrev`` or Icelandic
         ``abbrev_is`` matches ``code`` (case-insensitive) — the stations.cfg
