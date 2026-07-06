@@ -1508,6 +1508,7 @@ For subcommand help: receivers <command> --help
         create_archive_audit_parser,
         create_archive_reindex_parser,
         create_archive_rm_parser,
+        create_archive_sort_parser,
         create_archive_sync_parser,
         create_archive_verify_parser,
     )
@@ -1522,6 +1523,8 @@ For subcommand help: receivers <command> --help
     create_archive_reindex_parser(subparsers)
     # archive-rm (guarded deletion of empty/bad files from the archive)
     create_archive_rm_parser(subparsers)
+    # archive-sort (relocate misfiled raw files: decoded date ≠ filename)
+    create_archive_sort_parser(subparsers)
 
     # epos-disseminate (RINEX3 long-name dissemination to the EPOS files server)
     from .epos_disseminate import create_epos_disseminate_parser

@@ -855,3 +855,167 @@ def create_archive_sync_parser(subparsers) -> argparse.ArgumentParser:
     )
     parser.set_defaults(func=cmd_archive_sync)
     return parser
+
+
+def cmd_archive_sort(args: argparse.Namespace) -> int:
+    """Find misfiled/misnamed raw files (decoded date ≠ filename date) and
+    move them to their correct archive location via the rawdata gateway.
+
+    Planning reads file content locally (read-only mount): magic-byte format
+    classification + `teqc +meta` decoded epoch span. Dry-run by default;
+    --yes executes the moves (argv-safe, never overwrites an existing file).
+    """
+    from ..archive import load_sync_config, plan_relocations, relocate_archive_files
+
+    rel_files: list[str] = list(args.file or [])
+    if args.list:
+        rel_files.extend(
+            ln.strip()
+            for ln in Path(args.list).read_text().splitlines()
+            if ln.strip() and not ln.strip().startswith("#")
+        )
+    if not rel_files:
+        print("❌ no files given (use --file and/or --list)")
+        return 2
+
+    root = Path(args.root)
+    if not root.is_dir():
+        print(f"❌ local archive root not found: {root}")
+        return 2
+
+    print(f"🔎 archive-sort: classifying + decoding {len(rel_files)} file(s)")
+    print(f"   local root: {root}")
+    plans, skips = plan_relocations(root, rel_files, min_bytes=args.min_bytes)
+
+    by_reason: dict[str, int] = {}
+    for s in skips:
+        by_reason[s.reason] = by_reason.get(s.reason, 0) + 1
+    for reason, n in sorted(by_reason.items()):
+        print(f"   · {reason}: {n}")
+    if args.verbose:
+        for s in skips:
+            if s.reason != "verified-correct":
+                print(f"     {s.reason}: {s.rel} {s.detail}")
+
+    if not plans:
+        print("✅ no misfiled files — nothing to move")
+        return 0
+
+    print(f"\n📦 {len(plans)} misfiled file(s):")
+    for p in plans:
+        print(
+            f"   {p.src_rel}\n"
+            f"     claims {p.claimed:%Y-%m-%d}, decodes to "
+            f"{p.decoded_start:%Y-%m-%d %H:%M} ({p.fmt})\n"
+            f"     -> {p.dst_rel}"
+        )
+
+    if args.plan_out:
+        with open(args.plan_out, "w") as fh:
+            for p in plans:
+                fh.write(f"{p.src_rel}\t{p.dst_rel}\n")
+        print(f"\n   plan written to {args.plan_out}")
+
+    # Resolve the archive gateway from the sync target (same as archive-rm).
+    config_path = Path(args.config) if args.config else None
+    target = next(
+        (
+            t
+            for t in load_sync_config(config_path)
+            if getattr(t, "tier", None) == "archive"
+        ),
+        None,
+    )
+    if target is None or not target.host:
+        print("\n⚠️  no remote archive tier target in sync.yaml — plan only")
+        return 0
+    ssh_target = f"{target.user}@{target.host}"
+
+    execute = bool(args.yes)
+    print(
+        "\n⚠️  ARCHIVE RELOCATION"
+        + ("" if execute else " (DRY-RUN — nothing moved)")
+        + f"\n   gateway: {ssh_target}:{target.dest}"
+    )
+    res = relocate_archive_files(
+        [(p.src_rel, p.dst_rel) for p in plans],
+        ssh_target=ssh_target,
+        dest_root=target.dest,
+        execute=execute,
+    )
+    for src, dst in res.invalid:
+        print(f"   ❌ REFUSED (invalid/unsafe path): {src} -> {dst}")
+    for src, dst in res.dst_exists:
+        print(f"   ⏭️  SKIP destination exists (NOT replaced): {dst}")
+    for src, _dst in res.missing:
+        print(f"   ·  missing on archive: {src}")
+    for src, dst in res.would_move:
+        print(f"   🅼  would move: {src} -> {dst}")
+    for src, dst in res.moved:
+        print(f"   ✅ MOVED: {src} -> {dst}")
+    for src, dst in res.failed:
+        print(f"   ❌ FAILED: {src} -> {dst}")
+    for src, _dst in res.unreported:
+        print(f"   ⚠️  NO STATUS (gateway dropped mid-run — re-run): {src}")
+
+    if not execute and res.would_move:
+        print("\n   → re-run with --yes to actually move the files.")
+    if res.moved:
+        print(
+            "\n   → catalog note: archive_catalog rows for the OLD paths are now "
+            "stale — run archive-reindex / re-audit for the affected stations."
+        )
+    return 0 if res.ok else 1
+
+
+def create_archive_sort_parser(subparsers) -> argparse.ArgumentParser:
+    parser = subparsers.add_parser(
+        "archive-sort",
+        help="Move misfiled raw files (decoded date ≠ filename) to the right place",
+        description=(
+            "Classify raw files by magic bytes, decode their TRUE observation "
+            "date (teqc +meta — the receiver's embedded GPS week), and relocate "
+            "files whose filename/path claims a different date (e.g. the RHOF "
+            "2000/2001 batches holding 2010/2011 data). Dry-run by default; "
+            "moves go through the rawdata gateway, argv-safe, and an existing "
+            "destination is never overwritten."
+        ),
+    )
+    parser.add_argument(
+        "--file",
+        action="extend",
+        nargs="+",
+        metavar="REL",
+        help="Archive-relative raw path(s) (YYYY/mon/STA/session/raw/FILE)",
+    )
+    parser.add_argument(
+        "--list",
+        metavar="FILE",
+        help="File with one archive-relative path per line (# comments ok)",
+    )
+    parser.add_argument(
+        "--root",
+        default="/mnt_data/rawgpsdata",
+        help="Local (read-only) archive mount used to classify/decode "
+        "(default: /mnt_data/rawgpsdata)",
+    )
+    parser.add_argument(
+        "--min-bytes",
+        type=int,
+        default=4096,
+        help="Skip files smaller than this as stubs (default: 4096)",
+    )
+    parser.add_argument(
+        "--plan-out",
+        metavar="FILE",
+        help="Write the move plan (src<TAB>dst per line) to FILE",
+    )
+    parser.add_argument("--config", help="Path to sync.yaml (default: standard)")
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Execute the moves (default: dry-run)",
+    )
+    parser.add_argument("-v", "--verbose", action="store_true")
+    parser.set_defaults(func=cmd_archive_sort)
+    return parser

@@ -32,7 +32,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from ..rinex.converter_base import NamingConvention, RinexVersion
+from ..rinex.converter_base import ConversionError, NamingConvention, RinexVersion
 from ..rinex.rinex_namer import RinexNamer
 from ..utils.content_hash import content_sha256
 
@@ -692,13 +692,34 @@ def _decode_raw(
 ) -> Path:
     """Decode an archived raw file to RINEX, dispatching by receiver type.
 
-    Septentrio ``.sbf``/``.sbf.gz`` → sbf2rin; Trimble ``.T02``/``.T00`` → the
-    Trimble native converter. Routing by extension keeps the raw fallback working
-    for the whole fleet (Septentrio is the majority — a Trimble-only fallback was
-    useless for it).
+    Dispatch is by CONTENT (magic bytes) with extension as fallback — the
+    archive holds mislabeled files (e.g. KOSK ``.atc`` that is PolaRx2 SBF),
+    and the wrong decoder either dies or silently emits nothing. Septentrio
+    SBF → sbf2rin; Trimble ``.T02``/``.T00`` → the Trimble native converter;
+    a magic↔extension disagreement follows the magic, loudly. Ashtech U/R
+    files classify cleanly but have no dissemination decoder yet (teqc chain
+    — vault todo #56), so they fail loud instead of hitting the wrong tool.
     """
-    if ".sbf" in raw_path.name.lower():
+    from ..archive.raw_format import SBF, TRIMBLE, UNKNOWN, classify_raw
+
+    fmt = classify_raw(raw_path)
+    ext_says_sbf = ".sbf" in raw_path.name.lower()
+    if fmt == SBF or (fmt == UNKNOWN and ext_says_sbf):
+        if fmt == SBF and not ext_says_sbf:
+            logger.warning(
+                "%s: extension says non-SBF but content IS SBF — decoding as SBF",
+                raw_path.name,
+            )
         return _decode_sbf_raw(raw_path, station, observation_dt, out_dir)
+    if fmt not in (TRIMBLE, UNKNOWN):
+        raise ConversionError(
+            f"{raw_path.name}: raw format '{fmt}' has no dissemination decoder yet"
+        )
+    if ext_says_sbf:
+        logger.warning(
+            "%s: extension says SBF but content is not — trying Trimble decoder",
+            raw_path.name,
+        )
     return _decode_trimble_raw(raw_path, station, observation_dt, out_dir)
 
 
