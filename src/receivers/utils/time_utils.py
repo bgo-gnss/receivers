@@ -88,3 +88,22 @@ def generate_period_ranges(
     return _gt_generate_period_ranges(
         start, end, _session_period(session_type), reverse=reverse
     )
+
+
+def parse_dates_arg(value: str) -> set:
+    """Parse a ``--dates`` value — comma-separated YYYYMMDD, or ``@file``
+    (one per line; ``#`` comments and blanks ignored). Returns a set of
+    :class:`datetime.date`. Shared by ``rinex --dates`` and
+    ``epos-disseminate --dates``."""
+    from datetime import datetime as _dt
+    from pathlib import Path as _Path
+
+    if value.startswith("@"):
+        tokens = []
+        for line in _Path(value[1:]).expanduser().read_text().splitlines():
+            line = line.split("#", 1)[0].strip()
+            if line:
+                tokens.append(line)
+    else:
+        tokens = [t.strip() for t in value.split(",") if t.strip()]
+    return {_dt.strptime(t, "%Y%m%d").date() for t in tokens}

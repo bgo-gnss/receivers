@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 logger = logging.getLogger("receivers.cli.epos_disseminate")
@@ -237,6 +237,82 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
             return 1
         return 0
 
+    # ---- range mode (--start/--end or --dates): the sweep driver ---------
+    if args.start or args.end or args.dates:
+        if args.date:
+            print("--date cannot be combined with --start/--end/--dates")
+            return 1
+        if not target.active and not args.force:
+            print(
+                f"Target {target.name!r} is inactive — pass --force for a "
+                "pre-stage run (use --dest-override to a staging path)."
+            )
+            return 1
+        try:
+            if args.dates:
+                from ..utils.time_utils import parse_dates_arg
+
+                run_dates = sorted(parse_dates_arg(args.dates))
+            else:
+                if not (args.start and args.end):
+                    print("range mode needs BOTH --start and --end (or --dates)")
+                    return 1
+                d0 = datetime.strptime(args.start, "%Y-%m-%d").date()
+                d1 = datetime.strptime(args.end, "%Y-%m-%d").date()
+                if d1 < d0:
+                    print("--end before --start")
+                    return 1
+                run_dates = [d0 + timedelta(days=n) for n in range((d1 - d0).days + 1)]
+        except (ValueError, OSError) as exc:
+            print(f"invalid dates: {exc}")
+            return 1
+
+        from ..dissemination.job import run_epos_disseminate_job
+
+        session_provider = None
+        if not args.no_qc:
+            from ..dissemination import make_session_provider
+
+            session_provider = make_session_provider()
+
+        def engine_factory(tgt):
+            return EposDisseminate(
+                tgt,
+                dry_run=args.dry_run,
+                dest_override=args.dest_override,
+                session_provider=session_provider,
+            )
+
+        def _no_conn():
+            return None
+
+        print(
+            f"Range dissemination: {args.station or 'allowlist sweep'} — "
+            f"{len(run_dates)} date(s) "
+            f"{run_dates[0]}..{run_dates[-1]}" + (" [dry-run]" if args.dry_run else "")
+        )
+        summary = run_epos_disseminate_job(
+            config_path=args.config,
+            target_name=args.target,
+            no_qc=args.no_qc,
+            markers=[args.station.upper()] if args.station else None,
+            dates=run_dates,
+            supersede=not args.no_supersede and not args.dry_run,
+            parallel=args.parallel,
+            force=args.force,
+            engine_factory=engine_factory,
+            epos_conn_factory=(_no_conn if (args.no_index or args.dry_run) else None),
+        )
+        icon = "✅" if summary["failed"] == 0 else "⚠️ "
+        print(
+            f"{icon} range summary: pushed={summary['pushed']} "
+            f"cached={summary['cached']} skipped={summary['skipped']} "
+            f"failed={summary['failed']} superseded={summary['superseded']}"
+        )
+        if args.json:
+            print(json.dumps(summary, indent=2))
+        return 0 if summary["failed"] == 0 else 1
+
     if not args.station or not args.date:
         print(
             "--station and --date are required "
@@ -381,6 +457,33 @@ def create_epos_disseminate_parser(subparsers) -> argparse.ArgumentParser:
     )
     parser.add_argument("--station", help="4-char station id (e.g. FIM2)")
     parser.add_argument("--date", help="Observation date YYYY-MM-DD (UTC day)")
+    parser.add_argument(
+        "--start",
+        metavar="YYYY-MM-DD",
+        help="Range mode: first observation date (inclusive). With --end, "
+        "disseminates every date in the range — the full-history portal "
+        "refresh after a re-rinex campaign is --start <first> --end <last>. "
+        "Uses the sweep driver: engine reuse, batched supersede-cleanup, "
+        "optional --parallel.",
+    )
+    parser.add_argument(
+        "--end", metavar="YYYY-MM-DD", help="Range mode: last date (inclusive)"
+    )
+    parser.add_argument(
+        "--dates",
+        metavar="YYYYMMDD[,..]|@FILE",
+        help="Range mode: disseminate exactly these dates (comma-separated or "
+        "@file, one per line) — e.g. an archive-audit regen list.",
+    )
+    parser.add_argument(
+        "--parallel",
+        nargs="?",
+        const="auto",
+        default=None,
+        metavar="N",
+        help="Range mode: (station, year) chunks on a load-aware thread pool; "
+        "each chunk gets its own engine + EPOS DB connection.",
+    )
     parser.add_argument(
         "--list-stations",
         action="store_true",

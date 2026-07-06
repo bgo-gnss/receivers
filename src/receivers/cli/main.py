@@ -5043,22 +5043,11 @@ def _flush_fixed_batch(
 
 
 def _parse_dates_arg(value: str):
-    """Parse ``--dates`` — comma-separated YYYYMMDD, or ``@file`` (one per
-    line, comments/blanks ignored). Returns a set of datetime.date."""
-    from datetime import date as _date  # noqa: F401 — doc anchor
+    """Delegates to utils.time_utils.parse_dates_arg (shared with
+    epos-disseminate --dates)."""
+    from ..utils.time_utils import parse_dates_arg
 
-    if value.startswith("@"):
-        tokens = []
-        for line in Path(value[1:]).expanduser().read_text().splitlines():
-            line = line.split("#", 1)[0].strip()
-            if line:
-                tokens.append(line)
-    else:
-        tokens = [t.strip() for t in value.split(",") if t.strip()]
-    out = set()
-    for t in tokens:
-        out.add(datetime.strptime(t, "%Y%m%d").date())
-    return out
+    return parse_dates_arg(value)
 
 
 def _parallel_workers(args, stations, start_time, end_time, logger) -> int:
