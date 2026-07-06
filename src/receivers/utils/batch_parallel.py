@@ -93,10 +93,19 @@ def resolve_workers(
     unparsable → 1 with an error log. Shared by every batch verb that
     exposes ``--parallel``.
     """
-    if not par or n_chunks <= 1:
+    if not par:
+        return 1
+    if n_chunks <= 1:
+        logger.info("--parallel: only one chunk — running sequentially")
         return 1
     if str(par).lower() == "auto":
-        return auto_workers(n_chunks, logger=logger)
+        w = auto_workers(n_chunks, logger=logger)
+        if w == 1:
+            logger.info(
+                "--parallel: host too loaded for extra workers right now — "
+                "running sequentially"
+            )
+        return w
     try:
         return max(1, min(int(par), n_chunks))
     except (TypeError, ValueError):
@@ -125,6 +134,108 @@ def _load_gate(logger: logging.Logger) -> None:
             )
         time.sleep(GATE_POLL_S)
         waited += GATE_POLL_S
+
+
+class ChunkProgress:
+    """Live progress handle for one chunk (updates are GIL-atomic).
+
+    Duck-typed and deliberately tiny so worker code (converters,
+    header-fix loops, hashers) can call it without importing this module:
+    ``start() / set_total(n) / advance(seconds=None) / finish(ok=)``.
+    """
+
+    def __init__(self, label: str):
+        self.label = label
+        self.state = "pending"  # pending | running | done | failed
+        self.done = 0
+        self.total: Optional[int] = None
+        self.work_done = 0  # units that did real work (converted/fixed/hashed)
+        self._dur_sum = 0.0
+        self._dur_n = 0
+        self._t0: Optional[float] = None
+
+    def start(self) -> None:
+        self.state = "running"
+        self._t0 = time.monotonic()
+
+    def set_total(self, n: int) -> None:
+        self.total = n
+
+    def advance(self, seconds: Optional[float] = None) -> None:
+        self.done += 1
+        if seconds is not None:
+            self.work_done += 1
+            self._dur_sum += seconds
+            self._dur_n += 1
+
+    def finish(self, ok: bool = True) -> None:
+        self.state = "done" if ok else "failed"
+
+    def describe(self) -> str:
+        tot = str(self.total) if self.total is not None else "?"
+        s = f"{self.label} {self.done}/{tot}"
+        if self._dur_n:
+            avg = self._dur_sum / self._dur_n
+            s += f" ({avg:.1f}s/item"
+            if self.total is not None:
+                eta = int((self.total - self.done) * avg)
+                s += f", ETA {eta // 3600}:{eta % 3600 // 60:02d}h"
+            s += ")"
+        return s
+
+
+class ProgressBoard:
+    """Periodic one-line status for a parallel batch — log-friendly.
+
+    Appends a compact status line every ``interval`` seconds (no ANSI, no
+    carriage returns — safe for terminals, logs, and systemd journals):
+
+        ⏳ RHOF 2025 34/210 (17.4s/item, ETA 0:51h) | RHOF 2026 41/207 … | 13/15 chunks done
+
+    Use as a context manager around :func:`run_chunks`; create one handle
+    per chunk up front and update it from the chunk function.
+    """
+
+    def __init__(self, interval: int = 30, out: Callable[[str], None] = print):
+        self.interval = max(5, interval)
+        self.out = out
+        self.handles: List[ChunkProgress] = []
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def handle(self, label: str) -> ChunkProgress:
+        h = ChunkProgress(label)
+        self.handles.append(h)
+        return h
+
+    def render(self) -> str:
+        running = [h for h in self.handles if h.state == "running"]
+        done = sum(1 for h in self.handles if h.state in ("done", "failed"))
+        failed = sum(1 for h in self.handles if h.state == "failed")
+        parts = [h.describe() for h in running[:6]]
+        if len(running) > 6:
+            parts.append(f"+{len(running) - 6} more running")
+        parts.append(
+            f"{done}/{len(self.handles)} chunks done"
+            + (f", {failed} FAILED" if failed else "")
+        )
+        return "⏳ " + " | ".join(parts)
+
+    def _report_loop(self) -> None:
+        while not self._stop.wait(self.interval):
+            self.out(self.render())
+
+    def __enter__(self) -> ProgressBoard:
+        self._thread = threading.Thread(
+            target=self._report_loop, name="progress-board", daemon=True
+        )
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self.interval + 1)
 
 
 @dataclass

@@ -537,6 +537,7 @@ def fix_headers_station(
     flush_fn: Any = None,
     flush_every: int = 0,
     loglevel: int = logging.INFO,
+    progress: Any = None,
 ) -> dict:
     """Run ``--fix-headers`` across a station's archived RINEX.
 
@@ -594,19 +595,25 @@ def fix_headers_station(
 
         tos_cache = TOSSesionCache()
 
-    # Progress bar — shows current file + live counts.
-    try:
-        from tqdm import tqdm
-
-        pbar = tqdm(
-            files,
-            desc=f"  {station_id}",
-            unit="file",
-            ncols=120,
-            postfix={"disc": 0, "clean": 0, "err": 0},
-        )
-    except ImportError:
+    # Progress: a ChunkProgress handle (parallel batch — tqdm bars from N
+    # workers garble one terminal line, so the board reports instead), or a
+    # tqdm bar for the interactive sequential run.
+    if progress is not None:
+        progress.set_total(len(files))
         pbar = files
+    else:
+        try:
+            from tqdm import tqdm
+
+            pbar = tqdm(
+                files,
+                desc=f"  {station_id}",
+                unit="file",
+                ncols=120,
+                postfix={"disc": 0, "clean": 0, "err": 0},
+            )
+        except ImportError:
+            pbar = files
 
     # Incremental push batching: flush every ``flush_every`` fixed files so an
     # interruption loses at most one batch (never on a dry-run).
@@ -654,6 +661,8 @@ def fix_headers_station(
                 err=summary["errors"],
                 refresh=False,
             )
+        if progress is not None:
+            progress.advance()
     # Flush the final partial batch.
     if _do_flush and _pending:
         flush_fn(_pending)

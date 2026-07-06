@@ -208,6 +208,10 @@ def _configure(level: int, json_output: bool, log_dir: Path) -> None:
         console.setFormatter(JSONFormatter())
     else:
         console.setFormatter(ProductionFormatter())
+    # Parallel batch runs mark their per-file detail records with
+    # ``extra={"batch_quiet": True}``: full detail still lands in the file
+    # log; the console shows only the periodic progress board + problems.
+    console.addFilter(lambda r: not getattr(r, "batch_quiet", False))
     root.addHandler(console)
 
     # ── File handler (JSON, rotating) ────────────────────────────────
