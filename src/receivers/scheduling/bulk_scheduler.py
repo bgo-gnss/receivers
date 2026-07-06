@@ -2272,6 +2272,7 @@ class BulkDownloadScheduler:
         self._schedule_epos_disseminate()
         self._schedule_epos_reactive()
         self._schedule_archive_verify()
+        self._schedule_local_prune()
         self._schedule_morning_recovery()
         self._schedule_stream_capture()
 
@@ -2520,6 +2521,39 @@ class BulkDownloadScheduler:
 
         self.logger.info(
             f"Scheduled archive reconciler ({base_trigger.description}, {days_back} days back, immediate first run)"
+        )
+
+    def _schedule_local_prune(self) -> None:
+        """Schedule the local ring-buffer prune (see receivers.archive.prune).
+
+        Ages out local gpsdata copies whose long-term archive copy is
+        catalog-confirmed; retention + disk guardrails come from the
+        [local_prune] section (config, not code — tune as the disk grows).
+        Disabled by default; inert until scheduler.yaml enables it.
+        """
+        prune_cfg = self.yaml_config.get("local_prune", {})
+        if not prune_cfg.get("enabled", False):
+            self.logger.info("Local prune disabled in config")
+            return
+
+        from .local_prune import _run_local_prune_job
+
+        schedule = prune_cfg.get("schedule", "05:10")
+        base_trigger = parse_schedule(schedule)
+        self.scheduler.add_job(
+            func=_run_local_prune_job,
+            trigger=base_trigger.trigger_type,
+            args=[prune_cfg],
+            id="local_prune",
+            replace_existing=True,
+            max_instances=1,
+            executor="backfill",
+            **base_trigger.trigger_kwargs,
+        )
+        self.logger.info(
+            f"Scheduled local prune ({base_trigger.description}, retention="
+            f"{prune_cfg.get('retention_days')}, min_free_gb="
+            f"{prune_cfg.get('min_free_gb')})"
         )
 
     def _schedule_integrity_checker(self) -> None:

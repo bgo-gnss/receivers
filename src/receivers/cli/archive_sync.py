@@ -1019,3 +1019,154 @@ def create_archive_sort_parser(subparsers) -> argparse.ArgumentParser:
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.set_defaults(func=cmd_archive_sort)
     return parser
+
+
+def cmd_archive_prune(args: argparse.Namespace) -> int:
+    """Local ring-buffer prune: age out local gpsdata copies whose long-term
+    archive copy is catalog-confirmed. Dry-run by default; --yes deletes.
+    Retention + guardrails come from scheduler.yaml [local_prune] (overridable
+    per-flag for manual passes)."""
+    from ..archive import load_sync_config
+    from ..archive.prune import PruneConfig, disk_free_gb, run_prune
+    from ..config.receivers_config import ReceiversConfig
+    from ..scheduling.config_loader import load_scheduler_config
+
+    try:
+        ycfg = load_scheduler_config(
+            Path(args.scheduler_config) if args.scheduler_config else None
+        )
+        prune_cfg = ycfg.get("local_prune", {}) or {}
+    except Exception as exc:  # noqa: BLE001
+        print(f"⚠️  scheduler.yaml not loadable ({exc}) — using built-in defaults")
+        prune_cfg = {}
+
+    cfg = PruneConfig.from_dict(prune_cfg)
+    if args.retention:
+        for spec in args.retention:
+            session, _, days = spec.partition("=")
+            cfg.retention_days[session] = int(days)
+    if args.max_delete is not None:
+        cfg.max_delete_per_run = args.max_delete
+
+    rcfg = ReceiversConfig()
+    root = Path(args.root or rcfg.get_data_prepath())
+    if not root.is_dir():
+        print(f"❌ data root not found: {root}")
+        return 2
+
+    target = next(
+        (
+            t
+            for t in load_sync_config(Path(args.config) if args.config else None)
+            if getattr(t, "tier", None) == "archive"
+        ),
+        None,
+    )
+    archive_location = prune_cfg.get("archive_location") or getattr(
+        target, "name", None
+    )
+    if cfg.require_catalog and not archive_location:
+        print("❌ no archive tier target — catalog gate impossible, refusing")
+        return 2
+
+    execute = bool(args.yes)
+    free, total = disk_free_gb(root)
+    print("🌀 LOCAL RING-BUFFER PRUNE" + ("" if execute else " (DRY-RUN)"))
+    print(f"   root: {root}  ({free:.0f} GB free of {total:.0f} GB)")
+    print(f"   retention: {cfg.retention_days}")
+    print(
+        f"   guardrails: warn<{cfg.warn_free_gb:.0f} GB, "
+        f"emergency<{cfg.min_free_gb:.0f} GB "
+        f"(emergency retention: {cfg.emergency_retention_days})"
+    )
+    print(
+        f"   catalog gate: {'ON — only archive-confirmed files' if cfg.require_catalog else 'OFF (--no-catalog-gate)'}"
+    )
+
+    conn = None
+    if cfg.require_catalog:
+        from ..db.connection import get_connection
+
+        try:
+            conn = get_connection(host_override=args.catalog_host)
+        except Exception as exc:  # noqa: BLE001
+            print(f"❌ gps_health connection failed ({exc}) — nothing deleted")
+            return 1
+    try:
+        stats = run_prune(
+            root,
+            cfg,
+            archive_location=archive_location or "",
+            conn=conn,
+            dry_run=not execute,
+            sessions=args.session or None,
+        )
+    finally:
+        if conn is not None:
+            conn.close()
+
+    verb = "deleted" if execute else "would delete"
+    print(
+        f"\n   {verb}: {stats.deleted} file(s), {stats.freed_bytes / 1e9:.1f} GB "
+        f"(examined {stats.examined})"
+    )
+    for session, n in stats.per_session.items():
+        print(f"      {session}: {n}")
+    if stats.kept_uncataloged:
+        print(
+            f"   🛡  kept {stats.kept_uncataloged} file(s) NOT confirmed in the "
+            "archive catalog — check archive-sync before touching these"
+        )
+    if stats.unparseable:
+        print(f"   · {stats.unparseable} unparseable filename(s) skipped")
+    if stats.capped:
+        print("   ⏸  capped by max_delete_per_run — run again for the remainder")
+    if stats.mode != "normal":
+        print(f"   ⚠️  disk mode: {stats.mode}")
+    if not execute and stats.deleted:
+        print("\n   → re-run with --yes to actually delete.")
+    return 0
+
+
+def create_archive_prune_parser(subparsers) -> argparse.ArgumentParser:
+    parser = subparsers.add_parser(
+        "archive-prune",
+        help="Ring-buffer prune of local gpsdata (catalog-gated, dry-run default)",
+        description=(
+            "Delete local gpsdata files older than the per-session retention "
+            "(scheduler.yaml [local_prune]) — ONLY files whose long-term archive "
+            "copy is confirmed in archive_catalog. Disk guardrails log WARNING "
+            "under warn_free_gb and switch to emergency retention under "
+            "min_free_gb. Dry-run by default."
+        ),
+    )
+    parser.add_argument(
+        "--session",
+        action="extend",
+        nargs="+",
+        metavar="S",
+        help="Limit to these session types (default: all configured)",
+    )
+    parser.add_argument(
+        "--retention",
+        action="extend",
+        nargs="+",
+        metavar="SESSION=DAYS",
+        help="Override retention for this run (e.g. 1Hz_1hr=14)",
+    )
+    parser.add_argument(
+        "--root", help="Data root (default: receivers.cfg data_prepath)"
+    )
+    parser.add_argument("--max-delete", type=int, help="Cap deletions this run")
+    parser.add_argument("--config", help="Path to sync.yaml (archive target name)")
+    parser.add_argument(
+        "--scheduler-config", help="Path to scheduler.yaml (default: standard)"
+    )
+    parser.add_argument(
+        "--catalog-host", help="gps_health host override for the catalog gate"
+    )
+    parser.add_argument(
+        "--yes", action="store_true", help="Actually delete (default: dry-run)"
+    )
+    parser.set_defaults(func=cmd_archive_prune)
+    return parser

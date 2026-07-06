@@ -258,6 +258,28 @@ def get_default_config() -> Dict[str, Any]:
             # immediate read-back is largely redundant with rsync's own checksum).
             "push_verify_sessions": ["15s_24hr"],
         },
+        # Local ring-buffer: age out local gpsdata copies whose long-term
+        # archive copy is catalog-confirmed. Retention is CONFIG, not code —
+        # raise it as /mnt/data grows. Disk guardrails (warn/min free GB)
+        # tighten the ring and log WARNING/ERROR before the disk can fill.
+        "local_prune": {
+            "enabled": False,
+            "schedule": "05:10",
+            "retention_days": {
+                "15s_24hr": 365,
+                "1Hz_1hr": 21,
+                "status_1hr": 90,
+            },
+            # Applied instead while free space is below min_free_gb.
+            "emergency_retention_days": {
+                "1Hz_1hr": 7,
+                "status_1hr": 30,
+            },
+            "warn_free_gb": 150,
+            "min_free_gb": 100,
+            "require_catalog": True,
+            "max_delete_per_run": 20000,
+        },
         "load_monitoring": {
             "enabled": False,
             "max_cpu_load": 8.0,
@@ -361,6 +383,7 @@ def merge_with_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
         "archive_reconciler",
         "integrity_checker",
         "archive_verify",
+        "local_prune",
         "epos_disseminate",
         "epos_reactive",
         "load_monitoring",
@@ -592,6 +615,27 @@ archive_verify:
   # Requires read_root. 1Hz_1hr deliberately omitted (high volume; the cold
   # periodic verify prioritizes it instead).
   push_verify_sessions: ["15s_24hr"]
+
+# Local ring-buffer: delete local gpsdata copies older than the per-session
+# retention, ONLY when the long-term archive copy is confirmed in
+# archive_catalog. Retention is config — raise it as /mnt/data grows.
+# Guardrails: WARNING logged under warn_free_gb; under min_free_gb the
+# emergency retentions apply and ERROR is logged (ring tightens itself
+# before the disk can reach 100%).
+local_prune:
+  enabled: false
+  schedule: "05:10"
+  retention_days:
+    15s_24hr: 365
+    1Hz_1hr: 21
+    status_1hr: 90
+  emergency_retention_days:
+    1Hz_1hr: 7
+    status_1hr: 30
+  warn_free_gb: 150
+  min_free_gb: 100
+  require_catalog: true
+  max_delete_per_run: 20000
 
 stations: {}
 
