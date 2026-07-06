@@ -53,18 +53,15 @@ STATION_GATE_M = 10.0
 
 
 def resolve_position_gate_m(override=None) -> float:
-    """explicit override > receivers.cfg [rinex] position_gate_m > 30 m."""
+    """explicit override > receivers.cfg [rinex] position_gate_m (default 10)."""
     if override is not None:
         return float(override)
     try:
         from ..config.receivers_config import get_receivers_config
 
-        v = get_receivers_config().get_rinex_config().get("position_gate_m")
-        if v is not None:
-            return float(v)
+        return get_receivers_config().get_position_gate_m()
     except Exception:  # noqa: BLE001 - config optional
-        pass
-    return STATION_GATE_M
+        return STATION_GATE_M
 
 
 @dataclass(frozen=True)
