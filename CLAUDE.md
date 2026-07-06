@@ -431,9 +431,19 @@ TOS device-intake walkthrough (add-receiver/move-device → add-antenna → add-
 telemetry → stream-flip/download), with the session-split / monument_height /
 find_station-reindex / legacy-router gotchas.
 
-**Source of truth**: `gps-config-data` repo (`git.vedur.is/bgo/gps-config-data`). Edit there,
-never directly on the server. The sync timer (`gps-config-sync.timer`) propagates changes to
-the live server within ~10 minutes. `database.cfg` is the only file never synced (local credentials).
+**Source of truth**: `gps-config-data` repo (`git.vedur.is/bgo/gps-config-data`).
+**RULE (bgo, 2026-07-06): ALL config changes are made in gps-config-data and propagate
+outward — never edit a deployed file directly.** Commit + push immediately; an
+uncommitted laptop edit is invisible to the server (the 30S sync.yaml block sat
+uncommitted for a day — exactly this failure mode). The sync timer
+(`gps-config-sync.timer`) propagates within ~10 minutes; install.sh Phase 5 deploys
+the full set (`stations.cfg receivers.cfg scheduler.yaml database.cfg icinga.cfg
+station_areas.yaml sync.yaml agencies.yaml`). Two credential files are gitignored
+per-host — `receivers.cfg` and `database.cfg` — for those, edit the file inside the
+SERVER'S gps-config-data clone (`~/git/gps-config-data/`, still the deploy source),
+plus the committed `.template`/`environments/*.env` counterparts so fresh installs
+match. Note: install.sh sed-patches `data_prepath`/`tmp_dir` in receivers.cfg at
+deploy time — path-policy changes belong in install.sh, not only in the cfg.
 
 **Finalizing cfg from TOS — `cfg ... --global`**: the cfg verbs write the **local/deployed**
 config by default; `--global` instead writes the **gps-config-data repo** (resolved from

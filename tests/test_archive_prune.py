@@ -214,3 +214,63 @@ class TestRunPrune:
             today=TODAY,
         )
         assert not (tmp_path / "2025").exists()  # whole empty chain removed
+
+
+class TestDiskFillForecast:
+    def _run(self, tmp_path, monkeypatch, free_sequence, warn_days=21):
+        """Feed a sequence of (day-offset, free_gb) samples; return final ETA."""
+        from receivers.archive.prune import record_and_forecast
+
+        state = tmp_path / "hist.json"
+        vol = tmp_path
+        eta = None
+        for off, free in free_sequence:
+            monkeypatch.setattr(prune, "disk_free_gb", lambda p, f=free: (f, 1000.0))
+            eta = record_and_forecast(
+                vol,
+                state,
+                warn_days_to_full=warn_days,
+                today=TODAY + timedelta(days=off),
+            )
+        return eta
+
+    def test_filling_volume_projects_days_to_full(self, tmp_path, monkeypatch):
+        # losing 10 GB/day from 300 GB free → ~28 days to full
+        eta = self._run(
+            tmp_path,
+            monkeypatch,
+            [(0, 300.0), (1, 290.0), (2, 280.0), (3, 270.0)],
+        )
+        assert eta is not None and 26 <= eta <= 29
+
+    def test_error_when_inside_warn_window(self, tmp_path, monkeypatch, caplog):
+        import logging as _logging
+
+        with caplog.at_level(_logging.ERROR, logger="receivers.archive.prune"):
+            eta = self._run(
+                tmp_path,
+                monkeypatch,
+                [(0, 100.0), (2, 60.0), (4, 20.0)],  # 20 GB/day, 1 day left
+            )
+        assert eta is not None and eta < 21
+        assert any("DISK FILL FORECAST" in r.message for r in caplog.records)
+
+    def test_not_filling_returns_none(self, tmp_path, monkeypatch):
+        eta = self._run(
+            tmp_path,
+            monkeypatch,
+            [(0, 300.0), (2, 300.0), (4, 305.0)],  # stable/growing free
+        )
+        assert eta is None
+
+    def test_single_sample_no_trend(self, tmp_path, monkeypatch):
+        assert self._run(tmp_path, monkeypatch, [(0, 300.0)]) is None
+
+    def test_history_persists_and_trims(self, tmp_path, monkeypatch):
+        import json
+
+        self._run(tmp_path, monkeypatch, [(i, 300.0 - i) for i in range(5)])
+        hist = json.loads((tmp_path / "hist.json").read_text())
+        samples = hist[str(tmp_path)]
+        assert len(samples) == 5
+        assert samples[-1][1] == 296.0

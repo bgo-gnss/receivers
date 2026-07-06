@@ -72,5 +72,18 @@ def _run_local_prune_job(prune_cfg: dict, dry_run: bool = False) -> None:
             scratch_report(Path(rcfg.get_tmp_dir()))
         except Exception:  # noqa: BLE001 - best-effort
             pass
+
+        # Days-to-full forecast: the data volume + any extra volumes listed
+        # in config (e.g. the long-term archive mount /mnt/rawgpsdata, where
+        # IT needs ~3 weeks lead time to add space incrementally).
+        try:
+            from ..archive.prune import record_and_forecast
+
+            state = Path.home() / ".cache" / "gps_receivers" / "disk_history.json"
+            warn_days = int(prune_cfg.get("warn_days_to_full", 21))
+            for vol in [root, *prune_cfg.get("forecast_volumes", [])]:
+                record_and_forecast(Path(vol), state, warn_days_to_full=warn_days)
+        except Exception:  # noqa: BLE001 - forecast is best-effort
+            logger.exception("disk forecast failed")
     except Exception:  # noqa: BLE001 - job must never kill the scheduler
         logger.exception("local-prune job failed")

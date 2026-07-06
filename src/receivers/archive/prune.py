@@ -331,6 +331,97 @@ def _rmdir_if_empty(path: Path) -> None:
         pass
 
 
+def record_and_forecast(
+    volume: Path,
+    state_path: Path,
+    *,
+    warn_days_to_full: int = 21,
+    today: Optional[date] = None,
+    window_days: int = 14,
+    keep_samples: int = 90,
+) -> Optional[float]:
+    """Track free space over time and forecast days-to-full for ``volume``.
+
+    Appends today's free-GB sample to a small JSON history and estimates the
+    fill rate over the last ``window_days``. When the volume is on course to
+    fill within ``warn_days_to_full`` days it logs an ERROR — the aggressive,
+    log-visible signal ops asked for so storage can be expanded incrementally
+    BEFORE the disk runs out (IT lead time ~3 weeks). Returns the estimated
+    days-to-full (None when no trend yet or the volume is not filling).
+    """
+    import json
+
+    today = today or date.today()
+    try:
+        free, total = disk_free_gb(Path(volume))
+    except OSError as exc:
+        logger.warning("forecast: cannot stat %s: %s", volume, exc)
+        return None
+
+    key = str(volume)
+    history: dict = {}
+    try:
+        history = json.loads(Path(state_path).read_text())
+    except (OSError, ValueError):
+        history = {}
+    samples = [s for s in history.get(key, []) if s[0] != today.isoformat()]
+    samples.append([today.isoformat(), round(free, 2)])
+    samples = samples[-keep_samples:]
+    history[key] = samples
+    try:
+        Path(state_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(state_path).write_text(json.dumps(history))
+    except OSError as exc:
+        logger.warning("forecast: cannot persist history %s: %s", state_path, exc)
+
+    window_floor = today - timedelta(days=window_days)
+    window = [s for s in samples if s[0] >= window_floor.isoformat()]
+    if len(window) < 2:
+        return None
+    d0, f0 = window[0]
+    span_days = (today - date.fromisoformat(d0)).days
+    if span_days < 2:
+        return None  # need a real baseline before trusting a rate
+    rate_gb_per_day = (f0 - free) / span_days
+    if rate_gb_per_day <= 0:
+        logger.info(
+            "forecast %s: %.0f GB free, not filling (%.1f GB/day)",
+            volume,
+            free,
+            rate_gb_per_day,
+        )
+        return None
+    days_to_full = free / rate_gb_per_day
+    if days_to_full <= warn_days_to_full:
+        logger.error(
+            "DISK FILL FORECAST: %s full in ~%.0f days at %.1f GB/day "
+            "(%.0f GB free of %.0f) — request expansion NOW (lead time!)",
+            volume,
+            days_to_full,
+            rate_gb_per_day,
+            free,
+            total,
+        )
+    elif days_to_full <= 2 * warn_days_to_full:
+        logger.warning(
+            "disk fill forecast: %s full in ~%.0f days at %.1f GB/day "
+            "(%.0f GB free)",
+            volume,
+            days_to_full,
+            rate_gb_per_day,
+            free,
+        )
+    else:
+        logger.info(
+            "forecast %s: ~%.0f days to full at %.1f GB/day (%.0f GB free)",
+            volume,
+            days_to_full,
+            rate_gb_per_day,
+            free,
+        )
+    return days_to_full
+
+
 def scratch_report(tmp_dir: Path, warn_free_gb: float = 5.0) -> None:
     """Guardrail for the download scratch volume (best-effort, log-only)."""
     try:

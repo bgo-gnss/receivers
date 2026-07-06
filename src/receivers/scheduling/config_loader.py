@@ -279,6 +279,12 @@ def get_default_config() -> Dict[str, Any]:
             "min_free_gb": 100,
             "require_catalog": True,
             "max_delete_per_run": 20000,
+            # Days-to-full forecast: ERROR when a volume is on course to fill
+            # within warn_days_to_full (IT expansion lead time ~3 weeks).
+            # forecast_volumes = EXTRA volumes beyond the data root (e.g. the
+            # long-term archive mount).
+            "warn_days_to_full": 21,
+            "forecast_volumes": [],
         },
         "load_monitoring": {
             "enabled": False,
@@ -636,6 +642,13 @@ local_prune:
   min_free_gb: 100
   require_catalog: true
   max_delete_per_run: 20000
+  # Days-to-full forecast: ERROR-level warning when a volume fills within
+  # warn_days_to_full at the observed rate (IT expansion lead time ~3 weeks).
+  # forecast_volumes = extra volumes to watch beyond the data root, e.g. the
+  # long-term archive mount:
+  #   forecast_volumes: [/mnt/rawgpsdata]
+  warn_days_to_full: 21
+  forecast_volumes: []
 
 stations: {}
 
