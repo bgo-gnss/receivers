@@ -82,7 +82,9 @@ def _validate_station_for_download(
     """
     station_config = get_station_config(station_id)
     if station_config is None:
-        logger.warning(f"⚠️  Station {station_id} not found in configuration - SKIPPING")
+        logger.warning(
+            f"⚠️  Station {station_id} not found in configuration - SKIPPING"
+        )
         return None
 
     try:
@@ -892,7 +894,9 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
             voltage = power.get("voltage")
             if voltage is not None:
                 status = power.get("status", "ok")
-                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                emoji = (
+                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                )
                 metric_lines.append(f"Voltage: {emoji} {voltage:.2f} V")
 
         # Temperature
@@ -901,7 +905,9 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
             value = temp.get("value")
             if value is not None:
                 status = temp.get("status", "ok")
-                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                emoji = (
+                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                )
                 metric_lines.append(f"Temp: {emoji} {value}°C")
 
         # CPU load
@@ -910,7 +916,9 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
             value = cpu.get("value", cpu.get("percent"))
             if value is not None:
                 status = cpu.get("status", "ok")
-                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                emoji = (
+                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                )
                 metric_lines.append(f"CPU: {emoji} {value}%")
 
         # Disk usage
@@ -919,7 +927,9 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
             value = disk.get("usage_percent")
             if value is not None:
                 status = disk.get("status", "ok")
-                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                emoji = (
+                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                )
                 metric_lines.append(f"Disk: {emoji} {value:.0f}%")
 
         if metric_lines:
@@ -931,7 +941,9 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
             total = sats.get("total")
             if total is not None:
                 status = sats.get("status", "ok")
-                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                emoji = (
+                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                )
                 by_const = sats.get("by_constellation", {})
                 const_str = (
                     ", ".join(f"{k}:{v}" for k, v in by_const.items())
@@ -949,7 +961,9 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
             fix_mode = pos.get("fix_mode") or pos.get("fix_type")
             if fix_mode:
                 status = pos.get("status", "ok")
-                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                emoji = (
+                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                )
                 sats_used = pos.get("satellites_used", "")
                 lat = pos.get("latitude")
                 lon = pos.get("longitude")
@@ -1055,7 +1069,9 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
                     status = "warning"
                 else:
                     status = "ok"
-                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                emoji = (
+                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                )
                 label = session_labels.get(session, session)
                 file_parts.append(f"{label}:{emoji}")
         if file_parts:
@@ -1785,7 +1801,9 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
                 tcp = connection["tcp"]
                 status = tcp.get("status", "unknown")
                 host = tcp.get("host", "")
-                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                emoji = (
+                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
+                )
                 print(f"  tcp: {emoji} {status} ({host})")
 
             # Show port status (always show all ports for consistency, N/A if not configured)
@@ -4219,8 +4237,13 @@ def _rinex_convert_station_period(
     end_time: datetime,
     args,
     logger: logging.Logger,
+    durations: Optional[List[float]] = None,
 ) -> tuple:
     """Convert raw files to RINEX for a single station and time period.
+
+    ``durations`` (optional, caller-owned) collects per-file conversion
+    seconds across calls, feeding the in-run ETA lines and the final
+    timing summary.
 
     Returns:
         Tuple of (converted, failed, skipped).
@@ -4297,7 +4320,7 @@ def _rinex_convert_station_period(
         # --no-header-correction legitimately produces 0.
         expect_corrections = not getattr(args, "no_header_correction", False)
 
-        for raw_file in raw_files:
+        for file_idx, raw_file in enumerate(raw_files):
             output_dir = _reconvert_output_dir(Path(raw_file), source_root, args)
             output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -4315,7 +4338,9 @@ def _rinex_convert_station_period(
                     output_dir, _obs, station_id, args.session
                 )
                 if staged is not None:
-                    print(f"  ⏭️  {Path(raw_file).name}: already staged ({staged.name})")
+                    print(
+                        f"  ⏭️  {Path(raw_file).name}: already staged ({staged.name})"
+                    )
                     logger.info(f"⏭️  {raw_file} already staged as {staged.name}")
                     skipped += 1
                     continue
@@ -4362,13 +4387,33 @@ def _rinex_convert_station_period(
                 continue
 
             if result.success:
-                print(f"  ✅ {raw_file.name} -> {result.rinex_file.name}")
-                logger.info(f"✅ {raw_file.name} -> {result.rinex_file.name}")
+                dur = getattr(result, "duration_seconds", 0.0) or 0.0
+                print(f"  ✅ {raw_file.name} -> {result.rinex_file.name} ({dur:.1f}s)")
+                logger.info(
+                    f"✅ {raw_file.name} -> {result.rinex_file.name} ({dur:.1f}s)"
+                )
                 if result.header_corrections_applied > 0:
                     logger.debug(
                         f"   Applied {result.header_corrections_applied} header corrections"
                     )
                 converted += 1
+                if durations is not None:
+                    durations.append(dur)
+                    # Periodic ETA: after the first 5 conversions, then every
+                    # 25. "≤" because already-staged dates ahead skip in ~ms.
+                    # Only for real batches — in period-first mode each call
+                    # sees a handful of files and the ETA would be noise.
+                    n = len(durations)
+                    if (n == 5 or n % 25 == 0) and len(raw_files) >= 25:
+                        avg = sum(durations) / n
+                        remaining = len(raw_files) - (file_idx + 1)
+                        eta_s = int(remaining * avg)
+                        print(
+                            f"  ⏱️  avg {avg:.1f}s/file over {n} conversions; "
+                            f"{remaining} file(s) left in range ≈ "
+                            f"≤{eta_s // 3600}:{eta_s % 3600 // 60:02d}h",
+                            flush=True,
+                        )
 
                 # Track RINEX output in file_tracking DB
                 try:
@@ -4916,9 +4961,11 @@ def _flush_fixed_batch(
             return {"pushed": 0}
         dt = time.monotonic() - t0
         if proc.returncode != 0:
+            from ..archive.remove import clean_ssh_stderr
+
             print(
                 f"   ⚠️  batch rsync exit {proc.returncode} ({dt:.0f}s): "
-                f"{proc.stderr.strip()[:200]}"
+                f"{clean_ssh_stderr(proc.stderr)}"
             )
             return {"pushed": 0}
         print(f"   ✓ pushed {len(rel_fixed)} file(s) in {dt:.0f}s")
@@ -4939,17 +4986,31 @@ def _flush_fixed_batch(
             pass
 
 
-def _push_reconverted(work_dir, args, logger) -> None:
+def _push_reconverted(work_dir, args, logger) -> Dict[str, Any]:
     """Push re-rinexed files from a --work-dir staging tree back to the archive.
 
     Archive-side --backup-old (move old ``rinex/FILE`` → ``rinex_bak/FILE`` via the
     rawdata SSH gateway) runs BEFORE the rsync, preserving the superseded file on
     the archive. Then rsync the staged tree to the archive tier and reindex.
     Dry-run supported. Never raises.
+
+    Returns push stats for the run summary: ``staged`` (files in the list),
+    ``pushed`` (files rsync actually transferred — files already identical on
+    the archive are not re-sent, so pushed < staged is normal), ``rc`` (rsync
+    exit, None if rsync never ran), ``seconds``, ``note`` (error text or
+    dry-run marker).
     """
     import subprocess
     import tempfile
+    import time
 
+    stats: Dict[str, Any] = {
+        "staged": 0,
+        "pushed": 0,
+        "rc": None,
+        "seconds": 0.0,
+        "note": "",
+    }
     work = Path(work_dir).expanduser()
     staged = [p for p in work.rglob("*") if p.is_file() and p.parent.name == "rinex"]
     rel: list[str] = []
@@ -4958,15 +5019,18 @@ def _push_reconverted(work_dir, args, logger) -> None:
             rel.append(str(p.relative_to(work)))
         except ValueError:
             pass
+    stats["staged"] = len(rel)
     if not rel:
         print("  push: no staged RINEX files to push")
-        return
+        stats["note"] = "nothing staged"
+        return stats
 
     dry = getattr(args, "dry_run", False)
     full, name, destpath = _resolve_archive_target()
     if not full:
         logger.error("push: no archive-tier target in sync.yaml — cannot push")
-        return
+        stats["note"] = "no archive target configured"
+        return stats
     ssh_target = full.split(":", 1)[0] if ":" in full else None
 
     # Archive-side backup-old: move the soon-to-be-overwritten archive RINEX to
@@ -4991,7 +5055,8 @@ def _push_reconverted(work_dir, args, logger) -> None:
     src = str(work).rstrip("/") + "/"
     if dry:
         print(f"  [DRY RUN] would rsync {len(rel)} file(s) → {dest}")
-        return
+        stats["note"] = "dry-run"
+        return stats
 
     listf = tempfile.NamedTemporaryFile(
         "w", suffix=".rsync-files", delete=False, encoding="utf-8"
@@ -5000,6 +5065,7 @@ def _push_reconverted(work_dir, args, logger) -> None:
         listf.write("\n".join(rel) + "\n")
         listf.close()
         print(f"  🚀 push: {len(rel)} file(s) → {dest}", flush=True)
+        t0 = time.monotonic()
         try:
             proc = subprocess.run(
                 [
@@ -5018,11 +5084,36 @@ def _push_reconverted(work_dir, args, logger) -> None:
             )
         except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
             print(f"  ⚠️  rsync failed: {exc}")
-            return
+            stats["note"] = f"rsync failed: {exc}"
+            return stats
+        stats["seconds"] = time.monotonic() - t0
+        stats["rc"] = proc.returncode
+        # rsync -av lists each file it actually transferred; files already
+        # identical on the archive are skipped silently. Count real transfers
+        # so the summary distinguishes "pushed" from "already there".
+        rel_set = set(rel)
+        stats["pushed"] = sum(
+            1 for ln in proc.stdout.splitlines() if ln.strip() in rel_set
+        )
         if proc.returncode != 0:
-            print(f"  ⚠️  rsync exit {proc.returncode}: {proc.stderr.strip()[:200]}")
-            return
-        print(f"  ✓ pushed {len(rel)} file(s)")
+            from ..archive.remove import clean_ssh_stderr
+
+            err = clean_ssh_stderr(proc.stderr)
+            stats["note"] = err
+            print(
+                f"  ⚠️  rsync exit {proc.returncode} "
+                f"({stats['pushed']}/{len(rel)} transferred, "
+                f"{stats['seconds']:.0f}s): {err}"
+            )
+            print(
+                "     already-transferred files are durable; re-run the push "
+                "to send the rest (rsync skips what is already there)"
+            )
+            return stats
+        print(
+            f"  ✓ pushed {stats['pushed']} file(s) in {stats['seconds']:.0f}s "
+            f"({len(rel) - stats['pushed']} already on archive)"
+        )
         _push_reindex(
             args,
             [str(work / r) for r in rel],
@@ -5035,6 +5126,7 @@ def _push_reconverted(work_dir, args, logger) -> None:
             Path(listf.name).unlink()
         except OSError:
             pass
+    return stats
 
 
 def cmd_rinex(args) -> int:
@@ -5420,8 +5512,13 @@ def cmd_rinex(args) -> int:
     # A TOS/network drop mid-run raises NetworkUnavailableError out of the convert
     # loop; abort the whole run (don't push a partial batch) and tell the user to
     # re-run the same command to resume. Already-staged dates are skipped on resume.
+    import time as _time
+
     from ..rinex.converter_base import NetworkUnavailableError
 
+    run_t0 = _time.monotonic()
+    durations: List[float] = []
+    push_stats: Optional[Dict[str, Any]] = None
     aborted = False
     try:
         if network_first:
@@ -5467,6 +5564,7 @@ def cmd_rinex(args) -> int:
                         period_end,
                         args,
                         logger,
+                        durations=durations,
                     )
                     total_converted += c
                     total_failed += f
@@ -5502,6 +5600,7 @@ def cmd_rinex(args) -> int:
                     end_time,
                     args,
                     logger,
+                    durations=durations,
                 )
                 total_converted += c
                 total_failed += f
@@ -5527,17 +5626,49 @@ def cmd_rinex(args) -> int:
         and getattr(args, "work_dir", None)
     ):
         print("\nPushing re-rinexed files to the archive:")
-        _push_reconverted(args.work_dir, args, logger)
+        push_stats = _push_reconverted(args.work_dir, args, logger)
 
-    # Summary
-    print(
-        f"\nSummary: ✅ {total_converted} converted, ❌ {total_failed} failed, ⏭️  {total_skipped} skipped"
-    )
+    # Summary — conversion counts, per-file timing, elapsed, and push outcome.
+    elapsed = int(_time.monotonic() - run_t0)
+    elapsed_str = f"{elapsed // 3600}:{elapsed % 3600 // 60:02d}:{elapsed % 60:02d}"
+    lines = [
+        f"Summary: ✅ {total_converted} converted, ❌ {total_failed} failed, "
+        f"⏭️  {total_skipped} skipped (already staged)"
+    ]
+    if durations:
+        avg = sum(durations) / len(durations)
+        lines.append(
+            f"  ⏱️  elapsed {elapsed_str} — conversion avg {avg:.1f}s/file "
+            f"(min {min(durations):.1f} / max {max(durations):.1f}, "
+            f"{sum(durations):.0f}s converting)"
+        )
+    else:
+        lines.append(f"  ⏱️  elapsed {elapsed_str}")
+    if push_stats is not None:
+        rc = push_stats["rc"]
+        if push_stats["note"] and rc in (None, 0):
+            lines.append(f"  🚀 push: {push_stats['note']}")
+        elif rc == 0:
+            lines.append(
+                f"  🚀 push: {push_stats['pushed']}/{push_stats['staged']} "
+                f"transferred in {push_stats['seconds']:.0f}s "
+                f"({push_stats['staged'] - push_stats['pushed']} already on archive)"
+            )
+        else:
+            lines.append(
+                f"  🚀 push: INCOMPLETE (rsync exit {rc}) — "
+                f"{push_stats['pushed']}/{push_stats['staged']} transferred; "
+                f"re-run to push the rest: {push_stats['note']}"
+            )
+    elif aborted:
+        lines.append("  🚀 push: skipped (network abort — re-run to resume)")
+
+    print()
     logger.info(f"\n{'=' * 60}")
     logger.info("RINEX Conversion Summary:")
-    logger.info(f"  ✅ Converted: {total_converted}")
-    logger.info(f"  ❌ Failed: {total_failed}")
-    logger.info(f"  ⏭️  Skipped: {total_skipped}")
+    for line in lines:
+        print(line)
+        logger.info(line)
     logger.info(f"{'=' * 60}")
 
     return 0 if total_failed == 0 else 1

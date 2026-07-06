@@ -43,6 +43,28 @@ _RELPATH_RE = re.compile(
 # Characters never allowed in a target path (defense in depth over the regex).
 _FORBIDDEN = set("*?[]{}~ \t\n\r\\'\"$`;|&<>()!")
 
+# Known-harmless OpenSSH stderr noise. OpenSSH 10 prints a 3-line post-quantum
+# key-exchange warning on every connection to an older server; left in place it
+# fills the truncated error text and hides the REAL ssh/rsync error.
+_SSH_NOISE_MARKERS = (
+    "post-quantum key exchange",
+    "store now, decrypt later",
+    "openssh.com/pq.html",
+)
+
+
+def clean_ssh_stderr(stderr: str, limit: int = 400) -> str:
+    """Strip known-harmless OpenSSH warning lines so the real error survives
+    truncation; collapse the rest to one ``|``-separated line of ≤limit chars."""
+    lines = [
+        ln.strip()
+        for ln in stderr.splitlines()
+        if ln.strip() and not any(m in ln for m in _SSH_NOISE_MARKERS)
+    ]
+    if not lines and stderr.strip():
+        return "(stderr was only OpenSSH warning noise — no error text)"
+    return " | ".join(lines)[:limit]
+
 
 def validate_archive_relpath(rel: str) -> bool:
     """True only for a safe, archive-layout-shaped relative path."""
@@ -164,7 +186,9 @@ def remove_archive_files(
             logger.error("archive-rm FAILED to delete %s", rel)
     if proc.returncode != 0 and not (res.deleted or res.would_delete):
         logger.error(
-            "ssh gateway error (rc=%s): %s", proc.returncode, proc.stderr.strip()[:200]
+            "ssh gateway error (rc=%s): %s",
+            proc.returncode,
+            clean_ssh_stderr(proc.stderr),
         )
     return res
 
@@ -299,6 +323,8 @@ def backup_old_archive_files(
             logger.error("re-rinex backup FAILED for %s", rel)
     if proc.returncode != 0 and not (res.backed_up or res.would_backup):
         logger.error(
-            "ssh gateway error (rc=%s): %s", proc.returncode, proc.stderr.strip()[:200]
+            "ssh gateway error (rc=%s): %s",
+            proc.returncode,
+            clean_ssh_stderr(proc.stderr),
         )
     return res

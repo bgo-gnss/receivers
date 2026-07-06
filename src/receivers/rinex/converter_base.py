@@ -7,12 +7,13 @@ along with common data structures for conversion results.
 
 import logging
 import subprocess
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, ClassVar, Dict, List, Optional, Union
 
 from ..config.receivers_config import get_receivers_config
 
@@ -78,6 +79,14 @@ class NetworkUnavailableError(Exception):
     out of ``convert_file`` to abort the run cleanly; fixing connectivity and
     re-running the same command resumes (already-staged files are skipped).
     """
+
+
+# TOS-fetch retry policy: a seconds-long VPN/DNS resolver blip on the client
+# (laptop Cisco tunnel rekey — 2026-07-05/06 incidents) must not abort a
+# multi-hour archive run. Network failures are retried with linear backoff
+# (30 s, 60 s) before the NetworkUnavailableError abort fires as the backstop.
+_TOS_NETWORK_ATTEMPTS = 3
+_TOS_NETWORK_RETRY_DELAY_S = 30
 
 
 class ConversionError(Exception):
@@ -172,6 +181,11 @@ class RawToRinexConverter(ABC):
     2. Header correction using TOS database metadata
     3. Output naming according to short/long conventions
     """
+
+    # Probed once per class in _apply_header_corrections: does the installed
+    # tostools correct_rinex_from_tos accept the tos_metadata_cache kwarg?
+    # None = not probed yet.
+    _tos_cache_kw_supported: ClassVar[Optional[bool]] = None
 
     def __init__(
         self,
@@ -569,7 +583,7 @@ class RawToRinexConverter(ABC):
             # a *silently default* header on every file. Pass it only when the
             # installed tostools actually accepts it (detected once per class).
             cls = type(self)
-            if not hasattr(cls, "_tos_cache_kw_supported"):
+            if cls._tos_cache_kw_supported is None:
                 import inspect as _inspect
 
                 try:
@@ -580,7 +594,7 @@ class RawToRinexConverter(ABC):
                 except (ValueError, TypeError):
                     cls._tos_cache_kw_supported = False
 
-            corr_kwargs = dict(
+            corr_kwargs: Dict[str, Any] = dict(
                 rinex_file=rinex_file,
                 station_id=self.station_id,
                 observation_date=observation_date,
@@ -591,26 +605,38 @@ class RawToRinexConverter(ABC):
             )
             if cls._tos_cache_kw_supported:
                 corr_kwargs["tos_metadata_cache"] = self._tos_metadata_cache
-            try:
-                result = correct_rinex_from_tos(**corr_kwargs)
-            except SystemExit as e:
+            # Network failures get _TOS_NETWORK_ATTEMPTS tries with backoff so
+            # a transient resolver blip doesn't abort the whole run; anything
+            # non-network raises immediately (handled by the outer except).
+            last_err: Optional[BaseException] = None
+            for attempt in range(1, _TOS_NETWORK_ATTEMPTS + 1):
+                try:
+                    result = correct_rinex_from_tos(**corr_kwargs)
+                    break
+                except SystemExit as e:
+                    # tostools does sys.exit(1) on requests.ConnectionError
+                    last_err = e
+                except OSError as e:
+                    # socket.gaierror (DNS) and other transport errors subclass OSError
+                    last_err = e
+                except Exception as e:  # noqa: BLE001 — inspect for transport errors
+                    if not _is_network_error(e):
+                        raise
+                    last_err = e
+                if attempt < _TOS_NETWORK_ATTEMPTS:
+                    delay = _TOS_NETWORK_RETRY_DELAY_S * attempt
+                    self.logger.warning(
+                        f"TOS unreachable for {self.station_id} "
+                        f"{observation_date.date()} ({last_err!r}); retrying in "
+                        f"{delay}s (attempt {attempt}/{_TOS_NETWORK_ATTEMPTS})"
+                    )
+                    time.sleep(delay)
+            else:
                 raise NetworkUnavailableError(
                     f"TOS unreachable while correcting {self.station_id} "
-                    f"{observation_date.date()} (network/DNS down)"
-                ) from e
-            except OSError as e:
-                # socket.gaierror (DNS) and other transport errors subclass OSError
-                raise NetworkUnavailableError(
-                    f"TOS unreachable while correcting {self.station_id} "
-                    f"{observation_date.date()}: {e}"
-                ) from e
-            except Exception as e:  # noqa: BLE001 — inspect for transport errors
-                if _is_network_error(e):
-                    raise NetworkUnavailableError(
-                        f"TOS unreachable while correcting {self.station_id} "
-                        f"{observation_date.date()}: {e}"
-                    ) from e
-                raise
+                    f"{observation_date.date()} after {_TOS_NETWORK_ATTEMPTS} "
+                    f"attempts (network/DNS down): {last_err!r}"
+                ) from last_err
 
             if result is None:
                 self.logger.warning(
