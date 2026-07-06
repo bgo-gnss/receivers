@@ -235,6 +235,15 @@ def run_epos_disseminate_job(
             progress.set_total(len(chunk_dates))
         try:
             for d in chunk_dates:
+                # A severed EPOS conn (laptop sleep, NAT expiry) surfaces as
+                # closed after the keepalive/timeout kicks in — reopen so the
+                # rest of the chunk keeps indexing instead of skipping.
+                if conn is not None and getattr(conn, "closed", 0):
+                    try:
+                        conn = epos_conn_factory()
+                        logger.info("EPOS conn reopened mid-chunk (%s)", station)
+                    except Exception:  # noqa: BLE001 - indexing stays best-effort
+                        conn = None
                 runs = [(p,) for p in _active_products] if _active_products else [()]
                 for run_args in runs:
                     try:

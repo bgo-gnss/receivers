@@ -81,6 +81,18 @@ def connect(overrides: Optional[dict[str, Any]] = None) -> Any:
     schema = params.pop("schema") or DEFAULT_SCHEMA
     if not params.get("password"):
         params.pop("password", None)  # let ~/.pgpass supply it
+    # TCP hardening: without keepalives a connection severed mid-request (laptop
+    # sleep, NAT expiry, pgbouncer restart) blocks forever in recv() — observed
+    # 2026-07-06 as a full sweep deadlock (main thread hung in execute() while
+    # holding the index lock, every worker queued behind it). With these, a dead
+    # peer surfaces as an OperationalError within ~1 minute and the recover
+    # paths take over.
+    params.setdefault("connect_timeout", 10)
+    params.setdefault("keepalives", 1)
+    params.setdefault("keepalives_idle", 30)
+    params.setdefault("keepalives_interval", 10)
+    params.setdefault("keepalives_count", 3)
+    params.setdefault("tcp_user_timeout", 60000)  # ms; caps in-flight recv too
     conn = psycopg2.connect(**params)
     with conn.cursor() as cur:
         # Quote the schema (the prod name 'gnss-europe-v0-2-9' has hyphens).
