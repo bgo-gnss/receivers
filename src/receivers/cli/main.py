@@ -4252,12 +4252,17 @@ def _rinex_convert_station_period(
     logger: logging.Logger,
     durations: Optional[List[float]] = None,
     progress=None,
+    only_dates=None,
 ) -> tuple:
     """Convert raw files to RINEX for a single station and time period.
 
     ``durations`` (optional, caller-owned) collects per-file conversion
     seconds across calls, feeding the in-run ETA lines and the final
     timing summary.
+
+    ``only_dates`` (optional set of datetime.date) restricts the scan to
+    exactly those dates — the targeted regen path (``--dates``), typically
+    fed by ``archive-audit`` and paired with ``--force``.
 
     ``progress`` (optional ChunkProgress handle) switches to parallel-batch
     reporting: per-file ✅/⏭️ detail goes to the file log only
@@ -4284,6 +4289,7 @@ def _rinex_convert_station_period(
         raw_files = []
 
         while current_date < end_time:
+            cur_day = current_date.date()
             year = current_date.strftime("%Y")
             month = current_date.strftime("%b").lower()
 
@@ -4302,6 +4308,8 @@ def _rinex_convert_station_period(
                 )
                 current_date += timedelta(days=1)
 
+            if only_dates is not None and cur_day not in only_dates:
+                continue
             if raw_dir.exists():
                 matches = list(raw_dir.glob(filename))
                 raw_files.extend(matches)
@@ -5034,6 +5042,25 @@ def _flush_fixed_batch(
             pass
 
 
+def _parse_dates_arg(value: str):
+    """Parse ``--dates`` — comma-separated YYYYMMDD, or ``@file`` (one per
+    line, comments/blanks ignored). Returns a set of datetime.date."""
+    from datetime import date as _date  # noqa: F401 — doc anchor
+
+    if value.startswith("@"):
+        tokens = []
+        for line in Path(value[1:]).expanduser().read_text().splitlines():
+            line = line.split("#", 1)[0].strip()
+            if line:
+                tokens.append(line)
+    else:
+        tokens = [t.strip() for t in value.split(",") if t.strip()]
+    out = set()
+    for t in tokens:
+        out.add(datetime.strptime(t, "%Y%m%d").date())
+    return out
+
+
 def _parallel_workers(args, stations, start_time, end_time, logger) -> int:
     """Resolve ``--parallel`` into a worker count (1 = run sequentially).
 
@@ -5333,6 +5360,25 @@ def cmd_rinex(args) -> int:
             end_time = start_time + timedelta(hours=1)
         else:
             end_time = start_time + timedelta(days=1)
+
+    # --dates: targeted regen — exactly these dates, range derived from them
+    # (overrides -s/-e). Pair with --force to redo dates whose staged/pushed
+    # product exists but is bad; typically fed by 'receivers archive-audit'.
+    only_dates = None
+    if getattr(args, "dates", None):
+        try:
+            only_dates = _parse_dates_arg(args.dates)
+        except (ValueError, OSError) as exc:
+            logger.error(f"--dates: {exc}")
+            return 1
+        if not only_dates:
+            logger.error("--dates: no dates parsed")
+            return 1
+        start_time = datetime.combine(min(only_dates), datetime.min.time())
+        end_time = datetime.combine(
+            max(only_dates) + timedelta(days=1), datetime.min.time()
+        )
+        print(f"Targeted dates: {len(only_dates)} date(s)")
 
     if not start_time:
         if getattr(args, "fix_headers", False) and getattr(args, "all", False):
@@ -5738,6 +5784,7 @@ def cmd_rinex(args) -> int:
                         args,
                         logger,
                         durations=durations,
+                        only_dates=only_dates,
                     )
                     total_converted += c
                     total_failed += f
@@ -5798,6 +5845,7 @@ def cmd_rinex(args) -> int:
                         logger,
                         durations=durations,
                         progress=h,
+                        only_dates=only_dates,
                     )
                     h.finish(ok=True)
                     return res
@@ -5871,6 +5919,7 @@ def cmd_rinex(args) -> int:
                     args,
                     logger,
                     durations=durations,
+                    only_dates=only_dates,
                 )
                 total_converted += c
                 total_failed += f
