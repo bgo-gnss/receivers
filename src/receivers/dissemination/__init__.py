@@ -19,8 +19,18 @@ from .config import DisseminationTarget, load_dissemination_config
 from .engine import DisseminateResult, EposDisseminate
 from .epos_etl import EtlResult, run_etl
 from .qc_gate import QCVerdict, qc_check
-from .rinex_index import index_rinex_file, rinex_md5s
-from .tos_access import epos_markers, epos_stations, make_session_provider, TOSSesionCache
+from .rinex_index import (
+    deindex_rinex_file,
+    index_rinex_file,
+    rinex_md5s,
+    supersede_legacy,
+)
+from .tos_access import (
+    epos_markers,
+    epos_stations,
+    make_session_provider,
+    TOSSesionCache,
+)
 
 __all__ = [
     "DisseminationTarget",
@@ -36,5 +46,7 @@ __all__ = [
     "run_etl",
     "EtlResult",
     "index_rinex_file",
+    "deindex_rinex_file",
+    "supersede_legacy",
     "rinex_md5s",
 ]

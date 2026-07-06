@@ -129,32 +129,74 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
             )
         return 0 if not summary.get("failed") else 1
 
-    # --sitelog / --publish-m3g: generate (+ optionally publish) the site log (C6/T7).
+    # --sitelog / --publish-m3g: change-gated site log (+ optional M3G publish).
+    # The gate renders current TOS and writes a new dated log ONLY when the
+    # station content changed vs the latest committed one — so this verb is safe
+    # to "run on change": unchanged ⇒ no-op (no write, no commit, no M3G).
     if args.sitelog or args.publish_m3g:
         if not args.station:
             print("--sitelog/--publish-m3g requires --station")
             return 1
         from ..dissemination.sitelogs import (
+            commit_site_log,
             generate_site_log,
+            generate_site_log_if_changed,
             resolve_sitelogs_repo,
             submit_to_m3g,
         )
 
         out_dir = resolve_sitelogs_repo(args.sitelog_dir)
-        path = generate_site_log(
+
+        if args.sitelog_plain:
+            # Plain (undated RHOF00ISL.log) is a manual one-off — always written,
+            # not part of the dated series the gate compares.
+            path = generate_site_log(
+                args.station,
+                out_dir,
+                country_code=target.format.country_code,
+                monument_number=target.format.monument_number,
+                include_date=False,
+            )
+            if path is None:
+                print(f"Site log generation failed for {args.station} (see log).")
+                return 1
+            print(f"✅ site log: {path}")
+            return 0
+
+        gate = generate_site_log_if_changed(
             args.station,
             out_dir,
             country_code=target.format.country_code,
             monument_number=target.format.monument_number,
-            include_date=not args.sitelog_plain,
         )
-        if path is None:
+        if gate is None:
             print(f"Site log generation failed for {args.station} (see log).")
             return 1
-        print(f"✅ site log: {path}")
+        if gate.path is None:
+            print(f"Site log write failed for {args.station} (see log).")
+            return 1
+        path = gate.path
+
+        # The gate governs REGENERATION (write + commit only on change). A manual
+        # --publish-m3g is explicit intent, so it publishes the CURRENT log to M3G
+        # even when this run didn't change it (else a log committed on an earlier
+        # run could never be published).
+        if gate.changed:
+            print(f"✅ site log updated: {path}")
+            committed = commit_site_log(
+                out_dir, path, f"sitelog: {args.station} update {path.name}"
+            )
+            print(
+                "   committed to gps-sitelogs"
+                if committed
+                else "   commit: nothing to commit"
+            )
+        else:
+            print(f"✅ site log unchanged for {args.station} ({path.name})")
 
         if not args.publish_m3g:
             return 0
+        print(f"→ publishing {path.name} to M3G")
 
         # --publish-m3g: validate + publish to M3G (the API publishes directly).
         from ..dissemination.m3g_client import M3GError
@@ -257,9 +299,41 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
             finally:
                 conn.close()
 
+    # Supersede-cleanup: an R3 long-name product replaces the legacy short-name
+    # file the old container pushed for the same day. Remove it (portal + DB) —
+    # but ONLY after a durable push+index of the new file (else we'd orphan the
+    # day). In --dry-run we show the intent without touching the portal or DB.
+    # --no-supersede disables; skipped for local-dest (no host) test configs.
+    supersede = None
+    if result.superseded_name and not args.no_supersede and target.host:
+        # result.ok (not result.pushed): a re-run where the new file is already
+        # on the portal is "up-to-date" (transferred=False) but still needs the
+        # legacy removed. result.ok ⟹ push succeeded (file present) + indexed_id
+        # ⟹ row exists, so removing the legacy can't orphan the day.
+        do_it = result.ok and not args.dry_run and indexed_id is not None
+        rel_dir = str(Path(result.relative_path).parent) if result.relative_path else ""
+        conn2 = _epos_conn() if do_it else None
+        try:
+            from ..dissemination import supersede_legacy
+
+            supersede = supersede_legacy(
+                conn2,
+                superseded_name=result.superseded_name,
+                relative_dir=rel_dir,
+                ssh_target=f"{target.user}@{target.host}",
+                dest_root=target.dest,
+                dry_run=not do_it,
+            )
+        except Exception as exc:  # noqa: BLE001 - cleanup must not fail the push
+            logger.warning("supersede-cleanup failed: %s", exc)
+        finally:
+            if conn2 is not None:
+                conn2.close()
+
     if args.json:
         out = _result_dict(result)
         out["indexed_id"] = indexed_id
+        out["supersede"] = supersede
         print(json.dumps(out, indent=2))
     else:
         icon = "✅" if result.ok else "❌"
@@ -275,6 +349,21 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
             print(f"   dest={result.dest}")
         if indexed_id is not None:
             print(f"   indexed rinex_file id={indexed_id}")
+        if supersede is not None:
+            if supersede["removed"]:
+                print(
+                    f"   🧹 superseded legacy {result.superseded_name}: removed from portal"
+                    f" + de-indexed (db ids={supersede['deindexed']})"
+                )
+            elif supersede["would_remove"]:
+                print(
+                    f"   🧹 [dry-run] would supersede legacy {result.superseded_name}:"
+                    f" rm {supersede['would_remove']} + de-index name={result.superseded_name}"
+                )
+            elif supersede["skipped"]:
+                print(
+                    f"   🧹 supersede skipped (missing/too-big): {supersede['skipped']}"
+                )
         for err in result.errors:
             print(f"   ⚠ {err}")
     return 0 if result.ok else 1
@@ -362,6 +451,12 @@ def create_epos_disseminate_parser(subparsers) -> argparse.ArgumentParser:
         "--no-index",
         action="store_true",
         help="Do not index the pushed file into the EPOS rinex_file table",
+    )
+    parser.add_argument(
+        "--no-supersede",
+        action="store_true",
+        help="Do not remove the legacy short-name file the new long-name product "
+        "replaces (portal + DB). Default: remove it after a durable push+index.",
     )
     parser.add_argument(
         "--target", help="Dissemination target name (default: first in sync.yaml)"

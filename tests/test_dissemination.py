@@ -1963,24 +1963,31 @@ class TestAgencyWiring:
             tgt, agency_resolver=AgencyResolver.from_dict(TestAgencyResolver.RAW)
         )
 
-    def test_owner_org_resolves_to_agency(self):
+    def test_owner_org_resolves_to_english_agency(self):
         eng = self._engine()
+        # RINEX AGENCY = the full English institutional name (<=40); NATT's 36-char
+        # english_name fits, IMO's 31-char fits.
         assert eng._resolve_observer_agency({"owner_org": "Landmælingar Íslands"}) == (
             "GNSSatNATT",
-            "NATT",
+            "Natural Science Institute of Iceland",
         )
         assert eng._resolve_observer_agency({"owner_org": "Veðurstofa Íslands"}) == (
             "GNSSatIMO",
-            "Vedurstofa Islands",
+            "Icelandic Meteorological Office",
         )
 
-    def test_unknown_org_and_no_session_fall_back_to_format_defaults(self):
+    def test_unknown_org_and_no_session_fall_back_to_imo_english(self):
+        # Unknown/absent owner org falls back to the IMO entity
+        # (defaults.operator_agency), not a sync.yaml literal → English name.
         eng = self._engine()
         assert eng._resolve_observer_agency({"owner_org": "Nope"}) == (
             "GNSSatIMO",
-            "Vedurstofa Islands",
+            "Icelandic Meteorological Office",
         )
-        assert eng._resolve_observer_agency(None) == ("GNSSatIMO", "Vedurstofa Islands")
+        assert eng._resolve_observer_agency(None) == (
+            "GNSSatIMO",
+            "Icelandic Meteorological Office",
+        )
 
     def test_owner_org_in_session_and_history_fingerprints(self):
         from receivers.dissemination.tos_access import (
