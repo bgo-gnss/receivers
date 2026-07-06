@@ -126,9 +126,11 @@ class TestIdentityGate:
         out = _write_rinex(tmp_path / "RHOF0920.10o")
         c = self._conv(out)
         with patch.object(c, "_expected_station_xyz", return_value=RHOF_XYZ):
-            with pytest.raises(ConversionError, match="archive-sort"):
+            with pytest.raises(ConversionError, match="misfiled") as ei:
                 c._verify_conversion_identity(out, datetime(2000, 4, 1))
         assert not out.exists()
+        assert ei.value.category == "wrong-date"
+        assert "archive-sort" in ei.value.suggestion
 
     def test_wrong_station_position_deletes_output(self, tmp_path):
         out = _write_rinex(tmp_path / "RHOF0920.10o")
@@ -178,3 +180,60 @@ class TestSubclassGates:
         assert SBFConverter.accepted_raw_formats == frozenset({"sbf"})
         assert TrimbleConverter.accepted_raw_formats == frozenset({"trimble"})
         assert TrimbleNativeConverter.accepted_raw_formats == frozenset({"trimble"})
+
+
+class TestValidationEpilog:
+    def test_epilog_groups_and_suggests(self):
+        from receivers.rinex.converter_base import (
+            ConversionResult,
+            validation_epilog,
+        )
+
+        results = [
+            ConversionResult(raw_file=Path("A.sbf"), success=True),
+            ConversionResult(
+                raw_file=Path("RHOF200004010000a.atc"),
+                message="converted output starts 2010-04-02 ...",
+                validation_category="wrong-date",
+                validation_suggestion="relocate with 'receivers archive-sort ...'",
+            ),
+            ConversionResult(
+                raw_file=Path("KOSK201301010000a.atc"),
+                message="raw content is 'sbf' ...",
+                validation_category="wrong-format",
+                validation_suggestion="decode with sbf2rin ...",
+            ),
+        ]
+        text = validation_epilog(results)
+        assert text is not None
+        assert "refused 2 file(s)" in text
+        assert "[wrong-format] 1" in text and "[wrong-date] 1" in text
+        assert "archive-sort" in text and "sbf2rin" in text
+
+    def test_epilog_none_when_clean(self):
+        from receivers.rinex.converter_base import (
+            ConversionResult,
+            validation_epilog,
+        )
+
+        assert (
+            validation_epilog([ConversionResult(raw_file=Path("A"), success=True)])
+            is None
+        )
+
+    def test_convert_batch_logs_epilog(self, tmp_path, caplog):
+        import logging as _logging
+
+        raw = tmp_path / "KOSK201301010000a.sbf"
+        raw.write_bytes(b"\x00\x00\x00\x30BHDR" + b"\x00" * 200)  # ashtech in .sbf
+        c = _FakeConverter()
+        with caplog.at_level(_logging.WARNING):
+            batch = c.convert_batch([raw])
+        assert batch.failed == 1
+        assert batch.results[0].validation_category == "wrong-format"
+        assert any("refused 1 file(s)" in r.message for r in caplog.records)
+        # mid-run line is the COMPACT one
+        assert any(
+            "raw-validation refused" in r.message and "\n" not in r.message
+            for r in caplog.records
+        )
