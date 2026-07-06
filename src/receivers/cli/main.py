@@ -4993,24 +4993,19 @@ def _parallel_workers(args, stations, start_time, end_time, logger) -> int:
     clamped to the chunk count. Sequential whenever there is nothing to
     parallelize (single chunk) or the dates are missing.
     """
-    par = getattr(args, "parallel", None)
-    if not par or not start_time or not end_time:
+    if not start_time or not end_time:
         return 1
-    from ..utils.batch_parallel import auto_workers, split_year_ranges
+    from ..utils.batch_parallel import resolve_workers, split_year_ranges
 
     n_chunks = len(stations) * len(split_year_ranges(start_time, end_time))
-    if n_chunks <= 1:
-        return 1
-    if str(par).lower() == "auto":
-        return auto_workers(n_chunks, logger=logger)
-    try:
-        return max(1, min(int(par), n_chunks))
-    except ValueError:
-        logger.error(
-            "--parallel must be a number or 'auto' — got %r; running sequentially",
-            par,
-        )
-        return 1
+    return resolve_workers(getattr(args, "parallel", None), n_chunks, logger)
+
+
+def _parallel_workers_for_chunks(args, n_chunks: int, logger) -> int:
+    """Resolve ``--parallel`` against a known chunk count (1 = sequential)."""
+    from ..utils.batch_parallel import resolve_workers
+
+    return resolve_workers(getattr(args, "parallel", None), n_chunks, logger)
 
 
 def _push_reconverted(work_dir, args, logger) -> Dict[str, Any]:
@@ -5433,13 +5428,47 @@ def cmd_rinex(args) -> int:
                     tos_cache=tos_cache,
                 )
 
-        for station_id in stations:
-            print(f"\nProcessing: {station_id}")
-            summary = fix_headers_station(
-                station_id,
+        # --parallel: chunk the work like the re-rinex path — (station, year)
+        # chunks in a date range, per-station chunks with --all (whole-archive
+        # scans can't be split by year up front). Sequential runs keep the
+        # exact one-call-per-station behavior.
+        from ..utils.batch_parallel import run_chunks, split_year_ranges
+
+        _fh_start = start_time or datetime(2000, 1, 1)
+        _fh_end = end_time or datetime.now()
+        if getattr(args, "parallel", None) and not all_mode:
+            fh_chunks = [
+                (sid, ys, ye)
+                for sid in stations
+                for ys, ye in split_year_ranges(_fh_start, _fh_end)
+            ]
+        else:
+            fh_chunks = [(sid, _fh_start, _fh_end) for sid in stations]
+        fh_workers = _parallel_workers_for_chunks(args, len(fh_chunks), logger)
+
+        # The incremental push flush does rsync + catalog writes — serialize it
+        # across workers (concurrent gateway pushes are unreliable; see engine
+        # push-path notes). TOSSesionCache is shared: a concurrent first-fetch
+        # per station is a benign duplicate, after which all workers hit cache.
+        if _flush_fn is not None and fh_workers > 1:
+            import threading as _threading
+
+            _flush_lock = _threading.Lock()
+            _unlocked_flush = _flush_fn
+
+            def _flush_fn(batch_details, _f=_unlocked_flush, _lk=_flush_lock):
+                with _lk:
+                    return _f(batch_details)
+
+        def _fh_run_chunk(chunk):
+            sid, ys, ye = chunk
+            label = f"{sid}" if len(fh_chunks) == len(stations) else f"{sid} {ys.year}"
+            print(f"\nProcessing: {label}")
+            return fix_headers_station(
+                sid,
                 args.session,
-                start_time or datetime(2000, 1, 1),
-                end_time or datetime.now(),
+                ys,
+                ye,
                 archive_old=getattr(args, "archive_old", False),
                 dry_run=_dry_run,
                 all_files=all_mode,
@@ -5450,6 +5479,33 @@ def cmd_rinex(args) -> int:
                 flush_every=_flush_every,
                 loglevel=args.loglevel,
             )
+
+        if fh_workers > 1:
+            print(
+                f"\nParallel fix-headers: {len(fh_chunks)} chunk(s) "
+                f"on {fh_workers} worker(s)"
+            )
+            _outcomes = run_chunks(
+                fh_chunks, _fh_run_chunk, workers=fh_workers, logger=logger
+            )
+        else:
+            _outcomes = []
+            from ..utils.batch_parallel import ChunkOutcome
+
+            for _chunk in fh_chunks:
+                oc = ChunkOutcome(_chunk)
+                try:
+                    oc.value = _fh_run_chunk(_chunk)
+                except Exception as e:  # noqa: BLE001 — chunk isolation
+                    oc.error = e
+                    logger.error("fix-headers chunk %s failed: %s", _chunk, e)
+                _outcomes.append(oc)
+
+        for _oc in _outcomes:
+            if not _oc.ok or _oc.value is None:
+                total_errors += 1
+                continue
+            summary = _oc.value
             print(
                 f"  scanned={summary['scanned']} "
                 + (

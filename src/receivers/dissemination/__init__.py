@@ -26,10 +26,10 @@ from .rinex_index import (
     supersede_legacy,
 )
 from .tos_access import (
+    TOSSesionCache,
     epos_markers,
     epos_stations,
     make_session_provider,
-    TOSSesionCache,
 )
 
 __all__ = [

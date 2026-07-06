@@ -185,6 +185,12 @@ def cmd_archive_verify(args: argparse.Namespace) -> int:
     # dest_prefix lets us map the stored archive path onto the local read mount.
     dest_prefix = args.dest_prefix or (target.dest if target else None)
 
+    from ..utils.batch_parallel import resolve_workers
+
+    workers = resolve_workers(
+        getattr(args, "parallel", None), max(1, args.limit), logging.getLogger(__name__)
+    )
+
     conn = _get_conn(args.host, required=True)
     try:
         stats = verify_archive_catalog(
@@ -194,6 +200,7 @@ def cmd_archive_verify(args: argparse.Namespace) -> int:
             dest_prefix=dest_prefix,
             limit=args.limit,
             reverify_after_days=args.reverify_after_days,
+            workers=workers,
         )
     finally:
         if conn is not None:
@@ -258,21 +265,29 @@ def cmd_archive_reindex(args: argparse.Namespace) -> int:
 
     hosts = resolve_catalog_hosts(args.catalog_host, prod=args.catalog_prod)
     if args.catalog_prod and not hosts:
-        print("⚠️  --catalog-prod but [archive] catalog_hosts is unset in "
-              "receivers.cfg — refusing (would silently hit dev). Set "
-              "catalog_hosts = rek-d01.vedur.is, pgdev.vedur.is.")
+        print(
+            "⚠️  --catalog-prod but [archive] catalog_hosts is unset in "
+            "receivers.cfg — refusing (would silently hit dev). Set "
+            "catalog_hosts = rek-d01.vedur.is, pgdev.vedur.is."
+        )
         return 2
 
     results = reindex_files_multi(
-        hosts, files, root=root,
-        storage_location=target.name, dest_prefix=dest_prefix,
-        dry_run=args.dry_run, only_existing=args.only_existing,
+        hosts,
+        files,
+        root=root,
+        storage_location=target.name,
+        dest_prefix=dest_prefix,
+        dry_run=args.dry_run,
+        only_existing=args.only_existing,
     )
 
     if args.json:
-        print(json.dumps(
-            {h: (s.to_dict() if s else None) for h, s in results.items()}, indent=2
-        ))
+        print(
+            json.dumps(
+                {h: (s.to_dict() if s else None) for h, s in results.items()}, indent=2
+            )
+        )
     else:
         verb = "would reindex" if args.dry_run else "reindexed"
         for label, stats in results.items():
@@ -283,7 +298,11 @@ def cmd_archive_reindex(args: argparse.Namespace) -> int:
                 f"↻ {verb} archive_catalog ({target.name} on {label}): "
                 f"{stats.updated} updated, {stats.inserted} inserted, "
                 f"{stats.unchanged} unchanged"
-                + (f", {stats.skipped_new} skipped (no prior row)" if stats.skipped_new else "")
+                + (
+                    f", {stats.skipped_new} skipped (no prior row)"
+                    if stats.skipped_new
+                    else ""
+                )
                 + (f", {stats.skipped} unparsable" if stats.skipped else "")
             )
             for msg in stats.errors[:50]:
@@ -308,8 +327,11 @@ def cmd_archive_rm(args: argparse.Namespace) -> int:
     # Resolve the archive gateway (user@host) + root from the sync target.
     config_path = Path(args.config) if args.config else None
     target = next(
-        (t for t in load_sync_config(config_path)
-         if getattr(t, "tier", None) == "archive"),
+        (
+            t
+            for t in load_sync_config(config_path)
+            if getattr(t, "tier", None) == "archive"
+        ),
         None,
     )
     if target is None or not target.host:
@@ -324,17 +346,25 @@ def cmd_archive_rm(args: argparse.Namespace) -> int:
     # Loud, explicit banner — this is a production deletion path.
     print("⚠️  ARCHIVE DELETION" + ("" if execute else " (DRY-RUN — nothing removed)"))
     print(f"   gateway: {ssh_target}:{dest_root}")
-    print(f"   guard:   size ≤ {max_size} bytes" + (" (empty only)" if max_size == 0 else ""))
+    print(
+        f"   guard:   size ≤ {max_size} bytes"
+        + (" (empty only)" if max_size == 0 else "")
+    )
     if execute and max_size > 0:
-        print(f"   🛑 --yes with --max-size {max_size}: deleting files up to "
-              f"{max_size} bytes. Verify EACH path manually first.")
+        print(
+            f"   🛑 --yes with --max-size {max_size}: deleting files up to "
+            f"{max_size} bytes. Verify EACH path manually first."
+        )
     print(f"   targets ({len(args.file)}):")
     for rel in args.file:
         print(f"      {rel}")
 
     res = remove_archive_files(
-        list(args.file), ssh_target=ssh_target, dest_root=dest_root,
-        max_size=max_size, execute=execute,
+        list(args.file),
+        ssh_target=ssh_target,
+        dest_root=dest_root,
+        max_size=max_size,
+        execute=execute,
     )
 
     print()
@@ -362,8 +392,10 @@ def cmd_archive_rm(args: argparse.Namespace) -> int:
 
         _prune_hosts = resolve_catalog_hosts(args.catalog_host, prod=args.catalog_prod)
         if args.catalog_prod and not _prune_hosts:
-            print("   ⚠️  --catalog-prod but no [archive] catalog_hosts — catalog "
-                  "rows NOT pruned (would hit dev). Set catalog_hosts.")
+            print(
+                "   ⚠️  --catalog-prod but no [archive] catalog_hosts — catalog "
+                "rows NOT pruned (would hit dev). Set catalog_hosts."
+            )
             _prune_hosts = []
         for host in _prune_hosts:
             label = host or "localhost"
@@ -381,11 +413,15 @@ def cmd_archive_rm(args: argparse.Namespace) -> int:
                     conn.close()
 
     if not execute and res.would_delete:
-        print("\n   → re-run with --yes to actually delete "
-              "(catalog rows are pruned on all [archive] catalog_hosts).")
+        print(
+            "\n   → re-run with --yes to actually delete "
+            "(catalog rows are pruned on all [archive] catalog_hosts)."
+        )
     if res.skipped_toobig and max_size == 0:
-        print("\n   → some files are non-empty; if they are known-bad, re-run "
-              "with --max-size <bytes> (bounded) after verifying them.")
+        print(
+            "\n   → some files are non-empty; if they are known-bad, re-run "
+            "with --max-size <bytes> (bounded) after verifying them."
+        )
     return 0 if res.ok else 1
 
 
@@ -403,29 +439,39 @@ def create_archive_rm_parser(subparsers) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--file", action="extend", nargs="+", required=True, metavar="REL",
+        "--file",
+        action="extend",
+        nargs="+",
+        required=True,
+        metavar="REL",
         help="Archive-relative path(s) to delete "
         "(e.g. 2023/aug/RHOF/15s_24hr/rinex/RHOF2400.23D.Z). Repeatable and "
         "multi-valued. Explicit only — no globs, directories or recursion.",
     )
     parser.add_argument(
-        "--yes", action="store_true",
+        "--yes",
+        action="store_true",
         help="Actually delete (default is dry-run). Even with --yes, only files "
         "within --max-size are removed.",
     )
     parser.add_argument(
-        "--max-size", type=int, default=0, metavar="BYTES",
+        "--max-size",
+        type=int,
+        default=0,
+        metavar="BYTES",
         help="Delete only files with size ≤ BYTES (server-side re-check). "
         "Default 0 = empty only. Raise it (bounded) to remove known-tiny broken "
         "files, e.g. --max-size 8 for 3-byte truncated RINEX.",
     )
     parser.add_argument(
-        "--catalog-host", help="Explicit gps_health host(s), comma-separated, for "
+        "--catalog-host",
+        help="Explicit gps_health host(s), comma-separated, for "
         "catalog-row pruning (default: database.cfg). This is the CATALOG DB, not "
         "the delete target (that is the rawdata gateway from sync.yaml).",
     )
     parser.add_argument(
-        "--catalog-prod", action="store_true",
+        "--catalog-prod",
+        action="store_true",
         help="Prune catalog rows on the PRODUCTION set ([archive] catalog_hosts). "
         "Explicit opt-in; default prunes the database.cfg host only.",
     )
@@ -470,7 +516,8 @@ def create_archive_reindex_parser(subparsers) -> argparse.ArgumentParser:
         "localhost for a dev test). Default (no flag): database.cfg host.",
     )
     parser.add_argument(
-        "--catalog-prod", action="store_true",
+        "--catalog-prod",
+        action="store_true",
         help="Write the PRODUCTION catalog set ([archive] catalog_hosts, e.g. "
         "rek-d01 + pgdev). Explicit opt-in so a dev run stays local by default.",
     )
@@ -539,6 +586,16 @@ def create_archive_verify_parser(subparsers) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--json", action="store_true", help="Emit machine-readable JSON results"
+    )
+    parser.add_argument(
+        "--parallel",
+        nargs="?",
+        const="auto",
+        default=None,
+        metavar="N",
+        help="Pre-hash the archive files (the expensive read-back step) on a "
+        "thread pool. --parallel alone sizes from free cores minus current "
+        "loadavg; --parallel N forces N workers. DB access stays serial.",
     )
     parser.set_defaults(func=cmd_archive_verify)
     return parser

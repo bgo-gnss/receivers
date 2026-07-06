@@ -98,6 +98,7 @@ def verify_archive_catalog(
     limit: int = 500,
     reverify_after_days: Optional[int] = None,
     priority_sessions: tuple[str, ...] = ("15s_24hr", "1Hz_1hr"),
+    workers: int = 1,
     log: logging.Logger = logger,
 ) -> VerifyStats:
     """Verify catalog rows: local↔archive cross-check + optional read-back.
@@ -112,6 +113,9 @@ def verify_archive_catalog(
         limit: max catalog rows per run.
         reverify_after_days: if set, re-verify rows whose last_verified_at is
             older than this (else only never-verified rows when read-back is on).
+        workers: >1 pre-hashes the archive files on a thread pool (the
+            expensive step — decompress + sha256 over NFS). All DB access
+            stays on the calling thread; connections aren't shared.
         log: logger.
 
     Returns:
@@ -153,6 +157,30 @@ def verify_archive_catalog(
         )
         rows = cur.fetchall()
 
+    # Parallel pre-hash: compute the read-back hashes up front on a thread
+    # pool; the row loop below then consumes the results without touching
+    # the filesystem. status ∈ {"ok", "missing", "error"}.
+    pre_hash: dict = {}
+    if read_root is not None and workers > 1 and rows:
+        from ..utils.batch_parallel import run_chunks
+
+        def _hash_row(row):
+            row_id, file_path = row[0], row[5]
+            lp = _local_archive_path(file_path, dest_prefix, read_root)
+            if not os.path.isfile(lp):
+                return (row_id, "missing", None)
+            try:
+                return (row_id, "ok", content_sha256(lp))
+            except (CorruptArchiveFileError, OSError) as exc:
+                return (row_id, "error", exc)
+
+        for oc in run_chunks(
+            rows, _hash_row, workers=workers, logger=log, load_gate=False
+        ):
+            if oc.ok and oc.value is not None:
+                rid, status, payload = oc.value
+                pre_hash[rid] = (status, payload)
+
     for (
         row_id,
         station,
@@ -185,17 +213,35 @@ def verify_archive_catalog(
         if read_root is None:
             continue
         local_path = _local_archive_path(file_path, dest_prefix, read_root)
-        if not os.path.isfile(local_path):
-            stats.missing += 1
-            log.debug(f"verify: archive file not found at {local_path}")
-            continue
-        try:
-            actual = content_sha256(local_path)
-        except (CorruptArchiveFileError, OSError) as exc:
-            stats.mismatched += 1
-            stats.findings.append(f"unreadable archive file {local_path}: {exc}")
-            log.warning(f"verify: cannot hash archive file {local_path}: {exc}")
-            continue
+        _pre = pre_hash.get(row_id)
+        if _pre is not None:
+            _status, _payload = _pre
+            if _status == "missing":
+                stats.missing += 1
+                log.debug(f"verify: archive file not found at {local_path}")
+                continue
+            if _status == "error":
+                stats.mismatched += 1
+                stats.findings.append(
+                    f"unreadable archive file {local_path}: {_payload}"
+                )
+                log.warning(
+                    f"verify: cannot hash archive file {local_path}: {_payload}"
+                )
+                continue
+            actual = _payload
+        else:
+            if not os.path.isfile(local_path):
+                stats.missing += 1
+                log.debug(f"verify: archive file not found at {local_path}")
+                continue
+            try:
+                actual = content_sha256(local_path)
+            except (CorruptArchiveFileError, OSError) as exc:
+                stats.mismatched += 1
+                stats.findings.append(f"unreadable archive file {local_path}: {exc}")
+                log.warning(f"verify: cannot hash archive file {local_path}: {exc}")
+                continue
 
         if actual == cat_hash:
             with conn.cursor() as cur:
