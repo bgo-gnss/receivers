@@ -61,7 +61,8 @@ def _target(tmp_root, **over):
 class TestConfig:
     def test_loads_only_dissemination_tier(self, tmp_path):
         cfg = tmp_path / "sync.yaml"
-        cfg.write_text("""
+        cfg.write_text(
+            """
 targets:
   - name: imo_archive
     tier: archive
@@ -92,7 +93,8 @@ targets:
         hatanaka: true
         compression: gz
       dir_template: "%Y/#b/{station}/15s_24hr/rinex/"
-""")
+"""
+        )
         targets = load_dissemination_config(cfg)
         assert [t.name for t in targets] == ["epos"]  # archive tier filtered out
         t = targets[0]
@@ -868,7 +870,8 @@ class TestRawFallback:
 class TestDisseminateJob:
     def _active_cfg(self, tmp_path):
         cfg = tmp_path / "sync.yaml"
-        cfg.write_text("""
+        cfg.write_text(
+            """
 targets:
   - name: epos
     tier: dissemination
@@ -878,7 +881,8 @@ targets:
     dest: /tmp/epos_stage
     source_root: /mnt/data/gpsdata
     sessions: [15s_24hr]
-""")
+"""
+        )
         return cfg
 
     def test_no_active_target_is_noop(self, tmp_path):
@@ -1940,7 +1944,9 @@ class TestAgencyResolver:
         from receivers.dissemination.agencies import AgencyResolver
 
         p = tmp_path / "agencies.yaml"
-        p.write_text(textwrap.dedent("""
+        p.write_text(
+            textwrap.dedent(
+                """
                 defaults: {url: "https://x"}
                 agencies:
                   "Org A":
@@ -1949,7 +1955,9 @@ class TestAgencyResolver:
                     observer: "GNSSatA"
                     agency_label: "A"
                     address: "Single Line"
-                """))
+                """
+            )
+        )
         a = AgencyResolver.load(p).resolve("Org A")
         assert a.english_name == "A EN"
         assert a.address == ("Single Line",)  # scalar promoted to 1-tuple
@@ -2475,6 +2483,57 @@ class TestDisseminateJobRange:
         )
         assert s["pushed"] == 3 and s["failed"] == 0 and s["superseded"] == 0
         assert [d for _, d in calls] == sorted({*dates})
+
+    def test_dead_epos_conn_reopened_mid_chunk(self, tmp_path):
+        """A conn severed mid-chunk (laptop sleep, NAT expiry) is reopened at
+        the next date instead of silently skipping indexes for the rest."""
+        from datetime import date as _date
+
+        from receivers.dissemination.job import run_epos_disseminate_job
+
+        cfg = tmp_path / "sync.yaml"
+        cfg.write_text(
+            "targets:\n"
+            "  - name: epos\n"
+            "    active: false\n"
+            "    tier: dissemination\n"
+            "    host: ''\n"
+            "    user: u\n"
+            "    dest: /tmp/x\n"
+            "    source_root: /tmp/src\n"
+        )
+
+        class _Conn:
+            closed = 0
+
+            def close(self):
+                self.closed = 1
+
+        conns: list = []
+
+        def factory():
+            c = _Conn()
+            conns.append(c)
+            return c
+
+        outer = self
+
+        class _Eng:
+            def run_one(self, station, d):
+                conns[-1].closed = 1  # peer dies while this date is processed
+                return TestDisseminateJobRange._result(outer, station, d)
+
+        run_epos_disseminate_job(
+            config_path=str(cfg),
+            markers=["RHOF"],
+            no_qc=True,
+            dates=[_date(2013, 6, 14), _date(2013, 6, 15)],
+            force=True,
+            engine_factory=lambda t: _Eng(),
+            epos_conn_factory=factory,
+        )
+        # initial conn + one reopen when date 2 found it closed
+        assert len(conns) == 2
 
     def test_supersede_gated_on_indexed(self, tmp_path, monkeypatch):
         """superseded_name WITHOUT a durable index must never queue removal."""
