@@ -23,33 +23,58 @@ from typing import Any, Optional
 logger = logging.getLogger("receivers.dissemination.job")
 
 
+# Serializes EPOS index writes within this process: the schema's explicit
+# next-id allocation (SELECT max(id)+1 — the dev schema lacks the sequences/
+# constraints ON CONFLICT would need) races under parallel chunks and blows
+# up on pk_files. The write itself is ~ms next to a multi-second convert, so
+# serializing costs nothing.
+_INDEX_LOCK = threading.Lock()
+
+
 def _index_pushed(epos_conn: Any, target: Any, result: Any) -> Optional[int]:
     """Best-effort index of a freshly pushed file in the EPOS rinex_file table.
 
     Returns the ``rinex_file`` id (supersede-cleanup gates on it — legacy
     removal must never run unless the replacement is durably indexed), or
-    None when indexing was skipped/failed.
+    None when indexing was skipped/failed. A statement error triggers a
+    connection recover (rollback + search_path re-assert) and ONE retry —
+    without it the first error poisons the transaction and every later index
+    on this connection fails with 'current transaction is aborted'.
     """
     if epos_conn is None or not result.artifact_path or not result.relative_path:
         return None
-    try:
-        from .rinex_index import index_rinex_file
+    from .rinex_index import index_rinex_file
 
-        d = result.file_date
-        return index_rinex_file(
-            epos_conn,
-            Path(result.artifact_path),
-            result.station,
-            datetime(d.year, d.month, d.day),
-            relative_path=f"/files/{result.relative_path}",
-            session=(target.sessions[0] if target.sessions else "15s_24hr"),
-            rinex_version=result.rinex_version or 3,
-        )
-    except Exception as exc:  # noqa: BLE001 - index must never fail the sweep
-        logger.warning(
-            "index failed for %s %s: %s", result.station, result.file_date, exc
-        )
-        return None
+    d = result.file_date
+
+    def _attempt() -> Optional[int]:
+        with _INDEX_LOCK:
+            return index_rinex_file(
+                epos_conn,
+                Path(result.artifact_path),
+                result.station,
+                datetime(d.year, d.month, d.day),
+                relative_path=f"/files/{result.relative_path}",
+                session=(target.sessions[0] if target.sessions else "15s_24hr"),
+                rinex_version=result.rinex_version or 3,
+            )
+
+    for attempt in (1, 2):
+        try:
+            return _attempt()
+        except Exception as exc:  # noqa: BLE001 - index must never fail the sweep
+            from . import epos_db
+
+            recovered = epos_db.recover(epos_conn)
+            if attempt == 2 or not recovered:
+                logger.warning(
+                    "index failed for %s %s: %s", result.station, result.file_date, exc
+                )
+                return None
+            logger.info(
+                "index retry for %s %s after: %s", result.station, result.file_date, exc
+            )
+    return None
 
 
 def run_epos_disseminate_job(
