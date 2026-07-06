@@ -117,15 +117,21 @@ class TestPlanRelocations:
             size=100,
         )
 
+        from receivers.archive.raw_format import RawMeta
+
         spans = {
-            "RHOF200004010000a.atc": (datetime(2010, 4, 2), datetime(2010, 4, 2, 23)),
-            "ARHO201009010000a.atc": (datetime(2010, 9, 1), datetime(2010, 9, 1, 23)),
+            "RHOF200004010000a.atc": RawMeta(
+                start=datetime(2010, 4, 2), end=datetime(2010, 4, 2, 23)
+            ),
+            "ARHO201009010000a.atc": RawMeta(
+                start=datetime(2010, 9, 1), end=datetime(2010, 9, 1, 23)
+            ),
         }
 
-        def fake_span(path, fmt, **kw):
+        def fake_meta(path, fmt, **kw):
             return spans.get(Path(path).name)
 
-        monkeypatch.setattr(sort, "decoded_span", fake_span)
+        monkeypatch.setattr(sort, "teqc_meta", fake_meta)
         plans, skips = plan_relocations(tmp_path, [misfiled, correct, stub])
 
         assert len(plans) == 1
@@ -143,7 +149,6 @@ class TestPlanRelocations:
             "2018/apr/RHOF/15s_24hr/raw/RHOF201804010000a.T02",
             b"\x00\x00\x00\x0d",
         )
-        monkeypatch.setattr(sort, "decoded_span", lambda *a, **k: None)
         plans, skips = plan_relocations(tmp_path, [rel])
         assert not plans
         assert skips[0].reason == "no-date-decoder"
@@ -154,7 +159,7 @@ class TestPlanRelocations:
             "2000/apr/RHOF/15s_24hr/raw/RHOF200004010000a.atc",
             b"\x00\x00\x00\x30BHDR",
         )
-        monkeypatch.setattr(sort, "decoded_span", lambda *a, **k: None)
+        monkeypatch.setattr(sort, "teqc_meta", lambda *a, **k: None)
         plans, skips = plan_relocations(tmp_path, [rel])
         assert not plans
         assert skips[0].reason == "decode-failed"
@@ -326,3 +331,100 @@ class TestRelocateGatewayReset:
                 dest_root="~/gpsdata",
             )
         assert not res.unreported and res.ok
+
+
+class TestStationAndExtRemediation:
+    """The full remediation dimensions: wrong station (position decides) and
+    wrong extension (content decides)."""
+
+    FLEET = {"RHOF": (66.461123, -15.946707), "REYK": (64.1388, -21.9555)}
+
+    def _meta(self, lat=None, lon=None, start=None):
+        from receivers.archive.raw_format import RawMeta
+
+        return RawMeta(
+            start=start or datetime(2010, 4, 2),
+            end=datetime(2010, 4, 2, 23),
+            lat=lat,
+            lon=lon,
+        )
+
+    def test_wrong_station_relocates_by_position(self, tmp_path, monkeypatch):
+        # filed under REYK, but the antenna position is RHOF's mark
+        rel = _mk(
+            tmp_path,
+            "2010/apr/REYK/15s_24hr/raw/REYK201004020000a.atc",
+            b"\x00\x00\x00\x30BHDR",
+        )
+        monkeypatch.setattr(sort, "fleet_coordinates", lambda: self.FLEET)
+        monkeypatch.setattr(
+            sort, "teqc_meta", lambda *a, **k: self._meta(66.46113, -15.94671)
+        )
+        plans, skips = plan_relocations(tmp_path, [rel], verify_station=True)
+        assert len(plans) == 1
+        p = plans[0]
+        assert p.reasons == ("wrong-station",)
+        assert p.true_station == "RHOF"
+        assert p.dst_rel == "2010/apr/RHOF/15s_24hr/raw/RHOF201004020000a.atc"
+        assert p.station_dist_m is not None and p.station_dist_m < 50
+
+    def test_unknown_position_reported_never_moved(self, tmp_path, monkeypatch):
+        rel = _mk(
+            tmp_path,
+            "2010/apr/RHOF/15s_24hr/raw/RHOF201004020000a.atc",
+            b"\x00\x00\x00\x30BHDR",
+        )
+        monkeypatch.setattr(sort, "fleet_coordinates", lambda: self.FLEET)
+        monkeypatch.setattr(
+            sort, "teqc_meta", lambda *a, **k: self._meta(51.0, -1.0)  # not Iceland
+        )
+        plans, skips = plan_relocations(tmp_path, [rel], verify_station=True)
+        assert not plans
+        assert skips[0].reason == "unknown-station"
+
+    def test_matching_station_and_date_verified(self, tmp_path, monkeypatch):
+        rel = _mk(
+            tmp_path,
+            "2010/apr/RHOF/15s_24hr/raw/RHOF201004020000a.atc",
+            b"\x00\x00\x00\x30BHDR",
+        )
+        monkeypatch.setattr(sort, "fleet_coordinates", lambda: self.FLEET)
+        monkeypatch.setattr(
+            sort, "teqc_meta", lambda *a, **k: self._meta(66.46113, -15.94671)
+        )
+        plans, skips = plan_relocations(tmp_path, [rel], verify_station=True)
+        assert not plans and skips[0].reason == "verified-correct"
+
+    def test_wrong_ext_renamed_to_content(self, tmp_path, monkeypatch):
+        # KOSK case: SBF bytes under .atc → rename to .sbf (same date/station)
+        rel = _mk(
+            tmp_path,
+            "2013/jan/KOSK/15s_24hr/raw/KOSK201301010000a.atc",
+            b"$@Sic",
+        )
+        monkeypatch.setattr(
+            sort,
+            "teqc_meta",
+            lambda *a, **k: self._meta(start=datetime(2013, 1, 1)),
+        )
+        plans, skips = plan_relocations(tmp_path, [rel])
+        assert len(plans) == 1
+        assert plans[0].reasons == ("wrong-ext",)
+        assert plans[0].dst_rel == "2013/jan/KOSK/15s_24hr/raw/KOSK201301010000a.sbf"
+
+    def test_combined_wrong_everything(self, tmp_path, monkeypatch):
+        # SBF bytes, wrong date, filed under wrong station
+        rel = _mk(
+            tmp_path,
+            "2000/apr/REYK/15s_24hr/raw/REYK200004010000a.atc",
+            b"$@Sic",
+        )
+        monkeypatch.setattr(sort, "fleet_coordinates", lambda: self.FLEET)
+        monkeypatch.setattr(
+            sort, "teqc_meta", lambda *a, **k: self._meta(66.46113, -15.94671)
+        )
+        plans, _ = plan_relocations(tmp_path, [rel], verify_station=True)
+        assert len(plans) == 1
+        p = plans[0]
+        assert set(p.reasons) == {"wrong-station", "wrong-date", "wrong-ext"}
+        assert p.dst_rel == "2010/apr/RHOF/15s_24hr/raw/RHOF201004020000a.sbf"

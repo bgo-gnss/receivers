@@ -4532,7 +4532,8 @@ def _rinex_convert_station_period(
         failed += 1
 
     # End-of-batch procedure for refused files (kept out of the mid-run
-    # stream): what was refused, why, and what to do about each category.
+    # stream): what was refused, why, and what to do about each category —
+    # including the READY-TO-RUN remediation command when paths allow it.
     if _validation_refusals:
         from ..rinex.converter_base import validation_epilog
 
@@ -4540,6 +4541,24 @@ def _rinex_convert_station_period(
         if epilog:
             print(f"\n🛡  {epilog}")
             logger.warning(epilog)
+        try:
+            _root = str(_reconvert_source_root(args, data_prepath)).rstrip("/")
+            rels = []
+            for r in _validation_refusals:
+                if r.validation_category in ("wrong-date", "wrong-format"):
+                    p_str = str(r.raw_file)
+                    if p_str.startswith(_root + "/"):
+                        rels.append(p_str[len(_root) + 1 :])
+            if rels:
+                print("\n   → ready-to-run remediation (dry-run; add --yes to move):")
+                print(
+                    "     receivers archive-sort --check-station \\\n       --file "
+                    + " \\\n              ".join(rels[:30])
+                )
+                if len(rels) > 30:
+                    print(f"     ... and {len(rels) - 30} more — use --list FILE")
+        except Exception:  # noqa: BLE001 - suggestion is best-effort
+            pass
 
     return converted, failed, skipped
 
