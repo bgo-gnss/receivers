@@ -4030,6 +4030,12 @@ def _create_rinex_converter(
             print(manager.get_installation_guide(missing))
             return None, None, None
 
+    # Re-rinex feeds the long-term archive: a Hatanaka failure (usually
+    # corrupt raw observation lines) must FAIL the file, not stage an
+    # uncompacted .o.Z that breaks the .D.Z convention and the resume-skip.
+    if _is_rerinex_mode(args):
+        converter.strict_hatanaka = True
+
     return converter, raw_extension, station_config
 
 

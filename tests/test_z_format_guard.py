@@ -164,3 +164,53 @@ def test_split_bad_z_partitions_and_logs(tmp_path, caplog):
     assert ok == [good.name, other.name]
     assert refused == [bad.name]
     assert any("refusing" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------- strict Hatanaka (re-rinex)
+
+
+class TestStrictHatanaka:
+    """Re-rinex mode: Hatanaka failure must FAIL the file — never stage an
+    uncompacted .o product (breaks the .D.Z convention + resume-skip)."""
+
+    def _converter(self, strict: bool):
+        conv = _make_converter(CompressionFormat.Z)
+        conv.strict_hatanaka = strict
+        conv.apply_hatanaka = True
+        return conv
+
+    def test_strict_failure_raises_and_cleans_up(self, tmp_path, monkeypatch):
+        conv = self._converter(strict=True)
+        f = tmp_path / "TEST2440.24o"
+        f.write_bytes(b"RINEX OBS with corrupt lines")
+        monkeypatch.setattr(conv, "get_tool_path", lambda t: "/usr/bin/rnx2crx")
+        monkeypatch.setattr(
+            conv,
+            "_run_subprocess",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("exit code 1")),
+        )
+        with pytest.raises(ConversionError, match="Hatanaka compression failed"):
+            conv._apply_hatanaka_compression(f)
+        assert not f.exists(), "uncompacted intermediate must not linger"
+
+    def test_strict_no_output_raises(self, tmp_path, monkeypatch):
+        conv = self._converter(strict=True)
+        f = tmp_path / "TEST2450.24o"
+        f.write_bytes(b"RINEX OBS")
+        monkeypatch.setattr(conv, "get_tool_path", lambda t: "/usr/bin/rnx2crx")
+        monkeypatch.setattr(conv, "_run_subprocess", lambda *a, **k: None)  # no .24d
+        with pytest.raises(ConversionError, match="no output"):
+            conv._apply_hatanaka_compression(f)
+
+    def test_default_keeps_degraded_fallback(self, tmp_path, monkeypatch):
+        conv = self._converter(strict=False)
+        f = tmp_path / "TEST2460.24o"
+        f.write_bytes(b"RINEX OBS")
+        monkeypatch.setattr(conv, "get_tool_path", lambda t: "/usr/bin/rnx2crx")
+        monkeypatch.setattr(
+            conv,
+            "_run_subprocess",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("exit code 1")),
+        )
+        out = conv._apply_hatanaka_compression(f)
+        assert out == f and f.exists(), "daily pipeline keeps degraded-but-present"
