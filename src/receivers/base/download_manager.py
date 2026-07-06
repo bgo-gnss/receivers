@@ -5,6 +5,7 @@ Enhanced with Phase 1 utilities for unified validation, archiving, and retry log
 
 import logging
 import os
+import shutil
 import time
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
@@ -489,7 +490,9 @@ class BaseDownloadManager(ABC):
             self.logger.info(
                 f"📦 Archiving {os.path.basename(archive_path)} ({tmp_size:,} bytes)"
             )
-            os.rename(tmp_file_path, archive_path)
+            # shutil.move, not os.rename: tmp staging and the archive live on
+            # different filesystems (/tmp LV vs /mnt/data) — rename would EXDEV.
+            shutil.move(tmp_file_path, archive_path)
 
             # Verify successful archive
             if (
