@@ -25,6 +25,20 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Optional
 
+
+def _resolve_coord_tolerance(override=None) -> float:
+    """One global coordinate-identity gate — receivers.cfg [rinex]
+    position_gate_m (default 10 m) unless the caller overrides."""
+    if override is not None:
+        return float(override)
+    try:
+        from ..config.receivers_config import get_receivers_config
+
+        return get_receivers_config().get_position_gate_m()
+    except Exception:  # noqa: BLE001 - config optional
+        return 10.0
+
+
 logger = logging.getLogger("receivers.dissemination.qc")
 
 # Discrepancy keys that compare_rinex_to_tos emits ONLY on a genuine mismatch.
@@ -138,7 +152,7 @@ def qc_check(
     tos_session: Optional[dict[str, Any]],
     *,
     blocking_fields: frozenset[str] = DEFAULT_BLOCKING_FIELDS,
-    coord_tolerance_m: float = 10.0,
+    coord_tolerance_m: Optional[float] = None,
     loglevel: int = logging.WARNING,
 ) -> QCVerdict:
     """Verify ``rinex_file``'s header against ``tos_session``.
@@ -163,7 +177,10 @@ def qc_check(
     from tostools.rinex.validator import compare_rinex_to_tos
 
     result = compare_rinex_to_tos(
-        rinex_info, tos_session, loglevel=loglevel, coord_tolerance=coord_tolerance_m
+        rinex_info,
+        tos_session,
+        loglevel=loglevel,
+        coord_tolerance=_resolve_coord_tolerance(coord_tolerance_m),
     )
     discrepancies = dict(result.get("discrepancies", {}))
     matches = dict(result.get("matches", {}))

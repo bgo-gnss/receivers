@@ -528,6 +528,11 @@ class ReceiversConfig:
             # (teqc) so the L2 range stays P2. Bound to receiver type: a station
             # upgraded off NetRS automatically returns to the default version.
             "netrs_rinex_version": 2,
+            # THE global position-identity gate (metres): raw/header-derived
+            # coordinates within this distance of the surveyed mark confirm
+            # the station. One number for the converter identity gate,
+            # archive-sort --check-station and the header-QC coordinate check.
+            "position_gate_m": 10.0,
         }
 
         try:
@@ -548,6 +553,14 @@ class ReceiversConfig:
             self.logger.debug("No [rinex] section found, using defaults")
 
         return rinex_config
+
+    def get_position_gate_m(self) -> float:
+        """The global coordinate-identity tolerance (metres) — [rinex]
+        position_gate_m, default 10. Config, not code (bgo 2026-07-06)."""
+        try:
+            return float(self.get_rinex_config().get("position_gate_m", 10.0))
+        except (TypeError, ValueError):
+            return 10.0
 
     def get_storage_locations(self) -> list[Dict[str, Any]]:
         """Get storage location definitions from config.
