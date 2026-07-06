@@ -1227,6 +1227,20 @@ Examples:
     )
 
     mode_group.add_argument(
+        "--parallel",
+        nargs="?",
+        const="auto",
+        default=None,
+        metavar="N",
+        help="Convert calendar-year chunks in parallel (chunks are "
+        "date-disjoint, so workers never race on the same file). "
+        "--parallel alone sizes the pool from free cores minus current "
+        "loadavg and keeps re-checking load before each new chunk; "
+        "--parallel N forces N workers. The final --push stays a single "
+        "serialized step.",
+    )
+
+    mode_group.add_argument(
         "--backup-old",
         action="store_true",
         help="During RE-CONVERSION (re-rinex): before a new RINEX overwrites the "
