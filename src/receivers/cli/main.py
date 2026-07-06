@@ -4986,6 +4986,33 @@ def _flush_fixed_batch(
             pass
 
 
+def _parallel_workers(args, stations, start_time, end_time, logger) -> int:
+    """Resolve ``--parallel`` into a worker count (1 = run sequentially).
+
+    ``--parallel`` alone → load-aware auto sizing; ``--parallel N`` → N,
+    clamped to the chunk count. Sequential whenever there is nothing to
+    parallelize (single chunk) or the dates are missing.
+    """
+    par = getattr(args, "parallel", None)
+    if not par or not start_time or not end_time:
+        return 1
+    from ..utils.batch_parallel import auto_workers, split_year_ranges
+
+    n_chunks = len(stations) * len(split_year_ranges(start_time, end_time))
+    if n_chunks <= 1:
+        return 1
+    if str(par).lower() == "auto":
+        return auto_workers(n_chunks, logger=logger)
+    try:
+        return max(1, min(int(par), n_chunks))
+    except ValueError:
+        logger.error(
+            "--parallel must be a number or 'auto' — got %r; running sequentially",
+            par,
+        )
+        return 1
+
+
 def _push_reconverted(work_dir, args, logger) -> Dict[str, Any]:
     """Push re-rinexed files from a --work-dir staging tree back to the archive.
 
@@ -5535,6 +5562,7 @@ def cmd_rinex(args) -> int:
     run_t0 = _time.monotonic()
     durations: List[float] = []
     push_stats: Optional[Dict[str, Any]] = None
+    par_workers = _parallel_workers(args, stations, start_time, end_time, logger)
     aborted = False
     try:
         if network_first:
@@ -5585,6 +5613,55 @@ def cmd_rinex(args) -> int:
                     total_converted += c
                     total_failed += f
                     total_skipped += s
+        elif par_workers > 1:
+            # Parallel: date-disjoint (station, year) chunks on a load-aware
+            # thread pool. Each chunk gets its OWN converter instance (own
+            # TOS cache) so nothing mutable is shared; NetworkUnavailableError
+            # aborts the whole batch (resume by re-running, staged dates skip).
+            from ..utils.batch_parallel import run_chunks, split_year_ranges
+
+            year_ranges = split_year_ranges(start_time, end_time)
+            chunks = [(sid, ys, ye) for sid in stations for ys, ye in year_ranges]
+            workers = par_workers
+            print(
+                f"\nParallel conversion: {len(chunks)} year-chunk(s) "
+                f"on {workers} worker(s)"
+            )
+
+            def _convert_chunk(chunk):
+                sid, ys, ye = chunk
+                conv, ext, _ = _create_rinex_converter(
+                    sid,
+                    args,
+                    rinex_version,
+                    apply_hatanaka,
+                    compression_format,
+                    naming_convention,
+                    observation_types,
+                    logger,
+                    rinex_config,
+                )
+                if conv is None:
+                    return (0, 0, 1)
+                return _rinex_convert_station_period(
+                    sid, conv, ext, ys, ye, args, logger, durations=durations
+                )
+
+            outcomes = run_chunks(
+                chunks,
+                _convert_chunk,
+                workers=workers,
+                logger=logger,
+                abort_on=(NetworkUnavailableError,),
+            )
+            for oc in outcomes:
+                if oc.ok and oc.value is not None:
+                    c, f, s = oc.value
+                    total_converted += c
+                    total_failed += f
+                    total_skipped += s
+                elif oc.error is not None:
+                    total_failed += 1
         else:
             # Station-first: current behavior
             for station_id in stations:
