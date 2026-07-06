@@ -248,3 +248,33 @@ def plan_relocations(
         )
         logger.info("remediation: %s [%s] -> %s", rel, ",".join(reasons), dst_rel)
     return plans, skips
+
+
+def scan_station_raw(
+    root: Path,
+    station: str,
+    session: str = "15s_24hr",
+    *,
+    years: Optional[list] = None,
+) -> list[str]:
+    """Enumerate a station/session's raw files as archive-relative paths.
+
+    The station-first entry (mirrors archive-audit): the verb walks
+    ``root/YYYY/mon/STATION/session/raw/`` itself — no hand-built lists.
+    """
+    root = Path(root)
+    station = station.upper()
+    rels: list[str] = []
+    for ydir in sorted(root.iterdir()):
+        if not (ydir.is_dir() and ydir.name.isdigit() and len(ydir.name) == 4):
+            continue
+        if years and int(ydir.name) not in years:
+            continue
+        for mon in MONTH_DIRS[1:]:
+            raw_dir = ydir / mon / station / session / "raw"
+            if not raw_dir.is_dir():
+                continue
+            for f in sorted(raw_dir.iterdir()):
+                if f.is_file():
+                    rels.append(str(f.relative_to(root)))
+    return rels

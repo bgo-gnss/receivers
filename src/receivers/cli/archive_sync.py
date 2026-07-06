@@ -1091,6 +1091,11 @@ def cmd_archive_sort(args: argparse.Namespace) -> int:
             _record_plan_applied(Path(args.apply_plan), res)
         return 0 if res.ok else 1
 
+    root = Path(args.root)
+    if not root.is_dir():
+        print(f"❌ local archive root not found: {root}")
+        return 2
+
     rel_files: list[str] = list(args.file or [])
     if args.list:
         rel_files.extend(
@@ -1098,13 +1103,24 @@ def cmd_archive_sort(args: argparse.Namespace) -> int:
             for ln in Path(args.list).read_text().splitlines()
             if ln.strip() and not ln.strip().startswith("#")
         )
-    if not rel_files:
-        print("❌ no files given (use --file and/or --list)")
-        return 2
+    if args.stations:
+        from ..archive.sort import scan_station_raw
 
-    root = Path(args.root)
-    if not root.is_dir():
-        print(f"❌ local archive root not found: {root}")
+        years = None
+        if args.years:
+            years = []
+            for tok in args.years:
+                if "-" in tok:
+                    a, b = tok.split("-", 1)
+                    years.extend(range(int(a), int(b) + 1))
+                else:
+                    years.append(int(tok))
+        for sta in args.stations:
+            found = scan_station_raw(root, sta, args.session, years=years)
+            print(f"   {sta.upper()}/{args.session}: {len(found)} raw file(s)")
+            rel_files.extend(found)
+    if not rel_files:
+        print("❌ nothing to check (give STATION(s), --file or --list)")
         return 2
 
     print(f"🔎 archive-sort: classifying + decoding {len(rel_files)} file(s)")
@@ -1252,6 +1268,24 @@ def create_archive_sort_parser(subparsers) -> argparse.ArgumentParser:
             "moves go through the rawdata gateway, argv-safe, and an existing "
             "destination is never overwritten."
         ),
+    )
+    parser.add_argument(
+        "stations",
+        nargs="*",
+        metavar="STATION",
+        help="Station(s) to audit — the verb scans YYYY/mon/STA/SESSION/raw "
+        "itself (mirrors archive-audit); alternatively use --file/--list",
+    )
+    parser.add_argument(
+        "--session",
+        default="15s_24hr",
+        help="Session type for the station scan (default: 15s_24hr)",
+    )
+    parser.add_argument(
+        "--years",
+        nargs="+",
+        metavar="Y|A-B",
+        help="Limit the station scan to these years / ranges (e.g. 2000-2011)",
     )
     parser.add_argument(
         "--file",

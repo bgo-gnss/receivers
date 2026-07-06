@@ -428,3 +428,20 @@ class TestStationAndExtRemediation:
         p = plans[0]
         assert set(p.reasons) == {"wrong-station", "wrong-date", "wrong-ext"}
         assert p.dst_rel == "2010/apr/RHOF/15s_24hr/raw/RHOF201004020000a.sbf"
+
+
+class TestStationFirstScan:
+    def test_scan_station_raw_by_years(self, tmp_path):
+        from receivers.archive.sort import scan_station_raw
+
+        _mk(tmp_path, "2008/apr/RHOF/15s_24hr/raw/RHOF200804010000a.atc", b"x")
+        _mk(tmp_path, "2009/jul/RHOF/15s_24hr/raw/RHOF200907130000a.atc", b"x")
+        _mk(tmp_path, "2008/apr/REYK/15s_24hr/raw/REYK200804010000a.sbf", b"x")
+        _mk(tmp_path, "2008/apr/RHOF/1Hz_1hr/raw/RHOF200804010600b.sbf", b"x")
+
+        all_rhof = scan_station_raw(tmp_path, "rhof")
+        assert len(all_rhof) == 2  # both years, only RHOF 15s_24hr
+        only_2008 = scan_station_raw(tmp_path, "RHOF", years=[2008])
+        assert only_2008 == ["2008/apr/RHOF/15s_24hr/raw/RHOF200804010000a.atc"]
+        hz = scan_station_raw(tmp_path, "RHOF", "1Hz_1hr")
+        assert len(hz) == 1
