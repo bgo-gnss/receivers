@@ -11,9 +11,12 @@ The decoder flag is chosen by CONTENT (magic bytes), never by name — the
 emits nothing, and whole batches sit misfiled a decade off (the base-class
 identity gate catches those AFTER decode via first-obs date + position).
 
-Chain (proven epoch-identical to the era's archive RINEX on RHOF samples):
-``teqc -ash {u|r}`` → RINEX 2.11 obs (+nav) → optional ``gfzrnx -vo 3``
-when RINEX 3 output is requested (the archive R3 campaign form).
+Output is ALWAYS native RINEX 2.11 — teqc cannot create real RINEX 3 from
+Ashtech raw, and an R2→R3 pass through gfzrnx is explicitly an ambiguous
+REFORMATTING (gfzrnx's own COMMENT-block warning: LLI bit semantics differ
+between versions). Policy (bgo, 2026-07-06): R3 only when the converter
+creates it straight from raw; otherwise ship the honest native version.
+A RINEX-3 request is therefore clamped to RINEX 2 with a loud log line.
 """
 
 import logging
@@ -51,11 +54,21 @@ class AshtechConverter(TrimbleConverter):
     def converter_name(self) -> str:
         return "teqc"
 
-    def _get_required_tools(self) -> List[str]:
-        tools = ["teqc"]
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        from .converter_base import NamingConvention, RinexVersion
+
         if self.rinex_version.value >= 3:
-            tools.append("gfzrnx")
-        return tools
+            self.logger.info(
+                "Ashtech raw cannot yield REAL RINEX 3 (teqc decodes to 2.11; "
+                "R2→R3 is ambiguous reformatting per gfzrnx's own warning) — "
+                "clamping output to native RINEX 2.11"
+            )
+            self.rinex_version = RinexVersion.RINEX_2
+            self.naming_convention = NamingConvention.SHORT
+
+    def _get_required_tools(self) -> List[str]:
+        return ["teqc"]
 
     def _run_conversion(
         self,
@@ -63,16 +76,15 @@ class AshtechConverter(TrimbleConverter):
         output_dir: Path,
         observation_date: datetime,
     ) -> Path:
-        """teqc -ash {u|r} → RINEX 2.11 (+nav) → optional gfzrnx → RINEX 3."""
+        """teqc -ash {u|r} → native RINEX 2.11 obs (+nav sibling)."""
         try:
             working_file = self._decompress_if_needed(raw_file)
-            rinex2_file = self._run_teqc_ashtech(
+            rinex_file = self._run_teqc_ashtech(
                 working_file, output_dir, observation_date
             )
-            if self.rinex_version.value >= 3:
-                rinex_file = self._run_gfzrnx(rinex2_file, output_dir, observation_date)
-            else:
-                rinex_file = rinex2_file
+            # The obs IS the product — keep it out of the temp cleanup.
+            if rinex_file in self._temp_files:
+                self._temp_files.remove(rinex_file)
             if not self.keep_intermediate:
                 self._cleanup_temp_files()
             return rinex_file

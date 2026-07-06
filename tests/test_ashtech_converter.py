@@ -41,10 +41,16 @@ class TestDeclaration:
             {"ashtech_u", "ashtech_r"}
         )
         c = _conv()
-        from receivers.rinex.converter_base import RinexVersion
-
-        c.rinex_version = RinexVersion.RINEX_3
-        assert c._get_required_tools() == ["teqc", "gfzrnx"]
-        c.rinex_version = RinexVersion.RINEX_2
         assert c._get_required_tools() == ["teqc"]
         assert ".atc" in c.supported_extensions
+
+    def test_r3_request_clamped_to_native_r2(self):
+        """teqc cannot make REAL RINEX 3; an R3 request must clamp to 2.11
+        (R2->R3 via gfzrnx is ambiguous reformatting - bgo policy)."""
+        from receivers.rinex.ashtech_converter import AshtechConverter
+        from receivers.rinex.converter_base import NamingConvention, RinexVersion
+
+        c = AshtechConverter("RHOF", rinex_version=RinexVersion.RINEX_3)
+        assert c.rinex_version == RinexVersion.RINEX_2
+        assert c.naming_convention == NamingConvention.SHORT
+        assert c._get_required_tools() == ["teqc"]
