@@ -563,17 +563,36 @@ class RawToRinexConverter(ABC):
             # cached (in _get_corrections_from_tos) so a soft miss re-fetches.
             if not hasattr(self, "_tos_metadata_cache"):
                 self._tos_metadata_cache: dict = {}
+            # tos_metadata_cache is a newer-tostools optimization (re-rinex reuses
+            # one TOS fetch per station). Older tostools (e.g. 0.6.1) lacks the
+            # kwarg and raises TypeError — which this method catches and turns into
+            # a *silently default* header on every file. Pass it only when the
+            # installed tostools actually accepts it (detected once per class).
+            cls = type(self)
+            if not hasattr(cls, "_tos_cache_kw_supported"):
+                import inspect as _inspect
+
+                try:
+                    cls._tos_cache_kw_supported = (
+                        "tos_metadata_cache"
+                        in _inspect.signature(correct_rinex_from_tos).parameters
+                    )
+                except (ValueError, TypeError):
+                    cls._tos_cache_kw_supported = False
+
+            corr_kwargs = dict(
+                rinex_file=rinex_file,
+                station_id=self.station_id,
+                observation_date=observation_date,
+                output_file=rinex_file,  # Overwrite in place
+                station_config=station_config,
+                loglevel=self.logger.level,
+                extra_corrections=extra,
+            )
+            if cls._tos_cache_kw_supported:
+                corr_kwargs["tos_metadata_cache"] = self._tos_metadata_cache
             try:
-                result = correct_rinex_from_tos(
-                    rinex_file=rinex_file,
-                    station_id=self.station_id,
-                    observation_date=observation_date,
-                    output_file=rinex_file,  # Overwrite in place
-                    station_config=station_config,
-                    loglevel=self.logger.level,
-                    extra_corrections=extra,
-                    tos_metadata_cache=self._tos_metadata_cache,
-                )
+                result = correct_rinex_from_tos(**corr_kwargs)
             except SystemExit as e:
                 raise NetworkUnavailableError(
                     f"TOS unreachable while correcting {self.station_id} "
