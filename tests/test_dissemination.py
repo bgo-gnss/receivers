@@ -926,7 +926,14 @@ targets:
             markers=["RHOF", "FIHO", "AKUR"],
             engine_factory=lambda _t: eng,
         )
-        assert s == {"stations": 3, "pushed": 2, "cached": 2, "skipped": 2, "failed": 0}
+        assert s == {
+            "stations": 3,
+            "pushed": 2,
+            "cached": 2,
+            "skipped": 2,
+            "failed": 0,
+            "superseded": 0,
+        }
         assert len(eng.calls) == 6  # 3 stations x 2 days
 
 
@@ -1933,8 +1940,7 @@ class TestAgencyResolver:
         from receivers.dissemination.agencies import AgencyResolver
 
         p = tmp_path / "agencies.yaml"
-        p.write_text(
-            textwrap.dedent("""
+        p.write_text(textwrap.dedent("""
                 defaults: {url: "https://x"}
                 agencies:
                   "Org A":
@@ -1943,8 +1949,7 @@ class TestAgencyResolver:
                     observer: "GNSSatA"
                     agency_label: "A"
                     address: "Single Line"
-                """)
-        )
+                """))
         a = AgencyResolver.load(p).resolve("Org A")
         assert a.english_name == "A EN"
         assert a.address == ("Single Line",)  # scalar promoted to 1-tuple
@@ -2352,9 +2357,11 @@ class TestSubmitToM3G:
                 dry_run=dry_run,
                 md5_sitelog="abc" if self._u_ok else None,
                 sitelog_name="rhof00isl_20260702.log" if self._u_ok else None,
-                links={"self": "https://gnss-metadata.eu/v1/sitelog/view?id=RHOF00ISL"}
-                if self._u_ok
-                else {},
+                links=(
+                    {"self": "https://gnss-metadata.eu/v1/sitelog/view?id=RHOF00ISL"}
+                    if self._u_ok
+                    else {}
+                ),
                 error=None if self._u_ok else "boom",
             )
 
@@ -2405,3 +2412,116 @@ class TestSubmitToM3G:
         )
         assert len(mc.validate_calls) == 0
         assert r.uploaded is True
+
+
+class TestDisseminateJobRange:
+    """dates= / supersede batching / force on run_epos_disseminate_job."""
+
+    def _result(self, station, d, *, ok=True, cached=False, superseded=None):
+        from receivers.dissemination.engine import DisseminateResult
+
+        r = DisseminateResult(station=station, file_date=d)
+        r.ok = ok
+        r.cached = cached
+        r.dry_run = False
+        r.superseded_name = superseded
+        r.relative_path = f"2013/jun/{station}/15s_24hr/rinex/x.crx.gz"
+        r.artifact_path = None  # index skipped -> supersede must NOT trigger
+        return r
+
+    def test_explicit_dates_and_force(self, tmp_path):
+        from datetime import date as _date
+
+        from receivers.dissemination.job import run_epos_disseminate_job
+
+        cfg = tmp_path / "sync.yaml"
+        cfg.write_text(
+            "targets:\n"
+            "  - name: epos\n"
+            "    active: false\n"
+            "    tier: dissemination\n"
+            "    host: ''\n"
+            "    user: u\n"
+            "    dest: /tmp/x\n"
+            "    source_root: /tmp/src\n"
+        )
+        calls = []
+
+        class _Eng:
+            def run_one(self, station, d):
+                calls.append((station, d))
+                return TestDisseminateJobRange._result(self, station, d)
+
+        dates = [_date(2013, 6, 14), _date(2026, 1, 2), _date(2013, 6, 15)]
+        # active:false + force=False -> nothing runs
+        s0 = run_epos_disseminate_job(
+            config_path=str(cfg),
+            markers=["RHOF"],
+            no_qc=True,
+            dates=dates,
+            engine_factory=lambda t: _Eng(),
+            epos_conn_factory=lambda: None,
+        )
+        assert s0["pushed"] == 0 and not calls
+        # force=True -> runs all dates, sorted+deduped, year-chunked
+        s = run_epos_disseminate_job(
+            config_path=str(cfg),
+            markers=["RHOF"],
+            no_qc=True,
+            dates=dates + [_date(2013, 6, 14)],  # dup dropped
+            force=True,
+            engine_factory=lambda t: _Eng(),
+            epos_conn_factory=lambda: None,
+        )
+        assert s["pushed"] == 3 and s["failed"] == 0 and s["superseded"] == 0
+        assert [d for _, d in calls] == sorted({*dates})
+
+    def test_supersede_gated_on_indexed(self, tmp_path, monkeypatch):
+        """superseded_name WITHOUT a durable index must never queue removal."""
+        from datetime import date as _date
+
+        import receivers.dissemination.job as jobmod
+        from receivers.dissemination.job import run_epos_disseminate_job
+
+        cfg = tmp_path / "sync.yaml"
+        cfg.write_text(
+            "targets:\n"
+            "  - name: epos\n"
+            "    active: true\n"
+            "    tier: dissemination\n"
+            "    host: portal.example\n"
+            "    user: epos\n"
+            "    dest: /mnt/epos\n"
+            "    source_root: /tmp/src\n"
+        )
+
+        class _Eng:
+            def run_one(self, station, d):
+                return TestDisseminateJobRange._result(
+                    self, station, d, superseded="RHOF1650.13D.Z"
+                )
+
+        flushed = []
+        monkeypatch.setattr(
+            jobmod,
+            "_index_pushed",
+            lambda conn, tgt, res: None,  # index FAILED / skipped
+        )
+
+        def _boom(*a, **k):  # would be called only if a flush happens
+            flushed.append(1)
+            return {"removed": [], "skipped": [], "would_remove": [], "deindexed": []}
+
+        import receivers.dissemination.rinex_index as ri
+
+        monkeypatch.setattr(ri, "supersede_legacy_batch", _boom)
+        s = run_epos_disseminate_job(
+            config_path=str(cfg),
+            markers=["RHOF"],
+            no_qc=True,
+            dates=[_date(2013, 6, 14)],
+            engine_factory=lambda t: _Eng(),
+            epos_conn_factory=lambda: object(),  # conn present, index still None
+        )
+        assert s["pushed"] == 1
+        assert s["superseded"] == 0 and not flushed

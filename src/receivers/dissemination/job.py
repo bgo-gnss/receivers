@@ -15,6 +15,7 @@ layer on top of this trailing-window sweep.
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
@@ -22,15 +23,20 @@ from typing import Any, Optional
 logger = logging.getLogger("receivers.dissemination.job")
 
 
-def _index_pushed(epos_conn: Any, target: Any, result: Any) -> None:
-    """Best-effort index of a freshly pushed file in the EPOS rinex_file table."""
+def _index_pushed(epos_conn: Any, target: Any, result: Any) -> Optional[int]:
+    """Best-effort index of a freshly pushed file in the EPOS rinex_file table.
+
+    Returns the ``rinex_file`` id (supersede-cleanup gates on it — legacy
+    removal must never run unless the replacement is durably indexed), or
+    None when indexing was skipped/failed.
+    """
     if epos_conn is None or not result.artifact_path or not result.relative_path:
-        return
+        return None
     try:
         from .rinex_index import index_rinex_file
 
         d = result.file_date
-        index_rinex_file(
+        return index_rinex_file(
             epos_conn,
             Path(result.artifact_path),
             result.station,
@@ -43,6 +49,7 @@ def _index_pushed(epos_conn: Any, target: Any, result: Any) -> None:
         logger.warning(
             "index failed for %s %s: %s", result.station, result.file_date, exc
         )
+        return None
 
 
 def run_epos_disseminate_job(
@@ -53,18 +60,45 @@ def run_epos_disseminate_job(
     *,
     today: Optional[date] = None,
     markers: Optional[list[str]] = None,
+    dates: Optional[list[date]] = None,
+    supersede: bool = True,
+    parallel: Any = None,
+    force: bool = False,
     engine_factory: Any = None,
     epos_conn_factory: Any = None,
 ) -> dict[str, int]:
-    """Disseminate the last ``days_back`` days for every EPOS station. Never raises.
+    """Disseminate a date window for every EPOS station. Never raises.
 
-    Returns a summary ``{stations, pushed, cached, skipped, failed}``. The injectable
-    ``today`` / ``markers`` / ``engine_factory`` / ``epos_conn_factory`` keep the
-    sweep testable offline; production uses the real defaults.
+    Dates: explicit ``dates`` list when given (the range/--dates driver — a
+    full-history portal refresh after a re-rinex campaign is exactly this),
+    else the trailing ``days_back`` window (the T8 scheduler sweep).
+
+    Supersede-cleanup (``supersede=True``): a long-name product whose durable
+    push+index replaced a legacy short-name file queues that legacy file for
+    removal; queued items are removed in BATCHES (one argv-safe SSH call per
+    flush, not one per date) and de-indexed. Only ever gated on
+    ``result.ok and indexed`` — cleanup can never orphan a day.
+
+    ``parallel`` (None | "auto" | N): chunk the work into date-disjoint
+    (station, year) chunks on the load-aware thread pool; each chunk gets its
+    own engine and EPOS DB connection. Supersede flushes are serialized.
+
+    Returns a summary ``{stations, pushed, cached, skipped, failed, superseded}``.
+    The injectable ``today`` / ``markers`` / ``engine_factory`` /
+    ``epos_conn_factory`` keep the sweep testable offline. When no
+    ``epos_conn_factory`` is given the production EPOS DB connection is used
+    (best-effort — no [epos_db] config means no indexing, as before).
     """
     from .config import load_dissemination_config
 
-    summary = {"stations": 0, "pushed": 0, "cached": 0, "skipped": 0, "failed": 0}
+    summary = {
+        "stations": 0,
+        "pushed": 0,
+        "cached": 0,
+        "skipped": 0,
+        "failed": 0,
+        "superseded": 0,
+    }
     try:
         targets = load_dissemination_config(Path(config_path) if config_path else None)
     except Exception:
@@ -73,7 +107,9 @@ def run_epos_disseminate_job(
 
     if target_name:
         targets = [t for t in targets if t.name == target_name]
-    active = [t for t in targets if t.active]
+    # force: the CLI range mode's pre-stage path (mirrors the single-date
+    # --force) — the scheduler never sets it, so active:false still gates T8.
+    active = [t for t in targets if t.active or force]
     if not active:
         logger.info("epos-disseminate: no active dissemination target — nothing to do")
         return summary
@@ -118,50 +154,152 @@ def run_epos_disseminate_job(
         def engine_factory(tgt):  # type: ignore[misc]
             return EposDisseminate(tgt, session_provider=session_provider)
 
-    engine = engine_factory(target)
+    if epos_conn_factory is None:
+        epos_conn_factory = _open_epos_conn  # best-effort None without [epos_db]
 
-    end = today or date.today()
-    dates = [end - timedelta(days=n) for n in range(days_back)]
+    if dates is None:
+        end = today or date.today()
+        dates = [end - timedelta(days=n) for n in range(days_back)]
+    dates = sorted(set(dates))
 
-    epos_conn = None
-    if epos_conn_factory is not None:
+    do_supersede = bool(supersede and getattr(target, "host", ""))
+    ssh_target = f"{target.user}@{target.host}" if do_supersede else ""
+    flush_lock = threading.Lock()
+    _FLUSH_EVERY = 200
+
+    def _flush_supersedes(conn: Any, items: list) -> int:
+        """One batched portal rm + de-index for the queued legacy files."""
+        if not items or conn is None:
+            items.clear()
+            return 0
+        from .rinex_index import supersede_legacy_batch
+
+        with flush_lock:  # concurrent gateway ssh is unreliable — serialize
+            out = supersede_legacy_batch(
+                conn,
+                list(items),
+                ssh_target=ssh_target,
+                dest_root=target.dest,
+                dry_run=False,
+            )
+        n = len(out["removed"])
+        if out["skipped"]:
+            logger.info(
+                "supersede: %d legacy file(s) not on portal (already clean)",
+                len(out["skipped"]),
+            )
+        items.clear()
+        return n
+
+    def _run_station_dates(station: str, chunk_dates: list, progress=None) -> dict:
+        """One worker unit: own engine + own EPOS conn + local supersede queue."""
+        local = {"pushed": 0, "cached": 0, "skipped": 0, "failed": 0, "superseded": 0}
+        engine = engine_factory(target)
         try:
-            epos_conn = epos_conn_factory()
+            conn = epos_conn_factory()
         except Exception:  # noqa: BLE001 - indexing is best-effort
-            epos_conn = None
-
-    try:
-        for station in markers:
-            summary["stations"] += 1
-            for d in dates:
+            conn = None
+        pending: list = []
+        if progress is not None:
+            progress.set_total(len(chunk_dates))
+        try:
+            for d in chunk_dates:
                 try:
                     result = engine.run_one(station, d)
                 except Exception:
                     logger.exception("epos-disseminate %s %s: run failed", station, d)
-                    summary["failed"] += 1
+                    local["failed"] += 1
+                    if progress is not None:
+                        progress.advance()
                     continue
                 if not result.ok:
-                    summary["skipped"] += 1
+                    local["skipped"] += 1
+                    if progress is not None:
+                        progress.advance()
                     continue
-                if result.cached:
-                    summary["cached"] += 1
-                else:
-                    summary["pushed"] += 1
-                _index_pushed(epos_conn, target, result)
-    finally:
-        if epos_conn is not None:
+                local["cached" if result.cached else "pushed"] += 1
+                indexed_id = _index_pushed(conn, target, result)
+                if (
+                    do_supersede
+                    and result.superseded_name
+                    and not result.dry_run
+                    and indexed_id is not None
+                    and result.relative_path
+                ):
+                    pending.append(
+                        (
+                            result.superseded_name,
+                            str(Path(result.relative_path).parent),
+                        )
+                    )
+                    if len(pending) >= _FLUSH_EVERY:
+                        local["superseded"] += _flush_supersedes(conn, pending)
+                if progress is not None:
+                    progress.advance(getattr(result, "duration_seconds", None))
+            local["superseded"] += _flush_supersedes(conn, pending)
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:  # noqa: BLE001
+                    pass
+        return local
+
+    from ..utils.batch_parallel import resolve_workers
+
+    chunks: list = []
+    for station in markers:
+        by_year: dict[int, list] = {}
+        for d in dates:
+            by_year.setdefault(d.year, []).append(d)
+        for _year, chunk_dates in sorted(by_year.items()):
+            chunks.append((station, chunk_dates))
+    workers = resolve_workers(parallel, len(chunks), logger)
+
+    summary["stations"] = len(markers)
+    if workers > 1:
+        from ..utils.batch_parallel import ProgressBoard, run_chunks
+
+        board = ProgressBoard(interval=30)
+        handles = {id(c): board.handle(f"{c[0]} {c[1][0].year}") for c in chunks}
+
+        def _chunk_fn(chunk):
+            station, chunk_dates = chunk
+            h = handles[id(chunk)]
+            h.start()
             try:
-                epos_conn.close()
-            except Exception:  # noqa: BLE001
-                pass
+                res = _run_station_dates(station, chunk_dates, progress=h)
+                h.finish(ok=True)
+                return res
+            except BaseException:
+                h.finish(ok=False)
+                raise
+
+        with board:
+            outcomes = run_chunks(
+                chunks, _chunk_fn, workers=workers, logger=logger, load_gate=True
+            )
+        for oc in outcomes:
+            if oc.ok and oc.value is not None:
+                for k, v in oc.value.items():
+                    summary[k] += v
+            else:
+                summary["failed"] += len(oc.chunk[1])
+    else:
+        for station, chunk_dates in chunks:
+            local = _run_station_dates(station, chunk_dates)
+            for k, v in local.items():
+                summary[k] += v
 
     logger.info(
-        "epos-disseminate sweep: %d stations, pushed=%d cached=%d skipped=%d failed=%d",
+        "epos-disseminate sweep: %d stations, pushed=%d cached=%d skipped=%d "
+        "failed=%d superseded=%d",
         summary["stations"],
         summary["pushed"],
         summary["cached"],
         summary["skipped"],
         summary["failed"],
+        summary["superseded"],
     )
     return summary
 

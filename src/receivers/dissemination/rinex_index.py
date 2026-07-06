@@ -252,3 +252,56 @@ def supersede_legacy(
         except Exception as exc:  # noqa: BLE001
             logger.warning("supersede de-index failed for %s: %s", superseded_name, exc)
     return out
+
+
+def supersede_legacy_batch(
+    conn,
+    items: list[tuple[str, str]],
+    *,
+    ssh_target: str,
+    dest_root: str,
+    dry_run: bool = True,
+) -> dict:
+    """Batch form of :func:`supersede_legacy` for range/backfill sweeps.
+
+    ``items`` = ``(superseded_name, relative_dir)`` pairs, each already gated by
+    the caller on a durable push+index of its replacement. ONE argv-safe SSH
+    call removes the whole batch (vs one round-trip per date — the difference
+    between minutes and hours on a full-history portal refresh), then each
+    removed name is de-indexed. Never raises.
+    """
+    from ..archive.remove import remove_archive_files
+
+    out: dict = {"removed": [], "would_remove": [], "skipped": [], "deindexed": []}
+    if not items:
+        return out
+    rel_by_name = {
+        name: (f"{rel_dir.rstrip('/')}/{name}" if rel_dir else name)
+        for name, rel_dir in items
+    }
+    try:
+        rm = remove_archive_files(
+            sorted(rel_by_name.values()),
+            ssh_target=ssh_target,
+            dest_root=dest_root,
+            max_size=_SUPERSEDE_MAX_BYTES,
+            execute=not dry_run,
+        )
+        out["removed"] = [r for r, _ in rm.deleted]
+        out["would_remove"] = [r for r, _ in rm.would_delete]
+        out["skipped"] = (
+            [r for r, _ in rm.skipped_toobig] + list(rm.missing) + list(rm.invalid)
+        )
+    except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
+        logger.warning("supersede batch portal delete failed: %s", exc)
+        return out
+    if not dry_run:
+        removed_rels = set(out["removed"])
+        for name, rel in rel_by_name.items():
+            if rel not in removed_rels:
+                continue
+            try:
+                out["deindexed"].extend(deindex_rinex_file(conn, name))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("supersede de-index failed for %s: %s", name, exc)
+    return out
