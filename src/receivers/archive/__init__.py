@@ -21,12 +21,14 @@ from .reindex import (
     reindex_files_multi,
     resolve_catalog_hosts,
 )
+from .relocate import RelocateResult, relocate_archive_files
 from .remove import (
     RemoveResult,
     remove_archive_files,
     remove_catalog_rows,
     validate_archive_relpath,
 )
+from .sort import MovePlan, SkipInfo, plan_relocations
 from .verify import VerifyStats, verify_archive_catalog
 
 __all__ = [
@@ -44,4 +46,9 @@ __all__ = [
     "remove_archive_files",
     "remove_catalog_rows",
     "validate_archive_relpath",
+    "RelocateResult",
+    "relocate_archive_files",
+    "MovePlan",
+    "SkipInfo",
+    "plan_relocations",
 ]

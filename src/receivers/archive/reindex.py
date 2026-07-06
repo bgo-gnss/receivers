@@ -40,12 +40,12 @@ logger = logging.getLogger(__name__)
 class ReindexStats:
     """Outcome of a reindex run."""
 
-    updated: int = 0          # existing row, content_sha256 changed
-    inserted: int = 0         # no prior row for this file
-    unchanged: int = 0        # row already held the correct hash
+    updated: int = 0  # existing row, content_sha256 changed
+    inserted: int = 0  # no prior row for this file
+    unchanged: int = 0  # row already held the correct hash
     errors: list[str] = field(default_factory=list)
-    skipped: int = 0          # file could not be parsed to an archive identity
-    skipped_new: int = 0      # only_existing: no prior row, insert suppressed
+    skipped: int = 0  # file could not be parsed to an archive identity
+    skipped_new: int = 0  # only_existing: no prior row, insert suppressed
 
     @property
     def touched(self) -> int:
@@ -143,7 +143,11 @@ def reindex_files(
         if dry_run:
             log.info(
                 "reindex[DRY]: %s %s %s → %s (%s)",
-                storage_location, parsed.station, key, digest[:12], outcome,
+                storage_location,
+                parsed.station,
+                key,
+                digest[:12],
+                outcome,
             )
         else:
             upsert_catalog_row(
@@ -166,7 +170,9 @@ def reindex_files(
     return stats
 
 
-def resolve_catalog_hosts(override: Optional[str] = None, *, prod: bool = False) -> list:
+def resolve_catalog_hosts(
+    override: Optional[str] = None, *, prod: bool = False
+) -> list:
     """Resolve which gps_health host(s) an archive-catalog write targets.
 
     Safe-by-default: production is an EXPLICIT opt-in, never a silent config
@@ -222,8 +228,13 @@ def reindex_files_multi(
         try:
             conn = get_connection(host_override=host)
             results[label] = reindex_files(
-                conn, files, root=root, storage_location=storage_location,
-                dest_prefix=dest_prefix, dry_run=dry_run, only_existing=only_existing,
+                conn,
+                files,
+                root=root,
+                storage_location=storage_location,
+                dest_prefix=dest_prefix,
+                dry_run=dry_run,
+                only_existing=only_existing,
                 log=log,
             )
         except Exception as exc:  # noqa: BLE001

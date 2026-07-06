@@ -1,0 +1,328 @@
+"""Binary raw-format identification + misfiled-file sorter (.atc findings).
+
+Covers the three checks from vault todo #56: magic-byte format dispatch,
+decoded-date vs filename-date validation, and the guarded relocation plan
+for misfiled batches (RHOF 2000/2001 holding 2010/2011 data).
+"""
+
+from datetime import datetime
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from receivers.archive import raw_format, sort
+from receivers.archive.raw_format import (
+    ASHTECH_R,
+    ASHTECH_U,
+    SBF,
+    TRIMBLE,
+    UNKNOWN,
+    build_raw_name,
+    classify_raw,
+    parse_raw_name,
+)
+from receivers.archive.relocate import relocate_archive_files
+from receivers.archive.sort import plan_relocations
+
+# ── magic-byte classification ────────────────────────────────────────────────
+
+
+class TestClassifyRaw:
+    def test_sbf_magic(self):
+        assert classify_raw(head=b"$@Sic\x00\x00\x00" + b"\x00" * 56) == SBF
+
+    def test_ashtech_u_bhdr_at_offset_4(self):
+        head = b"\x00\x00\x00\x30BHDRVersion: UZ-12" + b"\x00" * 40
+        assert classify_raw(head=head) == ASHTECH_U
+
+    def test_ashtech_r_z12_prefix(self):
+        assert classify_raw(head=b"Z-12\x00 receiver dump" + b"\x00" * 44) == ASHTECH_R
+
+    def test_trimble_by_extension_only(self, tmp_path):
+        f = tmp_path / "RHOF201804010000a.T02"
+        f.write_bytes(b"\x00\x00\x00\x0dtry" + b"\x00" * 500)
+        assert classify_raw(f) == TRIMBLE
+
+    def test_unknown(self):
+        assert classify_raw(head=b"\x00" * 64) == UNKNOWN
+
+    def test_gzip_transparent(self, tmp_path):
+        import gzip as _gzip
+
+        f = tmp_path / "HUSM202606270000a.sbf.gz"
+        f.write_bytes(_gzip.compress(b"$@Sic" + b"\x00" * 100))
+        assert classify_raw(f) == SBF
+
+    def test_mislabeled_atc_with_sbf_content(self, tmp_path):
+        # KOSK case: .atc extension, SBF bytes — content wins.
+        f = tmp_path / "KOSK201301010000a.atc"
+        f.write_bytes(b"$@Sic" + b"\x00" * 100)
+        assert classify_raw(f) == SBF
+
+
+# ── filename parse / rebuild ─────────────────────────────────────────────────
+
+
+class TestRawName:
+    def test_parse(self):
+        p = parse_raw_name("RHOF200004010000a.atc")
+        assert p is not None
+        assert p.station == "RHOF"
+        assert p.claimed == datetime(2000, 4, 1)
+        assert p.session_letter == "a"
+        assert p.ext == "atc"
+
+    def test_parse_gz(self):
+        p = parse_raw_name("HUSM202606270000a.sbf.gz")
+        assert p is not None and p.ext == "sbf.gz"
+
+    def test_parse_rejects_garbage(self):
+        assert parse_raw_name("RHOF0970.18D.Z") is None
+        assert parse_raw_name("RHOF200013990000a.atc") is None  # month 13
+
+    def test_build_corrected_name(self):
+        p = parse_raw_name("RHOF200004010000a.atc")
+        assert p is not None
+        # the misfiled batch: claims 2000-04-01, decodes to 2010-04-02
+        assert build_raw_name(p, datetime(2010, 4, 2)) == "RHOF201004020000a.atc"
+
+
+# ── relocation planning ──────────────────────────────────────────────────────
+
+
+def _mk(root: Path, rel: str, head: bytes, size: int = 8192) -> str:
+    p = root / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(head + b"\x00" * max(0, size - len(head)))
+    return rel
+
+
+class TestPlanRelocations:
+    def test_misfiled_planned_correct_and_stub_skipped(self, tmp_path, monkeypatch):
+        misfiled = _mk(
+            tmp_path,
+            "2000/apr/RHOF/15s_24hr/raw/RHOF200004010000a.atc",
+            b"\x00\x00\x00\x30BHDR",
+        )
+        correct = _mk(
+            tmp_path,
+            "2010/sep/ARHO/15s_24hr/raw/ARHO201009010000a.atc",
+            b"\x00\x00\x00\x30BHDR",
+        )
+        stub = _mk(
+            tmp_path,
+            "2001/oct/RHOF/15s_24hr/raw/RHOF200110010000a.atc",
+            b"\x00\x00\x00\x30BHDR",
+            size=100,
+        )
+
+        spans = {
+            "RHOF200004010000a.atc": (datetime(2010, 4, 2), datetime(2010, 4, 2, 23)),
+            "ARHO201009010000a.atc": (datetime(2010, 9, 1), datetime(2010, 9, 1, 23)),
+        }
+
+        def fake_span(path, fmt, **kw):
+            return spans.get(Path(path).name)
+
+        monkeypatch.setattr(sort, "decoded_span", fake_span)
+        plans, skips = plan_relocations(tmp_path, [misfiled, correct, stub])
+
+        assert len(plans) == 1
+        p = plans[0]
+        assert p.src_rel == misfiled
+        assert p.dst_rel == "2010/apr/RHOF/15s_24hr/raw/RHOF201004020000a.atc"
+        assert p.fmt == ASHTECH_U
+        reasons = {s.rel: s.reason for s in skips}
+        assert reasons[correct] == "verified-correct"
+        assert reasons[stub] == "stub"
+
+    def test_no_date_decoder_skips_trimble(self, tmp_path, monkeypatch):
+        rel = _mk(
+            tmp_path,
+            "2018/apr/RHOF/15s_24hr/raw/RHOF201804010000a.T02",
+            b"\x00\x00\x00\x0d",
+        )
+        monkeypatch.setattr(sort, "decoded_span", lambda *a, **k: None)
+        plans, skips = plan_relocations(tmp_path, [rel])
+        assert not plans
+        assert skips[0].reason == "no-date-decoder"
+
+    def test_decode_failure_never_plans_a_move(self, tmp_path, monkeypatch):
+        rel = _mk(
+            tmp_path,
+            "2000/apr/RHOF/15s_24hr/raw/RHOF200004010000a.atc",
+            b"\x00\x00\x00\x30BHDR",
+        )
+        monkeypatch.setattr(sort, "decoded_span", lambda *a, **k: None)
+        plans, skips = plan_relocations(tmp_path, [rel])
+        assert not plans
+        assert skips[0].reason == "decode-failed"
+
+
+# ── guarded relocation (gateway) ─────────────────────────────────────────────
+
+
+class _Proc:
+    def __init__(self, stdout, rc=0):
+        self.stdout = stdout
+        self.stderr = ""
+        self.returncode = rc
+
+
+class TestRelocateArchiveFiles:
+    SRC = "2000/apr/RHOF/15s_24hr/raw/RHOF200004010000a.atc"
+    DST = "2010/apr/RHOF/15s_24hr/raw/RHOF201004020000a.atc"
+
+    def test_invalid_paths_refused_no_ssh(self):
+        with patch("subprocess.run") as m:
+            res = relocate_archive_files(
+                [("../etc/passwd", self.DST)],
+                ssh_target="gpsops@rawdata",
+                dest_root="~/gpsdata",
+            )
+        m.assert_not_called()
+        assert res.invalid and not res.ok
+
+    def test_dry_run_parses_would_move(self):
+        out = f"WOULD_MOVE|{self.SRC}|{self.DST}\n"
+        with patch("subprocess.run", return_value=_Proc(out)) as m:
+            res = relocate_archive_files(
+                [(self.SRC, self.DST)],
+                ssh_target="gpsops@rawdata",
+                dest_root="~/gpsdata",
+            )
+        assert res.would_move == [(self.SRC, self.DST)]
+        assert res.ok
+        # dry-run flag ("0") on the argv boundary, pairs as argv
+        cmd = m.call_args.args[0]
+        assert "0" in cmd and self.SRC in cmd and self.DST in cmd
+
+    def test_existing_destination_never_replaced(self):
+        out = f"SKIP_EXISTS|{self.SRC}|{self.DST}\n"
+        with patch("subprocess.run", return_value=_Proc(out)):
+            res = relocate_archive_files(
+                [(self.SRC, self.DST)],
+                ssh_target="gpsops@rawdata",
+                dest_root="~/gpsdata",
+                execute=True,
+            )
+        assert res.dst_exists == [(self.SRC, self.DST)]
+        assert not res.moved and res.ok
+
+    def test_moved_and_failed_classified(self):
+        out = f"MOVED|{self.SRC}|{self.DST}\nFAIL|{self.DST}|{self.SRC}\n"
+        with patch("subprocess.run", return_value=_Proc(out)):
+            res = relocate_archive_files(
+                [(self.SRC, self.DST), (self.DST, self.SRC)],
+                ssh_target="gpsops@rawdata",
+                dest_root="~/gpsdata",
+                execute=True,
+            )
+        assert res.moved == [(self.SRC, self.DST)]
+        assert res.failed and not res.ok
+
+
+# ── dissemination decoder dispatch by magic ──────────────────────────────────
+
+
+class TestDecodeRawMagicDispatch:
+    def test_mislabeled_sbf_atc_routes_to_sbf(self, tmp_path):
+        from receivers.dissemination import convert
+
+        f = tmp_path / "KOSK201301010000a.atc"
+        f.write_bytes(b"$@Sic" + b"\x00" * 200)
+        with patch.object(convert, "_decode_sbf_raw", return_value=Path("x")) as sbf:
+            convert._decode_raw(f, "KOSK", datetime(2013, 1, 1), tmp_path)
+        sbf.assert_called_once()
+
+    def test_ashtech_raises_instead_of_wrong_decoder(self, tmp_path):
+        from receivers.dissemination import convert
+        from receivers.dissemination.convert import ConversionError
+
+        f = tmp_path / "RHOF201004020000a.atc"
+        f.write_bytes(b"\x00\x00\x00\x30BHDR" + b"\x00" * 200)
+        with pytest.raises(ConversionError, match="ashtech_u"):
+            convert._decode_raw(f, "RHOF", datetime(2010, 4, 2), tmp_path)
+
+    def test_t02_still_routes_to_trimble(self, tmp_path):
+        from receivers.dissemination import convert
+
+        f = tmp_path / "RHOF201804010000a.T02"
+        f.write_bytes(b"\x00\x00\x00\x0d" + b"\x00" * 200)
+        with patch.object(
+            convert, "_decode_trimble_raw", return_value=Path("x")
+        ) as trm:
+            convert._decode_raw(f, "RHOF", datetime(2018, 4, 1), tmp_path)
+        trm.assert_called_once()
+
+    def test_sbf_gz_by_extension_still_works(self, tmp_path):
+        import gzip as _gzip
+
+        from receivers.dissemination import convert
+
+        f = tmp_path / "HUSM202606270000a.sbf.gz"
+        f.write_bytes(_gzip.compress(b"$@Sic" + b"\x00" * 100))
+        with patch.object(convert, "_decode_sbf_raw", return_value=Path("x")) as sbf:
+            convert._decode_raw(f, "HUSM", datetime(2026, 6, 27), tmp_path)
+        sbf.assert_called_once()
+
+
+# ── decoded_span parsing (teqc output, no binary needed) ─────────────────────
+
+
+class TestDecodedSpan:
+    def test_parses_teqc_meta_output(self, tmp_path, monkeypatch):
+        meta = (
+            "start date & time:       2010-04-02 00:00:00.000\n"
+            "final date & time:       2010-04-02 23:59:45.000\n"
+        )
+        monkeypatch.setattr(raw_format, "subprocess", _SubprocessStub(_Proc(meta)))
+        with patch("receivers.dissemination.convert.resolve_tool", return_value="teqc"):
+            span = raw_format.decoded_span(tmp_path / "f.atc", ASHTECH_U)
+        assert span == (datetime(2010, 4, 2), datetime(2010, 4, 2, 23, 59, 45))
+
+    def test_trimble_has_no_decoder(self, tmp_path):
+        assert raw_format.decoded_span(tmp_path / "f.T02", TRIMBLE) is None
+
+
+class _SubprocessStub:
+    def __init__(self, proc):
+        self._proc = proc
+
+    def run(self, *a, **k):
+        return self._proc
+
+
+class TestRelocateGatewayReset:
+    SRC1 = "2000/apr/RHOF/15s_24hr/raw/RHOF200004010000a.atc"
+    DST1 = "2010/apr/RHOF/15s_24hr/raw/RHOF201004020000a.atc"
+    SRC2 = "2001/oct/RHOF/15s_24hr/raw/RHOF200110190000a.atc"
+    DST2 = "2011/oct/RHOF/15s_24hr/raw/RHOF201110190334a.atc"
+
+    def test_partial_output_marks_unreported_and_not_ok(self):
+        """A mid-stream ssh reset (some lines + rc=255) must NEVER read as
+        success — the silent-partial that bit the live 2026-07-06 run."""
+        out = f"WOULD_MOVE|{self.SRC1}|{self.DST1}\n"  # second pair: no status
+        with patch("subprocess.run", return_value=_Proc(out, rc=255)):
+            res = relocate_archive_files(
+                [(self.SRC1, self.DST1), (self.SRC2, self.DST2)],
+                ssh_target="gpsops@rawdata",
+                dest_root="~/gpsdata",
+            )
+        assert res.would_move == [(self.SRC1, self.DST1)]
+        assert res.unreported == [(self.SRC2, self.DST2)]
+        assert not res.ok
+
+    def test_full_output_ok(self):
+        out = (
+            f"WOULD_MOVE|{self.SRC1}|{self.DST1}\n"
+            f"WOULD_MOVE|{self.SRC2}|{self.DST2}\n"
+        )
+        with patch("subprocess.run", return_value=_Proc(out)):
+            res = relocate_archive_files(
+                [(self.SRC1, self.DST1), (self.SRC2, self.DST2)],
+                ssh_target="gpsops@rawdata",
+                dest_root="~/gpsdata",
+            )
+        assert not res.unreported and res.ok
