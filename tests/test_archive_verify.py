@@ -162,3 +162,37 @@ class TestReadBackVerify:
         assert stats.read_back is False
         assert stats.checked == 1
         assert stats.verified == 0  # no read-back performed
+
+
+class TestParallelReadBack:
+    """workers>1 pre-hashes on a thread pool — outcomes must match serial."""
+
+    def test_parallel_matches_serial(self, db_conn, tmp_path):
+        rels = []
+        for i, payload in enumerate(
+            (b"intact one" * 50, b"intact two" * 50, b"intact three" * 50)
+        ):
+            rel = f"2026/jun/ELDC/15s_24hr/raw/ELDC_p{i}.sbf.gz"
+            _, digest = _seed_gz(tmp_path, rel, payload)
+            _seed_catalog(db_conn, rel, digest)
+            rels.append(rel)
+        # one corrupt + one missing
+        rel_bad = "2026/jun/ELDC/15s_24hr/raw/ELDC_bad.sbf.gz"
+        path, digest = _seed_gz(tmp_path, rel_bad, b"good" * 50)
+        _seed_catalog(db_conn, rel_bad, digest)
+        with gzip.GzipFile(path, "wb") as fh:
+            fh.write(b"tampered" * 50)
+        rel_missing = "2026/jun/ELDC/15s_24hr/raw/ELDC_gone.sbf.gz"
+        _seed_catalog(db_conn, rel_missing, "f" * 64)
+
+        stats = verify_archive_catalog(
+            db_conn,
+            storage_location="test_verify",
+            read_root=str(tmp_path),
+            dest_prefix="~/gpsdata",
+            workers=3,
+        )
+        assert stats.checked == 5
+        assert stats.verified == 3
+        assert stats.mismatched == 1
+        assert stats.missing == 1

@@ -81,6 +81,32 @@ def auto_workers(
     return workers
 
 
+def resolve_workers(
+    par: Any,
+    n_chunks: int,
+    logger: logging.Logger,
+) -> int:
+    """Resolve a ``--parallel`` argument value into a worker count.
+
+    ``None``/falsy → 1 (sequential); ``"auto"`` → :func:`auto_workers`;
+    an integer string → that many, clamped to ``n_chunks``; anything
+    unparsable → 1 with an error log. Shared by every batch verb that
+    exposes ``--parallel``.
+    """
+    if not par or n_chunks <= 1:
+        return 1
+    if str(par).lower() == "auto":
+        return auto_workers(n_chunks, logger=logger)
+    try:
+        return max(1, min(int(par), n_chunks))
+    except (TypeError, ValueError):
+        logger.error(
+            "--parallel must be a number or 'auto' — got %r; running sequentially",
+            par,
+        )
+        return 1
+
+
 def _load_gate(logger: logging.Logger) -> None:
     """Block (bounded) while the host is over the gate threshold."""
     cpu = os.cpu_count() or 2
