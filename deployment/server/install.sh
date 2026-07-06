@@ -627,12 +627,29 @@ done
 # Patch receivers.cfg for server paths
 if [[ -f "$CONFIG_DIR/receivers.cfg" ]]; then
     sed -i "s|^data_prepath\s*=.*|data_prepath = $DATA_DIR/|" "$CONFIG_DIR/receivers.cfg"
-    sed -i "s|^tmp_dir\s*=.*|tmp_dir = $CACHE_DIR/tmp/|" "$CONFIG_DIR/receivers.cfg"
+    # Download staging on the dedicated /tmp LV: isolated from data/logs/DB
+    # (a runaway download can't fill them) and systemd-tmpfiles ages out
+    # orphaned staging dirs automatically (2026-07-06: 30 GB of stale staging
+    # had accumulated on /home under the old ~/.cache/gps_receivers/tmp).
+    sed -i "s|^tmp_dir\s*=.*|tmp_dir = /tmp/gps_receivers/|" "$CONFIG_DIR/receivers.cfg"
+    mkdir -p /tmp/gps_receivers
+    chown "$SERVICE_USER:$SERVICE_GROUP" /tmp/gps_receivers 2>/dev/null || true
     # Uncomment PolaRX5 TCP credentials (commented-out in package defaults for portability;
     # idempotent: sed is a no-op when lines are already uncommented)
     sed -i 's/^# tcp_username = /tcp_username = /' "$CONFIG_DIR/receivers.cfg"
     sed -i 's/^# tcp_password = /tcp_password = /' "$CONFIG_DIR/receivers.cfg"
-    ok "Patched receivers.cfg (data_prepath=$DATA_DIR/, TCP auth activated)"
+    ok "Patched receivers.cfg (data_prepath=$DATA_DIR/, tmp_dir=/tmp/gps_receivers/, TCP auth activated)"
+fi
+
+# journald size cap — /var is 24G and journald grows unbounded by default
+# (2.4G observed 2026-07-06 with /var at 84%). Idempotent drop-in.
+if [[ ! -f /etc/systemd/journald.conf.d/size.conf ]]; then
+    mkdir -p /etc/systemd/journald.conf.d
+    printf '[Journal]\nSystemMaxUse=1G\n' > /etc/systemd/journald.conf.d/size.conf
+    systemctl restart systemd-journald
+    ok "journald capped at 1G (/etc/systemd/journald.conf.d/size.conf)"
+else
+    ok "journald size cap already in place"
 fi
 
 # ===========================================================================
