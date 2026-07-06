@@ -47,10 +47,24 @@ logger = logging.getLogger("receivers.archive.sort")
 # in the .atc sweeps) — flagged, never relocated.
 MIN_RAW_BYTES = 4096
 
-# A decoded antenna position within this distance of a station's surveyed
-# coordinates confirms the station identity (single-point solutions scatter
-# by metres, never kilometres).
-STATION_GATE_M = 1000.0
+# Position-identity gate: SAME metric as the converter's RINEX-header check
+# (one knob: receivers.cfg [rinex] position_gate_m; default 30 m).
+STATION_GATE_M = 10.0
+
+
+def resolve_position_gate_m(override=None) -> float:
+    """explicit override > receivers.cfg [rinex] position_gate_m > 30 m."""
+    if override is not None:
+        return float(override)
+    try:
+        from ..config.receivers_config import get_receivers_config
+
+        v = get_receivers_config().get_rinex_config().get("position_gate_m")
+        if v is not None:
+            return float(v)
+    except Exception:  # noqa: BLE001 - config optional
+        pass
+    return STATION_GATE_M
 
 
 @dataclass(frozen=True)

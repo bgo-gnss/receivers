@@ -466,9 +466,9 @@ class RawToRinexConverter(ABC):
             )
 
     # APPROX POSITION farther than this from the station's surveyed coordinates
-    # means the raw is NOT this station (single-point solutions scatter by
-    # metres, never kilometres). Configurable via [rinex] position_gate_m.
-    _POSITION_GATE_M = 1000.0
+    # means the raw is NOT this station. Shared with archive-sort — ONE metric
+    # for position identity. Configurable via [rinex] position_gate_m.
+    _POSITION_GATE_M = 10.0
 
     def _verify_conversion_identity(
         self, rinex_file: Path, observation_date: Optional[datetime]

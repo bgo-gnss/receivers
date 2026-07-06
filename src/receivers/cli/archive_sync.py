@@ -866,6 +866,58 @@ def cmd_archive_sort(args: argparse.Namespace) -> int:
     --yes executes the moves (argv-safe, never overwrites an existing file).
     """
     from ..archive import load_sync_config, plan_relocations, relocate_archive_files
+    from ..archive.sort import resolve_position_gate_m
+
+    # Apply a previously reviewed plan verbatim — no re-decode, the reviewed
+    # file IS the contract (src<TAB>dst per line; extra columns ignored).
+    if args.apply_plan:
+        pairs = []
+        for ln in Path(args.apply_plan).read_text().splitlines():
+            if not ln.strip() or ln.startswith("#"):
+                continue
+            cols = ln.split("\t")
+            if len(cols) >= 2:
+                pairs.append((cols[0].strip(), cols[1].strip()))
+        if not pairs:
+            print(f"❌ no src/dst pairs in {args.apply_plan}")
+            return 2
+        target = next(
+            (
+                t
+                for t in load_sync_config(Path(args.config) if args.config else None)
+                if getattr(t, "tier", None) == "archive"
+            ),
+            None,
+        )
+        if target is None or not target.host:
+            print("❌ no remote archive tier target in sync.yaml")
+            return 2
+        execute = bool(args.yes)
+        print(
+            f"🌀 APPLYING PLAN {args.apply_plan} ({len(pairs)} move(s))"
+            + ("" if execute else " (DRY-RUN)")
+        )
+        res = relocate_archive_files(
+            pairs,
+            ssh_target=f"{target.user}@{target.host}",
+            dest_root=target.dest,
+            execute=execute,
+        )
+        for src, dst in res.would_move:
+            print(f"   🅼  would move: {src} -> {dst}")
+        for src, dst in res.moved:
+            print(f"   ✅ MOVED: {src} -> {dst}")
+        for src, dst in res.dst_exists:
+            print(f"   ⏭️  SKIP destination exists: {dst}")
+        for src, _d in res.missing:
+            print(f"   ·  missing (already moved?): {src}")
+        for src, dst in res.failed:
+            print(f"   ❌ FAILED: {src} -> {dst}")
+        for src, _d in res.unreported:
+            print(f"   ⚠️  NO STATUS (gateway dropped — re-run): {src}")
+        if not execute and res.would_move:
+            print("\n   → re-run with --yes to actually move.")
+        return 0 if res.ok else 1
 
     rel_files: list[str] = list(args.file or [])
     if args.list:
@@ -885,17 +937,18 @@ def cmd_archive_sort(args: argparse.Namespace) -> int:
 
     print(f"🔎 archive-sort: classifying + decoding {len(rel_files)} file(s)")
     print(f"   local root: {root}")
+    gate_m = resolve_position_gate_m(args.station_gate_m)
     if args.check_station:
         print(
-            f"   station identity check: ON (position gate "
-            f"{args.station_gate_m:.0f} m — coordinates decide)"
+            f"   station identity check: ON (position gate {gate_m:.0f} m — "
+            "same metric as the RINEX-header check; coordinates decide)"
         )
     plans, skips = plan_relocations(
         root,
         rel_files,
         min_bytes=args.min_bytes,
         verify_station=args.check_station,
-        station_gate_m=args.station_gate_m,
+        station_gate_m=gate_m,
     )
 
     by_reason: dict[str, int] = {}
@@ -908,7 +961,21 @@ def cmd_archive_sort(args: argparse.Namespace) -> int:
             if s.reason != "verified-correct":
                 print(f"     {s.reason}: {s.rel} {s.detail}")
 
+    def _write_report():
+        if not args.report_out:
+            return
+        with open(args.report_out, "w") as fh:
+            fh.write("# kind\tpath\treason\tdetail\n")
+            for p in plans:
+                fh.write(f"MOVE\t{p.src_rel}\t{','.join(p.reasons)}\t-> {p.dst_rel}\n")
+            for sk in skips:
+                if sk.reason == "verified-correct":
+                    continue
+                fh.write(f"ISSUE\t{sk.rel}\t{sk.reason}\t{sk.detail}\n")
+        print(f"   full issue report written to {args.report_out}")
+
     if not plans:
+        _write_report()
         print("✅ no misfiled files — nothing to move")
         return 0
 
@@ -930,9 +997,31 @@ def cmd_archive_sort(args: argparse.Namespace) -> int:
 
     if args.plan_out:
         with open(args.plan_out, "w") as fh:
+            fh.write("# src\tdst\treasons\tdecoded\tevidence\n")
             for p in plans:
-                fh.write(f"{p.src_rel}\t{p.dst_rel}\n")
-        print(f"\n   plan written to {args.plan_out}")
+                ev = (
+                    f"{p.station_dist_m:.0f}m from {p.true_station}"
+                    if p.station_dist_m is not None
+                    else ""
+                )
+                fh.write(
+                    f"{p.src_rel}\t{p.dst_rel}\t{','.join(p.reasons)}\t"
+                    f"{p.decoded_start:%Y-%m-%d}\t{ev}\n"
+                )
+        print(
+            f"\n   plan written to {args.plan_out} — review, then run:\n"
+            f"     receivers archive-sort --apply-plan {args.plan_out} --yes"
+        )
+    if args.report_out:
+        with open(args.report_out, "w") as fh:
+            fh.write("# kind\tpath\treason\tdetail\n")
+            for p in plans:
+                fh.write(f"MOVE\t{p.src_rel}\t{','.join(p.reasons)}\t-> {p.dst_rel}\n")
+            for sk in skips:
+                if sk.reason == "verified-correct":
+                    continue
+                fh.write(f"ISSUE\t{sk.rel}\t{sk.reason}\t{sk.detail}\n")
+        print(f"   full issue report written to {args.report_out}")
 
     # Resolve the archive gateway from the sync target (same as archive-rm).
     config_path = Path(args.config) if args.config else None
@@ -1034,13 +1123,28 @@ def create_archive_sort_parser(subparsers) -> argparse.ArgumentParser:
     parser.add_argument(
         "--station-gate-m",
         type=float,
-        default=1000.0,
-        help="Position-match gate in metres for --check-station (default 1000)",
+        default=None,
+        help="Position-match gate in metres for --check-station (default: "
+        "receivers.cfg [rinex] position_gate_m, else 10 m — same metric as "
+        "the RINEX-header identity check)",
     )
     parser.add_argument(
         "--plan-out",
         metavar="FILE",
-        help="Write the move plan (src<TAB>dst per line) to FILE",
+        help="Write the runnable move plan (src<TAB>dst<TAB>reasons...) to "
+        "FILE — execute it later with --apply-plan FILE --yes",
+    )
+    parser.add_argument(
+        "--report-out",
+        metavar="FILE",
+        help="Write the FULL issue report (moves + stubs/unknown-station/"
+        "unreadable with evidence) to FILE",
+    )
+    parser.add_argument(
+        "--apply-plan",
+        metavar="FILE",
+        help="Execute a previously reviewed --plan-out file verbatim "
+        "(no re-decode); dry-run unless --yes",
     )
     parser.add_argument("--config", help="Path to sync.yaml (default: standard)")
     parser.add_argument(
