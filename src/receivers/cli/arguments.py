@@ -1115,6 +1115,13 @@ Examples:
         help="Use native Trimble converter via Docker (requires trm2rinex image)",
     )
 
+    format_group.add_argument(
+        "--ashtech",
+        action="store_true",
+        help="Convert Ashtech .atc raw via teqc (pre-2012 archive; the -ash u/r "
+        "flag is chosen from the file's magic bytes, never the name)",
+    )
+
     # Metadata options
     meta_group = parser.add_argument_group("metadata options")
     meta_group.add_argument(
