@@ -885,7 +885,18 @@ def cmd_archive_sort(args: argparse.Namespace) -> int:
 
     print(f"🔎 archive-sort: classifying + decoding {len(rel_files)} file(s)")
     print(f"   local root: {root}")
-    plans, skips = plan_relocations(root, rel_files, min_bytes=args.min_bytes)
+    if args.check_station:
+        print(
+            f"   station identity check: ON (position gate "
+            f"{args.station_gate_m:.0f} m — coordinates decide)"
+        )
+    plans, skips = plan_relocations(
+        root,
+        rel_files,
+        min_bytes=args.min_bytes,
+        verify_station=args.check_station,
+        station_gate_m=args.station_gate_m,
+    )
 
     by_reason: dict[str, int] = {}
     for s in skips:
@@ -901,12 +912,19 @@ def cmd_archive_sort(args: argparse.Namespace) -> int:
         print("✅ no misfiled files — nothing to move")
         return 0
 
-    print(f"\n📦 {len(plans)} misfiled file(s):")
+    print(f"\n📦 {len(plans)} file(s) need remediation:")
     for p in plans:
+        why = ",".join(p.reasons) or "misfiled"
+        extra = ""
+        if "wrong-station" in p.reasons and p.station_dist_m is not None:
+            extra = (
+                f" — position is {p.station_dist_m:.0f} m from "
+                f"{p.true_station}'s mark"
+            )
         print(
-            f"   {p.src_rel}\n"
+            f"   {p.src_rel}  [{why}]\n"
             f"     claims {p.claimed:%Y-%m-%d}, decodes to "
-            f"{p.decoded_start:%Y-%m-%d %H:%M} ({p.fmt})\n"
+            f"{p.decoded_start:%Y-%m-%d %H:%M} ({p.fmt}){extra}\n"
             f"     -> {p.dst_rel}"
         )
 
@@ -1004,6 +1022,20 @@ def create_archive_sort_parser(subparsers) -> argparse.ArgumentParser:
         type=int,
         default=4096,
         help="Skip files smaller than this as stubs (default: 4096)",
+    )
+    parser.add_argument(
+        "--check-station",
+        action="store_true",
+        help="Also verify STATION identity from the decoded antenna position "
+        "(coordinates decide) — a file matching another station's mark is "
+        "relocated to that station's tree; no match within the gate = "
+        "reported, never moved",
+    )
+    parser.add_argument(
+        "--station-gate-m",
+        type=float,
+        default=1000.0,
+        help="Position-match gate in metres for --check-station (default 1000)",
     )
     parser.add_argument(
         "--plan-out",

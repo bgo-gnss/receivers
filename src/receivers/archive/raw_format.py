@@ -103,14 +103,32 @@ def classify_raw(path: Optional[Path] = None, head: Optional[bytes] = None) -> s
     return UNKNOWN
 
 
-def decoded_span(
-    path: Path, fmt: str, *, timeout: int = 120
-) -> Optional[tuple[datetime, datetime]]:
-    """True (first, last) epoch of a raw file, from ``teqc +meta``.
+@dataclass(frozen=True)
+class RawMeta:
+    """What ``teqc +meta`` reveals about a raw file's TRUE identity."""
+
+    start: Optional[datetime] = None
+    end: Optional[datetime] = None
+    station_code: Optional[str] = None  # receiver-embedded 4-char code (soft)
+    lat: Optional[float] = None  # antenna position — the identity that
+    lon: Optional[float] = None  # cannot be faked by a filename
+    elevation: Optional[float] = None
+
+    @property
+    def span(self) -> Optional[tuple[datetime, datetime]]:
+        if self.start is None or self.end is None:
+            return None
+        return self.start, self.end
+
+
+def teqc_meta(path: Path, fmt: str, *, timeout: int = 120) -> Optional[RawMeta]:
+    """Decode a raw file's metadata (epoch span, embedded station code and
+    antenna position) via ``teqc +meta`` — one cheap pass, no conversion.
 
     Returns None when the format has no teqc decoder (Trimble — needs
-    runpkr00 first) or the decode fails. The dates come from the receiver's
-    embedded GPS week — trust them over the filename, always.
+    runpkr00 first) or teqc is unavailable. The values come from the
+    receiver's embedded records — trust them over the filename, always.
+    Position availability varies by format (Ashtech: yes; SBF: usually no).
     """
     flags = _TEQC_FLAGS.get(fmt)
     if flags is None:
@@ -128,21 +146,47 @@ def decoded_span(
         text=True,
         timeout=timeout,
     )
-    start = end = None
+    vals: dict = {}
     for line in proc.stdout.splitlines():
         if line.startswith("start date & time:"):
-            start = _parse_meta_dt(line)
+            vals["start"] = _parse_meta_dt(line)
         elif line.startswith("final date & time:"):
-            end = _parse_meta_dt(line)
-    if start is None or end is None:
+            vals["end"] = _parse_meta_dt(line)
+        elif line.startswith("4-char station code:"):
+            code = line.split(":", 1)[1].strip()
+            if code and code != "-Unknown-":
+                vals["station_code"] = code.upper()
+        elif line.startswith("antenna latitude (deg):"):
+            vals["lat"] = _parse_meta_float(line)
+        elif line.startswith("antenna longitude (deg):"):
+            vals["lon"] = _parse_meta_float(line)
+        elif line.startswith("antenna elevation (m):"):
+            vals["elevation"] = _parse_meta_float(line)
+    if not vals:
         logger.warning(
-            "teqc +meta gave no epoch span for %s (fmt=%s, rc=%s)",
-            path,
-            fmt,
-            proc.returncode,
+            "teqc +meta gave nothing for %s (fmt=%s, rc=%s)", path, fmt, proc.returncode
         )
         return None
-    return start, end
+    return RawMeta(**vals)
+
+
+def _parse_meta_float(line: str) -> Optional[float]:
+    try:
+        return float(line.split(":", 1)[1].strip())
+    except (ValueError, IndexError):
+        return None
+
+
+def decoded_span(
+    path: Path, fmt: str, *, timeout: int = 120
+) -> Optional[tuple[datetime, datetime]]:
+    """True (first, last) epoch of a raw file — see :func:`teqc_meta`."""
+    meta = teqc_meta(path, fmt, timeout=timeout)
+    if meta is None or meta.span is None:
+        if meta is not None:
+            logger.warning("teqc +meta gave no epoch span for %s", path)
+        return None
+    return meta.span
 
 
 def _parse_meta_dt(line: str) -> Optional[datetime]:
@@ -183,8 +227,25 @@ def parse_raw_name(name: str) -> Optional[ParsedRawName]:
     return ParsedRawName(m["sta"], claimed, m["letter"], m["ext"])
 
 
-def build_raw_name(parsed: ParsedRawName, true_start: datetime) -> str:
-    """The corrected filename: same station/letter/ext, the DECODED date."""
-    return (
-        f"{parsed.station}{true_start:%Y%m%d%H%M}{parsed.session_letter}.{parsed.ext}"
-    )
+def build_raw_name(
+    parsed: ParsedRawName,
+    true_start: datetime,
+    *,
+    station: Optional[str] = None,
+    ext: Optional[str] = None,
+) -> str:
+    """The corrected filename: DECODED date, optionally the TRUE station and
+    the extension matching the actual content."""
+    sta = (station or parsed.station).upper()
+    e = ext or parsed.ext
+    return f"{sta}{true_start:%Y%m%d%H%M}{parsed.session_letter}.{e}"
+
+
+# The extension a format's files should carry so extension-keyed tooling
+# (converter selection, session globs) picks the right chain. Ashtech has no
+# modern canonical extension — .atc is its home in this archive.
+CANONICAL_EXT = {
+    SBF: "sbf",
+    ASHTECH_U: "atc",
+    ASHTECH_R: "atc",
+}
