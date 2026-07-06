@@ -89,6 +89,22 @@ _TOS_NETWORK_ATTEMPTS = 3
 _TOS_NETWORK_RETRY_DELAY_S = 30
 
 
+# Where each external tool lives in OUR ecosystem — a missing-tool error must
+# tell the operator exactly what to install/symlink, not just a bare name.
+# gps-tools binaries reach /usr/local/bin via install.sh Phase 8.
+_TOOL_HINTS = {
+    "sbf2rin": "Septentrio RxTools (/usr/local/rxtools/bin, install.sh Phase 8)",
+    "bin2asc": "Septentrio RxTools (/usr/local/rxtools/bin)",
+    "teqc": "gps-tools repo bin/ (symlinked to /usr/local/bin by install.sh)",
+    "runpkr00": "gps-tools repo bin/ (Trimble .T02/.T00 extraction)",
+    "gfzrnx": "gps-tools repo bin/ or system PATH",
+    "CRX2RNX": "gps-tools repo bin/ (Hatanaka)",
+    "RNX2CRX": "gps-tools repo bin/ (Hatanaka)",
+    "trm2rinex": "Docker image (TrimbleNativeConverter; docker must be running)",
+    "compress": "ncompress package (apt install ncompress) — legacy .Z output",
+}
+
+
 class ConversionError(Exception):
     """Exception raised during RINEX conversion."""
 
@@ -290,6 +306,19 @@ class RawToRinexConverter(ABC):
             else:
                 self.naming_convention = NamingConvention.LONG
 
+    # Where each external tool lives in OUR ecosystem — so a missing-tool
+    # error tells the operator exactly what to install/symlink instead of a
+    # bare name. gps-tools binaries reach /usr/local/bin via install.sh
+    # Phase 8. Module-level so subclasses share it (see get_tool_path).
+
+    # Raw formats (receivers.archive.raw_format identifiers) this converter can
+    # actually decode — the CONTENT gate. The archive's extensions lie (.atc
+    # covers Ashtech U/R AND Septentrio SBF), and the wrong decoder either
+    # segfaults or silently emits nothing. None = no content gate (converters
+    # for formats the classifier doesn't know). UNKNOWN always passes — the
+    # gate refuses only a POSITIVE wrong identification.
+    accepted_raw_formats: Optional[frozenset] = None
+
     @property
     @abstractmethod
     def supported_extensions(self) -> List[str]:
@@ -323,6 +352,179 @@ class RawToRinexConverter(ABC):
             ConversionError: If conversion fails
         """
         pass
+
+    # What decodes each raw format in our toolchain — used by the format gate
+    # so a refusal tells the operator the RIGHT chain, and by missing-tool
+    # errors so they say where the tool lives.
+    _FORMAT_CHAINS = {
+        "sbf": "sbf2rin (Septentrio RxTools)",
+        "trimble": "runpkr00+teqc or trm2rinex (Docker)",
+        "ashtech_u": "teqc -ash u (gps-tools; no receivers converter yet — todo #56)",
+        "ashtech_r": "teqc -ash r (gps-tools; no receivers converter yet — todo #56)",
+    }
+
+    def _raw_validation_enabled(self) -> bool:
+        v = self.config.get_rinex_config().get("raw_validation", True)
+        return str(v).lower() not in ("false", "no", "0")
+
+    def _validate_raw_content(
+        self, raw_path: Path, observation_date: Optional[datetime]
+    ) -> None:
+        """Content gate: magic-byte format check (cheap, 64 bytes).
+
+        The archive's raw extensions lie (.atc covers Ashtech U-file, R-file
+        AND Septentrio SBF), and the wrong decoder segfaults or silently emits
+        nothing — refuse a POSITIVE wrong identification before decoding.
+        Date/station validation deliberately lives in the POST-conversion
+        identity gate instead: it is free there (the header is already
+        decoded), while a pre-decode date check (teqc +meta) would read the
+        whole raw file a second time on the hot reconciler path. Gate errors
+        fail OPEN (log + continue) — validation must never block a legitimate
+        conversion because of its own hiccup.
+        """
+        if not self._raw_validation_enabled():
+            return
+        try:
+            from ..archive.raw_format import UNKNOWN, classify_raw
+
+            fmt = classify_raw(raw_path)
+        except Exception as exc:  # noqa: BLE001 - gate is fail-open
+            self.logger.warning(f"raw content classification failed: {exc}")
+            return
+        if (
+            self.accepted_raw_formats is not None
+            and fmt != UNKNOWN
+            and fmt not in self.accepted_raw_formats
+        ):
+            chain = self._FORMAT_CHAINS.get(fmt, "no known chain")
+            raise ConversionError(
+                f"raw content is '{fmt}', not a {self.converter_name} input — "
+                f"the extension lies. That format needs: {chain}. Run "
+                "'receivers archive-sort' if the file is also misfiled",
+                raw_path,
+            )
+
+    # APPROX POSITION farther than this from the station's surveyed coordinates
+    # means the raw is NOT this station (single-point solutions scatter by
+    # metres, never kilometres). Configurable via [rinex] position_gate_m.
+    _POSITION_GATE_M = 1000.0
+
+    def _verify_conversion_identity(
+        self, rinex_file: Path, observation_date: Optional[datetime]
+    ) -> None:
+        """Identity gate on the RAW conversion output, before header corrections.
+
+        Two checks, per the station-identity model (TOS is canonical for
+        marker/antenna; the raw-derived coordinates CONFIRM the identity):
+
+        * first-obs date must match the claimed observation date (catches
+          misfiled Trimble raw, which has no cheap pre-decode date check);
+        * APPROX POSITION must be within the position gate of the station's
+          surveyed coordinates — a wrong-station file passes every filename
+          check but cannot fake where the receiver stood.
+
+        On failure the output is DELETED (a wrong product must not survive)
+        and ConversionError raised. Missing header fields fail open.
+        """
+        if not self._raw_validation_enabled():
+            return
+        try:
+            first_obs, xyz, marker = self._read_identity_header(rinex_file)
+        except Exception as exc:  # noqa: BLE001 - gate is fail-open
+            self.logger.warning(f"identity header read failed: {exc}")
+            return
+
+        if (
+            first_obs is not None
+            and observation_date is not None
+            and first_obs != observation_date.date()
+        ):
+            rinex_file.unlink(missing_ok=True)
+            raise ConversionError(
+                f"converted output starts {first_obs} but this file claims "
+                f"{observation_date.date()} — misfiled raw; run "
+                "'receivers archive-sort'",
+                rinex_file,
+            )
+
+        if marker and self.station_id not in marker.upper():
+            self.logger.warning(
+                f"raw marker '{marker}' does not mention {self.station_id} — "
+                "position check decides (TOS is canonical for the marker)"
+            )
+
+        if xyz is None or all(abs(c) < 1.0 for c in xyz):
+            return  # no usable position in the raw header — nothing to confirm
+        gate_m = float(
+            self.config.get_rinex_config().get("position_gate_m", self._POSITION_GATE_M)
+        )
+        expected = self._expected_station_xyz()
+        if expected is None:
+            return
+        dist = sum((a - b) ** 2 for a, b in zip(xyz, expected)) ** 0.5
+        if dist > gate_m:
+            rinex_file.unlink(missing_ok=True)
+            raise ConversionError(
+                f"raw-derived position is {dist / 1000.0:.1f} km from "
+                f"{self.station_id}'s surveyed coordinates (gate {gate_m:.0f} m) "
+                "— this raw is NOT this station; check the file's location "
+                "in the archive",
+                rinex_file,
+            )
+        self.logger.debug(
+            f"identity confirmed: position within {dist:.1f} m of {self.station_id}"
+        )
+
+    @staticmethod
+    def _read_identity_header(
+        rinex_file: Path,
+    ) -> "tuple[Optional[Any], Optional[tuple], Optional[str]]":
+        """(first_obs_date, approx_xyz, marker_name) from a RINEX obs header."""
+        from datetime import date as _date
+
+        first_obs = xyz = marker = None
+        with open(rinex_file, encoding="latin-1", errors="replace") as fh:
+            for i, line in enumerate(fh):
+                label = line[60:].strip()
+                if label == "TIME OF FIRST OBS":
+                    parts = line[:60].split()
+                    try:
+                        first_obs = _date(int(parts[0]), int(parts[1]), int(parts[2]))
+                    except (ValueError, IndexError):
+                        pass
+                elif label == "APPROX POSITION XYZ":
+                    try:
+                        x, y, z = (float(v) for v in line[:60].split()[:3])
+                        xyz = (x, y, z)
+                    except (ValueError, IndexError):
+                        pass
+                elif label == "MARKER NAME":
+                    marker = line[:60].strip()
+                elif label == "END OF HEADER" or i > 300:
+                    break
+        return first_obs, xyz, marker
+
+    def _expected_station_xyz(self) -> Optional[tuple]:
+        """Station's surveyed coordinates as ECEF, from stations.cfg."""
+        try:
+            from ..config_utils import get_station_config
+
+            cfg = get_station_config(self.station_id, silent=True) or {}
+            lat, lon, hgt = (
+                cfg.get("latitude"),
+                cfg.get("longitude"),
+                cfg.get("height"),
+            )
+            if lat is None or lon is None:
+                return None
+            import pyproj
+
+            tr = pyproj.Transformer.from_crs("EPSG:4979", "EPSG:4978", always_xy=True)
+            x, y, z = tr.transform(float(lon), float(lat), float(hgt or 0.0))
+            return (x, y, z)
+        except Exception as exc:  # noqa: BLE001 - gate is fail-open
+            self.logger.debug(f"no expected coordinates for {self.station_id}: {exc}")
+            return None
 
     def convert_file(
         self,
@@ -373,8 +575,20 @@ class RawToRinexConverter(ABC):
                 f"Converting {raw_path.name} for {observation_date.date()}"
             )
 
+            # Content gate BEFORE decoding: magic-byte format check (variable
+            # raw types — extensions lie) + decoded-date vs claimed-date where
+            # a cheap decoder exists (teqc +meta). Misfiled/mislabeled raw must
+            # never become a wrongly-dated RINEX product.
+            self._validate_raw_content(raw_path, observation_date)
+
             # Run conversion
             rinex_file = self._run_conversion(raw_path, output_path, observation_date)
+
+            # Identity gate BEFORE header corrections: the raw-derived header
+            # (first obs epoch + APPROX POSITION) must match the station/date
+            # this file CLAIMS to be — corrections would overwrite exactly the
+            # evidence (TOS marker + surveyed coords), so check first.
+            self._verify_conversion_identity(rinex_file, observation_date)
 
             # Apply header corrections if enabled
             corrections_applied = 0
@@ -1067,9 +1281,14 @@ class RawToRinexConverter(ABC):
             self._tool_paths[tool_name] = Path(system_path)
             return self._tool_paths[tool_name]
 
+        hint = _TOOL_HINTS.get(
+            tool_name,
+            "install it or set its path in receivers.cfg [rinex_tools]",
+        )
         raise ConversionError(
-            f"Conversion tool '{tool_name}' not found",
-            details="Install the tool or configure its path in receivers.cfg [rinex_tools] section",
+            f"Conversion tool '{tool_name}' not found — {self.converter_name} "
+            f"cannot run without it. Where it lives: {hint}. "
+            f"(Override: receivers.cfg [rinex_tools] {tool_name}_path = /path)",
         )
 
     def validate_tools(self) -> Dict[str, bool]:

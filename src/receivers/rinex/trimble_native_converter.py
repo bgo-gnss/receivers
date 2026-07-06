@@ -56,6 +56,12 @@ class TrimbleNativeConverter(RawToRinexConverter):
         MANA0010.26o.gz
     """
 
+    # Content gate (receivers.archive.raw_format): only this format may
+    # reach the decoder — the archive's extensions lie (.atc covers Ashtech
+    # U/R AND Septentrio SBF) and the wrong tool segfaults or emits nothing.
+    # 'unknown' always passes (formats without printable magic).
+    accepted_raw_formats = frozenset({"trimble"})
+
     # Docker image name
     DOCKER_IMAGE = "trm2rinex:cli-light"
 

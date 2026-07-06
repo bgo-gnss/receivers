@@ -51,6 +51,12 @@ class SBFConverter(RawToRinexConverter):
         ELDC0010.26o
     """
 
+    # Content gate (receivers.archive.raw_format): only this format may
+    # reach the decoder — the archive's extensions lie (.atc covers Ashtech
+    # U/R AND Septentrio SBF) and the wrong tool segfaults or emits nothing.
+    # 'unknown' always passes (formats without printable magic).
+    accepted_raw_formats = frozenset({"sbf"})
+
     def __init__(
         self,
         station_id: str,

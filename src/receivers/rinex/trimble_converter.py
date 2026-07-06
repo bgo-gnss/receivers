@@ -55,6 +55,12 @@ class TrimbleConverter(RawToRinexConverter):
         MANA00ISL_R_20260010000_01D_15S_MO.rnx.gz
     """
 
+    # Content gate (receivers.archive.raw_format): only this format may
+    # reach the decoder — the archive's extensions lie (.atc covers Ashtech
+    # U/R AND Septentrio SBF) and the wrong tool segfaults or emits nothing.
+    # 'unknown' always passes (formats without printable magic).
+    accepted_raw_formats = frozenset({"trimble"})
+
     def __init__(
         self,
         station_id: str,
