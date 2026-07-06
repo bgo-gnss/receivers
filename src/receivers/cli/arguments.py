@@ -1227,6 +1227,16 @@ Examples:
     )
 
     mode_group.add_argument(
+        "--dates",
+        metavar="YYYYMMDD[,..]|@FILE",
+        help="Convert ONLY these dates (comma-separated, or @file with one "
+        "per line) — the targeted-regen path, typically fed by "
+        "'receivers archive-audit'. Overrides -s/-e. Pair with --force to "
+        "redo dates whose existing product is bad (resume-skip would "
+        "otherwise protect it).",
+    )
+
+    mode_group.add_argument(
         "--parallel",
         nargs="?",
         const="auto",
@@ -1495,6 +1505,7 @@ For subcommand help: receivers <command> --help
 
     # archive-sync (batch delta push to the long-term archive gateway)
     from .archive_sync import (
+        create_archive_audit_parser,
         create_archive_reindex_parser,
         create_archive_rm_parser,
         create_archive_sync_parser,
@@ -1504,6 +1515,9 @@ For subcommand help: receivers <command> --help
     create_archive_sync_parser(subparsers)
     # archive-verify (re-hash archived files + local↔archive cross-check)
     create_archive_verify_parser(subparsers)
+
+    # archive-audit (junk + regen-candidate scan, emits fix commands)
+    create_archive_audit_parser(subparsers)
     # archive-reindex (refresh catalog sha256 after out-of-band file edits)
     create_archive_reindex_parser(subparsers)
     # archive-rm (guarded deletion of empty/bad files from the archive)

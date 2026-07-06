@@ -222,6 +222,153 @@ def cmd_archive_verify(args: argparse.Namespace) -> int:
     return 1 if (stats.mismatched or stats.local_divergent) else 0
 
 
+def cmd_archive_audit(args: argparse.Namespace) -> int:
+    """Audit the archive for junk + regen candidates; emit ready-made commands."""
+    from ..archive.audit import audit_station_session
+    from ..utils.batch_parallel import ProgressBoard, resolve_workers, run_chunks
+
+    # Source root: like fix-headers — the dissemination source_root (the
+    # read-only archive mount) unless overridden.
+    source = getattr(args, "source_dir", None)
+    if not source:
+        try:
+            from ..dissemination import load_dissemination_config
+
+            for t in load_dissemination_config():
+                if getattr(t, "tier", None) == "dissemination" and getattr(
+                    t, "source_root", None
+                ):
+                    source = t.source_root
+                    break
+        except Exception:  # noqa: BLE001
+            pass
+    if not source:
+        print("❌ no --source-dir and no dissemination source_root in sync.yaml")
+        return 2
+    root = Path(source).expanduser()
+    if not root.is_dir():
+        print(f"❌ source dir not found: {root}")
+        return 2
+
+    stations = [s.upper() for s in args.stations]
+    years = {int(y) for y in args.years.split(",")} if args.years else None
+    workers = resolve_workers(getattr(args, "parallel", None), len(stations), logger)
+
+    print(
+        f"Archive audit: {' '.join(stations)} {args.session} under {root}"
+        + (f" years={sorted(years)}" if years else "")
+        + (" [deep]" if args.deep else "")
+        + (" [check-version]" if args.check_version else "")
+    )
+
+    board = ProgressBoard(interval=30)
+    handles = {sta: board.handle(sta) for sta in stations}
+
+    def _audit_one(sta):
+        h = handles[sta]
+        h.start()
+        try:
+            rep = audit_station_session(
+                root,
+                sta,
+                args.session,
+                years=years,
+                deep=args.deep,
+                check_version=args.check_version,
+                check_missing=not args.no_missing,
+                progress=h,
+            )
+            h.finish(ok=True)
+            return rep
+        except BaseException:
+            h.finish(ok=False)
+            raise
+
+    with board:
+        outcomes = run_chunks(
+            stations, _audit_one, workers=workers, logger=logger, load_gate=False
+        )
+
+    reports = [oc.value for oc in outcomes if oc.ok and oc.value is not None]
+    failed = [oc for oc in outcomes if not oc.ok]
+    for oc in failed:
+        print(f"❌ audit failed for {oc.chunk}: {oc.error}")
+
+    if args.json:
+        print(
+            json.dumps(
+                [
+                    {
+                        "station": r.station,
+                        "session": r.session,
+                        "scanned": r.scanned,
+                        "clean": r.clean,
+                        "counts": r.counts(),
+                        "findings": [
+                            {
+                                "path": f.rel_path,
+                                "issue": f.issue,
+                                "detail": f.detail,
+                                "size": f.size,
+                                "date": (
+                                    f.file_date.isoformat() if f.file_date else None
+                                ),
+                                "junk": f.junk,
+                                "regen": f.regen,
+                            }
+                            for f in r.findings
+                        ],
+                    }
+                    for r in reports
+                ],
+                indent=2,
+            )
+        )
+        return 1 if any(r.findings for r in reports) or failed else 0
+
+    any_findings = False
+    for r in reports:
+        counts = r.counts()
+        icon = "✅" if not r.findings else "⚠️ "
+        print(
+            f"\n{icon} {r.station}: {r.scanned} scanned, {r.clean} clean"
+            + ("" if not counts else f", issues: {counts}")
+        )
+        for f in r.findings[:40]:
+            print(f"    [{f.issue}] {f.rel_path} — {f.detail}")
+        if len(r.findings) > 40:
+            print(f"    … (+{len(r.findings) - 40} more — use --json for all)")
+        any_findings = any_findings or bool(r.findings)
+
+    # Ready-to-run remediation commands.
+    junk = [(f.rel_path, f.size) for r in reports for f in r.findings if f.junk]
+    if junk:
+        cap = max(sz for _, sz in junk) + 1
+        print("\n🗑  junk removal (dry-run as shown; add --yes to delete):")
+        print(f"  receivers archive-rm --catalog-prod --max-size {cap} \\")
+        print("    --file " + " \\\n           ".join(p for p, _ in junk))
+    for r in reports:
+        dates = r.regen_dates
+        if dates:
+            dlist = ",".join(d.strftime("%Y%m%d") for d in dates)
+            print(f"\n🔁 regenerate {r.station} ({len(dates)} date(s)):")
+            print(
+                f"  receivers rinex {r.station} --session {r.session} "
+                f"--from-archive --backup-old --push --catalog-prod "
+                f"--force --dates {dlist}"
+            )
+    gzipz = [f for r in reports for f in r.findings if f.issue == "bad-magic"]
+    if gzipz:
+        print(
+            f"\n📦 {len(gzipz)} gzip-.Z file(s): content OK, wrong compression — "
+            "recompress via deployment/scripts/fix_gzip_z_to_lzw.sh (rek-d01) "
+            "or re-push from a recompressed staging tree; do NOT delete."
+        )
+    if not any_findings and not failed:
+        print("\n✅ archive clean — nothing to do")
+    return 1 if any_findings or failed else 0
+
+
 def cmd_archive_reindex(args: argparse.Namespace) -> int:
     """Re-hash files in a staging mirror and refresh their archive_catalog rows.
 
@@ -598,6 +745,57 @@ def create_archive_verify_parser(subparsers) -> argparse.ArgumentParser:
         "loadavg; --parallel N forces N workers. DB access stays serial.",
     )
     parser.set_defaults(func=cmd_archive_verify)
+    return parser
+
+
+def create_archive_audit_parser(subparsers) -> argparse.ArgumentParser:
+    parser = subparsers.add_parser(
+        "archive-audit",
+        help="Audit archive RINEX for junk + regen candidates (emits fix commands)",
+        description=(
+            "Walk a station/session's rinex dirs on the archive mount and flag "
+            "convention-breaking names (.o.Z, bare .d, lowercase .d.Z), wrong "
+            ".Z magic (gzip-as-.Z), unreadable files (--deep), RINEX 2 products "
+            "(--check-version) and raw-without-rinex dates. Emits ready-to-run "
+            "archive-rm and 'rinex --dates --force' commands, so campaign state "
+            "is reconstructible from the archive on ANY host — no local "
+            "staging-tree knowledge needed. Read-only."
+        ),
+    )
+    parser.add_argument("stations", nargs="+", metavar="STATION")
+    parser.add_argument("--session", default="15s_24hr")
+    parser.add_argument(
+        "--source-dir",
+        help="Archive mount to scan (default: dissemination source_root from "
+        "sync.yaml, e.g. /mnt_data/rawgpsdata)",
+    )
+    parser.add_argument("--years", metavar="Y1,Y2", help="Restrict to these year dirs")
+    parser.add_argument(
+        "--deep",
+        action="store_true",
+        help="Also test full decompression of every product (slow over NFS)",
+    )
+    parser.add_argument(
+        "--check-version",
+        action="store_true",
+        help="Read each product's CRINEX head and flag RINEX 2 products as "
+        "regen candidates (streams file heads — slower than name/magic-only)",
+    )
+    parser.add_argument(
+        "--no-missing",
+        action="store_true",
+        help="Skip the raw-without-rinex check",
+    )
+    parser.add_argument(
+        "--parallel",
+        nargs="?",
+        const="auto",
+        default=None,
+        metavar="N",
+        help="Audit stations in parallel (auto = load-aware sizing)",
+    )
+    parser.add_argument("--json", action="store_true")
+    parser.set_defaults(func=cmd_archive_audit)
     return parser
 
 
