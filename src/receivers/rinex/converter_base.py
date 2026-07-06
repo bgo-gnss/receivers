@@ -221,6 +221,13 @@ class RawToRinexConverter(ABC):
         self.apply_header_corrections = apply_header_corrections
         # session_type drives hourly vs daily filename session letter; None = daily
         self.session_type = session_type
+        # strict_hatanaka: a Hatanaka failure FAILS the file instead of
+        # falling back to an uncompacted .o product. Re-rinex sets this —
+        # the archive convention is .D.Z, and a silent .o.Z fallback both
+        # pollutes the archive and never matches the resume-skip name, so
+        # the date is re-converted (and re-pushed) on every run. Default
+        # False keeps the daily pipeline's degraded-but-present behavior.
+        self.strict_hatanaka = False
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.logger.setLevel(loglevel)
 
@@ -818,6 +825,12 @@ class RawToRinexConverter(ABC):
         try:
             rnx2crx = self.get_tool_path("rnx2crx")
         except ConversionError:
+            if self.strict_hatanaka:
+                raise ConversionError(
+                    f"rnx2crx not found — Hatanaka required for {rinex_file.name} "
+                    "(strict mode: refusing to stage uncompacted RINEX)",
+                    rinex_file,
+                )
             self.logger.warning("rnx2crx not found, skipping Hatanaka compression")
             return rinex_file
 
@@ -845,12 +858,42 @@ class RawToRinexConverter(ABC):
                 )
                 return hatanaka_file
             else:
+                if self.strict_hatanaka:
+                    raise ConversionError(
+                        f"rnx2crx produced no output for {rinex_file.name} "
+                        "(strict mode: refusing to stage uncompacted RINEX)",
+                        rinex_file,
+                    )
                 self.logger.warning(
                     f"rnx2crx did not create expected output: {rnx2crx_out}"
                 )
                 return rinex_file
 
+        except ConversionError:
+            # strict-mode refusal from above — clean the intermediates so
+            # nothing non-conforming lingers in the staging tree, then fail
+            # the file (convert_file turns this into a per-file ❌; the date
+            # stays unstaged and the existing archive .D.Z remains
+            # authoritative).
+            for leftover in (rnx2crx_out, rinex_file):
+                try:
+                    leftover.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            raise
         except Exception as e:
+            if self.strict_hatanaka:
+                for leftover in (rnx2crx_out, rinex_file):
+                    try:
+                        leftover.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                raise ConversionError(
+                    f"Hatanaka compression failed for {rinex_file.name}: {e} "
+                    "— corrupt raw data? (strict mode: refusing to stage "
+                    "uncompacted RINEX; existing archive file stays authoritative)",
+                    rinex_file,
+                ) from e
             self.logger.warning(f"Hatanaka compression failed: {e}")
             return rinex_file
 
