@@ -172,7 +172,8 @@ class StreamIngestor:
         self.archive_base = Path(archive_base)
         self.session_type = session_type
         self.rnx2crx = rnx2crx
-        self.compressor = list(compressor) if compressor else ["gzip", "-c"]
+        # .Z output = real LZW compress(1); see downsample.py (same leak).
+        self.compressor = list(compressor) if compressor else ["compress", "-c"]
         self._run: Runner = runner or _default_runner
         self._track: Optional[Tracker] = tracker
 

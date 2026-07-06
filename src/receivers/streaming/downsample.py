@@ -85,8 +85,13 @@ class RinexDownsampler:
         # GLONASS slot max at 24 and aborts on modern slots (R25+) that appear in
         # BNC stream RINEX, failing the whole day. gfzrnx handles them.
         self.gfzrnx = gfzrnx
-        # Default to gzip (handles/produces .Z-named gzip); overridable to `compress`.
-        self.compressor = list(compressor) if compressor else ["gzip", "-c"]
+        # .Z output MUST be real LZW compress(1) — the gzip-as-.Z era
+        # (fixed fleet-wide 2026-07-06) also leaked from here: this default
+        # was gzip, so every stream-capture product was a gzip impostor that
+        # the archive-sync format guard now refuses. Decompression stays
+        # gzip -dc (reads BOTH gzip and LZW), so legacy gzip-.Z inputs from
+        # the transition keep working.
+        self.compressor = list(compressor) if compressor else ["compress", "-c"]
         self._run: Runner = runner or _default_runner
         self.min_output_size = min_output_size
 
@@ -166,7 +171,7 @@ class RinexDownsampler:
         src = Path(src)
         if src.suffix in (".Z", ".gz"):
             decompressed = workdir / src.stem  # drop .Z/.gz
-            if self._run([*self.compressor[:1], "-dc", str(src)], decompressed) != 0:
+            if self._run(["gzip", "-dc", str(src)], decompressed) != 0:
                 raise RuntimeError(f"decompress failed: {src}")
             crx = decompressed
         else:
