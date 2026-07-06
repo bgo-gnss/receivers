@@ -5,9 +5,10 @@
 -- catalog KEY is unchanged by the rename — only the stored path/filename strings
 -- need the s/d.Z/D.Z/ rewrite, or verify/integrity will look for the old names.
 --
--- Scoped to session_type='15s_24hr' to match the daily-path migration. Widen to
--- '1Hz_1hr' only once that tier's files are renamed on disk too (keep DB and
--- disk in lockstep — never update a session here that you haven't renamed yet).
+-- Covers ALL RINEX sessions (15s_24hr + 1Hz_1hr). Only run this once the
+-- on-disk rawdata rename (migrate_rinex_d_to_D.sh over the full archive, both
+-- sessions) has completed — keep DB and disk in lockstep, never realign a row
+-- whose on-disk file you haven't renamed yet.
 --
 -- gps_health dual-writes to the pgdev mirror, so run this on BOTH:
 --   psql -h localhost          -d gps_health -f migrate_rinex_d_to_D.sql   # rek-d01
@@ -20,13 +21,12 @@ BEGIN;
 UPDATE archive_catalog
 SET file_path = regexp_replace(file_path, 'd\.Z$', 'D.Z')
 WHERE file_category = 'rinex'
-  AND session_type  = '15s_24hr'
   AND file_path ~ '[0-9][0-9]d\.Z$';
 
--- file_tracking: local rolling index; filename only (no directory)
+-- file_tracking: local rolling index; filename only (no directory).
+-- Restrict to rinex-shaped names so raw .sbf.gz rows are never touched.
 UPDATE file_tracking
 SET filename = regexp_replace(filename, 'd\.Z$', 'D.Z')
-WHERE session_type = '15s_24hr'
-  AND filename ~ '[0-9][0-9]d\.Z$';
+WHERE filename ~ '[0-9][0-9]d\.Z$';
 
 COMMIT;
