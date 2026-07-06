@@ -31,6 +31,13 @@ from typing import Optional
 logger = logging.getLogger("receivers.archive.raw_format")
 
 # Format identifiers (plain strings so they serialize/log cleanly).
+# ONE position-identity gate for the whole system (bgo 2026-07-06: 10 m —
+# the raw-derived position is accurate to a few metres, stations are km
+# apart; the converter identity gate, archive-sort AND the tostools
+# header-QC coord_tolerance all use the same metric).
+# Override via receivers.cfg [rinex] position_gate_m.
+DEFAULT_POSITION_GATE_M = 10.0
+
 SBF = "sbf"
 ASHTECH_U = "ashtech_u"
 ASHTECH_R = "ashtech_r"
