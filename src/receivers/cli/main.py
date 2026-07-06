@@ -3815,12 +3815,19 @@ def _create_rinex_converter(
     observation_types,
     logger: logging.Logger,
     rinex_config: dict = None,
+    loglevel_override: int = None,
 ):
     """Create appropriate RINEX converter for a station.
+
+    ``loglevel_override`` quiets the converter's internal chatter (parallel
+    batch mode raises it to WARNING so N workers don't flood the console).
 
     Returns:
         Tuple of (converter, raw_extension) or (None, None) on failure.
     """
+    _conv_loglevel = (
+        loglevel_override if loglevel_override is not None else args.loglevel
+    )
     from ..rinex import (
         LeicaConverter,
         SBFConverter,
@@ -3864,7 +3871,7 @@ def _create_rinex_converter(
             naming_convention=naming_convention,
             apply_header_corrections=not getattr(args, "no_header_correction", False),
             observation_types=observation_types,
-            loglevel=args.loglevel,
+            loglevel=_conv_loglevel,
             session_type=session_type,
         )
         raw_extension = ".sbf.gz"
@@ -3899,7 +3906,7 @@ def _create_rinex_converter(
                 apply_header_corrections=not getattr(
                     args, "no_header_correction", False
                 ),
-                loglevel=args.loglevel,
+                loglevel=_conv_loglevel,
                 session_type=session_type,
             )
         else:
@@ -3913,7 +3920,7 @@ def _create_rinex_converter(
                     args, "no_header_correction", False
                 ),
                 keep_intermediate=getattr(args, "keep_intermediate", False),
-                loglevel=args.loglevel,
+                loglevel=_conv_loglevel,
                 session_type=session_type,
             )
         raw_extension = ".T02*"  # Match .T02 and .T02.gz
@@ -3971,7 +3978,7 @@ def _create_rinex_converter(
                 apply_header_corrections=not getattr(
                     args, "no_header_correction", False
                 ),
-                loglevel=args.loglevel,
+                loglevel=_conv_loglevel,
                 session_type=session_type,
             )
         else:
@@ -3985,7 +3992,7 @@ def _create_rinex_converter(
                     args, "no_header_correction", False
                 ),
                 keep_intermediate=getattr(args, "keep_intermediate", False),
-                loglevel=args.loglevel,
+                loglevel=_conv_loglevel,
                 session_type=session_type,
             )
         raw_extension = ".T00*"  # Match .T00 and .T00.gz
@@ -3998,7 +4005,7 @@ def _create_rinex_converter(
             naming_convention=naming_convention,
             apply_header_corrections=not getattr(args, "no_header_correction", False),
             keep_intermediate=getattr(args, "keep_intermediate", False),
-            loglevel=args.loglevel,
+            loglevel=_conv_loglevel,
             session_type=session_type,
         )
         raw_extension = ".m00.gz"
@@ -4238,12 +4245,18 @@ def _rinex_convert_station_period(
     args,
     logger: logging.Logger,
     durations: Optional[List[float]] = None,
+    progress=None,
 ) -> tuple:
     """Convert raw files to RINEX for a single station and time period.
 
     ``durations`` (optional, caller-owned) collects per-file conversion
     seconds across calls, feeding the in-run ETA lines and the final
     timing summary.
+
+    ``progress`` (optional ChunkProgress handle) switches to parallel-batch
+    reporting: per-file ✅/⏭️ detail goes to the file log only
+    (``batch_quiet`` records), the handle feeds the periodic progress
+    board, and the inline ETA lines are suppressed. Failures stay loud.
 
     Returns:
         Tuple of (converted, failed, skipped).
@@ -4254,6 +4267,7 @@ def _rinex_convert_station_period(
     converted = 0
     failed = 0
     skipped = 0
+    _log_extra = {"batch_quiet": True} if progress is not None else None
 
     try:
         config = get_receivers_config()
@@ -4291,8 +4305,14 @@ def _rinex_convert_station_period(
             logger.warning(f"No raw files found for {station_id} in date range")
             return 0, 0, 1
 
-        print(f"  Found {len(raw_files)} raw file(s) to convert")
-        logger.info(f"Found {len(raw_files)} raw files to convert")
+        if progress is not None:
+            progress.set_total(len(raw_files))
+            logger.info(
+                f"Found {len(raw_files)} raw files to convert", extra=_log_extra
+            )
+        else:
+            print(f"  Found {len(raw_files)} raw file(s) to convert")
+            logger.info(f"Found {len(raw_files)} raw files to convert")
 
         if getattr(args, "dry_run", False):
             for raw_file in raw_files:
@@ -4338,10 +4358,16 @@ def _rinex_convert_station_period(
                     output_dir, _obs, station_id, args.session
                 )
                 if staged is not None:
-                    print(
-                        f"  ⏭️  {Path(raw_file).name}: already staged ({staged.name})"
+                    if progress is None:
+                        print(
+                            f"  ⏭️  {Path(raw_file).name}: already staged ({staged.name})"
+                        )
+                    else:
+                        progress.advance()
+                    logger.info(
+                        f"⏭️  {raw_file} already staged as {staged.name}",
+                        extra=_log_extra,
                     )
-                    logger.info(f"⏭️  {raw_file} already staged as {staged.name}")
                     skipped += 1
                     continue
 
@@ -4384,13 +4410,21 @@ def _rinex_convert_station_period(
                     f"❌ {raw_file}: 0 header corrections in re-rinex mode — dropped"
                 )
                 failed += 1
+                if progress is not None:
+                    progress.advance()
                 continue
 
             if result.success:
                 dur = getattr(result, "duration_seconds", 0.0) or 0.0
-                print(f"  ✅ {raw_file.name} -> {result.rinex_file.name} ({dur:.1f}s)")
+                if progress is None:
+                    print(
+                        f"  ✅ {raw_file.name} -> {result.rinex_file.name} ({dur:.1f}s)"
+                    )
+                else:
+                    progress.advance(dur)
                 logger.info(
-                    f"✅ {raw_file.name} -> {result.rinex_file.name} ({dur:.1f}s)"
+                    f"✅ {raw_file.name} -> {result.rinex_file.name} ({dur:.1f}s)",
+                    extra=_log_extra,
                 )
                 if result.header_corrections_applied > 0:
                     logger.debug(
@@ -4402,9 +4436,14 @@ def _rinex_convert_station_period(
                     # Periodic ETA: after the first 5 conversions, then every
                     # 25. "≤" because already-staged dates ahead skip in ~ms.
                     # Only for real batches — in period-first mode each call
-                    # sees a handful of files and the ETA would be noise.
+                    # sees a handful of files and the ETA would be noise. The
+                    # progress board covers this in parallel mode.
                     n = len(durations)
-                    if (n == 5 or n % 25 == 0) and len(raw_files) >= 25:
+                    if (
+                        progress is None
+                        and (n == 5 or n % 25 == 0)
+                        and len(raw_files) >= 25
+                    ):
                         avg = sum(durations) / n
                         remaining = len(raw_files) - (file_idx + 1)
                         eta_s = int(remaining * avg)
@@ -4426,9 +4465,12 @@ def _rinex_convert_station_period(
                 except Exception as e:
                     logger.debug(f"RINEX file tracking failed: {e}")
             else:
+                # Failures stay LOUD on console in every mode.
                 print(f"  ❌ {raw_file.name}: {result.message}")
                 logger.error(f"❌ {raw_file.name}: {result.message}")
                 failed += 1
+                if progress is not None:
+                    progress.advance()
 
     except NetworkUnavailableError:
         # TOS/network down mid-run — propagate so cmd_rinex aborts the push and
@@ -5460,34 +5502,58 @@ def cmd_rinex(args) -> int:
                 with _lk:
                     return _f(batch_details)
 
+        def _fh_label(chunk):
+            sid, ys, _ye = chunk
+            return f"{sid}" if len(fh_chunks) == len(stations) else f"{sid} {ys.year}"
+
+        _fh_handles: Dict[Any, Any] = {}
+
         def _fh_run_chunk(chunk):
             sid, ys, ye = chunk
-            label = f"{sid}" if len(fh_chunks) == len(stations) else f"{sid} {ys.year}"
-            print(f"\nProcessing: {label}")
-            return fix_headers_station(
-                sid,
-                args.session,
-                ys,
-                ye,
-                archive_old=getattr(args, "archive_old", False),
-                dry_run=_dry_run,
-                all_files=all_mode,
-                work_dir=_work_dir,
-                source_dir=Path(_source_dir) if _source_dir else None,
-                tos_cache=tos_cache,
-                flush_fn=_flush_fn,
-                flush_every=_flush_every,
-                loglevel=args.loglevel,
-            )
+            h = _fh_handles.get(chunk)
+            if h is None:
+                print(f"\nProcessing: {_fh_label(chunk)}")
+            else:
+                h.start()
+            try:
+                res = fix_headers_station(
+                    sid,
+                    args.session,
+                    ys,
+                    ye,
+                    archive_old=getattr(args, "archive_old", False),
+                    dry_run=_dry_run,
+                    all_files=all_mode,
+                    work_dir=_work_dir,
+                    source_dir=Path(_source_dir) if _source_dir else None,
+                    tos_cache=tos_cache,
+                    flush_fn=_flush_fn,
+                    flush_every=_flush_every,
+                    loglevel=args.loglevel,
+                    progress=h,
+                )
+                if h is not None:
+                    h.finish(ok=True)
+                return res
+            except BaseException:
+                if h is not None:
+                    h.finish(ok=False)
+                raise
 
         if fh_workers > 1:
+            from ..utils.batch_parallel import ProgressBoard
+
             print(
                 f"\nParallel fix-headers: {len(fh_chunks)} chunk(s) "
-                f"on {fh_workers} worker(s)"
+                f"on {fh_workers} worker(s) — progress line every 30s"
             )
-            _outcomes = run_chunks(
-                fh_chunks, _fh_run_chunk, workers=fh_workers, logger=logger
-            )
+            _fh_board = ProgressBoard(interval=30)
+            for _chunk in fh_chunks:
+                _fh_handles[_chunk] = _fh_board.handle(_fh_label(_chunk))
+            with _fh_board:
+                _outcomes = run_chunks(
+                    fh_chunks, _fh_run_chunk, workers=fh_workers, logger=logger
+                )
         else:
             _outcomes = []
             from ..utils.batch_parallel import ChunkOutcome
@@ -5504,10 +5570,11 @@ def cmd_rinex(args) -> int:
         for _oc in _outcomes:
             if not _oc.ok or _oc.value is None:
                 total_errors += 1
+                print(f"  {_fh_label(_oc.chunk)}: ❌ chunk failed — {_oc.error}")
                 continue
             summary = _oc.value
             print(
-                f"  scanned={summary['scanned']} "
+                f"  {_fh_label(_oc.chunk)}: scanned={summary['scanned']} "
                 + (
                     f"would_fix={summary.get('would_fix', 0)} clean={summary.get('clean', summary.get('skipped', 0))} "
                     if _dry_run
@@ -5674,50 +5741,98 @@ def cmd_rinex(args) -> int:
             # thread pool. Each chunk gets its OWN converter instance (own
             # TOS cache) so nothing mutable is shared; NetworkUnavailableError
             # aborts the whole batch (resume by re-running, staged dates skip).
-            from ..utils.batch_parallel import run_chunks, split_year_ranges
+            from ..utils.batch_parallel import (
+                ProgressBoard,
+                run_chunks,
+                split_year_ranges,
+            )
 
             year_ranges = split_year_ranges(start_time, end_time)
             chunks = [(sid, ys, ye) for sid in stations for ys, ye in year_ranges]
             workers = par_workers
             print(
                 f"\nParallel conversion: {len(chunks)} year-chunk(s) "
-                f"on {workers} worker(s)"
+                f"on {workers} worker(s) — per-file detail goes to the log; "
+                "console shows a progress line every 30s (failures always shown)"
             )
+            board = ProgressBoard(interval=30)
+            handles = {
+                chunk: board.handle(f"{chunk[0]} {chunk[1].year}") for chunk in chunks
+            }
 
             def _convert_chunk(chunk):
                 sid, ys, ye = chunk
-                conv, ext, _ = _create_rinex_converter(
-                    sid,
-                    args,
-                    rinex_version,
-                    apply_hatanaka,
-                    compression_format,
-                    naming_convention,
-                    observation_types,
-                    logger,
-                    rinex_config,
-                )
-                if conv is None:
-                    return (0, 0, 1)
-                return _rinex_convert_station_period(
-                    sid, conv, ext, ys, ye, args, logger, durations=durations
-                )
+                h = handles[chunk]
+                h.start()
+                try:
+                    conv, ext, _ = _create_rinex_converter(
+                        sid,
+                        args,
+                        rinex_version,
+                        apply_hatanaka,
+                        compression_format,
+                        naming_convention,
+                        observation_types,
+                        logger,
+                        rinex_config,
+                        # converter internals (3 lines/file) would flood the
+                        # console × N workers; per-file results still reach
+                        # the file log via the batch_quiet records.
+                        loglevel_override=max(logging.WARNING, args.loglevel),
+                    )
+                    if conv is None:
+                        return (0, 0, 1)
+                    res = _rinex_convert_station_period(
+                        sid,
+                        conv,
+                        ext,
+                        ys,
+                        ye,
+                        args,
+                        logger,
+                        durations=durations,
+                        progress=h,
+                    )
+                    h.finish(ok=True)
+                    return res
+                except BaseException:
+                    h.finish(ok=False)
+                    raise
 
-            outcomes = run_chunks(
-                chunks,
-                _convert_chunk,
-                workers=workers,
-                logger=logger,
-                abort_on=(NetworkUnavailableError,),
-            )
+            with board:
+                outcomes = run_chunks(
+                    chunks,
+                    _convert_chunk,
+                    workers=workers,
+                    logger=logger,
+                    abort_on=(NetworkUnavailableError,),
+                )
+            # Per-chunk breakdown: chunks with real work get a line; the
+            # fully-staged rest is one count (this is what tells you WHY only
+            # one stream of conversions was visible).
+            quiet_chunks = 0
+            print("\nPer-chunk results:")
             for oc in outcomes:
                 if oc.ok and oc.value is not None:
                     c, f, s = oc.value
                     total_converted += c
                     total_failed += f
                     total_skipped += s
+                    if c or f:
+                        label = f"{oc.chunk[0]} {oc.chunk[1].year}"
+                        print(
+                            f"  {label}: ✅ {c} converted, ❌ {f} failed, "
+                            f"⏭️  {s} already staged"
+                        )
+                    else:
+                        quiet_chunks += 1
                 elif oc.error is not None:
                     total_failed += 1
+                    print(
+                        f"  {oc.chunk[0]} {oc.chunk[1].year}: ❌ chunk failed — {oc.error}"
+                    )
+            if quiet_chunks:
+                print(f"  ({quiet_chunks} chunk(s) fully staged already — skips only)")
         else:
             # Station-first: current behavior
             for station_id in stations:

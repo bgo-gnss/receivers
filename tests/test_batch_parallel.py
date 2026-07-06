@@ -162,3 +162,46 @@ def test_load_gate_waits_then_releases(monkeypatch):
     monkeypatch.setattr(bp.time, "sleep", sleeps.append)
     bp._load_gate(LOG)
     assert sleeps == [bp.GATE_POLL_S, bp.GATE_POLL_S]
+
+
+# ------------------------------------------------------------ progress board
+
+
+def test_chunk_progress_describe_eta():
+    h = bp.ChunkProgress("RHOF 2026")
+    h.start()
+    h.set_total(100)
+    for _ in range(10):
+        h.advance(18.0)
+    d = h.describe()
+    assert d.startswith("RHOF 2026 10/100")
+    assert "18.0s/item" in d
+    assert "ETA 0:27h" in d  # 90 files * 18s = 1620s = 0:27
+
+
+def test_progress_board_render_states():
+    board = bp.ProgressBoard(interval=30)
+    a = board.handle("A 2024")
+    b = board.handle("B 2025")
+    c = board.handle("C 2026")
+    a.start()
+    a.set_total(5)
+    a.advance(2.0)
+    b.start()
+    b.finish(ok=True)
+    c.finish(ok=False)
+    line = board.render()
+    assert "A 2024 1/5" in line
+    assert "2/3 chunks done" in line
+    assert "1 FAILED" in line
+    assert "B 2025" not in line  # finished chunks leave the running list
+
+
+def test_progress_board_reporter_thread_lifecycle():
+    lines: list = []
+    board = bp.ProgressBoard(interval=30, out=lines.append)
+    with board:
+        h = board.handle("X")
+        h.start()
+    # reporter thread stopped cleanly; render still works after exit
+    assert "X" in board.render()
