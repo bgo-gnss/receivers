@@ -3829,6 +3829,7 @@ def _create_rinex_converter(
         loglevel_override if loglevel_override is not None else args.loglevel
     )
     from ..rinex import (
+        AshtechConverter,
         LeicaConverter,
         SBFConverter,
         TrimbleConverter,
@@ -3858,7 +3859,24 @@ def _create_rinex_converter(
 
     session_type = getattr(args, "session", None)
 
-    if (
+    # --ashtech wins outright: pre-2012 archive campaigns convert historical
+    # Ashtech .atc regardless of the station's CURRENT receiver type (RHOF is
+    # a PolaRX5 today; its 2008-2011 raw is a µZ-12).
+    if getattr(args, "ashtech", False):
+        converter = AshtechConverter(
+            station_id=station_id,
+            rinex_version=rinex_version,
+            apply_hatanaka=apply_hatanaka,
+            compression_format=compression_format,
+            naming_convention=naming_convention,
+            apply_header_corrections=not getattr(args, "no_header_correction", False),
+            keep_intermediate=getattr(args, "keep_intermediate", False),
+            loglevel=_conv_loglevel,
+            session_type=session_type,
+        )
+        raw_extension = ".atc"
+
+    elif (
         "polarx" in receiver_type
         or "septentrio" in receiver_type
         or "mosaic" in receiver_type

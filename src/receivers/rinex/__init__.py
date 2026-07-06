@@ -14,6 +14,7 @@ Main Components:
     - RinexNamer: Short/long RINEX filename conventions
 """
 
+from .ashtech_converter import AshtechConverter
 from .converter_base import (
     BatchConversionResult,
     ConversionError,
@@ -57,6 +58,7 @@ __all__ = [
     "SBFConverter",
     "TrimbleConverter",
     "TrimbleNativeConverter",
+    "AshtechConverter",
     "NetR9Converter",
     "NetRSConverter",
     "LeicaConverter",
