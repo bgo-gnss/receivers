@@ -857,6 +857,64 @@ def create_archive_sync_parser(subparsers) -> argparse.ArgumentParser:
     return parser
 
 
+def _record_plan_applied(plan_path: Path, res) -> None:
+    """When an executed plan lives inside gps-tos-corrections, stamp the batch
+    dir with an applied-marker and commit+push — the fix and its history are
+    the same object. Best-effort."""
+    import subprocess
+    from datetime import datetime, timezone
+
+    from ..config.receivers_config import ReceiversConfig
+
+    repo = ReceiversConfig().get_tos_corrections_repo() or str(
+        Path.home() / "git" / "gps-tos-corrections"
+    )
+    repo_path = Path(repo)
+    try:
+        rel_plan = plan_path.resolve().relative_to(repo_path.resolve())
+    except (ValueError, OSError):
+        return  # plan lives elsewhere — nothing to track
+    stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    marker = plan_path.parent / "applied.txt"
+    lines = [f"applied: {stamp}", f"moved: {len(res.moved)}"]
+    for src, dst in res.moved:
+        lines.append(f"MOVED\t{src}\t{dst}")
+    for src, dst in res.dst_exists:
+        lines.append(f"SKIPPED_EXISTS\t{src}\t{dst}")
+    for src, dst in res.failed:
+        lines.append(f"FAILED\t{src}\t{dst}")
+    marker.write_text("\n".join(lines) + "\n")
+    try:
+        subprocess.run(
+            ["git", "-C", str(repo_path), "add", str(rel_plan.parent)],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_path),
+                "commit",
+                "-q",
+                "-m",
+                f"raw-remediation applied: {rel_plan.parent} "
+                f"({len(res.moved)} moved)",
+            ],
+            capture_output=True,
+            timeout=30,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo_path), "push", "-q"],
+            capture_output=True,
+            timeout=60,
+        )
+        print(f"   📌 applied-marker committed + pushed ({rel_plan.parent})")
+    except Exception as exc:  # noqa: BLE001 - tracking is best-effort
+        print(f"   ⚠️  applied-marker git tracking failed: {exc}")
+
+
 def _persist_remediation_records(plans, skips, *, gate_m: float) -> None:
     """Write the fix files into the gps-tos-corrections repo (tracked!).
 
@@ -950,7 +1008,19 @@ def _persist_remediation_records(plans, skips, *, gate_m: float) -> None:
             timeout=30,
         )
         if done.returncode == 0:
-            print("   📌 committed to gps-tos-corrections")
+            pushed = subprocess.run(
+                ["git", "-C", str(repo_path), "push", "-q"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if pushed.returncode == 0:
+                print("   📌 committed + pushed to gps-tos-corrections")
+            else:
+                print(
+                    "   📌 committed to gps-tos-corrections (push failed: "
+                    f"{(pushed.stderr or '').strip()[:80]} — push manually)"
+                )
         else:
             print("   · nothing new to commit in gps-tos-corrections")
     except Exception as exc:  # noqa: BLE001 - tracking is best-effort
@@ -1017,6 +1087,8 @@ def cmd_archive_sort(args: argparse.Namespace) -> int:
             print(f"   ⚠️  NO STATUS (gateway dropped — re-run): {src}")
         if not execute and res.would_move:
             print("\n   → re-run with --yes to actually move.")
+        if execute and res.moved:
+            _record_plan_applied(Path(args.apply_plan), res)
         return 0 if res.ok else 1
 
     rel_files: list[str] = list(args.file or [])
