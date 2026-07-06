@@ -191,6 +191,12 @@ def run_epos_disseminate_job(
         items.clear()
         return n
 
+    # Multi-product (format.products): one published file per product per date.
+    # Explicit products use the product kwarg; the default single-product shape
+    # calls run_one(station, d) unchanged (keeps injected test engines working).
+    _products = list(getattr(getattr(target, "format", None), "products", ()) or ())
+    _active_products = [p for p in _products if getattr(p, "enabled", True)]
+
     def _run_station_dates(station: str, chunk_dates: list, progress=None) -> dict:
         """One worker unit: own engine + own EPOS conn + local supersede queue."""
         local = {"pushed": 0, "cached": 0, "skipped": 0, "failed": 0, "superseded": 0}
@@ -204,38 +210,41 @@ def run_epos_disseminate_job(
             progress.set_total(len(chunk_dates))
         try:
             for d in chunk_dates:
-                try:
-                    result = engine.run_one(station, d)
-                except Exception:
-                    logger.exception("epos-disseminate %s %s: run failed", station, d)
-                    local["failed"] += 1
-                    if progress is not None:
-                        progress.advance()
-                    continue
-                if not result.ok:
-                    local["skipped"] += 1
-                    if progress is not None:
-                        progress.advance()
-                    continue
-                local["cached" if result.cached else "pushed"] += 1
-                indexed_id = _index_pushed(conn, target, result)
-                if (
-                    do_supersede
-                    and result.superseded_name
-                    and not result.dry_run
-                    and indexed_id is not None
-                    and result.relative_path
-                ):
-                    pending.append(
-                        (
-                            result.superseded_name,
-                            str(Path(result.relative_path).parent),
+                runs = [(p,) for p in _active_products] if _active_products else [()]
+                for run_args in runs:
+                    try:
+                        if run_args:
+                            result = engine.run_one(station, d, product=run_args[0])
+                        else:
+                            result = engine.run_one(station, d)
+                    except Exception:
+                        logger.exception(
+                            "epos-disseminate %s %s: run failed", station, d
                         )
-                    )
-                    if len(pending) >= _FLUSH_EVERY:
-                        local["superseded"] += _flush_supersedes(conn, pending)
+                        local["failed"] += 1
+                        continue
+                    if not result.ok:
+                        local["skipped"] += 1
+                        continue
+                    local["cached" if result.cached else "pushed"] += 1
+                    indexed_id = _index_pushed(conn, target, result)
+                    if (
+                        do_supersede
+                        and result.superseded_name
+                        and not result.dry_run
+                        and indexed_id is not None
+                        and result.relative_path
+                    ):
+                        pending.append(
+                            (
+                                result.superseded_name,
+                                str(Path(result.relative_path).parent),
+                            )
+                        )
+                        if len(pending) >= _FLUSH_EVERY:
+                            local["superseded"] += _flush_supersedes(conn, pending)
                 if progress is not None:
-                    progress.advance(getattr(result, "duration_seconds", None))
+                    progress.advance()
             local["superseded"] += _flush_supersedes(conn, pending)
         finally:
             if conn is not None:

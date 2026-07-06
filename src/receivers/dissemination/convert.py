@@ -129,14 +129,20 @@ def _is_hatanaka(name: str) -> bool:
     return bool(name) and (name.endswith((".crx", ".CRX")) or name[-1] in "dD")
 
 
-def cache_key(source_path: Path, tos_fingerprint: str = "") -> str:
-    """``sha256(source content_sha256 + ':' + tos_fingerprint)``.
+def cache_key(
+    source_path: Path, tos_fingerprint: str = "", sample: Optional[int] = None
+) -> str:
+    """``sha256(source content_sha256 + ':' + tos_fingerprint)`` (+ sample slot).
 
     The TOS fingerprint is part of the key so a header correction (which leaves
     the source bytes unchanged) still invalidates the cached converted product.
+    A decimated product (``sample`` set) gets its own ``-s<rate>`` key so the
+    native and 30 s obs for the same date never share a cache slot; native
+    keys are unchanged (existing caches stay valid).
     """
     src_hash = content_sha256(source_path)
-    return hashlib.sha256(f"{src_hash}:{tos_fingerprint}".encode()).hexdigest()
+    key = hashlib.sha256(f"{src_hash}:{tos_fingerprint}".encode()).hexdigest()
+    return f"{key}-s{sample}" if sample is not None else key
 
 
 def long_rinex3_name(
@@ -405,6 +411,7 @@ def convert_for_dissemination(
     domes: str = "",
     observer: str = "",
     agency: str = "",
+    sample: Optional[int] = None,
 ) -> ConvertResult:
     """Produce the cached canonical plain obs for dissemination (Model B).
 
@@ -416,7 +423,12 @@ def convert_for_dissemination(
     source_path = Path(source_path)
     is_raw = any(e in source_path.name.lower() for e in _TRIMBLE_RAW + (".sbf",))
 
-    key = cache_key(source_path, tos_fingerprint)
+    # Per-call sample (a ProductSpec rate) wins; fall back to the format-level
+    # knob for the single-product config shape.
+    if sample is None:
+        sample = getattr(fmt, "sample", None)
+
+    key = cache_key(source_path, tos_fingerprint, sample=sample)
     out_dir = cache_dir.expanduser() / key
     if out_dir.is_dir():
         # The cache dir holds the canonical PLAIN obs (.rnx / .YYo). The engine also
@@ -474,7 +486,7 @@ def convert_for_dissemination(
             naming,
             fmt.country_code,
             tmpdir,
-            sample=getattr(fmt, "sample", None),
+            sample=sample,
             file_period=getattr(fmt, "file_period", "01D"),
             monument_number=getattr(fmt, "monument_number", "00"),
         )

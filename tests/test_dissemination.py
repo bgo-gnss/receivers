@@ -2525,3 +2525,108 @@ class TestDisseminateJobRange:
         )
         assert s["pushed"] == 1
         assert s["superseded"] == 0 and not flushed
+
+
+class TestProducts:
+    """format.products — multi-product per date (native + 30s decimated)."""
+
+    def test_products_parse_and_fallback(self):
+        from receivers.dissemination.config import DisseminationFormat, ProductSpec
+
+        f = DisseminationFormat.from_dict(
+            {
+                "products": [
+                    {"sample": None},
+                    {"sample": 30},
+                    {"sample": 60, "enabled": False},
+                ]
+            }
+        )
+        assert [p.sample for p in f.active_products()] == [None, 30]
+        # legacy single-sample shape unchanged
+        f2 = DisseminationFormat.from_dict({"sample": 30})
+        assert [p.sample for p in f2.active_products()] == [30]
+        # both set -> products win, top-level sample ignored
+        f3 = DisseminationFormat.from_dict(
+            {"sample": 30, "products": [{"sample": None}]}
+        )
+        assert f3.sample is None
+        assert f3.active_products() == [ProductSpec(sample=None)]
+
+    def test_cache_key_sample_slot(self, tmp_path):
+        import gzip as _gzip
+
+        from receivers.dissemination.convert import cache_key
+
+        src = tmp_path / "RHOF1830.26D.gz"
+        with _gzip.open(src, "wb") as fh:
+            fh.write(b"obs content")
+        base = cache_key(src, "fp")
+        assert cache_key(src, "fp", sample=None) == base
+        k30 = cache_key(src, "fp", sample=30)
+        assert k30 == f"{base}-s30" and k30 != base
+
+    def test_job_runs_each_product(self, tmp_path):
+        from datetime import date as _date
+
+        from receivers.dissemination.job import run_epos_disseminate_job
+
+        cfg = tmp_path / "sync.yaml"
+        cfg.write_text(
+            "targets:\n"
+            "  - name: epos\n"
+            "    active: true\n"
+            "    tier: dissemination\n"
+            "    host: ''\n"
+            "    user: u\n"
+            "    dest: /tmp/x\n"
+            "    source_root: /tmp/src\n"
+            "    format:\n"
+            "      products:\n"
+            "        - sample: null\n"
+            "        - sample: 30\n"
+        )
+        calls = []
+
+        class _Eng:
+            def run_one(self, station, d, product=None):
+                calls.append((station, d, getattr(product, "sample", "MISSING")))
+                r = TestDisseminateJobRange._result(self, station, d)
+                return r
+
+        s = run_epos_disseminate_job(
+            config_path=str(cfg),
+            markers=["RHOF"],
+            no_qc=True,
+            dates=[_date(2026, 7, 2)],
+            engine_factory=lambda t: _Eng(),
+            epos_conn_factory=lambda: None,
+        )
+        assert s["pushed"] == 2
+        assert [c[2] for c in calls] == [None, 30]
+
+    def test_engine_session_segment_token(self, tmp_path):
+        from receivers.dissemination.config import load_dissemination_config
+        from receivers.dissemination.engine import EposDisseminate
+
+        cfg = tmp_path / "sync.yaml"
+        cfg.write_text(
+            "targets:\n"
+            "  - name: epos\n"
+            "    active: true\n"
+            "    tier: dissemination\n"
+            "    host: ''\n"
+            "    user: u\n"
+            f"    dest: {tmp_path}\n"
+            f"    source_root: {tmp_path}\n"
+            "    format:\n"
+            '      dir_template: "%Y/#b/{station}/{session}/rinex/"\n'
+        )
+        target = load_dissemination_config(cfg)[0]
+        eng = EposDisseminate(target)
+        from datetime import date as _d2
+
+        rel = eng.relative_dir("RHOF", _d2(2026, 7, 2), session_segment="30s_24hr")
+        assert rel == "2026/jul/RHOF/30s_24hr/rinex"
+        rel2 = eng.relative_dir("RHOF", _d2(2026, 7, 2))
+        assert rel2 == "2026/jul/RHOF/15s_24hr/rinex"

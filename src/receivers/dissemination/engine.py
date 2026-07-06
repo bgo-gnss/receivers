@@ -209,11 +209,20 @@ class EposDisseminate:
             return dest
         return f"{self.target.user}@{self.target.host}:{dest}"
 
-    def relative_dir(self, station: str, d: date) -> str:
-        """Render the format's ``dir_template`` (gtimes tokens + {station}) for d."""
+    def relative_dir(
+        self, station: str, d: date, session_segment: Optional[str] = None
+    ) -> str:
+        """Render the format's ``dir_template`` (gtimes tokens + {station}) for d.
+
+        ``{session}`` in the template resolves to ``session_segment`` — the
+        per-product rate directory (``15s_24hr``/``30s_24hr``), derived from
+        the product's sample else the obs INTERVAL. Never hardcode the rate.
+        """
         import gtimes.timefunc as gt
 
         template = self.target.format.dir_template.replace("{station}", station.upper())
+        if "{session}" in template:
+            template = template.replace("{session}", session_segment or "15s_24hr")
         # gtimes resolves date tokens (%Y, #b, …); '1D' frequency for a daily file.
         rendered = gt.datepathlist(
             template, "1D", datelist=[datetime(d.year, d.month, d.day)]
@@ -259,7 +268,29 @@ class EposDisseminate:
 
     # ---- orchestration -----------------------------------------------------
 
-    def run_one(self, station: str, d: date) -> DisseminateResult:
+    def _session_segment(self, obs_path: Path, sample: Optional[int]) -> str:
+        """``<rate>s_24hr`` for the {session} dir token (rate = sample else
+        the obs INTERVAL — the same content-derived detection the long-name
+        frequency token uses)."""
+        from .convert import _resolve_data_frequency
+
+        tok = _resolve_data_frequency(Path(obs_path), sample)
+        if tok.endswith("S"):
+            try:
+                return f"{int(tok[:-1])}s_24hr"
+            except ValueError:  # pragma: no cover - malformed token
+                pass
+        return "15s_24hr"
+
+    def run_one(
+        self, station: str, d: date, product: Optional[Any] = None
+    ) -> DisseminateResult:
+        # Per-product dissemination (format.products): each product is one
+        # published file per date. Default = the format's single product.
+        if product is None:
+            product = self.target.format.active_products()[0]
+        sample = product.sample
+
         result = DisseminateResult(
             station=station.upper(), file_date=d, dry_run=self.dry_run
         )
@@ -310,6 +341,7 @@ class EposDisseminate:
                 domes=(session or {}).get("domes", ""),
                 observer=observer,
                 agency=agency,
+                sample=sample,
             )
         except ConvertError as exc:
             result.message = f"convert failed: {exc}"
@@ -318,7 +350,12 @@ class EposDisseminate:
 
         policy = self.target.format.policy_for(conv.rinex_version)
         pub_name = published_name(conv.obs_name, policy)
-        rel_dir = self.relative_dir(station, d)
+        session_segment = (
+            self._session_segment(conv.output_path, sample)
+            if "{session}" in self.target.format.dir_template
+            else None
+        )
+        rel_dir = self.relative_dir(station, d, session_segment=session_segment)
         result.long_name = pub_name
         result.cached = conv.cached
         result.rinex_version = conv.rinex_version
@@ -331,7 +368,10 @@ class EposDisseminate:
         # the portal + DB after a durable push+index. Only when the source is an
         # archive RINEX (not raw) AND the published name actually changed — an
         # R2-short push keeps the same name (rsync overwrite, nothing to clean).
-        if source is not None and pub_name != Path(source).name:
+        # Only the NATIVE-rate product may supersede: a decimated product
+        # (e.g. 30 s) is an ADDITIONAL file, not a replacement for the legacy
+        # short-name day file.
+        if source is not None and pub_name != Path(source).name and sample is None:
             result.superseded_name = Path(source).name
 
         # Header-QC gate: verify the plain obs header vs TOS before packaging/push.

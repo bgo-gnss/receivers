@@ -333,6 +333,49 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
         print(f"Invalid --date {args.date!r} (expected YYYY-MM-DD)")
         return 1
 
+    # Multi-product config (format.products with >1 entry): the sweep driver
+    # owns the per-product loop + index + batched supersede — reroute this
+    # single date through it rather than duplicating that logic here.
+    _prods = target.format.active_products()
+    if len(_prods) > 1:
+        from ..dissemination.job import run_epos_disseminate_job
+
+        session_provider2 = None
+        if not args.no_qc:
+            from ..dissemination import make_session_provider
+
+            session_provider2 = make_session_provider()
+
+        def _ef(tgt):
+            return EposDisseminate(
+                tgt,
+                dry_run=args.dry_run,
+                dest_override=args.dest_override,
+                session_provider=session_provider2,
+            )
+
+        print(f"{len(_prods)} products configured — using the sweep driver")
+        summary = run_epos_disseminate_job(
+            config_path=args.config,
+            target_name=args.target,
+            no_qc=args.no_qc,
+            markers=[args.station.upper()],
+            dates=[d],
+            supersede=not args.no_supersede and not args.dry_run,
+            force=args.force,
+            engine_factory=_ef,
+            epos_conn_factory=(
+                (lambda: None) if (args.no_index or args.dry_run) else None
+            ),
+        )
+        icon = "✅" if summary["failed"] == 0 else "⚠️ "
+        print(
+            f"{icon} pushed={summary['pushed']} cached={summary['cached']} "
+            f"skipped={summary['skipped']} failed={summary['failed']} "
+            f"superseded={summary['superseded']}"
+        )
+        return 0 if summary["failed"] == 0 else 1
+
     # The header-QC gate runs by default (live TOS session provider); --no-qc
     # disables it (e.g. an offline pre-stage where TOS is unreachable).
     session_provider = None

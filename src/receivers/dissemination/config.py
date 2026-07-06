@@ -54,6 +54,30 @@ class VersionPolicy:
 
 
 @dataclass(frozen=True)
+class ProductSpec:
+    """One published product per observation date (a ``format.products:`` entry).
+
+    ``sample=None`` ships the source rate unchanged (the native product —
+    the only one that may supersede a legacy short-name file on the portal);
+    ``sample=30`` decimates to 30 s at the dissemination boundary. Each
+    product gets its own convert-cache slot and its own ``{session}``
+    directory segment (``<rate>s_24hr``).
+    """
+
+    sample: Optional[int] = None
+    enabled: bool = True
+
+    @staticmethod
+    def from_dict(raw: dict) -> ProductSpec:
+        raw = raw or {}
+        sample_raw = raw.get("sample")
+        return ProductSpec(
+            sample=int(sample_raw) if sample_raw is not None else None,
+            enabled=bool(raw.get("enabled", True)),
+        )
+
+
+@dataclass(frozen=True)
 class DisseminationFormat:
     """The declarative format policy for a dissemination target (from sync.yaml).
 
@@ -98,13 +122,31 @@ class DisseminationFormat:
     agency: str = "Icelandic Meteorological Office"
     """AGENCY value written into disseminated headers (paired with OBSERVER)."""
 
+    products: tuple = ()
+    """Optional multi-product list (``format.products:``): one published product
+    per entry per date (e.g. native 15 s + decimated 30 s). Empty = single
+    product at the top-level ``sample`` (back-compat). When ``products`` is
+    given, the top-level ``sample`` is ignored (a warning is logged at parse)."""
+
     def policy_for(self, rinex_version: int) -> VersionPolicy:
         return self.rinex2 if rinex_version == 2 else self.rinex3
+
+    def active_products(self) -> list[ProductSpec]:
+        """The products to publish per date, in config order; never empty."""
+        prods = [p for p in self.products if p.enabled]
+        return prods or [ProductSpec(sample=self.sample)]
 
     @staticmethod
     def from_dict(raw: dict) -> DisseminationFormat:
         raw = raw or {}
         sample_raw = raw.get("sample")
+        products_raw = raw.get("products") or []
+        if products_raw and sample_raw is not None:
+            logger.warning(
+                "format: both 'products:' and top-level 'sample:' set — "
+                "'sample' is ignored (products define the per-product rates)"
+            )
+            sample_raw = None
         return DisseminationFormat(
             preserve_source_version=bool(raw.get("preserve_source_version", True)),
             country_code=raw.get("country_code", DEFAULT_COUNTRY_CODE),
@@ -122,6 +164,7 @@ class DisseminationFormat:
             monument_number=str(raw.get("monument_number", "00")),
             observer=raw.get("observer", "GNSSatIMO"),
             agency=raw.get("agency", "Icelandic Meteorological Office"),
+            products=tuple(ProductSpec.from_dict(p) for p in products_raw),
         )
 
 
