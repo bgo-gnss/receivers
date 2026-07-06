@@ -128,6 +128,59 @@ class ConversionError(Exception):
         return msg
 
 
+def validation_epilog(results) -> Optional[str]:
+    """End-of-batch summary of raw-validation refusals, with suggested fixes.
+
+    Returns None when nothing was refused. Grouped by category and capped per
+    group — the procedure the operator follows AFTER a sweep, kept out of the
+    per-file mid-run stream on purpose.
+    """
+    refused = [r for r in results if getattr(r, "validation_category", None)]
+    if not refused:
+        return None
+    from collections import defaultdict
+
+    by_cat: dict = defaultdict(list)
+    for r in refused:
+        by_cat[r.validation_category].append(r)
+    lines = [
+        f"raw-content validation refused {len(refused)} file(s) this batch — "
+        "review before re-running:"
+    ]
+    for cat in ("wrong-format", "wrong-date", "wrong-station"):
+        rs = by_cat.pop(cat, [])
+        if not rs:
+            continue
+        lines.append(f"  [{cat}] {len(rs)} file(s):")
+        for r in rs[:15]:
+            first = r.message.splitlines()[0] if r.message else ""
+            lines.append(f"    {Path(r.raw_file).name}: {first[:120]}")
+        if len(rs) > 15:
+            lines.append(f"    ... and {len(rs) - 15} more")
+        for sug in sorted(
+            {r.validation_suggestion for r in rs if r.validation_suggestion}
+        ):
+            lines.append(f"    → {sug}")
+    for cat, rs in by_cat.items():  # any future category
+        lines.append(f"  [{cat}] {len(rs)} file(s)")
+    return "\n".join(lines)
+
+
+class RawValidationError(ConversionError):
+    """A raw-content validation gate refused this file (not a tool failure).
+
+    ``category``: 'wrong-format' | 'wrong-date' | 'wrong-station'.
+    ``suggestion``: the operator action that actually fixes it. Mid-run these
+    log as ONE compact line; detail + suggestions surface in the end-of-batch
+    epilog (validation_epilog) so a sweep isn't cluttered.
+    """
+
+    def __init__(self, message, raw_file=None, *, category: str, suggestion: str = ""):
+        super().__init__(message, raw_file)
+        self.category = category
+        self.suggestion = suggestion
+
+
 @dataclass
 class ConversionResult:
     """Result of a single file conversion."""
@@ -139,6 +192,10 @@ class ConversionResult:
     duration_seconds: float = 0.0
     header_corrections_applied: int = 0
     warnings: List[str] = field(default_factory=list)
+    # Set when a raw-content validation gate refused the file (see
+    # RawValidationError) — batch runs aggregate these into an end epilog.
+    validation_category: Optional[str] = None
+    validation_suggestion: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -397,11 +454,15 @@ class RawToRinexConverter(ABC):
             and fmt not in self.accepted_raw_formats
         ):
             chain = self._FORMAT_CHAINS.get(fmt, "no known chain")
-            raise ConversionError(
+            raise RawValidationError(
                 f"raw content is '{fmt}', not a {self.converter_name} input — "
-                f"the extension lies. That format needs: {chain}. Run "
-                "'receivers archive-sort' if the file is also misfiled",
+                f"the extension lies. That format needs: {chain}",
                 raw_path,
+                category="wrong-format",
+                suggestion=(
+                    f"decode with {chain}; if also misfiled, run "
+                    f"'receivers archive-sort --file <rel-path>' first"
+                ),
             )
 
     # APPROX POSITION farther than this from the station's surveyed coordinates
@@ -440,11 +501,16 @@ class RawToRinexConverter(ABC):
             and first_obs != observation_date.date()
         ):
             rinex_file.unlink(missing_ok=True)
-            raise ConversionError(
+            raise RawValidationError(
                 f"converted output starts {first_obs} but this file claims "
-                f"{observation_date.date()} — misfiled raw; run "
-                "'receivers archive-sort'",
+                f"{observation_date.date()} — misfiled raw",
                 rinex_file,
+                category="wrong-date",
+                suggestion=(
+                    "the receiver's embedded time is authoritative — relocate "
+                    "with 'receivers archive-sort --file <rel-path>' (dry-run "
+                    "first), then convert at the TRUE date"
+                ),
             )
 
         if marker and self.station_id not in marker.upper():
@@ -464,12 +530,18 @@ class RawToRinexConverter(ABC):
         dist = sum((a - b) ** 2 for a, b in zip(xyz, expected)) ** 0.5
         if dist > gate_m:
             rinex_file.unlink(missing_ok=True)
-            raise ConversionError(
+            raise RawValidationError(
                 f"raw-derived position is {dist / 1000.0:.1f} km from "
                 f"{self.station_id}'s surveyed coordinates (gate {gate_m:.0f} m) "
-                "— this raw is NOT this station; check the file's location "
-                "in the archive",
+                "— this raw is NOT this station",
                 rinex_file,
+                category="wrong-station",
+                suggestion=(
+                    "identify the true station (decode + compare APPROX "
+                    "POSITION against stations.cfg) and move the file to that "
+                    "station's tree — archive-sort fixes dates, not stations; "
+                    "this one needs eyes"
+                ),
             )
         self.logger.debug(
             f"identity confirmed: position within {dist:.1f} m of {self.station_id}"
@@ -625,6 +697,18 @@ class RawToRinexConverter(ABC):
             # product is staged).
             raise
 
+        except RawValidationError as e:
+            # Gate refusal, not a tool failure: ONE compact line mid-run —
+            # the detail + suggested fix surfaces in the end-of-batch epilog
+            # (validation_epilog) so sweeps stay readable.
+            result.success = False
+            result.message = str(e)
+            result.validation_category = e.category
+            result.validation_suggestion = e.suggestion
+            self.logger.warning(
+                f"raw-validation refused {raw_path.name} ({e.category})"
+            )
+
         except ConversionError as e:
             result.success = False
             result.message = str(e)
@@ -672,6 +756,9 @@ class RawToRinexConverter(ABC):
                 batch_result.failed += 1
 
         batch_result.end_time = datetime.now()
+        epilog = validation_epilog(batch_result.results)
+        if epilog:
+            self.logger.warning(epilog)
         return batch_result
 
     def _has_supported_extension(self, file_path: Path) -> bool:

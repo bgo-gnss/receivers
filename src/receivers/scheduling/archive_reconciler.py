@@ -22,6 +22,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("receivers.scheduler.reconciler")
 
+# Raw-validation refusals collected during ONE sweep — summarized (with the
+# suggested operator actions) at sweep end instead of cluttering the per-file
+# stream. Reset at each sweep start; single-threaded within a sweep.
+_SWEEP_REFUSALS: list = []
+
 
 def _get_format_resolver():
     """Try to create a FormatResolver. Returns None if unavailable."""
@@ -88,6 +93,7 @@ def _run_archive_reconciler_job(
             f"Archive reconciler: scanning {len(convertible_stations)} stations, "
             f"{len(session_types)} sessions, {days_back} days back"
         )
+        _SWEEP_REFUSALS.clear()
 
         total_missing = 0
         total_converted = 0
@@ -123,6 +129,14 @@ def _run_archive_reconciler_job(
             f"{total_missing} missing RINEX, {total_converted} converted, "
             f"{total_errors} errors ({duration:.1f}s)"
         )
+        try:
+            from ..rinex.converter_base import validation_epilog
+
+            epilog = validation_epilog(_SWEEP_REFUSALS)
+            if epilog:
+                logger.warning(epilog)
+        except Exception:  # noqa: BLE001 - epilog must never fail the sweep
+            pass
 
     except Exception as e:
         logger.error(f"Archive reconciler failed: {type(e).__name__}: {e}")
@@ -574,9 +588,14 @@ def _convert_raw_to_rinex(
                     logger.warning(f"Could not track RINEX file: {e}")
             return True
         else:
-            logger.warning(
-                f"RINEX conversion failed for {raw_path.name}: {result.message}"
-            )
+            if getattr(result, "validation_category", None):
+                # Gate refusal: compact line already logged by the converter —
+                # collect for the sweep-end epilog, don't repeat the detail.
+                _SWEEP_REFUSALS.append(result)
+            else:
+                logger.warning(
+                    f"RINEX conversion failed for {raw_path.name}: {result.message}"
+                )
             return False
 
     except ImportError:

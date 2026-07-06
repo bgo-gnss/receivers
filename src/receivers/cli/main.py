@@ -4278,6 +4278,7 @@ def _rinex_convert_station_period(
     converted = 0
     failed = 0
     skipped = 0
+    _validation_refusals: list = []
     _log_extra = {"batch_quiet": True} if progress is not None else None
 
     try:
@@ -4478,6 +4479,17 @@ def _rinex_convert_station_period(
                     )
                 except Exception as e:
                     logger.debug(f"RINEX file tracking failed: {e}")
+            elif getattr(result, "validation_category", None):
+                # Raw-validation refusal: ONE compact line mid-run; the detail
+                # + suggested procedure prints in the end-of-batch epilog.
+                print(
+                    f"  🛡  {raw_file.name}: refused "
+                    f"({result.validation_category})"
+                )
+                _validation_refusals.append(result)
+                failed += 1
+                if progress is not None:
+                    progress.advance()
             else:
                 # Failures stay LOUD on console in every mode.
                 print(f"  ❌ {raw_file.name}: {result.message}")
@@ -4500,6 +4512,16 @@ def _rinex_convert_station_period(
 
             traceback.print_exc()
         failed += 1
+
+    # End-of-batch procedure for refused files (kept out of the mid-run
+    # stream): what was refused, why, and what to do about each category.
+    if _validation_refusals:
+        from ..rinex.converter_base import validation_epilog
+
+        epilog = validation_epilog(_validation_refusals)
+        if epilog:
+            print(f"\n🛡  {epilog}")
+            logger.warning(epilog)
 
     return converted, failed, skipped
 
