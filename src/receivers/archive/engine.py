@@ -29,6 +29,7 @@ from typing import Optional
 from ..utils.content_hash import CorruptArchiveFileError, content_sha256
 from .catalog import upsert_catalog_row
 from .config import SyncTarget
+from .format_guard import split_bad_z
 from .path_parse import parse_archive_path
 from .state import compute_floor, get_last_success, record_run
 
@@ -69,6 +70,7 @@ class SyncRunResult:
     delta_count: int = 0
     transferred: int = 0
     cataloged: int = 0
+    bad_format: int = 0  # .Z files refused by the format guard (wrong magic)
     ok: bool = False
     dry_run: bool = False
     message: str = ""
@@ -515,6 +517,21 @@ class ArchiveSync:
             transferred: list[str] = []
             if delta:
                 rel_paths = [os.path.relpath(p, self.target.source_root) for p in delta]
+                # Chokepoint format guard: never ship a .Z file whose bytes
+                # aren't LZW compress (the gzip-as-.Z regression class). Bad
+                # files are excluded and logged; the rest of the delta ships.
+                rel_paths, bad = split_bad_z(
+                    rel_paths, logger, root=self.target.source_root
+                )
+                if bad:
+                    result.bad_format += len(bad)
+                    result.errors.append(
+                        f"{category}: {len(bad)} .Z file(s) refused by format "
+                        "guard (wrong magic — fix with fix_gzip_z_to_lzw.sh)"
+                    )
+                if not rel_paths:
+                    per_cat.append(f"{category} 0/{len(delta)}")
+                    continue
                 rsync_ok, transferred, stderr = self._rsync(
                     rel_paths, _immutability_flag(category)
                 )

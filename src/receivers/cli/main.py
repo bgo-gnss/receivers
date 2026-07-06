@@ -5025,6 +5025,22 @@ def _push_reconverted(work_dir, args, logger) -> Dict[str, Any]:
         stats["note"] = "nothing staged"
         return stats
 
+    # Chokepoint format guard: never push a .Z file whose bytes aren't LZW
+    # compress (the gzip-as-.Z regression class). Refused files stay staged,
+    # so a re-run after fixing them (fix_gzip_z_to_lzw.sh) picks them up.
+    from ..archive.format_guard import split_bad_z
+
+    rel, bad_z = split_bad_z(rel, logger, root=str(work))
+    stats["staged"] = len(rel)
+    if bad_z:
+        print(
+            f"  ❌ format guard: {len(bad_z)} .Z file(s) with wrong magic "
+            "refused (gzip-as-.Z? fix with fix_gzip_z_to_lzw.sh) — see log"
+        )
+        stats["note"] = f"{len(bad_z)} file(s) refused by format guard"
+        if not rel:
+            return stats
+
     dry = getattr(args, "dry_run", False)
     full, name, destpath = _resolve_archive_target()
     if not full:

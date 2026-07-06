@@ -36,8 +36,7 @@ def _target(tmp_root, **over):
 class TestConfig:
     def test_load(self, tmp_path):
         cfg = tmp_path / "sync.yaml"
-        cfg.write_text(
-            """
+        cfg.write_text("""
 overlap_minutes: 7
 targets:
   - name: imo_archive
@@ -51,8 +50,7 @@ targets:
     file_categories: [raw, rinex]
     exclude_stations: [DYNA, HRNC, HAUR]
     cutover: "2026-06-22T00:00:00"
-"""
-        )
+""")
         targets = load_sync_config(cfg)
         assert len(targets) == 1
         t = targets[0]
@@ -66,8 +64,7 @@ targets:
 
     def test_legacy_singular_file_category(self, tmp_path):
         cfg = tmp_path / "sync.yaml"
-        cfg.write_text(
-            """
+        cfg.write_text("""
 targets:
   - name: imo_archive
     active: true
@@ -78,8 +75,7 @@ targets:
     sessions: [15s_24hr]
     file_category: raw
     cutover: "2026-06-22T00:00:00"
-"""
-        )
+""")
         t = load_sync_config(cfg)[0]
         assert t.file_categories == ("raw",)
 
@@ -149,7 +145,10 @@ class TestParseTransferred:
 def _make_file(root, rel, mtime: datetime):
     p = root / rel
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_bytes(b"data")
+    # .Z fixtures need the LZW magic or the format guard (correctly) refuses
+    # to sync them — .Z means real compress(1) output.
+    payload = b"\x1f\x9ddata" if rel.endswith(".Z") else b"data"
+    p.write_bytes(payload)
     ts = mtime.timestamp()
     os.utime(p, (ts, ts))
     return p
@@ -460,7 +459,11 @@ class TestEndToEndLocal:
             os.utime(f, (ts, ts))
 
         write(raw_rel, b"raw v1", CUTOVER + timedelta(days=1))
-        write(rnx_rel, b"rinex v1", CUTOVER + timedelta(days=1))
+        write(
+            rnx_rel,
+            b"\x1f\x9d\x90r\xd2\xb8)\x83\x07\x84\x9d\x18",
+            CUTOVER + timedelta(days=1),
+        )  # compress(1) of b"rinex v1"
 
         target = _target(
             src,
@@ -474,17 +477,25 @@ class TestEndToEndLocal:
         assert res.ok
         assert res.transferred == 2  # both tiers landed
         assert (dst / raw_rel).read_bytes() == b"raw v1"
-        assert (dst / rnx_rel).read_bytes() == b"rinex v1"
+        assert (
+            dst / rnx_rel
+        ).read_bytes() == b"\x1f\x9d\x90r\xd2\xb8)\x83\x07\x84\x9d\x18"
 
         # regenerate BOTH with newer content + newer mtime, re-sync.
         write(raw_rel, b"raw v2 MUST NOT WIN", CUTOVER + timedelta(days=2))
-        write(rnx_rel, b"rinex v2", CUTOVER + timedelta(days=2))
+        write(
+            rnx_rel,
+            b"\x1f\x9d\x90r\xd2\xb8)\x83\x07\x84\x1d\x19",
+            CUTOVER + timedelta(days=2),
+        )  # compress(1) of b"rinex v2"
         eng.run()
 
         # raw: --ignore-existing => archive keeps v1 (immutable record)
         assert (dst / raw_rel).read_bytes() == b"raw v1"
         # rinex: --update => archive now holds the newer v2 (regenerable)
-        assert (dst / rnx_rel).read_bytes() == b"rinex v2"
+        assert (
+            dst / rnx_rel
+        ).read_bytes() == b"\x1f\x9d\x90r\xd2\xb8)\x83\x07\x84\x1d\x19"
 
 
 class TestFreshness:
@@ -552,8 +563,7 @@ class TestSchedulerWiring:
         from receivers.archive.job import run_archive_sync_job
 
         cfg = tmp_path / "sync.yaml"
-        cfg.write_text(
-            """
+        cfg.write_text("""
 targets:
   - name: imo_archive
     active: false
@@ -563,8 +573,7 @@ targets:
     source_root: /mnt/data/gpsdata
     sessions: [15s_24hr]
     cutover: "2026-06-22T00:00:00"
-"""
-        )
+""")
         # all inactive -> returns before opening any DB connection
         run_archive_sync_job(config_path=str(cfg))
 
@@ -590,7 +599,8 @@ class TestPushExplicit:
         raw_rel = "2026/jun/AKUR/15s_24hr/raw/AKUR202606220000a.T02.gz"
         rnx_rel = "2026/jun/AKUR/15s_24hr/rinex/AKUR1730.26d.Z"
         raw_payload = b"raw sbf payload"
-        rnx_payload = b"hatanaka rinex payload"
+        rnx_plain = b"hatanaka rinex payload"
+        rnx_payload = b"\x1f\x9d\x90h\xc2\xd0\t\xe3&\xcc\x9a0 \xe4\xa4qS\x06\x0f\x088a\xf2\xb0y\x13\x86\x0c"  # compress(1) of rnx_plain
         for rel, data in ((raw_rel, raw_payload), (rnx_rel, rnx_payload)):
             f = src / rel
             f.parent.mkdir(parents=True, exist_ok=True)
@@ -621,7 +631,7 @@ class TestPushExplicit:
             )
             rows = dict(cur.fetchall())
         assert rows["raw"] == hashlib.sha256(raw_payload).hexdigest()
-        assert rows["rinex"] == hashlib.sha256(rnx_payload).hexdigest()
+        assert rows["rinex"] == hashlib.sha256(rnx_plain).hexdigest()
 
         # re-push is a clean no-op (raw --ignore-existing, rinex --update unchanged)
         pushed2, errors2, _ = eng.push_explicit(
