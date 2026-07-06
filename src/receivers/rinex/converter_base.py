@@ -737,9 +737,13 @@ class RawToRinexConverter(ABC):
 
         Returns:
             Path to compressed file
+
+        Raises:
+            ConversionError: ``.Z`` requested but compress(1) is not installed.
         """
         import gzip
         import shutil
+        import subprocess
 
         # Step 1: Apply Hatanaka compression if enabled
         if self.apply_hatanaka:
@@ -750,13 +754,43 @@ class RawToRinexConverter(ABC):
             # Already compressed
             return rinex_file
 
-        # Determine compression extension
         if self.compression_format == CompressionFormat.Z:
-            ext = ".Z"
-        else:
-            ext = ".gz"
+            # ".Z" is the IGS/GAMIT LZW convention and the historical IMO
+            # archive format — it MUST be real compress(1) output. Writing
+            # gzip bytes under a .Z name (as this method did until 2026-07)
+            # silently drifted the post-cutover archive from the legacy LZW
+            # files; consumers that use genuine ncompress uncompress choke on
+            # it. No silent gzip fallback here — fail loudly so a host
+            # without ncompress can't reintroduce the drift.
+            compressed_path = rinex_file.parent / (rinex_file.name + ".Z")
+            try:
+                # compress -f writes <name>.Z alongside and removes <name>.
+                subprocess.run(
+                    ["compress", "-f", str(rinex_file)],
+                    check=True,
+                    capture_output=True,
+                    timeout=120,
+                )
+            except FileNotFoundError as e:
+                raise ConversionError(
+                    "compress(1) not installed — required for .Z output "
+                    "(install ncompress, or set default_compression=gz)",
+                    rinex_file,
+                ) from e
+            except subprocess.CalledProcessError as e:
+                raise ConversionError(
+                    f"compress failed for {rinex_file.name}: "
+                    f"{e.stderr.decode(errors='replace').strip()[:200]}",
+                    rinex_file,
+                ) from e
+            if not compressed_path.exists():
+                raise ConversionError(
+                    f"compress produced no output for {rinex_file.name}",
+                    rinex_file,
+                )
+            return compressed_path
 
-        compressed_path = rinex_file.parent / (rinex_file.name + ext)
+        compressed_path = rinex_file.parent / (rinex_file.name + ".gz")
         with open(rinex_file, "rb") as f_in:
             with gzip.open(compressed_path, "wb") as f_out:
                 shutil.copyfileobj(f_in, f_out)
