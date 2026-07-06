@@ -20,7 +20,8 @@ from receivers.rinex.converter_base import (
 
 def _write_rinex(path: Path, *, first_obs=(2010, 4, 2), xyz=None, marker="RHOF"):
     xyz = xyz or (2456174.12, -701824.79, 5824755.54)  # RHOF-ish
-    tofo = "%6d%6d%6d%6d%6d%13.7f     GPS" % (*first_obs, 0, 0, 0.0)
+    y, mo, d = first_obs
+    tofo = f"{y:6d}{mo:6d}{d:6d}{0:6d}{0:6d}{0.0:13.7f}     GPS"
     lines = [
         "     2.11           OBSERVATION DATA    G (GPS)             RINEX VERSION / TYPE",
         f"{marker:<60}MARKER NAME",
@@ -46,9 +47,11 @@ class _FakeConverter(RawToRinexConverter):
         self._output = output
         self._rinex_cfg = {}
 
+        outer = self
+
         class _Cfg:
-            def get_rinex_config(_self):
-                return self._rinex_cfg
+            def get_rinex_config(self):
+                return outer._rinex_cfg
 
         self.config = _Cfg()
 
