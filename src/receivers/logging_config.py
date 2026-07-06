@@ -66,15 +66,18 @@ class StationLogDispatcher(logging.Handler):
     (e.g. ``receivers.trimble.http_download_client.BJTV`` → ``BJTV``) the record
     is written to ``{stations_dir}/{STATION}.log``.
 
-    Each file rotates at UTC midnight, keeping 90 days (≈3 months) of history.
-    The handler operates at INFO level so per-station files capture meaningful
-    events without the high-volume DEBUG traffic from health polling.
+    Each file rotates at UTC midnight, keeping ``retention_days`` of history
+    (default 30 — at 173 stations the per-station tree is a real disk consumer;
+    override via ``database.cfg [logging] station_log_days``). The handler
+    operates at INFO level so per-station files capture meaningful events
+    without the high-volume DEBUG traffic from health polling.
     """
 
-    def __init__(self, stations_dir: Path) -> None:
+    def __init__(self, stations_dir: Path, retention_days: int = 30) -> None:
         super().__init__(level=logging.INFO)
         self._stations_dir = stations_dir
         self._stations_dir.mkdir(parents=True, exist_ok=True)
+        self._retention_days = max(1, int(retention_days))
         self._handlers: dict[str, logging.handlers.TimedRotatingFileHandler] = {}
         self._create_lock = threading.Lock()
 
@@ -91,7 +94,7 @@ class StationLogDispatcher(logging.Handler):
                 h = logging.handlers.TimedRotatingFileHandler(
                     log_file,
                     when="midnight",
-                    backupCount=90,
+                    backupCount=self._retention_days,
                     encoding="utf-8",
                     utc=True,
                 )
@@ -121,6 +124,21 @@ class StationLogDispatcher(logging.Handler):
                 h.close()
             self._handlers.clear()
         super().close()
+
+
+def _station_log_days(default: int = 30) -> int:
+    """Per-station log retention from database.cfg [logging] station_log_days."""
+    config_dir = os.getenv("GPS_CONFIG_PATH")
+    base = Path(config_dir) if config_dir else Path.home() / ".config" / "gpsconfig"
+    cfg_path = base / "database.cfg"
+    if not cfg_path.exists():
+        return default
+    parser = configparser.ConfigParser()
+    parser.read(cfg_path)
+    try:
+        return max(1, parser.getint("logging", "station_log_days"))
+    except (configparser.Error, ValueError):
+        return default
 
 
 def _load_level_overrides() -> dict[str, int]:
@@ -225,8 +243,12 @@ def _configure(level: int, json_output: bool, log_dir: Path) -> None:
     file_handler.setFormatter(JSONFormatter())
     root.addHandler(file_handler)
 
-    # ── Per-station dispatcher (INFO, daily rotation, 90-day retention) ──
-    station_dispatcher = StationLogDispatcher(log_dir / "stations")
+    # ── Per-station dispatcher (INFO, daily rotation) ─────────────────
+    # Retention default 30 days; override with database.cfg [logging]
+    # station_log_days (173 stations × long retention is a real disk cost).
+    station_dispatcher = StationLogDispatcher(
+        log_dir / "stations", retention_days=_station_log_days()
+    )
     station_dispatcher.setFormatter(JSONFormatter())
     root.addHandler(station_dispatcher)
 
