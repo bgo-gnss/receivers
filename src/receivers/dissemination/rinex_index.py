@@ -25,6 +25,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from . import epos_db
 from .convert import _is_hatanaka, _strip_compression, resolve_tool
 from .epos_db import get_or_create, insert_row, update_row
 
@@ -105,7 +106,7 @@ def index_rinex_file(
     file_path = Path(file_path)
     marker = station.upper()
 
-    with conn.cursor() as cur:
+    with epos_db.tx_cursor(conn) as cur:
         cur.execute("SELECT id FROM station WHERE upper(marker) = %s", (marker,))
         row = cur.fetchone()
         if row is None:
@@ -191,7 +192,7 @@ def deindex_rinex_file(conn, name: str) -> list[int]:
     differs from ours, so matching on name (not name+path) is both correct and
     deliberate here.
     """
-    with conn.cursor() as cur:
+    with epos_db.tx_cursor(conn) as cur:
         cur.execute("DELETE FROM rinex_file WHERE name = %s RETURNING id", (name,))
         ids = [int(r[0]) for r in cur.fetchall()]
     conn.commit()
@@ -247,10 +248,7 @@ def supersede_legacy(
     except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
         logger.warning("supersede portal delete failed for %s: %s", rel, exc)
     if not dry_run:
-        try:
-            out["deindexed"] = deindex_rinex_file(conn, superseded_name)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("supersede de-index failed for %s: %s", superseded_name, exc)
+        out["deindexed"] = _deindex_recovering(conn, superseded_name)
     return out
 
 
@@ -296,12 +294,33 @@ def supersede_legacy_batch(
         logger.warning("supersede batch portal delete failed: %s", exc)
         return out
     if not dry_run:
-        removed_rels = set(out["removed"])
+        # De-index names removed just now AND names already absent from the
+        # portal: a prior partially-failed flush may have removed the file but
+        # left its DB row, so gating on this call's removals alone would leave
+        # the stale row forever. De-indexing a never-indexed name is a no-op.
+        clean_rels = set(out["removed"]) | set(rm.missing)
         for name, rel in rel_by_name.items():
-            if rel not in removed_rels:
+            if rel not in clean_rels:
                 continue
-            try:
-                out["deindexed"].extend(deindex_rinex_file(conn, name))
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("supersede de-index failed for %s: %s", name, exc)
+            out["deindexed"].extend(_deindex_recovering(conn, name))
     return out
+
+
+def _deindex_recovering(conn, name: str) -> list[int]:
+    """De-index with recover + one retry, never raising.
+
+    A statement error aborts the psycopg2 transaction and would poison every
+    later de-index on this connection ('current transaction is aborted') —
+    recover (rollback + search_path re-assert) and retry once, mirroring the
+    index path in job._index_pushed.
+    """
+    for attempt in (1, 2):
+        try:
+            return deindex_rinex_file(conn, name)
+        except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
+            recovered = epos_db.recover(conn)
+            if attempt == 2 or not recovered:
+                logger.warning("supersede de-index failed for %s: %s", name, exc)
+                return []
+            logger.info("supersede de-index retry for %s after: %s", name, exc)
+    return []

@@ -20,6 +20,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from . import epos_db
 from .epos_db import get_or_create, insert_row, update_row
 from .tos_access import (
     REQUIRED_ATTRIBUTES,
@@ -184,7 +185,7 @@ def upsert_station(conn, station: dict[str, Any], client: Any) -> tuple[str, int
             if monument_vals is None or child.get("time_to") is None:
                 monument_vals = _monument_values(ch)
 
-    with conn.cursor() as cur:
+    with epos_db.tx_cursor(conn) as cur:
         cur.execute(
             "SELECT id, id_location, id_geological FROM station "
             "WHERE upper(marker) = %s",
