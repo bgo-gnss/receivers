@@ -116,6 +116,28 @@ def recover(conn: Any) -> bool:
 
 
 @contextmanager
+def tx_cursor(conn: Any) -> Generator[Any, None, None]:
+    """Cursor whose transaction carries its own ``SET LOCAL search_path``.
+
+    The prod EPOS DB sits behind pgbouncer in transaction pooling
+    (psql.vedur.is:6432): each transaction may run on a different backend
+    server connection, so the session-level ``SET search_path`` from
+    :func:`connect` only sticks to whichever backend handled that one
+    transaction — any later transaction can land on a fresh backend and fail
+    with ``relation ... does not exist``. ``SET LOCAL`` is transaction-scoped
+    and therefore travels with the statements it protects.
+
+    Only applies when the connection was opened by :func:`connect` (schema
+    known); foreign/test connections get a plain cursor.
+    """
+    schema = _CONN_SCHEMAS.get(conn)
+    with conn.cursor() as cur:
+        if schema:
+            cur.execute(f'SET LOCAL search_path TO "{schema}"')
+        yield cur
+
+
+@contextmanager
 def managed(overrides: Optional[dict[str, Any]] = None) -> Generator[Any, None, None]:
     """Context manager: commit on success, rollback on error, always close."""
     conn = connect(overrides)

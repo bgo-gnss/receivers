@@ -248,7 +248,9 @@ def _render_sitelog(
     return content, Path(out_dir) / filename
 
 
-def _write_sitelog(content: str, out_path: Path, sid: str, loglevel: int) -> Optional[Path]:
+def _write_sitelog(
+    content: str, out_path: Path, sid: str, loglevel: int
+) -> Optional[Path]:
     from tostools.core.site_log import export_site_log_to_file
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -369,9 +371,7 @@ def generate_site_log_if_changed(
         except OSError:
             existing = ""
         if _normalize_sitelog(content) == _normalize_sitelog(existing):
-            logger.info(
-                "site log unchanged for %s (vs %s) — no-op", sid, latest.name
-            )
+            logger.info("site log unchanged for %s (vs %s) — no-op", sid, latest.name)
             return SitelogGateResult(sid, changed=False, path=latest, previous=latest)
 
     written = _write_sitelog(content, out_path, sid, loglevel)
