@@ -22,6 +22,7 @@ from __future__ import annotations
 import configparser
 import logging
 import os
+import weakref
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Generator, Optional
@@ -64,6 +65,9 @@ def get_epos_config(overrides: Optional[dict[str, Any]] = None) -> dict[str, Any
     return resolved
 
 
+_CONN_SCHEMAS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
 def connect(overrides: Optional[dict[str, Any]] = None) -> Any:
     """Open a psycopg2 connection to the EPOS DB with ``search_path`` set.
 
@@ -82,7 +86,33 @@ def connect(overrides: Optional[dict[str, Any]] = None) -> Any:
         # Quote the schema (the prod name 'gnss-europe-v0-2-9' has hyphens).
         cur.execute(f'SET search_path TO "{schema}"')
     conn.commit()
+    # Remember the schema so recover() can re-assert the search_path after a
+    # transaction abort (a failed statement poisons the psycopg2 transaction;
+    # everything after it fails with 'current transaction is aborted' until a
+    # rollback — and the rollback must not leave the session without its path).
+    # psycopg2 connections are C objects (no attribute assignment) — track in
+    # a weak-keyed side table that dies with the connection.
+    _CONN_SCHEMAS[conn] = schema
     return conn
+
+
+def recover(conn: Any) -> bool:
+    """Return a poisoned connection to a usable state (rollback + search_path).
+
+    Call after any statement error on a long-lived EPOS connection (sweeps
+    reuse one connection across thousands of index calls — one duplicate-key
+    error must not kill indexing for the rest of the run). Best-effort;
+    returns False when the connection is beyond recovery (caller reconnects).
+    """
+    try:
+        conn.rollback()
+        schema = _CONN_SCHEMAS.get(conn) or DEFAULT_SCHEMA
+        with conn.cursor() as cur:
+            cur.execute(f'SET search_path TO "{schema}"')
+        conn.commit()
+        return True
+    except Exception:  # noqa: BLE001 - dead connection
+        return False
 
 
 @contextmanager
