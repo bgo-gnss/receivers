@@ -1635,3 +1635,72 @@ def create_archive_prune_parser(subparsers) -> argparse.ArgumentParser:
     )
     parser.set_defaults(func=cmd_archive_prune)
     return parser
+
+
+def cmd_archive_catalog_backfill(args: argparse.Namespace) -> int:
+    """Seed local_raw/local_rinex catalog rows from file_tracking (unified index M1)."""
+    import json as _json
+
+    from ..archive.catalog import backfill_local_catalog
+    from ..config.receivers_config import ReceiversConfig
+
+    conn = _get_conn(args.host, required=True)
+    root = args.root or ReceiversConfig().get_data_prepath()
+    stats = backfill_local_catalog(
+        conn,
+        root,
+        batch_size=args.batch_size,
+        verify_exists=not args.no_verify_exists,
+        dry_run=args.dry_run,
+    )
+    conn.close()
+    if args.json:
+        print(_json.dumps(stats))
+    else:
+        verb = "would catalog" if args.dry_run else "cataloged"
+        print(
+            f"local catalog backfill: scanned={stats['scanned']} "
+            f"{verb}={stats['cataloged']} "
+            f"skipped_missing={stats['skipped_missing']} "
+            f"skipped_unmapped={stats['skipped_unmapped']}"
+        )
+    return 0
+
+
+def create_archive_catalog_backfill_parser(subparsers) -> argparse.ArgumentParser:
+    parser = subparsers.add_parser(
+        "catalog-backfill-local",
+        help="Seed local_raw/local_rinex archive_catalog rows from file_tracking",
+        description=(
+            "One-time (idempotent) backfill of the unified file index: for every "
+            "locally-held file already in file_tracking (archived/downloaded), "
+            "upsert a local_raw/local_rinex archive_catalog row. Carries any "
+            "file_tracking content_sha256 already computed (no re-hash) and skips "
+            "rows whose on-disk file is absent (unless --no-verify-exists). Run "
+            "against localhost first; the throttled rek-d01 run is a later phase."
+        ),
+    )
+    parser.add_argument(
+        "--host", help="gps_health host override (default: database.cfg host)"
+    )
+    parser.add_argument(
+        "--root", help="Data root (default: receivers.cfg data_prepath)"
+    )
+    parser.add_argument(
+        "--batch-size", type=int, default=1000, help="Rows per page (default: 1000)"
+    )
+    parser.add_argument(
+        "--no-verify-exists",
+        action="store_true",
+        help="Do not stat each file — trust file_tracking (faster, less accurate)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Count what would be cataloged without writing",
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON results"
+    )
+    parser.set_defaults(func=cmd_archive_catalog_backfill)
+    return parser

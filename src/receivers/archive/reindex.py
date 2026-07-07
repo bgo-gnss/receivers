@@ -157,6 +157,7 @@ def reindex_files(
                 session_type=parsed.session_type,
                 file_category=parsed.file_category,
                 file_date=parsed.file_date,
+                file_hour=parsed.file_hour,
                 archive_path=archive_path,
                 filename=os.path.basename(f),
                 file_size=os.path.getsize(f),

@@ -151,3 +151,22 @@ def content_sha256(path: FileRef, *, chunk_size: int = _CHUNK) -> str:
         ) from exc
 
     return digest.hexdigest()
+
+
+def compressed_sha256(path: FileRef, *, chunk_size: int = _CHUNK) -> str:
+    """Return the SHA-256 hex digest of ``path``'s ON-DISK (compressed) bytes.
+
+    The counterpart to :func:`content_sha256`: no decompression, just the raw
+    bytes as stored. This is the hash that corresponds to the EPOS
+    ``md5checksum`` (same on-disk bytes, different algorithm) — the *only* valid
+    sha256↔md5 mapping in the unified index (``md5uncompressed`` folds both gzip
+    and CRX2RNX and has no existing sha256 twin). Unlike ``content_sha256`` this
+    can never raise a corruption error — it hashes exactly what is on disk, so a
+    truncated ``.Z`` still produces a well-defined (and comparison-detectable)
+    hash. Streams in ``chunk_size`` blocks.
+    """
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()

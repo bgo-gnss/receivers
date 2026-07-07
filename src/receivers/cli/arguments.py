@@ -1513,6 +1513,7 @@ For subcommand help: receivers <command> --help
     # archive-sync (batch delta push to the long-term archive gateway)
     from .archive_sync import (
         create_archive_audit_parser,
+        create_archive_catalog_backfill_parser,
         create_archive_prune_parser,
         create_archive_reindex_parser,
         create_archive_rm_parser,
@@ -1535,6 +1536,8 @@ For subcommand help: receivers <command> --help
     create_archive_sort_parser(subparsers)
     # archive-prune (local ring-buffer: catalog-gated age-out with disk guardrails)
     create_archive_prune_parser(subparsers)
+    # catalog-backfill-local (seed local_raw/local_rinex catalog from file_tracking)
+    create_archive_catalog_backfill_parser(subparsers)
 
     # epos-disseminate (RINEX3 long-name dissemination to the EPOS files server)
     from .epos_disseminate import create_epos_disseminate_parser

@@ -33,6 +33,69 @@ class FileTracker:
         """
         self.connection_string = connection_string
         self._conn = None
+        self._data_prepath_cache: Optional[str] = None
+
+    def _data_prepath(self) -> Optional[str]:
+        """Local ring root (data_prepath), resolved once and cached.
+
+        Used to reconstruct the on-disk path for the durable local catalog
+        write. Returns None if config is unavailable (the catalog hook then
+        no-ops — best-effort).
+        """
+        if self._data_prepath_cache is None:
+            try:
+                from ..config.receivers_config import get_receivers_config
+
+                self._data_prepath_cache = get_receivers_config().get_data_prepath()
+            except Exception as e:  # noqa: BLE001 — best-effort
+                logger.debug(f"Cannot resolve data_prepath for catalog hook: {e}")
+                return None
+        return self._data_prepath_cache
+
+    def _catalog_local_archived(
+        self,
+        station_id: str,
+        session_type: str,
+        file_date: date,
+        file_hour: Optional[int],
+        filename: Optional[str],
+        file_size: Optional[int],
+    ) -> None:
+        """Durable local catalog write for a just-archived file (unified index M1).
+
+        Runs AFTER the file_tracking write is committed, in its own transaction,
+        fully isolated: a catalog failure rolls back only itself and never
+        touches the operational record. Hashes are deferred (lazy-filled by the
+        integrity checker), so this adds no decompression to the archive path.
+        """
+        if not filename:
+            return
+        data_prepath = self._data_prepath()
+        if not data_prepath or not self._conn:
+            return
+        try:
+            from ..archive.catalog import catalog_local_file
+
+            ok = catalog_local_file(
+                self._conn,
+                ft_session_type=session_type,
+                station=station_id,
+                file_date=file_date,
+                file_hour=file_hour,
+                filename=filename,
+                file_size=file_size,
+                data_prepath=data_prepath,
+            )
+            if ok:
+                self._conn.commit()
+            else:
+                self._conn.rollback()
+        except Exception as e:  # noqa: BLE001 — best-effort; never break archiving
+            logger.debug(f"local catalog hook failed for {station_id}/{filename}: {e}")
+            try:
+                self._conn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
 
     def connect(self, database: str = "gps_health") -> bool:
         """Connect to PostgreSQL database.
@@ -298,6 +361,9 @@ class FileTracker:
             self._conn.commit()
             logger.debug(
                 f"Marked file as archived: {station_id}/{session_type}/{file_date}"
+            )
+            self._catalog_local_archived(
+                station_id, session_type, file_date, file_hour, filename, file_size
             )
             return True
         except Exception as e:
@@ -1024,14 +1090,12 @@ class FormatResolver:
     def _load_formats(self) -> None:
         """Load all archive_format rows into memory."""
         with self._conn.cursor() as cur:
-            cur.execute(
-                """SELECT format_id, session_type, file_category, receiver_type,
+            cur.execute("""SELECT format_id, session_type, file_category, receiver_type,
                           frequency, rinex_version, naming_convention, hatanaka,
                           compression, file_extension, dir_template,
                           filename_template, description
                    FROM archive_format
-                   ORDER BY format_id"""
-            )
+                   ORDER BY format_id""")
             self._formats = {}
             for row in cur.fetchall():
                 fmt = ArchiveFormat(
@@ -1056,13 +1120,11 @@ class FormatResolver:
     def _load_locations(self) -> None:
         """Load all storage_location rows into memory."""
         with self._conn.cursor() as cur:
-            cur.execute(
-                """SELECT location_id, name, base_path, location_type,
+            cur.execute("""SELECT location_id, name, base_path, location_type,
                           is_primary, enabled
                    FROM storage_location
                    WHERE enabled = true
-                   ORDER BY location_id"""
-            )
+                   ORDER BY location_id""")
             self._locations = {}
             for row in cur.fetchall():
                 loc = StorageLocation(

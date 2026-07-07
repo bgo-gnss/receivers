@@ -89,6 +89,7 @@ class PruneStats:
     kept_uncataloged: int = 0
     unparseable: int = 0
     capped: bool = False
+    catalog_retracted: int = 0  # local_* archive_catalog rows removed on prune
     per_session: dict = field(default_factory=dict)  # session -> deleted count
 
 
@@ -251,6 +252,16 @@ def run_prune(
                     if cfg.require_catalog and archived is None:
                         stats.kept_uncataloged += sum(1 for _ in cat_dir.iterdir())
                         continue
+                    # Rows to retract from the LOCAL catalog for files pruned here.
+                    # NB: the deletion gate above reads the ARCHIVE location
+                    # (archive_location) — proof the permanent copy exists. This
+                    # retraction targets the LOCAL ring row (local_raw/local_rinex)
+                    # for the file that is going away — a separate location, never
+                    # the gate's (else the gate would become circular).
+                    retract_location = (
+                        "local_rinex" if category == "rinex" else "local_raw"
+                    )
+                    retract_rels: list[str] = []
                     for f in sorted(cat_dir.iterdir()):
                         if not f.is_file():
                             continue
@@ -287,9 +298,35 @@ def run_prune(
                                 days,
                                 stats.mode,
                             )
+                            # file first, then catalog row (remove.py contract):
+                            # a missing-file flag is a louder, recoverable failure
+                            # than a silently-uncataloged file.
+                            try:
+                                retract_rels.append(str(f.relative_to(root)))
+                            except ValueError:
+                                pass  # not under root — leave the row, log nothing
                         stats.deleted += 1
                         deleted_session += 1
                         stats.freed_bytes += size
+                    # Retract the local-ring catalog rows for the files just
+                    # unlinked, so "present@local" stops over-reporting a pruned
+                    # file (else missing_at_location under-fetches / missing_rinex
+                    # re-rinexes a gone file). Best-effort: a retraction failure
+                    # never resurrects the file, so it must not abort the prune.
+                    if not dry_run and conn is not None and retract_rels:
+                        from .remove import remove_catalog_rows
+
+                        try:
+                            stats.catalog_retracted += remove_catalog_rows(
+                                conn, retract_location, retract_rels
+                            )
+                        except Exception as exc:  # noqa: BLE001 - never abort prune
+                            logger.error(
+                                "catalog retraction failed for %s (%d rows): %s",
+                                cat_dir,
+                                len(retract_rels),
+                                exc,
+                            )
                     if not dry_run:
                         _rmdir_if_empty(cat_dir)
                 if not dry_run:
@@ -311,13 +348,15 @@ def run_prune(
     stats.free_gb_after = disk_free_gb(root)[0] if root.is_dir() else 0.0
     logger.info(
         "local-prune %s: examined=%d deleted=%d freed=%.1f GB "
-        "kept_uncataloged=%d unparseable=%d mode=%s per_session=%s",
+        "kept_uncataloged=%d unparseable=%d catalog_retracted=%d mode=%s "
+        "per_session=%s",
         "[DRY-RUN]" if dry_run else "done",
         stats.examined,
         stats.deleted,
         stats.freed_bytes / 1e9,
         stats.kept_uncataloged,
         stats.unparseable,
+        stats.catalog_retracted,
         stats.mode,
         stats.per_session,
     )

@@ -600,10 +600,13 @@ class ReceiversConfig:
                         else False
                     )
 
-                    if location_type not in ("local", "nfs", "server"):
+                    # location_type is now a coarse legacy hint (the `protocol`
+                    # column carries real transport semantics after mig 054), so
+                    # accept any non-empty value rather than dropping registry
+                    # rows the old CHECK forbade ('logical', 'remote', …).
+                    if not location_type:
                         self.logger.warning(
-                            f"Invalid location_type '{location_type}' for {location_id}, "
-                            f"must be local/nfs/server"
+                            f"Empty location_type for {location_id} — skipping"
                         )
                         continue
 
@@ -641,29 +644,173 @@ class ReceiversConfig:
         return locations
 
 
-def seed_storage_locations(connection_string: Optional[str] = None) -> int:
-    """Seed storage_location table from receivers.cfg on first run.
+def well_known_registry_locations(config: "ReceiversConfig") -> list[Dict[str, Any]]:
+    """The unified-file-index registry rows (mig 054 / plan §3.1).
 
-    Reads storage locations from ReceiversConfig and inserts any missing
-    entries into the storage_location table. Existing entries are not
-    modified (base_path may differ between environments).
+    One row per file server the receivers stack touches, beyond whatever the cfg
+    ``[storage_locations]`` section defines: the local ring split into raw/rinex,
+    the permanent IMO archive, the EPOS portal, and the receiver's own internal
+    buffer (a logical upstream). ``base_path`` is NOT NULL, so remote/logical
+    locations whose path is not a local mount carry a readable descriptor.
+    Host/root_path are left NULL where unknown — enriched later (M4 rollout);
+    the differential (M2) only needs the row to exist with its ``is_permanent``
+    flag correct.
+    """
+    try:
+        data_prepath = config.get_data_prepath()
+    except Exception:  # noqa: BLE001 — best-effort; the ring rows still seed
+        data_prepath = "(local ring)"
+
+    # (location_id, name, base_path, location_type, protocol, host, root_path,
+    #  is_primary, is_permanent)
+    return [
+        {
+            "location_id": "local_raw",
+            "name": "Local ring — raw",
+            "base_path": data_prepath,
+            "location_type": "local",
+            "protocol": "local",
+            "host": None,
+            "root_path": data_prepath,
+            "is_primary": False,
+            "is_permanent": False,
+        },
+        {
+            "location_id": "local_rinex",
+            "name": "Local ring — rinex",
+            "base_path": data_prepath,
+            "location_type": "local",
+            "protocol": "local",
+            "host": None,
+            "root_path": data_prepath,
+            "is_primary": False,
+            "is_permanent": False,
+        },
+        {
+            "location_id": "imo_archive",
+            "name": "IMO long-term archive (ananas via rawdata)",
+            "base_path": "(imo long-term archive)",
+            "location_type": "nfs",
+            "protocol": "nfs-ro",
+            "host": None,
+            "root_path": None,
+            "is_primary": False,
+            "is_permanent": True,
+        },
+        {
+            "location_id": "epos_portal",
+            "name": "EPOS portal (data.epos-iceland.is)",
+            "base_path": "(epos portal)",
+            "location_type": "server",
+            "protocol": "rsync",
+            "host": None,
+            "root_path": None,
+            "is_primary": False,
+            "is_permanent": False,
+        },
+        {
+            "location_id": "receiver",
+            "name": "Receiver internal buffer (logical upstream)",
+            "base_path": "(receiver internal buffer)",
+            "location_type": "logical",
+            "protocol": "logical",
+            "host": None,
+            "root_path": None,
+            "is_primary": False,
+            "is_permanent": False,
+        },
+    ]
+
+
+def _seed_storage_retention(conn, config_logger: logging.Logger) -> int:
+    """Project scheduler.yaml ``[local_prune]`` retention into storage_retention.
+
+    The yaml is the SINGLE source of truth for ring retention (see prune.py); this
+    table is a query-friendly derived copy the differential (M2) reads instead of
+    re-parsing yaml. Both local ring locations (raw + rinex) share the per-session
+    ring floor. Idempotent (DO UPDATE) so each seed refreshes from the yaml.
+    Returns the number of (location, session) rows written.
+    """
+    try:
+        from ..scheduling.config_loader import load_scheduler_config
+
+        prune = (load_scheduler_config() or {}).get("local_prune", {}) or {}
+    except Exception as e:  # noqa: BLE001 — retention is optional at seed time
+        config_logger.debug(f"No [local_prune] retention to seed: {e}")
+        return 0
+
+    retention = dict(prune.get("retention_days", {}) or {})
+    emergency = dict(prune.get("emergency_retention_days", {}) or {})
+    if not retention:
+        return 0
+
+    written = 0
+    with conn.cursor() as cur:
+        for session, days in retention.items():
+            try:
+                days_i = int(days)
+            except (TypeError, ValueError):
+                continue
+            emerg = emergency.get(session)
+            emerg_i = int(emerg) if emerg is not None else None
+            for loc in ("local_raw", "local_rinex"):
+                cur.execute(
+                    """INSERT INTO storage_retention
+                           (location_id, session_type, retention_days,
+                            emergency_retention_days, updated_at)
+                       VALUES (%s, %s, %s, %s, now())
+                       ON CONFLICT (location_id, session_type) DO UPDATE SET
+                           retention_days = EXCLUDED.retention_days,
+                           emergency_retention_days = EXCLUDED.emergency_retention_days,
+                           updated_at = now()""",
+                    (loc, session, days_i, emerg_i),
+                )
+                written += 1
+    return written
+
+
+def seed_storage_locations(connection_string: Optional[str] = None) -> int:
+    """Seed the storage_location registry + storage_retention (mig 054).
+
+    Two sources merge into the registry:
+      1. the cfg ``[storage_locations]`` section (environment-specific base paths);
+      2. the well-known unified-file-index locations
+         (:func:`well_known_registry_locations`).
+    Both upsert with ``DO UPDATE`` so the enrichment columns (protocol/host/
+    root_path/is_permanent) added in mig 054 are backfilled onto rows a prior
+    ``DO NOTHING`` seed left thin. Then storage_retention is projected from
+    scheduler.yaml ``[local_prune]``.
 
     Args:
         connection_string: PostgreSQL connection string. If None, uses env vars.
 
     Returns:
-        Number of locations inserted (0 if all already exist)
+        Number of storage_location rows inserted (new rows only; updates and
+        retention rows are logged, not counted).
     """
     config_logger = logging.getLogger(__name__)
 
     try:
         config = ReceiversConfig()
-        locations = config.get_storage_locations()
+        cfg_locations = config.get_storage_locations()
     except Exception as e:
         config_logger.warning(f"Cannot load storage locations from config: {e}")
         return 0
 
-    if not locations:
+    # Merge cfg locations with the well-known registry. cfg entries lack the mig
+    # 054 columns → default them; well-known entries carry them explicitly. A
+    # cfg entry for the same location_id wins on base_path (env-specific).
+    merged: Dict[str, Dict[str, Any]] = {}
+    for loc in well_known_registry_locations(config):
+        merged[loc["location_id"]] = loc
+    for loc in cfg_locations:
+        loc.setdefault("protocol", loc.get("location_type"))
+        loc.setdefault("host", None)
+        loc.setdefault("root_path", loc.get("base_path"))
+        loc.setdefault("is_permanent", False)
+        merged[loc["location_id"]] = {**merged.get(loc["location_id"], {}), **loc}
+
+    if not merged:
         return 0
 
     try:
@@ -682,27 +829,45 @@ def seed_storage_locations(connection_string: Optional[str] = None) -> int:
     inserted = 0
     try:
         with conn.cursor() as cur:
-            for loc in locations:
+            for loc in merged.values():
                 cur.execute(
                     """INSERT INTO storage_location
-                        (location_id, name, base_path, location_type, is_primary, enabled)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (location_id) DO NOTHING""",
+                        (location_id, name, base_path, location_type, protocol,
+                         host, root_path, is_primary, is_permanent, enabled)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (location_id) DO UPDATE SET
+                        name         = EXCLUDED.name,
+                        location_type = EXCLUDED.location_type,
+                        protocol     = COALESCE(EXCLUDED.protocol, storage_location.protocol),
+                        host         = COALESCE(EXCLUDED.host, storage_location.host),
+                        root_path    = COALESCE(EXCLUDED.root_path, storage_location.root_path),
+                        is_permanent = EXCLUDED.is_permanent
+                    RETURNING (xmax = 0) AS is_insert""",
                     (
                         loc["location_id"],
                         loc["name"],
                         loc["base_path"],
                         loc["location_type"],
-                        loc["is_primary"],
-                        loc["enabled"],
+                        loc.get("protocol"),
+                        loc.get("host"),
+                        loc.get("root_path"),
+                        loc.get("is_primary", False),
+                        loc.get("is_permanent", False),
+                        loc.get("enabled", True),
                     ),
                 )
-                if cur.rowcount > 0:
+                row = cur.fetchone()
+                if row and row[0]:
                     inserted += 1
 
+        retention_rows = _seed_storage_retention(conn, config_logger)
         conn.commit()
         if inserted:
             config_logger.info(f"Seeded {inserted} storage locations to database")
+        if retention_rows:
+            config_logger.info(
+                f"Seeded {retention_rows} storage_retention rows from [local_prune]"
+            )
 
     except Exception as e:
         config_logger.warning(f"Error seeding storage locations: {e}")
