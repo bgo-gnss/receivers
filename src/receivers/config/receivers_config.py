@@ -562,6 +562,22 @@ class ReceiversConfig:
         except (TypeError, ValueError):
             return 10.0
 
+    def get_use_terminal_absence(self) -> bool:
+        """Whether ``is_file_missing`` honours a TERMINAL file_absence as a skip.
+
+        Default FALSE: terminal absence stays advisory (recorded, not skipped)
+        until the served-gate (mig 061) is validated in production — flipping it
+        prematurely risks skipping a whole station on an all-files-404 config
+        error. Set ``[file_index] use_terminal_absence = true`` in receivers.cfg to
+        activate, once the served-gate is trusted; the scheduler then stops
+        re-fetching genuinely-gone files.
+        """
+        try:
+            value = self.config.get("file_index", "use_terminal_absence")
+            return value.strip().lower() in ("true", "yes", "on", "1")
+        except (configparser.NoSectionError, configparser.NoOptionError):
+            return False
+
     def get_storage_locations(self) -> list[Dict[str, Any]]:
         """Get storage location definitions from config.
 

@@ -34,6 +34,25 @@ class FileTracker:
         self.connection_string = connection_string
         self._conn = None
         self._data_prepath_cache: Optional[str] = None
+        self._use_terminal_cache: Optional[bool] = None
+
+    def _use_terminal_absence(self) -> bool:
+        """Whether to honour terminal file_absence as a skip (config, cached).
+
+        Default False (advisory) until the served-gate is trusted — see
+        ReceiversConfig.get_use_terminal_absence. Resolved once; a config error
+        degrades to the safe default.
+        """
+        if self._use_terminal_cache is None:
+            try:
+                from ..config.receivers_config import get_receivers_config
+
+                self._use_terminal_cache = (
+                    get_receivers_config().get_use_terminal_absence()
+                )
+            except Exception:  # noqa: BLE001 — safe default
+                self._use_terminal_cache = False
+        return self._use_terminal_cache
 
     def _data_prepath(self) -> Optional[str]:
         """Local ring root (data_prepath), resolved once and cached.
@@ -148,8 +167,14 @@ class FileTracker:
         try:
             with self._conn.cursor() as cur:
                 cur.execute(
-                    "SELECT is_file_missing(%s, %s, %s, %s::smallint)",
-                    (station_id, session_type, file_date, file_hour),
+                    "SELECT is_file_missing(%s, %s, %s, %s::smallint, %s)",
+                    (
+                        station_id,
+                        session_type,
+                        file_date,
+                        file_hour,
+                        self._use_terminal_absence(),
+                    ),
                 )
                 result = cur.fetchone()
                 return result[0] if result else False

@@ -435,10 +435,25 @@ Each with `_rollback.sql`; applied **local first**, then per-host explicitly (§
     `rinex_org` root fold (D8; inert until dated). Validated end-to-end on synthetic active stations:
     daily NULL-hour + present-subtraction, hourly 24/day with the incomplete current hour excluded,
     NetRS→15s-only session-map, case-insensitive receiver_type join. ADVISORY (static floor).
-  - **M2d slice-2b (next):** download-path served-gate (confirm absence only when the station served ≥1
-    other file — closes config-error poisoning) + dynamic receiver horizon (record oldest-file-seen per
-    station) → then flip `p_use_terminal`. Plus `receivers missing` CLI verb + known-missing manifest +
-    `missing_at_location` (full-history, needs the hard cap). `tos_validated_at` = separate QC axis, later.
+  - **M2d slice-2b (served-gate + activation) ✅ DONE (mig 061 + config):** the SERVED-GATE
+    (`record_file_absence`): terminal promotion additionally requires the station SERVED this session
+    within `serving_window_days` (default 2) — a per-(station,session) station-health `EXISTS` over
+    `file_tracking` (downloaded/archived). **Invariant `serving_window < terminal_after_days`** makes an
+    all-files-404 config error unable to EVER reach terminal (by the time the 3-day span elapses, the last
+    success is >2 days old → gate fails). Validated: healthy station's gap → terminal; config-error sim →
+    never terminal despite span+count. Plus `[file_index] use_terminal_absence` config (default FALSE) →
+    threaded through `FileTracker.is_file_missing` (`p_use_terminal`): terminal-skip is a deliberate config
+    flip once the gate is trusted (verified default-advisory vs flag-on). The terminal-absence story is now
+    safe AND activatable.
+  - **slice-2b.3 (next, own focused pass) — dynamic receiver horizon:** replace the static
+    `receiver_buffer_depth` floor with the REAL per-station horizon by recording the oldest file seen on
+    the receiver during the download listing. Design: add `stations.receiver_oldest_seen DATE` (or a
+    `receiver_horizon(sid, session_type, oldest_date, observed_at)` table); hook each receiver's remote
+    listing (Septentrio `download_manager.get_remote_file_list`, Trimble `http_download_client.
+    get_directory_listing`, Leica `leica_ftp_download_client` nlst) to compute `min(parse_date)` and upsert
+    it; change `missing_on_receiver`'s floor to `greatest(data_start, receiver_oldest_seen)`. Cross-cutting
+    into 3-4 receiver types + the hot path — deserves its own pass. Then also `missing_at_location(:loc)`
+    (full-history, needs the hard cap). `tos_validated_at` = separate QC axis, later.
 - **M3 — EPOS convergence:** unified-catalog writes at push (sha256 + stored md5s); `rinex_file` becomes
   a derived export (new UNIQUE + advisory lock). Exit: one write path.
 - **M4 — Migrate + prod rollout:** backfill (§7) + backward + cross-host reconcilers + per-host migrate
