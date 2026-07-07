@@ -2689,3 +2689,32 @@ class TestProducts:
         assert rel == "2026/jul/RHOF/30s_24hr/rinex"
         rel2 = eng.relative_dir("RHOF", _d2(2026, 7, 2))
         assert rel2 == "2026/jul/RHOF/15s_24hr/rinex"
+
+
+class TestSourceRootCandidates:
+    def test_first_existing_wins(self, tmp_path, monkeypatch):
+        from receivers.dissemination.config import _resolve_source_root
+
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        b.mkdir()
+        assert _resolve_source_root([str(a), str(b)], "epos") == str(b)
+
+    def test_string_form_passthrough(self, tmp_path):
+        from receivers.dissemination.config import _resolve_source_root
+
+        d = tmp_path / "root"
+        d.mkdir()
+        assert _resolve_source_root(str(d), "epos") == str(d)
+
+    def test_none_existing_keeps_first_and_warns(self, tmp_path, caplog):
+        import logging as _logging
+
+        from receivers.dissemination.config import _resolve_source_root
+
+        with caplog.at_level(_logging.WARNING):
+            out = _resolve_source_root(
+                [str(tmp_path / "x"), str(tmp_path / "y")], "epos"
+            )
+        assert out == str(tmp_path / "x")
+        assert any("NO source_root" in r.message for r in caplog.records)
