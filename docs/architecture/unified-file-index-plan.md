@@ -36,6 +36,7 @@
 | D5 | **Generalize `archive_catalog`** (durable, sha256-keyed, one-row-per-location) — do not invent a parallel table. | It already lives off the `file_tracking` TRUNCATE cascade. |
 | **D6** | **Dual-host = ONE mechanism, not two.** Scheduler-on-rek-d01 uses the **existing best-effort mirror** (`database.cfg mirror_host=pgdev`) — made *non-silent for catalog writes* + a cross-host reconcile net. Laptop maintenance (reindex/archive-rm) uses the **explicit `catalog_hosts` fan-out** (no mirror on laptops). **Never stack a fan-out on top of the mirror** (double-writes pgdev). | Critique L3: the mirror already dual-writes; a naïve fan-out writes pgdev 2–3×. |
 | **D7** | **Cross-location matching keys on a naming-independent LOGICAL key** `(station, session_type, file_category, file_date, file_hour)`, not `content_sha256`/`canonical_key`. | Critique L4: EPOS R3-long vs archive R2-short share neither hash nor basename — content-key joins can't correlate local↔portal. |
+| **D8** | **Product lineage via the OBSERVATION key** `(station, session_type, file_date, file_hour)` = the D7 logical key **minus `file_category`**. All products of one original download (raw, its rinex, hatanaka) share it; group `archive_catalog` rows across category + location by it → one observation's product family. The derived (rinex) worklist is then a **provenance question, not an independent expected-set**: a rinex is expected iff a rinexable RAW ROOT exists in the group (and date ≥ `rinex_config_valid_from`, else "needs TOS"). The RINEX-only/legacy case = a group with a rinex but no raw anywhere + `rinex_is_original` (mig 050) → the rinex IS the root, never flag a missing raw. Derive `raw_available`/`is_rinexed`/`rinex_is_original` **from the grouping** (avoid store-and-drift). Only the ROOT (raw) tier still needs the bounded date-range expected-set (a raw is expected because the station was running, not because another file points at it). `file_hour` (mig 055) makes the key exact for hourly data. EPOS 30S is a second derivation hop — handled via the D7 logical-key mapping (M3), not this same-observation join. | bgo insight 2026-07-07: collapses the hard half of the differential — the rinex worklist needs no `generate_series` and yields no false "missing rinex" for dates no raw ever existed. Implicit (no new schema); an explicit `family_id` for byte-level #34 provenance is an optional later add. |
 
 **Confirmed at handoff (2026-07-07):** (a) expected-set bounds **sync `data_start`/`data_end` from
 TOS** (§3.6, accepted new coupling); (b) *"update repos with missing status"* = the `file_absence` DB
@@ -155,9 +156,13 @@ Hard rules (critique L2 blockers/majors):
 - **NULL-safe joins:** `file_hour` is NULL for daily 15s; every anti-join uses `IS NOT DISTINCT FROM`
   (or branches NULL/day vs hourly like `is_file_missing()` migration 046) — a plain equi-join makes a
   terminal 15s day re-fetch forever.
-- **Coverage across receiver types:** the reachable-but-404/550 → absence hook exists only in PolaRx5;
-  it is a **hard M2 deliverable** to add it to Trimble/Leica/NetRS, else terminal-absence covers only
-  Septentrio and ask #3 is unmet for the rest of the fleet.
+- **Coverage across receiver types — ✅ MET (2026-07-07).** The reachable-but-absent hook turns out to
+  already exist fleet-wide: netr9/netrs/g10 each read their downloader's `file_outcomes` and call
+  `tracker.mark_missing` **only** on `"not_found"` (HTTP 404 / FTP 550 classified in
+  `http_download_client`/`leica_ftp_download_client`; connection/timeout → `"transport_error"`, never
+  marked). Because M2a folded `record_file_absence` into `mark_file_missing`, the whole fleet (polarx5 +
+  the three non-Septentrio types) now records absence through one entry point — **no separate M2b code
+  was needed**; verified end-to-end via `DownloadTracker.mark_missing`.
 
 `is_file_missing()` is reworked to consult `file_absence` (terminal → permanent skip) **plus** the 24 h
 TTL (transient), NULL-safe.
@@ -298,7 +303,9 @@ Each with `_rollback.sql`; applied **local first**, then per-host explicitly (§
 - **`archive/` (new)** — backward archive↔catalog reconciler + cross-host divergence detector (§3.7).
 - `health/file_tracker.py` — write/increment `file_absence` on reachable-but-absent; drop reliance on
   `file_locations`.
-- **download paths (Trimble/Leica/NetRS)** — add the reachable-but-404/550 → absence hook.
+- **download paths (Trimble/Leica/NetRS)** — ✅ already route reachable-but-404/550 through
+  `mark_missing` (via `file_outcomes == "not_found"`); the M2a fold makes that record absence. No change
+  needed (verified 2026-07-07).
 - `dissemination/job.py`/`rinex_index.py` — write the **unified catalog** (epos_portal, sha256 + stored
   md5s); derive the `rinex_file` export from it via an exporter that respects the new UNIQUE + an
   **advisory lock** (not the process-local `_INDEX_LOCK`) since a backfill exporter + live sweep now
@@ -402,11 +409,13 @@ Each with `_rollback.sql`; applied **local first**, then per-host explicitly (§
     `count(terminal)=0`) — file_tracking has no terminal state, so freezing those would re-break
     mig 046. Verified: apply/rollback/reapply clean; same-day 1Hz stays non-terminal, 3-day-span goes
     terminal; ruff/black clean; 20 gap-detector tests pass.
-  - **M2b (next) — non-Septentrio absence hook:** route netr9/netrs/g10 404/550 through the same
-    `mark_file_missing` entry point (the shared `download_tracker` wrapper is the choke point).
-  - **M2c — station `data_start`/`data_end` (057) + TOS sync** (accuracy upgrade; M2d can build first
-    on the earliest-observed-data lower bound, §3.6). **M2d — differential views (058) + `receivers
-    missing`.** Ceiling = last-complete-period-UTC regardless of TOS.
+  - **M2b — non-Septentrio absence hook ✅ DONE-BY-M2a (2026-07-07).** netr9/netrs/g10 already route
+    reachable-but-404/550 through `mark_missing` → `mark_file_missing`; the M2a fold makes that record
+    absence, so no separate code was needed. Verified end-to-end via `DownloadTracker.mark_missing`.
+  - **M2c (next) — station `data_start`/`data_end` (057) + TOS sync** (accuracy upgrade; M2d can build
+    first on the earliest-observed-data lower bound, §3.6). **M2d — differential views (058), built on
+    the D8 observation-key lineage + `receivers missing`.** Ceiling = last-complete-period-UTC regardless
+    of TOS.
 - **M3 — EPOS convergence:** unified-catalog writes at push (sha256 + stored md5s); `rinex_file` becomes
   a derived export (new UNIQUE + advisory lock). Exit: one write path.
 - **M4 — Migrate + prod rollout:** backfill (§7) + backward + cross-host reconcilers + per-host migrate
