@@ -188,8 +188,27 @@ def plan_relocations(
         if fmt == UNKNOWN:
             skips.append(SkipInfo(rel, "unknown-format"))
             continue
+        parts = rel.split("/")
+        dir_ym = (parts[0], parts[1]) if len(parts) == 6 else None
+        claimed_ym = (f"{parsed.claimed:%Y}", MONTH_DIRS[parsed.claimed.month])
+
         meta = teqc_meta(path, fmt) if fmt != TRIMBLE else None
         if meta is None or meta.start is None:
+            # No cheap decoder — but the NAME-vs-PATH consistency needs none:
+            # a file claiming a different year/month than its directory is
+            # wrong SOMEWHERE (which side lies needs a decode/eyes). Caught
+            # the 324 MB 'RHOF202101031833a.T02' living in 2017/dec.
+            if dir_ym is not None and dir_ym != claimed_ym:
+                skips.append(
+                    SkipInfo(
+                        rel,
+                        "path-name-mismatch",
+                        f"filename claims {parsed.claimed:%Y-%m-%d} but sits in "
+                        f"{dir_ym[0]}/{dir_ym[1]} — no {fmt} date decoder; "
+                        "needs eyes (convert or inspect to learn the truth)",
+                    )
+                )
+                continue
             reason = "no-date-decoder" if fmt == TRIMBLE else "decode-failed"
             skips.append(SkipInfo(rel, reason, fmt))
             continue
