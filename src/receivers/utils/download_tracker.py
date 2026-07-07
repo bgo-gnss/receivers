@@ -153,6 +153,46 @@ class DownloadTracker:
             remote_file_size=remote_file_size,
         )
 
+    def record_horizon(self, remote_filenames: list) -> bool:
+        """Record the oldest file this station still holds on the receiver.
+
+        The dynamic receiver horizon (unified file index slice-2b.3): the oldest
+        parseable (date, hour) across the receiver's CURRENT listing becomes the
+        real fetch floor for ``missing_on_receiver`` (and, later, the retention
+        floor for prune). MUST be called with the FULL remote listing for the
+        session, not a date-filtered subset, or the floor would be too recent.
+        Best-effort — never raises. Returns True if a horizon was recorded.
+        """
+        if not self._connected or not remote_filenames:
+            return False
+        oldest = _oldest_from_listing(remote_filenames, self.station_id)
+        if oldest is None:
+            return False
+        oldest_date, oldest_hour = oldest
+        # daily sessions have no meaningful hour floor
+        hour = oldest_hour if self.is_hourly else None
+        try:
+            with self._tracker._conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO receiver_horizon
+                           (sid, session_type, oldest_date, oldest_hour, observed_at)
+                       VALUES (%s, %s, %s, %s::smallint, now())
+                       ON CONFLICT (sid, session_type) DO UPDATE SET
+                           oldest_date = EXCLUDED.oldest_date,
+                           oldest_hour = EXCLUDED.oldest_hour,
+                           observed_at = now()""",
+                    (self.station_id, self.session, oldest_date, hour),
+                )
+            self._tracker._conn.commit()
+            return True
+        except Exception as e:  # noqa: BLE001 — best-effort; never break a download
+            logger.debug(f"record_horizon failed for {self.station_id}: {e}")
+            try:
+                self._tracker._conn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            return False
+
     def mark_missing(
         self,
         file_date: date,
@@ -274,6 +314,25 @@ class DownloadTracker:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit."""
         self.close()
+
+
+def _oldest_from_listing(
+    filenames: list, station_id: str
+) -> Optional[Tuple[date, Optional[int]]]:
+    """Oldest (date, hour) across a receiver listing, or None if none parse.
+
+    Sorts by (date, hour) treating a daily file's NULL hour as earliest. Used to
+    derive the receiver horizon (:meth:`DownloadTracker.record_horizon`).
+    """
+    parsed = []
+    for fn in filenames:
+        base = fn.rsplit("/", 1)[-1] if fn else fn
+        p = parse_date_from_filename(base, station_id)
+        if p is not None:
+            parsed.append(p)
+    if not parsed:
+        return None
+    return min(parsed, key=lambda p: (p[0], -1 if p[1] is None else p[1]))
 
 
 def parse_date_from_filename(

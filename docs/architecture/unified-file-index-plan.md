@@ -445,15 +445,25 @@ Each with `_rollback.sql`; applied **local first**, then per-host explicitly (§
     threaded through `FileTracker.is_file_missing` (`p_use_terminal`): terminal-skip is a deliberate config
     flip once the gate is trusted (verified default-advisory vs flag-on). The terminal-absence story is now
     safe AND activatable.
-  - **slice-2b.3 (next, own focused pass) — dynamic receiver horizon:** replace the static
-    `receiver_buffer_depth` floor with the REAL per-station horizon by recording the oldest file seen on
-    the receiver during the download listing. Design: add `stations.receiver_oldest_seen DATE` (or a
-    `receiver_horizon(sid, session_type, oldest_date, observed_at)` table); hook each receiver's remote
-    listing (Septentrio `download_manager.get_remote_file_list`, Trimble `http_download_client.
-    get_directory_listing`, Leica `leica_ftp_download_client` nlst) to compute `min(parse_date)` and upsert
-    it; change `missing_on_receiver`'s floor to `greatest(data_start, receiver_oldest_seen)`. Cross-cutting
-    into 3-4 receiver types + the hot path — deserves its own pass. Then also `missing_at_location(:loc)`
-    (full-history, needs the hard cap). `tos_validated_at` = separate QC axis, later.
+  - **slice-2b.3 foundation ✅ DONE (mig 062 + helper):** `receiver_horizon(sid, session_type,
+    oldest_date, oldest_hour, observed_at)` — per-(station,session), DUAL-PURPOSE (the
+    `missing_on_receiver` fetch floor now AND the prune retention floor later, per the ultrathink).
+    `missing_on_receiver` recreated with a horizon-with-fallback floor:
+    `greatest(data_start, coalesce(receiver_horizon.oldest_date, current_date - depth_days))` — the real
+    horizon when probed, the static `receiver_buffer_depth` seed otherwise. `DownloadTracker.record_horizon(
+    remote_filenames)` + `_oldest_from_listing()` upsert the oldest parseable (date,hour). Validated: a
+    probed horizon (oldest=cd-5) narrows the window from the static 30-day fallback to 5 days. Inert until
+    the probe populates rows (no behaviour change yet).
+  - **slice-2b.3 probe (next, own focused pass):** the recording call. NOT a free hot-path hook — a normal
+    download run lists only the requested recent date-dirs, so it never sees the receiver's OLDEST file.
+    Needs a dedicated per-receiver probe that lists the receiver's date-dir INDEX and finds the oldest dir
+    with files (Septentrio FTP nlst on the parent, Trimble HTTP `get_directory_listing`, Leica FTP nlst),
+    then calls `DownloadTracker.record_horizon(full_listing)`. Cheapest as a periodic scheduler task
+    (list the top-level date-dir structure, not every file). Receiver-specific → its own pass. Then also
+    `missing_at_location(:loc)` (full-history hard cap) + wire the horizon into prune's 15s retention floor
+    (§3, the "retain back to the oldest daily file on receiver" rule) + strengthen the prune "indexed
+    properly" gate (require imo_archive `content_sha256`/`last_verified_at`). `tos_validated_at` = separate
+    QC axis, later.
 - **M3 — EPOS convergence:** unified-catalog writes at push (sha256 + stored md5s); `rinex_file` becomes
   a derived export (new UNIQUE + advisory lock). Exit: one write path.
 - **M4 — Migrate + prod rollout:** backfill (§7) + backward + cross-host reconcilers + per-host migrate
@@ -485,3 +495,54 @@ Four-lens adversarial review (2026-07-07). 6 blockers + 12 majors; all folded in
 | MAJOR | Retention | no station→session map → non-PolaRX5 flagged 100% missing | §3.5 session-map |
 | MAJOR | Retention | `rinex_config_valid_from` as raw floor hides real raw gaps | §3.5 split rinex/raw floor |
 | MINOR/NIT | mixed | retention drift; passive stations; `.Z` truncation; non-Septentrio absence; interim rek-d01 catch-up | §3.1/§3.5/§3.4/§3.3/§8.2 |
+
+---
+
+## 12. Integration architecture — keep-options-open notes (2026-07-07)
+
+Design directions (not yet implemented) so current decisions don't close them.
+
+**The unifying frame — the index is a distributed state machine for file lifecycles.**
+An observation moves: `expected → on-receiver → downloaded@local_raw → rinexed@local_rinex →
+archived@imo_archive → verified@imo → [prunable@local] → disseminated@epos_portal`. The index
+records which states are reached (presence at a `location`+`category` + verify timestamps); the
+differential views are "which next transition is pending". Download, rinex, epos-disseminate, prune
+are all "advance an observation to its next state" — the index is the shared bus that tells each what
+is pending and de-dupes their work.
+
+**Extension points (keep parameterized, don't hardcode):**
+- **Server = a `storage_location` row** (registry carries host/protocol/root_path). New server = a seed
+  (+ a naming→observation-key map if its convention differs, D7). Keep every view parameterized by
+  location (`missing_at_location(:loc)`), never hardcoded to imo_archive/receiver.
+- **Product tier = a `file_category`** (raw/rinex/rinex_org today; nav/sinex/quality later).
+- **Derivation = a lineage edge.** D8 hardcodes raw→rinex; EPOS 30S is a 2nd hop (rinex_15S→30S). Keep
+  the option to model edges as DATA (`product_lineage(source_cat, target_cat, transform, valid_from_field)`)
+  so "derived expected iff source root present" is generic.
+- **Producer contract:** every producer, on creating a file, upserts the catalog row at ITS target
+  location (hash deferred) + soft-links its source. Download does this (M1 hook). GAP TO WATCH: every
+  rinex-producing path must catalog, else `missing_rinex` false-positives. EPOS unifies onto this (M3).
+
+**Backfill redefinition — two tiers, hot path UNCHANGED:**
+- **Hot tier** (morning recovery + short-term recheck): owns the last ~24-48h, transient, `file_tracking`
+  + 24h TTL (mig 046). KEEP AS-IS — fast, event-driven.
+- **Cold/deep tier** (backfill scheduler): owns day-2 → receiver horizon, reads `missing_on_receiver`
+  (the DB "dictionary"), fed into the existing distribution-window machinery. REPLACES the directory
+  glob + `backfill_progress` cursor (the differential IS the state, idempotent). The two tiers coordinate
+  THROUGH the index: a hot-tier fetch writes local_raw → the slot leaves `missing_on_receiver` on refresh
+  → the cold tier never re-fetches. Cold tier respects terminal-absence (once activated) + routes aged-off
+  slots to `needs_repull` instead of a receiver 404.
+
+**Retention / prune (bgo rule 2026-07-07):**
+- imo_archive = final, immutable (enforced: is_permanent, raw --ignore-existing, never --delete).
+- Per-tier local retention: **15s/daily defaults to `receiver_horizon.oldest_date`** (the oldest daily
+  file still on the receiver — dual-use of slice-2b.3) or shorter by config; **1Hz = 20 days (config)**;
+  status = config. A config MAX caps the horizon so it can't balloon local storage.
+- "Never delete a local raw unless stored on imo_archive AND **indexed properly**" — strengthen M1's
+  catalog gate (canonical_key present) to require the imo_archive row's `content_sha256` (a real index
+  entry) and ideally `last_verified_at` (read-back confirmed). This makes verify.py load-bearing on the
+  DELETE path → ordering: archive-sync → verify → prune-eligible. Un-archived files stay kept-and-flagged.
+
+**Also flagged:** EPOS is an allowlisted SUBSET (its expected-set ≠ the receiver expected-set);
+observations can be multi-source (the observation key dedups); don't prune a local rinex EPOS still needs
+to push; `tos_validated_at` (header-vs-TOS metadata correctness) is a SEPARATE QC axis, not the presence
+differential; config = policy, index = mechanism (invariant).
