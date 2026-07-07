@@ -82,3 +82,38 @@ class TestFormatterExceptionInfo:
             "receivers.download.RHOF", logging.INFO, "x.py", 1, "ok", (), None
         )
         assert "exc_info" not in json.loads(JSONFormatter().format(plain))
+
+
+class TestLogRotationGate:
+    """The receivers.log / audit handler must self-rotate on dev but defer to
+    logrotate on the server. Regression: an unconditional RotatingFileHandler
+    fought the server's logrotate over the same file and churned the most recent
+    hours of logs off disk (backupCount deletion at ~19 MB/h).
+    """
+
+    def test_external_rotation_uses_watched_handler(self, tmp_path, monkeypatch):
+        import logging.handlers
+
+        from receivers.base.production_logging import make_log_file_handler
+
+        monkeypatch.setenv("RECEIVERS_LOG_EXTERNAL_ROTATION", "1")
+        h = make_log_file_handler(tmp_path / "receivers.log", 1024, 3)
+        try:
+            assert isinstance(h, logging.handlers.WatchedFileHandler)
+            # WatchedFileHandler never deletes/rotates on its own.
+            assert not isinstance(h, logging.handlers.RotatingFileHandler)
+        finally:
+            h.close()
+
+    def test_no_external_rotation_uses_rotating_handler(self, tmp_path, monkeypatch):
+        import logging.handlers
+
+        from receivers.base.production_logging import make_log_file_handler
+
+        monkeypatch.setenv("RECEIVERS_LOG_EXTERNAL_ROTATION", "0")
+        h = make_log_file_handler(tmp_path / "receivers.log", 4096, 2)
+        try:
+            assert isinstance(h, logging.handlers.RotatingFileHandler)
+            assert h.maxBytes == 4096 and h.backupCount == 2
+        finally:
+            h.close()

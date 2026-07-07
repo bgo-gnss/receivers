@@ -32,7 +32,11 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from .base.production_logging import JSONFormatter, ProductionFormatter
+from .base.production_logging import (
+    JSONFormatter,
+    ProductionFormatter,
+    make_log_file_handler,
+)
 
 # 4-character uppercase station IDs used throughout the GNSS network
 _STATION_ID_RE = re.compile(r"^[A-Z][A-Z0-9]{3}$")
@@ -232,13 +236,13 @@ def _configure(level: int, json_output: bool, log_dir: Path) -> None:
     console.addFilter(lambda r: not getattr(r, "batch_quiet", False))
     root.addHandler(console)
 
-    # ── File handler (JSON, rotating) ────────────────────────────────
+    # ── File handler (JSON) ──────────────────────────────────────────
+    # On the server logrotate owns rotation (WatchedFileHandler); on dev the
+    # handler self-rotates (RotatingFileHandler 20 MB x 3). Previously this was
+    # an unconditional RotatingFileHandler that fought the server's logrotate and
+    # dropped the most recent hours of logs — see make_log_file_handler().
     log_file = log_dir / "receivers.log"
-    file_handler = logging.handlers.RotatingFileHandler(
-        log_file,
-        maxBytes=20 * 1024 * 1024,  # 20 MB
-        backupCount=3,
-    )
+    file_handler = make_log_file_handler(log_file, 20 * 1024 * 1024, 3)
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(JSONFormatter())
     root.addHandler(file_handler)
