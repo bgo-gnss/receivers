@@ -82,9 +82,7 @@ def _validate_station_for_download(
     """
     station_config = get_station_config(station_id)
     if station_config is None:
-        logger.warning(
-            f"⚠️  Station {station_id} not found in configuration - SKIPPING"
-        )
+        logger.warning(f"⚠️  Station {station_id} not found in configuration - SKIPPING")
         return None
 
     try:
@@ -894,9 +892,7 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
             voltage = power.get("voltage")
             if voltage is not None:
                 status = power.get("status", "ok")
-                emoji = (
-                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
-                )
+                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
                 metric_lines.append(f"Voltage: {emoji} {voltage:.2f} V")
 
         # Temperature
@@ -905,9 +901,7 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
             value = temp.get("value")
             if value is not None:
                 status = temp.get("status", "ok")
-                emoji = (
-                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
-                )
+                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
                 metric_lines.append(f"Temp: {emoji} {value}°C")
 
         # CPU load
@@ -916,9 +910,7 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
             value = cpu.get("value", cpu.get("percent"))
             if value is not None:
                 status = cpu.get("status", "ok")
-                emoji = (
-                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
-                )
+                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
                 metric_lines.append(f"CPU: {emoji} {value}%")
 
         # Disk usage
@@ -927,9 +919,7 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
             value = disk.get("usage_percent")
             if value is not None:
                 status = disk.get("status", "ok")
-                emoji = (
-                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
-                )
+                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
                 metric_lines.append(f"Disk: {emoji} {value:.0f}%")
 
         if metric_lines:
@@ -941,9 +931,7 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
             total = sats.get("total")
             if total is not None:
                 status = sats.get("status", "ok")
-                emoji = (
-                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
-                )
+                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
                 by_const = sats.get("by_constellation", {})
                 const_str = (
                     ", ".join(f"{k}:{v}" for k, v in by_const.items())
@@ -961,9 +949,7 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
             fix_mode = pos.get("fix_mode") or pos.get("fix_type")
             if fix_mode:
                 status = pos.get("status", "ok")
-                emoji = (
-                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
-                )
+                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
                 sats_used = pos.get("satellites_used", "")
                 lat = pos.get("latitude")
                 lon = pos.get("longitude")
@@ -1069,9 +1055,7 @@ def _print_quick_status(health: Dict[str, Any], station_config: Dict[str, Any]) 
                     status = "warning"
                 else:
                     status = "ok"
-                emoji = (
-                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
-                )
+                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
                 label = session_labels.get(session, session)
                 file_parts.append(f"{label}:{emoji}")
         if file_parts:
@@ -1801,9 +1785,7 @@ def cmd_health_single(args, station_id: str, logger: logging.Logger) -> int:
                 tcp = connection["tcp"]
                 status = tcp.get("status", "unknown")
                 host = tcp.get("host", "")
-                emoji = (
-                    "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
-                )
+                emoji = "✅" if status == "ok" else "⚠️" if status == "warning" else "❌"
                 print(f"  tcp: {emoji} {status} ({host})")
 
             # Show port status (always show all ports for consistency, N/A if not configured)
@@ -4271,6 +4253,8 @@ def _rinex_convert_station_period(
     durations: Optional[List[float]] = None,
     progress=None,
     only_dates=None,
+    flush_fn=None,
+    flush_every=0,
 ) -> tuple:
     """Convert raw files to RINEX for a single station and time period.
 
@@ -4464,6 +4448,16 @@ def _rinex_convert_station_period(
                         f"   Applied {result.header_corrections_applied} header corrections"
                     )
                 converted += 1
+                # --push incremental flush: every `flush_every` conversions, push
+                # the files staged so far to the archive (only the not-yet-pushed
+                # ones; the closure serializes + tracks them). Steady progress on a
+                # long re-rinex instead of one push at the very end.
+                if (
+                    flush_fn is not None
+                    and flush_every
+                    and converted % flush_every == 0
+                ):
+                    flush_fn()
                 if durations is not None:
                     durations.append(dur)
                     # Periodic ETA: after the first 5 conversions, then every
@@ -4501,8 +4495,7 @@ def _rinex_convert_station_period(
                 # Raw-validation refusal: ONE compact line mid-run; the detail
                 # + suggested procedure prints in the end-of-batch epilog.
                 print(
-                    f"  🛡  {raw_file.name}: refused "
-                    f"({result.validation_category})"
+                    f"  🛡  {raw_file.name}: refused " f"({result.validation_category})"
                 )
                 _validation_refusals.append(result)
                 failed += 1
@@ -5131,7 +5124,7 @@ def _parallel_workers_for_chunks(args, n_chunks: int, logger) -> int:
     return resolve_workers(getattr(args, "parallel", None), n_chunks, logger)
 
 
-def _push_reconverted(work_dir, args, logger) -> Dict[str, Any]:
+def _push_reconverted(work_dir, args, logger, only_rel=None) -> Dict[str, Any]:
     """Push re-rinexed files from a --work-dir staging tree back to the archive.
 
     Archive-side --backup-old (move old ``rinex/FILE`` → ``rinex_bak/FILE`` via the
@@ -5157,13 +5150,21 @@ def _push_reconverted(work_dir, args, logger) -> Dict[str, Any]:
         "note": "",
     }
     work = Path(work_dir).expanduser()
-    staged = [p for p in work.rglob("*") if p.is_file() and p.parent.name == "rinex"]
-    rel: list[str] = []
-    for p in staged:
-        try:
-            rel.append(str(p.relative_to(work)))
-        except ValueError:
-            pass
+    if only_rel is not None:
+        # Incremental flush: push exactly these (the files staged since the last
+        # flush) so archive-side --backup-old never re-touches already-pushed
+        # files. The caller tracks which rel paths have gone.
+        rel = list(only_rel)
+    else:
+        staged = [
+            p for p in work.rglob("*") if p.is_file() and p.parent.name == "rinex"
+        ]
+        rel = []
+        for p in staged:
+            try:
+                rel.append(str(p.relative_to(work)))
+            except ValueError:
+                pass
     stats["staged"] = len(rel)
     if not rel:
         print("  push: no staged RINEX files to push")
@@ -5787,6 +5788,56 @@ def cmd_rinex(args) -> int:
     push_stats: Optional[Dict[str, Any]] = None
     par_workers = _parallel_workers(args, stations, start_time, end_time, logger)
     aborted = False
+
+    # --push incremental flush (re-rinex): push to the archive every
+    # `_rinex_flush_every` conversions instead of one big push at the very end.
+    # The closure pushes ONLY files staged since the last flush (tracked in
+    # `_pushed_rel`) so archive-side --backup-old never re-touches an already-
+    # pushed file; it is serialized (concurrent gateway ssh is unreliable) and
+    # accumulates into push_stats. A failed rsync leaves its files un-marked so a
+    # later flush / the final flush retries them.
+    import threading as _threading
+
+    _do_flush = bool(
+        getattr(args, "push", False)
+        and _is_rerinex_mode(args)
+        and getattr(args, "work_dir", None)
+    )
+    _pushed_rel: set = set()
+    _flush_lock = _threading.Lock()
+    _rinex_flush_every = (
+        (int(getattr(args, "push_batch", 0) or 0) or 300) if _do_flush else 0
+    )
+
+    def _rinex_flush() -> None:
+        nonlocal push_stats
+        with _flush_lock:
+            work = Path(args.work_dir).expanduser()
+            all_rel = [
+                str(p.relative_to(work))
+                for p in work.rglob("*")
+                if p.is_file() and p.parent.name == "rinex"
+            ]
+            new_rel = [r for r in all_rel if r not in _pushed_rel]
+            if not new_rel:
+                return
+            st = _push_reconverted(args.work_dir, args, logger, only_rel=new_rel)
+            # Mark done only if the rsync actually ran ok (rc==0) — a failed push
+            # leaves them un-marked so a later flush retries. In --dry-run nothing
+            # transfers (rc None) but we still mark, so each flush previews only
+            # its own new batch (shows the cadence) instead of re-listing all.
+            if st.get("rc") == 0 or getattr(args, "dry_run", False):
+                _pushed_rel.update(new_rel)
+            if push_stats is None:
+                push_stats = st
+            else:
+                push_stats["staged"] += st.get("staged", 0)
+                push_stats["pushed"] += st.get("pushed", 0)
+                if st.get("note"):
+                    push_stats["note"] = st["note"]
+
+    _flush_fn = _rinex_flush if _do_flush else None
+
     try:
         if network_first:
             # Pre-create converters for all stations
@@ -5833,6 +5884,8 @@ def cmd_rinex(args) -> int:
                         logger,
                         durations=durations,
                         only_dates=only_dates,
+                        flush_fn=_flush_fn,
+                        flush_every=_rinex_flush_every,
                     )
                     total_converted += c
                     total_failed += f
@@ -5894,6 +5947,8 @@ def cmd_rinex(args) -> int:
                         durations=durations,
                         progress=h,
                         only_dates=only_dates,
+                        flush_fn=_flush_fn,
+                        flush_every=_rinex_flush_every,
                     )
                     h.finish(ok=True)
                     return res
@@ -5968,6 +6023,8 @@ def cmd_rinex(args) -> int:
                     logger,
                     durations=durations,
                     only_dates=only_dates,
+                    flush_fn=_flush_fn,
+                    flush_every=_rinex_flush_every,
                 )
                 total_converted += c
                 total_failed += f
@@ -5993,7 +6050,7 @@ def cmd_rinex(args) -> int:
         and getattr(args, "work_dir", None)
     ):
         print("\nPushing re-rinexed files to the archive:")
-        push_stats = _push_reconverted(args.work_dir, args, logger)
+        _rinex_flush()  # final flush: push whatever wasn't flushed mid-run
 
     # Summary — conversion counts, per-file timing, elapsed, and push outcome.
     elapsed = int(_time.monotonic() - run_t0)
