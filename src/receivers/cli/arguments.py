@@ -1538,6 +1538,10 @@ For subcommand help: receivers <command> --help
     create_archive_prune_parser(subparsers)
     # catalog-backfill-local (seed local_raw/local_rinex catalog from file_tracking)
     create_archive_catalog_backfill_parser(subparsers)
+    # missing (query the unified-file-index differential worklists — no ls)
+    from .missing import create_missing_parser
+
+    create_missing_parser(subparsers)
 
     # epos-disseminate (RINEX3 long-name dissemination to the EPOS files server)
     from .epos_disseminate import create_epos_disseminate_parser
