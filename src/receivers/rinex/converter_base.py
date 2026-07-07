@@ -529,23 +529,57 @@ class RawToRinexConverter(ABC):
             return
         dist = sum((a - b) ** 2 for a, b in zip(xyz, expected)) ** 0.5
         if dist > gate_m:
-            rinex_file.unlink(missing_ok=True)
-            raise RawValidationError(
-                f"raw-derived position is {dist / 1000.0:.1f} km from "
-                f"{self.station_id}'s surveyed coordinates (gate {gate_m:.0f} m) "
-                "— this raw is NOT this station",
-                rinex_file,
-                category="wrong-station",
-                suggestion=(
-                    "identify the true station (decode + compare APPROX "
-                    "POSITION against stations.cfg) and move the file to that "
-                    "station's tree — archive-sort fixes dates, not stations; "
-                    "this one needs eyes"
-                ),
+            # Outside the tight gate: mirror archive-sort's nuance before
+            # refusing. A degraded single-point solution tens of metres off
+            # its OWN mark is a quality note, not an identity problem — the
+            # legacy RHOF 2009-2011 days sit 10-100 m out and are RHOF beyond
+            # doubt (no other station within kilometres).
+            nearest, near_dist = self._nearest_fleet_station(xyz)
+            if (
+                nearest == self.station_id.upper() or nearest is None
+            ) and dist <= 1000.0:
+                self.logger.warning(
+                    f"position noisy: {dist:.0f} m from {self.station_id}'s mark "
+                    f"(gate {gate_m:.0f} m) but no other station is nearer — "
+                    "identity accepted, solution quality flagged"
+                )
+            else:
+                rinex_file.unlink(missing_ok=True)
+                hint = (
+                    f"nearest station is {nearest} at {near_dist:.0f} m"
+                    if nearest
+                    else "matches no station"
+                )
+                raise RawValidationError(
+                    f"raw-derived position is {dist / 1000.0:.1f} km from "
+                    f"{self.station_id}'s surveyed coordinates ({hint}) — "
+                    "this raw is NOT this station",
+                    rinex_file,
+                    category="wrong-station",
+                    suggestion=(
+                        "identify the true station (decode + compare APPROX "
+                        "POSITION against stations.cfg) and move the file to "
+                        "that station's tree — needs eyes"
+                    ),
+                )
+        else:
+            self.logger.debug(
+                f"identity confirmed: position within {dist:.1f} m of {self.station_id}"
             )
-        self.logger.debug(
-            f"identity confirmed: position within {dist:.1f} m of {self.station_id}"
-        )
+
+    def _nearest_fleet_station(self, xyz):
+        """(station, distance_m) of the fleet station nearest to ECEF xyz —
+        the same identity semantics as archive-sort. Best-effort (None, inf)."""
+        try:
+            import pyproj
+
+            from ..archive.sort import fleet_coordinates, nearest_station
+
+            tr = pyproj.Transformer.from_crs("EPSG:4978", "EPSG:4979", always_xy=True)
+            lon, lat, _h = tr.transform(*xyz)
+            return nearest_station(lat, lon, fleet_coordinates())
+        except Exception:  # noqa: BLE001 - fail-open
+            return None, float("inf")
 
     @staticmethod
     def _read_identity_header(

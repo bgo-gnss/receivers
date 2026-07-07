@@ -185,12 +185,16 @@ class ChunkProgress:
 
 
 class ProgressBoard:
-    """Periodic one-line status for a parallel batch — log-friendly.
+    """Periodic status for a parallel batch — log-friendly.
 
-    Appends a compact status line every ``interval`` seconds (no ANSI, no
-    carriage returns — safe for terminals, logs, and systemd journals):
+    Appends a status block every ``interval`` seconds (no ANSI, no carriage
+    returns — safe for terminals, logs, and systemd journals). A summary
+    header line, then one indented line per running chunk so it's clear they
+    belong together:
 
-        ⏳ RHOF 2025 34/210 (17.4s/item, ETA 0:51h) | RHOF 2026 41/207 … | 13/15 chunks done
+        ⏳ 13/15 chunks done, 3 FAILED
+              RHOF 2025 34/210 (17.4s/item, ETA 0:51h)
+              RHOF 2026 41/207 (16.9s/item, ETA 0:47h)
 
     Use as a context manager around :func:`run_chunks`; create one handle
     per chunk up front and update it from the chunk function.
@@ -212,14 +216,13 @@ class ProgressBoard:
         running = [h for h in self.handles if h.state == "running"]
         done = sum(1 for h in self.handles if h.state in ("done", "failed"))
         failed = sum(1 for h in self.handles if h.state == "failed")
-        parts = [h.describe() for h in running[:6]]
-        if len(running) > 6:
-            parts.append(f"+{len(running) - 6} more running")
-        parts.append(
-            f"{done}/{len(self.handles)} chunks done"
-            + (f", {failed} FAILED" if failed else "")
+        header = f"⏳ {done}/{len(self.handles)} chunks done" + (
+            f", {failed} FAILED" if failed else ""
         )
-        return "⏳ " + " | ".join(parts)
+        lines = [f"      {h.describe()}" for h in running[:6]]
+        if len(running) > 6:
+            lines.append(f"      (+{len(running) - 6} more running)")
+        return "\n".join([header, *lines])
 
     def _report_loop(self) -> None:
         while not self._stop.wait(self.interval):
