@@ -189,10 +189,31 @@ class TestG2FindStaleSiblings:
         sql, params = cur.calls[-1]
         assert "reference_date::date = %s" in sql
         assert "relative_path LIKE %s" in sql
-        assert "lower(rf.name) <> lower(%s)" in sql
+        # CASE-SENSITIVE: a .d/.D rename must be seen as a different file.
+        assert "rf.name <> %s" in sql
+        assert "lower(rf.name)" not in sql
         # marker, date, dir-prefix, keep
         assert params[0] == "ELEY"
         assert params[2] == "/files/2026/mar/ELEY/15s_24hr/rinex/%"
+
+    def test_case_rename_lowercase_d_is_a_stale_sibling(self, fake_db):
+        # keep = uppercase .D (G3); the lowercase .d row is a DIFFERENT portal
+        # file and must be returned for removal (the RHOF-2011 rename case).
+        rel = "2011/jun/RHOF/15s_24hr/rinex"
+        prefix = f"/files/{rel}/"
+        fake_db["cursor"] = _FakeCursor(
+            [("RHOF1790.11d.Z", prefix + "RHOF1790.11d.Z")], []
+        )
+        out = rinex_index.find_stale_siblings(
+            _FakeConn(),
+            marker="RHOF",
+            obs_date=date(2011, 6, 28),
+            relative_dir=rel,
+            keep_name="RHOF1790.11D.Z",
+        )
+        assert out == [
+            ("RHOF1790.11d.Z", prefix + "RHOF1790.11d.Z", f"{rel}/RHOF1790.11d.Z")
+        ]
 
 
 class TestG2PurgeBatch:

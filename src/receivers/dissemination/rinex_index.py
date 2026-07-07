@@ -351,7 +351,11 @@ def find_stale_siblings(
 
     Pinned to a single day AND a single dir. The dir holds a whole month, so the
     ``reference_date`` predicate is what isolates the one date — without it this
-    would sweep the month. ``lower(name)`` match makes ``.d``/``.D`` immaterial.
+    would sweep the month. The name comparison is CASE-SENSITIVE on purpose: the
+    portal FS is case-sensitive, so ``RHOF1790.11d.Z`` and ``RHOF1790.11D.Z`` are
+    two different files — when G3 re-publishes the uppercase ``.D``, the old
+    lowercase ``.d`` is a stale sibling that must be removed (a case-insensitive
+    match would treat it AS the keep and leave it behind).
     """
     rel_dir = relative_dir.strip("/")
     prefix = f"/files/{rel_dir}/"
@@ -362,7 +366,7 @@ def find_stale_siblings(
                WHERE upper(s.marker) = %s
                  AND rf.reference_date::date = %s
                  AND rf.relative_path LIKE %s
-                 AND lower(rf.name) <> lower(%s)""",
+                 AND rf.name <> %s""",
             (marker.upper(), obs_date, prefix + "%", keep_name),
         )
         rows = cur.fetchall()
