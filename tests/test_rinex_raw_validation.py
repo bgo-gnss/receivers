@@ -136,10 +136,31 @@ class TestIdentityGate:
         out = _write_rinex(tmp_path / "RHOF0920.10o")
         c = self._conv(out)
         reyk = (2587384.0, -1043033.0, 5716564.0)  # ~hundreds of km away
-        with patch.object(c, "_expected_station_xyz", return_value=reyk):
+        with (
+            patch.object(c, "_expected_station_xyz", return_value=reyk),
+            patch.object(c, "_nearest_fleet_station", return_value=("REYK", 12.0)),
+        ):
             with pytest.raises(ConversionError, match="NOT this station"):
                 c._verify_conversion_identity(out, datetime(2010, 4, 2))
         assert not out.exists()
+
+    def test_noisy_same_station_passes_with_warning(self, tmp_path, caplog):
+        """Tens of metres off its OWN mark (no other station nearer) is a
+        quality note, not an identity refusal — the legacy RHOF 2009-2011
+        gap days (10-100 m solutions) must convert."""
+        import logging as _logging
+
+        out = _write_rinex(tmp_path / "RHOF0920.10o")
+        c = self._conv(out)
+        off = (RHOF_XYZ[0] + 40, RHOF_XYZ[1], RHOF_XYZ[2])  # ~40 m off
+        with (
+            patch.object(c, "_expected_station_xyz", return_value=off),
+            patch.object(c, "_nearest_fleet_station", return_value=("RHOF", 40.0)),
+            caplog.at_level(_logging.WARNING),
+        ):
+            c._verify_conversion_identity(out, datetime(2010, 4, 2))
+        assert out.exists()
+        assert any("position noisy" in r.message for r in caplog.records)
 
     def test_matching_identity_passes(self, tmp_path):
         out = _write_rinex(tmp_path / "RHOF0920.10o")
