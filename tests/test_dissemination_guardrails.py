@@ -62,35 +62,26 @@ def _min_target(tmp_path):
     return _target(tmp_path)
 
 
-class TestG1SkipDecimatedForR2:
-    def test_decimated_product_skipped_when_source_is_r2(self, tmp_path, monkeypatch):
+class TestDecimatedR2IsEmitted:
+    def test_decimated_product_produced_for_r2(self, tmp_path, monkeypatch):
+        # G1 removed: the 30 s product for genuinely-R2 data (e.g. pre-2012
+        # RHOF) is a real, wanted product — run_one(sample=30) on an R2 source
+        # must PRODUCE a short-named file (uppercase .D via G3), never skip it.
         eng = eng_mod.EposDisseminate(_min_target(tmp_path))
-        src = tmp_path / "ELEY0600.26D.Z"
+        src = tmp_path / "RHOF1790.11D.Z"
         src.write_bytes(b"x")
+        conv = _Conv(2, tmp_path)
+        conv.obs_name = "RHOF1790.11o"
         monkeypatch.setattr(eng, "find_source", lambda s, d: src)
         monkeypatch.setattr(eng, "find_raw_source", lambda s, d: None)
-        monkeypatch.setattr(
-            eng_mod, "convert_for_dissemination", lambda *a, **k: _Conv(2, tmp_path)
-        )
-        r = eng.run_one("ELEY", date(2026, 3, 1), product=ProductSpec(sample=30))
-        assert r.ok is False
-        assert "decimated" in r.message and "30" in r.message
-        assert r.rinex_version == 2
-
-    def test_native_product_not_skipped_by_g1(self, tmp_path, monkeypatch):
-        # sample=None must NOT hit the G1 skip (it proceeds past the guard; we
-        # stop it at push by pointing at a no-host target so nothing is sent).
-        eng = eng_mod.EposDisseminate(_min_target(tmp_path))
-        src = tmp_path / "ELEY0600.26D.Z"
-        src.write_bytes(b"x")
-        monkeypatch.setattr(eng, "find_source", lambda s, d: src)
-        monkeypatch.setattr(eng, "find_raw_source", lambda s, d: None)
-        monkeypatch.setattr(
-            eng_mod, "convert_for_dissemination", lambda *a, **k: _Conv(2, tmp_path)
-        )
-        r = eng.run_one("ELEY", date(2026, 3, 1), product=ProductSpec(sample=None))
-        # It gets past G1 — the message is NOT the decimated-skip one.
-        assert "decimated" not in r.message
+        monkeypatch.setattr(eng_mod, "convert_for_dissemination", lambda *a, **k: conv)
+        monkeypatch.setattr(eng, "_session_segment", lambda *a, **k: "30s_24hr")
+        monkeypatch.setattr(eng_mod, "package", lambda *a, **k: tmp_path / "pkg")
+        monkeypatch.setattr(eng, "_push", lambda *a, **k: True)
+        r = eng.run_one("RHOF", date(2011, 6, 28), product=ProductSpec(sample=30))
+        assert "decimated" not in r.message  # not skipped
+        assert r.long_name == "RHOF1790.11D.Z"  # R2 short, uppercase (G3)
+        assert r.ok
 
 
 # --------------------------------------------------------------------------- G2

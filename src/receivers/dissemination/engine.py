@@ -349,17 +349,13 @@ class EposDisseminate:
             return result
 
         policy = self.target.format.policy_for(conv.rinex_version)
-        # G1: a decimated product (sample set) is only meaningful with long
-        # naming — a RINEX2 short name has no rate token, so a 30 s R2 product
-        # would be byte-identical to the native 15 s short (only the dir differs)
-        # and pollute the portal with a rate-less duplicate. Skip it.
-        if sample is not None and policy.naming != "long":
-            result.rinex_version = conv.rinex_version
-            result.message = (
-                f"decimated {sample}s product skipped: source is RINEX"
-                f"{conv.rinex_version} (short naming can't encode the rate)"
-            )
-            return result
+        # A decimated (sample) product IS emitted for RINEX2: the 30 s product
+        # for genuinely-R2 data (e.g. pre-2012) is a real, wanted EPOS product —
+        # decimated content, not a duplicate. Its short name carries no rate
+        # token, so the session DIR (30s_24hr/ vs 15s_24hr/) distinguishes the
+        # rate, as RINEX2 always does. A stale/premature R2 30 s (e.g. before a
+        # station is re-rinexed to R3) is cleaned by the G2 same-slot purge when
+        # the R3 long replaces it — so no up-front skip is needed here.
         pub_name = published_name(conv.obs_name, policy)
         session_segment = (
             self._session_segment(conv.output_path, sample)
