@@ -412,10 +412,20 @@ Each with `_rollback.sql`; applied **local first**, then per-host explicitly (§
   - **M2b — non-Septentrio absence hook ✅ DONE-BY-M2a (2026-07-07).** netr9/netrs/g10 already route
     reachable-but-404/550 through `mark_missing` → `mark_file_missing`; the M2a fold makes that record
     absence, so no separate code was needed. Verified end-to-end via `DownloadTracker.mark_missing`.
-  - **M2c (next) — station `data_start`/`data_end` (057) + TOS sync** (accuracy upgrade; M2d can build
-    first on the earliest-observed-data lower bound, §3.6). **M2d — differential views (058), built on
-    the D8 observation-key lineage + `receivers missing`.** Ceiling = last-complete-period-UTC regardless
-    of TOS.
+  - **M2c — station dates ✅ DONE (2026-07-07).** 057: `stations.data_start`/`data_end` +
+    `sync_station_dates_from_observed()` (earliest-observed fallback, §3.6; filled 158 local stations).
+    TOS sync = later accuracy upgrade.
+  - **M2d slice-1 — D8 lineage views ✅ DONE (2026-07-07).** 058: MATERIALIZED `file_coverage`
+    (per-observation product-presence matrix over the observation key; `obs_hour=COALESCE(hour,-1)` real
+    column + unique index; `refresh_file_coverage()` CONCURRENTLY — verified it runs) + `missing_rinex`
+    (raw root present, no rinex; whitelist `15s_24hr`/`1Hz_1hr`; **advisory-only** until the
+    rinex_config_valid_from gate + M4 imo_archive-date backfill). D8 join validated: SKRO (both on disk)
+    groups as one; ALFD (raw only, empty rinex dir) correctly flagged. Rollback = explicit ordered drops
+    (no CASCADE) so slice-2 objects fail loud.
+  - **M2d slice-2 (next) — ROOT-tier differential:** `missing_on_receiver` + `needs_repull_from_archive`
+    (bounded date-range expected-set from `data_start`..last-complete-period-UTC, per-source floors,
+    station→session map, subtract present@permanent, exclude passive/inactive) + `missing_at_location` +
+    `receivers missing` verb + known-missing manifest. The genuinely hard `generate_series` pass.
 - **M3 — EPOS convergence:** unified-catalog writes at push (sha256 + stored md5s); `rinex_file` becomes
   a derived export (new UNIQUE + advisory lock). Exit: one write path.
 - **M4 — Migrate + prod rollout:** backfill (§7) + backward + cross-host reconcilers + per-host migrate
