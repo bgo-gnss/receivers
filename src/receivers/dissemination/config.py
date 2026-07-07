@@ -186,7 +186,12 @@ class DisseminationTarget:
     """Destination base path on the remote (bare local path when ``host`` empty)."""
 
     source_root: str
-    """Local archive root to read RINEX/raw from (e.g. '/mnt/data/gpsdata')."""
+    """Local archive root to read RINEX/raw from (e.g. '/mnt/data/gpsdata').
+
+    sync.yaml may give a LIST of candidates — the first existing directory
+    wins, so ONE shared config serves hosts with different mounts (rek-d01
+    reads its live /mnt/data/gpsdata, the laptop its /mnt_data/rawgpsdata
+    NFS view). See _resolve_source_root."""
 
     sessions: tuple[str, ...]
     exclude_stations: frozenset[str]
@@ -233,6 +238,28 @@ class DisseminationTarget:
         return Path(self.convert_cache_dir).expanduser()
 
 
+def _resolve_source_root(value, name: str) -> str:
+    """First existing directory from a str-or-list ``source_root``.
+
+    Found live on rek-d01 (2026-07-07): the shared sync.yaml said
+    /mnt_data/rawgpsdata (the laptop's NFS view), which does not exist there
+    — every dissemination date was silently 'skipped'. A candidate list makes
+    the same config correct per host; when nothing exists we keep the first
+    entry and warn loudly (the sweep will skip, but the log says WHY).
+    """
+    candidates = [value] if isinstance(value, str) else list(value)
+    for c in candidates:
+        if Path(c).expanduser().is_dir():
+            return str(c)
+    logger.warning(
+        "dissemination target %s: NO source_root candidate exists on this "
+        "host (%s) — dates will be skipped as no-data",
+        name,
+        ", ".join(map(str, candidates)),
+    )
+    return str(candidates[0])
+
+
 def _build_target(raw: dict) -> DisseminationTarget:
     name = raw["name"]
     cutover = None
@@ -244,7 +271,7 @@ def _build_target(raw: dict) -> DisseminationTarget:
         host=raw.get("host", ""),
         user=raw.get("user", ""),
         dest=raw["dest"],
-        source_root=raw["source_root"],
+        source_root=_resolve_source_root(raw["source_root"], name),
         sessions=tuple(raw.get("sessions", ())),
         exclude_stations=frozenset(s.upper() for s in raw.get("exclude_stations", ())),
         stations=frozenset(s.upper() for s in raw.get("stations", ())),
