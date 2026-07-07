@@ -111,6 +111,45 @@ class JSONFormatter(logging.Formatter):
         return json.dumps(log_entry)
 
 
+# Path install.sh drops on the production server; its presence means logrotate
+# owns rotation of the receivers logs (see deployment/logrotate.d/gps-receivers).
+_LOGROTATE_MARKER = Path("/etc/logrotate.d/gps-receivers")
+
+
+def _external_log_rotation() -> bool:
+    """True when an external rotator (logrotate) owns the receivers log files.
+
+    On the production server install.sh installs /etc/logrotate.d/gps-receivers,
+    so the Python handlers must NOT rotate — a RotatingFileHandler fighting
+    logrotate over the same file churned the most recent ~3 h of logs off disk
+    (it deletes past backupCount; the fleet logs ~19 MB/h). The laptop/dev box
+    has no logrotate, so there the handlers self-rotate to stay bounded.
+
+    Override explicitly with RECEIVERS_LOG_EXTERNAL_ROTATION=1/0.
+    """
+    env = os.environ.get("RECEIVERS_LOG_EXTERNAL_ROTATION")
+    if env is not None:
+        return env.strip().lower() not in ("", "0", "false", "no")
+    return _LOGROTATE_MARKER.exists()
+
+
+def make_log_file_handler(
+    path: Path, max_bytes: int, backup_count: int
+) -> logging.Handler:
+    """File handler that cooperates with whoever owns log rotation.
+
+    - external rotation (logrotate present): ``WatchedFileHandler`` — append-only,
+      reopens the file after logrotate's rename+create, never deletes lines.
+    - otherwise: ``RotatingFileHandler(max_bytes, backup_count)`` — self-bounded,
+      so dev boxes without logrotate don't grow unbounded.
+    """
+    if _external_log_rotation():
+        return logging.handlers.WatchedFileHandler(path, encoding="utf-8")
+    return logging.handlers.RotatingFileHandler(
+        path, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8"
+    )
+
+
 class AuditLogger:
     """Separate audit logger for download statistics and performance metrics."""
 
@@ -129,11 +168,10 @@ class AuditLogger:
         for handler in self.logger.handlers[:]:
             self.logger.removeHandler(handler)
 
-        # JSON file handler for audit trail
-        file_handler = logging.handlers.RotatingFileHandler(
-            self.audit_file,
-            maxBytes=50 * 1024 * 1024,  # 50MB
-            backupCount=5,
+        # JSON file handler for audit trail. Cooperates with logrotate on the
+        # server (WatchedFileHandler), self-rotates on dev (RotatingFileHandler).
+        file_handler = make_log_file_handler(
+            self.audit_file, 50 * 1024 * 1024, 5  # 50 MB x 5 when self-rotating
         )
         file_handler.setFormatter(JSONFormatter())
         self.logger.addHandler(file_handler)
