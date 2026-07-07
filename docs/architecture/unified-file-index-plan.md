@@ -422,10 +422,23 @@ Each with `_rollback.sql`; applied **local first**, then per-host explicitly (§
     rinex_config_valid_from gate + M4 imo_archive-date backfill). D8 join validated: SKRO (both on disk)
     groups as one; ALFD (raw only, empty rinex dir) correctly flagged. Rollback = explicit ordered drops
     (no CASCADE) so slice-2 objects fail loud.
-  - **M2d slice-2 (next) — ROOT-tier differential:** `missing_on_receiver` + `needs_repull_from_archive`
-    (bounded date-range expected-set from `data_start`..last-complete-period-UTC, per-source floors,
-    station→session map, subtract present@permanent, exclude passive/inactive) + `missing_at_location` +
-    `receivers missing` verb + known-missing manifest. The genuinely hard `generate_series` pass.
+  - **M2a-safety ✅ DONE (mig 059):** `is_file_missing` gains `p_use_terminal` (DEFAULT FALSE) — terminal
+    absence is RECORDED but ADVISORY (does not drive a production skip) until the served-gate exists,
+    closing the all-files-404 config-error → skip-forever data-loss hole. 4-arg callers resolve to the
+    advisory default; opt in with `p_use_terminal => TRUE` once the served-gate ships.
+  - **M2d slice-2a — ROOT-tier differential ✅ DONE (mig 060):** `missing_on_receiver` (MATERIALIZED):
+    bounded expected-set (session-map from `receiver_buffer_depth` joined on `lower(receiver_type)`;
+    mosaic-x5 seeded; receiver-horizon floor `current_date-depth_days`; ceiling = last fully-elapsed slot
+    UTC; daily→1 NULL-hour row, hourly→24; NULL-safe anti-joins vs `file_coverage`+`file_absence`; active
+    stations only) MINUS present-root MINUS terminal-absent. `needs_repull_from_archive` (catalog join:
+    raw@permanent ∧ ¬raw@local — inert until M4 archive dates). `file_coverage` recreated with the
+    `rinex_org` root fold (D8; inert until dated). Validated end-to-end on synthetic active stations:
+    daily NULL-hour + present-subtraction, hourly 24/day with the incomplete current hour excluded,
+    NetRS→15s-only session-map, case-insensitive receiver_type join. ADVISORY (static floor).
+  - **M2d slice-2b (next):** download-path served-gate (confirm absence only when the station served ≥1
+    other file — closes config-error poisoning) + dynamic receiver horizon (record oldest-file-seen per
+    station) → then flip `p_use_terminal`. Plus `receivers missing` CLI verb + known-missing manifest +
+    `missing_at_location` (full-history, needs the hard cap). `tos_validated_at` = separate QC axis, later.
 - **M3 — EPOS convergence:** unified-catalog writes at push (sha256 + stored md5s); `rinex_file` becomes
   a derived export (new UNIQUE + advisory lock). Exit: one write path.
 - **M4 — Migrate + prod rollout:** backfill (§7) + backward + cross-host reconcilers + per-host migrate
