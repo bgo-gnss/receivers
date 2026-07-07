@@ -445,3 +445,30 @@ class TestStationFirstScan:
         assert only_2008 == ["2008/apr/RHOF/15s_24hr/raw/RHOF200804010000a.atc"]
         hz = scan_station_raw(tmp_path, "RHOF", "1Hz_1hr")
         assert len(hz) == 1
+
+    def test_noisy_same_station_is_informational(self, tmp_path, monkeypatch):
+        """~100 m from the CLAIMED station's own mark = degraded solution,
+        classified position-noisy — not unknown-station, never moved."""
+        from receivers.archive.raw_format import RawMeta
+
+        rel = _mk(
+            tmp_path,
+            "2009/nov/RHOF/15s_24hr/raw/RHOF200911250000a.atc",
+            b"\x00\x00\x00\x30BHDR",
+        )
+        fleet = {"RHOF": (66.461123, -15.946707), "REYK": (64.1388, -21.9555)}
+        monkeypatch.setattr(sort, "fleet_coordinates", lambda: fleet)
+        monkeypatch.setattr(
+            sort,
+            "teqc_meta",
+            lambda *a, **k: RawMeta(
+                start=datetime(2009, 11, 25),
+                end=datetime(2009, 11, 25, 23),
+                lat=66.46059,
+                lon=-15.94597,
+            ),
+        )
+        plans, skips = plan_relocations(tmp_path, [rel], verify_station=True)
+        assert not plans
+        assert skips[0].reason == "position-noisy"
+        assert "as filed" in skips[0].detail

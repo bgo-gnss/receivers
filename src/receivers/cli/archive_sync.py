@@ -857,6 +857,37 @@ def create_archive_sync_parser(subparsers) -> argparse.ArgumentParser:
     return parser
 
 
+def _sort_progress_renderer(total: int):
+    """Inline progress line for the decode pass: count, rate, ETA, hits.
+
+    TTY: a single self-overwriting line. Non-TTY (logs, pipes): one plain
+    line every 250 files so long runs still show a heartbeat.
+    """
+    import sys
+    import time
+
+    t0 = time.monotonic()
+    is_tty = sys.stdout.isatty()
+
+    def render(done: int, n: int, n_plans: int) -> None:
+        elapsed = time.monotonic() - t0
+        rate = done / elapsed if elapsed > 0 else 0.0
+        eta = (n - done) / rate if rate > 0 else 0.0
+        msg = (
+            f"   ⏳ {done}/{n} ({100 * done // max(n, 1)}%) — "
+            f"{rate:.1f} file/s, ETA {int(eta) // 60}:{int(eta) % 60:02d} — "
+            f"remediation hits: {n_plans}"
+        )
+        if is_tty:
+            print(f"\r{msg}", end="", flush=True)
+            if done == n:
+                print()
+        elif done % 250 == 0 or done == n:
+            print(msg, flush=True)
+
+    return render
+
+
 def _record_plan_applied(plan_path: Path, res) -> None:
     """When an executed plan lives inside gps-tos-corrections, stamp the batch
     dir with an applied-marker and commit+push — the fix and its history are
@@ -1137,6 +1168,7 @@ def cmd_archive_sort(args: argparse.Namespace) -> int:
         min_bytes=args.min_bytes,
         verify_station=args.check_station,
         station_gate_m=gate_m,
+        progress=_sort_progress_renderer(len(rel_files)),
     )
 
     by_reason: dict[str, int] = {}

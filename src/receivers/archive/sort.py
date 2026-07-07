@@ -151,6 +151,7 @@ def plan_relocations(
     min_bytes: int = MIN_RAW_BYTES,
     verify_station: bool = False,
     station_gate_m: float = STATION_GATE_M,
+    progress=None,
 ) -> tuple[list[MovePlan], list[SkipInfo]]:
     """Classify + decode each file under ``root`` and propose corrective moves.
 
@@ -165,7 +166,10 @@ def plan_relocations(
     fleet = fleet_coordinates() if verify_station else {}
     plans: list[MovePlan] = []
     skips: list[SkipInfo] = []
-    for rel in rel_files:
+    total = len(rel_files)
+    for idx, rel in enumerate(rel_files, 1):
+        if progress is not None:
+            progress(idx, total, len(plans))
         path = root / rel
         name = path.name
         parsed = parse_raw_name(name)
@@ -199,6 +203,20 @@ def plan_relocations(
         dist: Optional[float] = None
         if verify_station and meta.lat is not None and meta.lon is not None:
             near, dist = nearest_station(meta.lat, meta.lon, fleet)
+            if near == path_station.upper() and dist > station_gate_m:
+                # Nearest station IS the claimed one, just outside the tight
+                # gate — a degraded single-point solution, not a mystery.
+                # Informational only; never blocks the date/ext checks.
+                skips.append(
+                    SkipInfo(
+                        rel,
+                        "position-noisy",
+                        f"nearest is {near} (as filed) at {dist:.0f} m — "
+                        f"outside the {station_gate_m:.0f} m gate; solution "
+                        "quality, not identity",
+                    )
+                )
+                continue
             if near is None or dist > station_gate_m:
                 skips.append(
                     SkipInfo(
