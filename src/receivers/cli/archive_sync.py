@@ -888,6 +888,43 @@ def _sort_progress_renderer(total: int):
     return render
 
 
+def _print_fix_commands(plans, skips, persisted_dirs) -> None:
+    """End-of-scan contract: the ready-to-run FIX command per finding class.
+
+    Two-command workflow (bgo): command 1 scans + records in the corrections
+    repo and ENDS with exactly what to run; command 2 is that fix.
+    """
+    lines = []
+    if plans and persisted_dirs:
+        for d in persisted_dirs:
+            plan = Path(d) / "plan.tsv"
+            if plan.is_file():
+                lines.append(f"receivers archive-sort --apply-plan {plan} --yes")
+    stubs = [sk.rel for sk in skips if sk.reason == "stub"]
+    if stubs:
+        head = " \\\n    --file ".join([""] + stubs[:40]).lstrip()
+        lines.append(
+            f"receivers archive-rm --max-size 4096 --yes {head}"
+            + (f"\n  # ... +{len(stubs) - 40} more stubs" if len(stubs) > 40 else "")
+        )
+    eyes = [
+        sk
+        for sk in skips
+        if sk.reason in ("unknown-station", "path-name-mismatch", "unparseable-name")
+    ]
+    if not lines and not eyes:
+        return
+    print("\n→ FIX (run when reviewed):")
+    for cmd in lines:
+        print(f"  {cmd}")
+    if eyes:
+        print(f"  # needs eyes ({len(eyes)}):")
+        for sk in eyes[:10]:
+            print(f"  #   {sk.rel}  [{sk.reason}] {sk.detail[:70]}")
+        if len(eyes) > 10:
+            print(f"  #   ... and {len(eyes) - 10} more (see report.tsv)")
+
+
 def _record_plan_applied(plan_path: Path, res) -> None:
     """When an executed plan lives inside gps-tos-corrections, stamp the batch
     dir with an applied-marker and commit+push — the fix and its history are
@@ -960,6 +997,7 @@ def _persist_remediation_records(plans, skips, *, gate_m: float) -> None:
 
     from ..config.receivers_config import ReceiversConfig
 
+    _persist_remediation_records.last_written = []
     issues = [sk for sk in skips if sk.reason != "verified-correct"]
     if not plans and not issues:
         return
@@ -1014,6 +1052,7 @@ def _persist_remediation_records(plans, skips, *, gate_m: float) -> None:
                 fh.write(f"ISSUE\t{sk.rel}\t{sk.reason}\t{sk.detail}\n")
         written.append(out_dir)
         print(f"   📁 fix files -> {out_dir}")
+    _persist_remediation_records.last_written = written
 
     try:
         rels = [str(d.relative_to(repo_path)) for d in written]
@@ -1198,6 +1237,9 @@ def cmd_archive_sort(args: argparse.Namespace) -> int:
         _write_report()
         _persist_remediation_records(plans, skips, gate_m=gate_m)
         print("✅ no misfiled files — nothing to move")
+        _print_fix_commands(
+            plans, skips, getattr(_persist_remediation_records, "last_written", [])
+        )
         return 0
 
     print(f"\n📦 {len(plans)} file(s) need remediation:")
@@ -1235,6 +1277,9 @@ def cmd_archive_sort(args: argparse.Namespace) -> int:
         )
     _write_report()
     _persist_remediation_records(plans, skips, gate_m=gate_m)
+    _print_fix_commands(
+        plans, skips, getattr(_persist_remediation_records, "last_written", [])
+    )
 
     # Resolve the archive gateway from the sync target (same as archive-rm).
     config_path = Path(args.config) if args.config else None
