@@ -187,9 +187,10 @@ class TestConvertHelpers:
             published_name("RHOF00ISL_R_20261280000_01D_15S_MO.rnx", r3)
             == "RHOF00ISL_R_20261280000_01D_15S_MO.crx.gz"
         )
-        # R2 short, Hatanaka + .Z (legacy)
+        # R2 short, Hatanaka + .Z (legacy): G3 forces uppercase .D to match the
+        # IMO archive (.d->.D) and the legacy EPOS portal (RHOF0010.00D.Z).
         r2 = VersionPolicy(naming="short", hatanaka=True, compression="Z")
-        assert published_name("FIM21280.26o", r2) == "FIM21280.26d.Z"
+        assert published_name("FIM21280.26o", r2) == "FIM21280.26D.Z"
         # plain obs, no hatanaka, gz
         plain = VersionPolicy(naming="long", hatanaka=False, compression="gz")
         assert published_name("X.rnx", plain) == "X.rnx.gz"

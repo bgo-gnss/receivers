@@ -424,21 +424,27 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
     # day). In --dry-run we show the intent without touching the portal or DB.
     # --no-supersede disables; skipped for local-dest (no host) test configs.
     supersede = None
-    if result.superseded_name and not args.no_supersede and target.host:
-        # result.ok (not result.pushed): a re-run where the new file is already
-        # on the portal is "up-to-date" (transferred=False) but still needs the
-        # legacy removed. result.ok ⟹ push succeeded (file present) + indexed_id
-        # ⟹ row exists, so removing the legacy can't orphan the day.
+    if (
+        not args.no_supersede
+        and target.host
+        and result.ok
+        and result.relative_path
+        and result.long_name
+    ):
+        # G2 same-slot purge: remove any OTHER indexed portal file for this
+        # (station, obs-date, dir) — an R2->R3 leftover, a .d/.D case straggler,
+        # or decimated residue. result.ok ⟹ push succeeded (file present) and
+        # indexed_id ⟹ row exists, so the purge can't orphan the day. A conn is
+        # opened even in --dry-run to READ the stale siblings (no writes then).
         do_it = result.ok and not args.dry_run and indexed_id is not None
-        rel_dir = str(Path(result.relative_path).parent) if result.relative_path else ""
-        conn2 = _epos_conn() if do_it else None
+        rel_dir = str(Path(result.relative_path).parent)
+        conn2 = _epos_conn()
         try:
-            from ..dissemination import supersede_legacy
+            from ..dissemination.rinex_index import purge_stale_siblings_batch
 
-            supersede = supersede_legacy(
+            supersede = purge_stale_siblings_batch(
                 conn2,
-                superseded_name=result.superseded_name,
-                relative_dir=rel_dir,
+                [(result.station, result.file_date, rel_dir, result.long_name)],
                 ssh_target=f"{target.user}@{target.host}",
                 dest_root=target.dest,
                 dry_run=not do_it,
@@ -471,18 +477,16 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
         if supersede is not None:
             if supersede["removed"]:
                 print(
-                    f"   🧹 superseded legacy {result.superseded_name}: removed from portal"
-                    f" + de-indexed (db ids={supersede['deindexed']})"
+                    f"   🧹 purged {len(supersede['removed'])} stale sibling(s): "
+                    f"{supersede['removed']} (de-indexed ids={supersede['deindexed']})"
                 )
             elif supersede["would_remove"]:
                 print(
-                    f"   🧹 [dry-run] would supersede legacy {result.superseded_name}:"
-                    f" rm {supersede['would_remove']} + de-index name={result.superseded_name}"
+                    f"   🧹 [dry-run] would purge {len(supersede['would_remove'])} "
+                    f"stale sibling(s): {supersede['would_remove']}"
                 )
             elif supersede["skipped"]:
-                print(
-                    f"   🧹 supersede skipped (missing/too-big): {supersede['skipped']}"
-                )
+                print(f"   🧹 purge skipped (missing/too-big): {supersede['skipped']}")
         for err in result.errors:
             print(f"   ⚠ {err}")
     return 0 if result.ok else 1

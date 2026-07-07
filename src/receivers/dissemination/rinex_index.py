@@ -23,7 +23,7 @@ import logging
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from . import epos_db
 from .convert import _is_hatanaka, _strip_compression, resolve_tool
@@ -324,3 +324,127 @@ def _deindex_recovering(conn, name: str) -> list[int]:
                 return []
             logger.info("supersede de-index retry for %s after: %s", name, exc)
     return []
+
+
+# --- G2: same-slot invariant (one file per station/obs-date/product dir) --------
+# The narrow supersede above matched a single precomputed legacy name and only
+# for the native product — it missed .d/.D case variants (the source basename it
+# derived was the re-rinexed .D, the straggler was a mistaken-run .d) and never
+# touched decimated-product residue. The purge below enforces the real invariant
+# directly: after a durable push+index of a product, any OTHER indexed file in
+# the SAME (station, obs-date, dir) is a stale variant and is removed by its
+# ACTUAL stored name/case. Bounded to one slot — never a DOY glob.
+
+
+def find_stale_siblings(
+    conn, *, marker: str, obs_date: Any, relative_dir: str, keep_name: str
+) -> list[tuple[str, str]]:
+    """Indexed files in the same slot as a freshly pushed product but with a
+    different name — the stale variants to purge. Returns ``(name, stored_path)``
+    for our full-path rows only (``/files/<dir>/<name>``).
+
+    Pinned to a single day AND a single dir. The dir holds a whole month, so the
+    ``reference_date`` predicate is what isolates the one date — without it this
+    would sweep the month. ``lower(name)`` match makes ``.d``/``.D`` immaterial.
+    """
+    rel_dir = relative_dir.strip("/")
+    prefix = f"/files/{rel_dir}/"
+    with epos_db.tx_cursor(conn) as cur:
+        cur.execute(
+            """SELECT rf.name, rf.relative_path
+               FROM rinex_file rf JOIN station s ON s.id = rf.id_station
+               WHERE upper(s.marker) = %s
+                 AND rf.reference_date::date = %s
+                 AND rf.relative_path LIKE %s
+                 AND lower(rf.name) <> lower(%s)""",
+            (marker.upper(), obs_date, prefix + "%", keep_name),
+        )
+        rows = cur.fetchall()
+    # Full-path rows in exactly this dir only: stored path must equal prefix+name
+    # (excludes legacy dir-only rows and anything in a deeper subdir).
+    return [(str(n), str(p)) for (n, p) in rows if str(p) == f"{prefix}{n}"]
+
+
+def _deindex_row(conn, name: str, relative_path: str) -> list[int]:
+    """Delete the exact ``(name, relative_path)`` row(s); return ids."""
+    with epos_db.tx_cursor(conn) as cur:
+        cur.execute(
+            "DELETE FROM rinex_file WHERE name = %s AND relative_path = %s "
+            "RETURNING id",
+            (name, relative_path),
+        )
+        ids = [int(r[0]) for r in cur.fetchall()]
+    conn.commit()
+    if ids:
+        logger.info("purged stale rinex_file %s (ids=%s)", name, ids)
+    return ids
+
+
+def purge_stale_siblings_batch(
+    conn,
+    slots: list[tuple[str, Any, str, str]],
+    *,
+    ssh_target: str,
+    dest_root: str,
+    dry_run: bool = True,
+) -> dict:
+    """Enforce one-file-per-slot across a batch. Each ``slot`` is
+    ``(marker, obs_date, relative_dir, keep_name)`` for a durably pushed+indexed
+    product; remove any OTHER indexed portal file in that slot (portal + DB).
+    ONE argv-safe SSH rm for the whole set. Never raises."""
+    out: dict = {"removed": [], "would_remove": [], "skipped": [], "deindexed": []}
+    if not slots or conn is None:
+        return out
+    from ..archive.remove import remove_archive_files
+
+    victims: list[tuple[str, str, str]] = []  # (dest_rel, name, stored_path)
+    seen: set[str] = set()
+    for marker, obs_date, rel_dir, keep in slots:
+        try:
+            sibs = find_stale_siblings(
+                conn,
+                marker=marker,
+                obs_date=obs_date,
+                relative_dir=rel_dir,
+                keep_name=keep,
+            )
+        except Exception as exc:  # noqa: BLE001 - best-effort cleanup
+            epos_db.recover(conn)
+            logger.warning(
+                "stale-sibling scan failed (%s %s): %s", marker, obs_date, exc
+            )
+            continue
+        for name, stored in sibs:
+            if stored in seen:
+                continue
+            seen.add(stored)
+            dest_rel = (
+                stored[len("/files/") :]
+                if stored.startswith("/files/")
+                else stored.lstrip("/")
+            )
+            victims.append((dest_rel, name, stored))
+    if not victims:
+        return out
+    try:
+        rm = remove_archive_files(
+            sorted(v[0] for v in victims),
+            ssh_target=ssh_target,
+            dest_root=dest_root,
+            max_size=_SUPERSEDE_MAX_BYTES,
+            execute=not dry_run,
+        )
+        out["removed"] = [r for r, _ in rm.deleted]
+        out["would_remove"] = [r for r, _ in rm.would_delete]
+        out["skipped"] = (
+            [r for r, _ in rm.skipped_toobig] + list(rm.missing) + list(rm.invalid)
+        )
+    except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
+        logger.warning("stale-sibling portal delete failed: %s", exc)
+        return out
+    if not dry_run:
+        clean = set(out["removed"]) | set(rm.missing)
+        for dest_rel, name, stored in victims:
+            if dest_rel in clean:
+                out["deindexed"].extend(_deindex_row(conn, name, stored))
+    return out

@@ -193,14 +193,14 @@ def run_epos_disseminate_job(
     _FLUSH_EVERY = 200
 
     def _flush_supersedes(conn: Any, items: list) -> int:
-        """One batched portal rm + de-index for the queued legacy files."""
+        """One batched same-slot purge for the queued pushed products."""
         if not items or conn is None:
             items.clear()
             return 0
-        from .rinex_index import supersede_legacy_batch
+        from .rinex_index import purge_stale_siblings_batch
 
         with flush_lock:  # concurrent gateway ssh is unreliable — serialize
-            out = supersede_legacy_batch(
+            out = purge_stale_siblings_batch(
                 conn,
                 list(items),
                 ssh_target=ssh_target,
@@ -210,7 +210,7 @@ def run_epos_disseminate_job(
         n = len(out["removed"])
         if out["skipped"]:
             logger.info(
-                "supersede: %d legacy file(s) not on portal (already clean)",
+                "supersede: %d stale file(s) not on portal (already clean)",
                 len(out["skipped"]),
             )
         items.clear()
@@ -268,17 +268,23 @@ def run_epos_disseminate_job(
                         continue
                     local["cached" if result.cached else "pushed"] += 1
                     indexed_id = _index_pushed(conn, target, result)
+                    # G2: after a durable push+index, purge any stale sibling in
+                    # this exact slot (station, obs-date, dir) — an R2->R3 leftover,
+                    # a .d/.D case straggler, or decimated-dir residue. Queued per
+                    # product (native AND decimated); one batched rm at flush.
                     if (
                         do_supersede
-                        and result.superseded_name
                         and not result.dry_run
                         and indexed_id is not None
                         and result.relative_path
+                        and result.long_name
                     ):
                         pending.append(
                             (
-                                result.superseded_name,
+                                station,
+                                result.file_date,
                                 str(Path(result.relative_path).parent),
+                                result.long_name,
                             )
                         )
                         if len(pending) >= _FLUSH_EVERY:

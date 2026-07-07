@@ -605,6 +605,20 @@ def finalize_epos_header(
 def published_name(obs_name: str, policy) -> str:
     """The published filename for an obs name under a :class:`VersionPolicy`."""
     name = _obs_to_crinex_name(obs_name) if policy.hatanaka else obs_name
+    # RINEX2 Hatanaka short names use uppercase ``.D`` on the IMO archive (the
+    # fleet-wide .d->.D standardization) AND on the legacy EPOS portal
+    # (RHOF0010.00D.Z). _obs_to_crinex_name follows the obs ``.YYo`` case, which
+    # yields lowercase ``.YYd`` — force uppercase so a disseminated R2 short lines
+    # up with the archive + supersede-by-name (a lowercase straggler is exactly
+    # what slipped past supersede before). R3 Hatanaka is ``.crx`` (unaffected).
+    if (
+        policy.hatanaka
+        and len(name) >= 4
+        and name[-4] == "."
+        and name[-3:-1].isdigit()  # 2-digit year
+        and name[-1] == "d"
+    ):
+        name = name[:-1] + "D"
     ext = {"gz": ".gz", "Z": ".Z", "none": ""}.get(policy.compression, ".gz")
     return name + ext
 
