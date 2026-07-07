@@ -259,6 +259,12 @@ def run_epos_disseminate_job(
                         continue
                     if not result.ok:
                         local["skipped"] += 1
+                        logger.info(
+                            "epos-disseminate %s %s skipped: %s",
+                            station,
+                            d,
+                            str(getattr(result, "message", ""))[:160],
+                        )
                         continue
                     local["cached" if result.cached else "pushed"] += 1
                     indexed_id = _index_pushed(conn, target, result)
