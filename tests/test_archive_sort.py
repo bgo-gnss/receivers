@@ -472,3 +472,17 @@ class TestStationFirstScan:
         assert not plans
         assert skips[0].reason == "position-noisy"
         assert "as filed" in skips[0].detail
+
+    def test_t02_path_name_mismatch_flagged_without_decode(self, tmp_path):
+        """A T02 (no cheap decoder) whose NAME claims a different year/month
+        than its directory is flagged path-name-mismatch — the 324 MB
+        'RHOF202101031833a.T02 in 2017/dec' class."""
+        rel = _mk(
+            tmp_path,
+            "2017/dec/RHOF/15s_24hr/raw/RHOF202101031833a.T02",
+            b"\x00\x00\x00\x0d",
+        )
+        plans, skips = plan_relocations(tmp_path, [rel])
+        assert not plans
+        assert skips[0].reason == "path-name-mismatch"
+        assert "2021-01-03" in skips[0].detail
