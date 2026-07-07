@@ -256,12 +256,52 @@ class FileTracker:
             logger.debug(
                 f"Marked file as missing: {station_id}/{session_type}/{file_date}"
             )
+            # Durable confirmed-absent ledger (unified index M2): a reachable-but
+            # -absent (404/550) result. Best-effort + isolated so a pre-056 DB or
+            # any failure never undoes the operational missing-mark above.
+            self._record_receiver_absence(
+                station_id, session_type, file_date, file_hour
+            )
             return True
         except Exception as e:
             logger.debug(f"Error marking file as missing: {e}")
             if self._conn:
                 self._conn.rollback()
             return False
+
+    def _record_receiver_absence(
+        self,
+        station_id: str,
+        session_type: str,
+        file_date: date,
+        file_hour: Optional[int],
+    ) -> None:
+        """Log one reachable-but-absent confirmation to file_absence (mig 056).
+
+        Runs AFTER the file_tracking missing-mark is committed, in its own
+        transaction: terminal promotion is time-spanned inside
+        ``record_file_absence`` (never same-day count-only). Best-effort — a DB
+        without mig 056 (function absent) or any error is swallowed, leaving the
+        operational record and the 24 h transient TTL intact.
+        """
+        if not self._conn:
+            return
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    "SELECT record_file_absence(%s, %s, %s, %s::smallint, 'receiver')",
+                    (station_id, session_type, file_date, file_hour),
+                )
+            self._conn.commit()
+        except Exception as e:  # noqa: BLE001 — best-effort; never break the mark
+            logger.debug(
+                f"record_file_absence failed for "
+                f"{station_id}/{session_type}/{file_date}: {e}"
+            )
+            try:
+                self._conn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
 
     def mark_file_downloaded(
         self,
@@ -2453,3 +2493,55 @@ class GapDetector:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit."""
         self.close()
+
+
+def bootstrap_file_absence(conn, *, dry_run: bool = False) -> int:
+    """Seed file_absence from existing file_tracking ``status='missing'`` rows.
+
+    A one-time head start for the durable absence ledger (mig 056). Rows are
+    seeded NON-TERMINAL (``terminal=false``): file_tracking has no terminal
+    state — every ``missing`` row past the 24 h TTL is precisely the one mig 046
+    means to RETRY (the "receiver caught up later" case), so freezing them here
+    would be silent data loss. Terminal is earned only by go-forward,
+    time-spanned confirmations via ``record_file_absence``.
+
+    ``first_confirmed_at`` carries the file_tracking ``first_checked`` so the
+    observed miss-span is preserved; only RAW download sessions are seeded
+    (receiver absence is about the raw file, never the derived rinex). NULL-safe
+    on file_hour; idempotent (skips slots already present). Returns rows seeded.
+    """
+    count_sql = (
+        "SELECT count(*) FROM file_tracking ft WHERE ft.status='missing' "
+        "AND ft.session_type NOT LIKE %s AND NOT EXISTS ("
+        "  SELECT 1 FROM file_absence fa WHERE fa.source_location='receiver'"
+        "    AND fa.sid=ft.sid AND fa.session_type=ft.session_type"
+        "    AND fa.file_date=ft.file_date"
+        "    AND fa.file_hour IS NOT DISTINCT FROM ft.file_hour)"
+    )
+    insert_sql = """
+        INSERT INTO file_absence
+            (source_location, sid, session_type, file_date, file_hour,
+             confirmations, first_confirmed_at, last_confirmed_at, terminal)
+        SELECT 'receiver', ft.sid, ft.session_type, ft.file_date, ft.file_hour,
+               1, ft.first_checked, ft.last_checked, false
+        FROM file_tracking ft
+        WHERE ft.status = 'missing'
+          AND ft.session_type NOT LIKE %s
+          AND NOT EXISTS (
+              SELECT 1 FROM file_absence fa
+              WHERE fa.source_location = 'receiver'
+                AND fa.sid = ft.sid
+                AND fa.session_type = ft.session_type
+                AND fa.file_date = ft.file_date
+                AND fa.file_hour IS NOT DISTINCT FROM ft.file_hour
+          )
+    """
+    with conn.cursor() as cur:
+        if dry_run:
+            cur.execute(count_sql, (r"%\_rinex",))
+            return cur.fetchone()[0]
+        cur.execute(insert_sql, (r"%\_rinex",))
+        seeded = cur.rowcount
+    conn.commit()
+    logger.info("bootstrap_file_absence: seeded %d non-terminal rows", seeded)
+    return seeded

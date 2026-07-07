@@ -391,6 +391,22 @@ Each with `_rollback.sql`; applied **local first**, then per-host explicitly (§
 - **M2 — Absence + differential (local):** 056–058 + TOS date sync + reworked `is_file_missing()` +
   **non-Septentrio absence hook** + bounded/materialized views + `receivers missing`. Exit: worklists
   query-only, no `ls`, no false-missing on the failure cases in §11.
+  - **M2a — Absence ledger ✅ DONE (2026-07-07, local).** 056 (`file_absence` + two partial unique
+    indexes NULL-safe on hour; `record_file_absence()` — **terminal is TIME-SPANNED**, promoted only
+    once confirmations span ≥`terminal_after_days` (default 3) AND ≥`min_confirmations` (default 3),
+    so a same-day-late 1Hz file is never frozen; reworked `is_file_missing()` = terminal-absence OR
+    24 h TTL, `IS NOT DISTINCT FROM` hour). The absence write is FOLDED into
+    `file_tracker.mark_file_missing` (`_record_receiver_absence`, best-effort/isolated) — so M2a
+    actually delivers terminal-missing for polarx5, not an inert table. `bootstrap_file_absence()`
+    seeds **NON-terminal** from `file_tracking status='missing'` (RAW sessions only; verified
+    `count(terminal)=0`) — file_tracking has no terminal state, so freezing those would re-break
+    mig 046. Verified: apply/rollback/reapply clean; same-day 1Hz stays non-terminal, 3-day-span goes
+    terminal; ruff/black clean; 20 gap-detector tests pass.
+  - **M2b (next) — non-Septentrio absence hook:** route netr9/netrs/g10 404/550 through the same
+    `mark_file_missing` entry point (the shared `download_tracker` wrapper is the choke point).
+  - **M2c — station `data_start`/`data_end` (057) + TOS sync** (accuracy upgrade; M2d can build first
+    on the earliest-observed-data lower bound, §3.6). **M2d — differential views (058) + `receivers
+    missing`.** Ceiling = last-complete-period-UTC regardless of TOS.
 - **M3 — EPOS convergence:** unified-catalog writes at push (sha256 + stored md5s); `rinex_file` becomes
   a derived export (new UNIQUE + advisory lock). Exit: one write path.
 - **M4 — Migrate + prod rollout:** backfill (§7) + backward + cross-host reconcilers + per-host migrate
