@@ -136,6 +136,12 @@ def _load_gate(logger: logging.Logger) -> None:
         waited += GATE_POLL_S
 
 
+def _fmt_eta(seconds: float) -> str:
+    """Compact ``H:MMh`` for an ETA / elapsed duration."""
+    s = max(0, int(seconds))
+    return f"{s // 3600}:{s % 3600 // 60:02d}h"
+
+
 class ChunkProgress:
     """Live progress handle for one chunk (updates are GIL-atomic).
 
@@ -171,16 +177,35 @@ class ChunkProgress:
     def finish(self, ok: bool = True) -> None:
         self.state = "done" if ok else "failed"
 
-    def describe(self) -> str:
+    def _per_item_s(self) -> Optional[float]:
+        """Seconds per item: the recorded convert-time average when the caller
+        passes per-item durations to :meth:`advance`, otherwise a wall-clock
+        estimate (elapsed / items done). The fallback means any batch verb gets
+        a rate + ETA for free, without having to time each item itself."""
+        if self._dur_n:
+            return self._dur_sum / self._dur_n
+        if self._t0 is not None and self.done > 0:
+            return (time.monotonic() - self._t0) / self.done
+        return None
+
+    def eta_s(self) -> Optional[float]:
+        """Estimated seconds until this chunk finishes (None if unknown)."""
+        per = self._per_item_s()
+        if per is None or self.total is None:
+            return None
+        return max(0.0, (self.total - self.done) * per)
+
+    def describe(self, *, timing: bool = True) -> str:
         tot = str(self.total) if self.total is not None else "?"
         s = f"{self.label} {self.done}/{tot}"
-        if self._dur_n:
-            avg = self._dur_sum / self._dur_n
-            s += f" ({avg:.1f}s/item"
-            if self.total is not None:
-                eta = int((self.total - self.done) * avg)
-                s += f", ETA {eta // 3600}:{eta % 3600 // 60:02d}h"
-            s += ")"
+        if timing:
+            per = self._per_item_s()
+            if per is not None:
+                s += f" ({per:.1f}s/item"
+                eta = self.eta_s()
+                if eta is not None:
+                    s += f", ETA {_fmt_eta(eta)}"
+                s += ")"
         return s
 
 
@@ -189,15 +214,24 @@ class ProgressBoard:
 
     Appends a status block every ``interval`` seconds (no ANSI, no carriage
     returns — safe for terminals, logs, and systemd journals). A summary
-    header line, then one indented line per running chunk so it's clear they
-    belong together:
+    header (chunks done + overall ETA), then one indented line per running
+    chunk with its own rate + ETA:
 
-        ⏳ 13/15 chunks done, 3 FAILED
-              RHOF 2025 34/210 (17.4s/item, ETA 0:51h)
-              RHOF 2026 41/207 (16.9s/item, ETA 0:47h)
+        ⏳ 0/4 chunks done · ETA ~0:24h
+              RHOF 2024 19/366 (4.3s/item, ETA 0:24h)
+              RHOF 2025 32/365 (3.9s/item, ETA 0:21h)
+              RHOF 2026 39/187 (3.5s/item, ETA 0:08h)
+              RHOF 2023 19/22  (4.0s/item, ETA 0:00h)
 
-    Use as a context manager around :func:`run_chunks`; create one handle
-    per chunk up front and update it from the chunk function.
+    Once ≤3 chunks are still running it compacts them onto one line (the
+    overall ETA stays in the header):
+
+        ⏳ 1/4 chunks done · ETA ~0:24h
+              RHOF 2024 81/366 | RHOF 2025 89/365 | RHOF 2026 88/187
+
+    Rates/ETAs come from wall-clock by default, so every batch verb gets them
+    without timing each item. Use as a context manager around
+    :func:`run_chunks`; create one handle per chunk up front.
     """
 
     def __init__(self, interval: int = 30, out: Callable[[str], None] = print):
@@ -219,6 +253,18 @@ class ProgressBoard:
         header = f"⏳ {done}/{len(self.handles)} chunks done" + (
             f", {failed} FAILED" if failed else ""
         )
+        # Overall ETA = the slowest still-running chunk (the batch finishes with
+        # it). Approximate: ignores not-yet-started chunks when chunks > workers.
+        etas = [e for e in (h.eta_s() for h in running) if e is not None]
+        if etas:
+            header += f" · ETA ~{_fmt_eta(max(etas))}"
+        if not running:
+            return header
+        # Few chunks left: fit them on one line (counts only; ETA is in the
+        # header). Many: one per line, each with its own rate + ETA.
+        if len(running) <= 3:
+            joined = " | ".join(h.describe(timing=False) for h in running)
+            return f"{header}\n      {joined}"
         lines = [f"      {h.describe()}" for h in running[:6]]
         if len(running) > 6:
             lines.append(f"      (+{len(running) - 6} more running)")
