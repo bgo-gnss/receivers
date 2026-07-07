@@ -1097,6 +1097,65 @@ def _persist_remediation_records(plans, skips, *, gate_m: float) -> None:
         print(f"   ⚠️  gps-tos-corrections commit failed: {exc}")
 
 
+def _apply_plan_file(plan_path: Path, args) -> int:
+    """Execute a reviewed plan.tsv verbatim (no re-decode) via the gateway.
+
+    Dry-run unless --yes; a real run inside gps-tos-corrections gets an
+    applied-marker committed+pushed (_record_plan_applied).
+    """
+    from ..archive import load_sync_config, relocate_archive_files
+
+    pairs = []
+    for ln in plan_path.read_text().splitlines():
+        if not ln.strip() or ln.startswith("#"):
+            continue
+        cols = ln.split("\t")
+        if len(cols) >= 2:
+            pairs.append((cols[0].strip(), cols[1].strip()))
+    if not pairs:
+        print(f"❌ no src/dst pairs in {plan_path}")
+        return 2
+    target = next(
+        (
+            t
+            for t in load_sync_config(Path(args.config) if args.config else None)
+            if getattr(t, "tier", None) == "archive"
+        ),
+        None,
+    )
+    if target is None or not target.host:
+        print("❌ no remote archive tier target in sync.yaml")
+        return 2
+    execute = bool(args.yes)
+    print(
+        f"🌀 APPLYING PLAN {plan_path} ({len(pairs)} move(s))"
+        + ("" if execute else " (DRY-RUN)")
+    )
+    res = relocate_archive_files(
+        pairs,
+        ssh_target=f"{target.user}@{target.host}",
+        dest_root=target.dest,
+        execute=execute,
+    )
+    for src, dst in res.would_move:
+        print(f"   🅼  would move: {src} -> {dst}")
+    for src, dst in res.moved:
+        print(f"   ✅ MOVED: {src} -> {dst}")
+    for src, dst in res.dst_exists:
+        print(f"   ⏭️  SKIP destination exists: {dst}")
+    for src, _d in res.missing:
+        print(f"   ·  missing (already moved?): {src}")
+    for src, dst in res.failed:
+        print(f"   ❌ FAILED: {src} -> {dst}")
+    for src, _d in res.unreported:
+        print(f"   ⚠️  NO STATUS (gateway dropped — re-run): {src}")
+    if not execute and res.would_move:
+        print("\n   → re-run with --yes to actually move.")
+    if execute and res.moved:
+        _record_plan_applied(plan_path, res)
+    return 0 if res.ok else 1
+
+
 def cmd_archive_sort(args: argparse.Namespace) -> int:
     """Find misfiled/misnamed raw files (decoded date ≠ filename date) and
     move them to their correct archive location via the rawdata gateway.
@@ -1108,58 +1167,46 @@ def cmd_archive_sort(args: argparse.Namespace) -> int:
     from ..archive import load_sync_config, plan_relocations, relocate_archive_files
     from ..archive.sort import resolve_position_gate_m
 
+    # Apply the LATEST unapplied plan per station from gps-tos-corrections —
+    # the no-flag form of --apply-plan: scan wrote it there, review happened
+    # in the repo, --apply picks it up.
+    if args.apply:
+        if not args.stations:
+            print("❌ --apply needs STATION(s) (whose latest plan to run)")
+            return 2
+        from ..config.receivers_config import ReceiversConfig
+
+        repo = ReceiversConfig().get_tos_corrections_repo() or str(
+            Path.home() / "git" / "gps-tos-corrections"
+        )
+        rc = 0
+        for sta in args.stations:
+            base = Path(repo) / sta.lower() / "raw-remediation"
+            candidates = (
+                sorted(
+                    (d for d in base.iterdir() if (d / "plan.tsv").is_file()),
+                    reverse=True,
+                )
+                if base.is_dir()
+                else []
+            )
+            plan = None
+            for d in candidates:
+                if (d / "applied.txt").exists():
+                    break  # newest applied — nothing newer pending
+                plan = d / "plan.tsv"
+                break
+            if plan is None:
+                print(f"   {sta.upper()}: no unapplied plan in {base} — nothing to do")
+                continue
+            print(f"   {sta.upper()}: applying {plan}")
+            rc = max(rc, _apply_plan_file(plan, args))
+        return rc
+
     # Apply a previously reviewed plan verbatim — no re-decode, the reviewed
     # file IS the contract (src<TAB>dst per line; extra columns ignored).
     if args.apply_plan:
-        pairs = []
-        for ln in Path(args.apply_plan).read_text().splitlines():
-            if not ln.strip() or ln.startswith("#"):
-                continue
-            cols = ln.split("\t")
-            if len(cols) >= 2:
-                pairs.append((cols[0].strip(), cols[1].strip()))
-        if not pairs:
-            print(f"❌ no src/dst pairs in {args.apply_plan}")
-            return 2
-        target = next(
-            (
-                t
-                for t in load_sync_config(Path(args.config) if args.config else None)
-                if getattr(t, "tier", None) == "archive"
-            ),
-            None,
-        )
-        if target is None or not target.host:
-            print("❌ no remote archive tier target in sync.yaml")
-            return 2
-        execute = bool(args.yes)
-        print(
-            f"🌀 APPLYING PLAN {args.apply_plan} ({len(pairs)} move(s))"
-            + ("" if execute else " (DRY-RUN)")
-        )
-        res = relocate_archive_files(
-            pairs,
-            ssh_target=f"{target.user}@{target.host}",
-            dest_root=target.dest,
-            execute=execute,
-        )
-        for src, dst in res.would_move:
-            print(f"   🅼  would move: {src} -> {dst}")
-        for src, dst in res.moved:
-            print(f"   ✅ MOVED: {src} -> {dst}")
-        for src, dst in res.dst_exists:
-            print(f"   ⏭️  SKIP destination exists: {dst}")
-        for src, _d in res.missing:
-            print(f"   ·  missing (already moved?): {src}")
-        for src, dst in res.failed:
-            print(f"   ❌ FAILED: {src} -> {dst}")
-        for src, _d in res.unreported:
-            print(f"   ⚠️  NO STATUS (gateway dropped — re-run): {src}")
-        if not execute and res.would_move:
-            print("\n   → re-run with --yes to actually move.")
-        if execute and res.moved:
-            _record_plan_applied(Path(args.apply_plan), res)
-        return 0 if res.ok else 1
+        return _apply_plan_file(Path(args.apply_plan), args)
 
     root = Path(args.root)
     if not root.is_dir():
@@ -1417,9 +1464,15 @@ def create_archive_sort_parser(subparsers) -> argparse.ArgumentParser:
         "unreadable with evidence) to FILE",
     )
     parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Execute the LATEST unapplied plan for the given STATION(s) from "
+        "gps-tos-corrections (no path needed); dry-run unless --yes",
+    )
+    parser.add_argument(
         "--apply-plan",
         metavar="FILE",
-        help="Execute a previously reviewed --plan-out file verbatim "
+        help="Execute a specific reviewed plan file verbatim "
         "(no re-decode); dry-run unless --yes",
     )
     parser.add_argument("--config", help="Path to sync.yaml (default: standard)")
