@@ -338,10 +338,16 @@ def _deindex_recovering(conn, name: str) -> list[int]:
 
 def find_stale_siblings(
     conn, *, marker: str, obs_date: Any, relative_dir: str, keep_name: str
-) -> list[tuple[str, str]]:
+) -> list[tuple[str, str, str]]:
     """Indexed files in the same slot as a freshly pushed product but with a
-    different name — the stale variants to purge. Returns ``(name, stored_path)``
-    for our full-path rows only (``/files/<dir>/<name>``).
+    different name — the stale variants to purge. Returns
+    ``(name, stored_path, dest_rel)`` where ``dest_rel`` is the actual
+    portal-relative file path (``<dir>/<name>``) to remove.
+
+    Two row shapes both count as in-slot: OUR full-path rows
+    (``/files/<dir>/<name>``) and the legacy container's DIR-ONLY rows
+    (``/files/<dir>/``, filename carried in ``name``). Both are the legacy day
+    file our long-name product replaces. Deeper subdir rows are excluded.
 
     Pinned to a single day AND a single dir. The dir holds a whole month, so the
     ``reference_date`` predicate is what isolates the one date — without it this
@@ -360,9 +366,14 @@ def find_stale_siblings(
             (marker.upper(), obs_date, prefix + "%", keep_name),
         )
         rows = cur.fetchall()
-    # Full-path rows in exactly this dir only: stored path must equal prefix+name
-    # (excludes legacy dir-only rows and anything in a deeper subdir).
-    return [(str(n), str(p)) for (n, p) in rows if str(p) == f"{prefix}{n}"]
+    out: list[tuple[str, str, str]] = []
+    for n, p in rows:
+        n, p = str(n), str(p)
+        # our full-path row, OR a legacy dir-only row (path == the dir itself).
+        # Anything else under the prefix is a deeper subdir → not this slot.
+        if p == f"{prefix}{n}" or p == prefix:
+            out.append((n, p, f"{rel_dir}/{n}"))
+    return out
 
 
 def _deindex_row(conn, name: str, relative_path: str) -> list[int]:
@@ -414,15 +425,10 @@ def purge_stale_siblings_batch(
                 "stale-sibling scan failed (%s %s): %s", marker, obs_date, exc
             )
             continue
-        for name, stored in sibs:
-            if stored in seen:
+        for name, stored, dest_rel in sibs:
+            if dest_rel in seen:
                 continue
-            seen.add(stored)
-            dest_rel = (
-                stored[len("/files/") :]
-                if stored.startswith("/files/")
-                else stored.lstrip("/")
-            )
+            seen.add(dest_rel)
             victims.append((dest_rel, name, stored))
     if not victims:
         return out

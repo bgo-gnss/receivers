@@ -151,15 +151,16 @@ def fake_db(monkeypatch):
 
 
 class TestG2FindStaleSiblings:
-    def test_only_exact_full_path_rows_in_slot(self, fake_db):
+    def test_full_path_and_legacy_dir_only_in_slot_deeper_excluded(self, fake_db):
         rel = "2026/mar/ELEY/15s_24hr/rinex"
         prefix = f"/files/{rel}/"
-        # the SELECT already excludes the keep-name (lower<>lower) — here we test
-        # the Python-side full-path filter: keep only prefix+name rows.
         rows = [
-            ("ELEY0600.26d.Z", prefix + "ELEY0600.26d.Z"),  # KEEP: our full-path
-            ("ELEY0600.26X.Z", prefix),  # legacy dir-only -> drop
-            ("ELEY0600.26Y.Z", prefix + "sub/ELEY0600.26Y.Z"),  # deeper -> drop
+            # our full-path row
+            ("ELEY0600.26d.Z", prefix + "ELEY0600.26d.Z"),
+            # legacy container dir-only row (filename lives in `name`)
+            ("ELEY0600.26X.Z", prefix),
+            # deeper subdir -> different slot -> excluded
+            ("ELEY0600.26Y.Z", prefix + "sub/ELEY0600.26Y.Z"),
         ]
         fake_db["cursor"] = _FakeCursor(rows, [])
         out = rinex_index.find_stale_siblings(
@@ -169,7 +170,11 @@ class TestG2FindStaleSiblings:
             relative_dir=rel,
             keep_name="ELEY00ISL_R_20260600000_01D_15S_MO.crx.gz",
         )
-        assert out == [("ELEY0600.26d.Z", prefix + "ELEY0600.26d.Z")]
+        # (name, stored_path, dest_rel); dest_rel is always <dir>/<name>
+        assert out == [
+            ("ELEY0600.26d.Z", prefix + "ELEY0600.26d.Z", f"{rel}/ELEY0600.26d.Z"),
+            ("ELEY0600.26X.Z", prefix, f"{rel}/ELEY0600.26X.Z"),
+        ]
 
     def test_query_pins_date_and_dir(self, fake_db):
         cur = _FakeCursor([], [])
