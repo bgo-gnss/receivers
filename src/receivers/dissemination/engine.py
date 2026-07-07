@@ -112,6 +112,12 @@ class EposDisseminate:
 
             agency_resolver = AgencyResolver.load()
         self.agency_resolver = agency_resolver
+        # Optional utils.net_push.BatchPush: when set (by the range/sweep driver),
+        # run_one STAGES the published file into the batcher instead of pushing it
+        # per-file — the batcher flushes every N files in one rsync, and its
+        # on_flush callback does the index+supersede AFTER the batch is durable.
+        # Unset (single-date CLI, reactive) → immediate per-file push, unchanged.
+        self.pusher: Optional[Any] = None
 
     def _resolve_observer_agency(self, session: Optional[dict]) -> tuple[str, str]:
         """(OBSERVER, AGENCY) for the RINEX header.
@@ -399,12 +405,27 @@ class EposDisseminate:
         try:
             published = package(conv.output_path, policy, conv.output_path.parent)
             result.artifact_path = str(published)
-            transferred = self._push(published, rel_dir)
         except ConvertError as exc:
-            result.message = f"package/push failed: {exc}"
+            result.message = f"package failed: {exc}"
             result.errors.append(str(exc))
             return result
 
+        cache_note = " (cached)" if conv.cached else ""
+        if self.pusher is not None:
+            # Staged: the batcher rsyncs this file (with others) on its next flush,
+            # and its on_flush does the index+supersede once durable. Mark ok so the
+            # caller counts it; the actual transfer/index happen at flush time.
+            self.pusher.add(published, rel_dir, pub_name, ref=result)
+            result.ok = True
+            result.message = f"staged {pub_name}{cache_note}"
+            return result
+
+        try:
+            transferred = self._push(published, rel_dir)
+        except ConvertError as exc:
+            result.message = f"push failed: {exc}"
+            result.errors.append(str(exc))
+            return result
         result.pushed = transferred and not self.dry_run
         result.ok = True
         verb = (
@@ -412,6 +433,5 @@ class EposDisseminate:
             if self.dry_run
             else ("pushed" if transferred else "up-to-date")
         )
-        cache_note = " (cached)" if conv.cached else ""
         result.message = f"{verb} {pub_name}{cache_note}"
         return result

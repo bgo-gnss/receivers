@@ -189,32 +189,30 @@ def run_epos_disseminate_job(
 
     do_supersede = bool(supersede and getattr(target, "host", ""))
     ssh_target = f"{target.user}@{target.host}" if do_supersede else ""
+    push_ssh = f"{target.user}@{target.host}" if getattr(target, "host", "") else None
     flush_lock = threading.Lock()
-    _FLUSH_EVERY = 200
+    _PUSH_BATCH = 300  # files staged per rsync flush (both products of ~150 dates)
 
-    def _flush_supersedes(conn: Any, items: list) -> int:
-        """One batched same-slot purge for the queued pushed products."""
-        if not items or conn is None:
-            items.clear()
+    def _supersede_slots(conn: Any, slots: list) -> int:
+        """One batched same-slot purge for a flushed batch of pushed products."""
+        if not slots or conn is None:
             return 0
         from .rinex_index import purge_stale_siblings_batch
 
         with flush_lock:  # concurrent gateway ssh is unreliable — serialize
             out = purge_stale_siblings_batch(
                 conn,
-                list(items),
+                list(slots),
                 ssh_target=ssh_target,
                 dest_root=target.dest,
                 dry_run=False,
             )
-        n = len(out["removed"])
         if out["skipped"]:
             logger.info(
                 "supersede: %d stale file(s) not on portal (already clean)",
                 len(out["skipped"]),
             )
-        items.clear()
-        return n
+        return len(out["removed"])
 
     # Multi-product (format.products): one published file per product per date.
     # Explicit products use the product kwarg; the default single-product shape
@@ -223,14 +221,60 @@ def run_epos_disseminate_job(
     _active_products = [p for p in _products if getattr(p, "enabled", True)]
 
     def _run_station_dates(station: str, chunk_dates: list, progress=None) -> dict:
-        """One worker unit: own engine + own EPOS conn + local supersede queue."""
+        """One worker unit: own engine + own EPOS conn + own batched pusher.
+
+        run_one STAGES each published file into the pusher; the pusher rsyncs a
+        batch of ``_PUSH_BATCH`` files at a time (one connection, not one-per-
+        file) and calls ``_on_flush`` for the batch once it is DURABLE on the
+        portal — that is where the index + same-slot supersede run, so a stale
+        file is never removed before its replacement has landed.
+        """
+        from ..utils.net_push import BatchPush
+
         local = {"pushed": 0, "cached": 0, "skipped": 0, "failed": 0, "superseded": 0}
         engine = engine_factory(target)
         try:
             conn = epos_conn_factory()
         except Exception:  # noqa: BLE001 - indexing is best-effort
             conn = None
-        pending: list = []
+        state = {"conn": conn}  # boxed so a mid-chunk reopen is visible to on_flush
+
+        def _on_flush(refs: list, stats: dict) -> None:
+            # refs = result objects whose files just landed durably. Index each,
+            # then supersede their slots in one batched portal rm. Best-effort.
+            c = state["conn"]
+            slots = []
+            for result in refs:
+                if result is None:
+                    continue
+                idx = _index_pushed(c, target, result)
+                if (
+                    do_supersede
+                    and not getattr(result, "dry_run", False)
+                    and idx is not None
+                    and result.relative_path
+                    and result.long_name
+                ):
+                    slots.append(
+                        (
+                            result.station,
+                            result.file_date,
+                            str(Path(result.relative_path).parent),
+                            result.long_name,
+                        )
+                    )
+            if slots:
+                local["superseded"] += _supersede_slots(c, slots)
+
+        pusher = BatchPush(
+            dest_base=getattr(engine, "dest_override", None) or target.dest,
+            ssh_target=push_ssh,
+            flush_every=_PUSH_BATCH,
+            dry_run=getattr(engine, "dry_run", False),
+            on_flush=_on_flush,
+            log=logger,
+        )
+        engine.pusher = pusher
         if progress is not None:
             progress.set_total(len(chunk_dates))
         try:
@@ -238,12 +282,12 @@ def run_epos_disseminate_job(
                 # A severed EPOS conn (laptop sleep, NAT expiry) surfaces as
                 # closed after the keepalive/timeout kicks in — reopen so the
                 # rest of the chunk keeps indexing instead of skipping.
-                if conn is not None and getattr(conn, "closed", 0):
+                if state["conn"] is not None and getattr(state["conn"], "closed", 0):
                     try:
-                        conn = epos_conn_factory()
+                        state["conn"] = epos_conn_factory()
                         logger.info("EPOS conn reopened mid-chunk (%s)", station)
                     except Exception:  # noqa: BLE001 - indexing stays best-effort
-                        conn = None
+                        state["conn"] = None
                 runs = [(p,) for p in _active_products] if _active_products else [()]
                 for run_args in runs:
                     try:
@@ -266,36 +310,18 @@ def run_epos_disseminate_job(
                             str(getattr(result, "message", ""))[:160],
                         )
                         continue
+                    # run_one staged the file into the pusher (which flushes every
+                    # _PUSH_BATCH → _on_flush indexes + supersedes). Count here.
                     local["cached" if result.cached else "pushed"] += 1
-                    indexed_id = _index_pushed(conn, target, result)
-                    # G2: after a durable push+index, purge any stale sibling in
-                    # this exact slot (station, obs-date, dir) — an R2->R3 leftover,
-                    # a .d/.D case straggler, or decimated-dir residue. Queued per
-                    # product (native AND decimated); one batched rm at flush.
-                    if (
-                        do_supersede
-                        and not result.dry_run
-                        and indexed_id is not None
-                        and result.relative_path
-                        and result.long_name
-                    ):
-                        pending.append(
-                            (
-                                station,
-                                result.file_date,
-                                str(Path(result.relative_path).parent),
-                                result.long_name,
-                            )
-                        )
-                        if len(pending) >= _FLUSH_EVERY:
-                            local["superseded"] += _flush_supersedes(conn, pending)
                 if progress is not None:
                     progress.advance()
-            local["superseded"] += _flush_supersedes(conn, pending)
+            pusher.close()  # final flush → _on_flush for the remainder
         finally:
-            if conn is not None:
+            engine.pusher = None
+            c = state["conn"]
+            if c is not None:
                 try:
-                    conn.close()
+                    c.close()
                 except Exception:  # noqa: BLE001
                     pass
         return local
