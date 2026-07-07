@@ -48,7 +48,20 @@ class ProductionFormatter(logging.Formatter):
 
         level_icon = level_indicators.get(record.levelname, record.levelname)
 
-        return f"{timestamp} {level_icon} {station_id}{record.getMessage()}"
+        line = f"{timestamp} {level_icon} {station_id}{record.getMessage()}"
+
+        # Append exception traceback / stack info when present. The base
+        # logging.Formatter does this automatically; these custom format()
+        # overrides must replicate it or logger.exception() output is silently
+        # swallowed (no traceback anywhere) — which is exactly what hid an EPOS
+        # dissemination failure until it was reproduced by hand.
+        if record.exc_info:
+            if not record.exc_text:
+                record.exc_text = self.formatException(record.exc_info)
+            line = f"{line}\n{record.exc_text}"
+        if record.stack_info:
+            line = f"{line}\n{self.formatStack(record.stack_info)}"
+        return line
 
 
 class JSONFormatter(logging.Formatter):
@@ -82,6 +95,18 @@ class JSONFormatter(logging.Formatter):
         if record.levelname in ["ERROR", "CRITICAL"] and hasattr(record, "error_type"):
             log_entry["error_type"] = record.error_type
             log_entry["error_category"] = getattr(record, "error_category", "unknown")
+
+        # Serialize exception traceback / stack info when present. Without this
+        # logger.exception() writes only its message (exc_info is dropped),
+        # leaving no traceback in the JSON log — the gap that made an EPOS
+        # dissemination "run failed" undiagnosable from the logs alone.
+        # json.dumps escapes the embedded newlines, so records stay one-per-line.
+        if record.exc_info:
+            if not record.exc_text:
+                record.exc_text = self.formatException(record.exc_info)
+            log_entry["exc_info"] = record.exc_text
+        if record.stack_info:
+            log_entry["stack_info"] = self.formatStack(record.stack_info)
 
         return json.dumps(log_entry)
 
