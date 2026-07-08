@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Optional
@@ -523,6 +524,10 @@ def cmd_archive_index_backfill(args: argparse.Namespace) -> int:
             for n in sorted(names):
                 yield os.path.join(dirpath, n)
 
+    # Periodic progress to stderr (keeps stdout clean for --json).
+    def _progress(msg: str) -> None:
+        print(f"  … {msg}", file=sys.stderr, flush=True)
+
     stats = backfill_archive_catalog(
         hosts,
         _walk(),
@@ -533,6 +538,8 @@ def cmd_archive_index_backfill(args: argparse.Namespace) -> int:
         dry_run=args.dry_run,
         require_compressed=args.refill_compressed,
         sleep_between=args.sleep,
+        progress_every=args.progress_every,
+        progress_callback=_progress,
     )
 
     if args.json:
@@ -866,6 +873,14 @@ def create_archive_index_backfill_parser(subparsers) -> argparse.ArgumentParser:
         "RE-READS content-hashed rows to add the compressed_sha256 (EPOS-md5) "
         "counterpart. Heavy (re-reads the archive) — leave off for the primary "
         "index pass, which only touches genuinely-uncataloged files.",
+    )
+    parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=500,
+        metavar="N",
+        help="Log a progress line every N files scanned (default: 500) — so a long "
+        "walk reports periodically instead of only at the end.",
     )
     parser.add_argument(
         "--config", help="Path to sync.yaml (default: GPS_CONFIG_PATH/sync.yaml)"

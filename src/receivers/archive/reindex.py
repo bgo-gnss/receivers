@@ -28,7 +28,7 @@ import os
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 from ..utils.canonical_key import canonical_key
 from ..utils.content_hash import (
@@ -348,6 +348,7 @@ def backfill_archive_catalog(
     require_compressed: bool = False,
     sleep_between: float = 0.0,
     progress_every: int = 500,
+    progress_callback: Optional[Callable[[str], None]] = None,
     log: logging.Logger = logger,
 ) -> BackfillStats:
     """Index already-on-disk archive files into ``archive_catalog`` on every host.
@@ -415,9 +416,21 @@ def backfill_archive_catalog(
             for label, conn in conns.items()
         }
 
+        scanned = 0
+        verb = "would-index" if dry_run else "hashed"
         for f in files:
             if limit is not None and stats.hashed >= limit:
                 break
+            scanned += 1
+            if scanned % progress_every == 0:
+                msg = (
+                    f"progress: {scanned} scanned — {stats.hashed} {verb}, "
+                    f"{stats.skipped_done} already-indexed, "
+                    f"{stats.skipped_parse} unparsable"
+                )
+                log.info("backfill %s", msg)
+                if progress_callback is not None:
+                    progress_callback(msg)
             parsed = parse_archive_path(f, root)
             if parsed is None:
                 stats.skipped_parse += 1
@@ -432,7 +445,7 @@ def backfill_archive_catalog(
 
             if dry_run:
                 stats.hashed += 1
-                log.info("backfill[DRY]: would index %s → %s", key, needing)
+                log.debug("backfill[DRY]: would index %s → %s", key, needing)
                 continue
 
             try:
@@ -480,13 +493,6 @@ def backfill_archive_catalog(
                     )
 
             stats.hashed += 1
-            if stats.hashed % progress_every == 0:
-                log.info(
-                    "backfill progress: %d hashed, %d already-done, %d parse-skip",
-                    stats.hashed,
-                    stats.skipped_done,
-                    stats.skipped_parse,
-                )
             if sleep_between > 0:
                 time.sleep(sleep_between)
     finally:
