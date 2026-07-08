@@ -30,6 +30,102 @@ logger = logging.getLogger("receivers.dissemination.job")
 # serializing costs nothing.
 _INDEX_LOCK = threading.Lock()
 
+# Unified-index dual-write: alongside the EPOS ``rinex_file`` write we also upsert
+# an ``archive_catalog(storage_location='epos_portal')`` row in gps_health, so the
+# one sha256 index carries the portal tier (with BOTH sha256s AND both EPOS md5s).
+# The connection is opened lazily and CLOSED at sweep end (``_close_catalog_conn``)
+# so no gps_health connection is held between scheduler sweeps. Shared across
+# parallel chunks, so guarded by its own lock; commit-per-file means it never
+# holds a transaction open (unlike the FormatResolver leak).
+_CATALOG_LOCK = threading.Lock()
+_catalog_conn: Any = None
+
+
+def _get_catalog_conn() -> Any:
+    """Lazily open + cache the sweep's gps_health connection for the epos_portal
+    dual-write. On rek-d01 this is localhost + the best-effort pgdev mirror, so a
+    row lands on both DBs. Injectable for tests via ``_catalog_conn_factory``."""
+    global _catalog_conn
+    if _catalog_conn is None:
+        if _catalog_conn_factory is not None:
+            _catalog_conn = _catalog_conn_factory()
+        else:
+            from ..health.database_factory import DatabaseConnectionFactory
+
+            _catalog_conn = DatabaseConnectionFactory.get_connection(
+                database="gps_health"
+            )
+    return _catalog_conn
+
+
+# Test seam: set to a zero-arg callable returning a fake gps_health connection.
+_catalog_conn_factory: Any = None
+
+
+def _close_catalog_conn() -> None:
+    """Close the sweep's catalog connection (call from the job's finally) so no
+    gps_health connection is left held between scheduler sweeps."""
+    global _catalog_conn
+    with _CATALOG_LOCK:
+        if _catalog_conn is not None:
+            try:
+                _catalog_conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+            _catalog_conn = None
+
+
+def _catalog_epos_push(target: Any, result: Any) -> None:
+    """Best-effort dual-write of a pushed EPOS file into ``archive_catalog``
+    (``storage_location='epos_portal'``) with both sha256s + both EPOS md5s.
+
+    Independent of the ``rinex_file`` index (the external EPOS contract, written
+    separately) — NEVER raises, so it can't affect the sweep or supersede gating.
+    Skips a file not in hand (cached/aged-off) — those are the ``--epos`` backfill
+    scope, not the forward hash-at-push path.
+    """
+    path = getattr(result, "artifact_path", None)
+    if not path or getattr(result, "dry_run", False):
+        return
+    p = Path(path)
+    if not p.is_file():
+        return
+    try:
+        from ..archive.catalog import upsert_catalog_row
+        from ..utils.content_hash import compressed_sha256, content_sha256
+        from .rinex_index import rinex_md5s
+
+        md5checksum, md5uncompressed = rinex_md5s(p)
+        csha = content_sha256(p)
+        zsha = compressed_sha256(p)
+        with _CATALOG_LOCK:
+            conn = _get_catalog_conn()
+            upsert_catalog_row(
+                conn,
+                storage_location="epos_portal",
+                station=result.station,
+                session_type=(target.sessions[0] if target.sessions else "15s_24hr"),
+                file_category="rinex",
+                file_date=result.file_date,
+                file_hour=None,
+                archive_path=f"/files/{result.relative_path}",
+                filename=p.name,
+                file_size=p.stat().st_size,
+                content_sha256=csha,
+                compressed_sha256=zsha,
+                md5checksum=md5checksum,
+                md5uncompressed=md5uncompressed,
+            )
+            conn.commit()
+    except Exception as exc:  # noqa: BLE001 - dual-write must never fail the sweep
+        logger.warning(
+            "epos_portal catalog dual-write failed for %s %s: %s",
+            getattr(result, "station", "?"),
+            getattr(result, "file_date", "?"),
+            exc,
+        )
+        _close_catalog_conn()  # drop a possibly-poisoned conn; next file retries
+
 
 def _index_pushed(epos_conn: Any, target: Any, result: Any) -> Optional[int]:
     """Best-effort index of a freshly pushed file in the EPOS rinex_file table.
@@ -41,6 +137,10 @@ def _index_pushed(epos_conn: Any, target: Any, result: Any) -> Optional[int]:
     without it the first error poisons the transaction and every later index
     on this connection fails with 'current transaction is aborted'.
     """
+    # Unified-index dual-write (best-effort, independent of the rinex_file index
+    # and its epos_conn) — a pushed file lands in archive_catalog(epos_portal) too.
+    _catalog_epos_push(target, result)
+
     if epos_conn is None or not result.artifact_path or not result.relative_path:
         return None
     from .rinex_index import index_rinex_file
@@ -372,6 +472,8 @@ def run_epos_disseminate_job(
             for k, v in local.items():
                 summary[k] += v
 
+    _close_catalog_conn()  # don't hold a gps_health conn between sweeps
+
     logger.info(
         "epos-disseminate sweep: %d stations, pushed=%d cached=%d skipped=%d "
         "failed=%d superseded=%d",
@@ -558,6 +660,7 @@ def run_epos_reactive_job(
             )
         return run_reactive_sync(scan_markers, fingerprint_fn, store, actions)
     finally:
+        _close_catalog_conn()  # don't hold a gps_health conn between sweeps
         if epos_conn is not None:
             try:
                 epos_conn.close()

@@ -239,6 +239,8 @@ def upsert_catalog_row(
     file_tracking_id: Optional[int] = None,
     file_hour: Optional[int] = None,
     compressed_sha256: Optional[str] = None,
+    md5checksum: Optional[str] = None,
+    md5uncompressed: Optional[str] = None,
 ) -> None:
     """Insert/refresh the catalog row for one archived file.
 
@@ -263,8 +265,8 @@ def upsert_catalog_row(
                 (storage_location, station, file_date, file_hour, session_type,
                  file_category, canonical_key, file_path, compression,
                  file_size, content_sha256, compressed_sha256,
-                 file_tracking_id, indexed_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                 md5checksum, md5uncompressed, file_tracking_id, indexed_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
             ON CONFLICT (storage_location, session_type, file_category, canonical_key)
             DO UPDATE SET
                 file_path         = EXCLUDED.file_path,
@@ -274,6 +276,10 @@ def upsert_catalog_row(
                                              archive_catalog.content_sha256),
                 compressed_sha256 = COALESCE(EXCLUDED.compressed_sha256,
                                              archive_catalog.compressed_sha256),
+                md5checksum       = COALESCE(EXCLUDED.md5checksum,
+                                             archive_catalog.md5checksum),
+                md5uncompressed   = COALESCE(EXCLUDED.md5uncompressed,
+                                             archive_catalog.md5uncompressed),
                 station           = EXCLUDED.station,
                 file_date         = EXCLUDED.file_date,
                 file_hour         = COALESCE(EXCLUDED.file_hour,
@@ -295,6 +301,8 @@ def upsert_catalog_row(
                 file_size,
                 content_sha256,
                 compressed_sha256,
+                md5checksum,
+                md5uncompressed,
                 file_tracking_id,
             ),
         )
