@@ -19,10 +19,25 @@ from ..utils.download_tracker import parse_date_from_filename
 
 # Index of each dimension within the path components relative to source_root:
 #   [0]=YYYY  [1]=mon  [2]=STATION  [3]=SESSION  [4]=CATEGORY  [5]=filename
+_YEAR_IDX = 0
 _STATION_IDX = 2
 _SESSION_IDX = 3
 _CATEGORY_IDX = 4
 _MIN_PARTS = 6
+
+
+def _is_year_component(part: str) -> bool:
+    """True iff ``part`` is a 4-digit calendar year (the archive tree's top level).
+
+    This is the load-bearing guard against mis-parsing paths whose components are
+    shifted out of the ``YYYY/mon/STA/...`` layout — most importantly NFS/NetApp
+    ``.snapshot/<snap>/YYYY/...`` snapshot trees, where the two extra prefix dirs
+    would otherwise make the year read as the station, the month as the session,
+    and the real station as the category (all with a NULL file_date). Because the
+    year slot then holds ``.snapshot`` (not a year), rejecting here returns
+    ``None`` — the "not a catalogable archive file" contract every caller honours.
+    """
+    return len(part) == 4 and part.isdigit()
 
 
 @dataclass(frozen=True)
@@ -49,6 +64,10 @@ def parse_archive_path(abs_path: str, source_root: str) -> Optional[ParsedArchiv
         return None
     parts = rel.split(os.sep)
     if len(parts) < _MIN_PARTS:
+        return None
+    if not _is_year_component(parts[_YEAR_IDX]):
+        # Not a ``YYYY/mon/STA/...`` archive path (e.g. an NFS ``.snapshot``
+        # tree, whose leading dirs shift every dimension) — not catalogable.
         return None
 
     station = parts[_STATION_IDX]

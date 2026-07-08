@@ -353,6 +353,11 @@ def iter_archive_files(
     """
     for dirpath, dirs, names in os.walk(walk_dir):
         dirs.sort()
+        # Prune hidden directories — most importantly NFS/NetApp ``.snapshot``
+        # trees, which mirror the whole archive under two extra prefix dirs and
+        # would otherwise be walked (and mis-catalogued) once per retained snap.
+        # The archive layout has no legitimate dotdirs.
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
         rel = os.path.relpath(dirpath, root)
         depth = 0 if rel == os.curdir else rel.count(os.sep) + 1
         if stations is not None and depth == 2:
