@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Optional
@@ -302,22 +303,32 @@ class BackfillStats:
         }
 
 
-def _load_done_keys(conn, storage_location: str) -> set:
+def _load_done_keys(
+    conn, storage_location: str, *, require_compressed: bool = False
+) -> set:
     """Return the set of ``(session_type, file_category, canonical_key)`` rows on
-    this host that already hold BOTH hashes — the resume skip-set.
+    this host that count as already-indexed — the resume skip-set.
+
+    Default "done" = ``content_sha256`` present (the primary index hash). Most of
+    a mature archive is already content-hashed from prior reindex/sync work, so
+    this makes a full-archive sweep touch ONLY the genuinely-uncataloged files
+    (read once, not re-read the whole 16 TB). ``require_compressed=True`` also
+    demands ``compressed_sha256`` — for a deliberate later pass that fills the
+    EPOS-md5 counterpart on already-content-hashed rows (re-reads the archive).
 
     Loaded once per run so the per-file "already indexed?" check is an in-memory
-    lookup, not a network round-trip per file (the difference between one query
-    and tens of thousands against a remote prod DB).
+    lookup, not a network round-trip per file (one query vs tens of thousands
+    against a remote prod DB).
     """
     done: set = set()
+    predicate = "content_sha256 IS NOT NULL"
+    if require_compressed:
+        predicate += " AND compressed_sha256 IS NOT NULL"
     with conn.cursor() as cur:
         cur.execute(
-            """SELECT session_type, file_category, canonical_key
+            f"""SELECT session_type, file_category, canonical_key
                FROM archive_catalog
-               WHERE storage_location = %s
-                 AND content_sha256 IS NOT NULL
-                 AND compressed_sha256 IS NOT NULL""",
+               WHERE storage_location = %s AND {predicate}""",
             (storage_location,),
         )
         for st, fc, k in cur.fetchall():
@@ -334,17 +345,24 @@ def backfill_archive_catalog(
     dest_prefix: str,
     limit: Optional[int] = None,
     dry_run: bool = False,
+    require_compressed: bool = False,
+    sleep_between: float = 0.0,
     progress_every: int = 500,
     log: logging.Logger = logger,
 ) -> BackfillStats:
     """Index already-on-disk archive files into ``archive_catalog`` on every host.
 
-    Resumable + pausable: a file whose row on a host already holds BOTH
-    ``content_sha256`` and ``compressed_sha256`` is skipped there, so a re-run
-    only hashes what is still missing — the catalog's own hash-completeness IS
-    the cursor, no separate state file. ``limit`` caps the number of files newly
-    hashed this run (the heavy decompress + sha256 work), so the archive is
-    indexed in bounded batches with pauses between them.
+    Resumable + pausable: a file already counted as indexed on a host is skipped
+    there — the catalog's own hash-completeness IS the cursor, no separate state
+    file. "Indexed" = ``content_sha256`` present by default (the primary index
+    hash), so a full-archive sweep touches ONLY the genuinely-uncataloged files
+    instead of re-reading the whole archive for rows that were content-hashed by
+    prior work. ``require_compressed=True`` also demands ``compressed_sha256`` —
+    the deliberate later pass that fills the EPOS-md5 counterpart everywhere.
+    ``limit`` caps the number of files newly hashed this run (the heavy decompress
+    + sha256 work), so the archive is indexed in bounded batches with pauses.
+    ``sleep_between`` throttles the read rate — a small pause after each file
+    keeps a long-running sweep gentle on the NFS mount (pair with ``ionice``).
 
     Each file is hashed ONCE and fanned out to every host that needs it (rather
     than re-hashing per host) — ``content_sha256`` decompresses the file and is
@@ -391,7 +409,9 @@ def backfill_archive_catalog(
 
     try:
         done_keys = {
-            label: _load_done_keys(conn, storage_location)
+            label: _load_done_keys(
+                conn, storage_location, require_compressed=require_compressed
+            )
             for label, conn in conns.items()
         }
 
@@ -467,6 +487,8 @@ def backfill_archive_catalog(
                     stats.skipped_done,
                     stats.skipped_parse,
                 )
+            if sleep_between > 0:
+                time.sleep(sleep_between)
     finally:
         for conn in conns.values():
             try:

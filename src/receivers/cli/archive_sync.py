@@ -531,6 +531,8 @@ def cmd_archive_index_backfill(args: argparse.Namespace) -> int:
         dest_prefix=dest_prefix,
         limit=args.limit,
         dry_run=args.dry_run,
+        require_compressed=args.refill_compressed,
+        sleep_between=args.sleep,
     )
 
     if args.json:
@@ -847,7 +849,23 @@ def create_archive_index_backfill_parser(subparsers) -> argparse.ArgumentParser:
         default=None,
         metavar="N",
         help="Stop after N files are newly hashed this run (bounded/pausable). "
-        "Re-run to continue — already-hashed files are skipped.",
+        "Re-run to continue — already-indexed files are skipped.",
+    )
+    parser.add_argument(
+        "--sleep",
+        type=float,
+        default=0.0,
+        metavar="SECONDS",
+        help="Pause this long after each file, to keep a long sweep gentle on the "
+        "NFS mount (default: 0). Pair with `ionice -c3 nice -n19` when running.",
+    )
+    parser.add_argument(
+        "--refill-compressed",
+        action="store_true",
+        help="Treat a row as done only when BOTH hashes are present, so this pass "
+        "RE-READS content-hashed rows to add the compressed_sha256 (EPOS-md5) "
+        "counterpart. Heavy (re-reads the archive) — leave off for the primary "
+        "index pass, which only touches genuinely-uncataloged files.",
     )
     parser.add_argument(
         "--config", help="Path to sync.yaml (default: GPS_CONFIG_PATH/sync.yaml)"

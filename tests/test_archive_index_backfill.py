@@ -249,3 +249,62 @@ def test_connect_failure_is_recorded_not_raised(monkeypatch):
     assert stats.hashed == 0
     assert any("connect bad.host" in e for e in stats.errors)
     assert any("no catalog hosts reachable" in e for e in stats.errors)
+
+
+def _seed_content_only_row(conn, filename, content_hash):
+    """A row already content-hashed but WITHOUT compressed_sha256 — the state of
+    the ~285k mature-archive rows from prior reindex/sync work."""
+    from receivers.archive.catalog import upsert_catalog_row
+
+    upsert_catalog_row(
+        conn,
+        storage_location=LOC,
+        station="ELDC",
+        session_type="15s_24hr",
+        file_category="raw",
+        file_date=None,
+        file_hour=None,
+        archive_path=f"~/g/{filename}",
+        filename=filename,
+        file_size=1,
+        content_sha256=content_hash,
+        compressed_sha256=None,
+    )
+    conn.commit()
+
+
+def test_content_only_row_skipped_by_default(db_conn, tmp_path):
+    """Primary pass: a row that already has content_sha256 (but no compressed) is
+    SKIPPED — we do NOT re-read the whole archive for rows prior work hashed."""
+    _, ca = _seed_gz(tmp_path, REL_A, b"already content-hashed" * 40)
+    _seed_content_only_row(db_conn, "ELDC_a.sbf.gz", ca)
+
+    stats = backfill_archive_catalog(
+        [None],
+        [str(tmp_path / REL_A)],
+        root=str(tmp_path),
+        storage_location=LOC,
+        dest_prefix="~/g",
+    )
+    assert stats.skipped_done == 1
+    assert stats.hashed == 0  # not re-read
+
+
+def test_refill_compressed_reprocesses_content_only_row(db_conn, tmp_path):
+    """The deliberate later pass: --refill-compressed re-reads a content-only row
+    to add the compressed_sha256 (EPOS-md5) counterpart."""
+    _, ca = _seed_gz(tmp_path, REL_A, b"needs compressed hash" * 40)
+    _seed_content_only_row(db_conn, "ELDC_a.sbf.gz", ca)
+    assert _catalog_hashes(db_conn, "eldc_a.sbf")[1] is None  # compressed NULL
+
+    stats = backfill_archive_catalog(
+        [None],
+        [str(tmp_path / REL_A)],
+        root=str(tmp_path),
+        storage_location=LOC,
+        dest_prefix="~/g",
+        require_compressed=True,
+    )
+    assert stats.hashed == 1  # re-processed
+    content, compressed = _catalog_hashes(db_conn, "eldc_a.sbf")
+    assert content == ca and compressed is not None  # compressed now filled
