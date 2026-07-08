@@ -349,6 +349,7 @@ def backfill_archive_catalog(
     sleep_between: float = 0.0,
     progress_every: int = 500,
     progress_callback: Optional[Callable[[str], None]] = None,
+    unparsable_callback: Optional[Callable[[str], None]] = None,
     log: logging.Logger = logger,
 ) -> BackfillStats:
     """Index already-on-disk archive files into ``archive_catalog`` on every host.
@@ -434,6 +435,8 @@ def backfill_archive_catalog(
             parsed = parse_archive_path(f, root)
             if parsed is None:
                 stats.skipped_parse += 1
+                if unparsable_callback is not None:
+                    unparsable_callback(f)
                 continue
             key = canonical_key(os.path.basename(f))
             ident = (parsed.session_type, parsed.file_category, key)

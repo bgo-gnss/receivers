@@ -528,19 +528,32 @@ def cmd_archive_index_backfill(args: argparse.Namespace) -> int:
     def _progress(msg: str) -> None:
         print(f"  … {msg}", file=sys.stderr, flush=True)
 
-    stats = backfill_archive_catalog(
-        hosts,
-        _walk(),
-        root=root,
-        storage_location=args.storage_location,
-        dest_prefix=dest_prefix,
-        limit=args.limit,
-        dry_run=args.dry_run,
-        require_compressed=args.refill_compressed,
-        sleep_between=args.sleep,
-        progress_every=args.progress_every,
-        progress_callback=_progress,
+    # Optionally record paths that don't fit the archive layout (misfiled / stray
+    # files) to a manifest for later manual triage (archive-sort / archive-rm).
+    unparsable_fh = (
+        open(args.report_unparsable, "w") if args.report_unparsable else None
     )
+    unparsable_cb = (
+        (lambda p: unparsable_fh.write(p + "\n")) if unparsable_fh is not None else None
+    )
+    try:
+        stats = backfill_archive_catalog(
+            hosts,
+            _walk(),
+            root=root,
+            storage_location=args.storage_location,
+            dest_prefix=dest_prefix,
+            limit=args.limit,
+            dry_run=args.dry_run,
+            require_compressed=args.refill_compressed,
+            sleep_between=args.sleep,
+            progress_every=args.progress_every,
+            progress_callback=_progress,
+            unparsable_callback=unparsable_cb,
+        )
+    finally:
+        if unparsable_fh is not None:
+            unparsable_fh.close()
 
     if args.json:
         print(json.dumps(stats.to_dict(), indent=2))
@@ -881,6 +894,13 @@ def create_archive_index_backfill_parser(subparsers) -> argparse.ArgumentParser:
         metavar="N",
         help="Log a progress line every N files scanned (default: 500) — so a long "
         "walk reports periodically instead of only at the end.",
+    )
+    parser.add_argument(
+        "--report-unparsable",
+        metavar="FILE",
+        help="Write each file whose path does not fit the archive layout "
+        "(YYYY/mon/STA/session/cat) to FILE — a manifest of misfiled/stray files "
+        "for later manual triage (archive-sort to relocate, archive-rm to delete).",
     )
     parser.add_argument(
         "--config", help="Path to sync.yaml (default: GPS_CONFIG_PATH/sync.yaml)"
