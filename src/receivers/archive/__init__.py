@@ -16,7 +16,9 @@ dormant per-station pipeline task; this is the authoritative host-level feed.
 from .config import SyncTarget, load_sync_config
 from .engine import ArchiveSync, SyncRunResult
 from .reindex import (
+    BackfillStats,
     ReindexStats,
+    backfill_archive_catalog,
     reindex_files,
     reindex_files_multi,
     resolve_catalog_hosts,
@@ -42,6 +44,8 @@ __all__ = [
     "reindex_files",
     "reindex_files_multi",
     "resolve_catalog_hosts",
+    "BackfillStats",
+    "backfill_archive_catalog",
     "RemoveResult",
     "remove_archive_files",
     "remove_catalog_rows",

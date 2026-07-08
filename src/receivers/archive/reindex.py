@@ -25,11 +25,16 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Optional
 
 from ..utils.canonical_key import canonical_key
-from ..utils.content_hash import CorruptArchiveFileError, content_sha256
+from ..utils.content_hash import (
+    CorruptArchiveFileError,
+    compressed_sha256,
+    content_sha256,
+)
 from .catalog import upsert_catalog_row
 from .path_parse import parse_archive_path
 
@@ -263,3 +268,209 @@ def _existing_sha(
         )
         row = cur.fetchone()
     return row[0] if row else None
+
+
+# ---------------------------------------------------------------------------
+# One-time archive-index backfill (unified file index Track B).
+#
+# Indexes files ALREADY on disk in the permanent archive into archive_catalog on
+# every catalog host, computing BOTH hashes. Unlike ``reindex_files`` (a targeted
+# fix for out-of-band edits), this is a bulk, resumable, pausable sweep of the
+# archive tree for the ~39k-file historical backfill — run gradually from a host
+# that has the archive mounted (e.g. the laptop's ananas NFS), writing to prod
+# via the ``catalog_hosts`` fan-out.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class BackfillStats:
+    """Outcome of an archive-index backfill run."""
+
+    hashed: int = 0  # files newly hashed + upserted to >=1 host this run
+    skipped_done: int = 0  # every target host already held both hashes
+    skipped_parse: int = 0  # path is not a catalogable archive file
+    writes: dict = field(default_factory=dict)  # {label: {"ok": int, "fail": int}}
+    errors: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "hashed": self.hashed,
+            "skipped_done": self.skipped_done,
+            "skipped_parse": self.skipped_parse,
+            "writes": self.writes,
+            "errors": self.errors,
+        }
+
+
+def _load_done_keys(conn, storage_location: str) -> set:
+    """Return the set of ``(session_type, file_category, canonical_key)`` rows on
+    this host that already hold BOTH hashes — the resume skip-set.
+
+    Loaded once per run so the per-file "already indexed?" check is an in-memory
+    lookup, not a network round-trip per file (the difference between one query
+    and tens of thousands against a remote prod DB).
+    """
+    done: set = set()
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT session_type, file_category, canonical_key
+               FROM archive_catalog
+               WHERE storage_location = %s
+                 AND content_sha256 IS NOT NULL
+                 AND compressed_sha256 IS NOT NULL""",
+            (storage_location,),
+        )
+        for st, fc, k in cur.fetchall():
+            done.add((st, fc, k))
+    return done
+
+
+def backfill_archive_catalog(
+    hosts: list,
+    files: Iterable[str],
+    *,
+    root: str,
+    storage_location: str,
+    dest_prefix: str,
+    limit: Optional[int] = None,
+    dry_run: bool = False,
+    progress_every: int = 500,
+    log: logging.Logger = logger,
+) -> BackfillStats:
+    """Index already-on-disk archive files into ``archive_catalog`` on every host.
+
+    Resumable + pausable: a file whose row on a host already holds BOTH
+    ``content_sha256`` and ``compressed_sha256`` is skipped there, so a re-run
+    only hashes what is still missing — the catalog's own hash-completeness IS
+    the cursor, no separate state file. ``limit`` caps the number of files newly
+    hashed this run (the heavy decompress + sha256 work), so the archive is
+    indexed in bounded batches with pauses between them.
+
+    Each file is hashed ONCE and fanned out to every host that needs it (rather
+    than re-hashing per host) — ``content_sha256`` decompresses the file and is
+    the expensive step. ``dest_prefix`` maps the local read ``root`` onto the
+    canonical archive path, so laptop-written rows collide with the server's
+    forward-catalog rows on the logical key (COALESCE upsert → idempotent).
+
+    Note: ``file_date`` is written from the path parse (as ``reindex_files``
+    does). It activates the ``verify.py`` local↔archive cross-check, which is
+    inert here because the ``archive_verify`` scheduler job stays disabled for
+    this rollout.
+
+    Args:
+        hosts: catalog hosts from :func:`resolve_catalog_hosts` (``None`` in the
+            list = the default connection).
+        files: iterable of local file paths under ``root`` (archive layout).
+        root: the mount root the files sit under (e.g. ``/mnt_data/rawgpsdata``).
+        storage_location: ``archive_catalog.storage_location`` (e.g.
+            ``imo_archive``).
+        dest_prefix: the canonical archive dest for ``file_path``.
+        limit: stop after this many files are newly hashed (``None`` = no cap).
+        dry_run: classify + count, do not hash or write.
+
+    Returns:
+        :class:`BackfillStats`.
+    """
+    from ..db.connection import get_connection
+
+    stats = BackfillStats()
+    dest_prefix = dest_prefix.rstrip("/")
+
+    conns: dict = {}
+    for host in hosts:
+        label = host or "localhost"
+        try:
+            conns[label] = get_connection(host_override=host)
+            stats.writes[label] = {"ok": 0, "fail": 0}
+        except Exception as exc:  # noqa: BLE001
+            stats.errors.append(f"connect {label}: {exc}")
+            log.error("backfill: cannot connect to %s: %s", label, exc)
+    if not conns:
+        stats.errors.append("no catalog hosts reachable")
+        return stats
+
+    try:
+        done_keys = {
+            label: _load_done_keys(conn, storage_location)
+            for label, conn in conns.items()
+        }
+
+        for f in files:
+            if limit is not None and stats.hashed >= limit:
+                break
+            parsed = parse_archive_path(f, root)
+            if parsed is None:
+                stats.skipped_parse += 1
+                continue
+            key = canonical_key(os.path.basename(f))
+            ident = (parsed.session_type, parsed.file_category, key)
+
+            needing = [label for label in conns if ident not in done_keys[label]]
+            if not needing:
+                stats.skipped_done += 1
+                continue
+
+            if dry_run:
+                stats.hashed += 1
+                log.info("backfill[DRY]: would index %s → %s", key, needing)
+                continue
+
+            try:
+                csha = content_sha256(f)
+                zsha = compressed_sha256(f)
+            except CorruptArchiveFileError as exc:
+                stats.errors.append(f"corrupt, not indexed: {f}: {exc}")
+                log.error("backfill: corrupt file %s: %s", f, exc)
+                continue
+            except OSError as exc:
+                stats.errors.append(f"could not read {f}: {exc}")
+                continue
+
+            archive_path = f"{dest_prefix}/{parsed.relative_path}"
+            fsize = os.path.getsize(f)
+            for label in needing:
+                conn = conns[label]
+                try:
+                    upsert_catalog_row(
+                        conn,
+                        storage_location=storage_location,
+                        station=parsed.station,
+                        session_type=parsed.session_type,
+                        file_category=parsed.file_category,
+                        file_date=parsed.file_date,
+                        file_hour=parsed.file_hour,
+                        archive_path=archive_path,
+                        filename=os.path.basename(f),
+                        file_size=fsize,
+                        content_sha256=csha,
+                        compressed_sha256=zsha,
+                    )
+                    conn.commit()
+                    stats.writes[label]["ok"] += 1
+                    done_keys[label].add(ident)
+                except Exception as exc:  # noqa: BLE001
+                    try:
+                        conn.rollback()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    stats.writes[label]["fail"] += 1
+                    stats.errors.append(f"upsert {label} {key}: {exc}")
+                    log.error(
+                        "backfill: upsert to %s failed for %s: %s", label, key, exc
+                    )
+
+            stats.hashed += 1
+            if stats.hashed % progress_every == 0:
+                log.info(
+                    "backfill progress: %d hashed, %d already-done, %d parse-skip",
+                    stats.hashed,
+                    stats.skipped_done,
+                    stats.skipped_parse,
+                )
+    finally:
+        for conn in conns.values():
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+    return stats

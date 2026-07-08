@@ -458,6 +458,108 @@ def cmd_archive_reindex(args: argparse.Namespace) -> int:
     return 1 if _any_err else 0
 
 
+def cmd_archive_index_backfill(args: argparse.Namespace) -> int:
+    """One-time index of already-on-disk archive files into archive_catalog.
+
+    Walks ``--dir`` (the archive tree, e.g. the ananas read mount), hashes each
+    file (content + compressed sha256), and upserts its catalog row on every
+    catalog host. Resumable + pausable: ``--limit`` caps files hashed per run and
+    a re-run skips files already fully hashed. Built for the ~39k-file historical
+    ``imo_archive`` backfill, run gradually from a host that has the archive
+    mounted, writing to prod via ``[archive] catalog_hosts``.
+    """
+    import os
+
+    from ..archive import (
+        backfill_archive_catalog,
+        load_sync_config,
+        resolve_catalog_hosts,
+    )
+
+    walk_dir = str(Path(args.dir).expanduser())
+    if not os.path.isdir(walk_dir):
+        print(f"❌ --dir not a directory: {walk_dir}")
+        return 2
+    # `root` is the archive-layout root that identities are parsed relative to
+    # (YYYY/mon/STA/session/cat/FILE). `--dir` is the walk scope, which may be a
+    # SUBTREE of root (e.g. --root /mnt_data/rawgpsdata --dir …/2026 to index one
+    # year at a time). Defaults to --dir for the whole-mount case.
+    root = str(Path(args.root).expanduser()) if args.root else walk_dir
+    if os.path.relpath(walk_dir, root).startswith(".."):
+        print(f"❌ --dir {walk_dir} must be inside --root {root}")
+        return 2
+
+    # Resolve dest_prefix (canonical archive path) from the sync target unless given.
+    config_path = Path(args.config) if args.config else None
+    targets = load_sync_config(config_path)
+    target = next(
+        (t for t in targets if t.name == args.storage_location),
+        next((t for t in targets if getattr(t, "tier", None) == "archive"), None),
+    )
+    dest_prefix = args.dest_prefix or (target.dest if target else None)
+    if not dest_prefix:
+        print(
+            "❌ no --dest-prefix and no archive target in sync.yaml — need one to "
+            "map local paths onto the canonical archive file_path"
+        )
+        return 2
+
+    hosts = resolve_catalog_hosts(args.catalog_host, prod=args.catalog_prod)
+    if args.catalog_prod and not hosts:
+        print(
+            "⚠️  --catalog-prod but [archive] catalog_hosts is unset in "
+            "receivers.cfg — refusing (would silently hit dev). Set "
+            "catalog_hosts = rek-d01.vedur.is, pgdev.vedur.is."
+        )
+        return 2
+
+    # Lazy, deterministic walk so --limit can stop early without enumerating the
+    # whole tree, and a bounded re-run picks up where the last one left off.
+    def _walk():
+        for dirpath, dirs, names in os.walk(walk_dir):
+            dirs.sort()
+            if f"{os.sep}rinex_archive{os.sep}" in dirpath + os.sep:
+                continue
+            for n in sorted(names):
+                yield os.path.join(dirpath, n)
+
+    stats = backfill_archive_catalog(
+        hosts,
+        _walk(),
+        root=root,
+        storage_location=args.storage_location,
+        dest_prefix=dest_prefix,
+        limit=args.limit,
+        dry_run=args.dry_run,
+    )
+
+    if args.json:
+        print(json.dumps(stats.to_dict(), indent=2))
+    else:
+        verb = "would index" if args.dry_run else "indexed"
+        print(
+            f"📇 archive-index-backfill ({args.storage_location}): "
+            f"{stats.hashed} {verb}, {stats.skipped_done} already-done, "
+            f"{stats.skipped_parse} unparsable"
+        )
+        for label, w in stats.writes.items():
+            note = (
+                f" ({w['fail']} FAILED — catalogs may DIVERGE, re-run)"
+                if w["fail"]
+                else ""
+            )
+            print(f"   • {label}: {w['ok']} written{note}")
+        if args.limit and stats.hashed >= args.limit:
+            print(
+                f"   ⏸ hit --limit {args.limit}; re-run to continue "
+                "(already-done files are skipped)."
+            )
+        for msg in stats.errors[:50]:
+            print(f"   ⚠ {msg}")
+    _any_fail = bool(stats.errors) or any(w["fail"] for w in stats.writes.values())
+    return 1 if _any_fail else 0
+
+
 def cmd_archive_rm(args: argparse.Namespace) -> int:
     """Guarded deletion of specific files from the long-term archive.
 
@@ -686,6 +788,79 @@ def create_archive_reindex_parser(subparsers) -> argparse.ArgumentParser:
         "--json", action="store_true", help="Emit machine-readable JSON results"
     )
     parser.set_defaults(func=cmd_archive_reindex)
+    return parser
+
+
+def create_archive_index_backfill_parser(subparsers) -> argparse.ArgumentParser:
+    parser = subparsers.add_parser(
+        "archive-index-backfill",
+        help="One-time index of already-on-disk archive files into archive_catalog",
+        description=(
+            "Walk an archive tree (e.g. the ananas read mount) and upsert an "
+            "archive_catalog row for every file, hashing BOTH content_sha256 and "
+            "compressed_sha256. Resumable + pausable: --limit caps files hashed "
+            "per run and a re-run skips files already fully hashed, so the "
+            "~39k-file historical archive can be indexed in bounded batches with "
+            "pauses. Run from a host that has the archive mounted; --catalog-prod "
+            "writes the [archive] catalog_hosts set (rek-d01 + pgdev) so laptop "
+            "rows coalesce with the server's forward-catalog rows."
+        ),
+    )
+    parser.add_argument(
+        "--dir",
+        required=True,
+        help="Directory to walk. May be the whole archive mount or a SUBTREE of "
+        "--root (e.g. --root /mnt_data/rawgpsdata --dir …/2020 to index one year "
+        "at a time). Files are identified by their path relative to --root.",
+    )
+    parser.add_argument(
+        "--root",
+        help="Archive-layout root that identities are parsed relative to "
+        "(YYYY/mon/STA/session/cat/FILE), e.g. /mnt_data/rawgpsdata. Defaults to "
+        "--dir (whole-mount case). Set this when --dir is a subtree.",
+    )
+    parser.add_argument(
+        "--storage-location",
+        default="imo_archive",
+        help="archive_catalog.storage_location to write (default: imo_archive)",
+    )
+    parser.add_argument(
+        "--dest-prefix",
+        help="Canonical archive dest prefix for file_path (default: target.dest "
+        "from sync.yaml). Maps the local read mount onto the archive path so "
+        "rows coalesce with server-written rows on the logical key.",
+    )
+    parser.add_argument(
+        "--catalog-host",
+        help="Explicit gps_health host(s) to write, comma-separated (e.g. "
+        "localhost for a dev test). Default (no flag): database.cfg host.",
+    )
+    parser.add_argument(
+        "--catalog-prod",
+        action="store_true",
+        help="Write the PRODUCTION catalog set ([archive] catalog_hosts, e.g. "
+        "rek-d01 + pgdev). Explicit opt-in so a dev run stays local by default.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Stop after N files are newly hashed this run (bounded/pausable). "
+        "Re-run to continue — already-hashed files are skipped.",
+    )
+    parser.add_argument(
+        "--config", help="Path to sync.yaml (default: GPS_CONFIG_PATH/sync.yaml)"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Count what would be indexed without hashing or writing",
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON results"
+    )
+    parser.set_defaults(func=cmd_archive_index_backfill)
     return parser
 
 

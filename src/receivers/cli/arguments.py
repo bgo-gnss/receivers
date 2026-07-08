@@ -1514,6 +1514,7 @@ For subcommand help: receivers <command> --help
     from .archive_sync import (
         create_archive_audit_parser,
         create_archive_catalog_backfill_parser,
+        create_archive_index_backfill_parser,
         create_archive_prune_parser,
         create_archive_reindex_parser,
         create_archive_rm_parser,
@@ -1538,6 +1539,8 @@ For subcommand help: receivers <command> --help
     create_archive_prune_parser(subparsers)
     # catalog-backfill-local (seed local_raw/local_rinex catalog from file_tracking)
     create_archive_catalog_backfill_parser(subparsers)
+    # archive-index-backfill (one-time index of on-disk archive files → catalog)
+    create_archive_index_backfill_parser(subparsers)
     # missing (query the unified-file-index differential worklists — no ls)
     from .missing import create_missing_parser
 
