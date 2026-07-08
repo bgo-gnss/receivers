@@ -2,6 +2,11 @@
 # Purpose: Grafana dashboards on dev/production server
 # The scheduler runs via systemd, not Docker.
 #
+# Config:
+#   Copy .env.example -> .env and set GF_ADMIN_PASSWORD (see .env.example).
+#   `.env` is gitignored and auto-loaded by docker compose from this dir.
+#   Without it, the admin password defaults to "admin" (unsafe).
+#
 # Usage:
 #   cd ~/git/receivers/deployment/server
 #   docker compose up -d
