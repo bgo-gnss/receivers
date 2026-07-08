@@ -473,6 +473,7 @@ def cmd_archive_index_backfill(args: argparse.Namespace) -> int:
 
     from ..archive import (
         backfill_archive_catalog,
+        iter_archive_files,
         load_sync_config,
         resolve_catalog_hosts,
     )
@@ -514,15 +515,13 @@ def cmd_archive_index_backfill(args: argparse.Namespace) -> int:
         )
         return 2
 
-    # Lazy, deterministic walk so --limit can stop early without enumerating the
-    # whole tree, and a bounded re-run picks up where the last one left off.
-    def _walk():
-        for dirpath, dirs, names in os.walk(walk_dir):
-            dirs.sort()
-            if f"{os.sep}rinex_archive{os.sep}" in dirpath + os.sep:
-                continue
-            for n in sorted(names):
-                yield os.path.join(dirpath, n)
+    # Optional station/session scoping — prunes the walk at the STA / session
+    # directory level so "index just these stations" doesn't stat the whole tree.
+    station_set = {s.upper() for s in args.station} if args.station else None
+    session_set = set(args.session) if args.session else None
+    files = iter_archive_files(
+        walk_dir, root=root, stations=station_set, sessions=session_set
+    )
 
     # Periodic progress to stderr (keeps stdout clean for --json).
     def _progress(msg: str) -> None:
@@ -539,7 +538,7 @@ def cmd_archive_index_backfill(args: argparse.Namespace) -> int:
     try:
         stats = backfill_archive_catalog(
             hosts,
-            _walk(),
+            files,
             root=root,
             storage_location=args.storage_location,
             dest_prefix=dest_prefix,
@@ -840,6 +839,21 @@ def create_archive_index_backfill_parser(subparsers) -> argparse.ArgumentParser:
         help="Archive-layout root that identities are parsed relative to "
         "(YYYY/mon/STA/session/cat/FILE), e.g. /mnt_data/rawgpsdata. Defaults to "
         "--dir (whole-mount case). Set this when --dir is a subtree.",
+    )
+    parser.add_argument(
+        "--station",
+        nargs="+",
+        metavar="SID",
+        help="Only index these station(s) (4-char IDs, case-insensitive) — prunes "
+        "the walk to their dirs. e.g. --station RHOF ELEY to index two stations "
+        "first. Combine with --session to narrow further.",
+    )
+    parser.add_argument(
+        "--session",
+        nargs="+",
+        metavar="SESSION",
+        help="Only index these session type(s), e.g. --session 15s_24hr. Prunes the "
+        "walk to matching session dirs.",
     )
     parser.add_argument(
         "--storage-location",

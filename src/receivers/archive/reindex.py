@@ -336,6 +336,35 @@ def _load_done_keys(
     return done
 
 
+def iter_archive_files(
+    walk_dir: str,
+    *,
+    root: str,
+    stations: Optional[set] = None,
+    sessions: Optional[set] = None,
+) -> Iterable[str]:
+    """Yield archive file paths under ``walk_dir`` recursively (sorted).
+
+    Prunes the walk to ``stations`` (upper-cased 4-char IDs) and/or ``sessions``
+    at the STA / session directory level — so "index just these stations" does
+    not stat the whole tree. Skips ``rinex_archive`` backup dirs. Identities are
+    parsed relative to ``root`` (``walk_dir`` may be a subtree of it), so the
+    prune depths are measured from ``root``: ``YYYY(1)/mon(2)/STA(3)/session(4)``.
+    """
+    for dirpath, dirs, names in os.walk(walk_dir):
+        dirs.sort()
+        rel = os.path.relpath(dirpath, root)
+        depth = 0 if rel == os.curdir else rel.count(os.sep) + 1
+        if stations is not None and depth == 2:
+            dirs[:] = [d for d in dirs if d.upper() in stations]
+        if sessions is not None and depth == 3:
+            dirs[:] = [d for d in dirs if d in sessions]
+        if f"{os.sep}rinex_archive{os.sep}" in dirpath + os.sep:
+            continue
+        for n in sorted(names):
+            yield os.path.join(dirpath, n)
+
+
 def backfill_archive_catalog(
     hosts: list,
     files: Iterable[str],

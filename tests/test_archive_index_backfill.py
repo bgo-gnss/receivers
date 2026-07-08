@@ -308,3 +308,64 @@ def test_refill_compressed_reprocesses_content_only_row(db_conn, tmp_path):
     assert stats.hashed == 1  # re-processed
     content, compressed = _catalog_hashes(db_conn, "eldc_a.sbf")
     assert content == ca and compressed is not None  # compressed now filled
+
+
+def _build_tree(root, stations, sessions):
+    for sta in stations:
+        for sess in sessions:
+            d = root / "2015" / "jun" / sta / sess / "raw"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / f"{sta}202506150000a.sbf.gz").write_bytes(b"x")
+
+
+class TestIterArchiveFiles:
+    """Station/session pruning for scoped runs (index just these stations)."""
+
+    def _rel_stations(self, root, files):
+        # station is component index 2 under root: YYYY/mon/STA/...
+        import os
+
+        return {os.path.relpath(f, str(root)).split(os.sep)[2] for f in files}
+
+    def test_no_filter_yields_all(self, tmp_path):
+        _build_tree(tmp_path, ["RHOF", "ELEY", "OLKE"], ["15s_24hr", "1Hz_1hr"])
+        files = list(rx.iter_archive_files(str(tmp_path), root=str(tmp_path)))
+        assert len(files) == 6
+
+    def test_station_filter_prunes_walk(self, tmp_path):
+        _build_tree(tmp_path, ["RHOF", "ELEY", "OLKE"], ["15s_24hr", "1Hz_1hr"])
+        files = list(
+            rx.iter_archive_files(
+                str(tmp_path), root=str(tmp_path), stations={"RHOF", "ELEY"}
+            )
+        )
+        assert len(files) == 4  # 2 stations × 2 sessions
+        assert self._rel_stations(tmp_path, files) == {"RHOF", "ELEY"}
+
+    def test_station_and_session_filter(self, tmp_path):
+        _build_tree(tmp_path, ["RHOF", "ELEY", "OLKE"], ["15s_24hr", "1Hz_1hr"])
+        files = list(
+            rx.iter_archive_files(
+                str(tmp_path),
+                root=str(tmp_path),
+                stations={"RHOF", "ELEY"},
+                sessions={"15s_24hr"},
+            )
+        )
+        assert len(files) == 2  # RHOF/15s + ELEY/15s
+        assert all("15s_24hr" in f for f in files)
+
+    def test_station_filter_is_case_insensitive(self, tmp_path):
+        # dirs are upper-cased station IDs; the filter set is upper-cased by caller.
+        _build_tree(tmp_path, ["RHOF", "OLKE"], ["15s_24hr"])
+        files = list(
+            rx.iter_archive_files(str(tmp_path), root=str(tmp_path), stations={"RHOF"})
+        )
+        assert len(files) == 1 and "RHOF" in files[0]
+
+    def test_rinex_archive_backups_skipped(self, tmp_path):
+        d = tmp_path / "2015" / "jun" / "RHOF" / "15s_24hr" / "rinex_archive"
+        d.mkdir(parents=True)
+        (d / "RHOF1660.15D.Z").write_bytes(b"x")
+        files = list(rx.iter_archive_files(str(tmp_path), root=str(tmp_path)))
+        assert files == []  # backup dir excluded
