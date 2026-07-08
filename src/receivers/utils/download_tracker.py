@@ -159,39 +159,23 @@ class DownloadTracker:
         The dynamic receiver horizon (unified file index slice-2b.3): the oldest
         parseable (date, hour) across the receiver's CURRENT listing becomes the
         real fetch floor for ``missing_on_receiver`` (and, later, the retention
-        floor for prune). MUST be called with the FULL remote listing for the
-        session, not a date-filtered subset, or the floor would be too recent.
-        Best-effort — never raises. Returns True if a horizon was recorded.
+        floor for prune). Pass the FULL remote listing for the session, OR — the
+        sanctioned adaptation used by the dedicated horizon probe — the listing of
+        the CONFIRMED-OLDEST date directory: either way the minimum parseable
+        (date, hour) is the true receiver floor, so a confirmed-oldest-dir subset
+        is valid. What is NOT valid is a recent date-filtered subset (a normal
+        download run), which would record a too-recent floor. Best-effort — never
+        raises. Returns True if a horizon was recorded.
         """
         if not self._connected or not remote_filenames:
             return False
-        oldest = _oldest_from_listing(remote_filenames, self.station_id)
-        if oldest is None:
-            return False
-        oldest_date, oldest_hour = oldest
-        # daily sessions have no meaningful hour floor
-        hour = oldest_hour if self.is_hourly else None
-        try:
-            with self._tracker._conn.cursor() as cur:
-                cur.execute(
-                    """INSERT INTO receiver_horizon
-                           (sid, session_type, oldest_date, oldest_hour, observed_at)
-                       VALUES (%s, %s, %s, %s::smallint, now())
-                       ON CONFLICT (sid, session_type) DO UPDATE SET
-                           oldest_date = EXCLUDED.oldest_date,
-                           oldest_hour = EXCLUDED.oldest_hour,
-                           observed_at = now()""",
-                    (self.station_id, self.session, oldest_date, hour),
-                )
-            self._tracker._conn.commit()
-            return True
-        except Exception as e:  # noqa: BLE001 — best-effort; never break a download
-            logger.debug(f"record_horizon failed for {self.station_id}: {e}")
-            try:
-                self._tracker._conn.rollback()
-            except Exception:  # noqa: BLE001
-                pass
-            return False
+        return record_receiver_horizon(
+            self._tracker._conn,
+            self.station_id,
+            self.session,
+            self.is_hourly,
+            remote_filenames,
+        )
 
     def mark_missing(
         self,
@@ -314,6 +298,94 @@ class DownloadTracker:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit."""
         self.close()
+
+
+def record_receiver_horizon(
+    conn,
+    station_id: str,
+    session: str,
+    is_hourly: bool,
+    remote_filenames: list,
+) -> bool:
+    """Upsert the receiver horizon from a listing on a given DB connection.
+
+    Shared upsert for both the hot download path (:meth:`DownloadTracker.
+    record_horizon`) and the dedicated ``receiver_horizon_probe`` scheduler job,
+    which reuses ONE connection across the whole fleet instead of opening one per
+    (station, session).
+
+    The oldest parseable ``(date, hour)`` across ``remote_filenames`` becomes the
+    ``receiver_horizon`` row. Guard: a horizon with ``oldest_date`` in the FUTURE
+    is a parse artefact (e.g. a day-of-year filename read against the wrong year)
+    — recording it would push the fetch floor past today and silently drop every
+    fetchable slot, so it is rejected and nothing is written (the static
+    ``receiver_buffer_depth`` floor stays in force). Best-effort — never raises;
+    returns True only when a row was written.
+    """
+    if conn is None or not remote_filenames:
+        return False
+    oldest = _oldest_from_listing(remote_filenames, station_id)
+    if oldest is None:
+        return False
+    return upsert_receiver_horizon(
+        conn, station_id, session, is_hourly, oldest[0], oldest[1]
+    )
+
+
+def upsert_receiver_horizon(
+    conn,
+    station_id: str,
+    session: str,
+    is_hourly: bool,
+    oldest_date: Optional[date],
+    oldest_hour: Optional[int],
+) -> bool:
+    """Write a pre-parsed ``(oldest_date, oldest_hour)`` horizon to the DB.
+
+    The date-source-agnostic core of :func:`record_receiver_horizon`. Trimble/
+    Leica derive ``(date, hour)`` from filenames (via ``_oldest_from_listing``);
+    Septentrio derives the date from the ``%y%j`` day-directory name — the daily
+    SBF/RINEX filenames there don't carry a full timestamp — and both funnel
+    through here. Never raises; returns True only when a row was written.
+    """
+    if conn is None or oldest_date is None:
+        return False
+    # A future oldest_date can only be a parse artefact (e.g. a day-of-year name
+    # read against the wrong year) — never a real receiver floor. Reject it so a
+    # too-recent floor can never drop fetchable slots (unified file index
+    # slice-2b.3 silent-under-report guard).
+    if oldest_date > date.today():
+        logger.debug(
+            "record_horizon: rejecting future oldest_date %s for %s/%s "
+            "(parse artefact)",
+            oldest_date,
+            station_id,
+            session,
+        )
+        return False
+    # daily sessions have no meaningful hour floor
+    hour = oldest_hour if is_hourly else None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO receiver_horizon
+                       (sid, session_type, oldest_date, oldest_hour, observed_at)
+                   VALUES (%s, %s, %s, %s::smallint, now())
+                   ON CONFLICT (sid, session_type) DO UPDATE SET
+                       oldest_date = EXCLUDED.oldest_date,
+                       oldest_hour = EXCLUDED.oldest_hour,
+                       observed_at = now()""",
+                (station_id, session, oldest_date, hour),
+            )
+        conn.commit()
+        return True
+    except Exception as e:  # noqa: BLE001 — best-effort; never break a download
+        logger.debug(f"record_horizon failed for {station_id}: {e}")
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return False
 
 
 def _oldest_from_listing(

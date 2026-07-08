@@ -454,16 +454,34 @@ Each with `_rollback.sql`; applied **local first**, then per-host explicitly (§
     remote_filenames)` + `_oldest_from_listing()` upsert the oldest parseable (date,hour). Validated: a
     probed horizon (oldest=cd-5) narrows the window from the static 30-day fallback to 5 days. Inert until
     the probe populates rows (no behaviour change yet).
-  - **slice-2b.3 probe (next, own focused pass):** the recording call. NOT a free hot-path hook — a normal
-    download run lists only the requested recent date-dirs, so it never sees the receiver's OLDEST file.
-    Needs a dedicated per-receiver probe that lists the receiver's date-dir INDEX and finds the oldest dir
-    with files (Septentrio FTP nlst on the parent, Trimble HTTP `get_directory_listing`, Leica FTP nlst),
-    then calls `DownloadTracker.record_horizon(full_listing)`. Cheapest as a periodic scheduler task
-    (list the top-level date-dir structure, not every file). Receiver-specific → its own pass. Then also
-    `missing_at_location(:loc)` (full-history hard cap) + wire the horizon into prune's 15s retention floor
-    (§3, the "retain back to the oldest daily file on receiver" rule) + strengthen the prune "indexed
-    properly" gate (require imo_archive `content_sha256`/`last_verified_at`). `tos_validated_at` = separate
-    QC axis, later.
+  - **slice-2b.3 probe ✅ DONE (`receiver_horizon_probe.py` + `_schedule_receiver_horizon_probe` +
+    `receivers scheduler horizon-probe`):** dedicated per-receiver probe that lists each receiver's
+    date-dir INDEX, walks to the oldest non-empty directory, and records `(oldest_date, oldest_hour)`
+    via the shared `upsert_receiver_horizon`. Reuses the receiver objects' *config-resolved* connection
+    params (no hardcoded paths — honours per-station `receiver_base_path`/`remote_date_format` overrides).
+    **Per-type reality (live-validated on the laptop, AFST/ALFD + 8 more):**
+    * **Septentrio** (PolaRX5/mosaic-X5) organises by **`%y%j` day directories** (`26119` = 2026 doy 119),
+      NOT GPS weeks (the `{gpsweek:05d}` code path is unused in prod). Daily SBF/RINEX filenames carry no
+      full timestamp, so the DATE comes from the **directory name**; hourly sessions refine the hour from
+      the timestamped filenames inside. FTP `nlst`.
+    * **Trimble NetR9/NetR5**: HTTP `/prog/show?directory` returns `directory name=YYYYMM` / `file name=…`
+      lines — needed a dir-aware index parse (the download client's `get_directory_listing` keeps files
+      only). Files carry a full timestamp → parsed directly. Handles both `%Y%m` and VARG's `%Y%m/%d`.
+    * **Trimble NetRS**: HTTP API has **no `directory` verb** ("Invalid verb/object combination") — it
+      cannot be listed, so it safely no-ops to the static floor (documented, not a bug).
+    * **Leica G10** (1 station): flat `{base}{subdir}/`, day-of-year names (year-ambiguous → future-date
+      guard covers the boundary).
+    **Guards (silent-under-report):** record only from the confirmed oldest non-empty dir; empty old
+    shells are skipped; `upsert_receiver_horizon` rejects any future `oldest_date`. Live floor check: all
+    horizons move the floor *back* (deep buffers: AUST 15s 30→364 d) or *forward when genuinely shallow*
+    (AUSV 1Hz 7→1 d), `greatest(data_start, …)` clamps the deep case, **zero zero-windows**. Config-gated
+    (`[receiver_horizon_probe] enabled: false`), backfill executor, daily + 5-min startup run; 16 unit
+    tests (mocked FTP/HTTP: `%y%j` parse, walk-past-empty, VARG layout, NetRS no-op, future-date reject).
+  - **slice-2b.3 remaining (next passes):** flip `[file_index] use_terminal_absence` once the gate is
+    trusted; `missing_at_location(:loc)` (full-history hard cap); wire the horizon into prune's 15s
+    retention floor (§3, "retain back to the oldest daily file on receiver") + strengthen the prune
+    "indexed properly" gate (require imo_archive `content_sha256`/`last_verified_at`). `tos_validated_at`
+    = separate QC axis, later.
 - **M3 — EPOS convergence:** unified-catalog writes at push (sha256 + stored md5s); `rinex_file` becomes
   a derived export (new UNIQUE + advisory lock). Exit: one write path.
 - **M4 — Migrate + prod rollout:** backfill (§7) + backward + cross-host reconcilers + per-host migrate

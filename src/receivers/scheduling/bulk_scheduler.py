@@ -2273,6 +2273,7 @@ class BulkDownloadScheduler:
         self._schedule_epos_reactive()
         self._schedule_archive_verify()
         self._schedule_local_prune()
+        self._schedule_receiver_horizon_probe()
         self._schedule_morning_recovery()
         self._schedule_stream_capture()
 
@@ -2554,6 +2555,51 @@ class BulkDownloadScheduler:
             f"Scheduled local prune ({base_trigger.description}, retention="
             f"{prune_cfg.get('retention_days')}, min_free_gb="
             f"{prune_cfg.get('min_free_gb')})"
+        )
+
+    def _schedule_receiver_horizon_probe(self) -> None:
+        """Schedule the per-receiver horizon probe (unified file index slice-2b.3).
+
+        Lists each receiver's date-directory index to find the oldest file it
+        still holds, recording it in ``receiver_horizon`` — the dynamic fetch
+        floor for ``missing_on_receiver``. Disabled by default; inert until
+        scheduler.yaml enables it (``[receiver_horizon_probe] enabled: true``).
+        Daily is ample — the horizon advances ~1 day/day. Runs on the backfill
+        executor so it never competes with live downloads.
+        """
+        probe_cfg = self.yaml_config.get("receiver_horizon_probe", {})
+        if not probe_cfg.get("enabled", False):
+            self.logger.info("Receiver horizon probe disabled in config")
+            return
+
+        from .receiver_horizon_probe import _run_horizon_probe_job
+
+        schedule = probe_cfg.get("schedule", "04:40")
+        base_trigger = parse_schedule(schedule)
+        self.scheduler.add_job(
+            func=_run_horizon_probe_job,
+            trigger=base_trigger.trigger_type,
+            args=[probe_cfg],
+            id="receiver_horizon_probe",
+            replace_existing=True,
+            max_instances=1,
+            executor="backfill",
+            **base_trigger.trigger_kwargs,
+        )
+        # Delayed first run (5 minutes after start) so a fresh scheduler
+        # populates horizons without waiting for the daily slot.
+        self.scheduler.add_job(
+            func=_run_horizon_probe_job,
+            trigger="date",
+            run_date=datetime.now() + timedelta(seconds=300),
+            args=[probe_cfg],
+            id="receiver_horizon_probe_startup",
+            replace_existing=True,
+            executor="backfill",
+        )
+        self.logger.info(
+            f"Scheduled receiver horizon probe ({base_trigger.description}, "
+            "immediate first run in 5 min)"
         )
 
     def _schedule_integrity_checker(self) -> None:

@@ -648,6 +648,69 @@ def cmd_scheduler_integrity(args) -> int:
         return 1
 
 
+def cmd_scheduler_horizon_probe(args) -> int:
+    """Manually trigger the per-receiver horizon probe (unified file index).
+
+    Lists each receiver's date-directory index to find the oldest file it still
+    holds and records it in ``receiver_horizon`` (the dynamic fetch floor for
+    ``missing_on_receiver``). Handy for one-off validation against real receivers.
+    """
+    stations = getattr(args, "stations", None)
+    session = getattr(args, "session", None)
+    station_filter = [s.upper() for s in stations] if stations else None
+    probe_cfg = {}
+    if session and session != "all":
+        probe_cfg["sessions"] = [session]
+
+    scope = ", ".join(station_filter) if station_filter else "all active stations"
+    print(f"Receiver horizon probe: {scope}")
+    if probe_cfg.get("sessions"):
+        print(f"  Sessions: {', '.join(probe_cfg['sessions'])}")
+
+    try:
+        from ..scheduling.receiver_horizon_probe import _run_horizon_probe_job
+
+        _run_horizon_probe_job(probe_cfg or None, station_filter=station_filter)
+    except Exception as e:
+        print(f"Horizon probe failed: {e}")
+        return 1
+
+    # Show what got recorded (for the filtered stations, or the latest overall).
+    try:
+        from ..health import FileTracker
+
+        tracker = FileTracker()
+        if tracker.connect():
+            with tracker._conn.cursor() as cur:
+                if station_filter:
+                    cur.execute(
+                        "SELECT sid, session_type, oldest_date, oldest_hour "
+                        "FROM receiver_horizon WHERE sid = ANY(%s) "
+                        "ORDER BY sid, session_type",
+                        (station_filter,),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT sid, session_type, oldest_date, oldest_hour "
+                        "FROM receiver_horizon ORDER BY observed_at DESC LIMIT 40"
+                    )
+                rows = cur.fetchall()
+            tracker.close()
+            if rows:
+                print(f"\nreceiver_horizon ({len(rows)} rows):")
+                for sid, sess, oldest, hour in rows:
+                    hr = f" h{hour}" if hour is not None else ""
+                    print(f"  {sid:6} {sess:12} {oldest}{hr}")
+            else:
+                print(
+                    "\nNo horizons recorded — stations may be unreachable, or "
+                    "have no directory-listing API (NetRS)."
+                )
+    except Exception:  # noqa: BLE001 - summary is best-effort
+        pass
+    return 0
+
+
 def cmd_scheduler_pipeline_status(args) -> int:
     """Show pipeline job status and history."""
     try:
@@ -1369,6 +1432,22 @@ def create_scheduler_parser(subparsers):
     )
     integrity_parser.set_defaults(func=cmd_scheduler_integrity)
 
+    horizon_parser = scheduler_subparsers.add_parser(
+        "horizon-probe",
+        help="Probe receivers for their oldest-held file (dynamic fetch floor)",
+    )
+    horizon_parser.add_argument(
+        "--stations",
+        nargs="+",
+        help="Only probe these stations (default: all active stations)",
+    )
+    horizon_parser.add_argument(
+        "--session",
+        default=None,
+        help="Restrict to one session type (default: the receiver's seeded sessions)",
+    )
+    horizon_parser.set_defaults(func=cmd_scheduler_horizon_probe)
+
     clean_stale_parser = scheduler_subparsers.add_parser(
         "clean-stale-tmp",
         help="Delete stale partial downloads from tmp (older than --hours)",
@@ -1401,7 +1480,7 @@ def handle_scheduler_command(args) -> int:
     if not hasattr(args, "scheduler_command") or not args.scheduler_command:
         print("❌ No scheduler command specified")
         print(
-            "Available commands: start, stop, restart, status, config, test, gaps, backfill, backfill-status, reconcile, integrity, pipeline-status, load-status, bootstrap"
+            "Available commands: start, stop, restart, status, config, test, gaps, backfill, backfill-status, reconcile, integrity, horizon-probe, pipeline-status, load-status, bootstrap"
         )
         return 1
 

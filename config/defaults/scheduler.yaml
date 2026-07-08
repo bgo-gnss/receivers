@@ -83,6 +83,21 @@ integrity_checker:
   check_receiver: true
   size_tolerance_pct: 50.0
 
+# Receiver horizon probe (unified file index slice-2b.3). Lists each receiver's
+# date-directory index once per run to find the OLDEST file it still holds and
+# records it in receiver_horizon — the dynamic fetch floor for
+# missing_on_receiver, replacing the conservative static receiver_buffer_depth
+# seed (a deep-buffer station expects older files back to the real horizon; a
+# shallow-buffer station stops churning 404s on data it already rotated out).
+# Disabled by default; the differential falls back to the static floor until
+# this is enabled. NetRS has no directory-listing API and safely keeps the
+# static floor. Runs on the backfill executor. `sessions` restricts which
+# sessions to probe (default: the receiver's seeded sessions).
+receiver_horizon_probe:
+  enabled: false
+  schedule: "04:40"
+  # sessions: [15s_24hr, 1Hz_1hr]
+
 # Morning recovery — daily catch-up for stations whose previous-day(s) file is
 # still missing after the primary 00:01 window and 00:36 second-chance retry.
 # Targets PolaRX5 receivers that need 30-90 min after midnight before reliably
