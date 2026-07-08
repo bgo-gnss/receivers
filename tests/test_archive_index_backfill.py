@@ -369,3 +369,62 @@ class TestIterArchiveFiles:
         (d / "RHOF1660.15D.Z").write_bytes(b"x")
         files = list(rx.iter_archive_files(str(tmp_path), root=str(tmp_path)))
         assert files == []  # backup dir excluded
+
+    def test_snapshot_dir_pruned(self, tmp_path):
+        # NetApp/NFS ``.snapshot`` mirrors the whole archive under two extra
+        # prefix dirs — the walk must never descend into it.
+        _build_tree(tmp_path, ["RHOF"], ["15s_24hr"])  # 1 real file
+        snap = (
+            tmp_path
+            / ".snapshot"
+            / "Anti_ransomware_backup.2026-07-08_0809"
+            / "2003"
+            / "jan"
+            / "RHOF"
+            / "15s_24hr"
+            / "rinex"
+        )
+        snap.mkdir(parents=True)
+        (snap / "RHOF0010.03D.Z").write_bytes(b"x")
+        files = list(rx.iter_archive_files(str(tmp_path), root=str(tmp_path)))
+        assert len(files) == 1  # only the real file
+        assert all("/.snapshot/" not in f for f in files)
+
+
+class TestParseArchivePathGuards:
+    """The year-slot guard rejects shifted (non-``YYYY/mon/STA/...``) paths."""
+
+    def test_snapshot_path_rejected(self, tmp_path):
+        from receivers.archive.path_parse import parse_archive_path
+
+        p = str(
+            tmp_path
+            / ".snapshot"
+            / "Anti_ransomware_backup.2026-07-08_0809"
+            / "2003"
+            / "jan"
+            / "RHOF"
+            / "15s_24hr"
+            / "rinex"
+            / "RHOF0010.03D.Z"
+        )
+        # Pre-guard this mis-parsed to station="2003"/session="jan"/category="RHOF".
+        assert parse_archive_path(p, str(tmp_path)) is None
+
+    def test_real_path_still_parses(self, tmp_path):
+        from receivers.archive.path_parse import parse_archive_path
+
+        p = str(
+            tmp_path
+            / "2026"
+            / "apr"
+            / "AKUR"
+            / "15s_24hr"
+            / "raw"
+            / "AKUR202604070000a.T02.gz"
+        )
+        parsed = parse_archive_path(p, str(tmp_path))
+        assert parsed is not None
+        assert parsed.station == "AKUR"
+        assert parsed.session_type == "15s_24hr"
+        assert parsed.file_category == "raw"
