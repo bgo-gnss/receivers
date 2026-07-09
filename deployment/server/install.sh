@@ -661,6 +661,28 @@ phase 6 "PostgreSQL database"
 systemctl enable --now postgresql
 ok "PostgreSQL running"
 
+# ── PGDATA volume check (todo #62) ──────────────────────────────────────────
+# gps_health grows continuously (health block_* + the unified file-index
+# catalog), so its data dir must live on the large data volume, NOT a small OS
+# partition like /var (a full /var takes down the production DB). We do NOT move
+# the cluster here — that's a gated manual op (docs/deployment/
+# relocate-pgdata-to-mnt-data.md) — but we WARN if PGDATA is on a different
+# volume than the GPS data root. The expected location is DERIVED from DATA_DIR
+# (the same constant that drives data_prepath), so nothing is hardcoded here.
+PGDATA=$(sudo -u postgres psql -tAc "SHOW data_directory" 2>/dev/null | tr -d '[:space:]')
+if [[ -n "$PGDATA" ]]; then
+    data_vol=$(stat -c '%m' "$(dirname "$DATA_DIR")" 2>/dev/null || echo "")
+    pgdata_vol=$(stat -c '%m' "$PGDATA" 2>/dev/null || echo "")
+    if [[ -n "$data_vol" && -n "$pgdata_vol" && "$data_vol" != "$pgdata_vol" ]]; then
+        warn "PGDATA ($PGDATA) is on volume '$pgdata_vol', not the GPS data volume '$data_vol'."
+        warn "  A growing gps_health DB on a small OS volume can fill it and halt production."
+        warn "  Relocate to $(dirname "$DATA_DIR")/postgresql/ — see"
+        warn "  docs/deployment/relocate-pgdata-to-mnt-data.md (todo #62)."
+    else
+        ok "PGDATA on the GPS data volume ($pgdata_vol)"
+    fi
+fi
+
 # Create database roles
 if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='$SERVICE_USER'" | grep -q 1; then
     sudo -u postgres createuser "$SERVICE_USER"

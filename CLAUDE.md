@@ -638,6 +638,17 @@ bgo is in the gpsops group — can read/write gpsops-owned dirs without owning t
 **Config source**: install.sh Phase 5 checks `~/git/gps-config-data/<file>` first, then `config/defaults/<file>`.
 `~/git/gps-config-data/receivers.cfg` must exist (non-template) for TCP credentials to deploy correctly.
 
+**PGDATA location (gps_health DB)**: the Postgres cluster data dir lives on the
+large data volume — `/mnt/data/postgresql/17/main`, **not** the Debian default
+`/var/lib/postgresql/17/main` (relocated 2026-07-09, todo #62; `/var` is a small
+24 GB OS volume the growing DB was filling). PGDATA is governed by
+`postgresql.conf`'s `data_directory` (an OS/packaging concern), **not** by
+`receivers.cfg` — do not try to move it from app config. install.sh Phase 6 only
+*warns* if PGDATA is on a different volume than the GPS data root (`data_prepath`);
+the move itself is the gated manual runbook
+[`docs/deployment/relocate-pgdata-to-mnt-data.md`](docs/deployment/relocate-pgdata-to-mnt-data.md).
+A `RequiresMountsFor=/mnt/data` systemd drop-in guarantees boot ordering.
+
 **Log locations** (read as gpsops or bgo via group membership):
 - Main log: `~/.cache/gps_receivers/logs/receivers.log`
 - Audit: `~/.cache/gps_receivers/logs/download_audit.jsonl`
