@@ -20,6 +20,21 @@ LOG = logging.getLogger("test.batch")
 # ------------------------------------------------------------ year chunking
 
 
+def test_fmt_duration_hours_and_minutes():
+    """>=1h → 'X.X h'; <1h → 'xx min' (never below 1 min)."""
+    assert bp.fmt_duration(4680) == "1.3 h"
+    assert bp.fmt_duration(3600) == "1.0 h"
+    assert bp.fmt_duration(660) == "11 min"
+    assert bp.fmt_duration(90) == "2 min"
+    assert bp.fmt_duration(20) == "1 min"
+    assert bp.fmt_duration(0) == "1 min"
+
+
+def test_fmt_time_left_indicator():
+    assert bp.fmt_time_left(4680) == f"{bp.TIME_LEFT_ICON} 1.3 h left"
+    assert bp.fmt_time_left(660) == f"{bp.TIME_LEFT_ICON} 11 min left"
+
+
 def test_split_year_ranges_mid_year_boundaries():
     ranges = split_year_ranges(datetime(2012, 8, 28), datetime(2014, 3, 5))
     assert ranges == [
@@ -176,7 +191,8 @@ def test_chunk_progress_describe_eta():
     d = h.describe()
     assert d.startswith("RHOF 2026 10/100")
     assert "18.0s/item" in d
-    assert "ETA 0:27h" in d  # 90 files * 18s = 1620s = 0:27
+    # 90 files * 18s = 1620s = 27 min → the standard time-left indicator.
+    assert f"{bp.TIME_LEFT_ICON} 27 min left" in d
 
 
 def test_progress_board_render_states():
