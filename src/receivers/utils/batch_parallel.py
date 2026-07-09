@@ -136,10 +136,31 @@ def _load_gate(logger: logging.Logger) -> None:
         waited += GATE_POLL_S
 
 
-def _fmt_eta(seconds: float) -> str:
-    """Compact ``H:MMh`` for an ETA / elapsed duration."""
+# Nerd-font "timer" glyph for the time-left indicator.
+TIME_LEFT_ICON = "󰥽"
+
+
+def fmt_duration(seconds: float) -> str:
+    """Human-friendly duration — the general batch-progress time convention:
+    ``1.3 h`` at/above one hour, else ``42 min`` (never below ``1 min``).
+
+    >>> fmt_duration(4680), fmt_duration(660), fmt_duration(20)
+    ('1.3 h', '11 min', '1 min')
+    """
     s = max(0, int(seconds))
-    return f"{s // 3600}:{s % 3600 // 60:02d}h"
+    if s >= 3600:
+        return f"{s / 3600:.1f} h"
+    return f"{max(1, round(s / 60))} min"
+
+
+def fmt_time_left(seconds: float) -> str:
+    """Standard time-left indicator: ``󰥽 1.3 h left`` / ``󰥽 42 min left``."""
+    return f"{TIME_LEFT_ICON} {fmt_duration(seconds)} left"
+
+
+def _fmt_eta(seconds: float) -> str:
+    """Back-compat alias — compact duration for ETA displays."""
+    return fmt_duration(seconds)
 
 
 class ChunkProgress:
@@ -204,7 +225,7 @@ class ChunkProgress:
                 s += f" ({per:.1f}s/item"
                 eta = self.eta_s()
                 if eta is not None:
-                    s += f", ETA {_fmt_eta(eta)}"
+                    s += f", {fmt_time_left(eta)}"
                 s += ")"
         return s
 
@@ -257,7 +278,7 @@ class ProgressBoard:
         # it). Approximate: ignores not-yet-started chunks when chunks > workers.
         etas = [e for e in (h.eta_s() for h in running) if e is not None]
         if etas:
-            header += f" · ETA ~{_fmt_eta(max(etas))}"
+            header += f" · {fmt_time_left(max(etas))}"
         if not running:
             return header
         # Few chunks left: fit them on one line (counts only; ETA is in the
