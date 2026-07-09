@@ -191,8 +191,9 @@ def test_chunk_progress_describe_eta():
     d = h.describe()
     assert d.startswith("RHOF 2026 10/100")
     assert "18.0s/item" in d
-    # 90 files * 18s = 1620s = 27 min → the standard time-left indicator.
-    assert f"{bp.TIME_LEFT_ICON} 27 min left" in d
+    # Per-chunk line shows the rate only — no per-chunk time-left (the board
+    # header carries the overall ETA).
+    assert "left" not in d
 
 
 def test_progress_board_render_states():

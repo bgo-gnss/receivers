@@ -222,11 +222,9 @@ class ChunkProgress:
         if timing:
             per = self._per_item_s()
             if per is not None:
-                s += f" ({per:.1f}s/item"
-                eta = self.eta_s()
-                if eta is not None:
-                    s += f", {fmt_time_left(eta)}"
-                s += ")"
+                # Per-chunk rate only — the board header carries the overall
+                # time-left, so a per-chunk one here is redundant (bgo).
+                s += f" ({per:.1f}s/item)"
         return s
 
 
