@@ -5570,6 +5570,7 @@ def cmd_rinex(args) -> int:
         # Resolve early → fail fast before any fixing if push can't proceed.
         _flush_fn = None
         _flush_every = 0
+        _push_dest_display = None
         if getattr(args, "push", False) and not _dry_run:
             _adest, _aname, _adestpath = _resolve_archive_target()
             if not _adest:
@@ -5581,6 +5582,7 @@ def cmd_rinex(args) -> int:
                 logger.error("--push needs a staging --work-dir (staging is disabled)")
                 return 1
             _flush_every = max(1, int(getattr(args, "push_batch", 100) or 100))
+            _push_dest_display = _adest.rstrip("/") + "/"
 
             def _flush_fn(batch_details, _a=_adest, _n=_aname, _p=_adestpath):
                 return _flush_fixed_batch(
@@ -5652,6 +5654,7 @@ def cmd_rinex(args) -> int:
                     tos_cache=tos_cache,
                     flush_fn=_flush_fn,
                     flush_every=_flush_every,
+                    push_dest=_push_dest_display,
                     loglevel=args.loglevel,
                     progress=h,
                 )
