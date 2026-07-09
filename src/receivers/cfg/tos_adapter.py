@@ -221,3 +221,17 @@ def station_name(station: Dict[str, Any]) -> Optional[str]:
     if val in (None, ""):
         return None
     return str(val)
+
+
+def iers_domes_number(station: Dict[str, Any]) -> Optional[str]:
+    """Return the station's IERS DOMES number (RINEX MARKER NUMBER).
+
+    Surfaced at the top level of the station dict by
+    ``TOSClient.get_complete_station_metadata`` (attribute code
+    ``iers_domes_number``). TOS/IGS is the canonical source; ``None`` when
+    TOS has no DOMES recorded, so a missing value never overwrites cfg.
+    """
+    val = station.get("iers_domes_number")
+    if val in (None, ""):
+        return None
+    return str(val).strip() or None

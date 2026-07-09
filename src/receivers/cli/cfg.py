@@ -3535,16 +3535,18 @@ _SYNC_POSITION_EXCLUDE = frozenset({"latitude", "longitude", "height"})
 
 
 def _sync_overwrite_specs():
-    """FieldSpecs sync-from-tos overwrites: TOS-authoritative device identity.
+    """FieldSpecs sync-from-tos overwrites: TOS-canonical-for-cfg fields.
 
-    The tos-writable fields (receiver type/serial/firmware, antenna
-    type/serial/radome, station_name) minus surveyed position.
+    Marked declaratively with ``sync_from_tos=True`` in the manifest:
+    receiver type/serial/firmware, antenna type/serial/radome, station_name,
+    and rinex_marker_number (IERS DOMES). This is deliberately NOT the
+    ``tos_writable`` set — DOMES is TOS-canonical for cfg (TOS→cfg) yet must
+    never be pushed cfg→TOS, so it carries no ``tos_attribute_code``. Surveyed
+    position stays cfg-canonical and is excluded via ``sync_from_tos=False``.
     """
     from ..cfg.field_manifest import FIELDS
 
-    return [
-        s for s in FIELDS if s.tos_writable and s.cfg_key not in _SYNC_POSITION_EXCLUDE
-    ]
+    return [s for s in FIELDS if s.sync_from_tos]
 
 
 def _is_literal_ip(value) -> bool:
@@ -4026,10 +4028,12 @@ Diagnosing TCP authentication failures:
         help="Overwrite stations.cfg device fields from current TOS state",
         description=(
             "Bring stations.cfg in line with TOS after a device change is recorded "
-            "there. Overwrites TOS-authoritative device fields (receiver "
-            "type/serial/firmware, antenna type/serial/radome, station_name) and a "
-            "single station's SIM router_ip; surveyed position stays cfg-canonical "
-            "(flag-only). No receiver probe — TOS is the source. Default is dry-run."
+            "there. Overwrites TOS-canonical fields (receiver type/serial/firmware, "
+            "antenna type/serial/radome, station_name, rinex_marker_number ← IERS "
+            "DOMES) and a single station's SIM router_ip; surveyed position stays "
+            "cfg-canonical (flag-only). A field is filled only when TOS actually "
+            "carries a value — an absent TOS DOMES never clobbers cfg. No receiver "
+            "probe — TOS is the source. Default is dry-run."
         ),
     )
     sync.add_argument("station", nargs="*", help="Station marker(s); omit with --all")

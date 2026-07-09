@@ -17,7 +17,7 @@ from receivers.cli.cfg import (
 class TestOverwriteSpecs:
     def test_overwrites_device_identity_only(self):
         keys = {s.cfg_key for s in _sync_overwrite_specs()}
-        # TOS-authoritative device fields are overwritten
+        # TOS-canonical-for-cfg fields are overwritten: device identity + DOMES
         assert keys == {
             "receiver_type",
             "receiver_serial",
@@ -26,6 +26,7 @@ class TestOverwriteSpecs:
             "antenna_serial",
             "antenna_radome",
             "station_name",
+            "rinex_marker_number",
         }
 
     def test_never_surveyed_position(self):
@@ -33,6 +34,27 @@ class TestOverwriteSpecs:
         # stations.cfg / survey is ground truth — these must stay flag-only
         for k in ("latitude", "longitude", "height", "antenna_height"):
             assert k not in keys
+
+    def test_domes_is_canonical_for_cfg_but_not_pushable_to_tos(self):
+        """rinex_marker_number ← TOS iers_domes_number, but NEVER cfg→TOS.
+
+        DOMES is IGS/TOS-canonical: sync-from-tos writes it into cfg, but it
+        carries no tos_attribute_code so reconcile --push-tos can't send cfg's
+        (often wrong 4-char) value up to TOS. This split is the fix for the
+        NYLA cross-contamination.
+        """
+        from receivers.cfg import tos_adapter
+        from receivers.cfg.field_manifest import fields_by_key
+
+        spec = fields_by_key()["rinex_marker_number"]
+        assert spec.sync_from_tos is True
+        assert spec.tos_writable is False  # must not push cfg→TOS
+        assert tos_adapter.iers_domes_number({"iers_domes_number": "10230M001"}) == (
+            "10230M001"
+        )
+        # Missing/blank DOMES → None, so a silent TOS gap never clobbers cfg.
+        assert tos_adapter.iers_domes_number({}) is None
+        assert tos_adapter.iers_domes_number({"iers_domes_number": ""}) is None
 
 
 class TestSyntheticSerialStrip:

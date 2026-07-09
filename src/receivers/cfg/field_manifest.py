@@ -296,6 +296,13 @@ class FieldSpec:
     # the receiver hardware is literally the authoritative source. Position
     # fields are flag-only even though the receiver can supply them.
     receiver_primary: bool = False
+    # If True, ``cfg sync-from-tos`` overwrites this cfg field with the current
+    # TOS value (TOS→cfg). This is DISTINCT from ``tos_writable`` (cfg→TOS push
+    # via ``reconcile --push-tos``): a field can be TOS-canonical for cfg
+    # without being safe to push cfg→TOS. ``rinex_marker_number`` (IERS DOMES)
+    # is the canonical example — TOS/IGS owns it, cfg must follow it but must
+    # never push its (often wrong 4-char) value up to TOS.
+    sync_from_tos: bool = False
     # TOS write-side metadata. ``tos_attribute_code=None`` means the field is
     # not writable via ``--push-tos`` (e.g. composite fields).
     # ``tos_target_entity`` is the entity type that owns the attribute:
@@ -351,6 +358,7 @@ FIELDS: List[FieldSpec] = [
         cfg_format=_receiver_type_to_cfg,
         description="Receiver model/type (e.g. PolaRX5, NetR9)",
         receiver_primary=True,
+        sync_from_tos=True,
         tos_attribute_code="model",
         tos_target_entity="gnss_receiver",
         tos_format=to_igs_receiver,
@@ -363,6 +371,7 @@ FIELDS: List[FieldSpec] = [
         normalize=_strip_placeholder,
         description="Receiver serial number",
         receiver_primary=True,
+        sync_from_tos=True,
         tos_attribute_code="serial_number",
         tos_target_entity="gnss_receiver",
     ),
@@ -374,6 +383,7 @@ FIELDS: List[FieldSpec] = [
         normalize=_normalize_firmware_version,
         description="Active firmware version reported by the receiver",
         receiver_primary=True,
+        sync_from_tos=True,
         tos_attribute_code="firmware_version",
         tos_target_entity="gnss_receiver",
     ),
@@ -386,6 +396,7 @@ FIELDS: List[FieldSpec] = [
         tos_extract=tos_adapter.current_antenna_model,
         receiver_authoritative=False,
         description="IGS-style antenna model code",
+        sync_from_tos=True,
         tos_attribute_code="model",
         tos_target_entity="antenna",
         tos_format=to_igs_antenna,
@@ -398,6 +409,7 @@ FIELDS: List[FieldSpec] = [
         normalize=_strip_placeholder,
         receiver_authoritative=False,
         description="Antenna serial number",
+        sync_from_tos=True,
         tos_attribute_code="serial_number",
         tos_target_entity="antenna",
     ),
@@ -408,6 +420,7 @@ FIELDS: List[FieldSpec] = [
         tos_extract=tos_adapter.current_radome_model,
         receiver_authoritative=False,
         description="Radome model code (NONE if absent)",
+        sync_from_tos=True,
         tos_attribute_code="model",
         tos_target_entity="radome",
         tos_format=to_igs_radome,
@@ -564,8 +577,23 @@ FIELDS: List[FieldSpec] = [
         label="Station Name",
         tos_extract=tos_adapter.station_name,
         description="Long-form station name (TOS-only; receiver MarkerName carries the 4-char ID)",
+        sync_from_tos=True,
         tos_attribute_code="name",
         tos_target_entity="station",
+    ),
+    # IERS DOMES number → RINEX MARKER NUMBER. TOS/IGS is canonical; cfg follows
+    # TOS via ``cfg sync-from-tos`` but is NEVER pushed up (no tos_attribute_code,
+    # so not tos_writable — reconcile --push-tos won't offer to send cfg's value,
+    # which for most of the fleet is the wrong 4-char marker, back to TOS). The
+    # RINEX converter reads this cfg key for MARKER NUMBER, so drift here writes
+    # the 4-char ID into headers instead of the DOMES (the NYLA cross-contamination).
+    FieldSpec(
+        cfg_key="rinex_marker_number",
+        label="Marker Number (DOMES)",
+        tos_extract=tos_adapter.iers_domes_number,
+        receiver_authoritative=False,
+        description="IERS DOMES number for RINEX MARKER NUMBER (TOS-canonical)",
+        sync_from_tos=True,
     ),
     # Runtime-observed: no receiver health probe or TOS source. The download
     # path records the observed value into cfg_discrepancy when the live FTP
@@ -596,9 +624,11 @@ def with_position_tolerance(tolerance_m: float) -> List[FieldSpec]:
         "height": position_equality_for("height", tolerance_m),
     }
     return [
-        replace(spec, equal=overrides[spec.cfg_key])
-        if spec.cfg_key in overrides
-        else spec
+        (
+            replace(spec, equal=overrides[spec.cfg_key])
+            if spec.cfg_key in overrides
+            else spec
+        )
         for spec in FIELDS
     ]
 
