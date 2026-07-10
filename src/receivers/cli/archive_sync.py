@@ -277,6 +277,7 @@ def cmd_archive_audit(args: argparse.Namespace) -> int:
                 deep=args.deep,
                 check_version=args.check_version,
                 check_missing=not args.no_missing,
+                check_identity=getattr(args, "identity", False),
                 progress=h,
             )
             h.finish(ok=True)
@@ -364,6 +365,26 @@ def cmd_archive_audit(args: argparse.Namespace) -> int:
             f"\n📦 {len(gzipz)} gzip-.Z file(s): content OK, wrong compression — "
             "recompress via deployment/scripts/fix_gzip_z_to_lzw.sh (rek-d01) "
             "or re-push from a recompressed staging tree; do NOT delete."
+        )
+    strays = [(r.station, f) for r in reports for f in r.findings if f.issue == "stray"]
+    if strays:
+        stray_stations = sorted({sta for sta, _ in strays})
+        print(
+            f"\n📍 {len(strays)} stray file(s): position matches a DIFFERENT "
+            "station. Confirm the true station (authoritative teqc +meta) and "
+            "relocate — never delete or regen-in-place:"
+        )
+        for sta in stray_stations:
+            print(
+                f"  receivers archive-sort {sta} --session {args.session} "
+                "--verify-station   # dry-run; add --apply to move"
+            )
+    stacked = [f for r in reports for f in r.findings if f.issue == "stacked"]
+    if stacked:
+        print(
+            f"\n🧱 {len(stacked)} stacked file(s): multiple RINEX documents in one "
+            ".Z — included in the regenerate command(s) above (a clean re-rinex "
+            "collapses them to a single document)."
         )
     if not any_findings and not failed:
         print("\n✅ archive clean — nothing to do")
@@ -1022,6 +1043,14 @@ def create_archive_audit_parser(subparsers) -> argparse.ArgumentParser:
         action="store_true",
         help="Read each product's CRINEX head and flag RINEX 2 products as "
         "regen candidates (streams file heads — slower than name/magic-only)",
+    )
+    parser.add_argument(
+        "--identity",
+        action="store_true",
+        help="Header-probe every valid product for a stray position (closest to "
+        "a DIFFERENT station → issue 'stray', fix via archive-sort) and for "
+        "stacking (multiple concatenated RINEX docs → issue 'stacked', fix via a "
+        "clean re-rinex). Report-only; decompresses each file (slower over NFS).",
     )
     parser.add_argument(
         "--no-missing",
