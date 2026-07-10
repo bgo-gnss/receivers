@@ -29,6 +29,8 @@ def _run_integrity_check_job(
     size_tolerance_pct: float = 50.0,
     station_filter: Optional[List[str]] = None,
     hash_fill_limit: int = 1000,
+    check_identity: bool = True,
+    identity_sessions: Optional[List[str]] = None,
 ) -> None:
     """APScheduler job: periodic file integrity check.
 
@@ -42,6 +44,11 @@ def _run_integrity_check_job(
        present files that lack it (Option B: keep the hot download/archive path
        hash-free). Bounded by ``hash_fill_limit`` per run.
 
+    When ``check_identity`` is set, a report-only header probe also runs per
+    station/session over the archived RINEX in the window, flagging stray files
+    (position closest to a different station) and stacked/multi-document files.
+    Findings are logged (never auto-repaired — relocation/re-rinex need eyes).
+
     Args:
         session_types: Session types to check (e.g., ['15s_24hr', '1Hz_1hr'])
         days_back: Number of days to look back from yesterday
@@ -49,6 +56,11 @@ def _run_integrity_check_job(
         size_tolerance_pct: Flag files deviating more than this % from median
         station_filter: If set, only check these station IDs (CLI use)
         hash_fill_limit: Max files to content-hash per run (0 disables the phase)
+        check_identity: Run the report-only stray/stacked header probe
+        identity_sessions: Sessions the identity probe runs on. Default (None)
+            = daily sessions only (those NOT ending in '1hr'): the same
+            stray/stacked signal appears on the daily product, and probing
+            hourly (1Hz_1hr = 24x the files) every run is wasteful.
     """
     try:
         from ..cli.main import get_all_station_configs
@@ -92,10 +104,33 @@ def _run_integrity_check_job(
         logger.warning("Cannot connect to database for integrity check")
         return
 
+    # Resolve fleet geometry + position gate ONCE for the whole run (the
+    # report-only identity probe). Fail-open: if cfg is unreadable the probe
+    # is skipped rather than aborting the size/hash checks.
+    fleet: Dict[str, Any] = {}
+    gate_m = 10.0
+    # Identity probe scope: daily sessions only by default. Hourly (1Hz_1hr) is
+    # ~24x the file volume and carries no extra stray/stacked signal over the
+    # daily product, so re-decompressing it every run is wasteful.
+    if identity_sessions is None:
+        identity_sessions = [s for s in session_types if not s.endswith("1hr")]
+    identity_set = set(identity_sessions) if check_identity else set()
+    if identity_set:
+        try:
+            from ..archive.sort import fleet_coordinates, resolve_position_gate_m
+
+            fleet = fleet_coordinates()
+            gate_m = resolve_position_gate_m()
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"identity probe disabled (fleet/gate unavailable): {e}")
+            identity_set = set()
+
     total_untracked = 0
     total_registered = 0
     total_suspect = 0
     total_checked = 0
+    total_stray = 0
+    total_stacked = 0
 
     try:
         for session_type in session_types:
@@ -111,11 +146,15 @@ def _run_integrity_check_job(
                         active_stations[station_id],
                         check_receiver=check_receiver,
                         size_tolerance_pct=size_tolerance_pct,
+                        fleet=fleet if session_type in identity_set else None,
+                        gate_m=gate_m,
                     )
                     total_untracked += result["untracked"]
                     total_registered += result["registered"]
                     total_suspect += result["suspect"]
                     total_checked += result["checked"]
+                    total_stray += result.get("stray", 0)
+                    total_stacked += result.get("stacked", 0)
                 except Exception as e:
                     logger.debug(
                         f"Integrity check failed for {station_id}/{session_type}: {e}"
@@ -133,7 +172,8 @@ def _run_integrity_check_job(
         f"Integrity check complete in {duration:.1f}s: "
         f"{total_checked} files checked, {total_untracked} untracked found, "
         f"{total_registered} registered, {total_suspect} suspect, "
-        f"{hash_stats['hashed']} content-hashed"
+        f"{hash_stats['hashed']} content-hashed, "
+        f"{total_stray} stray, {total_stacked} stacked"
     )
 
 
@@ -260,13 +300,22 @@ def _check_station_session(
     station_config: Dict[str, Any],
     check_receiver: bool = True,
     size_tolerance_pct: float = 50.0,
+    fleet: Optional[Dict[str, Any]] = None,
+    gate_m: float = 10.0,
 ) -> Dict[str, int]:
     """Check integrity for a single station/session combination.
 
     Returns:
-        Dict with counts: untracked, registered, suspect, checked
+        Dict with counts: untracked, registered, suspect, checked, stray, stacked
     """
-    result = {"untracked": 0, "registered": 0, "suspect": 0, "checked": 0}
+    result = {
+        "untracked": 0,
+        "registered": 0,
+        "suspect": 0,
+        "checked": 0,
+        "stray": 0,
+        "stacked": 0,
+    }
 
     receiver_type = station_config.get("receiver_type", "").lower() or None
 
@@ -393,6 +442,78 @@ def _check_station_session(
             end_date,
             tracker,
         )
+
+    # Phase 5 (report-only): stray / stacked header probe on RINEX in the window.
+    if fleet is not None:
+        try:
+            probe = _identity_stacked_check(
+                station_id, session_type, start_date, end_date, checker, fleet, gate_m
+            )
+            result["stray"] = probe["stray"]
+            result["stacked"] = probe["stacked"]
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"identity probe failed for {station_id}/{session_type}: {e}")
+
+    return result
+
+
+def _identity_stacked_check(
+    station_id: str,
+    session_type: str,
+    start_date: date,
+    end_date: date,
+    checker: "ArchiveFileChecker",
+    fleet: Dict[str, Any],
+    gate_m: float,
+) -> Dict[str, int]:
+    """Report-only probe: flag stray + stacked RINEX in the window.
+
+    Walks the ``…/<STA>/<session>/rinex/`` directory for each month spanned by
+    the window and probes the daily RINEX header (no ``teqc``). Findings are
+    logged under ``receivers.scheduler.integrity`` (the monitoring channel);
+    nothing is moved, deleted, or re-rinexed — remediation needs eyes.
+    """
+    from ..archive.file_identity import probe_rinex_file
+
+    result = {"stray": 0, "stacked": 0}
+
+    # RINEX lives under the '<session>_rinex' path (rinex/ subdir).
+    rinex_session = (
+        session_type if session_type.endswith("_rinex") else f"{session_type}_rinex"
+    )
+
+    unique_months: Set[Tuple[int, str]] = set()
+    current = start_date
+    while current <= end_date:
+        dt = datetime.combine(current, datetime.min.time())
+        unique_months.add((current.year, dt.strftime("%b").lower()))
+        current += timedelta(days=1)
+
+    from ..utils.download_tracker import parse_date_from_filename
+
+    for year, month in unique_months:
+        rinex_dir = checker.get_archive_directory(
+            station_id, rinex_session, year=year, month=month
+        )
+        if not os.path.isdir(rinex_dir):
+            continue
+        for entry in sorted(os.listdir(rinex_dir)):
+            if not entry.startswith(station_id):
+                continue
+            path = os.path.join(rinex_dir, entry)
+            if not os.path.isfile(path):
+                continue
+            # Keep to the date window (the dir is a whole month).
+            parsed = parse_date_from_filename(entry, station_id)
+            if parsed is not None:
+                fdate = parsed[0]
+                if fdate < start_date or fdate > end_date:
+                    continue
+            for f in probe_rinex_file(
+                Path(path), station_id, fleet=fleet, gate_m=gate_m
+            ):
+                result[f.kind] = result.get(f.kind, 0) + 1
+                logger.warning("integrity[%s]: %s — %s", f.kind, f.rel, f.detail)
 
     return result
 

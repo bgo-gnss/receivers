@@ -4,8 +4,11 @@ Covers:
 - seeder.resolve_areas_yaml() precedence (GPS_CONFIG_DATA_REPO → gps_parser
   deployed dir → bundled default).
 - the scheduler's station_areas.yaml mtime watch + auto-reseed.
+- schema v-next compat: the optional per-area keys (name_is, cdn) added for
+  the aflogun_tmp region source must not change what seed_areas() loads.
 
-No DB / network — the reseed itself is mocked.
+No DB / network — the reseed itself is mocked; the compat test uses the
+dry-run path, which parses the yaml without a connection.
 """
 
 from __future__ import annotations
@@ -117,3 +120,67 @@ def test_reseed_areas_swallows_errors(monkeypatch):
     obj = SimpleNamespace(logger=logging.getLogger("test.areas"))
     # Must not raise — a reseed failure can't be allowed to kill the scheduler job.
     BulkDownloadScheduler._reseed_areas.__get__(obj)()
+
+
+# --- schema v-next compat (name_is / cdn keys) --------------------------------
+
+BUNDLED_AREAS = seeder_mod.CONFIG_DIR / "defaults" / "station_areas.yaml"
+
+
+def _seed_areas_dry_run(areas_file):
+    """Run the real seed_areas dry-run path without a DB connection."""
+    stub = SimpleNamespace()
+    return seeder_mod.Seeder.seed_areas.__get__(stub)(
+        areas_file=areas_file, dry_run=True
+    )
+
+
+def test_seed_areas_unaffected_by_optional_area_keys():
+    # seed_areas must load exactly the areas/members the yaml declares, with
+    # the new optional keys (name_is, cdn) present but ignored.
+    import yaml
+
+    data = yaml.safe_load(BUNDLED_AREAS.read_text())
+    expected_areas = sum(len(data[t]) for t in ("volcanic_areas", "regional_areas"))
+    expected_members = sum(
+        len(area["stations"])
+        for t in ("volcanic_areas", "regional_areas")
+        for area in data[t].values()
+    )
+
+    counts = _seed_areas_dry_run(BUNDLED_AREAS)
+
+    assert counts == {"areas": expected_areas, "members": expected_members}
+    assert expected_areas == 19  # 12 volcanic + 7 regional
+
+
+def test_optional_keys_follow_schema_rules():
+    # name_is everywhere; cdn only where a CDN plot dir exists, and the
+    # svartsengi area maps to the thorbjorn dir.
+    import yaml
+
+    data = yaml.safe_load(BUNDLED_AREAS.read_text())
+    areas = {
+        area_id: area
+        for t in ("volcanic_areas", "regional_areas")
+        for area_id, area in data[t].items()
+    }
+
+    assert all("name_is" in area for area in areas.values())
+    assert areas["svartsengi"]["cdn"] == "thorbjorn"
+
+    cdn_slugs = {a["cdn"] for a in areas.values() if "cdn" in a}
+    # 11 of the 12 CDN dirs; kverkfjoll arrives with the new-area content slice.
+    assert cdn_slugs == {
+        "askja",
+        "bardarbunga",
+        "eyjafjallajokull",
+        "grimsvotn",
+        "hekla",
+        "hengill",
+        "katla",
+        "oraefajokull",
+        "reykjanes",
+        "thorbjorn",
+        "torfajokull",
+    }

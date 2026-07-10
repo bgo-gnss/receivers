@@ -206,6 +206,12 @@ def get_default_config() -> Dict[str, Any]:
             # to N present files per run, newest-first. 0 disables. Keeps the hot
             # download/archive path hash-free (Option B).
             "hash_fill_limit": 1000,
+            # Phase 5: report-only stray/stacked RINEX header probe. Runs on
+            # daily sessions only by default (identity_sessions=None → sessions
+            # not ending in '1hr'); set identity_sessions to a list to override,
+            # or check_identity=false to disable.
+            "check_identity": True,
+            "identity_sessions": None,
         },
         # Batch delta push to the long-term archive gateway (rawdata -> ananas).
         # Disabled by default: double-gated with `active: true` per target in
@@ -604,6 +610,11 @@ integrity_checker:
   # Phase 4: lazily fill file_tracking.content_sha256 (mig 052), newest-first,
   # up to N files/run. 0 disables. Keeps the hot download/archive path hash-free.
   hash_fill_limit: 1000
+  # Phase 5: report-only stray/stacked RINEX header probe. Daily sessions only
+  # by default (hourly is 24x the files for no extra signal). Set
+  # identity_sessions: [15s_24hr, 1Hz_1hr] to widen, or check_identity: false.
+  check_identity: true
+  # identity_sessions: [15s_24hr]
 
 # Periodic archive integrity verify (read-back re-hash vs archive_catalog +
 # local cross-check). Disabled by default. Set read_root to the archive's

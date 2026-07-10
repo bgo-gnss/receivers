@@ -175,11 +175,33 @@ def audit_station_session(
     deep: bool = False,
     check_version: bool = False,
     check_missing: bool = True,
+    check_identity: bool = False,
     progress=None,
 ) -> AuditReport:
-    """Audit one station/session across the archive tree. Read-only."""
+    """Audit one station/session across the archive tree. Read-only.
+
+    With ``check_identity`` each valid RINEX product is also probed (header
+    only) for a stray position (closest to a different station → issue
+    ``stray``, fix via ``archive-sort``) and for stacking (multiple RINEX
+    documents concatenated → issue ``stacked``, fix via a clean re-rinex).
+    Report-only: neither is auto-repaired.
+    """
     station = station.upper()
     report = AuditReport(station=station, session=session)
+
+    # Fleet geometry + gate for the identity probe — resolved once. Fail-open.
+    _fleet: dict = {}
+    _gate_m = 10.0
+    if check_identity:
+        try:
+            from .sort import fleet_coordinates as _fc
+            from .sort import resolve_position_gate_m as _rg
+
+            _fleet = _fc()
+            _gate_m = _rg()
+        except Exception:  # noqa: BLE001
+            check_identity = False
+
     rinex_dirs: List[Path] = []
     for ydir in sorted(source_root.iterdir()) if source_root.is_dir() else []:
         if not (ydir.is_dir() and ydir.name.isdigit()):
@@ -268,7 +290,29 @@ def audit_station_session(
                         valid_dates.add(fdate)
                     continue
 
-            report.clean += 1
+            # Report-only identity probe on the valid product: stray + stacked.
+            id_findings = []
+            if check_identity:
+                from .file_identity import probe_rinex_file
+
+                for pf in probe_rinex_file(
+                    f, station, fleet=_fleet, gate_m=_gate_m, rel=rel
+                ):
+                    id_findings.append(
+                        AuditFinding(
+                            rel_path=rel,
+                            issue=pf.kind,  # 'stray' | 'stacked'
+                            detail=pf.detail,
+                            size=size,
+                            file_date=fdate,
+                            junk=False,  # never delete: relocate (stray) / re-rinex (stacked)
+                            regen=(pf.kind == "stacked" and fdate is not None),
+                        )
+                    )
+            if id_findings:
+                report.findings.extend(id_findings)
+            else:
+                report.clean += 1
             if fdate:
                 valid_dates.add(fdate)
 

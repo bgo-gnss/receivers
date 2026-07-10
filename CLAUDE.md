@@ -191,6 +191,10 @@ receivers scheduler reconcile --stations ELDC THOB
 receivers scheduler integrity --session 15s_24hr --days 7
 receivers scheduler integrity --session all --days 30 --no-receiver
 receivers scheduler integrity --stations ENTC ELDC --tolerance 20
+
+# Full-archive identity audit (stray + stacked; report-only, emits fix commands)
+receivers archive-audit NYLA --identity --years 2022      # stray/stacked sweep
+receivers archive-audit NYLA --identity --deep --check-version  # + corruption + R2
 ```
 
 ## Architecture
@@ -241,7 +245,7 @@ receivers download STATION --sync --archive  # Phase 1 is always active
 - **Multi-session backfill**: All three sessions backfilled via self-gating interval jobs
 - **Gap detection**: Periodic scan for missing files (every 2h, configurable)
 - **Archive reconciler**: SBF→RINEX conversion for orphaned raw files (every 6h)
-- **Integrity checker**: Validates archives, detects untracked files, flags size anomalies (every 6h)
+- **Integrity checker**: Validates archives, detects untracked files, flags size anomalies (every 6h). Also runs a **report-only identity probe** on the window's RINEX (header-only, no `teqc`): flags **stray** files (`APPROX POSITION XYZ` closest to a *different* station — the FAGC class) and **stacked** files (multiple RINEX documents concatenated in one `.Z`). Never auto-repairs — logs under `receivers.scheduler.integrity` with the fix command (`archive-sort` for a stray, re-rinex for a stacked file). **Scoped to daily sessions only** by default (`identity_sessions=None` → non-`1hr`): hourly `1Hz_1hr` is ~24× the files for no extra signal, so at `days_back=7` this is ~1 local decompress/station/day (~a minute). Widen via `identity_sessions: [...]` or disable via `check_identity: false`. Shared probe: `receivers/archive/file_identity.py`.
 - **Persistence**: SQLite job store survives restarts
 - **Manual compatibility**: All manual operations remain fully functional
 - **Extensibility**: Task interface allows scheduling any operation type (status, health, validation)

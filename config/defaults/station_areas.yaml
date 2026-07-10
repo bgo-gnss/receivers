@@ -2,11 +2,25 @@
 # Defines geographic and volcanic monitoring areas for GPS stations
 # Stations can belong to multiple areas (overlap allowed)
 #
-# Generated based on actual station coordinates from database.
-# Volcanic areas use radius from center point.
-# Regional areas use bounding boxes.
+# Originally generated from station coordinates in the database; hand-maintained
+# since. Volcanic areas use radius from center point. Regional areas use
+# bounding boxes. Keep the structure regular — a future generator script must be
+# able to rewrite whole sections without breaking hand-edited content.
 #
-# Usage: Used by Grafana dashboard for filtering voltage/health plots by area
+# Per-area keys:
+#   name        Display name (English)          — required
+#   name_is     Display name (Icelandic)        — optional
+#   description Free-text description           — optional
+#   cdn         Slug of this area's plot dir on the CDN (brunnur). Absent key
+#               means no CDN counterpart: consumers fall back to the standard
+#               plot location.                  — optional
+#   stations    Member station markers          — required
+#   geometry, analyses — RESERVED for the shapefile/area-analyses phase; do not
+#               use yet.
+#
+# Usage: seeded into the station_areas DB table by receivers (Grafana area
+# filtering); region source for the aflogun_tmp GNSS browser via
+# [PATHS] station_areas_file in postprocess.cfg
 
 # =============================================================================
 # VOLCANIC MONITORING AREAS
@@ -16,6 +30,8 @@ volcanic_areas:
 
   svartsengi:
     name: "Svartsengi"
+    name_is: "Svartsengi"
+    cdn: thorbjorn
     description: "Svartsengi/Sundhnúkur volcanic system - active 2024-2025"
     stations:
       - THOB   # Þorbjörn
@@ -45,6 +61,7 @@ volcanic_areas:
 
   krysuvik:
     name: "Krýsuvík"
+    name_is: "Krýsuvík"
     description: "Krýsuvík-Trölladyngja volcanic system"
     stations:
       - KRIV   # Krýsuvík
@@ -58,6 +75,8 @@ volcanic_areas:
 
   hengill:
     name: "Hengill"
+    name_is: "Hengill"
+    cdn: hengill
     description: "Hengill volcanic system"
     stations:
       - OLKE   # Ölkelduháls
@@ -68,6 +87,8 @@ volcanic_areas:
 
   hekla:
     name: "Hekla"
+    name_is: "Hekla"
+    cdn: hekla
     description: "Hekla volcanic system"
     stations:
       - FEDG   # Feðgar
@@ -81,6 +102,8 @@ volcanic_areas:
 
   eyjafjallajokull:
     name: "Eyjafjallajökull"
+    name_is: "Eyjafjallajökull"
+    cdn: eyjafjallajokull
     description: "Eyjafjallajökull volcanic system"
     stations:
       - STE2   # Steinahellir
@@ -89,6 +112,8 @@ volcanic_areas:
 
   katla:
     name: "Katla"
+    name_is: "Katla"
+    cdn: katla
     description: "Katla volcanic system (Mýrdalsjökull)"
     stations:
       - AUST   # Austmannsbunga
@@ -103,6 +128,8 @@ volcanic_areas:
 
   torfajokull:
     name: "Torfajökull"
+    name_is: "Torfajökull"
+    cdn: torfajokull
     description: "Torfajökull volcanic system"
     stations:
       - HRSC   # Hrafntinnusker
@@ -112,6 +139,8 @@ volcanic_areas:
 
   grimsvotn:
     name: "Grímsvötn"
+    name_is: "Grímsvötn"
+    cdn: grimsvotn
     description: "Grímsvötn volcanic system"
     stations:
       - GRVC   # Grímsvötn
@@ -120,6 +149,8 @@ volcanic_areas:
 
   bardarbunga:
     name: "Bárðarbunga"
+    name_is: "Bárðarbunga"
+    cdn: bardarbunga
     description: "Bárðarbunga volcanic system (Holuhraun 2014-2015)"
     stations:
       - KISA   # Kistufell
@@ -135,6 +166,8 @@ volcanic_areas:
 
   oraefajokull:
     name: "Öræfajökull"
+    name_is: "Öræfajökull"
+    cdn: oraefajokull
     description: "Öræfajökull volcanic system"
     stations:
       - ROTH   # Rótarholt
@@ -149,6 +182,8 @@ volcanic_areas:
 
   askja:
     name: "Askja"
+    name_is: "Askja"
+    cdn: askja
     description: "Askja volcanic system"
     stations:
       - OLAC   # Ólafsgígar
@@ -164,6 +199,7 @@ volcanic_areas:
 
   krafla:
     name: "Krafla"
+    name_is: "Krafla"
     description: "Krafla volcanic system"
     stations:
       - KRAC   # Krafla
@@ -177,6 +213,8 @@ regional_areas:
 
   reykjanes:
     name: "Reykjanes"
+    name_is: "Reykjanesskagi"
+    cdn: reykjanes
     description: "Reykjanes Peninsula"
     stations:
       - AFST
@@ -227,6 +265,7 @@ regional_areas:
 
   south:
     name: "South Iceland"
+    name_is: "Suðurland"
     description: "South Iceland coastal region"
     stations:
       - ALHV
@@ -253,6 +292,7 @@ regional_areas:
 
   north:
     name: "North Iceland"
+    name_is: "Norðurland"
     description: "North Iceland"
     stations:
       - AKUR
@@ -291,6 +331,7 @@ regional_areas:
 
   east:
     name: "East Iceland"
+    name_is: "Austurland"
     description: "East Iceland"
     stations:
       - ALFD
@@ -315,6 +356,7 @@ regional_areas:
 
   west_westfjords:
     name: "West / Westfjords"
+    name_is: "Vesturland og Vestfirðir"
     description: "West Iceland and Westfjords"
     stations:
       - BJTV
@@ -329,6 +371,7 @@ regional_areas:
 
   central_highlands:
     name: "Central Highlands"
+    name_is: "Miðhálendið"
     description: "Central highland interior"
     stations:
       - BLEI
@@ -380,6 +423,7 @@ regional_areas:
 
   vatnajokull:
     name: "Vatnajökull"
+    name_is: "Vatnajökull"
     description: "Vatnajökull glacier region"
     stations:
       - ALFD
@@ -443,5 +487,6 @@ regional_areas:
 # Regional areas use geographic bounding boxes.
 # Stations may appear in multiple areas where coverage overlaps.
 #
-# To update: Run scripts/analyze_station_areas.py with current coordinates.
+# To update: edit by hand (the analyze_station_areas.py generator referenced
+# here previously no longer exists; a criteria-driven generator is planned).
 
