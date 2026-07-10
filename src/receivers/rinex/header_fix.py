@@ -536,6 +536,7 @@ def fix_headers_station(
     tos_cache: Any = None,
     flush_fn: Any = None,
     flush_every: int = 0,
+    push_dest: Optional[str] = None,
     loglevel: int = logging.INFO,
     progress: Any = None,
 ) -> dict:
@@ -556,6 +557,10 @@ def fix_headers_station(
     that batch immediately, so an interruption loses at most one batch's work
     instead of the whole run (a re-run then skips already-pushed files, whose
     headers now match TOS). Never invoked on a dry-run.
+
+    ``push_dest`` is a display-only string (the resolved archive gateway, e.g.
+    ``gpsops@rawdata.vedur.is:~/gpsdata/``); when set it is echoed on the
+    staging banner so the operator sees where fixed batches are pushed.
 
     Returns ``{station, scanned, fixed, skipped, errors, details: [...]}``.
     """
@@ -588,6 +593,8 @@ def fix_headers_station(
             f"   Staging fixed files into {work_dir} "
             f"(source archive NOT modified — push back with rsync)"
         )
+        if push_dest:
+            print(f"   → pushing fixed batches to {push_dest}")
 
     # One TOS call per station (cached device_history), not per file.
     if tos_cache is None:

@@ -97,14 +97,31 @@ receivers cfg reconcile --all --position-tolerance-m 5.0
 receivers cfg reconcile --list-fields
 ```
 
-**Reconcilable fields** (all 11 fields covered):
+**Reconcilable fields** (all 12 fields covered):
 - Receiver identity (receiver-authoritative): `receiver_type`, `receiver_serial`, `receiver_firmware_version`
 - Antenna metadata (flag-only — TOS canonical, receiver value used for QC mismatch only):
   `antenna_type`, `antenna_serial`, `antenna_radome`, `antenna_height`
 - Position (flag-only — surveyed coords from TOS canonical, receiver PVT value confirms
   receiver is at the expected mark within `--position-tolerance-m`, default 2 m):
   `latitude`, `longitude`, `height`
-- TOS-only: `station_name` (receiver MarkerName carries the 4-char ID)
+- TOS-only: `station_name` (receiver MarkerName carries the 4-char ID),
+  `rinex_marker_number` (IERS DOMES → RINEX MARKER NUMBER; TOS-canonical, cfg follows)
+
+**Sync cfg from TOS — `cfg sync-from-tos STATION [STATION…] | --all`**: the inverse
+direction of `reconcile` for **TOS-canonical** fields — after a TOS change, write the
+current TOS values into stations.cfg (**no receiver probe**). Scope = the manifest fields
+flagged `sync_from_tos=True` (receiver type/serial/firmware, antenna type/serial/radome,
+`station_name`, `rinex_marker_number`) plus a single station's SIM `router_ip`; surveyed
+position stays cfg-canonical (flag-only). A field is filled **only when TOS carries a
+value** — an absent TOS DOMES never clobbers cfg. The surgical writer (`_update_cfg_field`)
+rewrites just the target `[STATION]` section's key lines, leaving the rest of the file
+byte-for-byte intact. Default dry-run; `--no-dry-run` applies; `--global --push` commits
+to the gps-config-data repo. `--all` refuses `--yes` (never blind-bulk-apply — TOS can be
+stale). **`rinex_marker_number` is TOS-canonical-for-cfg but deliberately NOT `tos_writable`**
+(no `tos_attribute_code`): cfg follows TOS, but `reconcile --push-tos` will never send cfg's
+value up to TOS — cfg had the wrong 4-char marker for most of the fleet, and the RINEX
+converter reads this key for MARKER NUMBER (the NYLA cross-contamination). This is the
+workflow step to run after every TOS metadata change.
 
 **Behaviour change**: as of this feature, `receivers health <SID>` no
 longer silently writes to `stations.cfg`. Discrepancies are logged with
