@@ -30,6 +30,7 @@ def _run_integrity_check_job(
     station_filter: Optional[List[str]] = None,
     hash_fill_limit: int = 1000,
     check_identity: bool = True,
+    identity_sessions: Optional[List[str]] = None,
 ) -> None:
     """APScheduler job: periodic file integrity check.
 
@@ -56,6 +57,10 @@ def _run_integrity_check_job(
         station_filter: If set, only check these station IDs (CLI use)
         hash_fill_limit: Max files to content-hash per run (0 disables the phase)
         check_identity: Run the report-only stray/stacked header probe
+        identity_sessions: Sessions the identity probe runs on. Default (None)
+            = daily sessions only (those NOT ending in '1hr'): the same
+            stray/stacked signal appears on the daily product, and probing
+            hourly (1Hz_1hr = 24x the files) every run is wasteful.
     """
     try:
         from ..cli.main import get_all_station_configs
@@ -104,7 +109,13 @@ def _run_integrity_check_job(
     # is skipped rather than aborting the size/hash checks.
     fleet: Dict[str, Any] = {}
     gate_m = 10.0
-    if check_identity:
+    # Identity probe scope: daily sessions only by default. Hourly (1Hz_1hr) is
+    # ~24x the file volume and carries no extra stray/stacked signal over the
+    # daily product, so re-decompressing it every run is wasteful.
+    if identity_sessions is None:
+        identity_sessions = [s for s in session_types if not s.endswith("1hr")]
+    identity_set = set(identity_sessions) if check_identity else set()
+    if identity_set:
         try:
             from ..archive.sort import fleet_coordinates, resolve_position_gate_m
 
@@ -112,6 +123,7 @@ def _run_integrity_check_job(
             gate_m = resolve_position_gate_m()
         except Exception as e:  # noqa: BLE001
             logger.debug(f"identity probe disabled (fleet/gate unavailable): {e}")
+            identity_set = set()
 
     total_untracked = 0
     total_registered = 0
@@ -134,7 +146,7 @@ def _run_integrity_check_job(
                         active_stations[station_id],
                         check_receiver=check_receiver,
                         size_tolerance_pct=size_tolerance_pct,
-                        fleet=fleet if check_identity else None,
+                        fleet=fleet if session_type in identity_set else None,
                         gate_m=gate_m,
                     )
                     total_untracked += result["untracked"]

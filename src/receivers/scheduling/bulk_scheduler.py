@@ -2622,10 +2622,16 @@ class BulkDownloadScheduler:
         check_receiver = checker_cfg.get("check_receiver", True)
         size_tolerance_pct = checker_cfg.get("size_tolerance_pct", 50.0)
         hash_fill_limit = checker_cfg.get("hash_fill_limit", 1000)
+        # Report-only stray/stacked probe. Default: on, daily sessions only
+        # (identity_sessions=None → non-'1hr' sessions; hourly is 24x the files
+        # for no extra signal).
+        check_identity = checker_cfg.get("check_identity", True)
+        identity_sessions = checker_cfg.get("identity_sessions", None)
 
         base_trigger = parse_schedule(schedule)
 
-        # args positions 5/6 = station_filter (None = all), hash_fill_limit
+        # args positions 5/6 = station_filter (None = all), hash_fill_limit;
+        # 7/8 = check_identity, identity_sessions
         job_args = [
             sessions,
             days_back,
@@ -2633,6 +2639,8 @@ class BulkDownloadScheduler:
             size_tolerance_pct,
             None,
             hash_fill_limit,
+            check_identity,
+            identity_sessions,
         ]
 
         self.scheduler.add_job(
