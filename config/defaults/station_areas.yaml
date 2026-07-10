@@ -18,9 +18,21 @@
 #   geometry, analyses — RESERVED for the shapefile/area-analyses phase; do not
 #               use yet.
 #
+# Top-level keys:
+#   category_labels  Display labels for the area categories (a category is a
+#                    "<category>_areas" section); consumers fall back to the
+#                    raw category key when unlabeled.
+#   <category>_areas Area definitions, one mapping per category.
+#
 # Usage: seeded into the station_areas DB table by receivers (Grafana area
 # filtering); region source for the aflogun_tmp GNSS browser via
 # [PATHS] station_areas_file in postprocess.cfg
+
+category_labels:
+  volcanic: "Eldstöðvakerfi"
+  regional: "Landshlutar"
+  seismic: "Skjálftabelti"
+  monitoring: "Skriðu- og flóðavöktun"
 
 # =============================================================================
 # VOLCANIC MONITORING AREAS
