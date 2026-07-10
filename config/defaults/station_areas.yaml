@@ -70,6 +70,11 @@ volcanic_areas:
       - HRAG   # Hraunagrandi
       - LISF   # LISF
       - NAMC   # NAMC
+      - KRIV
+      - MOHA
+      - NYLA
+      - RVIT
+      - SYRF
 
   krysuvik:
     name: "Krýsuvík"
@@ -96,6 +101,9 @@ volcanic_areas:
       - HUSM   # Húsmúli
       - HVER   # Hveragerði
       - NVEL   # Nesjavellir
+      - GFEL
+      - HLID
+      - VOGS
 
   hekla:
     name: "Hekla"
@@ -111,6 +119,9 @@ volcanic_areas:
       - HESA   # Hestalda
       - HAUD   # Haukadalur
       - ISAK   # Ísakot
+      - SAUR
+      - STOR
+      - VMEY
 
   eyjafjallajokull:
     name: "Eyjafjallajökull"
@@ -121,6 +132,12 @@ volcanic_areas:
       - STE2   # Steinahellir
       - THEY   # Þorvaldseyri
       - FIM2   # Fimmvörðuháls
+      - GOLA
+      - HAMR
+      - ISAK
+      - MJSK
+      - STOR
+      - VMEY
 
   katla:
     name: "Katla"
@@ -137,6 +154,10 @@ volcanic_areas:
       - OFEL   # Öldufell
       - RFEL   # Rauðufell
       - FIM2   # Fimmvörðuháls
+      - ISAK
+      - SNAE
+      - THEY
+      - VMEY
 
   torfajokull:
     name: "Torfajökull"
@@ -148,6 +169,8 @@ volcanic_areas:
       - TORK   # Torfajökull
       - STHV   # Stórahver
       - LAHC   # Landmannalaugar
+      - HESA
+      - ISAK
 
   grimsvotn:
     name: "Grímsvötn"
@@ -158,6 +181,11 @@ volcanic_areas:
       - GRVC   # Grímsvötn
       - GFUM   # Grímsfjall
       - HAFS   # Hamarinn
+      - DYNC
+      - DYNG
+      - GIGO
+      - GSIG
+      - ISAK
 
   bardarbunga:
     name: "Bárðarbunga"
@@ -175,6 +203,12 @@ volcanic_areas:
       - GRVC   # Grímsvötn
       - GFUM   # Grímsfjall
       - URHC   # URHC
+      - FJOC
+      - GIGO
+      - HAUC
+      - JOKU
+      - KIDC
+      - SKRO
 
   oraefajokull:
     name: "Öræfajökull"
@@ -191,6 +225,8 @@ volcanic_areas:
       - KVSK   # Kvísker
       - FAGC   # Fagurholsmýri
       - SKFC   # Skaftafell
+      - INGC
+      - KALF
 
   askja:
     name: "Askja"
@@ -208,6 +244,10 @@ volcanic_areas:
       - HRIC   # HRIC
       - DYNY   # Dyngjufjöll
       - LANH   # LANH
+      - ALFD
+      - GIGO
+      - RIFC
+      - URHC
 
   krafla:
     name: "Krafla"
@@ -216,6 +256,33 @@ volcanic_areas:
     stations:
       - KRAC   # Krafla
       - MYVA   # Mývatn
+
+  kverkfjoll:
+    name: "Kverkfjöll"
+    name_is: "Kverkfjöll"
+    cdn: kverkfjoll
+    description: "Kverkfjöll volcanic system"
+    # initial list = stations the gpsplot scripts publish for this region
+    stations:
+      - GFUM   # Grímsfjall
+      - GSIG
+      - KVEC   # Kverkfjöll
+      - LANH
+      - RIFC
+      - THOC
+
+  ljosufjoll:
+    name: "Ljósufjöll"
+    name_is: "Ljósufjöll"
+    cdn: ljosufjoll
+    description: "Ljósufjöll volcanic system (Snæfellsnes belt)"
+    # initial list = stations the gpsplot scripts publish for this region
+    stations:
+      - FIHO
+      - HITA   # Hítardalur
+      - HRAH
+      - SARP
+      - SKHA
 
 # =============================================================================
 # REGIONAL MONITORING AREAS  
@@ -274,6 +341,7 @@ regional_areas:
       - VMOS
       - VOGC
       - VOGS
+      - ELEY
 
   south:
     name: "South Iceland"
@@ -485,6 +553,104 @@ regional_areas:
       - URHC
       - VONC
       - VOTT
+
+# =============================================================================
+# SEISMIC ZONES
+# =============================================================================
+
+seismic_areas:
+
+  sudurland:
+    name: "South Iceland Seismic Zone"
+    name_is: "Suðurland"
+    # no cdn: — the CDN volcanos listing has no sudurland dir (standard plots)
+    description: "South Iceland Seismic Zone (SISZ)"
+    stations:
+      - SELF   # Selfoss
+      - HLID   # Hlíðardalsskóli
+      - GFEL
+      - KALT
+      - KIDJ
+      - SAUR
+      - STOR   # Stórólfshvoll
+      - HAUD   # Haukadalur
+      - HVER   # Hveragerði (overlaps hengill)
+
+  tjornes:
+    name: "Tjörnes fracture zone"
+    name_is: "Tjörnesbrotabeltið"
+    cdn: tjornes
+    description: "Tjörnes fracture zone (TFZ)"
+    # initial list = stations the gpsplot scripts publish for this region
+    stations:
+      - AKUR   # Akureyri
+      - ARHO   # Árholt
+      - BAUG
+      - BRIK
+      - BRTT
+      - FTEY   # Flatey
+      - GAKE
+      - GJOG   # Gjögurtá
+      - GMEY   # Grímsey
+      - GRAN
+      - HEDI   # Héðinshöfði
+      - HELC
+      - HOTJ
+      - HRAC
+      - KOSK
+      - KVIS   # Kvísker N
+      - MANA   # Máná
+      - RHOF   # Raufarhöfn
+      - SAVI
+      - SIFJ   # Siglufjörður
+
+# =============================================================================
+# HAZARD MONITORING AREAS (skriðu- og flóðavöktun)
+# =============================================================================
+
+monitoring_areas:
+
+  seydisfjordur:
+    name: "Seyðisfjörður landslide monitoring"
+    name_is: "Seyðisfjörður"
+    cdn: seydisfjordur
+    description: "Landslide monitoring, Seyðisfjörður"
+    # initial list = stations the gpsplot scripts publish for this region
+    # (SEY1 and SEY9 exist in stations.cfg but are not on the CDN — review)
+    stations:
+      - SEY2
+      - SEY3
+      - SEY4
+      - SEY5
+      - SEY6
+      - SEY7
+      - SEY8
+      - SEYD
+      - SEY1
+      - SEY9
+
+  svinafellsheidi:
+    name: "Svínafellsheiði landslide monitoring"
+    name_is: "Svínafellsheiði"
+    cdn: svinafellsheidi
+    description: "Landslide monitoring, Svínafellsheiði (overlaps oraefajokull)"
+    # initial list = stations the gpsplot scripts publish for this region
+    stations:
+      - ROTH   # Rótarholt
+      - SKFC   # Skaftafell
+      - SLEC   # Slétta
+      - SVIE   # Svínafell E
+      - SVIN   # Svínafell
+
+  eskaftarketill:
+    name: "Eystri-Skaftárketill jökulhlaup monitoring"
+    name_is: "Eystri-Skaftárketill"
+    cdn: eskaftarketill
+    description: "Jökulhlaup monitoring, Eystri-Skaftárketill"
+    # The CDN plots SKA2 here, but SKA2 is currently inactive (not monitoring)
+    # and absent from stations.cfg. If re-activated: add it to stations.cfg
+    # first, then list it here (validation requires members to exist).
+    stations: []
 
 # =============================================================================
 # NOTES

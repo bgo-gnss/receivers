@@ -151,7 +151,9 @@ def test_seed_areas_unaffected_by_optional_area_keys():
     counts = _seed_areas_dry_run(BUNDLED_AREAS)
 
     assert counts == {"areas": expected_areas, "members": expected_members}
-    assert expected_areas == 19  # 12 volcanic + 7 regional
+    # 14 volcanic + 7 regional; seismic_areas/monitoring_areas sections are
+    # invisible to the seeder until it opts in — that's the compat contract.
+    assert expected_areas == 21
 
 
 def test_optional_keys_follow_schema_rules():
@@ -170,7 +172,8 @@ def test_optional_keys_follow_schema_rules():
     assert areas["svartsengi"]["cdn"] == "thorbjorn"
 
     cdn_slugs = {a["cdn"] for a in areas.values() if "cdn" in a}
-    # 11 of the 12 CDN dirs; kverkfjoll arrives with the new-area content slice.
+    # volcanic/regional slugs only — tjornes, seydisfjordur, svinafellsheidi
+    # and eskaftarketill live in the seismic/monitoring sections.
     assert cdn_slugs == {
         "askja",
         "bardarbunga",
@@ -179,6 +182,8 @@ def test_optional_keys_follow_schema_rules():
         "hekla",
         "hengill",
         "katla",
+        "kverkfjoll",
+        "ljosufjoll",
         "oraefajokull",
         "reykjanes",
         "thorbjorn",
