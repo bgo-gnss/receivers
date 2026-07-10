@@ -11,7 +11,7 @@ This document covers workflows for testing features, comparing branches, and saf
 ### Test a Feature Branch
 
 ```bash
-cd /home/bgo/work/projects/gps/gpslibrary_new/receivers
+cd /home/bgo/work/projects/gpslibrary/receivers
 
 # Check current branch
 git branch --show-current  # main
@@ -134,7 +134,7 @@ Test changes across multiple packages (receivers, gtimes, gps_parser):
 
 ```bash
 # All three repos have feature branches
-cd /home/bgo/work/projects/gps/gpslibrary_new
+cd /home/bgo/work/projects/gpslibrary
 
 # Switch all to feature branches
 cd receivers && git checkout feature/new-logic

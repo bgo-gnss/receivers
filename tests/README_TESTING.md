@@ -4,7 +4,7 @@
 
 ### 1. Quick Verification (10 seconds)
 ```bash
-cd /home/bgo/work/projects/gps/gpslibrary_new/receivers
+cd /home/bgo/work/projects/gpslibrary/receivers
 export PYTHONPATH=src:../gtimes/src:../gps_parser/src
 
 # Run all unit tests

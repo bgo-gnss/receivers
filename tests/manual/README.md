@@ -28,7 +28,7 @@ Tests HTTP Basic Auth with NATT-operated Trimble receivers that have downgraded 
 **Usage**:
 ```bash
 # Edit configuration section in script first
-cd /home/bgo/work/projects/gps/gpslibrary_new/receivers
+cd /home/bgo/work/projects/gpslibrary/receivers
 PYTHONPATH=src:../gtimes/src:../gps_parser/src python3 tests/manual/test_natt_auth.py
 ```
 

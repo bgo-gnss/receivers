@@ -14,7 +14,7 @@ import yaml
 import psycopg2
 
 # Load YAML
-with open('/home/bgo/work/projects/gps/gpslibrary_new/receivers/config/station_areas.yaml') as f:
+with open('/home/bgo/work/projects/gpslibrary/receivers/config/station_areas.yaml') as f:
     config = yaml.safe_load(f)
 
 conn = psycopg2.connect(

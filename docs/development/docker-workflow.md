@@ -57,7 +57,7 @@ volumes:
 ### 1. Start the Development Container
 
 ```bash
-cd /home/bgo/work/projects/gps/gpslibrary_new/receivers/deployment/docker-dev
+cd /home/bgo/work/projects/gpslibrary/receivers/deployment/docker-dev
 docker-compose up -d
 ```
 
@@ -113,7 +113,7 @@ Configuration files are also mounted, so changes apply immediately:
 
 ```bash
 # Edit configuration
-vim /home/bgo/work/projects/gps/gpslibrary_new/gps-config-data/scheduler.yaml
+vim /home/bgo/work/projects/gpslibrary/gps-config-data/scheduler.yaml
 
 # Restart to apply
 docker restart gps-receivers-scheduler-dev
@@ -142,7 +142,7 @@ Changes to sibling packages (`gtimes`, `gps_parser`) are also live:
 
 ```bash
 # Edit gtimes
-vim /home/bgo/work/projects/gps/gpslibrary_new/gtimes/src/gtimes/timefunc.py
+vim /home/bgo/work/projects/gpslibrary/gtimes/src/gtimes/timefunc.py
 
 # Restart receivers container
 docker restart gps-receivers-scheduler-dev

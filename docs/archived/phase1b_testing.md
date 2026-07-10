@@ -202,7 +202,7 @@ export USE_PHASE1_UTILITIES=1
 **Fix:**
 ```bash
 # Make sure you're in receivers directory
-cd /home/bgo/work/projects/gps/gpslibrary_new/receivers
+cd /home/bgo/work/projects/gpslibrary/receivers
 
 # Check PYTHONPATH
 export PYTHONPATH=../gtimes/src:../gps_parser/src:src

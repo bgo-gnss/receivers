@@ -222,7 +222,7 @@ Once gtimes PR is merged and released:
 ### Branch Information
 - **Branch**: `fix/datepathlist-hourly-frequency-bug`
 - **Commit**: `a357f28` - "fix: respect lfrequency parameter in datepathlist for hourly data"
-- **Location**: `/home/bgo/work/projects/gps/gpslibrary_new/gtimes`
+- **Location**: `/home/bgo/work/projects/gpslibrary/gtimes`
 
 ### ✅ PR Submitted
 - **Phase 5**: Documentation (complete - comprehensive PR description)

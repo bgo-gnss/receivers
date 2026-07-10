@@ -6,7 +6,7 @@ This guide walks you through manually testing the Phase 1 utilities to understan
 
 ```bash
 # Ensure you're in the receivers directory
-cd /home/bgo/work/projects/gps/gpslibrary_new/receivers
+cd /home/bgo/work/projects/gpslibrary/receivers
 
 # Set PYTHONPATH
 export PYTHONPATH=src:../gtimes/src:../gps_parser/src

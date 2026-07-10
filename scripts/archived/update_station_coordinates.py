@@ -172,7 +172,7 @@ def main():
     print("WARNING: This script is deprecated. Use 'receivers db seed --only coordinates' instead.\n")
     parser = argparse.ArgumentParser(description="Update station coordinates from XYZ file")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be updated without making changes")
-    parser.add_argument("--xyz-file", default="/home/bgo/work/projects/gps/gpslibrary_new/gps-config-data/station_coord.xyz",
+    parser.add_argument("--xyz-file", default="/home/bgo/work/projects/gpslibrary/gps-config-data/station_coord.xyz",
                         help="Path to XYZ coordinate file")
     args = parser.parse_args()
 

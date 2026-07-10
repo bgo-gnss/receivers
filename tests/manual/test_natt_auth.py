@@ -20,9 +20,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 # Add receivers package to path
-sys.path.insert(0, "/home/bgo/work/projects/gps/gpslibrary_new/receivers/src")
-sys.path.insert(0, "/home/bgo/work/projects/gps/gpslibrary_new/gps_parser/src")
-sys.path.insert(0, "/home/bgo/work/projects/gps/gpslibrary_new/gtimes/src")
+sys.path.insert(0, "/home/bgo/work/projects/gpslibrary/receivers/src")
+sys.path.insert(0, "/home/bgo/work/projects/gpslibrary/gps_parser/src")
+sys.path.insert(0, "/home/bgo/work/projects/gpslibrary/gtimes/src")
 
 # ============================================================================
 # CONFIGURATION - EDIT THESE VALUES
