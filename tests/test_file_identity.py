@@ -33,6 +33,45 @@ def test_count_documents_single_vs_stacked():
     assert fi.count_documents("no header here") == 0
 
 
+def test_count_documents_ignores_event_flag_marker_records():
+    """One document with mid-session event-flag-3 records must count as ONE.
+
+    Regression (2026-07-10): the NYLA late-2022 files toggled MarkerName
+    NYLA<->FAGC intraday, recorded as valid event-flag-3 'new site occupation'
+    blocks — several MARKER NAME lines, but a single END OF HEADER. Counting
+    MARKER NAME false-flagged them as stacked; counting END OF HEADER is correct.
+    """
+    text = (
+        "     3.04           OBSERVATION DATA    M   RINEX VERSION / TYPE\n"
+        "NYLA                                        MARKER NAME\n"
+        "10230M001                                   MARKER NUMBER\n"
+        "                                            END OF HEADER\n"
+        "> 2022 11 30 13 48 15.0000000  3  2\n"  # event flag 3: header records follow
+        "NYLA                                        MARKER NAME\n"
+        "FAGC                                        MARKER NAME\n"
+        "> 2022 11 30 14 16 45.0000000  3  1\n"
+        "FAGC                                        MARKER NAME\n"
+    )
+    assert text.count("MARKER NAME") == 4  # the trap that fooled the old metric
+    assert fi.count_documents(text) == 1  # exactly one real document
+
+
+def test_probe_does_not_flag_event_flag_file_as_stacked(tmp_path):
+    """End-to-end: a valid event-flag file at its own mark → no findings."""
+    lat, lon = FLEET["AAAA"]
+    x, y, z = _ecef(lat, lon)
+    f = tmp_path / "AAAA0010.24o.rnx"
+    f.write_text(
+        "     3.04           OBSERVATION DATA    M   RINEX VERSION / TYPE\n"
+        "AAAA                                        MARKER NAME\n"
+        f"  {x:.4f}  {y:.4f}  {z:.4f}   APPROX POSITION XYZ\n"
+        "                                            END OF HEADER\n"
+        "> 2024 01 01 00 00 00.0000000  3  1\n"
+        "BBBB                                        MARKER NAME\n"  # mid-session event
+    )
+    assert fi.probe_rinex_file(f, "AAAA", fleet=FLEET, gate_m=10.0) == []
+
+
 # ------------------------------------------------------- parse_first_approx_xyz
 
 

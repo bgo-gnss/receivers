@@ -12,7 +12,10 @@ full-archive audit:
 * **stacked / multi-document** — more than one RINEX document is concatenated
   into a single ``.D.Z`` (each historical re-process appended a compress member
   instead of replacing). A conformant reader sees only the first document; the
-  rest is dead weight. Detected by counting ``MARKER NAME`` records.
+  rest is dead weight. Detected by counting ``END OF HEADER`` (one per real
+  document) — NOT ``MARKER NAME``, which recurs within a single document via
+  event-flag-3 "new site occupation" records (mid-session marker/antenna
+  changes) and would false-positive those valid files as stacked.
 
 Both are REPORT-ONLY. Remediation needs eyes:
 
@@ -65,12 +68,18 @@ class IdentityFinding:
 def count_documents(text: str) -> int:
     """Number of concatenated RINEX documents in ``text``.
 
-    One ``MARKER NAME`` record per RINEX observation header; a well-formed file
-    has exactly one. The label is 13 fixed characters right-justified in the
-    header line, so a chance collision inside Hatanaka-compressed observation
-    data is effectively impossible.
+    Counts ``END OF HEADER`` — exactly one terminates each document's header,
+    so N of them means N concatenated documents (a genuine stack).
+
+    Do NOT count ``MARKER NAME``/``MARKER NUMBER``: a *single* valid document
+    legitimately carries several of those via event-flag-3 ("new site
+    occupation") records when the marker/antenna changes mid-session — e.g. the
+    NYLA late-2022 files that toggled MarkerName NYLA↔FAGC intraday. Counting
+    marker records false-positives every such file as "stacked" (the 2026-07-10
+    regression: 9 valid NYLA files misflagged). ``END OF HEADER`` appears once
+    per document regardless of how many in-stream event records follow.
     """
-    return text.count("MARKER NAME")
+    return text.count("END OF HEADER")
 
 
 def parse_first_approx_xyz(text: str) -> Optional[Xyz]:
