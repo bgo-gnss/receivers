@@ -582,7 +582,11 @@ def finalize_epos_header(
     """Write the EPOS-mandated marker / observer header records (4.1.7).
 
     - MARKER NAME  ← 9-char ID (R3) / 4-char (R2)
-    - MARKER NUMBER ← DOMES when known, else the 4-char ID
+    - MARKER NUMBER ← DOMES when known, else the version-appropriate ID
+      (9-char for R3, 4-char for R2 — same width as MARKER NAME). A station
+      with no IERS DOMES (e.g. ELEY) otherwise got a bare 4-char MARKER NUMBER
+      even in RINEX 3; matching MARKER NAME's width keeps the no-DOMES fallback
+      consistent across versions (R2 already did this).
     - OBSERVER / AGENCY ← generic team name + agency (never personal initials)
 
     Best-effort like :func:`set_header_from_tos`; the QC gate is the safety net.
@@ -593,7 +597,10 @@ def finalize_epos_header(
             "MARKER NAME": epos_marker_name(
                 sid, version, country_code, monument_number
             ),
-            "MARKER NUMBER": (domes or sid).strip(),
+            "MARKER NUMBER": (
+                domes.strip()
+                or epos_marker_name(sid, version, country_code, monument_number)
+            ),
         }
         if observer or agency:
             records["OBSERVER / AGENCY"] = f"{observer:<20}{agency:<40}"
