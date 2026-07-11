@@ -177,31 +177,45 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
             return 1
         path = gate.path
 
-        # The gate governs REGENERATION (write + commit only on change). A manual
+        # --dry-run makes this a pure preview: the log is still rendered (needed
+        # to show the diff and to validate against M3G), but nothing persistent
+        # or outward happens — no git commit, no M3G PUT. Without it, --sitelog
+        # commits a changed log and --publish-m3g publishes it.
+        preview = bool(args.dry_run)
+
+        # The gate governs REGENERATION (write only on change). A manual
         # --publish-m3g is explicit intent, so it publishes the CURRENT log to M3G
         # even when this run didn't change it (else a log committed on an earlier
         # run could never be published).
         if gate.changed:
-            print(f"✅ site log updated: {path}")
-            committed = commit_site_log(
-                out_dir, path, f"sitelog: {args.station} update {path.name}"
-            )
-            print(
-                "   committed to gps-sitelogs"
-                if committed
-                else "   commit: nothing to commit"
-            )
+            if preview:
+                print(f"✅ site log WOULD update: {path}  (--dry-run: not committed)")
+            else:
+                print(f"✅ site log updated: {path}")
+                committed = commit_site_log(
+                    out_dir, path, f"sitelog: {args.station} update {path.name}"
+                )
+                print(
+                    "   committed to gps-sitelogs"
+                    if committed
+                    else "   commit: nothing to commit"
+                )
         else:
             print(f"✅ site log unchanged for {args.station} ({path.name})")
 
         if not args.publish_m3g:
             return 0
-        print(f"→ publishing {path.name} to M3G")
+        # --dry-run → validate-only (no PUT). Same verb, so you don't have to
+        # switch to `receivers m3g submit` just to preview M3G validation.
+        dry_run = preview
+        print(
+            f"→ {'validating' if dry_run else 'publishing'} {path.name} "
+            f"{'against' if dry_run else 'to'} M3G"
+        )
 
         # --publish-m3g: validate + publish to M3G (the API publishes directly).
         from ..dissemination.m3g_client import M3GError
 
-        dry_run = False  # --publish-m3g means: actually publish
         # Reuse the standalone m3g submit flow but feed the just-written path.
         try:
             result = submit_to_m3g(
@@ -224,18 +238,32 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
             if not result.validated:
                 print("\n⚠️  publish skipped — fix the validation errors above first.")
                 return 1
+
         ur = result.upload
-        if ur is not None and ur.ok:
+        if ur is None:
+            # validate-only (--dry-run) or a skip — no PUT was sent.
+            if result.skipped:
+                print(f"   ⚠ skipped: {result.skipped}")
+            elif dry_run:
+                print(
+                    f"\n✅ DRY RUN — {path.name} validated, NOT published for "
+                    f"{args.station}. Drop --dry-run to publish."
+                )
+            return 0 if result.validated else 1
+        if getattr(ur, "dry_run", False):
+            print(
+                f"\n✅ DRY RUN — {path.name} validated, NOT published for "
+                f"{args.station}. Drop --dry-run to publish."
+            )
+            return 0
+        if ur.ok:
             print(f"\n✅ M3G PUBLISHED for {args.station}.")
             if ur.sitelog_name:
                 print(f"   filename: {ur.sitelog_name}")
             print(f"   🔔 review + alerts: {ur.draft_url}")
-        elif ur is not None:
-            print(
-                f"\n❌ M3G publish failed: {ur.error or 'HTTP ' + str(ur.status_code)}"
-            )
-            return 1
-        return 0
+            return 0
+        print(f"\n❌ M3G publish failed: {ur.error or 'HTTP ' + str(ur.status_code)}")
+        return 1
 
     # ---- range mode (--start/--end or --dates): the sweep driver ---------
     if args.start or args.end or args.dates:
@@ -614,7 +642,10 @@ def create_epos_disseminate_parser(subparsers) -> argparse.ArgumentParser:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Convert + rsync --dry-run; no file is written to the dest",
+        help="Preview mode, no persistent/outward writes. Range mode: convert + "
+        "rsync --dry-run (no file written to dest). --sitelog: render but do not "
+        "commit. --publish-m3g: validate only, no PUT (same as `m3g submit` "
+        "without --publish).",
     )
     parser.add_argument(
         "--dest-override",
