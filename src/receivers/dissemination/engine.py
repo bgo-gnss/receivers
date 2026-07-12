@@ -163,12 +163,20 @@ class EposDisseminate:
         session_provider: Optional[SessionProvider] = None,
         set_header: bool = True,
         agency_resolver: Optional[AgencyResolver] = None,
+        tos_metadata_cache: Optional[dict] = None,
     ) -> None:
         self.target = target
         self.dry_run = dry_run
         self.dest_override = dest_override
         # When set, the header-QC gate runs before every push (T3 injects it).
         self.session_provider = session_provider
+        # Caller-owned memo for the date-independent per-station TOS fetch inside
+        # set_header (correct_rinex_from_tos). Shared across every date of a run so
+        # a backfill makes 1 TOS call per station, not 1 per file. Own dict if none
+        # passed (still dedupes within this engine's chunk).
+        self.tos_metadata_cache: dict = (
+            tos_metadata_cache if tos_metadata_cache is not None else {}
+        )
         # Rewrite the converted header from TOS before caching/QC (needs a session
         # provider to fingerprint the TOS metadata for the cache key). Tests pass
         # set_header=False to stay offline.
@@ -417,6 +425,7 @@ class EposDisseminate:
                 observer=observer,
                 agency=agency,
                 sample=sample,
+                tos_metadata_cache=self.tos_metadata_cache,
             )
         except ConvertError as exc:
             result.message = f"convert failed: {exc}"
