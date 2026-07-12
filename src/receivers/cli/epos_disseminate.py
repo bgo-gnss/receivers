@@ -334,11 +334,17 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
 
         from ..dissemination.job import run_epos_disseminate_job
 
+        # Cached TOS access shared across EVERY date/chunk of the run: the QC
+        # session provider (TOSSesionCache → 1 metadata fetch/station) and the
+        # set-header corrector (tos_metadata_cache → 1 fetch/station). Without these
+        # a full-history range re-hit TOS twice PER FILE (thousands of round-trips,
+        # and one transient VPN/TOS blip failed a file).
         session_provider = None
         if not args.no_qc:
-            from ..dissemination import make_session_provider
+            from ..dissemination.tos_access import TOSSesionCache
 
-            session_provider = make_session_provider()
+            session_provider = TOSSesionCache().get_session
+        tos_meta_cache: dict = {}
 
         def engine_factory(tgt):
             return EposDisseminate(
@@ -346,6 +352,7 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
                 dry_run=args.dry_run,
                 dest_override=args.dest_override,
                 session_provider=session_provider,
+                tos_metadata_cache=tos_meta_cache,
             )
 
         def _no_conn():
@@ -407,9 +414,10 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
 
         session_provider2 = None
         if not args.no_qc:
-            from ..dissemination import make_session_provider
+            from ..dissemination.tos_access import TOSSesionCache
 
-            session_provider2 = make_session_provider()
+            session_provider2 = TOSSesionCache().get_session
+        tos_meta_cache2: dict = {}
 
         def _ef(tgt):
             return EposDisseminate(
@@ -417,6 +425,7 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
                 dry_run=args.dry_run,
                 dest_override=args.dest_override,
                 session_provider=session_provider2,
+                tos_metadata_cache=tos_meta_cache2,
             )
 
         print(f"{len(_prods)} products configured — using the sweep driver")

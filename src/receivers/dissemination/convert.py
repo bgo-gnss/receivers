@@ -348,21 +348,36 @@ def _frequency_token(interval_seconds: float) -> str:
     return f"{int(round(interval_seconds)):02d}S"
 
 
+# Stations already warned (this process) about a missing INTERVAL, so a
+# full-history backfill logs the fallback ONCE per station at WARNING instead of
+# ~2×/date (old RINEX-2 obs have no INTERVAL record — thousands of identical lines).
+_NO_INTERVAL_WARNED: set[str] = set()
+
+
 def _resolve_data_frequency(plain_obs: Path, sample: Optional[int]) -> str:
     """Frequency token: the config ``sample`` override, else the file's INTERVAL.
 
-    Never invents a rate silently — if neither is known we log and fall back to
-    ``15S`` (the legacy default) so the filename is at least deterministic, but
-    the warning flags that the source had no INTERVAL record.
+    Never invents a rate silently — if neither is known we fall back to ``15S``
+    (the legacy default) so the filename is at least deterministic. The fallback
+    is flagged once per station at WARNING (further occurrences at DEBUG) so a
+    20-year backfill of INTERVAL-less RINEX-2 doesn't drown the log.
     """
     if sample is not None:
         return _frequency_token(sample)
     interval = detect_interval(plain_obs)
     if interval is not None:
         return _frequency_token(interval)
-    logger.warning(
-        "no INTERVAL in %s and no configured sample — naming as 15S", plain_obs.name
-    )
+    station = plain_obs.name[:4].upper()
+    if station not in _NO_INTERVAL_WARNED:
+        _NO_INTERVAL_WARNED.add(station)
+        logger.warning(
+            "no INTERVAL in %s and no configured sample — naming as 15S "
+            "(further %s files logged at DEBUG)",
+            plain_obs.name,
+            station,
+        )
+    else:
+        logger.debug("no INTERVAL in %s — naming as 15S", plain_obs.name)
     return "15S"
 
 
@@ -484,6 +499,7 @@ def convert_for_dissemination(
     observer: str = "",
     agency: str = "",
     sample: Optional[int] = None,
+    tos_metadata_cache: Optional[dict] = None,
 ) -> ConvertResult:
     """Produce the cached canonical plain obs for dissemination (Model B).
 
@@ -549,7 +565,9 @@ def convert_for_dissemination(
         shutil.copy2(canon_src, staged)
 
         if set_header:
-            set_header_from_tos(staged, station, observation_dt)
+            set_header_from_tos(
+                staged, station, observation_dt, tos_metadata_cache=tos_metadata_cache
+            )
             # EPOS-specific header finalization (4.1.7) that the general TOS corrector
             # does not do: 9-char MARKER NAME (R3), DOMES in MARKER NUMBER, generic
             # OBSERVER/AGENCY. Done on the temp obs so the placed product is complete.
@@ -793,7 +811,10 @@ def package(obs_path: Path, policy, out_dir: Path) -> Path:
 
 
 def set_header_from_tos(
-    rinex_file: Path, station: str, observation_dt: datetime
+    rinex_file: Path,
+    station: str,
+    observation_dt: datetime,
+    tos_metadata_cache: Optional[dict] = None,
 ) -> bool:
     """Rewrite ``rinex_file``'s header from TOS metadata (in place). Best-effort.
 
@@ -802,6 +823,11 @@ def set_header_from_tos(
     metadata, and historical re-pushes must reflect TOS as of that date). Returns
     True if a correction was applied; False (logged) on any failure — the QC gate
     is the safety net that blocks a still-wrong header from being pushed.
+
+    ``tos_metadata_cache`` (a caller-owned dict) memoizes the date-independent
+    per-station TOS fetch: a range/backfill that corrects every day of a station
+    makes 1 TOS call per station instead of 1 per file (and is far less exposed to
+    a transient TOS/VPN blip). Pass the same dict across every date of a run.
     """
     try:
         from tostools.rinex import correct_rinex_from_tos
@@ -813,6 +839,7 @@ def set_header_from_tos(
             output_file=rinex_file,
             station_config=None,  # force TOS (canonical for EPOS), not station.cfg
             loglevel=logging.WARNING,
+            tos_metadata_cache=tos_metadata_cache,
         )
         return result is not None
     except Exception as exc:  # noqa: BLE001 - never fail the convert on a TOS glitch

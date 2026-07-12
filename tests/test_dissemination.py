@@ -2927,3 +2927,91 @@ class TestSourceRootCandidates:
             )
         assert out == str(tmp_path / "x")
         assert any("NO source_root" in r.message for r in caplog.records)
+
+
+# -------------------------------------------------- TOS efficiency / log noise
+class TestNoIntervalWarningDedup:
+    """The 'no INTERVAL → naming as 15S' fallback logs once per station at WARNING
+    (rest at DEBUG) — a 20-year backfill of INTERVAL-less RINEX-2 must not spam."""
+
+    _HDR = (
+        "     2.11           OBSERVATION DATA    G (GPS)             "
+        "RINEX VERSION / TYPE\n" + " " * 60 + "END OF HEADER\n"
+    )
+
+    def test_warns_once_then_debug(self, tmp_path, caplog):
+        import logging as _logging
+
+        import receivers.dissemination.convert as dconv
+
+        dconv._NO_INTERVAL_WARNED.discard("QQQQ")
+        f1 = tmp_path / "QQQQ2090.06O"
+        f2 = tmp_path / "QQQQ2100.06O"
+        f1.write_text(self._HDR)
+        f2.write_text(self._HDR)
+
+        with caplog.at_level(_logging.DEBUG, logger="receivers.dissemination"):
+            assert dconv._resolve_data_frequency(f1, None) == "15S"
+            assert dconv._resolve_data_frequency(f2, None) == "15S"
+
+        warns = [
+            r
+            for r in caplog.records
+            if r.levelno == _logging.WARNING and "no INTERVAL" in r.message
+        ]
+        debugs = [
+            r
+            for r in caplog.records
+            if r.levelno == _logging.DEBUG and "no INTERVAL" in r.message
+        ]
+        assert len(warns) == 1  # first file only
+        assert len(debugs) == 1  # second file demoted
+
+    def test_configured_sample_never_warns(self, tmp_path, caplog):
+        import logging as _logging
+
+        import receivers.dissemination.convert as dconv
+
+        f = tmp_path / "QQQ52090.06O"
+        f.write_text(self._HDR)
+        with caplog.at_level(_logging.WARNING, logger="receivers.dissemination"):
+            assert dconv._resolve_data_frequency(f, 30) == "30S"
+        assert not [r for r in caplog.records if "no INTERVAL" in r.message]
+
+
+class TestTosMetadataCache:
+    """set_header threads a caller-owned metadata cache so a backfill makes 1 TOS
+    fetch per station, not 1 per file (the per-file-reconnect fix)."""
+
+    def test_set_header_forwards_cache(self, tmp_path, monkeypatch):
+        import receivers.dissemination.convert as dconv
+
+        captured = {}
+
+        def fake_correct(**kw):
+            captured.update(kw)
+            return object()  # non-None ⇒ "applied"
+
+        monkeypatch.setattr("tostools.rinex.correct_rinex_from_tos", fake_correct)
+        cache: dict = {}
+        f = tmp_path / "x.rnx"
+        f.write_text("hdr")
+        ok = dconv.set_header_from_tos(
+            f, "NYLA", datetime(2026, 1, 1), tos_metadata_cache=cache
+        )
+        assert ok is True
+        assert captured["tos_metadata_cache"] is cache  # same dict forwarded
+
+    def test_engine_holds_shared_cache(self):
+        from types import SimpleNamespace
+
+        from receivers.dissemination.engine import EposDisseminate
+
+        tgt = SimpleNamespace()
+        shared: dict = {}
+        eng = EposDisseminate(tgt, tos_metadata_cache=shared, agency_resolver=object())
+        assert eng.tos_metadata_cache is shared
+        # No cache passed ⇒ its own fresh dict (still dedupes within the engine).
+        eng2 = EposDisseminate(tgt, agency_resolver=object())
+        assert eng2.tos_metadata_cache == {}
+        assert eng2.tos_metadata_cache is not shared
