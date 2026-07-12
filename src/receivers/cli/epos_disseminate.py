@@ -53,8 +53,8 @@ def _resolve_cli_date(value: str, role: str, args: argparse.Namespace, target):
     """Resolve a ``--start``/``--end``/``--date`` value to a ``date``.
 
     Accepts a literal (``YYYY-MM-DD`` / ``YYYYMMDD``) or a symbolic token
-    (``full``, ``last``, ``device_start``, ``device_end``, ``today``,
-    ``yesterday``) with an optional ``±N`` day offset. ``full``/``last`` read the
+    (``first``, ``last``, ``device_start``, ``device_end``, ``today``,
+    ``yesterday``) with an optional ``±N`` day offset. ``first``/``last`` read the
     archive extent for ``--station``; ``device_*`` read the TOS session for
     ``--device SN``. Raises :class:`~receivers.utils.date_vocab.DateVocabError`
     (a ``ValueError``) with an actionable message on anything unresolvable.
@@ -572,17 +572,17 @@ def create_epos_disseminate_parser(subparsers) -> argparse.ArgumentParser:
         "--date",
         metavar="DATE|TOKEN",
         help="Observation date: YYYY-MM-DD / YYYYMMDD, or a token "
-        "(today, yesterday, full, last, device_start, device_end) "
+        "(today, yesterday, first, last, device_start, device_end) "
         "with an optional ±N day offset (e.g. yesterday-1).",
     )
     parser.add_argument(
         "--start",
         metavar="DATE|TOKEN",
         help="Range mode: first observation date (inclusive). Accepts a literal "
-        "date or a token — 'full' = the earliest ARCHIVED day for --station, "
+        "date or a token — 'first' = the earliest ARCHIVED day for --station, "
         "'device_start' = the TOS session start for --device SN — with an "
-        "optional ±N offset (full+7). The full-history portal refresh after a "
-        "re-rinex campaign is simply --start full --end last. Uses the sweep "
+        "optional ±N offset (first+7). The full-history portal refresh after a "
+        "re-rinex campaign is simply --start first --end last. Uses the sweep "
         "driver: engine reuse, batched supersede-cleanup, optional --parallel.",
     )
     parser.add_argument(

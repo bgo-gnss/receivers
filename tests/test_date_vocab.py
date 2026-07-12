@@ -2,7 +2,7 @@
 
 Covers :mod:`receivers.utils.date_vocab` (literal + token + ±N offset resolution,
 missing-provider errors) and the two backing providers:
-``engine.archive_date_bounds`` (full/last) and
+``engine.archive_date_bounds`` (first/last) and
 ``tos_access.device_session_bounds`` (device_start/device_end).
 """
 
@@ -61,12 +61,12 @@ class TestResolveTokens:
         assert resolve_date("today", _ctx()) == _TODAY
         assert resolve_date("yesterday", _ctx()) == date(2026, 7, 11)
 
-    def test_full_last_from_archive(self):
-        assert resolve_date("full", _ctx()) == date(2006, 7, 27)
+    def test_first_last_from_archive(self):
+        assert resolve_date("first", _ctx()) == date(2006, 7, 27)
         assert resolve_date("last", _ctx()) == date(2026, 7, 11)
 
     def test_token_offsets(self):
-        assert resolve_date("full+7", _ctx()) == date(2006, 8, 3)
+        assert resolve_date("first+7", _ctx()) == date(2006, 8, 3)
         assert resolve_date("last-1", _ctx()) == date(2026, 7, 10)
         assert resolve_date("today-30", _ctx()) == date(2026, 6, 12)
 
@@ -82,7 +82,7 @@ class TestResolveTokens:
         assert resolve_date("device_end", ctx) == date(2026, 7, 11)
 
     def test_case_insensitive(self):
-        assert resolve_date("FULL", _ctx()) == date(2006, 7, 27)
+        assert resolve_date("FIRST", _ctx()) == date(2006, 7, 27)
 
 
 class TestResolveErrors:
@@ -90,13 +90,13 @@ class TestResolveErrors:
         with pytest.raises(DateVocabError):
             resolve_date("bogus", _ctx())
 
-    def test_full_without_archive_context(self):
+    def test_first_without_archive_context(self):
         with pytest.raises(DateVocabError, match="archive"):
-            resolve_date("full", _ctx(station=None, archive_bounds=None))
+            resolve_date("first", _ctx(station=None, archive_bounds=None))
 
-    def test_full_with_empty_archive(self):
+    def test_first_with_empty_archive(self):
         with pytest.raises(DateVocabError, match="no archived files"):
-            resolve_date("full", _ctx(archive_bounds=lambda: (None, None)))
+            resolve_date("first", _ctx(archive_bounds=lambda: (None, None)))
 
     def test_device_without_serial(self):
         with pytest.raises(DateVocabError, match="--device"):
@@ -112,7 +112,7 @@ class TestResolveErrors:
 
     def test_tokens_listed(self):
         assert {
-            "full",
+            "first",
             "last",
             "device_start",
             "device_end",
@@ -233,7 +233,7 @@ class TestCliResolveIntegration:
         base.update(over)
         return SimpleNamespace(**base)
 
-    def test_full_and_last_walk_the_archive(self, tmp_path):
+    def test_first_and_last_walk_the_archive(self, tmp_path):
         from receivers.cli.epos_disseminate import _resolve_cli_date
 
         for year, mon, doy in [(2006, "jul", 208), (2026, "jul", 192)]:
@@ -242,10 +242,10 @@ class TestCliResolveIntegration:
             (d / f"NYLA{doy:03d}0.{year % 100:02d}d.Z").write_bytes(b"x")
         tgt = self._target(tmp_path)
         args = self._args()
-        assert _resolve_cli_date("full", "start", args, tgt) == date(2006, 7, 27)
+        assert _resolve_cli_date("first", "start", args, tgt) == date(2006, 7, 27)
         assert _resolve_cli_date("last", "end", args, tgt) == date(2026, 7, 11)
         # Offset on a token flows through the CLI resolver too.
-        assert _resolve_cli_date("full+1", "start", args, tgt) == date(2006, 7, 28)
+        assert _resolve_cli_date("first+1", "start", args, tgt) == date(2006, 7, 28)
 
     def test_device_tokens_use_tos_bounds(self, tmp_path, monkeypatch):
         import receivers.cli.epos_disseminate as cli

@@ -4,12 +4,12 @@ A tiny registry of tokens resolvable through one entry point, :func:`resolve_dat
 alongside literal dates (``YYYY-MM-DD`` / ``YYYYMMDD``). Built-in tokens:
 
 - ``today`` / ``yesterday`` — the injected "now" and the day before.
-- ``full`` / ``last`` — the earliest / latest **archived** observation date for the
+- ``first`` / ``last`` — the earliest / latest **archived** observation date for the
   station (truest "what we can actually push"). Needs an archive context.
 - ``device_start`` / ``device_end`` — the bounds of a specific device's TOS session,
   selected by ``--device SN``. Needs a device context.
 
-Any token OR literal may carry a ``±N`` day offset — ``full+7``, ``last-1``,
+Any token OR literal may carry a ``±N`` day offset — ``first+7``, ``last-1``,
 ``today-30``, ``2026-01-01+14`` — the "can be added to" knob for trimming a range.
 
 The resolver is **domain-agnostic**: the caller supplies a :class:`DateContext`
@@ -66,7 +66,7 @@ Resolver = Callable[[DateContext], date]
 _REGISTRY: dict[str, Resolver] = {}
 
 _LITERAL_FORMATS = ("%Y-%m-%d", "%Y%m%d")
-# base (token or literal) followed by a signed day offset, e.g. ``full+7``,
+# base (token or literal) followed by a signed day offset, e.g. ``first+7``,
 # ``today-30``, ``2026-01-01+14``. The base is non-greedy so the trailing signed
 # integer is the offset, not part of the base.
 _OFFSET_RE = re.compile(r"^(?P<base>.+?)\s*(?P<offset>[+-]\d+)$")
@@ -138,14 +138,14 @@ def resolve_date(value: str, ctx: DateContext) -> date:
 def _require_archive(ctx: DateContext) -> tuple[date, date]:
     if ctx.archive_bounds is None:
         raise DateVocabError(
-            "'full'/'last' need an archive context — pass --station "
+            "'first'/'last' need an archive context — pass --station "
             "(not available for an allowlist sweep)"
         )
     lo, hi = ctx.archive_bounds()
     if lo is None or hi is None:
         raise DateVocabError(
             f"no archived files found for {ctx.station or 'station'} — "
-            "cannot resolve 'full'/'last'"
+            "cannot resolve 'first'/'last'"
         )
     return lo, hi
 
@@ -178,7 +178,7 @@ def _device_end(ctx: DateContext) -> date:
 
 register("today", lambda ctx: ctx.today)
 register("yesterday", lambda ctx: ctx.today - timedelta(days=1))
-register("full", lambda ctx: _require_archive(ctx)[0])
+register("first", lambda ctx: _require_archive(ctx)[0])
 register("last", lambda ctx: _require_archive(ctx)[1])
 register("device_start", lambda ctx: _require_device(ctx)[0])
 register("device_end", _device_end)
