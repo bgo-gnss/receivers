@@ -9,11 +9,13 @@ The riskiest link in the dissemination chain — it is what the legacy library
     3. R2 → R3 + long name                      via ``gfzrnx -vo 3``
     (4. set header from TOS — DEFERRED to T2/T3; ``set_header`` is a stub here)
 
-The converted output is cached keyed on
-``sha256(source content_sha256 + ":" + tos_fingerprint)`` — NOT the source hash
-alone, so a later TOS header correction (which changes ``tos_fingerprint``)
-invalidates exactly the affected files and forces a re-render. T1 passes an empty
-fingerprint; the reactive ticket (T6) supplies the real one.
+The output is a two-layer cache: the expensive *header-free* decode is cached on
+source content alone (:func:`decode_cache_key`), and the header-applied product on
+``sha256(content_sha256 + ":" + tos_fingerprint + ":h" + schema)``
+(:func:`cache_key`). A later TOS header correction (which changes ``tos_fingerprint``)
+or a header-logic bump invalidates exactly the affected output files but reuses the
+decode cache — so the re-push re-heads the cached obs with no raw re-decode. T1 passes
+an empty fingerprint; the reactive ticket (T6) supplies the real one.
 
 Tools resolve from ``$GPS_TOOLS_BIN`` → ``PATH`` (incl. uppercase) → the sibling
 ``gps-tools/bin/`` checkout, so it works both deployed (symlinked into
@@ -132,9 +134,9 @@ def _is_hatanaka(name: str) -> bool:
 # Bump on any CODE-level change to what set_header_from_tos / finalize_epos_header
 # write into the header. Folded into cache_key so a logic fix invalidates cached
 # converted products even though the source bytes AND the TOS fingerprint are
-# unchanged — a plain `epos-disseminate --force` re-push then re-converts with the
-# corrected header instead of serving a stale cache hit. (A TOS-driven header fix
-# already moves the fingerprint, so it does not need a bump.)
+# unchanged — a plain `epos-disseminate --force` re-push then re-heads the cached
+# decode obs (no raw re-decode) instead of serving a stale cache hit. (A TOS-driven
+# header fix already moves the fingerprint, so it does not need a bump.)
 #   v1: original EPOS header finalization
 #   v2: MARKER NUMBER no-DOMES fallback → version-aware (9-char R3 / 4-char R2)
 HEADER_SCHEMA_VERSION = 2
@@ -163,6 +165,22 @@ def cache_key(
     key = hashlib.sha256(
         f"{src_hash}:{tos_fingerprint}:h{HEADER_SCHEMA_VERSION}".encode()
     ).hexdigest()
+    return f"{key}-s{sample}" if sample is not None else key
+
+
+def decode_cache_key(source_path: Path, sample: Optional[int] = None) -> str:
+    """``sha256(content_sha256 + ':decode')`` — the *header-free* decode key.
+
+    The expensive raw→canonical decode (sbf2rin / CRX2RNX / gfzrnx) depends only on
+    the **source bytes** and the sampling rate — NOT on TOS metadata or the header
+    schema. Keying the decoded canonical obs on content alone lets a TOS-driven
+    header correction (which moves :func:`cache_key`'s fingerprint) or a header-logic
+    bump (:data:`HEADER_SCHEMA_VERSION`) re-push a corrected header by re-copying and
+    re-heading this cached obs — with no raw re-decode. This is what makes an
+    ``epos-disseminate --force`` header re-push cheap.
+    """
+    src_hash = content_sha256(source_path)
+    key = hashlib.sha256(f"{src_hash}:decode".encode()).hexdigest()
     return f"{key}-s{sample}" if sample is not None else key
 
 
@@ -243,6 +261,39 @@ def _obs_complete(obs_path: Path) -> bool:
     except OSError:
         return False
     return False
+
+
+def _find_complete_plain_obs(out_dir: Path) -> Optional[Path]:
+    """Return a complete PLAIN obs in ``out_dir``, or None (evicting poison).
+
+    The cache dir holds the canonical PLAIN obs (.rnx / .YYo). The engine also
+    packages the published file (.crx.gz / .YYd.Z) into this same dir for reuse, so
+    a hit must select the plain obs — never a compressed/Hatanaka packaged artifact
+    (which :func:`detect_rinex_version` can't read). A truncated obs (pre-atomic-write
+    poison or bit-rot) evicts the whole key dir and returns None so the caller
+    re-renders rather than serving it forever.
+    """
+    if not out_dir.is_dir():
+        return None
+    existing = [
+        p
+        for p in out_dir.iterdir()
+        if p.is_file()
+        and not _strip_compression(p.name)[1]
+        and not _is_hatanaka(p.name)
+    ]
+    if not existing:
+        return None
+    obs = existing[0]
+    if _obs_complete(obs):
+        return obs
+    logger.warning(
+        "convert cache POISONED (incomplete obs %s) — evicting %s and re-rendering",
+        obs.name,
+        out_dir.name,
+    )
+    shutil.rmtree(out_dir, ignore_errors=True)
+    return None
 
 
 def _packaged_valid(pkg_path: Path) -> bool:
@@ -436,11 +487,24 @@ def convert_for_dissemination(
 ) -> ConvertResult:
     """Produce the cached canonical plain obs for dissemination (Model B).
 
-    The source's RINEX version is preserved; naming follows ``fmt`` (R2→short,
-    R3→long). Output is cached under ``cache_dir/<key>/`` keyed on
-    :func:`cache_key` (content + TOS fingerprint). Packaging (Hatanaka/compression)
-    is applied later by :func:`package`. ``set_header`` rewrites the header from TOS.
+    Two-layer cache (the split is what makes a header re-push cheap):
+
+    1. **Decode layer** (:func:`decode_cache_key`, content + sample only) — the
+       expensive raw→canonical obs, *header-free*. Re-run only when the source
+       bytes change.
+    2. **Output layer** (:func:`cache_key`, content + TOS fingerprint + header
+       schema) — the header-applied plain obs the engine packages/pushes.
+
+    A TOS metadata change (moves the fingerprint) or a header-logic bump
+    (:data:`HEADER_SCHEMA_VERSION`) misses the output layer but HITS the decode
+    layer, so ``set_header``'s corrected header is re-applied by copying + re-heading
+    the cached decode obs — with **no** sbf2rin/CRX2RNX/gfzrnx re-decode. That is the
+    cheap ``epos-disseminate --force`` header re-push. The source's RINEX version is
+    preserved; naming follows ``fmt`` (R2→short, R3→long). Packaging is applied later
+    by :func:`package`. ``set_header`` rewrites the header from TOS + EPOS rules.
     """
+    import tempfile
+
     source_path = Path(source_path)
     is_raw = any(e in source_path.name.lower() for e in _TRIMBLE_RAW + (".sbf",))
 
@@ -449,48 +513,97 @@ def convert_for_dissemination(
     if sample is None:
         sample = getattr(fmt, "sample", None)
 
+    cache_root = cache_dir.expanduser()
     key = cache_key(source_path, tos_fingerprint, sample=sample)
-    out_dir = cache_dir.expanduser() / key
-    if out_dir.is_dir():
-        # The cache dir holds the canonical PLAIN obs (.rnx / .YYo). The engine also
-        # packages the published file (.crx.gz / .YYd.Z) into this same dir for reuse,
-        # so a cache hit must select the plain obs — never a compressed/Hatanaka
-        # packaged artifact (which detect_rinex_version can't read).
-        existing = [
-            p
-            for p in out_dir.iterdir()
-            if p.is_file()
-            and not _strip_compression(p.name)[1]
-            and not _is_hatanaka(p.name)
-        ]
-        if existing:
-            obs = existing[0]
-            if _obs_complete(obs):
-                logger.info("convert cache hit %s → %s", source_path.name, obs.name)
-                return ConvertResult(
-                    obs, obs.name, detect_rinex_version(obs), True, source_path
-                )
-            # Pre-fix poison (or bit-rot): a truncated obs sits in the cache. Evict
-            # the whole key dir (a stale bad file under a different obs_name must not
-            # be served on a later hit) and re-convert.
-            logger.warning(
-                "convert cache POISONED (incomplete obs %s) — evicting %s and re-converting",
-                obs.name,
-                out_dir.name,
-            )
-            shutil.rmtree(out_dir, ignore_errors=True)
+    out_dir = cache_root / key
+
+    # Output-layer hit: header already applied under this exact fingerprint+schema.
+    hit = _find_complete_plain_obs(out_dir)
+    if hit:
+        logger.info("convert cache hit %s → %s", source_path.name, hit.name)
+        return ConvertResult(
+            hit, hit.name, detect_rinex_version(hit), True, source_path
+        )
+
+    # Decode layer: the expensive header-free canonical obs (reused across TOS /
+    # header-schema changes). This is the only step that may run sbf2rin / gfzrnx.
+    canon_src, version = _decode_cached_canonical(
+        source_path,
+        station,
+        observation_dt,
+        fmt=fmt,
+        cache_root=cache_root,
+        sample=sample,
+        is_raw=is_raw,
+    )
+    obs_name = canon_src.name
 
     out_dir.mkdir(parents=True, exist_ok=True)
+    # Stage in a temp dir on the SAME filesystem as the cache (a sibling of out_dir,
+    # invisible to the hit scanner) so the final placement is an atomic os.replace.
+    # Header mutation happens on the temp copy BEFORE placement, so a kill mid-rewrite
+    # dies in the temp dir and never leaves a partial in the cache — and the decode
+    # obs is never touched.
+    with tempfile.TemporaryDirectory(dir=cache_root, prefix=".epos_hdr_") as tmp:
+        staged = Path(tmp) / obs_name
+        shutil.copy2(canon_src, staged)
 
+        if set_header:
+            set_header_from_tos(staged, station, observation_dt)
+            # EPOS-specific header finalization (4.1.7) that the general TOS corrector
+            # does not do: 9-char MARKER NAME (R3), DOMES in MARKER NUMBER, generic
+            # OBSERVER/AGENCY. Done on the temp obs so the placed product is complete.
+            finalize_epos_header(
+                staged,
+                station,
+                version,
+                country_code=fmt.country_code,
+                monument_number=getattr(fmt, "monument_number", "00"),
+                domes=domes,
+                # Per-station agency (resolved from TOS owner org) overrides the
+                # format default; empty ⇒ fall back to the format's observer/agency.
+                observer=observer or getattr(fmt, "observer", ""),
+                agency=agency or getattr(fmt, "agency", ""),
+            )
+
+        final_obs = out_dir / obs_name
+        os.replace(str(staged), str(final_obs))
+
+    logger.info(
+        "re-headed %s → %s (RINEX %d)", source_path.name, final_obs.name, version
+    )
+    return ConvertResult(final_obs, obs_name, version, False, source_path)
+
+
+def _decode_cached_canonical(
+    source_path: Path,
+    station: str,
+    observation_dt: datetime,
+    *,
+    fmt,
+    cache_root: Path,
+    sample: Optional[int],
+    is_raw: bool,
+) -> tuple[Path, int]:
+    """Return ``(header-free canonical obs, version)`` from the decode cache.
+
+    Keyed on :func:`decode_cache_key` (source content + sample) under
+    ``cache_root/decode/<key>/`` — independent of TOS metadata and the header
+    schema, so it survives header re-pushes. On a miss it runs the expensive
+    decode (sbf2rin / CRX2RNX / gfzrnx) and places the result atomically. The
+    returned obs carries NO header corrections; the caller applies those on a copy.
+    """
     import tempfile
 
-    # Stage in a temp dir on the SAME filesystem as the cache (a sibling of
-    # out_dir, invisible to the hit scanner which only iterates out_dir) so the
-    # final placement is an atomic os.replace — NOT a cross-fs copy. All header
-    # mutation happens on the temp obs BEFORE it is placed, so a kill mid-rewrite
-    # dies in the temp dir and never leaves a partial in the cache.
-    cache_root = cache_dir.expanduser()
-    with tempfile.TemporaryDirectory(dir=cache_root, prefix=".epos_convert_") as tmp:
+    dkey = decode_cache_key(source_path, sample=sample)
+    decode_dir = cache_root / "decode" / dkey
+    hit = _find_complete_plain_obs(decode_dir)
+    if hit:
+        logger.info("decode cache hit %s → %s", source_path.name, hit.name)
+        return hit, detect_rinex_version(hit)
+
+    decode_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=cache_root, prefix=".epos_decode_") as tmp:
         tmpdir = Path(tmp)
         if is_raw:
             decoded = _decode_raw(source_path, station, observation_dt, tmpdir)
@@ -511,33 +624,11 @@ def convert_for_dissemination(
             file_period=getattr(fmt, "file_period", "01D"),
             monument_number=getattr(fmt, "monument_number", "00"),
         )
+        final = decode_dir / obs_name
+        os.replace(str(canon), str(final))
 
-        if set_header:
-            set_header_from_tos(canon, station, observation_dt)
-            # EPOS-specific header finalization (4.1.7) that the general TOS corrector
-            # does not do: 9-char MARKER NAME (R3), DOMES in MARKER NUMBER, generic
-            # OBSERVER/AGENCY. Done on the temp obs so the placed product is complete.
-            finalize_epos_header(
-                canon,
-                station,
-                version,
-                country_code=fmt.country_code,
-                monument_number=getattr(fmt, "monument_number", "00"),
-                domes=domes,
-                # Per-station agency (resolved from TOS owner org) overrides the
-                # format default; empty ⇒ fall back to the format's observer/agency.
-                observer=observer or getattr(fmt, "observer", ""),
-                agency=agency or getattr(fmt, "agency", ""),
-            )
-
-        # Atomic placement into the cache (canon and out_dir share the filesystem).
-        final_obs = out_dir / obs_name
-        os.replace(str(canon), str(final_obs))
-
-    logger.info(
-        "converted %s → %s (RINEX %d)", source_path.name, final_obs.name, version
-    )
-    return ConvertResult(final_obs, obs_name, version, False, source_path)
+    logger.info("decoded %s → %s (RINEX %d)", source_path.name, final.name, version)
+    return final, version
 
 
 def epos_marker_name(

@@ -249,6 +249,124 @@ class TestConvertHelpers:
         assert res.rinex_version == 3
 
 
+# ------------------------------------------------------------------- decode-cache split
+_FAKE_OBS = (
+    "     3.04           OBSERVATION DATA    M (MIXED)           "
+    "RINEX VERSION / TYPE\n" + " " * 60 + "END OF HEADER\n"
+)
+
+
+class TestDecodeCacheSplit:
+    """The two-layer cache: the expensive header-free decode is keyed on source
+    content alone, so a TOS-fingerprint change or a HEADER_SCHEMA_VERSION bump
+    re-heads the cached decode obs WITHOUT re-running sbf2rin/gfzrnx."""
+
+    @staticmethod
+    def _install_fakes(monkeypatch):
+        """Patch the decode primitives with a call counter (no external tools)."""
+        import receivers.dissemination.convert as dconv
+
+        counter = {"decode": 0}
+
+        def fake_to_plain(src, tmpdir):
+            counter["decode"] += 1
+            p = Path(tmpdir) / "plain.rnx"
+            p.write_text(_FAKE_OBS)
+            return p
+
+        def fake_canonical(
+            plain,
+            station,
+            observation_dt,
+            version,
+            naming,
+            country_code,
+            tmpdir,
+            *,
+            sample=None,
+            file_period="01D",
+            monument_number="00",
+        ):
+            name = f"{station}00ISL_R_20261790000_01D_15S_MO.rnx"
+            p = Path(tmpdir) / name
+            p.write_text(_FAKE_OBS)
+            return p, name
+
+        monkeypatch.setattr(dconv, "_to_plain_obs", fake_to_plain)
+        monkeypatch.setattr(dconv, "_canonical_obs", fake_canonical)
+        monkeypatch.setattr(dconv, "detect_rinex_version", lambda p: 3)
+        return dconv, counter
+
+    def _convert(self, dconv, src, cache, **over):
+        from receivers.dissemination.config import DisseminationFormat
+
+        kw = dict(fmt=DisseminationFormat(), cache_dir=cache, tos_fingerprint="fp1")
+        kw.update(over)
+        return dconv.convert_for_dissemination(src, "RHOF", datetime(2026, 6, 28), **kw)
+
+    def test_fingerprint_change_reuses_decode_cache(self, tmp_path, monkeypatch):
+        dconv, counter = self._install_fakes(monkeypatch)
+        src = tmp_path / "RHOF1790.26D.Z"
+        src.write_bytes(b"source-bytes-xyz")
+        cache = tmp_path / "cache"
+
+        r1 = self._convert(dconv, src, cache, tos_fingerprint="fp1")
+        r2 = self._convert(dconv, src, cache, tos_fingerprint="fp2")
+
+        # Decode ran ONCE though two distinct header-applied outputs were rendered.
+        assert counter["decode"] == 1
+        assert r1.cached is False and r2.cached is False
+        assert r1.output_path.parent != r2.output_path.parent  # distinct out_dirs
+        assert r1.output_path.is_file() and r2.output_path.is_file()
+
+    def test_header_schema_bump_reuses_decode_cache(self, tmp_path, monkeypatch):
+        dconv, counter = self._install_fakes(monkeypatch)
+        src = tmp_path / "RHOF1790.26D.Z"
+        src.write_bytes(b"source-bytes-xyz")
+        cache = tmp_path / "cache"
+
+        r1 = self._convert(dconv, src, cache, tos_fingerprint="fp")
+        monkeypatch.setattr(dconv, "HEADER_SCHEMA_VERSION", 99)
+        r2 = self._convert(dconv, src, cache, tos_fingerprint="fp")
+
+        # A code-level header fix (schema bump) re-heads cheaply — no re-decode.
+        assert counter["decode"] == 1
+        assert r1.output_path.parent != r2.output_path.parent
+
+    def test_repeat_same_key_is_output_cache_hit(self, tmp_path, monkeypatch):
+        dconv, counter = self._install_fakes(monkeypatch)
+        src = tmp_path / "RHOF1790.26D.Z"
+        src.write_bytes(b"source-bytes-xyz")
+        cache = tmp_path / "cache"
+
+        r1 = self._convert(dconv, src, cache, tos_fingerprint="fp")
+        r2 = self._convert(dconv, src, cache, tos_fingerprint="fp")
+
+        assert counter["decode"] == 1
+        assert r1.cached is False and r2.cached is True
+
+    def test_decode_cache_key_ignores_fingerprint_and_schema(
+        self, tmp_path, monkeypatch
+    ):
+        import receivers.dissemination.convert as dconv
+        from receivers.dissemination.convert import cache_key, decode_cache_key
+
+        f = tmp_path / "s"
+        f.write_bytes(b"abc")
+        k = decode_cache_key(f)
+
+        # Stable across a header-schema bump (it is header-free by design).
+        monkeypatch.setattr(dconv, "HEADER_SCHEMA_VERSION", 42)
+        assert decode_cache_key(f) == k
+        # Distinct from the output key (which folds fingerprint + schema).
+        assert decode_cache_key(f) != cache_key(f, "")
+        # Content-sensitive, and a decimated product gets its own slot.
+        g = tmp_path / "g"
+        g.write_bytes(b"different")
+        assert decode_cache_key(g) != k
+        assert decode_cache_key(f, sample=30) != k
+
+
 # --------------------------------------------------------------------------- engine (no tools)
 class TestEngineSourceResolution:
     def test_excluded_station_is_noop(self, tmp_path):
