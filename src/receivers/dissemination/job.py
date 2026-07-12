@@ -33,14 +33,23 @@ class _SeqProgress:
     year chunk), so the per-chunk ``set_total`` is ignored. Auto-disables when
     stderr is not a TTY (piped / cron / ``--json`` capture) and degrades to a
     no-op when tqdm is unavailable.
+
+    While the bar is live it also routes every ``receivers.*`` log record through
+    ``tqdm.write`` (``logging_redirect_tqdm``) so a mid-run WARNING prints cleanly
+    ABOVE the bar instead of being concatenated onto the bar's carriage-return line
+    (both share stderr — the "newlines are off" garble).
     """
 
     def __init__(self, total: int, desc: str) -> None:
         self._bar = None
+        self._stack = None
         try:
+            import logging
             import sys
+            from contextlib import ExitStack
 
             from tqdm import tqdm
+            from tqdm.contrib.logging import logging_redirect_tqdm
 
             self._bar = tqdm(
                 total=total,
@@ -48,6 +57,12 @@ class _SeqProgress:
                 unit="date",
                 ncols=100,
                 disable=not sys.stderr.isatty(),
+            )
+            # The console handler lives on the "receivers" logger (propagate=False),
+            # so redirect that logger's stream handlers — not the root's.
+            self._stack = ExitStack()
+            self._stack.enter_context(
+                logging_redirect_tqdm(loggers=[logging.getLogger("receivers")])
             )
         except ImportError:
             pass
@@ -64,6 +79,10 @@ class _SeqProgress:
             self._bar.set_postfix(counts)
 
     def close(self) -> None:
+        # Restore normal logging BEFORE removing the bar line.
+        if self._stack is not None:
+            self._stack.close()
+            self._stack = None
         if self._bar is not None:
             self._bar.close()
 
