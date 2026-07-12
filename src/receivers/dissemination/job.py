@@ -23,6 +23,51 @@ from typing import Any, Optional
 logger = logging.getLogger("receivers.dissemination.job")
 
 
+class _SeqProgress:
+    """tqdm progress bar for the SEQUENTIAL range run.
+
+    The interactive single-bar analogue of the parallel :class:`ProgressBoard`
+    (which reports for N workers). Duck-types the ``ChunkProgress`` surface that
+    :func:`_run_station_dates` calls — ``set_total`` / ``advance`` — but the grand
+    total is fixed at construction (one bar over ALL dates, across every station/
+    year chunk), so the per-chunk ``set_total`` is ignored. Auto-disables when
+    stderr is not a TTY (piped / cron / ``--json`` capture) and degrades to a
+    no-op when tqdm is unavailable.
+    """
+
+    def __init__(self, total: int, desc: str) -> None:
+        self._bar = None
+        try:
+            import sys
+
+            from tqdm import tqdm
+
+            self._bar = tqdm(
+                total=total,
+                desc=desc,
+                unit="date",
+                ncols=100,
+                disable=not sys.stderr.isatty(),
+            )
+        except ImportError:
+            pass
+
+    def set_total(self, n: int) -> None:  # grand total fixed in __init__
+        pass
+
+    def advance(self, seconds: Optional[float] = None) -> None:
+        if self._bar is not None:
+            self._bar.update(1)
+
+    def set_postfix(self, **counts: int) -> None:
+        if self._bar is not None:
+            self._bar.set_postfix(counts)
+
+    def close(self) -> None:
+        if self._bar is not None:
+            self._bar.close()
+
+
 # Serializes EPOS index writes within this process: the schema's explicit
 # next-id allocation (SELECT max(id)+1 — the dev schema lacks the sequences/
 # constraints ON CONFLICT would need) races under parallel chunks and blows
@@ -467,10 +512,25 @@ def run_epos_disseminate_job(
             else:
                 summary["failed"] += len(oc.chunk[1])
     else:
-        for station, chunk_dates in chunks:
-            local = _run_station_dates(station, chunk_dates)
-            for k, v in local.items():
-                summary[k] += v
+        # Sequential (no --parallel): one tqdm bar over ALL dates — the parallel
+        # path already shows progress via ProgressBoard; this closes the gap for
+        # the default single-worker range run (e.g. --start full --end <date>).
+        seq_total = sum(len(c[1]) for c in chunks)
+        seq_desc = markers[0] if len(markers) == 1 else "disseminate"
+        seq = _SeqProgress(seq_total, seq_desc)
+        try:
+            for station, chunk_dates in chunks:
+                local = _run_station_dates(station, chunk_dates, progress=seq)
+                for k, v in local.items():
+                    summary[k] += v
+                seq.set_postfix(
+                    pushed=summary["pushed"],
+                    cached=summary["cached"],
+                    skipped=summary["skipped"],
+                    failed=summary["failed"],
+                )
+        finally:
+            seq.close()
 
     _close_catalog_conn()  # don't hold a gps_health conn between sweeps
 

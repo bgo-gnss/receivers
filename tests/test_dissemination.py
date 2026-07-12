@@ -2621,6 +2621,78 @@ class TestDisseminateJobRange:
         assert s["pushed"] == 3 and s["failed"] == 0 and s["superseded"] == 0
         assert [d for _, d in calls] == sorted({*dates})
 
+    def test_sequential_range_advances_progress_bar(self, tmp_path, monkeypatch):
+        """The default (no --parallel) range run drives ONE progress bar over all
+        dates: total = every date, one advance per date, closed at the end."""
+        from datetime import date as _date
+
+        import receivers.dissemination.job as job
+        from receivers.dissemination.job import run_epos_disseminate_job
+
+        cfg = tmp_path / "sync.yaml"
+        cfg.write_text(
+            "targets:\n"
+            "  - name: epos\n"
+            "    active: false\n"
+            "    tier: dissemination\n"
+            "    host: ''\n"
+            "    user: u\n"
+            "    dest: /tmp/x\n"
+            "    source_root: /tmp/src\n"
+        )
+
+        class _Eng:
+            def run_one(self, station, d):
+                return TestDisseminateJobRange._result(self, station, d)
+
+        spy = {"n": 0, "total": None, "desc": None, "closed": False}
+
+        class _SpyProgress:
+            def __init__(self, total, desc):
+                spy["total"], spy["desc"] = total, desc
+
+            def set_total(self, n):  # per-chunk call — ignored (grand total fixed)
+                pass
+
+            def advance(self, seconds=None):
+                spy["n"] += 1
+
+            def set_postfix(self, **counts):
+                pass
+
+            def close(self):
+                spy["closed"] = True
+
+        monkeypatch.setattr(job, "_SeqProgress", _SpyProgress)
+
+        # Two year-chunks (2024, 2026) so a grand total across chunks is exercised.
+        dates = [_date(2024, 1, 1), _date(2024, 1, 2), _date(2026, 5, 8)]
+        s = run_epos_disseminate_job(
+            config_path=str(cfg),
+            markers=["RHOF"],
+            no_qc=True,
+            dates=dates,
+            force=True,
+            engine_factory=lambda t: _Eng(),
+            epos_conn_factory=lambda: None,
+        )
+        assert s["pushed"] == 3
+        assert spy["total"] == 3  # one bar over ALL dates, not per chunk
+        assert spy["n"] == 3  # one advance per date
+        assert spy["desc"] == "RHOF"  # single-station desc
+        assert spy["closed"] is True
+
+    def test_seqprogress_adapter_is_noop_safe(self):
+        """_SeqProgress degrades cleanly (non-TTY / no tqdm) — never raises."""
+        from receivers.dissemination.job import _SeqProgress
+
+        p = _SeqProgress(5, "X")
+        p.set_total(99)
+        p.advance()
+        p.advance(1.5)
+        p.set_postfix(pushed=1, failed=0)
+        p.close()
+
     def test_dead_epos_conn_reopened_mid_chunk(self, tmp_path):
         """A conn severed mid-chunk (laptop sleep, NAT expiry) is reopened at
         the next date instead of silently skipping indexes for the rest."""
