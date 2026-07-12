@@ -18,7 +18,7 @@ URL fix. Everything else uses the public :class:`tostools.api.tos_client.TOSClie
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Optional
 
 from .qc_gate import select_session
@@ -220,6 +220,52 @@ def _to_dt(value: Any) -> Optional[datetime]:
         return datetime.fromisoformat(str(value).replace("Z", "").strip()[:19])
     except ValueError:
         return None
+
+
+def device_session_bounds(
+    device_history: list[dict[str, Any]],
+    serial: str,
+    *,
+    device_key: str = "gnss_receiver",
+) -> tuple[Optional[date], Optional[date]]:
+    """``(device_start, device_end)`` for the device with ``serial`` in TOS history.
+
+    Scans ``device_history`` for sessions whose ``device_key`` (default the
+    receiver) carries ``serial``, and returns the earliest ``time_from`` and the
+    latest inclusive end. A half-open TOS session ``[time_from, time_to)`` is a
+    successor's install boundary, so the last day THIS device owns is
+    ``time_to − 1 day`` (the handover day belongs to the next device's range).
+    An open session (``time_to`` None) yields ``device_end = None`` — "still
+    current". ``(None, None)`` when no session matches the serial.
+
+    Backs the ``device_start`` / ``device_end`` date tokens (``--device SN``).
+    """
+    want = str(serial).strip()
+    lo: Optional[date] = None
+    hi: Optional[date] = None
+    open_ended = False
+    found = False
+    for session in device_history:
+        dev = session.get(device_key) or {}
+        if str(dev.get("serial_number") or "").strip() != want:
+            continue
+        found = True
+        start = _to_dt(session.get("time_from"))
+        if start is not None:
+            d0 = start.date()
+            if lo is None or d0 < lo:
+                lo = d0
+        if session.get("time_to") is None:
+            open_ended = True
+            continue
+        end = _to_dt(session.get("time_to"))
+        if end is not None:
+            d1 = (end - timedelta(days=1)).date()
+            if hi is None or d1 > hi:
+                hi = d1
+    if not found:
+        return None, None
+    return lo, (None if open_ended else hi)
 
 
 def _latest_covering(
