@@ -129,19 +129,40 @@ def _is_hatanaka(name: str) -> bool:
     return bool(name) and (name.endswith((".crx", ".CRX")) or name[-1] in "dD")
 
 
+# Bump on any CODE-level change to what set_header_from_tos / finalize_epos_header
+# write into the header. Folded into cache_key so a logic fix invalidates cached
+# converted products even though the source bytes AND the TOS fingerprint are
+# unchanged — a plain `epos-disseminate --force` re-push then re-converts with the
+# corrected header instead of serving a stale cache hit. (A TOS-driven header fix
+# already moves the fingerprint, so it does not need a bump.)
+#   v1: original EPOS header finalization
+#   v2: MARKER NUMBER no-DOMES fallback → version-aware (9-char R3 / 4-char R2)
+HEADER_SCHEMA_VERSION = 2
+
+
 def cache_key(
     source_path: Path, tos_fingerprint: str = "", sample: Optional[int] = None
 ) -> str:
-    """``sha256(source content_sha256 + ':' + tos_fingerprint)`` (+ sample slot).
+    """``sha256(content_sha256 + ':' + tos_fingerprint + ':' + header schema)``.
 
-    The TOS fingerprint is part of the key so a header correction (which leaves
-    the source bytes unchanged) still invalidates the cached converted product.
+    Three things invalidate the cached converted product:
+
+    - **Source content** — the raw/RINEX bytes changed.
+    - **TOS fingerprint** — a header correction driven by a TOS metadata change
+      (the source bytes are unchanged, but the applied header differs).
+    - **Header schema version** (:data:`HEADER_SCHEMA_VERSION`) — a *code-level*
+      change to what ``finalize_epos_header`` / ``set_header_from_tos`` write.
+      A TOS fix moves the fingerprint; a logic fix does not, so without this a
+      ``--force`` re-push would serve a stale header. Bump the constant on any
+      such change.
+
     A decimated product (``sample`` set) gets its own ``-s<rate>`` key so the
-    native and 30 s obs for the same date never share a cache slot; native
-    keys are unchanged (existing caches stay valid).
+    native and 30 s obs for the same date never share a cache slot.
     """
     src_hash = content_sha256(source_path)
-    key = hashlib.sha256(f"{src_hash}:{tos_fingerprint}".encode()).hexdigest()
+    key = hashlib.sha256(
+        f"{src_hash}:{tos_fingerprint}:h{HEADER_SCHEMA_VERSION}".encode()
+    ).hexdigest()
     return f"{key}-s{sample}" if sample is not None else key
 
 

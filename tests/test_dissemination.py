@@ -169,6 +169,18 @@ class TestConvertHelpers:
         assert k_empty != k_fp  # header correction (new fingerprint) ⇒ new cache slot
         assert cache_key(f, "tos-fingerprint-v1") == k_fp  # deterministic
 
+    def test_cache_key_depends_on_header_schema_version(self, tmp_path, monkeypatch):
+        # A code-level header-logic fix (bumped HEADER_SCHEMA_VERSION) invalidates
+        # the cache even though the source bytes + TOS fingerprint are unchanged —
+        # so `epos-disseminate --force` re-converts with the corrected header.
+        from receivers.dissemination import convert as dconv
+
+        f = tmp_path / "sample.rnx"
+        f.write_bytes(b"RINEX CONTENT")
+        k_v2 = cache_key(f, "fp")
+        monkeypatch.setattr(dconv, "HEADER_SCHEMA_VERSION", 99)
+        assert cache_key(f, "fp") != k_v2
+
     @pytest.mark.parametrize(
         "obs,crinex",
         [
