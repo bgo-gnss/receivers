@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 logger = logging.getLogger("receivers.cli.epos_disseminate")
@@ -47,6 +47,43 @@ def _epos_conn():
     except Exception as exc:  # noqa: BLE001 - DB optional for dry-run / no-index
         logger.warning("no EPOS DB connection (%s) — metadata/index steps skipped", exc)
         return None
+
+
+def _resolve_cli_date(value: str, role: str, args: argparse.Namespace, target):
+    """Resolve a ``--start``/``--end``/``--date`` value to a ``date``.
+
+    Accepts a literal (``YYYY-MM-DD`` / ``YYYYMMDD``) or a symbolic token
+    (``full``, ``last``, ``device_start``, ``device_end``, ``today``,
+    ``yesterday``) with an optional ``±N`` day offset. ``full``/``last`` read the
+    archive extent for ``--station``; ``device_*`` read the TOS session for
+    ``--device SN``. Raises :class:`~receivers.utils.date_vocab.DateVocabError`
+    (a ``ValueError``) with an actionable message on anything unresolvable.
+    """
+    from ..dissemination.engine import archive_date_bounds
+    from ..dissemination.tos_access import TOSSesionCache, device_session_bounds
+    from ..utils.date_vocab import DateContext, resolve_date
+
+    station = (args.station or "").upper() or None
+    hist_cache: dict[str, list] = {}
+
+    def _archive():
+        return archive_date_bounds(target.source_root, target.sessions, station)
+
+    def _device(serial: str):
+        if "hist" not in hist_cache:
+            meta = TOSSesionCache().get_metadata(station) or {}
+            hist_cache["hist"] = meta.get("device_history", []) or []
+        return device_session_bounds(hist_cache["hist"], serial)
+
+    ctx = DateContext(
+        role=role,
+        today=datetime.now(UTC).date(),
+        station=station,
+        device_serial=getattr(args, "device", None),
+        archive_bounds=_archive if station else None,
+        device_bounds=_device if station else None,
+    )
+    return resolve_date(value, ctx)
 
 
 def _cmd_refresh_metadata(args: argparse.Namespace) -> int:
@@ -285,10 +322,10 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
                 if not (args.start and args.end):
                     print("range mode needs BOTH --start and --end (or --dates)")
                     return 1
-                d0 = datetime.strptime(args.start, "%Y-%m-%d").date()
-                d1 = datetime.strptime(args.end, "%Y-%m-%d").date()
+                d0 = _resolve_cli_date(args.start, "start", args, target)
+                d1 = _resolve_cli_date(args.end, "end", args, target)
                 if d1 < d0:
-                    print("--end before --start")
+                    print(f"--end ({d1}) before --start ({d0})")
                     return 1
                 run_dates = [d0 + timedelta(days=n) for n in range((d1 - d0).days + 1)]
         except (ValueError, OSError) as exc:
@@ -356,9 +393,9 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        d = datetime.strptime(args.date, "%Y-%m-%d").date()
-    except ValueError:
-        print(f"Invalid --date {args.date!r} (expected YYYY-MM-DD)")
+        d = _resolve_cli_date(args.date, "date", args, target)
+    except ValueError as exc:
+        print(f"Invalid --date {args.date!r}: {exc}")
         return 1
 
     # Multi-product config (format.products with >1 entry): the sweep driver
@@ -531,18 +568,36 @@ def create_epos_disseminate_parser(subparsers) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--station", help="4-char station id (e.g. FIM2)")
-    parser.add_argument("--date", help="Observation date YYYY-MM-DD (UTC day)")
     parser.add_argument(
-        "--start",
-        metavar="YYYY-MM-DD",
-        help="Range mode: first observation date (inclusive). With --end, "
-        "disseminates every date in the range — the full-history portal "
-        "refresh after a re-rinex campaign is --start <first> --end <last>. "
-        "Uses the sweep driver: engine reuse, batched supersede-cleanup, "
-        "optional --parallel.",
+        "--date",
+        metavar="DATE|TOKEN",
+        help="Observation date: YYYY-MM-DD / YYYYMMDD, or a token "
+        "(today, yesterday, full, last, device_start, device_end) "
+        "with an optional ±N day offset (e.g. yesterday-1).",
     )
     parser.add_argument(
-        "--end", metavar="YYYY-MM-DD", help="Range mode: last date (inclusive)"
+        "--start",
+        metavar="DATE|TOKEN",
+        help="Range mode: first observation date (inclusive). Accepts a literal "
+        "date or a token — 'full' = the earliest ARCHIVED day for --station, "
+        "'device_start' = the TOS session start for --device SN — with an "
+        "optional ±N offset (full+7). The full-history portal refresh after a "
+        "re-rinex campaign is simply --start full --end last. Uses the sweep "
+        "driver: engine reuse, batched supersede-cleanup, optional --parallel.",
+    )
+    parser.add_argument(
+        "--end",
+        metavar="DATE|TOKEN",
+        help="Range mode: last date (inclusive). Literal or token — 'last' = the "
+        "latest ARCHIVED day for --station, 'device_end' = the TOS session end "
+        "for --device SN (open session ⇒ last archived day) — with an optional "
+        "±N offset (last-1).",
+    )
+    parser.add_argument(
+        "--device",
+        metavar="SN",
+        help="Receiver serial for the device_start / device_end date tokens "
+        "(the TOS session bounds of that specific receiver).",
     )
     parser.add_argument(
         "--dates",

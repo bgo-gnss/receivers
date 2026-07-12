@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
@@ -54,6 +55,74 @@ _MONTHS = [
     "nov",
     "dec",
 ]
+
+# Long-name R3 epoch ``_YYYYDDDHHMM_`` (e.g. RHOF00ISL_R_20261280000_01D_15S_MO.crx).
+_LONG_EPOCH_RE = re.compile(r"_(\d{4})(\d{3})\d{4}_")
+# Short-name stem ``SSSSDDD0.YY[dDoO]`` (DOY in cols 5-7; year taken from the path).
+_SHORT_STEM_RE = re.compile(r"^[A-Za-z0-9]{4}(\d{3})[0a-x]\.\d{2}[dDoO]", re.ASCII)
+
+
+def _date_from_rinex_name(name: str, year_hint: int) -> Optional[date]:
+    """The observation date encoded in a RINEX filename.
+
+    Long names carry a full ``YYYYDDD`` epoch; short names carry only DOY, so the
+    year comes from the archive's ``/YYYY/`` path component (``year_hint``). Returns
+    None for anything that isn't a recognisable RINEX obs name.
+    """
+    m = _LONG_EPOCH_RE.search(name)
+    if m:
+        year, doy = int(m.group(1)), int(m.group(2))
+        try:
+            return date(year, 1, 1) + timedelta(days=doy - 1)
+        except ValueError:
+            return None
+    m = _SHORT_STEM_RE.match(name)
+    if m:
+        doy = int(m.group(1))
+        if 1 <= doy <= 366:
+            return date(year_hint, 1, 1) + timedelta(days=doy - 1)
+    return None
+
+
+def archive_date_bounds(
+    source_root: str | Path,
+    sessions: Optional[tuple[str, ...]],
+    station: str,
+) -> tuple[Optional[date], Optional[date]]:
+    """``(earliest, latest)`` archived observation date for ``station``.
+
+    Walks ``<source_root>/<YYYY>/<mon>/<SID>/<session>/rinex/`` across every year
+    and month, deriving each file's date from its name (year from the path for
+    short names). Returns ``(None, None)`` when the station has no archived RINEX.
+    Backs the ``full`` / ``last`` date tokens.
+    """
+    root = Path(source_root).expanduser()
+    sid = station.upper()
+    session_names = tuple(sessions) if sessions else ("15s_24hr",)
+    earliest: Optional[date] = None
+    latest: Optional[date] = None
+    if not root.is_dir():
+        return None, None
+    for ydir in root.iterdir():
+        if not (ydir.is_dir() and ydir.name.isdigit()):
+            continue
+        year = int(ydir.name)
+        for mdir in ydir.iterdir():
+            if not mdir.is_dir():
+                continue
+            for session in session_names:
+                rinex_dir = mdir / sid / session / "rinex"
+                if not rinex_dir.is_dir():
+                    continue
+                for f in rinex_dir.iterdir():
+                    d = _date_from_rinex_name(f.name, year)
+                    if d is None:
+                        continue
+                    if earliest is None or d < earliest:
+                        earliest = d
+                    if latest is None or d > latest:
+                        latest = d
+    return earliest, latest
 
 
 @dataclass
