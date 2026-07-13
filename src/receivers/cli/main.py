@@ -3868,12 +3868,15 @@ def _create_rinex_converter(
         )
         raw_extension = ".atc"
 
-    elif getattr(args, "trimble", False):
-        # --trimble wins outright (mirrors --ashtech): force the native Trimble
-        # converter for a station's historical .T00/.T02 raw regardless of its
+    elif getattr(args, "trimble", False) and not receiver_type_override:
+        # --trimble restricts the run to Trimble raw regardless of the station's
         # CURRENT receiver type (NYLA is a PolaRX5 today; its pre-2019 raw is a
-        # NetRS). The native converter emits RINEX 3 and handles both .T00 and
-        # .T02; the `[02]` class + trailing `*` also match the .gz variants.
+        # NetRS). This branch only handles the CALLER's probe (no per-file override
+        # yet): it returns a native converter so the station isn't skipped and sets
+        # the .T0[02]* discovery glob. The batch loop then re-dispatches PER FILE
+        # via receiver_type_override=netrs/netr9 — which reaches the version-aware
+        # branches below (NetRS→R2 default, NetR9→R3), honouring the version policy.
+        # The `[02]` class + trailing `*` also match the .gz variants.
         if not TrimbleNativeConverter.is_available():
             logger.error(
                 "--trimble needs the native Trimble converter (Docker trm2rinex "
@@ -4351,21 +4354,34 @@ def _rinex_convert_station_period(
         data_prepath = config.get_data_prepath()
         source_root = _reconvert_source_root(args, data_prepath)
 
-        # Per-file converter dispatch: in re-rinex mode, with no format FORCED
-        # (--ashtech/--trimble) and the build params supplied, pick the converter
-        # from each raw file's ACTUAL format (magic bytes) instead of the station's
-        # current configured receiver — so a station swapped to another receiver
-        # still reconverts its historical raw. Otherwise use the single passed
-        # converter (daily convert, or a forced format).
-        _forced = getattr(args, "ashtech", False) or getattr(args, "trimble", False)
-        _per_file = _is_rerinex_mode(args) and not _forced and build_params is not None
+        # Per-file converter dispatch (re-rinex, build params supplied): pick the
+        # converter from each raw file instead of the station's current configured
+        # receiver — so a station swapped to another receiver still reconverts its
+        # historical raw. Two flavours:
+        #   * auto (no forced format): type from the raw's ACTUAL magic bytes;
+        #   * --trimble: RESTRICT to Trimble raw and force the Trimble sub-type by
+        #     container extension (.T00→netrs, .T02→netr9) even if the magic is
+        #     ambiguous — the escape hatch for mislabelled Trimble.
+        # Either way the NetRS/NetR9 branch decides the RINEX version (NetRS→R2
+        # default, NetR9→R3), so --trimble now honours the version policy (pass
+        # --version to override). --ashtech stays a single-converter force.
+        _trimble_mode = getattr(args, "trimble", False)
+        _per_file = (
+            _is_rerinex_mode(args)
+            and not getattr(args, "ashtech", False)
+            and build_params is not None
+        )
         _conv_cache: dict = {}
 
         def _converter_for(raw_path: Path):
             """(converter, receiver_type) for a raw file; (None, None) to skip."""
             if not _per_file:
                 return converter, None
-            rt = _receiver_type_for_raw(raw_path)
+            if _trimble_mode:
+                # Trimble-only run: force the sub-type from the extension.
+                rt = "netr9" if ".t02" in raw_path.name.lower() else "netrs"
+            else:
+                rt = _receiver_type_for_raw(raw_path)
             if rt is None:
                 return None, None
             if rt not in _conv_cache:
@@ -4389,6 +4405,10 @@ def _rinex_convert_station_period(
 
         current_date = start_time
         raw_files = []
+        # AUTO per-file globs EVERY extension (format decided by content);
+        # --trimble restricts to raw_extension (.T0[02]*); daily/forced use the
+        # single configured raw_extension.
+        _glob_all = _per_file and not _trimble_mode
 
         while current_date < end_time:
             cur_day = current_date.date()
@@ -4397,10 +4417,8 @@ def _rinex_convert_station_period(
 
             if "1hr" in args.session.lower():
                 stem = f"{station_id}{current_date.strftime('%Y%m%d%H%M')}"
-                # Per-file mode globs EVERY extension (format decided by content);
-                # otherwise the single configured raw_extension.
                 filename = (
-                    f"{stem}*" if _per_file else f"{stem}*.{raw_extension.lstrip('.')}"
+                    f"{stem}*" if _glob_all else f"{stem}*.{raw_extension.lstrip('.')}"
                 )
                 raw_dir = (
                     Path(source_root) / year / month / station_id / args.session / "raw"
@@ -4408,7 +4426,7 @@ def _rinex_convert_station_period(
                 current_date += timedelta(hours=1)
             else:
                 stem = f"{station_id}{current_date.strftime('%Y%m%d')}"
-                filename = f"{stem}*" if _per_file else f"{stem}*{raw_extension}"
+                filename = f"{stem}*" if _glob_all else f"{stem}*{raw_extension}"
                 raw_dir = (
                     Path(source_root) / year / month / station_id / args.session / "raw"
                 )

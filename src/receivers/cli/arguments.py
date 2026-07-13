@@ -1125,11 +1125,13 @@ Examples:
     format_group.add_argument(
         "--trimble",
         action="store_true",
-        help="Force the native Trimble converter + .T00/.T02 glob regardless of "
-        "the station's CURRENT receiver type — for re-rinexing a station's "
-        "historical Trimble raw after it was swapped to another receiver (e.g. "
-        "NYLA is a PolaRX5 today but its pre-2019 raw is NetRS .T00). Escape "
-        "hatch; normally the format is auto-detected from the raw file.",
+        help="Restrict a re-rinex run to Trimble .T00/.T02 raw regardless of the "
+        "station's CURRENT receiver type — for reconverting historical Trimble "
+        "raw after a station was swapped (e.g. NYLA is a PolaRX5 today but its "
+        "pre-2019 raw is NetRS .T00). Sub-type is forced by extension and the "
+        "version follows policy: .T00→NetRS (RINEX-2 default), .T02→NetR9 "
+        "(RINEX-3); pass --version to override. Escape hatch; normally the format "
+        "is auto-detected from the raw file.",
     )
 
     # Metadata options
