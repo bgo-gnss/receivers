@@ -226,3 +226,80 @@ class TestPerFileDispatch:
             )
 
         assert (converted, failed, skipped) == (0, 1, 0)  # loud failure, not skip
+
+    def test_trimble_mode_forces_subtype_by_extension(self, tmp_path):
+        """--trimble restricts to Trimble raw and forces the sub-type by extension
+        (.T00→netrs (R2), .T02→netr9 (R3)) — .sbf in the same dir is NOT touched,
+        so the version policy is honoured per file."""
+        root = tmp_path / "archive"
+        d = root / "2013" / "dec" / "NYLA" / "15s_24hr" / "raw"
+        d.mkdir(parents=True)
+        (d / "NYLA201312130000a.T00").write_bytes(b"trimble-netrs")
+        (d / "NYLA201312140000a.T02").write_bytes(b"trimble-netr9")
+        (d / "NYLA201312130000a.sbf").write_bytes(b"$@sbf")  # must be ignored
+
+        seen: dict = {}
+
+        def fake_create(station_id, args, *a, receiver_type_override=None, **k):
+            mc = seen.get(receiver_type_override)
+            if mc is None:
+                mc = MagicMock()
+                mc.converted = []
+
+                def _cv(raw_file, output_dir=None, force=False, _mc=mc):
+                    _mc.converted.append(Path(raw_file).name)
+                    rnx = Path(output_dir) / f"{Path(raw_file).stem}.rnx"
+                    rnx.parent.mkdir(parents=True, exist_ok=True)
+                    rnx.write_text("x")
+                    return SimpleNamespace(
+                        success=True,
+                        header_corrections_applied=5,
+                        rinex_file=rnx,
+                        duration_seconds=0.1,
+                    )
+
+                def _dt(p):
+                    g = re.match(r"NYLA(\d{4})(\d{2})(\d{2})", Path(p).name)
+                    return (
+                        datetime.datetime(int(g[1]), int(g[2]), int(g[3]))
+                        if g
+                        else None
+                    )
+
+                mc.convert_file.side_effect = _cv
+                mc._extract_date_from_filename.side_effect = _dt
+                seen[receiver_type_override] = mc
+            return mc, f".{receiver_type_override}", None
+
+        args = _args(root)
+        args.trimble = True
+        bp = {
+            "rinex_version": 3,
+            "apply_hatanaka": False,
+            "compression_format": None,
+            "naming_convention": None,
+            "observation_types": None,
+            "rinex_config": None,
+        }
+        with (
+            patch.object(m, "_create_rinex_converter", side_effect=fake_create),
+            patch(
+                "receivers.config.receivers_config.get_receivers_config",
+                return_value=MagicMock(get_data_prepath=lambda: str(tmp_path)),
+            ),
+        ):
+            converted, failed, skipped = m._rinex_convert_station_period(
+                "NYLA",
+                MagicMock(),  # caller's native converter (ignored in per-file mode)
+                ".T0[02]*",  # --trimble discovery glob
+                datetime.datetime(2013, 12, 13),
+                datetime.datetime(2013, 12, 15),  # 13th + 14th
+                args,
+                MagicMock(),
+                build_params=bp,
+            )
+
+        assert (converted, failed, skipped) == (2, 0, 0)
+        assert set(seen) == {"netrs", "netr9"}  # .sbf never routed (polarx absent)
+        assert seen["netrs"].converted == ["NYLA201312130000a.T00"]
+        assert seen["netr9"].converted == ["NYLA201312140000a.T02"]
