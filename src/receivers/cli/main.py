@@ -3798,11 +3798,17 @@ def _create_rinex_converter(
     logger: logging.Logger,
     rinex_config: dict = None,
     loglevel_override: int = None,
+    receiver_type_override: str = None,
 ):
     """Create appropriate RINEX converter for a station.
 
     ``loglevel_override`` quiets the converter's internal chatter (parallel
     batch mode raises it to WARNING so N workers don't flood the console).
+
+    ``receiver_type_override`` (``"polarx"``/``"netrs"``/``"netr9"``/``"ashtech"``)
+    replaces the station-config receiver type — used by the re-rinex per-file
+    dispatch, which selects the converter from each raw file's ACTUAL format
+    (magic bytes) rather than the station's current configured receiver.
 
     Returns:
         Tuple of (converter, raw_extension) or (None, None) on failure.
@@ -3824,6 +3830,10 @@ def _create_rinex_converter(
         return None, None, None
 
     receiver_type = station_config.get("receiver", {}).get("type", "").lower()
+    # Per-file dispatch (re-rinex): the raw file's actual format wins over the
+    # station's CURRENT configured receiver (authoritative when they disagree).
+    if receiver_type_override:
+        receiver_type = receiver_type_override.lower()
 
     # Determine if native Trimble converter should be used.
     # CLI --native-trimble wins; then re-rinex mode (feeding the IMO archive)
@@ -3844,7 +3854,7 @@ def _create_rinex_converter(
     # --ashtech wins outright: pre-2012 archive campaigns convert historical
     # Ashtech .atc regardless of the station's CURRENT receiver type (RHOF is
     # a PolaRX5 today; its 2008-2011 raw is a µZ-12).
-    if getattr(args, "ashtech", False):
+    if getattr(args, "ashtech", False) or receiver_type == "ashtech":
         converter = AshtechConverter(
             station_id=station_id,
             rinex_version=rinex_version,
@@ -4266,6 +4276,34 @@ def _cmd_del_backup(stations, args, start_time, end_time, logger) -> int:
     return 0
 
 
+def _receiver_type_for_raw(path: Path) -> Optional[str]:
+    """Effective receiver type for a raw file, from its CONTENT (magic bytes)
+    plus extension — the authority when stations.cfg / TOS disagrees.
+
+    Returns a ``_create_rinex_converter`` ``receiver_type_override`` string, or
+    None when the file isn't a recognised raw format (caller skips it). Septentrio
+    magic → ``polarx``; Ashtech U/R → ``ashtech``; Trimble carries no printable
+    magic, so the container extension splits NetRS (``.T00`` → ``netrs``, RINEX-2
+    pin) from NetR9 (``.T02`` → ``netr9``) — the split that drives the version rule.
+    """
+    from ..archive.raw_format import (
+        ASHTECH_R,
+        ASHTECH_U,
+        SBF,
+        TRIMBLE,
+        classify_raw,
+    )
+
+    fmt = classify_raw(path)
+    if fmt == SBF:
+        return "polarx"
+    if fmt in (ASHTECH_U, ASHTECH_R):
+        return "ashtech"
+    if fmt == TRIMBLE:
+        return "netr9" if ".t02" in path.name.lower() else "netrs"
+    return None  # UNKNOWN — not a raw we can convert
+
+
 def _rinex_convert_station_period(
     station_id: str,
     converter,
@@ -4279,6 +4317,7 @@ def _rinex_convert_station_period(
     only_dates=None,
     flush_fn=None,
     flush_every=0,
+    build_params: Optional[dict] = None,
 ) -> tuple:
     """Convert raw files to RINEX for a single station and time period.
 
@@ -4312,6 +4351,42 @@ def _rinex_convert_station_period(
         data_prepath = config.get_data_prepath()
         source_root = _reconvert_source_root(args, data_prepath)
 
+        # Per-file converter dispatch: in re-rinex mode, with no format FORCED
+        # (--ashtech/--trimble) and the build params supplied, pick the converter
+        # from each raw file's ACTUAL format (magic bytes) instead of the station's
+        # current configured receiver — so a station swapped to another receiver
+        # still reconverts its historical raw. Otherwise use the single passed
+        # converter (daily convert, or a forced format).
+        _forced = getattr(args, "ashtech", False) or getattr(args, "trimble", False)
+        _per_file = _is_rerinex_mode(args) and not _forced and build_params is not None
+        _conv_cache: dict = {}
+
+        def _converter_for(raw_path: Path):
+            """(converter, receiver_type) for a raw file; (None, None) to skip."""
+            if not _per_file:
+                return converter, None
+            rt = _receiver_type_for_raw(raw_path)
+            if rt is None:
+                return None, None
+            if rt not in _conv_cache:
+                c, _ext, _sc = _create_rinex_converter(
+                    station_id,
+                    args,
+                    build_params["rinex_version"],
+                    build_params["apply_hatanaka"],
+                    build_params["compression_format"],
+                    build_params["naming_convention"],
+                    build_params["observation_types"],
+                    logger,
+                    rinex_config=build_params.get("rinex_config"),
+                    loglevel_override=(
+                        logging.WARNING if progress is not None else None
+                    ),
+                    receiver_type_override=rt,
+                )
+                _conv_cache[rt] = c
+            return _conv_cache[rt], rt
+
         current_date = start_time
         raw_files = []
 
@@ -4321,15 +4396,19 @@ def _rinex_convert_station_period(
             month = current_date.strftime("%b").lower()
 
             if "1hr" in args.session.lower():
-                filename = f"{station_id}{current_date.strftime('%Y%m%d%H%M')}*.{raw_extension.lstrip('.')}"
+                stem = f"{station_id}{current_date.strftime('%Y%m%d%H%M')}"
+                # Per-file mode globs EVERY extension (format decided by content);
+                # otherwise the single configured raw_extension.
+                filename = (
+                    f"{stem}*" if _per_file else f"{stem}*.{raw_extension.lstrip('.')}"
+                )
                 raw_dir = (
                     Path(source_root) / year / month / station_id / args.session / "raw"
                 )
                 current_date += timedelta(hours=1)
             else:
-                filename = (
-                    f"{station_id}{current_date.strftime('%Y%m%d')}*{raw_extension}"
-                )
+                stem = f"{station_id}{current_date.strftime('%Y%m%d')}"
+                filename = f"{stem}*" if _per_file else f"{stem}*{raw_extension}"
                 raw_dir = (
                     Path(source_root) / year / month / station_id / args.session / "raw"
                 )
@@ -4357,7 +4436,12 @@ def _rinex_convert_station_period(
 
         if getattr(args, "dry_run", False):
             for raw_file in raw_files:
-                print(f"  [DRY RUN] Would convert: {raw_file.name}")
+                _dc, _drt = _converter_for(Path(raw_file))
+                if _dc is None:
+                    print(f"  [DRY RUN] skip {raw_file.name}: unrecognised raw format")
+                    continue
+                _fmt_note = f" [{_drt}]" if _drt else ""
+                print(f"  [DRY RUN] Would convert: {raw_file.name}{_fmt_note}")
                 if getattr(args, "backup_old", False):
                     raw_parent = Path(raw_file).parent
                     _od = (
@@ -4366,7 +4450,7 @@ def _rinex_convert_station_period(
                         else raw_parent / "rinex"
                     )
                     try:
-                        _obs = converter._extract_date_from_filename(Path(raw_file))
+                        _obs = _dc._extract_date_from_filename(Path(raw_file))
                     except Exception:  # noqa: BLE001
                         _obs = None
                     if _obs is not None:
@@ -4382,6 +4466,21 @@ def _rinex_convert_station_period(
         expect_corrections = not getattr(args, "no_header_correction", False)
 
         for file_idx, raw_file in enumerate(raw_files):
+            # Select the converter from THIS file's format (per-file dispatch),
+            # else the single passed converter. An unrecognised raw is skipped
+            # loudly rather than fed to the wrong converter.
+            converter, _rt = _converter_for(Path(raw_file))
+            if converter is None:
+                logger.warning(
+                    "skipping %s: unrecognised raw format (no converter)",
+                    Path(raw_file).name,
+                    extra=_log_extra,
+                )
+                if progress is not None:
+                    progress.advance()
+                skipped += 1
+                continue
+
             output_dir = _reconvert_output_dir(Path(raw_file), source_root, args)
             output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -5869,6 +5968,18 @@ def cmd_rinex(args) -> int:
 
     _flush_fn = _rinex_flush if _do_flush else None
 
+    # Shared build params so the re-rinex per-file dispatch can construct a
+    # converter for whatever format each raw file actually is (see
+    # _rinex_convert_station_period / _receiver_type_for_raw).
+    _build_params = {
+        "rinex_version": rinex_version,
+        "apply_hatanaka": apply_hatanaka,
+        "compression_format": compression_format,
+        "naming_convention": naming_convention,
+        "observation_types": observation_types,
+        "rinex_config": rinex_config,
+    }
+
     try:
         if network_first:
             # Pre-create converters for all stations
@@ -5917,6 +6028,7 @@ def cmd_rinex(args) -> int:
                         only_dates=only_dates,
                         flush_fn=_flush_fn,
                         flush_every=_rinex_flush_every,
+                        build_params=_build_params,
                     )
                     total_converted += c
                     total_failed += f
@@ -5980,6 +6092,7 @@ def cmd_rinex(args) -> int:
                         only_dates=only_dates,
                         flush_fn=_flush_fn,
                         flush_every=_rinex_flush_every,
+                        build_params=_build_params,
                     )
                     h.finish(ok=True)
                     return res
@@ -6056,6 +6169,7 @@ def cmd_rinex(args) -> int:
                     only_dates=only_dates,
                     flush_fn=_flush_fn,
                     flush_every=_rinex_flush_every,
+                    build_params=_build_params,
                 )
                 total_converted += c
                 total_failed += f
