@@ -1122,6 +1122,16 @@ Examples:
         "flag is chosen from the file's magic bytes, never the name)",
     )
 
+    format_group.add_argument(
+        "--trimble",
+        action="store_true",
+        help="Force the native Trimble converter + .T00/.T02 glob regardless of "
+        "the station's CURRENT receiver type — for re-rinexing a station's "
+        "historical Trimble raw after it was swapped to another receiver (e.g. "
+        "NYLA is a PolaRX5 today but its pre-2019 raw is NetRS .T00). Escape "
+        "hatch; normally the format is auto-detected from the raw file.",
+    )
+
     # Metadata options
     meta_group = parser.add_argument_group("metadata options")
     meta_group.add_argument(

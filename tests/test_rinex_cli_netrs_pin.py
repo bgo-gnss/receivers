@@ -70,3 +70,55 @@ class TestNetrsManualPin:
         )
         _, kwargs = mock_trimble.call_args
         assert kwargs["rinex_version"] == RinexVersion.RINEX_3
+
+
+_POLARX_CONFIG = {"receiver": {"type": "PolaRX5"}}
+
+
+def _args_trimble():
+    a = _args(rinex_version=None)
+    a.trimble = True
+    a.ashtech = False
+    return a
+
+
+@pytest.mark.unit
+class TestTrimbleOverride:
+    """--trimble forces the native Trimble converter + .T00/.T02 glob regardless
+    of the station's CURRENT receiver type (re-rinex a Septentrio-today station's
+    historical NetRS raw, e.g. NYLA)."""
+
+    @patch("receivers.rinex.TrimbleNativeConverter")
+    @patch("receivers.cli.main.get_station_config", return_value=_POLARX_CONFIG)
+    def test_trimble_overrides_current_septentrio(self, _cfg, mock_native):
+        mock_native.is_available.return_value = True
+        mock_native.return_value = MagicMock()
+        conv, ext, _sc = _create_rinex_converter(
+            "NYLA",
+            _args_trimble(),
+            RinexVersion.RINEX_3,
+            None,
+            None,
+            NamingConvention.SHORT,
+            None,
+            MagicMock(),
+        )
+        # Native Trimble, not the SBFConverter the PolaRX5 config would pick.
+        assert conv is mock_native.return_value
+        assert ext == ".T0[02]*"  # matches .T00, .T02, and .gz variants
+
+    @patch("receivers.rinex.TrimbleNativeConverter")
+    @patch("receivers.cli.main.get_station_config", return_value=_POLARX_CONFIG)
+    def test_trimble_needs_native_converter(self, _cfg, mock_native):
+        mock_native.is_available.return_value = False
+        conv, ext, _sc = _create_rinex_converter(
+            "NYLA",
+            _args_trimble(),
+            RinexVersion.RINEX_3,
+            None,
+            None,
+            NamingConvention.SHORT,
+            None,
+            MagicMock(),
+        )
+        assert conv is None and ext is None  # no Docker image → clean refusal
