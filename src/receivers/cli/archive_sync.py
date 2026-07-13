@@ -1355,6 +1355,17 @@ def _persist_remediation_records(plans, skips, *, gate_m: float) -> None:
                 text=True,
                 timeout=60,
             )
+            # A fresh clone often has no upstream set on its default branch, so a
+            # bare `git push` fails ("has no upstream branch"). Fall back to an
+            # explicit `origin HEAD` (and set tracking) so the records actually
+            # reach the shared repo instead of stranding in a local commit.
+            if pushed.returncode != 0 and "upstream" in (pushed.stderr or ""):
+                pushed = subprocess.run(
+                    ["git", "-C", str(repo_path), "push", "-q", "-u", "origin", "HEAD"],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
             if pushed.returncode == 0:
                 print("   📌 committed + pushed to gps-tos-corrections")
             else:
