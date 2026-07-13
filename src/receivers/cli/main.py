@@ -4438,7 +4438,12 @@ def _rinex_convert_station_period(
             for raw_file in raw_files:
                 _dc, _drt = _converter_for(Path(raw_file))
                 if _dc is None:
-                    print(f"  [DRY RUN] skip {raw_file.name}: unrecognised raw format")
+                    _why = (
+                        "unrecognised raw format"
+                        if _drt is None
+                        else f"no {_drt} converter available"
+                    )
+                    print(f"  [DRY RUN] skip {raw_file.name}: {_why}")
                     continue
                 _fmt_note = f" [{_drt}]" if _drt else ""
                 print(f"  [DRY RUN] Would convert: {raw_file.name}{_fmt_note}")
@@ -4471,14 +4476,27 @@ def _rinex_convert_station_period(
             # loudly rather than fed to the wrong converter.
             converter, _rt = _converter_for(Path(raw_file))
             if converter is None:
-                logger.warning(
-                    "skipping %s: unrecognised raw format (no converter)",
-                    Path(raw_file).name,
-                    extra=_log_extra,
-                )
+                if _rt is None:
+                    logger.warning(
+                        "skipping %s: unrecognised raw format",
+                        Path(raw_file).name,
+                        extra=_log_extra,
+                    )
+                    skipped += 1
+                else:
+                    # Format recognised but its converter could not be BUILT
+                    # (missing tool / Docker down) — a real failure, not a silent
+                    # skip, so a Docker outage can't masquerade as "nothing to do".
+                    logger.error(
+                        "%s: no %s converter available (missing tool/Docker?) "
+                        "— not converted",
+                        Path(raw_file).name,
+                        _rt,
+                        extra=_log_extra,
+                    )
+                    failed += 1
                 if progress is not None:
                     progress.advance()
-                skipped += 1
                 continue
 
             output_dir = _reconvert_output_dir(Path(raw_file), source_root, args)

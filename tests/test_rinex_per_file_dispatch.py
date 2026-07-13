@@ -185,3 +185,44 @@ class TestPerFileDispatch:
 
         assert converted == 0 and skipped == 1  # skipped, never converted
         assert calls == []  # no converter built for an unrecognised format
+
+    def test_recognised_but_unbuildable_converter_is_failure(self, tmp_path):
+        """A recognised format whose converter can't be BUILT (Docker/tool down)
+        is a FAILURE, not a silent skip — so an outage can't read as 'nothing to
+        do' (advisor)."""
+        root = tmp_path / "archive"
+        d = root / "2013" / "dec" / "NYLA" / "15s_24hr" / "raw"
+        d.mkdir(parents=True)
+        (d / "NYLA201312130000a.T00").write_bytes(b"trimble-netrs-data")
+
+        # Simulate the native Trimble converter being unavailable.
+        def fake_create(station_id, args, *a, receiver_type_override=None, **k):
+            return None, None, None
+
+        bp = {
+            "rinex_version": 3,
+            "apply_hatanaka": False,
+            "compression_format": None,
+            "naming_convention": None,
+            "observation_types": None,
+            "rinex_config": None,
+        }
+        with (
+            patch.object(m, "_create_rinex_converter", side_effect=fake_create),
+            patch(
+                "receivers.config.receivers_config.get_receivers_config",
+                return_value=MagicMock(get_data_prepath=lambda: str(tmp_path)),
+            ),
+        ):
+            converted, failed, skipped = m._rinex_convert_station_period(
+                "NYLA",
+                None,
+                ".sbf.gz",
+                datetime.datetime(2013, 12, 13),
+                datetime.datetime(2013, 12, 14),
+                _args(root),
+                MagicMock(),
+                build_params=bp,
+            )
+
+        assert (converted, failed, skipped) == (0, 1, 0)  # loud failure, not skip
