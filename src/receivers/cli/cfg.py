@@ -2120,7 +2120,10 @@ def cmd_cfg_extract(args) -> int:
     fields["receiver_controlport"] = "28784"
 
     fields["rinex_marker_name"] = sid
-    fields["rinex_marker_number"] = sid
+    # MARKER NUMBER = IERS DOMES only; MARKER NAME already carries the 4-char id.
+    # Bench extract has no TOS DOMES handy, so leave it unset (the converter skips
+    # an absent value); `cfg sync-from-tos --only rinex_marker_number` fills the
+    # real DOMES later if/when the station is registered.
 
     # Remaining manifest fields (antenna, position, serial, firmware)
     fields.update(manifest_fields)
@@ -3621,8 +3624,10 @@ def _local_stations_cfg_path() -> Path:
 
 def cmd_cfg_sync_from_tos(args) -> int:
     """Overwrite stations.cfg device fields from current TOS state (TOS-authoritative)."""
+    from tostools.rinex import is_iers_domes
+
     from ..cfg.reconciler import apply_diff, compare_station
-    from ..config.receivers_config import _update_cfg_field
+    from ..config.receivers_config import _remove_cfg_field, _update_cfg_field
     from ..config_utils import get_station_config
     from .arguments import normalize_station_tokens
 
@@ -3724,7 +3729,26 @@ def cmd_cfg_sync_from_tos(args) -> int:
             elif plan and plan[0] == "flag":
                 sim_flag = plan[1]
 
-        if not planned and sim_overwrite is None and not flagged and sim_flag is None:
+        # rinex_marker_number strip: a cfg value that is NOT a valid IERS DOMES is
+        # invalid as a MARKER NUMBER by definition (MARKER NAME already carries the
+        # 4-char id). Remove the line — but only when TOS has no real DOMES to fill
+        # in its place (that fill is already in `planned`), and NEVER strip a cfg
+        # value that IS a real DOMES that TOS momentarily lacks (the "absent TOS
+        # never clobbers cfg" rule). Scoped by --only like every other field.
+        strip_marker = False
+        if only_set is None or "rinex_marker_number" in only_set:
+            _cur_mn = (station_config.get("rinex_marker_number") or "").strip()
+            _tos_fills = any(d.cfg_key == "rinex_marker_number" for d in planned)
+            if _cur_mn and not is_iers_domes(_cur_mn) and not _tos_fills:
+                strip_marker = True
+
+        if (
+            not planned
+            and sim_overwrite is None
+            and not flagged
+            and sim_flag is None
+            and not strip_marker
+        ):
             print(f"✅ {sid}: already in sync with TOS")
             continue
 
@@ -3746,11 +3770,20 @@ def cmd_cfg_sync_from_tos(args) -> int:
                 f"  ⚠ router_ip: cfg hostname {sim_flag[0]!r} vs TOS SIM {sim_flag[1]!r}"
                 " — not changed (fix DNS or pin the IP manually)"
             )
+        if strip_marker:
+            print(
+                f"  ✂ rinex_marker_number: {station_config.get('rinex_marker_number')!r}"
+                " → (removed — not an IERS DOMES)"
+            )
 
-        if dry or (not planned and sim_overwrite is None):
+        if dry or (not planned and sim_overwrite is None and not strip_marker):
             continue
         if not args.yes:
-            n = len(planned) + (1 if sim_overwrite is not None else 0)
+            n = (
+                len(planned)
+                + (1 if sim_overwrite is not None else 0)
+                + (1 if strip_marker else 0)
+            )
             if input(f"  Apply {n} change(s) to {sid}? [y/N] ").strip().lower() != "y":
                 print(f"  skipped {sid}")
                 continue
@@ -3771,6 +3804,14 @@ def cmd_cfg_sync_from_tos(args) -> int:
                 ):
                     any_global_change = True
             print(f"  ✓ router_ip = {sim_overwrite!r}")
+        if strip_marker:
+            for tgt in write_targets:
+                path = tgt if tgt is not None else _local_stations_cfg_path()
+                if _remove_cfg_field(path, sid, "rinex_marker_number") and (
+                    tgt is not None
+                ):
+                    any_global_change = True
+            print("  ✓ rinex_marker_number removed (not an IERS DOMES)")
 
     if dry:
         print(

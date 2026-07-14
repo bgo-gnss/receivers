@@ -5,6 +5,7 @@ and the safety guard, which is where the correctness/risk lives.
 """
 
 import argparse
+from pathlib import Path
 
 from receivers.cli.cfg import (
     _is_literal_ip,
@@ -161,3 +162,79 @@ class TestOnlyFilter:
         valid = {s.cfg_key for s in _sync_overwrite_specs()} | {"router_ip"}
         assert "rinex_marker_number" in valid
         assert "router_ip" in valid
+
+
+class TestMarkerNumberStrip:
+    """`sync-from-tos --only rinex_marker_number` removes a cfg value that is not
+    a valid IERS DOMES (invalid as a MARKER NUMBER — MARKER NAME carries the 4-char
+    id), but never a real DOMES that TOS momentarily lacks."""
+
+    def _patch(self, monkeypatch, *, cfg_value, removed):
+        import receivers.cfg.reconciler as rec
+        import receivers.cli.arguments as cliargs
+        import receivers.cli.cfg as cfgmod
+        import receivers.config.receivers_config as rc
+        import receivers.config_utils as cu
+
+        monkeypatch.setattr(
+            cliargs, "normalize_station_tokens", lambda toks: list(toks)
+        )
+        monkeypatch.setattr(
+            cu,
+            "get_station_config",
+            lambda sid, silent=True: {"rinex_marker_number": cfg_value},
+        )
+        # Truthy TOS record, but no DOMES → compare_station yields no planned diff.
+        monkeypatch.setattr(cfgmod, "_query_tos", lambda sid: {"id_entity": 1})
+        monkeypatch.setattr(rec, "compare_station", lambda *a, **k: [])
+        monkeypatch.setattr(cfgmod, "_resolve_global_target", lambda args: None)
+        monkeypatch.setattr(
+            cfgmod, "_local_stations_cfg_path", lambda: Path("/tmp/x.cfg")
+        )
+        monkeypatch.setattr(cfgmod, "_maybe_commit_global", lambda *a, **k: None)
+
+        def fake_remove(path, sid, key):
+            removed.append((sid, key))
+            return True
+
+        monkeypatch.setattr(rc, "_remove_cfg_field", fake_remove)
+
+    def test_non_domes_value_is_stripped(self, monkeypatch, capsys):
+        removed: list = []
+        self._patch(monkeypatch, cfg_value="AFST", removed=removed)
+        rc = cmd_cfg_sync_from_tos(
+            _args(
+                station=["AFST"],
+                only=["rinex_marker_number"],
+                no_dry_run=True,
+                yes=True,
+            )
+        )
+        assert rc == 0
+        assert removed == [("AFST", "rinex_marker_number")]
+        assert "removed" in capsys.readouterr().out
+
+    def test_real_domes_is_not_clobbered(self, monkeypatch, capsys):
+        # cfg already holds a valid DOMES; TOS has none right now → leave it.
+        removed: list = []
+        self._patch(monkeypatch, cfg_value="10230M001", removed=removed)
+        rc = cmd_cfg_sync_from_tos(
+            _args(
+                station=["REYK"],
+                only=["rinex_marker_number"],
+                no_dry_run=True,
+                yes=True,
+            )
+        )
+        assert rc == 0
+        assert removed == []
+
+    def test_dry_run_shows_but_does_not_strip(self, monkeypatch, capsys):
+        removed: list = []
+        self._patch(monkeypatch, cfg_value="AFST", removed=removed)
+        rc = cmd_cfg_sync_from_tos(
+            _args(station=["AFST"], only=["rinex_marker_number"])  # dry by default
+        )
+        assert rc == 0
+        assert removed == []  # nothing written in dry-run
+        assert "✂" in capsys.readouterr().out  # but the plan shows the strip

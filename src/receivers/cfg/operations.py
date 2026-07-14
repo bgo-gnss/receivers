@@ -1334,7 +1334,9 @@ def add_station(
         "rinex_agency": rinex_agency,
         "station_owner": station_owner,
         "rinex_marker_name": station_id,
-        "rinex_marker_number": station_id,
+        # MARKER NUMBER = IERS DOMES only (MARKER NAME carries the 4-char id).
+        # None when the station has no DOMES → omitted below → no cfg line.
+        "rinex_marker_number": tos_adapter.iers_domes_number(station),
         "antenna_serial": tos_adapter.current_antenna_serial(station),
         "antenna_type": antenna_type,
         "antenna_radome": tos_adapter.current_radome_model(station) or "NONE",
