@@ -198,7 +198,9 @@ def qc_check(
 
     # EPOS 4.1.7: the DOMES (when TOS has one) must be in MARKER NUMBER. The header
     # finalizer writes it; the gate verifies it (catches cfg data errors / drops).
-    tos_domes = str(tos_session.get("domes") or "").strip().upper()
+    from tostools.rinex import domes_or_skip
+
+    tos_domes = domes_or_skip(tos_session.get("domes"))
     if tos_domes:
         rnx_number = str(rinex_info.get("MARKER NUMBER") or "").strip().upper()
         if rnx_number == tos_domes:
@@ -207,10 +209,10 @@ def qc_check(
         else:
             discrepancies["domes"] = {"rinex": rnx_number, "tos": tos_domes}
     else:
-        # No real DOMES: compare_rinex_to_tos still emits a (domes-or-marker)
-        # fallback discrepancy for --fix-headers, but a missing/marker-only
-        # MARKER NUMBER is NOT an EPOS DOMES violation and must not BLOCK QC —
-        # finalize_epos_header sets it in the pipeline. Drop it here.
+        # No real DOMES: policy is no MARKER NUMBER line at all. finalize_epos_header
+        # strips it; compare_rinex_to_tos may flag a leftover id for --fix-headers,
+        # but an absent/legacy MARKER NUMBER is NOT an EPOS DOMES violation and must
+        # not BLOCK QC. Drop it here.
         discrepancies.pop("domes", None)
         matches.pop("domes", None)
 

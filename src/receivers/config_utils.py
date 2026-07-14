@@ -253,7 +253,9 @@ def get_station_config(
             # RINEX header metadata (from teqc configs)
             "rinex": {
                 "marker_name": raw_config.get("rinex_marker_name", station_id),
-                "marker_number": raw_config.get("rinex_marker_number", station_id),
+                # No station-id fallback: MARKER NUMBER carries the IERS DOMES only
+                # (the corrector's domes_or_skip guard strips a non-DOMES value).
+                "marker_number": raw_config.get("rinex_marker_number", ""),
                 # Resolved from station_operator via agencies.yaml (above), not the
                 # retired rinex_observer/rinex_agency personal-initial fields.
                 "observer": _observer,

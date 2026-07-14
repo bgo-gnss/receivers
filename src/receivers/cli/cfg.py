@@ -3657,6 +3657,25 @@ def cmd_cfg_sync_from_tos(args) -> int:
         return 1
 
     overwrite_keys = {s.cfg_key for s in _sync_overwrite_specs()}
+
+    # --only: restrict the sync to a subset of fields (e.g. just the IERS DOMES).
+    # router_ip is a valid target even though it comes from the SIM, not a spec.
+    only = getattr(args, "only", None)
+    only_set = None
+    if only:
+        valid_keys = overwrite_keys | {"router_ip"}
+        unknown = [f for f in only if f not in valid_keys]
+        if unknown:
+            print(
+                f"❌ Unknown --only field(s): {', '.join(unknown)}.\n"
+                f"   Valid sync fields: {', '.join(sorted(valid_keys))}"
+            )
+            return 1
+        only_set = set(only)
+        overwrite_keys &= only_set
+        if "router_ip" not in only_set:
+            include_sim = False  # skip the SIM lookup entirely when not selected
+
     # local always; also the gps-config-data repo when --global.
     write_targets = [None] + ([global_target] if global_target is not None else [])
 
@@ -3691,6 +3710,8 @@ def cmd_cfg_sync_from_tos(args) -> int:
             if d.cfg_key in _SYNC_POSITION_EXCLUDE
             and d.needs_attention
             and d.tos_value is not None
+            # under --only, suppress flags for non-selected fields (e.g. position)
+            and (only_set is None or d.cfg_key in only_set)
         ]
 
         # SIM -> router_ip (single-station only)
@@ -3761,9 +3782,10 @@ def cmd_cfg_sync_from_tos(args) -> int:
             args, "stations: sync-from-tos", changed=False, dry_run=True
         )
     else:
+        scope = f" ({', '.join(only)})" if only else " (TOS→cfg device fields)"
         _maybe_commit_global(
             args,
-            "stations: sync-from-tos (TOS→cfg device fields)",
+            f"stations: sync-from-tos{scope}",
             changed=any_global_change,
             dry_run=False,
         )
@@ -4055,6 +4077,16 @@ Diagnosing TCP authentication failures:
         "--no-sim",
         action="store_true",
         help="Skip the SIM/router_ip lookup (single-station)",
+    )
+    sync.add_argument(
+        "--only",
+        nargs="+",
+        metavar="FIELD",
+        help=(
+            "Restrict the sync to these cfg field(s) instead of every "
+            "sync_from_tos field — e.g. `--only rinex_marker_number` to fill just "
+            "the IERS DOMES. Run `cfg reconcile --list-fields` for the field names."
+        ),
     )
     _add_global_flags(sync)
     sync.set_defaults(func=cmd_cfg_sync_from_tos)

@@ -123,6 +123,7 @@ def _args(**over):
         yes=False,
         no_dry_run=False,
         no_sim=False,
+        only=None,
         global_cfg=False,
         push=False,
         dry_run=None,
@@ -143,3 +144,20 @@ class TestGuard:
         rc = cmd_cfg_sync_from_tos(_args())
         assert rc == 1
         assert "Specify" in capsys.readouterr().out
+
+
+class TestOnlyFilter:
+    def test_unknown_only_field_rejected(self, capsys):
+        # --only validates before any TOS call, so this needs no network.
+        rc = cmd_cfg_sync_from_tos(_args(station=["ELDC"], only=["bogus_field"]))
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "Unknown --only field(s): bogus_field" in out
+        # the error lists the valid fields, including the DOMES key
+        assert "rinex_marker_number" in out
+
+    def test_domes_and_router_ip_are_valid_only_fields(self):
+        # rinex_marker_number is a spec field; router_ip is valid too (from SIM).
+        valid = {s.cfg_key for s in _sync_overwrite_specs()} | {"router_ip"}
+        assert "rinex_marker_number" in valid
+        assert "router_ip" in valid

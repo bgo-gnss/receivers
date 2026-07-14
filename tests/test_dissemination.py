@@ -1177,18 +1177,19 @@ class TestEposHeaderFinalize:
         assert recs["OBSERVER / AGENCY"][:20].strip() == "GNSSatIMO"
         assert recs["OBSERVER / AGENCY"][20:].strip() == "Vedurstofa Islands"
 
-    def test_finalize_no_domes_falls_back_to_versioned_id(self, tmp_path):
+    def test_finalize_no_domes_strips_marker_number(self, tmp_path):
         from receivers.dissemination.convert import finalize_epos_header
 
-        # No DOMES → MARKER NUMBER tracks the version, matching MARKER NAME:
-        # 9-char for R3 (was a bare 4-char before), 4-char for R2.
+        # No DOMES → MARKER NUMBER line is removed (never the station id), in both
+        # RINEX versions. The pre-existing legacy 4-char line is actively stripped.
         p3 = self._header(tmp_path, marker="ABCD", number="ABCD")
         finalize_epos_header(p3, "ABCD", 3, country_code="ISL", domes="")
-        assert self._records(p3)["MARKER NUMBER"].strip() == "ABCD00ISL"
+        assert "MARKER NUMBER" not in self._records(p3)
+        assert self._records(p3)["MARKER NAME"].strip() == "ABCD00ISL"
 
         p2 = self._header(tmp_path, marker="ABCD", number="ABCD")
         finalize_epos_header(p2, "ABCD", 2, country_code="ISL", domes="")
-        assert self._records(p2)["MARKER NUMBER"].strip() == "ABCD"
+        assert "MARKER NUMBER" not in self._records(p2)
 
     def test_finalize_is_idempotent(self, tmp_path):
         from receivers.dissemination.convert import finalize_epos_header

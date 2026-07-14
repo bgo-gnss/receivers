@@ -116,12 +116,25 @@ position stays cfg-canonical (flag-only). A field is filled **only when TOS carr
 value** — an absent TOS DOMES never clobbers cfg. The surgical writer (`_update_cfg_field`)
 rewrites just the target `[STATION]` section's key lines, leaving the rest of the file
 byte-for-byte intact. Default dry-run; `--no-dry-run` applies; `--global --push` commits
-to the gps-config-data repo. `--all` refuses `--yes` (never blind-bulk-apply — TOS can be
-stale). **`rinex_marker_number` is TOS-canonical-for-cfg but deliberately NOT `tos_writable`**
+to the gps-config-data repo. `--only FIELD…` restricts the sync to specific fields (e.g.
+`--only rinex_marker_number` to fill just the IERS DOMES without touching receiver/antenna
+metadata). `--all` refuses `--yes` (never blind-bulk-apply — TOS can be stale).
+**`rinex_marker_number` is TOS-canonical-for-cfg but deliberately NOT `tos_writable`**
 (no `tos_attribute_code`): cfg follows TOS, but `reconcile --push-tos` will never send cfg's
 value up to TOS — cfg had the wrong 4-char marker for most of the fleet, and the RINEX
 converter reads this key for MARKER NUMBER (the NYLA cross-contamination). This is the
 workflow step to run after every TOS metadata change.
+
+**MARKER NUMBER policy (bgo, 2026-07-13): the RINEX `MARKER NUMBER` field carries the IERS
+DOMES number and nothing else — absent a real DOMES the line is skipped/stripped, never
+filled with the 4-char station id** (`MARKER NAME` already carries that). Enforced in one
+place — `tostools.rinex.domes.domes_or_skip` (regex `^\d{5}[A-Z]\d{3}$`) — across every
+write and compare path: the archive converter (`corrector.py` config + TOS branches, which
+now emit a `STRIP_LINE` sentinel), the EPOS finalizer (`convert.finalize_epos_header` →
+`_set_header_records` `None`=strip), and the QC/compare side (`validator.compare_rinex_to_tos`,
+`gps_rinex`, `qc_gate`) so a `--fix-headers` run *removes* a stale id instead of re-injecting
+it. A 4-char value in cfg is treated as "no DOMES" and skipped, so the policy is correct
+fleet-wide even before `sync-from-tos --only rinex_marker_number` fills the ~32 real DOMES.
 
 **Behaviour change**: as of this feature, `receivers health <SID>` no
 longer silently writes to `stations.cfg`. Discrepancies are logged with

@@ -1,9 +1,8 @@
-"""EPOS MARKER NUMBER fallback tracks the RINEX version when no DOMES.
+"""EPOS MARKER NUMBER carries the IERS DOMES only, else the line is stripped.
 
-DOMES present → MARKER NUMBER is the DOMES. DOMES missing → the
-version-appropriate ID (9-char for R3, 4-char for R2), matching MARKER NAME —
-a station like ELEY (no IERS DOMES) otherwise got a bare 4-char MARKER NUMBER
-even in RINEX 3.
+DOMES present → MARKER NUMBER is the DOMES. DOMES missing → no MARKER NUMBER
+line at all (never the station id, which MARKER NAME already carries). A station
+like ELEY (no IERS DOMES) gets no MARKER NUMBER record in any RINEX version.
 """
 
 from pathlib import Path
@@ -34,17 +33,49 @@ def _finalize(tmp_path, sid, version, domes=""):
     return p
 
 
-def test_marker_number_r3_no_domes_is_nine_char(tmp_path):
+def _has_record(path: Path, label: str) -> bool:
+    return any(
+        line[60:80].strip() == label
+        for line in path.read_text(encoding="latin-1").splitlines()
+    )
+
+
+def test_marker_number_r3_no_domes_is_absent(tmp_path):
     p = _finalize(tmp_path, "ELEY", 3)
-    assert _record(p, "MARKER NUMBER") == "ELEY00ISL"
-    # MARKER NAME is 9-char too — the fallback now matches its width.
+    assert not _has_record(p, "MARKER NUMBER")
+    # MARKER NAME is still written (the 9-char ID).
     assert _record(p, "MARKER NAME") == "ELEY00ISL"
 
 
-def test_marker_number_r2_no_domes_is_four_char(tmp_path):
+def test_marker_number_r2_no_domes_is_absent(tmp_path):
     p = _finalize(tmp_path, "ELEY", 2)
-    assert _record(p, "MARKER NUMBER") == "ELEY"
+    assert not _has_record(p, "MARKER NUMBER")
     assert _record(p, "MARKER NAME") == "ELEY"
+
+
+def test_marker_number_non_domes_value_is_stripped(tmp_path):
+    # A 4-char id passed as domes is not a real DOMES → no MARKER NUMBER line.
+    p = _finalize(tmp_path, "ELEY", 3, domes="ELEY")
+    assert not _has_record(p, "MARKER NUMBER")
+
+
+def test_existing_marker_number_line_stripped_when_no_domes(tmp_path):
+    # A pre-existing MARKER NUMBER line (e.g. from the decoder) is removed when
+    # the station has no DOMES — "actively strip", not "leave whatever's there".
+    p = tmp_path / "eley.rnx"
+    p.write_text(
+        "     3.04           OBSERVATION DATA    M                   "
+        "RINEX VERSION / TYPE\n"
+        "ELEY                                                        "
+        "MARKER NUMBER\n"
+        "                                                            "
+        "END OF HEADER\n",
+        encoding="latin-1",
+    )
+    finalize_epos_header(
+        p, "ELEY", 3, country_code="ISL", monument_number="00", domes=""
+    )
+    assert not _has_record(p, "MARKER NUMBER")
 
 
 def test_marker_number_uses_domes_when_present(tmp_path):

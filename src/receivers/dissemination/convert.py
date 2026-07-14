@@ -139,7 +139,8 @@ def _is_hatanaka(name: str) -> bool:
 # header fix already moves the fingerprint, so it does not need a bump.)
 #   v1: original EPOS header finalization
 #   v2: MARKER NUMBER no-DOMES fallback → version-aware (9-char R3 / 4-char R2)
-HEADER_SCHEMA_VERSION = 2
+#   v3: MARKER NUMBER = IERS DOMES only; no DOMES → strip the line (no id fallback)
+HEADER_SCHEMA_VERSION = 3
 
 
 def cache_key(
@@ -664,12 +665,14 @@ def epos_marker_name(
     return f"{sid}{mon}{country_code.upper()}" if version >= 3 else sid
 
 
-def _set_header_records(rinex_file: Path, records: dict[str, str]) -> None:
+def _set_header_records(rinex_file: Path, records: dict[str, str | None]) -> None:
     """Update-or-insert fixed-column header records ``{label: value(cols 1-60)}``.
 
     RINEX header lines are ``value[1:60] + label[61:80]``. Existing records with a
     matching label are rewritten; any not present are inserted just before
-    ``END OF HEADER`` (in dict order). Idempotent.
+    ``END OF HEADER`` (in dict order). A value of ``None`` means **strip**: an
+    existing line with that label is removed and none is inserted (used for
+    MARKER NUMBER on a station with no IERS DOMES). Idempotent.
 
     Uses latin-1 for the whole-file round-trip: it is byte-preserving (0-255 map
     bijectively to U+0000-00FF), so a stray non-ASCII byte in the OBSERVATION data
@@ -685,14 +688,17 @@ def _set_header_records(rinex_file: Path, records: dict[str, str]) -> None:
         label = line[60:80].strip() if len(line) >= 61 else ""
         if label == "END OF HEADER":
             for lbl, val in records.items():
-                if lbl not in applied:
+                if lbl not in applied and val is not None:
                     out.append(f"{val:<60}{lbl:<20}\n")
                     applied.add(lbl)
             out.append(line)
             continue
         if label in records and label not in applied:
-            out.append(f"{records[label]:<60}{label:<20}\n")
+            val = records[label]
             applied.add(label)
+            if val is None:  # strip: drop this line, insert nothing
+                continue
+            out.append(f"{val:<60}{label:<20}\n")
             continue
         out.append(line)
     rinex_file.write_text("".join(out), encoding="latin-1")
@@ -712,25 +718,24 @@ def finalize_epos_header(
     """Write the EPOS-mandated marker / observer header records (4.1.7).
 
     - MARKER NAME  ← 9-char ID (R3) / 4-char (R2)
-    - MARKER NUMBER ← DOMES when known, else the version-appropriate ID
-      (9-char for R3, 4-char for R2 — same width as MARKER NAME). A station
-      with no IERS DOMES (e.g. ELEY) otherwise got a bare 4-char MARKER NUMBER
-      even in RINEX 3; matching MARKER NAME's width keeps the no-DOMES fallback
-      consistent across versions (R2 already did this).
+    - MARKER NUMBER ← IERS DOMES only. A station with no DOMES (e.g. ELEY) gets
+      **no** MARKER NUMBER line (the ``None`` = strip signal to
+      :func:`_set_header_records`) — never the station id, which MARKER NAME
+      already carries.
     - OBSERVER / AGENCY ← generic team name + agency (never personal initials)
 
     Best-effort like :func:`set_header_from_tos`; the QC gate is the safety net.
     """
     try:
+        from tostools.rinex import domes_or_skip
+
         sid = station.upper()
-        records = {
+        records: dict[str, str | None] = {
             "MARKER NAME": epos_marker_name(
                 sid, version, country_code, monument_number
             ),
-            "MARKER NUMBER": (
-                domes.strip()
-                or epos_marker_name(sid, version, country_code, monument_number)
-            ),
+            # DOMES when real, else None → strip the line (no id fallback).
+            "MARKER NUMBER": domes_or_skip(domes) or None,
         }
         if observer or agency:
             records["OBSERVER / AGENCY"] = f"{observer:<20}{agency:<40}"

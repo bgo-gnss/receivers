@@ -86,6 +86,27 @@ def test_domes_only_discrepancy_is_fixed(monkeypatch, tmp_path):
     assert result["changes"]["MARKER NUMBER"] == ("RHOF", "10216M001")
 
 
+def test_no_domes_strip_routes_marker_number_to_corrector(monkeypatch, tmp_path):
+    # New policy path: a no-DOMES station whose archived header still carries a
+    # legacy 4-char MARKER NUMBER. The validator flags it with an empty "tos"
+    # (display-only strip flag); header_fix must still route MARKER NUMBER into
+    # the corrector's only_fields, where the corrector recomputes the real strip.
+    comparison = {
+        "discrepancies": {"domes": {"rinex": "RHOF", "tos": ""}},
+        "corrections": {"MARKER NUMBER": ""},
+    }
+    result, captured = _drive(
+        monkeypatch,
+        tmp_path,
+        comparison=comparison,
+        session={"marker": "RHOF", "domes": ""},  # no DOMES
+    )
+    assert result["fixed"] is True
+    assert captured["only_fields"] == {"MARKER NUMBER"}
+    # the strip is recorded as a legacy-id → (empty) transition for the summary
+    assert result["changes"]["MARKER NUMBER"] == ("RHOF", "")
+
+
 def test_domes_and_height_fixed_in_one_pass(monkeypatch, tmp_path):
     comparison = {
         "discrepancies": {
