@@ -48,7 +48,20 @@ def rsync_tree(
     src = f"{str(src_dir).rstrip('/')}/"
     base = dest_base.rstrip("/")
     dest = f"{ssh_target}:{base}/" if ssh_target else f"{base}/"
-    cmd = ["rsync", "-a", "--itemize-changes", "--mkpath"]
+    # --chmod=D755,F644 pins the DESTINATION perms regardless of the staging
+    # tree's umask-dependent modes. Without it, `rsync -a` (-p) stamps the portal
+    # dirs/files with whatever umask created the stage — a 0002-umask run leaves
+    # 775 dirs / 664 files, a 0022 run leaves 755/644 — so the portal perms drift
+    # per run. --no-owner/--no-group: the remote (epos) user can't chown anyway.
+    cmd = [
+        "rsync",
+        "-a",
+        "--chmod=D755,F644",
+        "--no-owner",
+        "--no-group",
+        "--itemize-changes",
+        "--mkpath",
+    ]
     if dry_run:
         cmd.append("--dry-run")
     cmd += [src, dest]

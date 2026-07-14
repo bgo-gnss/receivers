@@ -326,7 +326,17 @@ class EposDisseminate:
             f"{base.rstrip('/')}/{rel_dir}/" if rel_dir else base.rstrip("/") + "/"
         )
 
-        cmd = ["rsync", "-a", "--itemize-changes", "--mkpath"]
+        # --chmod=D755,F644 pins portal perms regardless of the source umask (see
+        # net_push.rsync_tree); --no-owner/--no-group: the epos user can't chown.
+        cmd = [
+            "rsync",
+            "-a",
+            "--chmod=D755,F644",
+            "--no-owner",
+            "--no-group",
+            "--itemize-changes",
+            "--mkpath",
+        ]
         if self.dry_run:
             cmd.append("--dry-run")
         if not self.target.host:

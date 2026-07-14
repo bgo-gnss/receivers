@@ -28,6 +28,30 @@ def test_rsync_tree_preserves_structure(tmp_path):
     assert stats["rc"] == 0
 
 
+def test_rsync_tree_pins_perms_dir_755_file_644(tmp_path):
+    # Regression: rsync -a alone stamps the destination with the SOURCE (umask-
+    # dependent) perms, so the portal dirs/files drifted (664 files, 775 dirs from
+    # 0002-umask runs). --chmod=D755,F644 must pin them regardless of source mode.
+    import os
+    import stat
+
+    src = tmp_path / "src"
+    d = src / "2011/jun/RHOF/15s_24hr/rinex"
+    d.mkdir(parents=True)
+    f = d / "RHOF1790.11D.Z"
+    f.write_text("obs")
+    os.chmod(d, 0o775)  # a 0002-umask-style dir
+    os.chmod(f, 0o664)  # a 0002-umask-style file
+
+    dest = tmp_path / "dest"
+    rsync_tree(src, str(dest))
+
+    landed_dir = dest / "2011/jun/RHOF/15s_24hr/rinex"
+    landed_file = landed_dir / "RHOF1790.11D.Z"
+    assert stat.S_IMODE(landed_dir.stat().st_mode) == 0o755
+    assert stat.S_IMODE(landed_file.stat().st_mode) == 0o644
+
+
 def test_batchpush_flushes_every_n_then_remainder(tmp_path):
     dest = tmp_path / "dest"
     files = tmp_path / "files"
