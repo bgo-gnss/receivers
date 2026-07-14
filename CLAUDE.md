@@ -472,12 +472,16 @@ uncommitted laptop edit is invisible to the server (the 30S sync.yaml block sat
 uncommitted for a day — exactly this failure mode). The sync timer
 (`gps-config-sync.timer`) propagates within ~10 minutes; install.sh Phase 5 deploys
 the full set (`stations.cfg receivers.cfg scheduler.yaml database.cfg icinga.cfg
-station_areas.yaml sync.yaml agencies.yaml`). Two credential files are gitignored
-per-host — `receivers.cfg` and `database.cfg` — for those, edit the file inside the
-SERVER'S gps-config-data clone (`~/git/gps-config-data/`, still the deploy source),
-plus the committed `.template`/`environments/*.env` counterparts so fresh installs
-match. Note: install.sh sed-patches `data_prepath`/`tmp_dir` in receivers.cfg at
-deploy time — path-policy changes belong in install.sh, not only in the cfg.
+station_areas.yaml sync.yaml agencies.yaml`). **`receivers.cfg` is now tracked**
+(2026-07-14): the repo is internal-only and its creds are shared/non-sensitive, so
+it's a normal committed file like the others — canonical = rek-d01 production config,
+propagated by the sync timer. **Only `database.cfg` stays gitignored per-host** (edit it
+inside the SERVER'S gps-config-data clone `~/git/gps-config-data/`, plus the committed
+`.template`/`environments/*.env` so fresh installs match). Note: install.sh sed-patches
+`data_prepath`/`tmp_dir` in receivers.cfg at deploy time; because the tracked canonical
+now carries the production `data_prepath` (`/mnt/data/gpsdata/`), that patch is a no-op on
+rek-d01 — keep the canonical's path at the production value or the raw-cp sync would push a
+bad path to gpsops.
 
 **Finalizing cfg from TOS — `cfg ... --global`**: the cfg verbs write the **local/deployed**
 config by default; `--global` instead writes the **gps-config-data repo** (resolved from
