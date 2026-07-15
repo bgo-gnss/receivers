@@ -14,10 +14,32 @@ import json
 import logging
 import logging.handlers
 import os
+import re
 import sys
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+# 4-character uppercase station IDs used throughout the GNSS network
+# (e.g. RHOF, ELEY). Duplicated from ``logging_config._STATION_ID_RE`` to
+# keep the import surface clean — ``logging_config`` imports THIS module,
+# so importing it back would be circular.
+_STATION_ID_RE = re.compile(r"^[A-Z][A-Z0-9]{3}$")
+
+
+def _station_from_logger_name(name: str) -> Optional[str]:
+    """Return the 4-char station id encoded in a ``receivers.*`` logger
+    name, or ``None``.
+
+    The station is the LAST dotted component *only when it matches the
+    station-id pattern* — so ``receivers.download.RHOF`` → ``"RHOF"`` but
+    ``receivers.scheduler.reconciler`` → ``None``. The old
+    ``record.name.count('.') >= 2`` heuristic wrongly treated any
+    3+-segment logger's tail as a station, mislabelling
+    ``reconciler`` / ``db_writer`` / ``health_query`` as station ids.
+    """
+    tail = name.rsplit(".", 1)[-1]
+    return tail if _STATION_ID_RE.match(tail) else None
 
 
 class ProductionFormatter(logging.Formatter):
@@ -32,8 +54,9 @@ class ProductionFormatter(logging.Formatter):
 
         # Extract station ID from logger name if available
         station_id = ""
-        if "receivers." in record.name and record.name.count(".") >= 2:
-            station_id = f"[{record.name.split('.')[-1]}] "
+        station = _station_from_logger_name(record.name)
+        if station:
+            station_id = f"[{station}] "
         elif hasattr(record, "station_id"):
             station_id = f"[{record.station_id}] "
 
@@ -69,7 +92,10 @@ class JSONFormatter(logging.Formatter):
 
     def format(self, record):
         log_entry = {
-            "timestamp": datetime.fromtimestamp(record.created).isoformat(),
+            # Explicit UTC — record.created is a POSIX timestamp; the old
+            # bare fromtimestamp() emitted a local-naive ISO string with no
+            # offset, which Loki/Grafana then misread as UTC.
+            "timestamp": datetime.fromtimestamp(record.created, tz=UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -78,8 +104,9 @@ class JSONFormatter(logging.Formatter):
         }
 
         # Add station context if available
-        if "receivers." in record.name and record.name.count(".") >= 2:
-            log_entry["station_id"] = record.name.split(".")[-1]
+        station = _station_from_logger_name(record.name)
+        if station:
+            log_entry["station_id"] = station
         elif hasattr(record, "station_id"):
             log_entry["station_id"] = record.station_id
 

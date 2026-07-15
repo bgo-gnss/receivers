@@ -84,6 +84,82 @@ class TestFormatterExceptionInfo:
         assert "exc_info" not in json.loads(JSONFormatter().format(plain))
 
 
+class TestStationExtractionAndTimestamp:
+    """JSONFormatter/ProductionFormatter must (a) tag only real 4-char
+    station ids from the logger name — not any 3+-segment tail — and
+    (b) emit an explicit-UTC timestamp.
+
+    Regression: the old ``record.name.count('.') >= 2`` heuristic
+    mislabelled ``receivers.scheduler.reconciler`` as station
+    "reconciler"; the old bare ``fromtimestamp()`` emitted a local-naive
+    ISO string Loki/Grafana would misread as UTC.
+    """
+
+    @staticmethod
+    def _record(name):
+        import logging
+
+        return logging.getLogger(name).makeRecord(
+            name, logging.INFO, "x.py", 1, "msg", (), None
+        )
+
+    def test_station_logger_gets_station_id(self):
+        import json
+
+        from receivers.base.production_logging import JSONFormatter
+
+        entry = json.loads(
+            JSONFormatter().format(self._record("receivers.download.RHOF"))
+        )
+        assert entry["station_id"] == "RHOF"
+
+    def test_module_logger_has_no_station_id(self):
+        import json
+
+        from receivers.base.production_logging import JSONFormatter
+
+        for name in (
+            "receivers.scheduler.reconciler",
+            "receivers.health.db_writer",
+            "receivers.cli.health_query",
+        ):
+            entry = json.loads(JSONFormatter().format(self._record(name)))
+            assert "station_id" not in entry, name
+
+    def test_explicit_station_id_attr_still_used(self):
+        import json
+        import logging
+
+        from receivers.base.production_logging import JSONFormatter
+
+        rec = logging.getLogger("receivers.scheduler").makeRecord(
+            "receivers.scheduler", logging.INFO, "x.py", 1, "m", (), None
+        )
+        rec.station_id = "ELEY"
+        entry = json.loads(JSONFormatter().format(rec))
+        assert entry["station_id"] == "ELEY"
+
+    def test_timestamp_is_utc_aware(self):
+        import json
+        from datetime import datetime
+
+        from receivers.base.production_logging import JSONFormatter
+
+        entry = json.loads(JSONFormatter().format(self._record("receivers.x")))
+        ts = datetime.fromisoformat(entry["timestamp"])
+        assert ts.utcoffset() is not None  # tz-aware, not local-naive
+        assert ts.utcoffset().total_seconds() == 0  # UTC
+
+    def test_production_formatter_brackets_only_real_station(self):
+        from receivers.base.production_logging import ProductionFormatter
+
+        f = ProductionFormatter()
+        assert "[RHOF]" in f.format(self._record("receivers.download.RHOF"))
+        assert "[reconciler]" not in f.format(
+            self._record("receivers.scheduler.reconciler")
+        )
+
+
 class TestLogRotationGate:
     """The receivers.log / audit handler must self-rotate on dev but defer to
     logrotate on the server. Regression: an unconditional RotatingFileHandler
