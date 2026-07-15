@@ -22,6 +22,13 @@ def get_connection(
     Uses DatabaseConnectionFactory for connection params with optional
     host override for pointing at different servers.
 
+    When ``host_override`` targets the configured ``mirror_host``, the
+    connection uses that host's declared identity (``mirror_user`` + its
+    ``~/.pgpass`` credential), NOT the primary user — so a ``--catalog-prod``
+    reindex reaches the mirror the same way the mirror writer does. Credential
+    resolution lives in :meth:`DatabaseConnectionFactory.get_connection_params_for_host`
+    (database.cfg is the single source of truth for per-host access).
+
     Args:
         host_override: Override the configured host (e.g., 'pgdev.vedur.is').
         database: Override the database name (default: gps_health).
@@ -33,24 +40,14 @@ def get_connection(
         ImportError: If psycopg2 is not installed.
         psycopg2.OperationalError: If connection fails.
     """
-    import os
-
     from ..health.database_factory import DatabaseConnectionFactory
 
     if host_override:
-        # Temporarily set env var to override host
-        old_host = os.environ.get("POSTGRES_HOST")
-        os.environ["POSTGRES_HOST"] = host_override
-        try:
-            conn = DatabaseConnectionFactory.get_connection(
-                database=database or "gps_health"
-            )
-        finally:
-            if old_host is not None:
-                os.environ["POSTGRES_HOST"] = old_host
-            else:
-                os.environ.pop("POSTGRES_HOST", None)
-        return conn
+        # Single direct connection to the specific host, resolving that
+        # host's credentials from database.cfg (mirror_host → mirror_user).
+        return DatabaseConnectionFactory.connect_to_host(
+            host_override, database=database or "gps_health"
+        )
 
     return DatabaseConnectionFactory.get_connection(database=database or "gps_health")
 

@@ -146,6 +146,7 @@ def _load_config_file() -> Dict[str, str]:
             "password",
             "mirror_host",
             "mirror_user",
+            "mirror_password",
         ):
             if parser.has_option("postgresql", key):
                 result[key] = parser.get("postgresql", key)
@@ -349,41 +350,86 @@ class DatabaseConnectionFactory:
         }
 
     @classmethod
-    def _build_mirror_params(
-        cls, database: Optional[str] = None
-    ) -> Optional[tuple]:
+    def get_connection_params_for_host(
+        cls, host: Optional[str], database: Optional[str] = None
+    ) -> Dict[str, str]:
+        """Resolve connection params for a SPECIFIC host.
+
+        ``database.cfg`` is the single source of truth for *how each host is
+        reached*, so every code path that targets a particular server — the
+        mirror writer, a ``--catalog-prod`` reindex, a CLI ``host_override`` —
+        resolves the same credentials for the same host, with no ambiguity:
+
+        * ``host`` is the primary ``[postgresql] host`` (or ``None``) →
+          primary ``user`` / ``password``.
+        * ``host`` is the configured ``mirror_host`` → ``mirror_user``
+          (+ ``mirror_password`` if set, else the primary password is dropped
+          so libpq consults ``~/.pgpass`` — the conventional way to supply a
+          separate mirror credential without checking it in).
+        * ``host`` is neither → primary credentials with the host swapped,
+          plus a WARNING: that host's access identity is not declared in
+          database.cfg, so it is a guess.
+        """
+        params = cls.get_connection_params(database)
+        if not host or host == params["host"]:
+            return params
+
+        cfg = _load_config_file()
+        if host == cfg.get("mirror_host"):
+            host_params = {**params, "host": host}
+            mirror_user = cfg.get("mirror_user")
+            if mirror_user:
+                host_params["user"] = mirror_user
+            mirror_password = cfg.get("mirror_password")
+            if mirror_password is not None:
+                host_params["password"] = mirror_password
+            elif mirror_user and mirror_user != params.get("user"):
+                # Primary's password is meaningless for a different user on a
+                # different server — drop it so ~/.pgpass is consulted.
+                host_params.pop("password", None)
+            return host_params
+
+        logger.warning(
+            "get_connection_params_for_host: %s is neither the primary nor the "
+            "mirror_host in database.cfg — falling back to primary credentials "
+            "(user=%s). Its access identity is not declared; add it as "
+            "mirror_host (or extend the config) to make this unambiguous.",
+            host,
+            params.get("user"),
+        )
+        return {**params, "host": host}
+
+    @classmethod
+    def connect_to_host(cls, host: str, database: Optional[str] = None) -> Any:
+        """Open a single (non-mirrored) connection to a specific host, using
+        that host's database.cfg-declared credentials.
+
+        Used by CLI ``host_override`` paths (e.g. per-catalog-host reindex)
+        that must target one server explicitly — no dual-write wrapper.
+        """
+        import psycopg2
+
+        return psycopg2.connect(**cls.get_connection_params_for_host(host, database))
+
+    @classmethod
+    def _build_mirror_params(cls, database: Optional[str] = None) -> Optional[tuple]:
         """Resolve (mirror_host, mirror_params) or None if no mirror configured.
 
         Shared by both the direct mirror connection (``_get_mirror_connection``)
         and the mirror pool.  Returns None when ``mirror_host`` is unset or would
-        mirror to the primary host itself.
+        mirror to the primary host itself. Credential resolution is delegated to
+        :meth:`get_connection_params_for_host` so the mirror writer and every
+        ``host_override`` path agree on how ``mirror_host`` is reached.
         """
         cfg = _load_config_file()
         mirror_host = cfg.get("mirror_host")
         if not mirror_host:
             return None
 
-        params = cls.get_connection_params(database)
-        if mirror_host == params["host"]:
+        if mirror_host == cls.get_connection_params(database)["host"]:
             return None  # Don't mirror to self
 
-        mirror_params = {**params, "host": mirror_host}
-        mirror_user = cfg.get("mirror_user")
-        if mirror_user:
-            mirror_params["user"] = mirror_user
-        # Mirror can use a different auth mechanism (e.g., LDAP) than the
-        # primary. If a mirror_password is provided, use it; otherwise drop
-        # the primary's password so libpq falls back to ~/.pgpass (the
-        # conventional way to supply a separate mirror credential without
-        # putting it in the checked-in config).
-        mirror_password = cfg.get("mirror_password")
-        if mirror_password is not None:
-            mirror_params["password"] = mirror_password
-        elif mirror_user and mirror_user != params.get("user"):
-            # Primary's password is meaningless for a different user on a
-            # different server — drop it so ~/.pgpass is consulted.
-            mirror_params.pop("password", None)
-        return mirror_host, mirror_params
+        return mirror_host, cls.get_connection_params_for_host(mirror_host, database)
 
     @classmethod
     def _get_mirror_connection(cls, database: Optional[str] = None) -> Optional[Any]:
@@ -427,9 +473,7 @@ class DatabaseConnectionFactory:
                     from psycopg2 import pool as _pg_pool
 
                     params = cls.get_connection_params(database)
-                    pool = _pg_pool.ThreadedConnectionPool(
-                        1, _MAX_POOL_CONN, **params
-                    )
+                    pool = _pg_pool.ThreadedConnectionPool(1, _MAX_POOL_CONN, **params)
                     _primary_pools[key] = pool
         return pool
 

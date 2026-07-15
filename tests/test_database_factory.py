@@ -10,8 +10,8 @@ import pytest
 from receivers.health.database_factory import (
     _MAX_POOL_CONN,
     DatabaseConnectionFactory,
-    _DualConnection,
     _conn_semaphore,
+    _DualConnection,
 )
 
 
@@ -61,6 +61,81 @@ class TestGetConnectionParams:
             with patch.dict(os.environ, {}, clear=True):
                 params = DatabaseConnectionFactory.get_connection_params()
                 assert params["user"] == "postgres"
+
+
+class TestGetConnectionParamsForHost:
+    """Per-host credential resolution — database.cfg is the single source of
+    truth for HOW each host is reached.
+
+    Regression: the ``--catalog-prod`` reindex used to reach the mirror_host
+    (pgdev) with the PRIMARY user, so it authenticated as gpsops and pgdev's
+    LDAP rejected it — while the config already declared mirror_user=bgo.
+    """
+
+    _CFG = {
+        "host": "localhost",
+        "port": "5432",
+        "database": "gps_health",
+        "user": "gpsops",
+        "password": "primarypass",
+        "mirror_host": "pgdev.vedur.is",
+        "mirror_user": "bgo",
+    }
+
+    def _resolve(self, host, cfg=None):
+        with patch(
+            "receivers.health.database_factory._load_config_file",
+            return_value=cfg or self._CFG,
+        ):
+            with patch.dict(os.environ, {}, clear=True):
+                return DatabaseConnectionFactory.get_connection_params_for_host(host)
+
+    def test_none_host_is_primary(self):
+        p = self._resolve(None)
+        assert p["host"] == "localhost"
+        assert p["user"] == "gpsops"
+        assert p["password"] == "primarypass"
+
+    def test_primary_host_is_primary(self):
+        p = self._resolve("localhost")
+        assert p["user"] == "gpsops"
+        assert p["password"] == "primarypass"
+
+    def test_mirror_host_uses_mirror_user_and_drops_password(self):
+        # The whole fix: pgdev → connect as bgo, password dropped so libpq
+        # consults ~/.pgpass (which carries the bgo@pgdev credential).
+        p = self._resolve("pgdev.vedur.is")
+        assert p["host"] == "pgdev.vedur.is"
+        assert p["user"] == "bgo"
+        assert "password" not in p
+
+    def test_mirror_password_used_when_set(self):
+        cfg = {**self._CFG, "mirror_password": "bgopass"}
+        p = self._resolve("pgdev.vedur.is", cfg=cfg)
+        assert p["user"] == "bgo"
+        assert p["password"] == "bgopass"
+
+    def test_undeclared_host_falls_back_to_primary_with_warning(self, caplog):
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            p = self._resolve("some.other.host")
+        assert p["host"] == "some.other.host"
+        assert p["user"] == "gpsops"  # primary — the only credential we have
+        assert any("not declared" in r.message for r in caplog.records)
+
+    @patch("psycopg2.connect")
+    def test_connect_to_host_uses_resolved_params(self, mock_connect):
+        with patch(
+            "receivers.health.database_factory._load_config_file",
+            return_value=self._CFG,
+        ):
+            with patch.dict(os.environ, {}, clear=True):
+                DatabaseConnectionFactory.connect_to_host("pgdev.vedur.is")
+        kwargs = mock_connect.call_args.kwargs
+        assert kwargs["host"] == "pgdev.vedur.is"
+        assert kwargs["user"] == "bgo"
+        assert "password" not in kwargs
 
 
 class TestGetConnection:
@@ -151,8 +226,10 @@ class TestConnectionContextManager:
         """Commits on success and returns the connection to the pool."""
         mock_conn = _live_conn()
         pool = _FakePool([mock_conn])
-        with patch.object(DatabaseConnectionFactory, "_primary_pool", return_value=pool), \
-             patch.object(DatabaseConnectionFactory, "_mirror_pool", return_value=None):
+        with (
+            patch.object(DatabaseConnectionFactory, "_primary_pool", return_value=pool),
+            patch.object(DatabaseConnectionFactory, "_mirror_pool", return_value=None),
+        ):
             with DatabaseConnectionFactory.connection() as conn:
                 assert conn is mock_conn
             mock_conn.commit.assert_called_once()
@@ -164,8 +241,10 @@ class TestConnectionContextManager:
         """Rolls back and DISCARDS (close=True) a connection whose op raised."""
         mock_conn = _live_conn()
         pool = _FakePool([mock_conn])
-        with patch.object(DatabaseConnectionFactory, "_primary_pool", return_value=pool), \
-             patch.object(DatabaseConnectionFactory, "_mirror_pool", return_value=None):
+        with (
+            patch.object(DatabaseConnectionFactory, "_primary_pool", return_value=pool),
+            patch.object(DatabaseConnectionFactory, "_mirror_pool", return_value=None),
+        ):
             with pytest.raises(ValueError):
                 with DatabaseConnectionFactory.connection():
                     raise ValueError("test error")
@@ -179,8 +258,10 @@ class TestConnectionContextManager:
         mock_conn = _live_conn()
         mock_conn.commit.side_effect = Exception("commit failed")
         pool = _FakePool([mock_conn])
-        with patch.object(DatabaseConnectionFactory, "_primary_pool", return_value=pool), \
-             patch.object(DatabaseConnectionFactory, "_mirror_pool", return_value=None):
+        with (
+            patch.object(DatabaseConnectionFactory, "_primary_pool", return_value=pool),
+            patch.object(DatabaseConnectionFactory, "_mirror_pool", return_value=None),
+        ):
             with pytest.raises(Exception):
                 with DatabaseConnectionFactory.connection():
                     pass
@@ -191,8 +272,10 @@ class TestConnectionContextManager:
         dead = _dead_conn()
         live = _live_conn()
         pool = _FakePool([dead, live])
-        with patch.object(DatabaseConnectionFactory, "_primary_pool", return_value=pool), \
-             patch.object(DatabaseConnectionFactory, "_mirror_pool", return_value=None):
+        with (
+            patch.object(DatabaseConnectionFactory, "_primary_pool", return_value=pool),
+            patch.object(DatabaseConnectionFactory, "_mirror_pool", return_value=None),
+        ):
             with DatabaseConnectionFactory.connection() as conn:
                 assert conn is live
             # dead one was closed-discarded during checkout
@@ -206,12 +289,16 @@ class TestConnectionContextManager:
         mirror = _live_conn()
         ppool = _FakePool([primary])
         mpool = _FakePool([mirror])
-        with patch.object(DatabaseConnectionFactory, "_primary_pool", return_value=ppool), \
-             patch.object(DatabaseConnectionFactory, "_mirror_pool", return_value=mpool), \
-             patch(
-                 "receivers.health.database_factory._load_config_file",
-                 return_value={"mirror_host": "mirror.example.com"},
-             ):
+        with (
+            patch.object(
+                DatabaseConnectionFactory, "_primary_pool", return_value=ppool
+            ),
+            patch.object(DatabaseConnectionFactory, "_mirror_pool", return_value=mpool),
+            patch(
+                "receivers.health.database_factory._load_config_file",
+                return_value={"mirror_host": "mirror.example.com"},
+            ),
+        ):
             with DatabaseConnectionFactory.connection() as conn:
                 assert isinstance(conn, _DualConnection)
             assert ppool.returned == [(primary, False)]
@@ -220,10 +307,12 @@ class TestConnectionContextManager:
     def test_connection_string_bypasses_pool(self):
         """A full-DSN connection is not pooled — opened and closed directly."""
         mock_conn = MagicMock()
-        with patch.object(
-            DatabaseConnectionFactory, "get_connection", return_value=mock_conn
-        ) as mock_get, \
-             patch.object(DatabaseConnectionFactory, "_primary_pool") as mock_pool:
+        with (
+            patch.object(
+                DatabaseConnectionFactory, "get_connection", return_value=mock_conn
+            ) as mock_get,
+            patch.object(DatabaseConnectionFactory, "_primary_pool") as mock_pool,
+        ):
             with DatabaseConnectionFactory.connection(
                 connection_string="postgresql://u:p@h/db"
             ) as conn:
@@ -244,8 +333,10 @@ class TestConnectionSemaphore:
     def test_semaphore_released_on_success(self):
         """Semaphore is released after successful context manager exit."""
         pool = _FakePool([_live_conn()])
-        with patch.object(DatabaseConnectionFactory, "_primary_pool", return_value=pool), \
-             patch.object(DatabaseConnectionFactory, "_mirror_pool", return_value=None):
+        with (
+            patch.object(DatabaseConnectionFactory, "_primary_pool", return_value=pool),
+            patch.object(DatabaseConnectionFactory, "_mirror_pool", return_value=None),
+        ):
             with DatabaseConnectionFactory.connection():
                 pass
         # If semaphore leaked, subsequent acquires would eventually block.
@@ -255,8 +346,10 @@ class TestConnectionSemaphore:
     def test_semaphore_released_on_exception(self):
         """Semaphore is released even when the caller raises."""
         pool = _FakePool([_live_conn()])
-        with patch.object(DatabaseConnectionFactory, "_primary_pool", return_value=pool), \
-             patch.object(DatabaseConnectionFactory, "_mirror_pool", return_value=None):
+        with (
+            patch.object(DatabaseConnectionFactory, "_primary_pool", return_value=pool),
+            patch.object(DatabaseConnectionFactory, "_mirror_pool", return_value=None),
+        ):
             with pytest.raises(RuntimeError):
                 with DatabaseConnectionFactory.connection():
                     raise RuntimeError("boom")
