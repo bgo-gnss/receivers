@@ -227,6 +227,58 @@ def test_reindex_files_multi_records_per_host_failure(monkeypatch):
     assert results["bad.host"] is None  # failure surfaced, not swallowed
 
 
+class _FakeCursor:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, *a, **kw):
+        return None
+
+    def fetchone(self):
+        return (1,)
+
+
+class _FakeConn:
+    closed = False
+
+    def cursor(self):
+        return _FakeCursor()
+
+    def close(self):
+        self.closed = True
+
+
+def test_preflight_all_reachable(monkeypatch):
+    """Every host SELECT 1s cleanly → all-None (no errors), None host → localhost."""
+    import receivers.archive.reindex as rx
+
+    monkeypatch.setattr(
+        "receivers.db.connection.get_connection",
+        lambda host_override=None: _FakeConn(),
+    )
+    res = rx.preflight_catalog_hosts(["pgdev.vedur.is", None])
+    assert res == {"pgdev.vedur.is": None, "localhost": None}
+
+
+def test_preflight_records_unreachable(monkeypatch):
+    """An unreachable host is reported (error string), a good one stays None."""
+    import receivers.archive.reindex as rx
+
+    def _conn(host_override=None):
+        if host_override == "bad.host":
+            raise OSError("connection refused")
+        return _FakeConn()
+
+    monkeypatch.setattr("receivers.db.connection.get_connection", _conn)
+    res = rx.preflight_catalog_hosts(["good.host", "bad.host"])
+    assert res["good.host"] is None
+    assert res["bad.host"] is not None
+    assert "refused" in res["bad.host"]
+
+
 def test_rinex_org_catalogs_as_distinct_row(db_conn, tmp_path):
     # A rinex_org preservation shares the rinex file's canonical_key but parses
     # to file_category='rinex_org' → a SEPARATE catalog row, no collision.

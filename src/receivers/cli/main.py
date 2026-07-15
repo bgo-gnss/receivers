@@ -5725,6 +5725,62 @@ def cmd_rinex(args) -> int:
             _flush_every = max(1, int(getattr(args, "push_batch", 100) or 100))
             _push_dest_display = _adest.rstrip("/") + "/"
 
+            # Catalog connectivity preflight (todo #71a). Each batch flush
+            # reindexes EVERY [archive] catalog_hosts entry; an unreachable host
+            # otherwise only shows up as a per-batch "catalogs may DIVERGE"
+            # warning, so a multi-hour run finishes "successfully" while the
+            # catalogs silently drift (rek-d01 ↔ pgdev diverged ~12 days
+            # unnoticed). Test every target UP FRONT and refuse to start a
+            # production run on any failure — fail fast, before any fixing.
+            _will_reindex = (
+                getattr(args, "reindex", False)
+                or getattr(args, "catalog_prod", False)
+                or bool(getattr(args, "catalog_host", None))
+            )
+            if _will_reindex:
+                from ..archive import (
+                    preflight_catalog_hosts,
+                    resolve_catalog_hosts,
+                )
+
+                _pf_prod = getattr(args, "catalog_prod", False)
+                _pf_hosts = resolve_catalog_hosts(
+                    getattr(args, "catalog_host", None), prod=_pf_prod
+                )
+                if _pf_prod and not _pf_hosts:
+                    logger.error(
+                        "--catalog-prod but [archive] catalog_hosts is unset in "
+                        "receivers.cfg — refusing to start (reindex would "
+                        "silently hit dev instead of prod)."
+                    )
+                    return 1
+                _pf = preflight_catalog_hosts(_pf_hosts)
+                _pf_bad = [h for h, err in _pf.items() if err is not None]
+                if _pf_bad:
+                    if getattr(args, "force", False):
+                        logger.warning(
+                            "catalog preflight FAILED for %s but -f/--force "
+                            "given — continuing anyway; catalogs MAY DIVERGE.",
+                            ", ".join(_pf_bad),
+                        )
+                    else:
+                        logger.error(
+                            "Refusing to start: %d/%d catalog host(s) "
+                            "unreachable (%s). Fix connectivity/credentials "
+                            "(database.cfg per-host creds; see todo #71), or "
+                            "pass -f/--force to run anyway (risks divergence).",
+                            len(_pf_bad),
+                            len(_pf_hosts),
+                            ", ".join(_pf_bad),
+                        )
+                        return 1
+                else:
+                    print(
+                        "   ✓ catalog preflight: "
+                        f"{len(_pf_hosts)} host(s) reachable "
+                        f"({', '.join(h or 'localhost' for h in _pf_hosts)})"
+                    )
+
             def _flush_fn(batch_details, _a=_adest, _n=_aname, _p=_adestpath):
                 return _flush_fixed_batch(
                     batch_details,
