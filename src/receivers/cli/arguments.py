@@ -1234,6 +1234,23 @@ Examples:
     )
 
     mode_group.add_argument(
+        "--correct-receiver",
+        action="store_true",
+        help="With --fix-headers: ALSO rewrite the REC # / TYPE / VERS header "
+        "from TOS (normally flag-only). For a station whose header is "
+        "known-stale — e.g. a BNC-stream 1Hz whose receiver label was frozen "
+        "across an instrument swap. NEVER use on a dual-instrument site "
+        "(the header correctly records a separate streaming box). Refuses a "
+        "multi-station run; use one station at a time.",
+    )
+    mode_group.add_argument(
+        "--correct-antenna",
+        action="store_true",
+        help="With --fix-headers: ALSO rewrite the ANT # / TYPE header from TOS "
+        "(normally flag-only). Same stale-header caveats as --correct-receiver.",
+    )
+
+    mode_group.add_argument(
         "--from-archive",
         action="store_true",
         help="Re-rinex mode: read raw from the persistent archive (the sync.yaml "

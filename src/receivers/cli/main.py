@@ -5624,6 +5624,29 @@ def cmd_rinex(args) -> int:
     if getattr(args, "fix_headers", False):
         from ..rinex.header_fix import fix_headers_station
 
+        # --correct-receiver/--correct-antenna: opt normally-flag-only hardware
+        # fields into rewriting. These OVERRIDE a deliberate safety guard (the
+        # header records the actual hardware at acquisition), so restrict them to
+        # a single, deliberately-chosen station — a multi-station/fleet run would
+        # corrupt any dual-instrument site, overwriting a correct streaming-box
+        # header with the TOS daily receiver.
+        _correct_hw = set()
+        if getattr(args, "correct_receiver", False):
+            _correct_hw.add("receiver")
+        if getattr(args, "correct_antenna", False):
+            _correct_hw.add("antenna")
+        _correct_hw = frozenset(_correct_hw)
+        if _correct_hw and len(stations) != 1:
+            logger.error(
+                "--correct-receiver/--correct-antenna rewrite hardware headers "
+                "and must target exactly ONE station (got %d: %s). Run them one "
+                "station at a time — a fleet run would corrupt dual-instrument "
+                "sites.",
+                len(stations),
+                ", ".join(stations),
+            )
+            return 1
+
         # Default source dir: read from sync.yaml's first dissemination target's
         # source_root (same field the EPOS disseminator uses). Falls back to
         # data_prepath from receivers.cfg if sync.yaml is unavailable.
@@ -5852,6 +5875,7 @@ def cmd_rinex(args) -> int:
                     flush_fn=_flush_fn,
                     flush_every=_flush_every,
                     push_dest=_push_dest_display,
+                    correct_hardware=_correct_hw,
                     loglevel=args.loglevel,
                     progress=h,
                 )
