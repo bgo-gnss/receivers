@@ -206,9 +206,15 @@ def fix_headers_in_file(
     source_base: Optional[Path] = None,
     session_type: Optional[str] = None,
     tos_cache: Any = None,
+    correct_hardware: frozenset = frozenset(),
     loglevel: int = logging.INFO,
 ) -> dict:
     """Fix the discrepant TOS header fields of one RINEX file.
+
+    ``correct_hardware`` opts specific normally-FLAG_ONLY hardware fields into
+    rewriting for this run — a subset of ``{"receiver", "antenna"}`` (see
+    ``--correct-receiver`` / ``--correct-antenna``). Empty (default) preserves
+    the safe behaviour: receiver/antenna are flagged, never rewritten.
 
     When ``work_dir`` is given, the file is COPIED to a mirror path under
     ``work_dir`` (preserving the archive-relative path from ``source_base``)
@@ -297,8 +303,25 @@ def fix_headers_in_file(
         "interval",
     }
 
-    correctable_keys = discrepancy_keys & _CORRECTABLE.keys()
-    flag_keys = discrepancy_keys & _FLAG_ONLY
+    # Opt-in promotion of normally FLAG_ONLY hardware fields. --correct-receiver
+    # / --correct-antenna move receiver/antenna into the correctable set for THIS
+    # run. The validator's normalized-identity gate still fires only on a REAL
+    # change (a naming variant like PolaRx5 ≡ SEPT POLARX5 is never rewritten).
+    # Use ONLY on a station whose header is known-stale — e.g. a BNC-stream 1Hz
+    # whose receiver label was frozen across an instrument swap — NEVER on a
+    # dual-instrument site, where the header correctly records a separate
+    # streaming box and TOS would overwrite it with the wrong (daily) receiver.
+    _HARDWARE_LABELS = {"receiver": "REC # / TYPE / VERS", "antenna": "ANT # / TYPE"}
+    correctable_map = dict(_CORRECTABLE)
+    flag_only = set(_FLAG_ONLY)
+    for _hw in correct_hardware:
+        _hw_label = _HARDWARE_LABELS.get(_hw)
+        if _hw_label:
+            correctable_map[_hw] = _hw_label
+            flag_only.discard(_hw)
+
+    correctable_keys = discrepancy_keys & correctable_map.keys()
+    flag_keys = discrepancy_keys & flag_only
 
     # Record flag-only mismatches for the run summary (never written).
     for key in sorted(flag_keys):
@@ -320,7 +343,7 @@ def fix_headers_in_file(
     # correction for.
     corrections_labels = set(comparison.get("corrections", {}).keys())
     discrepant_labels = {
-        _CORRECTABLE[key] for key in correctable_keys
+        correctable_map[key] for key in correctable_keys
     } & corrections_labels
     if not discrepant_labels:
         return result
@@ -328,7 +351,7 @@ def fix_headers_in_file(
     # Record the actual value transition (old header → TOS) per field.
     for key in correctable_keys:
         d = _disc.get(key)
-        label = _CORRECTABLE.get(key)
+        label = correctable_map.get(key)
         if d and label and label in discrepant_labels:
             result["changes"][label] = (d.get("rinex"), d.get("tos"))
 
@@ -537,10 +560,15 @@ def fix_headers_station(
     flush_fn: Any = None,
     flush_every: int = 0,
     push_dest: Optional[str] = None,
+    correct_hardware: frozenset = frozenset(),
     loglevel: int = logging.INFO,
     progress: Any = None,
 ) -> dict:
     """Run ``--fix-headers`` across a station's archived RINEX.
+
+    ``correct_hardware`` (a subset of ``{"receiver", "antenna"}``) opts those
+    normally-flag-only hardware fields into rewriting for this run — see
+    ``fix_headers_in_file``. Empty preserves the safe flag-only default.
 
     When ``work_dir`` is given, files are discovered from ``source_dir``
     (or ``data_prepath``) and COPIED to a mirror path under ``work_dir``
@@ -638,6 +666,7 @@ def fix_headers_station(
             source_base=source_base,
             session_type=session,
             tos_cache=tos_cache,
+            correct_hardware=correct_hardware,
             loglevel=loglevel,
         )
         summary["details"].append(r)

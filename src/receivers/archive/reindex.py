@@ -256,6 +256,49 @@ def reindex_files_multi(
     return results
 
 
+def preflight_catalog_hosts(
+    hosts: list,
+    *,
+    log: logging.Logger = logger,
+) -> dict:
+    """Test-connect to every catalog host BEFORE a long reindex run.
+
+    A ``--catalog-prod`` run reindexes EVERY ``[archive] catalog_hosts`` entry
+    per batch. When one host is unreachable, :func:`reindex_files_multi` only
+    surfaces it as a per-batch "catalogs may DIVERGE" warning — so a hours-long
+    fix-headers run completes "successfully" while the catalogs silently drift
+    (rek-d01 ↔ pgdev diverged ~12 days unnoticed). This preflight opens a real
+    connection and runs ``SELECT 1`` against each host so the caller can refuse
+    to start the run when any target is down, instead of discovering it batch by
+    batch. Idempotent and read-only.
+
+    Returns ``{host_label: None if reachable else error_string}`` in ``hosts``
+    order (``None`` host → the ``"localhost"`` default connection).
+    """
+    from ..db.connection import get_connection
+
+    results: dict = {}
+    for host in hosts:
+        label = host or "localhost"
+        conn = None
+        try:
+            conn = get_connection(host_override=host)
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                cur.fetchone()
+            results[label] = None
+        except Exception as exc:  # noqa: BLE001
+            log.error("catalog preflight: %s UNREACHABLE — %s", label, exc)
+            results[label] = str(exc)
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:  # noqa: BLE001
+                    pass
+    return results
+
+
 def _existing_sha(
     conn, storage_location: str, session_type: str, file_category: str, key: str
 ) -> Optional[str]:

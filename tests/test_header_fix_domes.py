@@ -19,7 +19,7 @@ from receivers.rinex import header_fix as hf
 from receivers.rinex import raw_presence as rp
 
 
-def _drive(monkeypatch, tmp_path, *, comparison, session=None):
+def _drive(monkeypatch, tmp_path, *, comparison, session=None, correct_hardware=frozenset()):
     """Run fix_headers_in_file on one real (empty) file with everything mocked.
 
     Returns (result, captured) where captured["only_fields"] is the set handed
@@ -66,6 +66,7 @@ def _drive(monkeypatch, tmp_path, *, comparison, session=None):
         observation_date=datetime(2010, 4, 1),
         tos_cache=tos_cache,
         session_type="15s_24hr",
+        correct_hardware=correct_hardware,
     )
     return result, captured
 
@@ -135,6 +136,45 @@ def test_receiver_only_discrepancy_is_flagged_not_written(monkeypatch, tmp_path)
     assert captured["only_fields"] is None  # corrector never called
     # but the mismatch IS recorded so the run summary can surface it
     assert result["flagged"]["receiver"] == ("x sn=1", "y sn=2")
+
+
+def test_correct_receiver_optin_writes_rec_type(monkeypatch, tmp_path):
+    # With correct_hardware={"receiver"} (the --correct-receiver opt-in) the
+    # normally flag-only receiver is promoted to correctable and routed to the
+    # corrector's only_fields as REC # / TYPE / VERS.
+    comparison = {
+        "discrepancies": {"receiver": {"rinex": "TRIMBLE NETRS", "tos": "SEPT POLARX5"}},
+        "corrections": {"REC # / TYPE / VERS": ["3001", "SEPT POLARX5", "5.5.0"]},
+    }
+    result, captured = _drive(
+        monkeypatch, tmp_path, comparison=comparison,
+        correct_hardware=frozenset({"receiver"}),
+    )
+    assert result["fixed"] is True
+    assert captured["only_fields"] == {"REC # / TYPE / VERS"}
+    assert result["changes"]["REC # / TYPE / VERS"] == ("TRIMBLE NETRS", "SEPT POLARX5")
+    # not left in the flag-only bucket
+    assert "receiver" not in result["flagged"]
+
+
+def test_correct_receiver_optin_leaves_antenna_flag_only(monkeypatch, tmp_path):
+    # Opting in ONLY receiver must not promote antenna — it stays flag-only.
+    comparison = {
+        "discrepancies": {
+            "receiver": {"rinex": "TRIMBLE NETRS", "tos": "SEPT POLARX5"},
+            "antenna": {"rinex": "OLD", "tos": "NEW"},
+        },
+        "corrections": {
+            "REC # / TYPE / VERS": ["3001", "SEPT POLARX5", "5.5.0"],
+            "ANT # / TYPE": ["999", "NEW"],
+        },
+    }
+    result, captured = _drive(
+        monkeypatch, tmp_path, comparison=comparison,
+        correct_hardware=frozenset({"receiver"}),
+    )
+    assert captured["only_fields"] == {"REC # / TYPE / VERS"}  # antenna NOT written
+    assert result["flagged"]["antenna"] == ("OLD", "NEW")
 
 
 def test_observer_agency_fixed_with_injected_value(monkeypatch, tmp_path):

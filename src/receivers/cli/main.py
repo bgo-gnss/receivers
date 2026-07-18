@@ -5624,6 +5624,29 @@ def cmd_rinex(args) -> int:
     if getattr(args, "fix_headers", False):
         from ..rinex.header_fix import fix_headers_station
 
+        # --correct-receiver/--correct-antenna: opt normally-flag-only hardware
+        # fields into rewriting. These OVERRIDE a deliberate safety guard (the
+        # header records the actual hardware at acquisition), so restrict them to
+        # a single, deliberately-chosen station — a multi-station/fleet run would
+        # corrupt any dual-instrument site, overwriting a correct streaming-box
+        # header with the TOS daily receiver.
+        _correct_hw = set()
+        if getattr(args, "correct_receiver", False):
+            _correct_hw.add("receiver")
+        if getattr(args, "correct_antenna", False):
+            _correct_hw.add("antenna")
+        _correct_hw = frozenset(_correct_hw)
+        if _correct_hw and len(stations) != 1:
+            logger.error(
+                "--correct-receiver/--correct-antenna rewrite hardware headers "
+                "and must target exactly ONE station (got %d: %s). Run them one "
+                "station at a time — a fleet run would corrupt dual-instrument "
+                "sites.",
+                len(stations),
+                ", ".join(stations),
+            )
+            return 1
+
         # Default source dir: read from sync.yaml's first dissemination target's
         # source_root (same field the EPOS disseminator uses). Falls back to
         # data_prepath from receivers.cfg if sync.yaml is unavailable.
@@ -5725,6 +5748,62 @@ def cmd_rinex(args) -> int:
             _flush_every = max(1, int(getattr(args, "push_batch", 100) or 100))
             _push_dest_display = _adest.rstrip("/") + "/"
 
+            # Catalog connectivity preflight (todo #71a). Each batch flush
+            # reindexes EVERY [archive] catalog_hosts entry; an unreachable host
+            # otherwise only shows up as a per-batch "catalogs may DIVERGE"
+            # warning, so a multi-hour run finishes "successfully" while the
+            # catalogs silently drift (rek-d01 ↔ pgdev diverged ~12 days
+            # unnoticed). Test every target UP FRONT and refuse to start a
+            # production run on any failure — fail fast, before any fixing.
+            _will_reindex = (
+                getattr(args, "reindex", False)
+                or getattr(args, "catalog_prod", False)
+                or bool(getattr(args, "catalog_host", None))
+            )
+            if _will_reindex:
+                from ..archive import (
+                    preflight_catalog_hosts,
+                    resolve_catalog_hosts,
+                )
+
+                _pf_prod = getattr(args, "catalog_prod", False)
+                _pf_hosts = resolve_catalog_hosts(
+                    getattr(args, "catalog_host", None), prod=_pf_prod
+                )
+                if _pf_prod and not _pf_hosts:
+                    logger.error(
+                        "--catalog-prod but [archive] catalog_hosts is unset in "
+                        "receivers.cfg — refusing to start (reindex would "
+                        "silently hit dev instead of prod)."
+                    )
+                    return 1
+                _pf = preflight_catalog_hosts(_pf_hosts)
+                _pf_bad = [h for h, err in _pf.items() if err is not None]
+                if _pf_bad:
+                    if getattr(args, "force", False):
+                        logger.warning(
+                            "catalog preflight FAILED for %s but -f/--force "
+                            "given — continuing anyway; catalogs MAY DIVERGE.",
+                            ", ".join(_pf_bad),
+                        )
+                    else:
+                        logger.error(
+                            "Refusing to start: %d/%d catalog host(s) "
+                            "unreachable (%s). Fix connectivity/credentials "
+                            "(database.cfg per-host creds; see todo #71), or "
+                            "pass -f/--force to run anyway (risks divergence).",
+                            len(_pf_bad),
+                            len(_pf_hosts),
+                            ", ".join(_pf_bad),
+                        )
+                        return 1
+                else:
+                    print(
+                        "   ✓ catalog preflight: "
+                        f"{len(_pf_hosts)} host(s) reachable "
+                        f"({', '.join(h or 'localhost' for h in _pf_hosts)})"
+                    )
+
             def _flush_fn(batch_details, _a=_adest, _n=_aname, _p=_adestpath):
                 return _flush_fixed_batch(
                     batch_details,
@@ -5796,6 +5875,7 @@ def cmd_rinex(args) -> int:
                     flush_fn=_flush_fn,
                     flush_every=_flush_every,
                     push_dest=_push_dest_display,
+                    correct_hardware=_correct_hw,
                     loglevel=args.loglevel,
                     progress=h,
                 )
