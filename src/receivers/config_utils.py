@@ -37,6 +37,56 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Passive-station schema (stations.cfg role/flag fields)
+# ---------------------------------------------------------------------------
+# station_role = active | passive marks data-source-only stations
+# (reference-frame ties / regional context from the GLOBK processing) that
+# IMO does not operate. Every consumer that enumerates ALL stations.cfg
+# sections must skip passive entries: scheduler load, DB seeder, cfg
+# reconcile. See gpslibrary/GLOBAL_SITES_investigation.md §4.4.
+#
+# NOTE: distinct from the pre-existing ``health_check = passive`` key
+# ("operated, but don't actively poll health") — unrelated concept.
+
+STATION_ROLE_PASSIVE = "passive"
+
+_BOOL_TRUE = {"true", "yes", "1", "on"}
+_BOOL_FALSE = {"false", "no", "0", "off"}
+
+
+def parse_station_role(value: Any) -> str:
+    """Normalize a raw stations.cfg ``station_role`` value.
+
+    Missing/empty → ``"active"`` (pre-schema status quo). Unknown values
+    also normalize to ``"active"`` (fail-open: a typo must never drop an
+    operated station from the schedulers; gps_parser validation flags it).
+    """
+    role = str(value or "").split("#")[0].strip().lower()
+    if role in ("active", STATION_ROLE_PASSIVE):
+        return role
+    if role:
+        logger.warning("Unknown station_role %r — treating as 'active'", value)
+    return "active"
+
+
+def is_passive_role(value: Any) -> bool:
+    """True when a raw ``station_role`` value marks a passive station."""
+    return parse_station_role(value) == STATION_ROLE_PASSIVE
+
+
+def _parse_cfg_bool(value: Any, default: bool) -> bool:
+    """Lenient bool parse for station flags (bad values → default + warn)."""
+    text = str(value or "").split("#")[0].strip().lower()
+    if not text:
+        return default
+    if text in _BOOL_TRUE:
+        return True
+    if text in _BOOL_FALSE:
+        return False
+    logger.warning("Not a boolean config value %r — using default %s", value, default)
+    return default
+
 
 def _learned_ftp_mode_override(station_id: str) -> Optional[str]:
     """Look up an open ftp_mode discrepancy for this station, return its observed value.
@@ -275,6 +325,12 @@ def get_station_config(
             # Station-level properties (unprefixed fields from stations.cfg)
             "power_type": raw_config.get("power_type", "battery"),
             "ntrip_importance": raw_config.get("ntrip_importance"),
+            # Passive-station schema (see module header): role + flags
+            "station_role": parse_station_role(raw_config.get("station_role")),
+            "is_reference_site": _parse_cfg_bool(
+                raw_config.get("is_reference_site"), False
+            ),
+            "is_in_iceland": _parse_cfg_bool(raw_config.get("is_in_iceland"), True),
             "station_status": raw_config.get("station_status"),
             "health_check": raw_config.get("health_check"),
             "station_owner": raw_config.get("station_owner"),

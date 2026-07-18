@@ -72,6 +72,34 @@ def _is_station_id(section: str) -> bool:
     return section not in EXCLUDED_SECTIONS and section.isupper() and len(section) == 4
 
 
+def _seedable_station_ids(parser) -> list[str]:
+    """Station sections to seed: 4-char IDs, minus passive stations.
+
+    Passive (``station_role = passive``) sections are data-source-only
+    descriptors for the GLOBK processing — not operated stations. Seeding
+    them would silently inflate the gps_health station tables and every
+    dashboard/fleet count built on them (see
+    GLOBAL_SITES_investigation.md §4.4).
+    """
+    from ..config_utils import is_passive_role
+
+    station_ids = []
+    passive_skipped = 0
+    for section in parser.config.sections():
+        if not _is_station_id(section):
+            continue
+        if is_passive_role(parser.config.get(section, "station_role", fallback=None)):
+            passive_skipped += 1
+            continue
+        station_ids.append(section)
+    if passive_skipped:
+        logger.info(
+            "Seeder: skipped %d passive (data-source-only) stations",
+            passive_skipped,
+        )
+    return station_ids
+
+
 class Seeder:
     """Seeds the gps_health database with station metadata, coordinates, and areas."""
 
@@ -101,7 +129,7 @@ class Seeder:
             return {"inserted": 0, "updated": 0, "skipped": 0}
 
         parser = gps_parser.ConfigParser()
-        station_ids = [s for s in parser.config.sections() if _is_station_id(s)]
+        station_ids = _seedable_station_ids(parser)
 
         if not station_ids:
             print("No stations found in configuration")
@@ -305,7 +333,7 @@ class Seeder:
             return {"updated": 0, "skipped": 0}
 
         parser = gps_parser.ConfigParser()
-        station_ids = [s for s in parser.config.sections() if _is_station_id(s)]
+        station_ids = _seedable_station_ids(parser)
 
         conn = self._get_conn()
         updated = skipped = 0

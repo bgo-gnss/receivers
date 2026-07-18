@@ -210,7 +210,15 @@ def _load_station_configs(
 
 
 def _all_station_ids() -> List[str]:
-    """Return all 4-letter uppercase station IDs from stations.cfg."""
+    """Return all 4-letter uppercase station IDs from stations.cfg.
+
+    Passive (``station_role = passive``) stations are excluded: they are
+    data-source-only descriptors with no TOS/runtime counterpart, so
+    reconciling them would only generate noise
+    (GLOBAL_SITES_investigation.md §4.4).
+    """
+    from ..config_utils import is_passive_role
+
     try:
         import gps_parser  # type: ignore
     except ImportError:
@@ -221,7 +229,10 @@ def _all_station_ids() -> List[str]:
     return sorted(
         s
         for s in cp.config.sections()
-        if s not in excluded and s.isupper() and len(s) == 4
+        if s not in excluded
+        and s.isupper()
+        and len(s) == 4
+        and not is_passive_role(cp.config.get(s, "station_role", fallback=None))
     )
 
 

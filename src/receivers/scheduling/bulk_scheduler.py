@@ -1645,6 +1645,11 @@ class BulkDownloadScheduler:
             all_stations = get_all_station_configs()
 
             for station_id, config in all_stations.items():
+                # Belt-and-braces: passive (data-source-only) stations are
+                # already filtered in get_all_station_configs(); never let
+                # one reach the scheduler even if a caller bypasses that.
+                if str(config.get("station_role", "")).strip().lower() == "passive":
+                    continue
                 # Extract relevant configuration
                 # 'active' is the default — normalize to None (NULL in DB)
                 station_status = config.get("station_status")
