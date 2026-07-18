@@ -46,28 +46,20 @@ logger = logging.getLogger(__name__)
 # sections must skip passive entries: scheduler load, DB seeder, cfg
 # reconcile. See gpslibrary/GLOBAL_SITES_investigation.md §4.4.
 #
+# The role parser is CANONICAL in gps_parser (single source of truth,
+# fail-open to 'active' on unknown values) — re-exported here so
+# receivers-internal callers keep one import site.
+#
 # NOTE: distinct from the pre-existing ``health_check = passive`` key
 # ("operated, but don't actively poll health") — unrelated concept.
 
-STATION_ROLE_PASSIVE = "passive"
+from gps_parser import (  # noqa: E402  (after the guarded gps_parser import)
+    STATION_ROLE_PASSIVE,
+    parse_station_role,
+)
 
 _BOOL_TRUE = {"true", "yes", "1", "on"}
 _BOOL_FALSE = {"false", "no", "0", "off"}
-
-
-def parse_station_role(value: Any) -> str:
-    """Normalize a raw stations.cfg ``station_role`` value.
-
-    Missing/empty → ``"active"`` (pre-schema status quo). Unknown values
-    also normalize to ``"active"`` (fail-open: a typo must never drop an
-    operated station from the schedulers; gps_parser validation flags it).
-    """
-    role = str(value or "").split("#")[0].strip().lower()
-    if role in ("active", STATION_ROLE_PASSIVE):
-        return role
-    if role:
-        logger.warning("Unknown station_role %r — treating as 'active'", value)
-    return "active"
 
 
 def is_passive_role(value: Any) -> bool:

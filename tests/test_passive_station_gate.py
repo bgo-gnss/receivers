@@ -18,6 +18,12 @@ from receivers.db.seeder import _seedable_station_ids
 
 
 class TestParseStationRole:
+    """Behavior pin for the role parser AT THE RECEIVERS IMPORT SITE.
+
+    ``parse_station_role`` is canonical in gps_parser and re-exported by
+    ``receivers.config_utils`` — these tests guarantee the re-export keeps
+    byte-identical fail-open semantics for receivers callers."""
+
     def test_missing_and_empty_default_to_active(self):
         assert parse_station_role(None) == "active"
         assert parse_station_role("") == "active"

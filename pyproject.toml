@@ -46,6 +46,9 @@ dependencies = [
     "psycopg2-binary>=2.9.0",
     "gtimes @ git+https://github.com/bgo-gnss/gtimes@v0.5.1",
     "tostools @ git+https://github.com/bgo-gnss/tostools@6d23524",
+    # TODO(passive-schema): bump pin to the commit that includes
+    # parse_station_role (config_utils imports it) once gps_parser's
+    # feat/passive-station-schema merges — merge gps_parser FIRST.
     "gps-parser @ git+https://github.com/bgo-gnss/gps_parser@93c8ab6",
 ]
 
