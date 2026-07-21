@@ -75,7 +75,17 @@ def parse_archive_path(abs_path: str, source_root: str) -> Optional[ParsedArchiv
     category = parts[_CATEGORY_IDX]
     filename = parts[-1]
 
-    parsed = parse_date_from_filename(filename, station)
+    # The archive path carries the unambiguous 4-digit year (already validated
+    # by ``_is_year_component`` above) and the session type. Feed both to the
+    # filename parser so a short-name RINEX-2 file (``NYLA060a.21D.Z``) is dated
+    # by its *observation* year — not the current year — and hour 0 of an hourly
+    # session is not mistaken for a daily file. See parse_date_from_filename.
+    parsed = parse_date_from_filename(
+        filename,
+        station,
+        default_year=int(parts[_YEAR_IDX]),
+        session_type=session,
+    )
     file_date: Optional[date] = parsed[0] if parsed else None
     file_hour: Optional[int] = parsed[1] if parsed else None
 
