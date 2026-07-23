@@ -407,8 +407,22 @@ def _oldest_from_listing(
     return min(parsed, key=lambda p: (p[0], -1 if p[1] is None else p[1]))
 
 
+def _is_hourly_session(session_type: Optional[str]) -> bool:
+    """True for an hourly archive session (e.g. ``1Hz_1hr``, ``status_1hr``).
+
+    Hourly session names end in ``_1hr``; daily sessions end in ``_24hr``. The
+    session type is the only thing that disambiguates a short-name letter ``a``:
+    hour 0 of an hourly file vs. the daily file of a daily/Leica session — the
+    filename alone cannot tell them apart.
+    """
+    return session_type is not None and session_type.endswith("_1hr")
+
+
 def parse_date_from_filename(
-    filename: str, station_id: str
+    filename: str,
+    station_id: str,
+    default_year: Optional[int] = None,
+    session_type: Optional[str] = None,
 ) -> Optional[Tuple[date, Optional[int]]]:
     """Parse date and hour from various filename formats.
 
@@ -418,9 +432,24 @@ def parse_date_from_filename(
     - Leica: SKFC266a.m00 -> day 266 of current year
     - Trimble: Similar patterns
 
+    Short day-of-year names (RINEX-2 short ``DDD<letter>.YY``, Leica ``.m00``)
+    carry only the day-of-year — the 4-digit year is NOT recoverable from the
+    name (the ``.YY`` suffix is century-ambiguous). Pass ``default_year`` (and,
+    for hourly hour-0 disambiguation, ``session_type``) whenever the caller
+    knows them from context — e.g. the archive ``YYYY/…/SESSION/`` path — so the
+    timestamp is anchored, not guessed as "now". This is what keeps a re-rinex
+    of *historical* data from being catalogued under the current year.
+
     Args:
         filename: Filename to parse
         station_id: Station ID for validation
+        default_year: Authoritative 4-digit year for day-of-year names. When
+            ``None`` (live FTP listings, in-flight downloads) the current year
+            is assumed, as before.
+        session_type: Archive session (e.g. ``1Hz_1hr``). Disambiguates the
+            short-name letter ``a`` — hour 0 for an hourly session, the daily
+            file otherwise. When ``None`` the legacy behaviour (``a`` = daily)
+            is preserved.
 
     Returns:
         Tuple of (date, hour) or None if cannot parse
@@ -452,13 +481,19 @@ def parse_date_from_filename(
     if leica_match:
         day_of_year = int(leica_match.group(1))
         session_letter = leica_match.group(2).lower()
-        # Assume current year for Leica files
-        current_year = datetime.now().year
+        # Anchor the year to the caller-supplied context (the archive YYYY/
+        # directory) — the name's own ".YY" suffix is century-ambiguous, so
+        # fall back to "now" only when the caller has no context. Using the
+        # real year also makes the day-of-year offset leap-year-correct.
+        year = default_year if default_year is not None else datetime.now().year
         try:
-            file_date = date(current_year, 1, 1) + timedelta(days=day_of_year - 1)
-            # If letter is 'a', it's daily; otherwise b-x maps to hours 1-23
-            file_hour = None
-            if session_letter != "a":
+            file_date = date(year, 1, 1) + timedelta(days=day_of_year - 1)
+            # Session letter a..x -> hours 0..23 for an HOURLY session. For a
+            # daily session (or no session context) 'a' denotes the daily file
+            # (no hour); b..x still map to 1..23 as before.
+            if session_letter == "a" and not _is_hourly_session(session_type):
+                file_hour = None
+            else:
                 file_hour = ord(session_letter) - ord("a")
             return file_date, file_hour
         except ValueError:
