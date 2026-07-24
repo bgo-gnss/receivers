@@ -468,8 +468,7 @@ def _push_to_storage(local_paths, logger) -> None:
     if target is None:
         return  # no active archive target — cutover not active, push disabled
     try:
-        from ..archive import ArchiveSync
-        from ..health.database_factory import DatabaseConnectionFactory
+        from ..archive import ArchiveSync, open_catalog_conns
 
         # Bound concurrency (sshd MaxStartups) — never block a worker forever.
         if not _push_sem.acquire(timeout=120):
@@ -477,8 +476,13 @@ def _push_to_storage(local_paths, logger) -> None:
             return
         verify_cfg = _get_push_verify()
         try:
-            with DatabaseConnectionFactory.connection() as conn:
-                sync = ArchiveSync(target, conn=conn)
+            # Fan the catalog rows out to EVERY catalog host (rek-d01 + pgdev),
+            # not just the local default — otherwise the mirror silently diverges
+            # (only explicit --catalog-prod reindex used to reach it). conns[0] is
+            # the operational host (carries the watermark); the rest are mirrors.
+            with open_catalog_conns(prod=True) as catalog_conns:
+                conn = catalog_conns[0] if catalog_conns else None
+                sync = ArchiveSync(target, conn=conn, catalog_conns=catalog_conns)
                 pushed, errors, digests = sync.push_explicit(list(local_paths))
                 # Immediate read-back for the critical small-volume sessions
                 # (15s_24hr). Runs while holding the push slot but does NOT sleep

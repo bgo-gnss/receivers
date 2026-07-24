@@ -61,15 +61,23 @@ def cmd_archive_sync(args: argparse.Namespace) -> int:
             return 1
 
     # The catalog + watermark need a DB; a pure dry-run can run without one.
-    conn = _get_conn(args.host, required=not args.dry_run)
+    # Fan the catalog out to every catalog host (rek-d01 + pgdev) so a manual
+    # sweep keeps the mirror in sync too — writing only localhost is what let the
+    # catalogs diverge. conns[0] is the operational host (watermark); an explicit
+    # --host is honoured as a single target.
+    from ..archive import open_catalog_conns
 
     results = []
     exit_code = 0
-    try:
+    with open_catalog_conns(
+        prod=True, override=args.host, required=not args.dry_run
+    ) as catalog_conns:
+        conn = catalog_conns[0] if catalog_conns else None
         for target in targets:
             engine = ArchiveSync(
                 target,
                 conn=conn,
+                catalog_conns=catalog_conns,
                 dry_run=args.dry_run,
                 dest_override=args.dest_override,
                 force=args.force,
@@ -81,9 +89,6 @@ def cmd_archive_sync(args: argparse.Namespace) -> int:
                 exit_code = 1
             if not args.json:
                 _print_result(result)
-    finally:
-        if conn is not None:
-            conn.close()
 
     if args.json:
         print(
