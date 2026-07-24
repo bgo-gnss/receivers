@@ -1,0 +1,51 @@
+[Unit]
+# Server-side HOST disk + scheduler-liveness alert. Runs the Nagios/Icinga check
+# (receivers.monitoring.host_disk_check) and pushes a PASSIVE check result to
+# Icinga, the IMO's alerting backbone — so an out-of-space OS volume OR a wedged
+# scheduler notifies operators through Icinga while nobody is at a laptop.
+#
+# WHY THIS EXISTS: on 2026-07-21 the small /home OS LV filled to 100%, every
+# scheduler write failed with OSError [Errno 28], yet systemd still showed the
+# unit "active (running)" and downloads silently stopped for ~2 days. Nothing
+# alerted. This check watches the two signals that would have caught it: OS-mount
+# disk usage, and the freshness of the scheduler's activity trail ("active but
+# wedged"). It runs OUT OF PROCESS from the scheduler on purpose — the frozen
+# scheduler's own logging died with the disk, so an in-process watchdog would
+# have been mute too.
+#
+# This is a USER-LEVEL unit, installed at
+#   ~gpsops/.config/systemd/user/gps-host-monitor.{service,timer}
+# managed by gpsops with NO sudo (same model as gps-receivers-scheduler and
+# gps-archive-sync-alert):
+#   systemctl --user enable --now gps-host-monitor.timer
+#   systemctl --user list-timers gps-host-monitor.timer
+#   journalctl --user-unit gps-host-monitor -n 20
+# Linger (already enabled for gpsops) lets the timer fire without an active
+# session — so no User=/Group= here (a --user unit runs as gpsops by definition).
+#
+# Requires the Icinga service object `rek-d01.gps.vedur.is!Host disk and liveness`
+# to exist on the Icinga server (with notifications + a freshness/staleness
+# threshold) for alerts to actually fire — see
+# docs/monitoring/host-disk-liveness-alert.md. Until then the push logs "Service
+# not found" harmlessly and the journal still records the OK/WARN/CRIT line.
+Description=GPS host disk + scheduler-liveness alert — push passive check to Icinga
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# WARN(1)/CRIT(2)/UNKNOWN(3) are valid Nagios outcomes, not unit failures — the
+# alert is delivered via the Icinga push (which happens before exit), so a CRIT
+# must NOT leave the unit in "failed" state. Only a real crash is a failure.
+SuccessExitStatus=1 2 3
+Environment="LANG=en_US.UTF-8"
+Environment="GPS_CONFIG_PATH=/home/gpsops/.config/gpsconfig"
+# --ttl 900 = 3x the 5-min cadence: Icinga marks the service stale only after ~3
+# consecutive missed pushes, tolerating a transient blip without false alarms.
+# 5-min cadence + 60-min liveness CRIT means a real freeze pages within minutes.
+# --forecast-volume adds a days-to-full trajectory signal for the chronically-full
+# archive mount (todo #73), surfacing prune's existing forecast to Icinga.
+ExecStart=/home/bgo/git/receivers/venv/bin/python -m receivers.monitoring.host_disk_check --icinga --icinga-host rek-d01 --ttl 900 --forecast-volume /mnt/rawgpsdata
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gps-host-monitor

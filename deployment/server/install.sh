@@ -1165,6 +1165,29 @@ gpsops_systemctl daemon-reload
 gpsops_systemctl enable --now gps-archive-sync-alert.timer >/dev/null
 ok "Archive-sync alert timer installed as gpsops user unit (every 15 min → Icinga)"
 
+# Host disk + scheduler-liveness alert timer — runs every 5 min, pushes a passive
+# check result to Icinga (rek-d01.gps.vedur.is!Host disk and liveness). Catches
+# the 2026-07-21 failure mode: a full OS volume (/home) that freezes the scheduler
+# while systemd still reports it "active". Runs OUT OF PROCESS from the scheduler
+# so it still reports when the scheduler is wedged. Needs the Icinga service object
+# defined server-side to actually notify — see
+# docs/monitoring/host-disk-liveness-alert.md.
+#
+# Installed as a gpsops USER unit (same model as gps-archive-sync-alert). Linger
+# (Phase 10) lets the timer fire without an active gpsops session. ExecStart venv
+# path is patched for this install dir.
+HM_SVC="$USER_UNIT_DIR/gps-host-monitor.service"
+HM_TIMER="$USER_UNIT_DIR/gps-host-monitor.timer"
+sudo -u "$SERVICE_USER" mkdir -p "$USER_UNIT_DIR"
+sed -e "s|ExecStart=.*/bin/python |ExecStart=$VENV_DIR/bin/python |" \
+    "$INSTALL_DIR/deployment/systemd/gps-host-monitor.service" > "$HM_SVC"
+install -m 644 "$INSTALL_DIR/deployment/systemd/gps-host-monitor.timer" "$HM_TIMER"
+chown "$SERVICE_USER:$SERVICE_GROUP" "$HM_SVC" "$HM_TIMER"
+chmod 644 "$HM_SVC" "$HM_TIMER"
+gpsops_systemctl daemon-reload
+gpsops_systemctl enable --now gps-host-monitor.timer >/dev/null
+ok "Host disk + liveness alert timer installed as gpsops user unit (every 5 min → Icinga)"
+
 # Logrotate
 if [[ -f "$INSTALL_DIR/deployment/logrotate.d/gps-receivers" ]]; then
     # Patch log path to match this installation
