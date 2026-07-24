@@ -347,6 +347,16 @@ class DatabaseConnectionFactory:
                 cfg.get("user", os.getenv("USER", "postgres")),
             ),
             "password": os.getenv("POSTGRES_PASSWORD", cfg.get("password", "")),
+            # Bound every connect so a degraded remote host (e.g. the pgdev mirror
+            # over a flaky VPN) fails FAST instead of hanging. Without this, the
+            # routine catalog fan-out on the hot push path — which opens a mirror
+            # connection per push under a bounded semaphore — could stall the
+            # daily downloads waiting on libpq's default (indefinite) connect.
+            # Best-effort fan-out only catches connect *errors*; a hang needs a
+            # ceiling. Localhost connects are instant, so this is a no-op there.
+            "connect_timeout": os.getenv(
+                "POSTGRES_CONNECT_TIMEOUT", cfg.get("connect_timeout", "10")
+            ),
         }
 
     @classmethod

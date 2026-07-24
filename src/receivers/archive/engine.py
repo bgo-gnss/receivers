@@ -96,6 +96,7 @@ class ArchiveSync:
         target: SyncTarget,
         conn=None,
         *,
+        catalog_conns=None,
         dry_run: bool = False,
         dest_override: Optional[str] = None,
         force: bool = False,
@@ -103,7 +104,21 @@ class ArchiveSync:
         rsync_timeout: int = 1800,
     ) -> None:
         self.target = target
+        # ``conn`` is the PRIMARY/operational connection — it carries the
+        # per-target watermark/sync-state (``get_last_success``/``record_run``),
+        # which is single-host and need not be mirrored.
         self.conn = conn
+        # ``catalog_conns`` is the identical-catalog fan-out set: every
+        # archive_catalog row is upserted to ALL of these so the ``catalog_hosts``
+        # (rek-d01 + pgdev) stay in sync. When not given, fall back to the single
+        # ``conn`` — preserving the historical single-host behaviour for callers
+        # (and tests) that have not opted into the fan-out. See
+        # ``reindex.open_catalog_conns``.
+        self._catalog_conns = (
+            list(catalog_conns)
+            if catalog_conns is not None
+            else ([conn] if conn is not None else [])
+        )
         self.dry_run = dry_run
         self.dest_override = dest_override
         # Run even when the target is inactive — for the manual pre-stage verify
@@ -281,7 +296,7 @@ class ArchiveSync:
         archive-vs-catalog reconciliation pass (post-Monday) must find exactly
         that case; the freshness/integrity story must not assume completeness.
         """
-        if self.conn is None:
+        if not self._catalog_conns:
             return 0, [], {}
         root = self.target.source_root
         cataloged = 0
@@ -303,22 +318,44 @@ class ArchiveSync:
                 errors.append(f"could not read {rel}: {exc}")
                 continue
             archive_path = self._archive_path(rel)
-            upsert_catalog_row(
-                self.conn,
-                storage_location=self.target.name,
-                station=parsed.station,
-                session_type=parsed.session_type,
-                file_category=parsed.file_category,
-                file_date=parsed.file_date,
-                file_hour=parsed.file_hour,
-                archive_path=archive_path,
-                filename=os.path.basename(rel),
-                file_size=os.path.getsize(local),
-                content_sha256=digest,
-            )
-            self.conn.commit()  # per-file: a crash loses one row, not the run
-            digests[rel] = digest
-            cataloged += 1
+            # Fan the row out to EVERY catalog host so rek-d01 + pgdev stay in
+            # sync (the digest is hashed once and reused). The primary (index 0)
+            # is the operational host; a mirror failure is logged loudly — that
+            # is the divergence this fan-out exists to prevent — but does not
+            # abort the run (a pgdev outage must not stall the daily downloads).
+            primary_ok = False
+            for idx, c in enumerate(self._catalog_conns):
+                try:
+                    upsert_catalog_row(
+                        c,
+                        storage_location=self.target.name,
+                        station=parsed.station,
+                        session_type=parsed.session_type,
+                        file_category=parsed.file_category,
+                        file_date=parsed.file_date,
+                        file_hour=parsed.file_hour,
+                        archive_path=archive_path,
+                        filename=os.path.basename(rel),
+                        file_size=os.path.getsize(local),
+                        content_sha256=digest,
+                    )
+                    c.commit()  # per-file: a crash loses one row, not the run
+                    if idx == 0:
+                        primary_ok = True
+                except Exception as exc:  # noqa: BLE001
+                    label = "primary" if idx == 0 else f"mirror#{idx}"
+                    msg = f"catalog upsert to {label} failed ({rel}) — catalogs may DIVERGE: {exc}"
+                    logger.error(msg)
+                    errors.append(msg)
+                    try:
+                        c.rollback()
+                    except Exception:  # noqa: BLE001
+                        pass
+            # ``digests`` feeds the push-path read-back verify (primary-authoritative),
+            # so only count a file cataloged when the primary row committed.
+            if primary_ok:
+                digests[rel] = digest
+                cataloged += 1
         return cataloged, errors, digests
 
     # ---- push-on-download (low-latency write-through) -----------------------
@@ -465,17 +502,34 @@ class ArchiveSync:
         return stats
 
     def _stamp_verified(self, key: str, parsed) -> None:
-        """Mark the catalog row read-back-verified (matches upsert's logical key)."""
-        if self.conn is None:
-            return
-        with self.conn.cursor() as cur:
-            cur.execute(
-                """UPDATE archive_catalog SET last_verified_at = now()
-                   WHERE storage_location = %s AND session_type = %s
-                     AND file_category = %s AND canonical_key = %s""",
-                (self.target.name, parsed.session_type, parsed.file_category, key),
-            )
-        self.conn.commit()
+        """Mark the catalog row read-back-verified on every catalog host.
+
+        Fans out to the same connection set as the upsert so the mirror's
+        ``last_verified_at`` tracks the primary's; a mirror failure is logged and
+        skipped, never fatal.
+        """
+        for idx, c in enumerate(self._catalog_conns):
+            try:
+                with c.cursor() as cur:
+                    cur.execute(
+                        """UPDATE archive_catalog SET last_verified_at = now()
+                           WHERE storage_location = %s AND session_type = %s
+                             AND file_category = %s AND canonical_key = %s""",
+                        (
+                            self.target.name,
+                            parsed.session_type,
+                            parsed.file_category,
+                            key,
+                        ),
+                    )
+                c.commit()
+            except Exception as exc:  # noqa: BLE001
+                label = "primary" if idx == 0 else f"mirror#{idx}"
+                logger.error("stamp-verified to %s failed (%s): %s", label, key, exc)
+                try:
+                    c.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
 
     def _archive_path(self, rel: str) -> str:
         """Where the file lands on the archive (dest base + relative tree)."""

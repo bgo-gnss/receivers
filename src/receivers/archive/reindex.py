@@ -27,6 +27,7 @@ import logging
 import os
 import time
 from collections.abc import Iterable
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -206,6 +207,85 @@ def resolve_catalog_hosts(
         except Exception:  # noqa: BLE001
             return []
     return [None]
+
+
+@contextmanager
+def open_catalog_conns(
+    *,
+    prod: bool = True,
+    override: Optional[str] = None,
+    required: bool = True,
+    log: logging.Logger = logger,
+):
+    """Open one gps_health connection per catalog host for a ROUTINE catalog write.
+
+    The routine write paths (sync engine push-on-download and the scheduled
+    archive-sync sweep) historically wrote a single default connection
+    (localhost). That silently diverged the ``catalog_hosts`` set: only explicit
+    ``--catalog-prod`` reindex operations ever fanned out, so the mirror
+    (``pgdev``) fell ~10x behind the operational host (``rek-d01``). This helper
+    resolves the identical-catalog set the same way :func:`resolve_catalog_hosts`
+    does and opens a connection to every host, so the caller can upsert to all.
+
+    Yields the list of open connections (host order == ``catalog_hosts`` order,
+    so element 0 is the local/operational host). Semantics:
+
+    * **Best-effort secondaries, mandatory primary.** If the FIRST host cannot be
+      reached the error propagates (the operational catalog write must not be
+      silently skipped). A later host that is unreachable is logged loudly (this
+      is exactly the divergence the fan-out prevents) and dropped from the list,
+      so a ``pgdev`` outage degrades to "rek-d01 only + a warning" instead of
+      blocking every download.
+    * **Dev fallback.** When no ``catalog_hosts`` are configured (a laptop),
+      ``resolve_catalog_hosts`` returns ``[]``; we fall back to ``[None]`` — the
+      single default connection — preserving the previous single-host behaviour.
+
+    All connections are closed on exit.
+    """
+    from ..db.connection import get_connection
+
+    hosts = resolve_catalog_hosts(override, prod=prod) or [None]
+    explicit = override is not None
+    conns: list = []
+    try:
+        for idx, host in enumerate(hosts):
+            # For the resolved prod set, element 0 is the operational/local host:
+            # reach it via the DEFAULT connection (host_override=None) so it uses
+            # clean primary credentials and we do not open a second connection to
+            # the same DB — connecting it by its own FQDN would trip the "neither
+            # primary nor mirror_host" credential-fallback warning on every routine
+            # write. The remaining hosts are mirrors, reached by explicit
+            # host_override. An explicit ``override`` is always honoured as given.
+            conn_host = host if explicit else (None if idx == 0 else host)
+            label = host or "localhost"
+            try:
+                conns.append(get_connection(host_override=conn_host))
+            except Exception as exc:  # noqa: BLE001
+                if idx == 0:
+                    # Primary (operational) host: a caller that can proceed
+                    # without a DB (a pure dry-run) passes required=False and
+                    # gets an empty set; otherwise the failure propagates.
+                    if required:
+                        raise
+                    log.warning(
+                        "no gps_health connection (%s) — proceeding without "
+                        "catalog indexing",
+                        exc,
+                    )
+                    break
+                log.error(
+                    "catalog fan-out: secondary host %s unreachable — routine "
+                    "writes will SKIP it and the catalogs may DIVERGE (%s)",
+                    label,
+                    exc,
+                )
+        yield conns
+    finally:
+        for c in conns:
+            try:
+                c.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def reindex_files_multi(

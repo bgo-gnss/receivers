@@ -23,10 +23,10 @@ def run_archive_sync_job(
     max_age_minutes: int = 120,
 ) -> None:
     """Run all active sync targets, then log freshness. Never raises out."""
-    from ..db.connection import get_connection
     from .config import load_sync_config
     from .engine import ArchiveSync
     from .freshness import evaluate_all
+    from .reindex import open_catalog_conns
 
     try:
         targets = load_sync_config(Path(config_path) if config_path else None)
@@ -39,29 +39,36 @@ def run_archive_sync_job(
         logger.info("archive-sync: no active targets — nothing to do")
         return
 
-    conn = None
     try:
-        conn = get_connection(host_override=host)
-        for target in active:
-            try:
-                result = ArchiveSync(target, conn=conn).run()
-                logger.info(
-                    "archive-sync %s: %s (transferred=%d cataloged=%d)",
-                    target.name,
-                    result.message,
-                    result.transferred,
-                    result.cataloged,
+        # Fan the catalog rows out to EVERY catalog host (rek-d01 + pgdev) so the
+        # mirror does not silently diverge from the operational host. conns[0] is
+        # the operational host — it also carries the per-target watermark and the
+        # single-host freshness read. An explicit ``host`` override is honoured
+        # as a single target.
+        with open_catalog_conns(prod=True, override=host) as catalog_conns:
+            conn = catalog_conns[0] if catalog_conns else None
+            for target in active:
+                try:
+                    result = ArchiveSync(
+                        target, conn=conn, catalog_conns=catalog_conns
+                    ).run()
+                    logger.info(
+                        "archive-sync %s: %s (transferred=%d cataloged=%d)",
+                        target.name,
+                        result.message,
+                        result.transferred,
+                        result.cataloged,
+                    )
+                    for err in result.errors:
+                        logger.warning("archive-sync %s: %s", target.name, err)
+                except Exception:
+                    logger.exception("archive-sync %s: run failed", target.name)
+            if conn is not None:
+                evaluate_all(
+                    conn, active, now=datetime.now(), max_age_minutes=max_age_minutes
                 )
-                for err in result.errors:
-                    logger.warning("archive-sync %s: %s", target.name, err)
-            except Exception:
-                logger.exception("archive-sync %s: run failed", target.name)
-        evaluate_all(conn, active, now=datetime.now(), max_age_minutes=max_age_minutes)
     except Exception:
         logger.exception("archive-sync job failed")
-    finally:
-        if conn is not None:
-            conn.close()
 
 
 def run_archive_verify_job(
