@@ -1,0 +1,15 @@
+[Unit]
+Description=Run the GPS host disk + scheduler-liveness alert every 5 minutes
+
+[Timer]
+# 5-min cadence: disk fills and freezes are fast-moving (this incident went
+# 81%->100% between human glances), and the liveness CRIT is 60 min, so a tight
+# cadence pages within minutes of a real wedge. OnBootSec gives a first reading
+# shortly after boot; Persistent catches up a missed run if the host was down.
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+# User-level timers.target (this is a `systemctl --user` timer owned by gpsops).
+WantedBy=timers.target

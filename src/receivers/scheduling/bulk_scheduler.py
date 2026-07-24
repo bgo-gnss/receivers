@@ -331,6 +331,30 @@ def _check_config_changes_job() -> None:
         _scheduler_instance._check_areas_config_changes()
 
 
+def _heartbeat_job() -> None:
+    """Write the liveness heartbeat file (standalone job fn for APScheduler).
+
+    Touches ``{cache}/heartbeat`` every minute. The external monitor
+    (``receivers.monitoring.host_disk_check``) alerts when this file goes stale —
+    the "scheduler active but wedged" detector for the 2026-07-21 /home-full
+    incident, where the process stayed ``active`` while every write failed with
+    ``OSError: [Errno 28]``. The heartbeat shares the volume with the logs, so a
+    full disk freezes it too: staleness catches both a hung scheduler AND a full
+    volume. A write failure here is itself the signal (stale mtime) — swallow it.
+    """
+    try:
+        if _scheduler_instance is not None:
+            hb = Path(_scheduler_instance.log_dir).parent / "heartbeat"
+        else:
+            hb = Path.home() / ".cache" / "gps_receivers" / "heartbeat"
+        hb.parent.mkdir(parents=True, exist_ok=True)
+        hb.write_text(f"{time.time()}\n")
+    except Exception:  # noqa: BLE001 - a failed write is the signal, not a crash
+        logging.getLogger("receivers.scheduler").debug(
+            "heartbeat write failed", exc_info=True
+        )
+
+
 def _write_connectivity_status(
     station_id: str, health_data: Dict[str, Any], logger: logging.Logger
 ) -> None:
@@ -2268,6 +2292,10 @@ class BulkDownloadScheduler:
         # Schedule config file watcher (every 1 minute)
         self._schedule_config_watcher()
 
+        # Schedule liveness heartbeat (every 1 minute) — external monitor alerts
+        # when it goes stale (the "active but wedged" detector, incident 2026-07-21)
+        self._schedule_heartbeat()
+
         # Schedule backfill, gap detection, archive reconciler, and integrity checker
         self._schedule_multi_session_backfill()
         self._schedule_gap_detection()
@@ -2364,6 +2392,23 @@ class BulkDownloadScheduler:
             replace_existing=True,
         )
         self.logger.info("Scheduled config watcher (every 1 min)")
+
+    def _schedule_heartbeat(self) -> None:
+        """Schedule the 1-min liveness heartbeat file write.
+
+        The external monitor (``receivers.monitoring.host_disk_check``, run by the
+        ``gps-host-monitor`` systemd timer) alerts when the heartbeat goes stale —
+        the "scheduler active but wedged" detector for the 2026-07-21 /home-full
+        freeze. Runs on the default executor; the write is a sub-millisecond touch.
+        """
+        self.scheduler.add_job(
+            func=_heartbeat_job,
+            trigger="interval",
+            minutes=1,
+            id="liveness_heartbeat",
+            replace_existing=True,
+        )
+        self.logger.info("Scheduled liveness heartbeat (every 1 min)")
 
     def _schedule_backfill(self) -> None:
         """DEPRECATED: Use _schedule_multi_session_backfill() instead."""
