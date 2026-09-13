@@ -249,6 +249,30 @@ def upsert_catalog_row(
     re-run (or a later back-zip that changes path/compression) updates the same
     row rather than duplicating it.
 
+    **The DO UPDATE is guarded so an unchanged row is not rewritten.** Every
+    caller re-catalogs files it has already catalogued — the hourly archive
+    sweep alone re-upserted ~3,550 rows an hour on rek-d01 — and because
+    ``indexed_at = now()`` always differs, each of those wrote a new row
+    version. Measured 2026-09-13: 6,263,588 updates on a 9.45M-row table,
+    1,332,249 dead tuples (14.1 %), and autovacuum had run ONCE in the table's
+    life (14.1 % sits permanently under the global 0.2 scale factor — since
+    lowered to 0.02 on both hosts). Of 11 representative writes, 6 were pure
+    no-ops.
+
+    Consequence to know about: ``indexed_at`` now means "when this row last
+    CHANGED", not "when we last re-saw the file". Nothing depends on the older
+    reading — ``migrations/051_sync_state.sql`` explicitly records that the sync
+    watermark is a dedicated column and is NOT derived from
+    ``MAX(archive_catalog.indexed_at)``, which is the one dependency that would
+    have made this unsafe.
+
+    The COALESCE'd columns need the ``EXCLUDED.x IS NOT NULL`` half of their
+    predicate: an incoming NULL is a no-op by construction there, so testing
+    ``IS DISTINCT FROM`` alone would fire on every NULL-carrying write (the
+    deferred-hash path sends one on every local-ring write) and defeat the
+    guard entirely. ``scripts/dev/check_catalog_upsert_noop.py`` proves all of
+    this against a live schema.
+
     ``file_hour`` (mig 055) is the hour-of-day for hourly products (NULL for
     daily). ``compressed_sha256`` (mig 055) is the on-disk-bytes hash — usually
     NULL on the forward write (lazy-filled by the integrity checker), so on
@@ -287,6 +311,33 @@ def upsert_catalog_row(
                 file_tracking_id  = COALESCE(EXCLUDED.file_tracking_id,
                                              archive_catalog.file_tracking_id),
                 indexed_at        = now()
+            WHERE archive_catalog.file_path   IS DISTINCT FROM EXCLUDED.file_path
+               OR archive_catalog.compression IS DISTINCT FROM EXCLUDED.compression
+               OR archive_catalog.file_size   IS DISTINCT FROM EXCLUDED.file_size
+               OR archive_catalog.station     IS DISTINCT FROM EXCLUDED.station
+               OR archive_catalog.file_date   IS DISTINCT FROM EXCLUDED.file_date
+               -- The COALESCE'd columns change the row ONLY when the incoming
+               -- value is non-NULL and actually differs; an incoming NULL is a
+               -- no-op by construction, so testing IS DISTINCT FROM alone would
+               -- fire on every NULL-carrying write and defeat the guard.
+               OR (EXCLUDED.file_hour IS NOT NULL
+                   AND archive_catalog.file_hour
+                       IS DISTINCT FROM EXCLUDED.file_hour)
+               OR (EXCLUDED.content_sha256 IS NOT NULL
+                   AND archive_catalog.content_sha256
+                       IS DISTINCT FROM EXCLUDED.content_sha256)
+               OR (EXCLUDED.compressed_sha256 IS NOT NULL
+                   AND archive_catalog.compressed_sha256
+                       IS DISTINCT FROM EXCLUDED.compressed_sha256)
+               OR (EXCLUDED.md5checksum IS NOT NULL
+                   AND archive_catalog.md5checksum
+                       IS DISTINCT FROM EXCLUDED.md5checksum)
+               OR (EXCLUDED.md5uncompressed IS NOT NULL
+                   AND archive_catalog.md5uncompressed
+                       IS DISTINCT FROM EXCLUDED.md5uncompressed)
+               OR (EXCLUDED.file_tracking_id IS NOT NULL
+                   AND archive_catalog.file_tracking_id
+                       IS DISTINCT FROM EXCLUDED.file_tracking_id)
             """,
             (
                 storage_location,
