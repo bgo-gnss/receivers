@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple, Union
 
 from .lookback import Lookback
 from .schedule_parser import ScheduleTrigger, apply_distribution_window, parse_schedule
@@ -41,7 +41,9 @@ _load_monitor: Optional["LoadMonitor"] = None
 # Per-session batch result accumulator (thread-safe, reset after each daily summary)
 import threading as _threading
 
-_BATCH_STATS: dict = {}  # {session_type: {"ok": [...], "fail": {...}, "expected": [...], "skipped": [...]}}
+_BATCH_STATS: dict = (
+    {}
+)  # {session_type: {"ok": [...], "fail": {...}, "expected": [...], "skipped": [...]}}
 _BATCH_LOCK = _threading.Lock()
 
 
@@ -1591,6 +1593,9 @@ class BulkDownloadScheduler:
         # in config. Populated by _mark_disabled(), consumed by start() —
         # APScheduler 3.x refuses remove_job() while the scheduler is stopped.
         self._disabled_jobs: List[str] = []
+        # prefix -> job ids this run registered; anything else under the
+        # prefix is a stale persisted copy (see _retire_stale_family).
+        self._job_family_keep: Dict[str, set] = {}
 
         # Load schedule configurations from YAML (with defaults as fallback)
         self.schedule_configs = {}
@@ -1609,9 +1614,7 @@ class BulkDownloadScheduler:
                     (
                         10
                         if session_type == "15s_24hr"
-                        else 15
-                        if session_type == "1Hz_1hr"
-                        else 25
+                        else 15 if session_type == "1Hz_1hr" else 25
                     ),
                 )
                 frequency = session_cfg.get(
@@ -1631,9 +1634,7 @@ class BulkDownloadScheduler:
                         (
                             3
                             if session_type == "15s_24hr"
-                            else 4
-                            if session_type == "1Hz_1hr"
-                            else 5
+                            else 4 if session_type == "1Hz_1hr" else 5
                         ),
                     ),
                     timeout_minutes=session_cfg.get(
@@ -1641,9 +1642,7 @@ class BulkDownloadScheduler:
                         (
                             45
                             if session_type == "15s_24hr"
-                            else 30
-                            if session_type == "1Hz_1hr"
-                            else 15
+                            else 30 if session_type == "1Hz_1hr" else 15
                         ),
                     ),
                     lookback_periods=session_cfg.get("lookback_periods", 1),
@@ -1664,9 +1663,7 @@ class BulkDownloadScheduler:
                         (
                             3
                             if session_type == "15s_24hr"
-                            else 4
-                            if session_type == "1Hz_1hr"
-                            else 5
+                            else 4 if session_type == "1Hz_1hr" else 5
                         ),
                     ),
                     timeout_minutes=session_cfg.get(
@@ -1674,9 +1671,7 @@ class BulkDownloadScheduler:
                         (
                             45
                             if session_type == "15s_24hr"
-                            else 30
-                            if session_type == "1Hz_1hr"
-                            else 15
+                            else 30 if session_type == "1Hz_1hr" else 15
                         ),
                     ),
                     lookback_periods=session_cfg.get("lookback_periods", 1),
@@ -2123,7 +2118,9 @@ class BulkDownloadScheduler:
             self.logger.info("Config change: refreshing stream capture configs")
             _run_stream_config_refresh_job()
             _run_stream_supervise_job()
-        except Exception as e:  # noqa: BLE001 — never let stream refresh kill the watcher
+        except (
+            Exception
+        ) as e:  # noqa: BLE001 — never let stream refresh kill the watcher
             self.logger.error(f"Stream refresh after config change failed: {e}")
 
     def _reseed_areas(self) -> None:
@@ -2696,7 +2693,9 @@ class BulkDownloadScheduler:
                     session_type="15s_24hr_rinex",
                 )
                 self.logger.info("external %s: fetched %d file(s)", sid, len(files))
-            except Exception as exc:  # noqa: BLE001 - one station must not sink the sweep
+            except (
+                Exception
+            ) as exc:  # noqa: BLE001 - one station must not sink the sweep
                 self.logger.warning("external %s: fetch failed: %s", sid, exc)
 
         # Mirror dual-write counters — silent unless something actually failed.
@@ -3315,6 +3314,7 @@ class BulkDownloadScheduler:
         # are trusted as "verified absent". 0 disables the age guard.
         stale_missing_window_minutes = cfg.get("stale_missing_window_minutes", 120)
 
+        registered_ids: List[str] = []
         for idx, sched in enumerate(schedules):
             base_trigger = parse_schedule(sched)
             # Keep id stable for single-fire (legacy) so operators can
@@ -3322,6 +3322,7 @@ class BulkDownloadScheduler:
             job_id = (
                 "morning_recovery" if len(schedules) == 1 else f"morning_recovery_{idx}"
             )
+            registered_ids.append(job_id)
 
             self.scheduler.add_job(
                 func=_run_morning_recovery_job,
@@ -3349,6 +3350,12 @@ class BulkDownloadScheduler:
                 f"bypass_known_missing={bypass_known_missing}, "
                 f"stale_missing_window={stale_missing_window_minutes}m)"
             )
+
+        # Retire any persisted morning_recovery* job this run did NOT register.
+        # Switching `schedule` between a single string and a list changes the id
+        # scheme (morning_recovery <-> morning_recovery_N), and the old row
+        # survives in the jobstore and keeps firing with its original args.
+        self._retire_stale_family("morning_recovery", registered_ids)
 
     def _detect_outage_gap(self, session_type: str = "15s_24hr") -> int:
         """Detect how many days of data are missing since the last successful download.
@@ -3712,9 +3719,7 @@ class BulkDownloadScheduler:
             # registration here skipped the station. Same class as the
             # archive_sync flag bypass. health_* here covers the status
             # monitoring job; see _remove_disabled_jobs for the mechanism.
-            self._disabled_jobs.extend(
-                f"health_{sid}" for sid in skipped_stations
-            )
+            self._disabled_jobs.extend(f"health_{sid}" for sid in skipped_stations)
 
         if not health_stations:
             self._mark_disabled("Health monitoring (no eligible stations)", "health_*")
@@ -3912,13 +3917,77 @@ class BulkDownloadScheduler:
         self.logger.log(level, f"{feature} disabled in config")
         self._disabled_jobs.extend(job_ids)
 
+    def _retire_stale_family(self, prefix: str, keep_ids: Iterable[str]) -> None:
+        """Retire persisted jobs under ``prefix`` that this run did NOT register.
+
+        ``_mark_disabled`` covers "the feature was switched off". This covers the
+        other half: the feature is still ENABLED but its job IDs changed, so the
+        old persisted copies keep firing forever alongside the new ones.
+
+        Found in production 2026-09-13: ``morning_recovery``'s id is
+        ``morning_recovery`` for a single-fire schedule but
+        ``morning_recovery_{idx}`` once ``schedule`` became a list. When the
+        config gained a second and third fire, the unsuffixed job was never
+        removed — so two "Morning recovery starting" passes ran at 01:30 every
+        night, one of them carrying the STALE args from whenever the schedule
+        was last a single string (``days_back=3`` against the current 7), and
+        both then downloaded the same stations a minute apart.
+
+        Same root cause as the 2026-08 "archive_sync disabled but still
+        pushing" bug: the SQLite jobstore is authoritative across restarts, and
+        re-registering under a new id does not disturb the old row.
+
+        Removal is deferred to :meth:`_remove_disabled_jobs` for the same reason
+        as ``_mark_disabled`` — APScheduler 3.x refuses ``remove_job()`` while
+        the scheduler is stopped, and every ``_schedule_*`` hook runs before
+        ``start()``.
+        """
+        # Lazily initialised for the same reason _remove_disabled_jobs uses
+        # getattr: the test suite constructs this class with __new__ and wires
+        # only what a case needs, so a registrar may run on a shell that never
+        # saw __init__.
+        if not hasattr(self, "_job_family_keep"):
+            self._job_family_keep: Dict[str, set] = {}
+        self._job_family_keep[prefix] = set(keep_ids)
+
     def _remove_disabled_jobs(self) -> None:
-        """Drop persisted jobs whose features are disabled (called post-start)."""
-        if not self._disabled_jobs:
+        """Drop stale persisted jobs (called post-start).
+
+        Two sources, both of which must be checked: ``_disabled_jobs`` (feature
+        switched off) and ``_job_family_keep`` (feature on, job ids changed).
+        Guarding the early return on only the first meant the family sweep
+        silently never ran unless something else happened to be disabled in the
+        same start — caught by test_stale_family_member_is_removed.
+        """
+        # getattr, not a bare attribute: the test suite builds this class with
+        # __new__ and wires only the attributes a case needs, and several
+        # long-standing tests predate _job_family_keep. A hard reference here
+        # broke 10 of them — the method must tolerate a partially-constructed
+        # shell, which is also what a subclass or a future partial init would be.
+        families: Dict[str, set] = getattr(self, "_job_family_keep", {})
+        if not self._disabled_jobs and not families:
             return
         from apscheduler.jobstores.base import JobLookupError
 
         existing = {job.id for job in self.scheduler.get_jobs()}
+
+        # Stale family members: enabled feature, changed job ids.
+        for prefix, keep in families.items():
+            for job_id in sorted(j for j in existing if j.startswith(prefix)):
+                if job_id in keep:
+                    continue
+                try:
+                    self.scheduler.remove_job(job_id)
+                    self.logger.info(
+                        "Removed STALE persisted job '%s' — not registered this "
+                        "run (job ids under '%s*' changed; it would have fired "
+                        "alongside the current set with outdated args)",
+                        job_id,
+                        prefix,
+                    )
+                except JobLookupError:
+                    pass
+
         for spec in dict.fromkeys(self._disabled_jobs):
             if spec.endswith("*"):
                 targets = sorted(j for j in existing if j.startswith(spec[:-1]))
