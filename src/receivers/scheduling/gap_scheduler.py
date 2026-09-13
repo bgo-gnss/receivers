@@ -64,13 +64,43 @@ def _run_gap_detection_job(
             f"{len(session_types)} sessions, {lb.describe(session_types)}"
         )
 
+        from ..config_utils import filter_stations_for_session
+
         with GapDetector() as detector:
             for session_type in session_types:
+                # Only scan receivers that can produce this session at all.
+                # Without this, ~76 non-Septentrio receivers (which have no
+                # status_1hr session) contributed permanent phantom status
+                # gaps: 180 x 36 = 6,480 "expected" instead of 104 x 36 =
+                # 3,744, re-queued into backfill every 6 h forever. The
+                # backfill then requested hour-00 from a NetRS, whose
+                # session_map maps it to the DAILY 15s raw — archiving a
+                # second copy under status_1hr/raw — and got a 44-byte error
+                # body for the other 23 hours, ~5,800 failures/day. The live
+                # download jobs have always applied this narrowing; only
+                # gap detection and the backfill enqueue did not.
+                scan_ids = filter_stations_for_session(
+                    all_stations, station_ids, session_type
+                )
+                if not scan_ids:
+                    logger.info(
+                        "Gap detection %s: no receiver supports this session — skipped",
+                        session_type,
+                    )
+                    continue
+                if len(scan_ids) != len(station_ids):
+                    logger.info(
+                        "Gap detection %s: %d of %d stations support this session",
+                        session_type,
+                        len(scan_ids),
+                        len(station_ids),
+                    )
+
                 # max_files is what makes files_back exact. Under days_back it
                 # equals the full enumerated range, so passing it is a no-op
                 # there and the two units share one call path.
                 summary = detector.get_gap_summary(
-                    station_ids,
+                    scan_ids,
                     session_type,
                     days_back=lb.date_span_days(session_type),
                     receiver_types=receiver_types,
