@@ -8,7 +8,7 @@ DB-driven and **classified**: query ``file_tracking`` / ``file_absence`` /
   ``confirmed_gone``     — ``file_absence.terminal`` OR older than ``receiver_horizon``
                            → skip (ran off the receiver auto-delete cycle)
   ``provisional_absent`` — ``file_absence`` row, not yet terminal → low-priority retry
-  ``already_ok``         — archived → skip
+  ``already_ok``         — present in ``archive_catalog`` → skip
 
 This module is the **read-only classification engine** (this file) plus, later,
 the worker that runs the full pipeline per ``queued`` day. The scheduler wiring
@@ -22,6 +22,34 @@ so it never pollutes this worklist.
 
 Read-only: never calls ``sync_archive_to_db`` (``sync_first=False``), so it
 cannot mutate ``file_tracking``.
+
+The presence oracle is ``archive_catalog``, NOT the filesystem
+--------------------------------------------------------------
+This module used to ask the local filesystem "is this file on disk?" via
+``GapDetector.find_gaps``. That is the wrong question for a *long-term*
+backfill: ``local_prune`` empties the local rolling window after 21 days for
+1Hz while ``lookback_days`` is 30-90, so every healthy station classified its
+own archived hours as gaps, forever. Measured on THOB 2026-09-13:
+``queued=206, already_ok=0`` on a station with zero real gaps.
+
+So the oracle is now the long-term archive's index, keyed on
+``canonical_key`` and filtered to ``storage_location='imo_archive'``:
+
+* **``canonical_key``, never ``file_date``.** ``archive_catalog.file_date``
+  carries known bad values (the imo_archive tier spans ``0012-08-18`` to
+  ``2027-01-01``) from the July mis-dating incident and todo #170. The
+  canonical key embeds station, date, hour and session letter, so a key
+  lookup is immune to all of it. The query hits
+  ``archive_catalog_logical_key``, the UNIQUE index on exactly
+  ``(storage_location, session_type, file_category, canonical_key)``.
+* **``imo_archive`` only.** ``local_raw`` / ``local_rinex`` are the same
+  rolling window in DB form; reading them would reintroduce the very bug this
+  replaces.
+* **Failure is not a gap.** If the catalog cannot be read, the report comes
+  back EMPTY with a warning. Classifying everything as a gap on a failed query
+  would queue a whole lookback window per station — the stampede this feature
+  was disabled for. There is deliberately no filesystem fallback: silently
+  falling back to the oracle being replaced is the worst available outcome.
 """
 
 from __future__ import annotations
@@ -153,6 +181,189 @@ def _archived_dates(sid: str, session: str, start: date, end: date) -> set:
         return set()
 
 
+# The long-term archive tier in ``archive_catalog``. NOT ``local_raw`` /
+# ``local_rinex`` — those mirror the rolling local window that ``local_prune``
+# empties, which is the bug this oracle exists to fix. A test pins this.
+ARCHIVE_STORAGE_LOCATION = "imo_archive"
+
+
+@dataclass(frozen=True)
+class _Slot:
+    """One expected file slot and the canonical keys that would satisfy it."""
+
+    file_date: date
+    file_hour: Optional[int]
+    raw_key: str
+    rinex_keys: tuple[str, ...]
+    raw_path: str
+
+
+def _rinex_keys(sid: str, dt, file_hour: Optional[int]) -> tuple[str, ...]:
+    """Canonical keys of the IGS short-name RINEX products for one slot.
+
+    ``ArchiveFileChecker.build_archive_path`` cannot be used for this: given a
+    ``"<session>_rinex"`` session it returns the *raw* filename unchanged (its
+    extension comes from the receiver type), so a rinex lookup built from it
+    can never match anything. Verified on rek-d01 2026-09-13 — THOB's expected
+    "rinex" key came back as ``thob202609100000b.sbf`` while the archive holds
+    ``THOB253a.26D.Z``. That silently reduced the raw/rinex union to raw only,
+    which is invisible on a healthy PolaRX5 station but wrong for a
+    stream-acquired one: GONH (mosaic-X5, RTCM3 -> BNC -> RINEX) has almost no
+    1Hz raw, so it scored 684 false gaps out of 720 with 3,026 of its RINEX
+    hours sitting in the catalog.
+
+    So the name is built from gtimes' ``#Rin2`` directly, hourly-vs-daily by
+    frequency: ``1H`` yields ``THOB253a.26D`` (hour letter a-x) and ``1D``
+    yields ``THOB2530.26D``.
+
+    Two keys are returned, Hatanaka ``d`` and plain ``o``. ``canonical_key``
+    deliberately does not fold that pair (they carry different
+    ``content_sha256`` values), but for "does the data product exist?" either
+    encoding answers yes.
+    """
+    from ..utils.canonical_key import canonical_key
+
+    freq = "1H" if file_hour is not None else "1D"
+    keys: list[str] = []
+    for ext in ("D", "O"):
+        try:
+            import gtimes.timefunc as gt
+
+            name = gt.datepathlist(f"{sid}#Rin2{ext}", freq, datelist=[dt])[0]
+        except Exception:  # noqa: BLE001
+            continue
+        keys.append(canonical_key(name))
+    return tuple(dict.fromkeys(keys))
+
+
+def _expected_slots(
+    sid: str,
+    session: str,
+    start: date,
+    end: date,
+    receiver_type: Optional[str],
+) -> list[_Slot]:
+    """Every (date, hour) slot in the window, with its raw + rinex canonical keys.
+
+    The slot list and the RAW filename come from ``GapDetector`` so this
+    classifier and ordinary gap detection can never disagree about what a
+    station is *supposed* to produce — only about where they look for it. The
+    RINEX names come from :func:`_rinex_keys`; see there for why they cannot.
+    """
+    from datetime import datetime
+
+    from ..health.file_tracker import GapDetector
+    from ..utils.canonical_key import canonical_key
+
+    slots: list[_Slot] = []
+    with GapDetector() as det:
+        # Private, but deliberately: it is the single definition of "daily vs
+        # hourly" that find_gaps itself uses. Re-deriving it here would let the
+        # two drift. tests/test_ltb_catalog_oracle.py fails if it disappears.
+        expected = det._generate_expected_files(sid, session, start, end)
+        for file_date, file_hour in expected:
+            dt = datetime.combine(file_date, datetime.min.time())
+            if file_hour is not None:
+                dt = dt.replace(hour=file_hour)
+            raw_path = det.archive_checker.build_archive_path(
+                sid, session, dt, receiver_type
+            )
+            slots.append(
+                _Slot(
+                    file_date=file_date,
+                    file_hour=file_hour,
+                    raw_key=canonical_key(raw_path),
+                    rinex_keys=_rinex_keys(sid, dt, file_hour),
+                    raw_path=raw_path,
+                )
+            )
+    return slots
+
+
+def _catalog_present_keys(
+    session: str, file_category: str, keys: list[str]
+) -> Optional[set[str]]:
+    """Which of ``keys`` the long-term archive catalog holds for this session.
+
+    Keyed purely on ``canonical_key`` — there is deliberately NO ``file_date``
+    predicate, because that column carries known-bad values (see the module
+    docstring). Hits ``archive_catalog_logical_key``.
+
+    Returns:
+        The present subset, or ``None`` if the catalog could not be read.
+        ``None`` means "no oracle", NOT "nothing is present": the caller must
+        abandon the run rather than classify the whole window as a gap.
+    """
+    if not keys:
+        return set()
+
+    from ..health.database_factory import DatabaseConnectionFactory
+
+    try:
+        with (
+            DatabaseConnectionFactory.connection(single_host=True) as conn,
+            conn.cursor() as cur,
+        ):
+            cur.execute(
+                "SELECT canonical_key FROM archive_catalog "
+                "WHERE storage_location = %s AND session_type = %s "
+                "AND file_category = %s AND canonical_key = ANY(%s)",
+                (ARCHIVE_STORAGE_LOCATION, session, file_category, list(keys)),
+            )
+            return {r[0] for r in cur.fetchall()}
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "archive_catalog lookup failed (%s/%s, %d keys): %s",
+            session,
+            file_category,
+            len(keys),
+            e,
+        )
+        return None
+
+
+def _known_missing_slots(
+    sid: str, session: str, slots: list[_Slot]
+) -> set[tuple[date, Optional[int]]]:
+    """Slots the receiver is already known not to hold.
+
+    Batched equivalent of the ``skip_missing_on_receiver=True`` branch inside
+    ``find_gaps``: same ``is_file_missing()`` SQL function, same
+    ``use_terminal_absence`` flag, one round trip instead of one per slot.
+
+    Fails CLOSED-ish by design: on error it returns an empty set, i.e. nothing
+    is skipped. That can only make the worklist larger, never silently drop a
+    day that really is recoverable, and the horizon floor still bounds it.
+    """
+    if not slots:
+        return set()
+
+    from ..health.file_tracker import FileTracker
+
+    try:
+        tracker = FileTracker()
+        if not tracker.connect():
+            return set()
+        use_terminal = tracker._use_terminal_absence()
+        with tracker.read_cursor() as cur:
+            cur.execute(
+                "SELECT t.file_date, t.file_hour "
+                "FROM unnest(%s::date[], %s::smallint[]) AS t(file_date, file_hour) "
+                "WHERE is_file_missing(%s, %s, t.file_date, t.file_hour, %s)",
+                (
+                    [sl.file_date for sl in slots],
+                    [sl.file_hour for sl in slots],
+                    sid,
+                    session,
+                    use_terminal,
+                ),
+            )
+            return {(r[0], r[1]) for r in cur.fetchall()}
+    except Exception as e:  # noqa: BLE001
+        logger.debug("known_missing_slots %s/%s: %s", sid, session, e)
+        return set()
+
+
 def query_long_term_gaps(
     sid: str,
     session: str,
@@ -165,17 +376,25 @@ def query_long_term_gaps(
     holes — e.g. a month missing between present data, like SARP's June — are
     found. Read-only; safe to run any time.
 
+    Presence comes from ``archive_catalog`` (see the module docstring), so a
+    station whose local rolling window has been pruned no longer false-gaps.
+    If the catalog cannot be read the report comes back empty — never full.
+
+    The raw/rinex intersection is per SLOT, i.e. ``(file_date, file_hour)``.
+    It used to be ``{g.file_date for g in rinex_gaps}``, a set of *dates*, so
+    for an hourly session a single missing rinex hour made every raw-missing
+    hour that day a download candidate. Harmless while the feature was off and
+    only exercised on daily ``15s_24hr``; wrong for the 1Hz window #174 needs.
+
     Args:
         sid: Station id, e.g. ``"SARP"``.
         session: Session type, e.g. ``"15s_24hr"``.
         lookback_days: Hard cap on how far back to look.
-        receiver_type: Optional, passed to ``GapDetector.find_gaps`` for the
-            correct archive path/extension per receiver family. Auto-looked-up
-            from station config when None (required — the PolaRX5 default path
-            would false-gap every NetRS/NetR9 day).
+        receiver_type: Optional, used to build the correct archive
+            path/extension per receiver family. Auto-looked-up from station
+            config when None (required — the PolaRX5 default path would
+            false-gap every NetRS/NetR9 day).
     """
-    from ..health.file_tracker import GapDetector
-
     sid = sid.upper()
     last_archived = _last_archived_date(sid, session)
     horizon = _receiver_horizon(sid, session)
@@ -202,48 +421,61 @@ def query_long_term_gaps(
     if start > end:
         return report  # fully up to date
 
-    # Download candidates: not in archive AND not known-missing-on-receiver.
-    # skip_missing_on_receiver=True excludes confirmed absences so we don't
-    # waste a slot re-probing files the receiver has aged out.
-    # A day needs downloading only if BOTH raw and rinex are absent: rinex-on-disk
-    # (even when raw was pruned from the local ring-buffer) means the data product
-    # exists, so it is not a real gap. find_gaps checks the filesystem per session,
-    # so this is robust to file_tracking's rinex rows being incomplete.
+    # Download candidates: absent from the LONG-TERM ARCHIVE and not
+    # known-missing-on-receiver. A slot counts as satisfied when EITHER the raw
+    # OR the rinex product is catalogued — a rinex file whose raw was pruned is
+    # still the data product, so it is not a real gap.
     try:
-        with GapDetector() as det:
-            raw_gaps = det.find_gaps(
-                sid,
-                session,
-                start,
-                end,
-                receiver_type=receiver_type,
-                sync_first=False,
-                skip_missing_on_receiver=True,
-            )
-            rinex_gaps = det.find_gaps(
-                sid,
-                f"{session}_rinex",
-                start,
-                end,
-                receiver_type=receiver_type,
-                sync_first=False,
-                skip_missing_on_receiver=False,
-            )
+        slots = _expected_slots(sid, session, start, end, receiver_type)
     except Exception as e:  # noqa: BLE001
-        logger.warning("find_gaps %s/%s: %s", sid, session, e)
-        raw_gaps, rinex_gaps = [], []
+        logger.warning("expected_slots %s/%s: %s", sid, session, e)
+        return report
+
+    raw_present = _catalog_present_keys(session, "raw", [sl.raw_key for sl in slots])
+    rinex_present = _catalog_present_keys(
+        session, "rinex", [k for sl in slots for k in sl.rinex_keys]
+    )
+    if raw_present is None or rinex_present is None:
+        # No oracle. Returning the empty report leaves queued=[] and
+        # already_ok=0, so the run is a no-op and the next one retries. Falling
+        # back to the filesystem here would restore the exact bug this replaces.
+        logger.warning(
+            "Long-term backfill %s/%s: archive_catalog unavailable — "
+            "skipping classification rather than queueing the whole window",
+            sid,
+            session,
+        )
+        return report
 
     term, prov = _absence_counts(sid, session, start, end)
     report.confirmed_gone = term
     report.provisional_absent = prov
 
-    rinex_missing = {g.file_date for g in rinex_gaps}
+    known_missing = _known_missing_slots(sid, session, slots)
     horizon_floor = horizon or date.min
-    report.queued = [
-        g
-        for g in raw_gaps
-        if g.file_date in rinex_missing and g.file_date >= horizon_floor
-    ]
+
+    from ..health.file_tracker import GapInfo
+
+    queued: list[Any] = []
+    for sl in slots:
+        if sl.raw_key in raw_present or rinex_present.intersection(sl.rinex_keys):
+            report.already_ok += 1
+            continue
+        if (sl.file_date, sl.file_hour) in known_missing:
+            continue
+        if sl.file_date < horizon_floor:
+            continue
+        queued.append(
+            GapInfo(
+                station_id=sid,
+                session_type=session,
+                file_date=sl.file_date,
+                file_hour=sl.file_hour,
+                reason="not_in_archive_catalog",
+                expected_path=sl.raw_path,
+            )
+        )
+    report.queued = queued
 
     return report
 
