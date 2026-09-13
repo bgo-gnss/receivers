@@ -33,8 +33,10 @@ from receivers.scheduling import long_term_backfill as ltb
 # helpers
 # --------------------------------------------------------------------------
 def _slot(d, h, raw, rnx):
+    """rnx may be a single key or a tuple of the d/o encoding pair."""
+    keys = (rnx,) if isinstance(rnx, str) else tuple(rnx)
     return ltb._Slot(
-        file_date=d, file_hour=h, raw_key=raw, rinex_key=rnx, raw_path=f"/a/{raw}"
+        file_date=d, file_hour=h, raw_key=raw, rinex_keys=keys, raw_path=f"/a/{raw}"
     )
 
 
@@ -334,3 +336,64 @@ def test_hourly_and_daily_sessions_produce_the_expected_slot_counts():
     hourly = gen(None, "THOB", "1Hz_1hr", start, end)
     assert [h for _, h in daily] == [None]
     assert [h for _, h in hourly] == list(range(24))
+
+
+# --------------------------------------------------------------------------
+# the rinex-name defect found in live validation
+# --------------------------------------------------------------------------
+def test_rinex_keys_are_igs_short_names_not_the_raw_filename():
+    """``build_archive_path`` returns the RAW name for a ``_rinex`` session.
+
+    Found on rek-d01 2026-09-13: the expected "rinex" key for THOB came back as
+    ``thob202609100000b.sbf`` while the archive holds ``THOB253a.26D.Z``. The
+    rinex half of the oracle could therefore never match, silently reducing the
+    raw/rinex union to raw alone. Invisible on a healthy PolaRX5 station;
+    catastrophic on a stream-acquired one — GONH (mosaic-X5) has almost no 1Hz
+    raw and scored 684 false gaps out of 720 with 3,026 RINEX hours catalogued.
+    """
+    from datetime import datetime
+
+    hourly = ltb._rinex_keys("THOB", datetime(2026, 9, 10, 0), 0)
+    assert "thob253a.26d" in hourly
+    assert not any(
+        k.endswith(".sbf") for k in hourly
+    ), "a raw filename here means build_archive_path leaked back in"
+    # hour letter advances a..x
+    assert "thob253b.26d" in ltb._rinex_keys("THOB", datetime(2026, 9, 10, 1), 1)
+    assert "thob253x.26d" in ltb._rinex_keys("THOB", datetime(2026, 9, 10, 23), 23)
+    # daily form ends in 0, not an hour letter
+    assert "thob2530.26d" in ltb._rinex_keys("THOB", datetime(2026, 9, 10), None)
+
+
+def test_rinex_keys_cover_both_hatanaka_and_plain_observation():
+    """canonical_key does not fold ``d``/``o``; both answer "product exists"."""
+    from datetime import datetime
+
+    keys = ltb._rinex_keys("THOB", datetime(2026, 9, 10, 0), 0)
+    assert {"thob253a.26d", "thob253a.26o"} <= set(keys)
+
+
+def test_a_rinex_only_station_is_not_all_gaps(monkeypatch, patched):
+    """The GONH shape: stream-acquired, so raw is absent by design."""
+    from datetime import datetime
+
+    slots = [
+        ltb._Slot(
+            file_date=date(2026, 9, 10),
+            file_hour=h,
+            raw_key=f"gonh2026091{h:02d}b.sbf",
+            rinex_keys=ltb._rinex_keys("GONH", datetime(2026, 9, 10, h), h),
+            raw_path="/a/x",
+        )
+        for h in range(24)
+    ]
+    monkeypatch.setattr(ltb, "_expected_slots", lambda *a, **k: slots)
+    catalogued = {k for sl in slots for k in sl.rinex_keys if k.endswith(".26d")}
+    monkeypatch.setattr(
+        ltb,
+        "_catalog_present_keys",
+        lambda s, cat, keys: catalogued if cat == "rinex" else set(),
+    )
+    rep = ltb.query_long_term_gaps("GONH", "1Hz_1hr", lookback_days=1)
+    assert rep.queued == []
+    assert rep.already_ok == 24

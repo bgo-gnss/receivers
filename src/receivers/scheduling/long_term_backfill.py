@@ -194,8 +194,46 @@ class _Slot:
     file_date: date
     file_hour: Optional[int]
     raw_key: str
-    rinex_key: str
+    rinex_keys: tuple[str, ...]
     raw_path: str
+
+
+def _rinex_keys(sid: str, dt, file_hour: Optional[int]) -> tuple[str, ...]:
+    """Canonical keys of the IGS short-name RINEX products for one slot.
+
+    ``ArchiveFileChecker.build_archive_path`` cannot be used for this: given a
+    ``"<session>_rinex"`` session it returns the *raw* filename unchanged (its
+    extension comes from the receiver type), so a rinex lookup built from it
+    can never match anything. Verified on rek-d01 2026-09-13 — THOB's expected
+    "rinex" key came back as ``thob202609100000b.sbf`` while the archive holds
+    ``THOB253a.26D.Z``. That silently reduced the raw/rinex union to raw only,
+    which is invisible on a healthy PolaRX5 station but wrong for a
+    stream-acquired one: GONH (mosaic-X5, RTCM3 -> BNC -> RINEX) has almost no
+    1Hz raw, so it scored 684 false gaps out of 720 with 3,026 of its RINEX
+    hours sitting in the catalog.
+
+    So the name is built from gtimes' ``#Rin2`` directly, hourly-vs-daily by
+    frequency: ``1H`` yields ``THOB253a.26D`` (hour letter a-x) and ``1D``
+    yields ``THOB2530.26D``.
+
+    Two keys are returned, Hatanaka ``d`` and plain ``o``. ``canonical_key``
+    deliberately does not fold that pair (they carry different
+    ``content_sha256`` values), but for "does the data product exist?" either
+    encoding answers yes.
+    """
+    from ..utils.canonical_key import canonical_key
+
+    freq = "1H" if file_hour is not None else "1D"
+    keys: list[str] = []
+    for ext in ("D", "O"):
+        try:
+            import gtimes.timefunc as gt
+
+            name = gt.datepathlist(f"{sid}#Rin2{ext}", freq, datelist=[dt])[0]
+        except Exception:  # noqa: BLE001
+            continue
+        keys.append(canonical_key(name))
+    return tuple(dict.fromkeys(keys))
 
 
 def _expected_slots(
@@ -207,9 +245,10 @@ def _expected_slots(
 ) -> list[_Slot]:
     """Every (date, hour) slot in the window, with its raw + rinex canonical keys.
 
-    The slot list and the filenames both come from ``GapDetector`` so this
+    The slot list and the RAW filename come from ``GapDetector`` so this
     classifier and ordinary gap detection can never disagree about what a
-    station is *supposed* to produce — only about where they look for it.
+    station is *supposed* to produce — only about where they look for it. The
+    RINEX names come from :func:`_rinex_keys`; see there for why they cannot.
     """
     from datetime import datetime
 
@@ -229,15 +268,12 @@ def _expected_slots(
             raw_path = det.archive_checker.build_archive_path(
                 sid, session, dt, receiver_type
             )
-            rinex_path = det.archive_checker.build_archive_path(
-                sid, f"{session}_rinex", dt, receiver_type
-            )
             slots.append(
                 _Slot(
                     file_date=file_date,
                     file_hour=file_hour,
                     raw_key=canonical_key(raw_path),
-                    rinex_key=canonical_key(rinex_path),
+                    rinex_keys=_rinex_keys(sid, dt, file_hour),
                     raw_path=raw_path,
                 )
             )
@@ -397,7 +433,7 @@ def query_long_term_gaps(
 
     raw_present = _catalog_present_keys(session, "raw", [sl.raw_key for sl in slots])
     rinex_present = _catalog_present_keys(
-        session, "rinex", [sl.rinex_key for sl in slots]
+        session, "rinex", [k for sl in slots for k in sl.rinex_keys]
     )
     if raw_present is None or rinex_present is None:
         # No oracle. Returning the empty report leaves queued=[] and
@@ -422,7 +458,7 @@ def query_long_term_gaps(
 
     queued: list[Any] = []
     for sl in slots:
-        if sl.raw_key in raw_present or sl.rinex_key in rinex_present:
+        if sl.raw_key in raw_present or rinex_present.intersection(sl.rinex_keys):
             report.already_ok += 1
             continue
         if (sl.file_date, sl.file_hour) in known_missing:
