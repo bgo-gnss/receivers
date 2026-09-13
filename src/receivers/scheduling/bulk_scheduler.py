@@ -2826,8 +2826,19 @@ class BulkDownloadScheduler:
             **base_trigger.trigger_kwargs,
         )
 
-        # Schedule an immediate first run (interval triggers default to
-        # start_date=now+interval which delays first execution)
+        # Schedule an immediate first run. Needed for BOTH trigger kinds: an
+        # interval trigger defaults to start_date=now+interval, and a cron
+        # trigger (deployed config since 2026-09-13) waits until its next
+        # matching hour -- up to 6 h of no gap detection after a restart.
+        # Startup delay is 30 min apart, not 60 s apart, for the same reason the
+        # 6 h cron hours are 1 h apart (gps-config-data 2026-09-13): each of
+        # these three walks takes 22-27 min over the same 180 stations on the
+        # same 40-thread executor. Firing them 60/120/180 s apart made them
+        # ~95 %% concurrent, so every RESTART reproduced exactly the pile-up the
+        # cron staggering removes from steady state -- and did it while the
+        # scheduler was also re-registering 848 jobs. gap_detection keeps the
+        # short delay because it is the only thing that re-activates a
+        # completed backfill_progress row.
         self.scheduler.add_job(
             func=_run_gap_detection_job,
             trigger="date",
@@ -2884,7 +2895,7 @@ class BulkDownloadScheduler:
         self.scheduler.add_job(
             func=_run_archive_reconciler_job,
             trigger="date",
-            run_date=datetime.now() + timedelta(seconds=120),
+            run_date=datetime.now() + timedelta(seconds=1800),
             args=[sessions],
             kwargs={"lookback": lookback},
             id="archive_reconciler_startup",
@@ -3111,7 +3122,7 @@ class BulkDownloadScheduler:
         self.scheduler.add_job(
             func=_run_integrity_check_job,
             trigger="date",
-            run_date=datetime.now() + timedelta(seconds=180),
+            run_date=datetime.now() + timedelta(seconds=3600),
             args=job_args,
             kwargs=job_kwargs,
             id="integrity_checker_startup",
