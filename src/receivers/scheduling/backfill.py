@@ -133,8 +133,10 @@ def _enqueue_backfill(session_type: str, station_ids: list, days_back: int) -> i
 
     Semantics (idempotent, safe to call every gap-detection run):
       * No row yet         -> INSERT a pending row covering the last days_back.
-      * Row completed/failed -> RE-ACTIVATE it (status='pending') and widen its
-        range to cover the gap window.
+      * Row completed/failed -> RE-ACTIVATE it (status='pending') and RESET its
+        cursor to the gap window. Deliberately a reset, not a widen: a completed
+        row can hold a cursor far older than its own backfill_end, and
+        LEAST()-ing against it resurrected an ~85-day walk on the next gap.
       * Row pending/in_progress -> LEFT UNTOUCHED (a backfill is already in
         flight for it; don't disturb its cursor).
 
@@ -184,10 +186,29 @@ def _enqueue_backfill(session_type: str, station_ids: list, days_back: int) -> i
                     VALUES (%s, %s, CURRENT_DATE - %s, CURRENT_DATE - %s,
                             CURRENT_DATE, 'pending')
                     ON CONFLICT (sid, session_type) DO UPDATE
-                       SET next_date      = LEAST(backfill_progress.next_date,
-                                                  EXCLUDED.next_date),
-                           backfill_start = LEAST(backfill_progress.backfill_start,
-                                                  EXCLUDED.backfill_start),
+                       -- Reset the cursor to the window being requested; do NOT
+                       -- LEAST() it against whatever the row happened to hold.
+                       -- A completed row can carry a cursor far older than its
+                       -- own backfill_end (200 such rows on rek-d01 2026-09-13,
+                       -- next_date back to 2026-05-17 against a backfill_end of
+                       -- 2026-08-10 — residue from the 2026-08-08..11
+                       -- long_term_backfill window, which writes through this
+                       -- same row). LEAST() resurrected that cursor on the next
+                       -- re-activation, so a station that developed a single
+                       -- fresh gap would be walked day-by-day across ~85 days,
+                       -- almost all of them beyond what the receiver still
+                       -- holds (the 1Hz ring is ~30 days).
+                       --
+                       -- gap_scheduler already documents the intent this
+                       -- restores: "The queued backfill row must cover the SAME
+                       -- window the gaps were found in, or the worker re-widens
+                       -- what this run just narrowed."
+                       --
+                       -- backfill_end keeps GREATEST: the end should only ever
+                       -- move forward, and a row whose end is already beyond
+                       -- today is not something to shrink.
+                       SET next_date      = EXCLUDED.next_date,
+                           backfill_start = EXCLUDED.backfill_start,
                            backfill_end   = GREATEST(backfill_progress.backfill_end,
                                                      EXCLUDED.backfill_end),
                            status         = 'pending',
