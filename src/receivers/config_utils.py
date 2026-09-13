@@ -9,7 +9,7 @@ import logging
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 # Import gtimes for path construction
 try:
@@ -760,3 +760,64 @@ def select_active_stations(
             continue
         selected[sid] = cfg
     return selected
+
+
+def supports_session(receiver_type: Optional[str], session_type: str) -> bool:
+    """Whether ``receiver_type`` can produce ``session_type`` at all.
+
+    **Fail-open by design.** A receiver type that declares no ``session_map``
+    in ``receivers.cfg`` returns ``True`` for every session. That is not
+    laziness: ``mosaic-x5`` has no section (it reuses the PolaRX5 session_map
+    at the receiver level and declares its real sessions per-station via
+    ``remote_sessions``), so a closed filter would silently drop those stations
+    out of gap detection entirely — and a station nothing scans is a station
+    whose gaps are never repaired. Excluding work is safe; excluding a station
+    from *gap detection* loses data.
+
+    The authority is ``receivers_config.get_supported_sessions`` — the same
+    source the live download jobs use (``cli.main`` and
+    ``BulkDownloadScheduler._get_stations_for_session``) — and deliberately NOT
+    ``receiver_registry.REGISTRY[...].sessions``. The two disagree in
+    production: for ``netr5`` the cfg says ``15s_24hr`` only while the registry
+    also claims ``1Hz_1hr``. Filtering on the registry would therefore keep
+    netr5 stations in the 1Hz scan that the downloader refuses to serve —
+    manufacturing exactly the phantom gaps this function exists to remove.
+
+    Case-insensitive: session names come from configparser keys, which are
+    lower-cased on read.
+    """
+    from .config.receivers_config import get_receivers_config
+
+    if not receiver_type:
+        return True
+    supported = get_receivers_config().get_supported_sessions(receiver_type.lower())
+    if not supported:
+        return True
+    return session_type.lower() in {s.lower() for s in supported}
+
+
+def filter_stations_for_session(
+    all_configs: Dict[str, Dict[str, Any]],
+    station_ids: Iterable[str],
+    session_type: str,
+) -> List[str]:
+    """Narrow ``station_ids`` to those whose receiver can produce ``session_type``.
+
+    Companion to :func:`select_active_stations`: that answers "should this
+    station generate work at all", this answers "for THIS session". The
+    scheduler's live download jobs have always applied this narrowing
+    (``status_1hr`` registers ~104 jobs, not 180); ``gap_detection`` and the
+    backfill enqueue did not, so ~76 receivers with no status session at all
+    contributed permanent phantom status gaps — re-queued every 6 h forever,
+    and on NetRS the hour-00 request mapped to the DAILY 15s raw and archived
+    it a second time under ``status_1hr/raw``.
+
+    Order is preserved so log output stays stable.
+    """
+    return [
+        sid
+        for sid in station_ids
+        if supports_session(
+            (all_configs.get(sid) or {}).get("receiver_type"), session_type
+        )
+    ]

@@ -142,6 +142,35 @@ def _enqueue_backfill(session_type: str, station_ids: list, days_back: int) -> i
     """
     if not station_ids:
         return 0
+
+    # Belt-and-braces: the caller (gap_scheduler) now filters by receiver
+    # capability, but this is the function that WRITES the queue, and an
+    # unfiltered row here is what produced ~5,800 failed downloads a day for
+    # receivers that have no status_1hr session at all. Guard the write, not
+    # just the caller — a future caller will forget.
+    try:
+        # From config_utils, NOT cli.main: that module is a 7,000-line command
+        # surface and the scheduling->CLI inversion was deliberately removed
+        # once already (see get_all_station_configs' own docstring). This is a
+        # DB-write path running in every backfill worker.
+        from ..config_utils import filter_stations_for_session, get_all_station_configs
+
+        capable = filter_stations_for_session(
+            get_all_station_configs(), station_ids, session_type
+        )
+        if len(capable) != len(station_ids):
+            logger.info(
+                "Backfill enqueue %s: dropped %d station(s) whose receiver has "
+                "no such session",
+                session_type,
+                len(station_ids) - len(capable),
+            )
+        station_ids = capable
+        if not station_ids:
+            return 0
+    except Exception as e:  # never let the guard block a legitimate enqueue
+        logger.warning(f"Backfill enqueue capability filter skipped: {e}")
+
     try:
         from ..health.database_factory import DatabaseConnectionFactory
 
