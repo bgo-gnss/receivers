@@ -153,6 +153,7 @@ class IngestResult:
     station_id: str
     ingested: List[str] = field(default_factory=list)
     skipped_current: List[str] = field(default_factory=list)
+    skipped_archived: List[str] = field(default_factory=list)
     failed: List[str] = field(default_factory=list)
 
 
@@ -212,6 +213,10 @@ class StreamIngestor:
             if key == cur:
                 result.skipped_current.append(path.name)  # still being written
                 continue
+            dest = parsed.archive_path(self.archive_base, self.session_type)
+            if self._already_archived(path, dest):
+                result.skipped_archived.append(path.name)
+                continue
             try:
                 self._ingest_one(parsed, path)
                 result.ingested.append(path.name)
@@ -221,13 +226,47 @@ class StreamIngestor:
 
         if result.ingested or result.failed:
             logger.info(
-                "Ingest %s: %d ingested, %d skipped (current), %d failed",
+                "Ingest %s: %d ingested, %d skipped (current), "
+                "%d skipped (already archived), %d failed",
                 station_id,
                 len(result.ingested),
                 len(result.skipped_current),
+                len(result.skipped_archived),
                 len(result.failed),
             )
         return result
+
+    @staticmethod
+    def _already_archived(src: Path, dest: Path) -> bool:
+        """True when ``dest`` already holds this hour and ``src`` is not newer.
+
+        Without this, every pass re-ingested every completed file in the RT dir.
+        BNC never deletes what it wrote, so the dir grows without bound (1,293
+        files for GONH on 2026-09-13, back to DOY 205), and each pass ran
+        RNX2CRX + compress + move over all of them. Measured consequences:
+        1,223 of GONH's 1,268 archived RINEX carried that day's mtime, the
+        hourly archive sweep therefore saw ~3,350 "changed" RINEX and pushed
+        them to the SINGLE-CORE rawdata gateway every hour (~59,500 transfers
+        in 17 sweeps), and the same sweep re-upserted ~3,550 archive_catalog
+        rows an hour.
+
+        Compared by MTIME rather than mere existence, deliberately. A bare
+        ``dest.exists()`` check would break the RINEX2 -> RINEX3 transition the
+        per-hour dedupe above exists to protect: if a short ``.YYO`` is ingested
+        on one pass and the long ``.rnx`` for that same hour only appears on a
+        later pass, an existence check would pin the archive to the RINEX 2
+        version forever. A newer source still wins.
+
+        Fails OPEN (returns False -> ingest) if either stat fails, so a
+        permission or race problem degrades to the previous always-ingest
+        behaviour rather than silently dropping data.
+        """
+        try:
+            if not dest.exists():
+                return False
+            return dest.stat().st_mtime >= src.stat().st_mtime
+        except OSError:
+            return False
 
     def _ingest_one(self, parsed: BncRinexFile, obs_path: Path) -> None:
         compressed = self._hatanaka_compress(parsed, obs_path)
