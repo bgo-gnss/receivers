@@ -347,6 +347,12 @@ class FileTracker:
 
     @staticmethod
     def _retract_absence(cur, station_id, session_type, file_date, file_hour) -> int:
+        # NOTE: since migration 073 the SAME retraction runs inside
+        # `upsert_file_tracking`, which every present-marking path funnels
+        # through — so on a migrated database this call finds 0 rows. It is kept
+        # deliberately, not by oversight: it keeps the DOWNLOAD path retracting
+        # if the code is ever deployed ahead of the migration. The two predicates
+        # are identical and must stay so; change both or neither.
         """Drop the ``file_absence`` row for a slot we have just obtained.
 
         ``file_absence`` was write-only: ``record_file_absence`` inserts and
