@@ -3016,6 +3016,11 @@ class BulkDownloadScheduler:
                 "max_workers": cfg.get("max_workers", 2),
                 "max_days_per_station": cfg.get("max_days_per_station"),
                 "run_rinex": cfg.get("run_rinex", True),
+                # S3 run budget — the throttle that gates re-enabling this
+                # feature. max_days_per_station does NOT bound a run: at ~180
+                # stations x 2 sessions it still authorises ~10,800 slots.
+                "max_run_seconds": cfg.get("max_run_seconds", 1800),
+                "max_slots_per_run": cfg.get("max_slots_per_run", 600),
             },
             id="long_term_backfill",
             replace_existing=True,
@@ -3047,6 +3052,9 @@ class BulkDownloadScheduler:
                 "reconnection_window_minutes": cfg.get(
                     "reconnection_window_minutes", 20
                 ),
+                "max_run_seconds": cfg.get("max_run_seconds", 1800),
+                "max_slots_per_run": cfg.get("max_slots_per_run", 600),
+                "reattempt_cooldown_minutes": cfg.get("reattempt_cooldown_minutes", 90),
             },
             id="reconnection_backfill",
             replace_existing=True,

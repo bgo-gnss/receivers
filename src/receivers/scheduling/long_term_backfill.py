@@ -87,11 +87,131 @@ So the oracle is now the long-term archive's index, keyed on
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, date, timedelta
 from typing import Any, Optional
 
 logger = logging.getLogger("receivers.scheduler.long_term_backfill")
+
+
+# ---------------------------------------------------------------------------
+# S3 — the throttle that gates re-enabling this feature
+# ---------------------------------------------------------------------------
+#
+# scheduler.yaml's `long_term_backfill:` block says re-enable needs the
+# idempotence bug fixed AND "either load_monitoring is back or another throttle
+# exists". S1 closed the first half — recovery now sticks, because the
+# classifier reads `archive_catalog`, so a recovered day comes back
+# `already_ok` (verified on rek-d01 2026-09-14: GJFV's days backfilled 09-12
+# all classify `already_ok`, queued=0). This section is the second half.
+#
+# It does NOT route through `_load_monitor_overloaded()`. That predicate
+# returns False whenever `_load_monitor is None`, and `load_monitoring` is
+# still disabled in scheduler.yaml — deliberately, because enabling it makes
+# the reconciler gate on process-wide thread count and self-block live
+# downloads. **Every existing `if _load_monitor_overloaded(): defer` call site
+# in this module is therefore still dead code.** They are left in place for the
+# day load_monitoring returns; nothing here depends on them.
+
+DEFAULT_MAX_RUN_SECONDS = 1800.0  # 30 min — half the reconnection interval
+DEFAULT_MAX_SLOTS_PER_RUN = 600
+
+
+@dataclass
+class RunBudget:
+    """Wall-clock and slot ceiling for ONE run of an LTB job.
+
+    The per-station `max_days` cap does not bound a RUN: at 180 stations x 2
+    sessions, `max_days_per_station=30` still authorises 10,800 slots. With the
+    reachability gate costing a 5-9 s ping per slot (see the module docstring),
+    that is a run measured in days, against `max_workers=2`. This bounds the
+    run itself.
+
+    **Wall-clock is the primary bound, slots the secondary.** A slot's cost
+    varies by two orders of magnitude — an `already_ok` classification is
+    microseconds, a real download is minutes — so a slot count alone cannot
+    bound duration. The clock can, and `max_seconds` defaults to half the
+    15-minute reconnection interval so a run cannot still be going when its
+    successor is due.
+
+    Shared across the daily job's worker threads, so every accessor takes the
+    lock. `take()` is the only way to reserve work: it hands back how much the
+    caller may actually do, which is what lets a station shorten its own queue
+    instead of checking the budget mid-loop and abandoning work half-done.
+    """
+
+    max_seconds: Optional[float] = DEFAULT_MAX_RUN_SECONDS
+    max_slots: Optional[int] = DEFAULT_MAX_SLOTS_PER_RUN
+    _started: float = field(default_factory=time.monotonic)
+    _slots_used: int = 0
+    _lock: Any = field(default_factory=threading.Lock, repr=False)
+    exhausted_reason: Optional[str] = None
+
+    def elapsed(self) -> float:
+        return time.monotonic() - self._started
+
+    @property
+    def slots_used(self) -> int:
+        with self._lock:
+            return self._slots_used
+
+    def exhausted(self) -> bool:
+        """True once either ceiling is reached; records WHICH one, once."""
+        with self._lock:
+            return self._exhausted_locked()
+
+    def _exhausted_locked(self) -> bool:
+        if self.max_seconds is not None and self.elapsed() >= self.max_seconds:
+            if self.exhausted_reason is None:
+                self.exhausted_reason = (
+                    f"wall-clock {self.elapsed():.0f}s >= {self.max_seconds:.0f}s"
+                )
+            return True
+        if self.max_slots is not None and self._slots_used >= self.max_slots:
+            if self.exhausted_reason is None:
+                self.exhausted_reason = f"slots {self._slots_used} >= {self.max_slots}"
+            return True
+        return False
+
+    def take(self, want: int) -> int:
+        """Reserve up to `want` slots; returns how many were granted (>= 0).
+
+        Reserving up front rather than checking per slot is what keeps a
+        station's work coherent: it trims its queue to what it may finish
+        instead of stopping mid-way through one.
+        """
+        if want <= 0:
+            return 0
+        with self._lock:
+            if self._exhausted_locked():
+                return 0
+            if self.max_slots is None:
+                granted = want
+            else:
+                granted = max(0, min(want, self.max_slots - self._slots_used))
+            self._slots_used += granted
+            return granted
+
+    def give_back(self, n: int) -> None:
+        """Return slots reserved but not used (a station that short-circuited).
+
+        Without this, a station skipped for being offline would still spend its
+        whole reservation and starve the stations behind it — the opposite of
+        what the short-circuit is for.
+        """
+        if n <= 0:
+            return
+        with self._lock:
+            self._slots_used = max(0, self._slots_used - n)
+
+    def describe(self) -> str:
+        cap_s = f"{self.max_seconds:.0f}s" if self.max_seconds else "unbounded"
+        cap_n = str(self.max_slots) if self.max_slots else "unbounded"
+        return (
+            f"budget {self.slots_used}/{cap_n} slots, " f"{self.elapsed():.0f}s/{cap_s}"
+        )
 
 
 @dataclass
@@ -109,6 +229,10 @@ class LongTermGapReport:
     provisional_absent: int = 0  # absent, not yet terminal
     already_ok: int = 0  # present in archive within the window
     not_settled: int = 0  # too recent for archive absence to be evidence
+    # --- S3 throttle outcomes (set by the worker, not the classifier) ---
+    skipped_offline: bool = False  # connectivity says down: whole queue skipped
+    unreachable_slots: int = 0  # slots that hit the driver ping gate this run
+    budget_capped: int = 0  # queued slots the run budget declined to start
 
     @property
     def total_window_days(self) -> int:
@@ -123,6 +247,13 @@ class LongTermGapReport:
             f"queued={len(self.queued)} confirmed_gone={self.confirmed_gone} "
             f"provisional_absent={self.provisional_absent} already_ok={self.already_ok} "
             f"not_settled={self.not_settled}"
+            + (" | SKIPPED: station offline" if self.skipped_offline else "")
+            + (
+                f" | unreachable={self.unreachable_slots}"
+                if self.unreachable_slots
+                else ""
+            )
+            + (f" | budget_capped={self.budget_capped}" if self.budget_capped else "")
         )
 
 
@@ -589,6 +720,99 @@ def format_report(report: LongTermGapReport, max_queued: int = 12) -> str:
     return "\n".join(lines)
 
 
+# How stale a `station_connectivity` row may be and still gate a whole queue.
+# The health job refreshes every 5 min, so anything older than this means the
+# monitor itself is not running and its verdict is not evidence.
+CONNECTIVITY_TRUST_MINUTES = 30
+
+# Reconnection re-attempt cooldown.
+#
+# The historical symptom ("VMEY's same 3 days recovered 5x in one day", the
+# scheduler.yaml block) was the IDEMPOTENCE bug: recovery did not stick, so
+# every tick re-queued the same days. S1 fixed that — a recovered day is
+# `already_ok` on the next pass.
+#
+# What remains is narrower and bounded: `archive_catalog` lags a successful
+# recovery by roughly the archive-sync interval (measured ~1.4 h for most
+# stations), while the reconnection job runs every 15 min. A station that
+# FLAPS therefore mints a fresh `state_since` each time and can be re-picked
+# several times inside that lag window, re-attempting days already recovered.
+#
+# This is insurance, not a hot path: measured on rek-d01 2026-09-14, only 7
+# stations reconnected in 24 h fleet-wide, and a non-flapping station's
+# `state_since` does not change, so it naturally falls out of the 20-minute
+# candidate window after ~2 ticks.
+#
+# In-process on purpose. A restart clears it, which is correct — the run
+# budget still bounds the damage, and persisting it would mean a DB write per
+# station per tick to suppress work that is already cheap when it does recur.
+DEFAULT_REATTEMPT_COOLDOWN_MINUTES = 90
+
+_attempt_lock = threading.Lock()
+_last_attempt: dict[str, float] = {}
+
+
+def _recently_attempted(sid: str, cooldown_minutes: int) -> bool:
+    """True if `sid` was attempted within the cooldown (never blocks on error)."""
+    if cooldown_minutes <= 0:
+        return False
+    with _attempt_lock:
+        last = _last_attempt.get(sid)
+    return last is not None and (time.monotonic() - last) < cooldown_minutes * 60
+
+
+def _mark_attempted(sid: str) -> None:
+    with _attempt_lock:
+        _last_attempt[sid] = time.monotonic()
+
+
+def _reset_attempt_history() -> None:
+    """Clear the cooldown map. For tests; never called in production."""
+    with _attempt_lock:
+        _last_attempt.clear()
+
+
+def _station_is_offline(sid: str) -> Optional[bool]:
+    """Is `sid` down, per `station_connectivity`? ``None`` when we cannot say.
+
+    This is the cheap half of the per-station short-circuit: the health job
+    already pings every station every 5 minutes and stores the verdict, so
+    asking the DB costs nothing and saves up to 720 pings for a dead station.
+
+    **Absence of evidence is never treated as "offline".** A missing row, a
+    stale row, or a failed query all return ``None``, and the caller proceeds —
+    a monitoring outage must not silently stop recovery fleet-wide. The
+    expensive half (reacting to a live ping failure mid-run) is what covers
+    the case this one misses: a station that is down while its row still says
+    online.
+
+    `station_connectivity` already requires two consecutive failed pings before
+    reporting offline, so this does not fire on a single lossy-link blip.
+    """
+    from ..health.database_factory import DatabaseConnectionFactory
+
+    try:
+        with (
+            DatabaseConnectionFactory.connection(single_host=True) as conn,
+            conn.cursor() as cur,
+        ):
+            cur.execute(
+                "SELECT is_online, last_check < now() - make_interval(mins => %s) "
+                "FROM station_connectivity WHERE sid = %s",
+                (CONNECTIVITY_TRUST_MINUTES, sid),
+            )
+            row = cur.fetchone()
+    except Exception as e:  # noqa: BLE001 - never block recovery on a DB blip
+        logger.debug("connectivity lookup failed for %s: %s", sid, e)
+        return None
+    if not row:
+        return None
+    is_online, is_stale = row[0], row[1]
+    if is_online is None or is_stale:
+        return None
+    return not is_online
+
+
 def run_long_term_backfill_station(
     sid: str,
     session: str,
@@ -598,6 +822,7 @@ def run_long_term_backfill_station(
     max_days: Optional[int] = None,
     receiver_type: Optional[str] = None,
     settle_hours: int = DEFAULT_SETTLE_HOURS,
+    budget: Optional[RunBudget] = None,
 ) -> LongTermGapReport:
     """Recover one station's classified gaps through the full per-day pipeline.
 
@@ -615,6 +840,17 @@ def run_long_term_backfill_station(
         run_rinex: run RINEX conversion after download (default True).
         dry_run: classify only, no downloads.
         max_days: cap how many queued days to process this run (throttle).
+        budget: shared per-RUN ceiling (see :class:`RunBudget`). When given,
+            this station trims its queue to what the budget still allows and
+            returns unused reservation, so one station cannot starve the rest.
+
+    Throttles, in the order they apply (all reported in ``report.summary()``):
+
+    1. **Station offline** → skip the whole queue, one DB read, zero pings.
+    2. **Run budget** → trim the queue to what this run may still start.
+    3. **Live unreachable** → abandon the remainder the moment the driver's own
+       ping gate refuses a slot, which covers the station whose connectivity
+       row is wrong.
     """
     report = query_long_term_gaps(
         sid,
@@ -633,7 +869,40 @@ def run_long_term_backfill_station(
         )
         return report
 
+    # (1) Station-level short-circuit, BEFORE any slot work. One DB read
+    # replaces up to `len(queued)` pings at 5-9 s each.
+    if _station_is_offline(sid):
+        report.skipped_offline = True
+        logger.info(
+            "Long-term backfill %s/%s: station offline — skipping %d queued slot(s) "
+            "(saved ~%d ping(s))",
+            sid,
+            session,
+            n,
+            n,
+        )
+        return report
+
     queued = report.queued if not max_days else report.queued[:max_days]
+
+    # (2) Run budget. Reserve up front so the queue is trimmed coherently
+    # rather than abandoned mid-slot, and so unused reservation goes back.
+    reserved = len(queued)
+    if budget is not None:
+        granted = budget.take(reserved)
+        if granted < reserved:
+            report.budget_capped = reserved - granted
+            logger.info(
+                "Long-term backfill %s/%s: run budget allows %d of %d slot(s) (%s)",
+                sid,
+                session,
+                granted,
+                reserved,
+                budget.describe(),
+            )
+        queued = queued[:granted]
+        reserved = granted
+
     logger.info(
         "Long-term backfill %s/%s: %d/%d day(s) to recover%s",
         sid,
@@ -643,12 +912,21 @@ def run_long_term_backfill_station(
         " [DRY RUN]" if dry_run else "",
     )
     if dry_run:
+        if budget is not None:
+            budget.give_back(reserved)
         return report
 
     from .backfill import _backfill_station_day_generic
 
     recovered = failed = 0
-    for gap in queued:
+    for i, gap in enumerate(queued):
+        # (3) Live reachability. `download_data` returns status='unreachable'
+        # when its own ping gate refuses, which the shared primitive folds into
+        # files_error and does NOT raise on — so before this, an unreachable
+        # station drained its whole queue AND logged every slot as `recovered`.
+        # The out-param surfaces it without changing the primitive's return
+        # type, which three other callers depend on for cursor advancement.
+        outcome: dict = {}
         try:
             _backfill_station_day_generic(
                 sid,
@@ -657,7 +935,22 @@ def run_long_term_backfill_station(
                 session,
                 immediate_archive=True,
                 run_rinex=run_rinex,
+                outcome=outcome,
             )
+            if outcome.get("status") == "unreachable":
+                report.unreachable_slots += 1
+                remaining = len(queued) - i - 1
+                logger.info(
+                    "Long-term backfill %s/%s: unreachable at %s — abandoning "
+                    "%d remaining slot(s) this run",
+                    sid,
+                    session,
+                    gap.file_date,
+                    remaining,
+                )
+                if budget is not None:
+                    budget.give_back(remaining)
+                break
             recovered += 1
         except Exception as e:  # noqa: BLE001
             failed += 1
@@ -665,11 +958,12 @@ def run_long_term_backfill_station(
                 "Long-term backfill %s/%s/%s failed: %s", sid, session, gap.file_date, e
             )
     logger.info(
-        "Long-term backfill %s/%s done: recovered=%d failed=%d",
+        "Long-term backfill %s/%s done: recovered=%d failed=%d%s",
         sid,
         session,
         recovered,
         failed,
+        f" unreachable={report.unreachable_slots}" if report.unreachable_slots else "",
     )
     return report
 
@@ -698,11 +992,18 @@ def _run_long_term_backfill_job(
     max_days_per_station: Optional[int] = None,
     run_rinex: bool = True,
     settle_hours: int = DEFAULT_SETTLE_HOURS,
+    max_run_seconds: Optional[float] = DEFAULT_MAX_RUN_SECONDS,
+    max_slots_per_run: Optional[int] = DEFAULT_MAX_SLOTS_PER_RUN,
 ) -> None:
     """APScheduler **daily backstop**: classify every active station, recover gaps.
 
-    Throttled (low ``max_workers``) and yields to RT via :func:`_load_monitor_overloaded`.
-    The worker is idempotent (sync-skips present files), so a daily run is safe.
+    Throttled by a shared :class:`RunBudget` (wall-clock + slots) and a
+    per-station offline short-circuit. The ``_load_monitor_overloaded()`` yield
+    below is **dead code** while ``load_monitoring`` is disabled — see the S3
+    note at the top of this module; the budget is what actually bounds a run.
+
+    The worker is idempotent (the classifier reads ``archive_catalog``, so a
+    recovered day comes back ``already_ok``), so a daily run is safe.
     This is the backstop; the reconnection trigger is the primary path.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -717,14 +1018,18 @@ def _run_long_term_backfill_job(
         and cfg.get("station_status") not in ("discontinued", "inactive")
         and cfg.get("health_check") != "passive"
     ]
+    budget = RunBudget(max_seconds=max_run_seconds, max_slots=max_slots_per_run)
     logger.info(
-        "Long-term backfill(daily): %d stations, sessions=%s, lookback=%dd",
+        "Long-term backfill(daily): %d stations, sessions=%s, lookback=%dd, %s",
         len(active),
         sessions,
         lookback_days,
+        budget.describe(),
     )
 
     def _one(sid: str, session: str):
+        if budget.exhausted():
+            return None
         if _load_monitor_overloaded():
             logger.info("Long-term backfill: load high — deferring %s/%s", sid, session)
             return None
@@ -736,6 +1041,7 @@ def _run_long_term_backfill_job(
                 run_rinex=run_rinex,
                 max_days=max_days_per_station,
                 settle_hours=settle_hours,
+                budget=budget,
             )
             return len(report.queued)
         except Exception as e:  # noqa: BLE001
@@ -749,8 +1055,14 @@ def _run_long_term_backfill_job(
             for f in as_completed(ex.submit(_one, sid, s) for sid, s in tasks)
         ]
     logger.info(
-        "Long-term backfill(daily) done: %d station/session had queued gaps",
+        "Long-term backfill(daily) done: %d station/session had queued gaps, %s%s",
         sum(1 for r in results if r),
+        budget.describe(),
+        (
+            f" — STOPPED EARLY: {budget.exhausted_reason}"
+            if budget.exhausted_reason
+            else ""
+        ),
     )
 
 
@@ -761,6 +1073,9 @@ def _run_reconnection_backfill_job(
     max_days_per_station: Optional[int] = None,
     reconnection_window_minutes: int = 20,
     settle_hours: int = DEFAULT_SETTLE_HOURS,
+    max_run_seconds: Optional[float] = DEFAULT_MAX_RUN_SECONDS,
+    max_slots_per_run: Optional[int] = DEFAULT_MAX_SLOTS_PER_RUN,
+    reattempt_cooldown_minutes: int = DEFAULT_REATTEMPT_COOLDOWN_MINUTES,
 ) -> None:
     """APScheduler **reconnection trigger**: recover stations that just came online.
 
@@ -798,12 +1113,26 @@ def _run_reconnection_backfill_job(
     )
 
     floor = date.today() - timedelta(days=min_outage_days)
+    budget = RunBudget(max_seconds=max_run_seconds, max_slots=max_slots_per_run)
     for sid in candidates:
+        if budget.exhausted():
+            logger.info(
+                "Long-term backfill(reconnect): %s — deferring remaining station(s)",
+                budget.exhausted_reason,
+            )
+            break
         if _load_monitor_overloaded():
             logger.info(
                 "Long-term backfill(reconnect): load high — deferring remaining"
             )
             break
+        if _recently_attempted(sid, reattempt_cooldown_minutes):
+            logger.debug(
+                "Long-term backfill(reconnect): %s attempted < %dm ago — skipping",
+                sid,
+                reattempt_cooldown_minutes,
+            )
+            continue
         try:
             report = query_long_term_gaps(
                 sid, "15s_24hr", lookback_days=lookback_days, settle_hours=settle_hours
@@ -811,6 +1140,7 @@ def _run_reconnection_backfill_job(
             # only act on a real outage: a queued day older than min_outage_days,
             # so a brief flap doesn't trigger a heavy multi-month recovery.
             if report.queued and any(g.file_date <= floor for g in report.queued):
+                _mark_attempted(sid)
                 run_long_term_backfill_station(
                     sid,
                     "15s_24hr",
@@ -818,6 +1148,7 @@ def _run_reconnection_backfill_job(
                     run_rinex=run_rinex,
                     max_days=max_days_per_station,
                     settle_hours=settle_hours,
+                    budget=budget,
                 )
         except Exception as e:  # noqa: BLE001
             logger.warning("Long-term backfill(reconnect) %s: %s", sid, e)

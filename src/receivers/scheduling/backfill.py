@@ -380,6 +380,7 @@ def _backfill_station_day_generic(
     session_type: str,
     immediate_archive: bool = False,
     run_rinex: bool = False,
+    outcome: Optional[dict] = None,
 ) -> bool:
     """Process one day of backfill for any session type.
 
@@ -395,6 +396,18 @@ def _backfill_station_day_generic(
         immediate_archive: If True, archive each file immediately.
                           If False (bulk), download all then archive.
         run_rinex: If True, run RINEX conversion after successful download.
+        outcome: Optional caller-owned dict, filled in with this day's download
+                 result (``status``, ``files_downloaded``). An OUT-PARAM rather
+                 than a richer return value on purpose: the ``bool`` return is
+                 "is there more work", and three callers
+                 (``backfill._run_backfill_job``, ``cli/scheduler.py``, the
+                 long-term backfill worker) drive cursor advancement from it.
+                 Widening it would touch all of them for the benefit of one.
+
+                 Long-term backfill reads ``status`` to short-circuit a station
+                 the driver's ping gate has just refused — without it,
+                 ``unreachable`` is indistinguishable from success here, since
+                 it is folded into ``files_error`` and never raises.
 
     Returns:
         True if there's more work to do, False if backfill is complete
@@ -430,8 +443,14 @@ def _backfill_station_day_generic(
 
         if result is None:
             files_error = 1
+            if outcome is not None:
+                outcome["status"] = "failed"
+                outcome["files_downloaded"] = 0
         else:
             status = result.get("status", "failed")
+            if outcome is not None:
+                outcome["status"] = status
+                outcome["files_downloaded"] = result.get("files_downloaded", 0)
             downloaded_files = result.get("downloaded_files", [])
             files_downloaded = result.get("files_downloaded", 0)
 
