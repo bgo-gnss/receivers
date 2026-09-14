@@ -54,7 +54,7 @@ def read_obs_header_identity(
         for i, line in enumerate(fh):
             label = line[60:].strip()
             if label == "TIME OF FIRST OBS":
-                first_obs = _parse_first_obs(line[:60])
+                first_obs = parse_first_obs_value(line[:60])
             elif label == "APPROX POSITION XYZ":
                 try:
                     x, y, z = (float(v) for v in line[:60].split()[:3])
@@ -68,7 +68,7 @@ def read_obs_header_identity(
     return first_obs, xyz, marker
 
 
-def _parse_first_obs(value: str) -> Optional[datetime]:
+def parse_first_obs_value(value: Optional[str]) -> Optional[datetime]:
     """``2026 9 8 19 26 45.0000000 GPS`` → ``datetime(2026, 9, 8, 19, 26, 45)``.
 
     Seconds are FLOORED and carried as a timedelta rather than passed to the
@@ -79,7 +79,9 @@ def _parse_first_obs(value: str) -> Optional[datetime]:
     A header carrying only ``y m d`` (no time) parses to midnight — the same
     value the filename would have given, so such a file is simply not refined.
     """
-    parts = value.split()
+    if value is None:
+        return None
+    parts = str(value).split()
     try:
         year, month, day = (int(p) for p in parts[:3])
         base = datetime(year, month, day)
@@ -123,14 +125,42 @@ def resolve_tos_lookup_epoch(
     except Exception as exc:  # noqa: BLE001 - refinement is fail-open
         log.debug(f"first-obs read failed for {rinex_file}: {exc}")
         return claimed
+    return refine_tos_epoch(claimed, first_obs, log, Path(rinex_file).name)
+
+
+def refine_tos_epoch(
+    claimed: Optional[datetime],
+    first_obs: Optional[datetime],
+    log: Optional[Any] = None,
+    source: str = "the header",
+) -> Optional[datetime]:
+    """Apply the day-preserving refinement to an ALREADY-PARSED first-obs epoch.
+
+    Split out from :func:`resolve_tos_lookup_epoch` so the rule lives in exactly
+    one place. The two callers reach the epoch differently and neither should
+    re-implement the rule:
+
+    * the archive converter has a plain file on disk and reads it;
+    * ``--fix-headers`` already holds the decompressed header value (its files
+      are ``.Z``/``.gz`` in the archive, so re-opening them to re-read one field
+      would mean decompressing twice).
+    """
+    if claimed is None:
+        return None
+    log = log or logger
     if first_obs is None or first_obs.date() != claimed.date():
         return claimed
     if first_obs != claimed:
         log.debug(
             f"TOS lookup epoch refined {claimed:%H:%M:%S} → {first_obs:%H:%M:%S} "
-            f"from {Path(rinex_file).name}'s TIME OF FIRST OBS"
+            f"from {source}'s TIME OF FIRST OBS"
         )
     return first_obs
 
 
-__all__ = ["read_obs_header_identity", "resolve_tos_lookup_epoch"]
+__all__ = [
+    "read_obs_header_identity",
+    "parse_first_obs_value",
+    "refine_tos_epoch",
+    "resolve_tos_lookup_epoch",
+]

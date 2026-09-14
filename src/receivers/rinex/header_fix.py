@@ -36,6 +36,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
+from .obs_epoch import parse_first_obs_value, refine_tos_epoch
+
 logger = logging.getLogger("receivers.rinex.header_fix")
 
 
@@ -268,7 +270,25 @@ def fix_headers_in_file(
         from ..dissemination.tos_access import TOSSesionCache
 
         tos_cache = TOSSesionCache()
-    tos_session = tos_cache.get_session(station_id, observation_date)
+    # TOS device sessions are bounded by real timestamps, so a station whose
+    # receiver was swapped mid-day is unresolvable from a date alone: a RINEX 2
+    # daily name carries no time and resolves to midnight, landing in the OLD
+    # era. Ask with the file's own first-observation epoch instead. The archive
+    # converter was fixed the same way (obs_epoch); leaving this path on
+    # midnight would make --fix-headers REVERT a header the converter got right.
+    #
+    # The epoch is taken from `rinex_info`, already read above — these files are
+    # .Z/.gz in the archive and re-opening one to re-read a single field would
+    # decompress it twice. `observation_date` itself is untouched: it is the
+    # file's CLAIMED date and still drives reporting and the misdated-file
+    # comparison below.
+    lookup_epoch = refine_tos_epoch(
+        observation_date,
+        parse_first_obs_value(rinex_info.get("TIME OF FIRST OBS")),
+        logger,
+        source_path.name,
+    )
+    tos_session = tos_cache.get_session(station_id, lookup_epoch)
     if tos_session is None:
         result["error"] = "no TOS session covers this date"
         return result
@@ -1008,7 +1028,20 @@ def archive_header_matches_tos(
         from ..dissemination.tos_access import TOSSesionCache
 
         tos_cache = TOSSesionCache()
-    tos_session = tos_cache.get_session(station_id, observation_date)
+    # Same epoch refinement as the fix path, and for a sharper reason: this gate
+    # decides whether a pre-fix BACKUP may be deleted. Asking TOS with a
+    # different session than the fix used would make the two disagree on every
+    # changeover day — the corrected file would never verify, and its backup
+    # would be kept forever.
+    tos_session = tos_cache.get_session(
+        station_id,
+        refine_tos_epoch(
+            observation_date,
+            parse_first_obs_value(info.get("TIME OF FIRST OBS")),
+            logger,
+            Path(archive_file).name,
+        ),
+    )
     if tos_session is None:
         return False
     comparison = compare_rinex_to_tos(info, tos_session, loglevel=loglevel)
