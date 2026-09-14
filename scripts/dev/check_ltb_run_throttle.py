@@ -141,6 +141,17 @@ def main() -> int:
         f"({hours(granted)} of ping worst-case), against an unthrottled "
         f"{hours(saved + would_run)}."
     )
+    print(
+        "\nLIMIT OF THIS MODEL — read before quoting the figure above.\n"
+        "  Every duration here is slots x PING cost. That is the right model\n"
+        "  for an UNREACHABLE station, and the wrong one for a reachable one,\n"
+        "  where a run is dominated by download + RINEX time (minutes per\n"
+        "  slot, not seconds). So this demonstrates the offline gate and the\n"
+        "  slot cap, and says NOTHING about the case the wall-clock ceiling\n"
+        "  exists for — the 'one THEY pass ran 49 minutes' shape in\n"
+        "  scheduler.yaml. Only the clock bounds that, and only a live run\n"
+        "  shows it."
+    )
     return 0
 
 
