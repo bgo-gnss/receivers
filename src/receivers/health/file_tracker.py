@@ -345,6 +345,39 @@ class FileTracker:
             except Exception:  # noqa: BLE001
                 pass
 
+    @staticmethod
+    def _retract_absence(cur, station_id, session_type, file_date, file_hour) -> int:
+        """Drop the ``file_absence`` row for a slot we have just obtained.
+
+        ``file_absence`` was write-only: ``record_file_absence`` inserts and
+        promotes, and NOTHING ever retracted a row — not even a later successful
+        download of that exact file. Measured 2026-09-14: after recovering
+        RIFC/15s_24hr/2026-09-05, ``file_tracking`` correctly read ``downloaded,
+        75485 bytes`` while ``file_absence`` still read ``terminal = t``.
+
+        That is latent rather than harmful only because ``use_terminal_absence``
+        is false. The moment it is enabled, a stale terminal row makes
+        ``is_file_missing()`` return TRUE for a file already in the archive, so
+        gap detection and the backfill would skip a slot we hold.
+
+        Deleting rather than un-flagging: the slot is no longer absent, and
+        ``record_file_absence`` recreates the row from scratch if it goes missing
+        again — which is the honest state, and keeps the confirmation counter
+        meaningful instead of resuming from a stale total.
+
+        ``IS NOT DISTINCT FROM`` on ``file_hour`` matches the table's
+        ``NULLS NOT DISTINCT`` unique constraint, so a daily slot (NULL hour)
+        retracts correctly instead of never matching.
+        """
+        cur.execute(
+            """DELETE FROM file_absence
+                WHERE source_location = 'receiver' AND sid = %s
+                  AND session_type = %s AND file_date = %s
+                  AND file_hour IS NOT DISTINCT FROM %s::smallint""",
+            (station_id, session_type, file_date, file_hour),
+        )
+        return cur.rowcount or 0
+
     def mark_file_downloaded(
         self,
         station_id: str,
@@ -387,7 +420,20 @@ class FileTracker:
                         remote_file_size,
                     ),
                 )
+                # Same transaction: having the file and recording it absent
+                # must never both be true.
+                retracted = self._retract_absence(
+                    cur, station_id, session_type, file_date, file_hour
+                )
             self._conn.commit()
+            if retracted:
+                logger.info(
+                    "Retracted %d stale file_absence row(s) for %s/%s/%s",
+                    retracted,
+                    station_id,
+                    session_type,
+                    file_date,
+                )
             logger.debug(
                 f"Marked file as downloaded: {station_id}/{session_type}/{file_date}"
             )
