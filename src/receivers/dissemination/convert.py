@@ -152,7 +152,16 @@ def _is_hatanaka(name: str) -> bool:
 #       source bytes nor the TOS fingerprint move, and without a new schema
 #       version a re-push of those two would silently re-serve the cached stale
 #       header. Re-heads for the other 342 produce identical bytes.
-HEADER_SCHEMA_VERSION = 4
+#   v5: the TOS session lookup keyed on the FILENAME-derived date, which for a
+#       daily file is midnight. TOS sessions are bounded by real timestamps, so
+#       a station whose receiver was swapped mid-day published the header of the
+#       hardware it no longer had (measured: RFEL 2026-09-08, data from 19:26 on
+#       a PolaRX5, header said TRIMBLE NETRS). Now keyed on the file's own
+#       TIME OF FIRST OBS. Affects each station only on its CHANGEOVER days, but
+#       the bump is fleet-wide for the same reason as v4 — it is a code change,
+#       so neither the source bytes nor the TOS fingerprint move, and every
+#       other date re-heads to identical bytes.
+HEADER_SCHEMA_VERSION = 5
 
 
 def cache_key(
@@ -933,10 +942,18 @@ def set_header_from_tos(
     try:
         from tostools.rinex import correct_rinex_from_tos
 
+        from ..rinex.obs_epoch import resolve_tos_lookup_epoch
+
+        # TOS sessions are bounded by real timestamps, so a station whose
+        # receiver was swapped mid-day cannot be resolved from a date alone: a
+        # daily filename resolves to midnight and lands in the OLD era. Ask with
+        # the file's own first-observation epoch. `staged` here is a plain
+        # uncompressed obs copy, so reading one header field is cheap, and the
+        # refinement never moves the DAY (see obs_epoch).
         result = correct_rinex_from_tos(
             rinex_file=rinex_file,
             station_id=station.upper(),
-            observation_date=observation_dt,
+            observation_date=resolve_tos_lookup_epoch(rinex_file, observation_dt),
             output_file=rinex_file,
             station_config=None,  # force TOS (canonical for EPOS), not station.cfg
             loglevel=logging.WARNING,
