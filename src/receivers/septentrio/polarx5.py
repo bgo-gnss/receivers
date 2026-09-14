@@ -1309,6 +1309,129 @@ class PolaRX5(BaseReceiver):
                 return Path(arch_path).name
         return fname
 
+    def _fetch_unfinalised_variant(
+        self,
+        ftp,
+        remote_file,
+        file_name,
+        local_file,
+        session,
+        downloaded_files,
+        file_tracker,
+        is_hourly_session,
+        immediate_archive,
+        archive,
+        missing_file_dict,
+        get_file_datetime,
+    ) -> bool:
+        """Fetch a day the receiver left UNFINALISED, i.e. never compressed.
+
+        Septentrio writes ``{SID}{DOY}{s}.{yy}_.A`` while a log is active and
+        finalises it to ``…_.gz``. A day the receiver was interrupted never
+        finalises: it is left as a bare ``{SID}{DOY}{s}.{yy}_`` with no ``.gz``
+        and no ``.A``. Because ``_build_remote_template`` bakes in
+        ``compression`` (default ``.gz``), the downloader asks only for the
+        ``.gz``, gets a 550 every time, and after 3 days / 3 confirmations the
+        slot is promoted to a TERMINAL ``file_absence`` — permanently skipped
+        once ``use_terminal_absence`` is ever enabled, while the data sits on
+        the receiver.
+
+        Measured on RIFC 2026-09-14. Every bare file is an exact multiple of
+        4096 and much smaller than a normal day, i.e. a partial, block-aligned
+        log::
+
+            26244  RIFC2440.26_       2,768,896   (676 x 4096)  unfinalised
+            26245  RIFC2450.26_.gz      988,082                 normal
+            26248  RIFC2480.26_         131,072   ( 32 x 4096)  unfinalised
+            26250  RIFC2500.26_.gz    4,746,823                 normal
+
+        They persist — the 2026-09-03/04 files were still bare 10-11 days on —
+        so this is not a compress-on-a-delay window.
+
+        Partial data is still data, so fetch it. Two deliberate limits:
+
+        * **Only the bare name is tried, never ``.A``.** ``.A`` is the log the
+          receiver is writing *right now*; fetching it would race the writer.
+          A bare-name probe cannot reach it (different suffix) and this must
+          not be generalised to "try any suffix".
+        * **``SIZE``, not ``NLST``.** The download path uses ``SIZE`` and the
+          two do not agree on this server: ``SIZE …_.gz`` answers
+          ``550 Can't check for file existence`` while ``SIZE …_`` returns the
+          length. Verified before this was written.
+
+        The fetched bytes are gzipped to ``local_file`` (the ``.gz`` name) so
+        every downstream consumer — validation, ``file_tracking`` identity,
+        ``_disk_filename``, the archiver — sees exactly what it expects. Writing
+        uncompressed bytes into a ``.gz``-named file would fail gzip validation
+        later.
+
+        Returns True if the slot was handled (caller should ``continue``).
+        """
+        if not remote_file.endswith(".gz"):
+            return False
+        bare_remote = remote_file[:-3]
+        try:
+            bare_size = ftp.size(bare_remote)
+        except Exception:  # noqa: BLE001 — genuinely absent in both forms
+            return False
+        if not bare_size:
+            return False
+
+        self.logger.info(
+            f"📦 {file_name} absent, but the receiver holds an unfinalised "
+            f"{Path(bare_remote).name} ({bare_size:,} bytes) — fetching and "
+            "compressing locally"
+        )
+        staged = Path(str(local_file) + ".unfinalised")
+        _dl_start = time.time()
+        try:
+            with open(staged, "wb") as fh:
+                ftp.retrbinary(f"RETR {bare_remote}", fh.write)
+            if staged.stat().st_size != bare_size:
+                raise OSError(
+                    f"short read: got {staged.stat().st_size} of {bare_size} bytes"
+                )
+            from ..utils.compression_detector import CompressionConverter
+
+            if not CompressionConverter(self.logger).compress_file(
+                staged, Path(local_file), "gzip"
+            ):
+                raise OSError("gzip of the unfinalised file failed")
+        except Exception as e:  # noqa: BLE001
+            self.logger.warning(f"⚠️  Unfinalised fetch of {file_name} failed: {e}")
+            self._last_file_error = f"unfinalised fetch failed: {e}"
+            for leftover in (staged, Path(local_file)):
+                try:
+                    leftover.unlink()
+                except OSError:
+                    pass
+            return False
+        finally:
+            try:
+                staged.unlink()
+            except OSError:
+                pass
+
+        from ..utils.stall_timeout import record_download
+
+        self._handle_successful_download(
+            file_name,
+            Path(local_file),
+            Path(local_file).stat().st_size,
+            bare_size,
+            session,
+            time.time() - _dl_start,
+            downloaded_files,
+            file_tracker,
+            is_hourly_session,
+            immediate_archive,
+            archive,
+            missing_file_dict,
+            record_download,
+            get_file_datetime,
+        )
+        return True
+
     def _ftp_download(
         self,
         files_dict,
@@ -1439,6 +1562,28 @@ class PolaRX5(BaseReceiver):
                         or "not found" in error_msg
                         or "no such file" in error_msg
                     ):
+                        # Before believing "missing": the receiver may hold this
+                        # day UNFINALISED, i.e. bare and uncompressed, because it
+                        # was interrupted and never compressed the log. Asking
+                        # only for the .gz is what turns those days into TERMINAL
+                        # absences for data that is still there. See
+                        # _fetch_unfinalised_variant.
+                        if self._fetch_unfinalised_variant(
+                            ftp,
+                            remote_file,
+                            file_name,
+                            local_file,
+                            session,
+                            downloaded_files,
+                            file_tracker,
+                            is_hourly_session,
+                            immediate_archive,
+                            archive,
+                            missing_file_dict,
+                            get_file_datetime,
+                        ):
+                            continue
+
                         # Remote file is missing - check local file for archiving
                         remote_file_size = None
                         if local_file.exists():
