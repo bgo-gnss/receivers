@@ -3052,7 +3052,10 @@ class BulkDownloadScheduler:
                 "reconnection_window_minutes": cfg.get(
                     "reconnection_window_minutes", 20
                 ),
-                "max_run_seconds": cfg.get("max_run_seconds", 1800),
+                # NOT the daily job's ceiling: this trigger fires every 15
+                # min, and max_instances=1 means an overrunning pass silently
+                # DROPS the firings it overlaps.
+                "max_run_seconds": cfg.get("reconnection_max_run_seconds", 600),
                 "max_slots_per_run": cfg.get("max_slots_per_run", 600),
                 "reattempt_cooldown_minutes": cfg.get("reattempt_cooldown_minutes", 90),
             },

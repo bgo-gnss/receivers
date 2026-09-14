@@ -44,7 +44,10 @@ from receivers.scheduling.long_term_backfill import (
     RunBudget,
     _mark_attempted,
     _recently_attempted,
+    _advance_rotation,
     _reset_attempt_history,
+    _reset_rotation,
+    _rotate,
     run_long_term_backfill_station,
 )
 
@@ -326,3 +329,53 @@ class TestConnectivityGateReadsTheRow:
 
     def test_a_db_failure_never_blocks_recovery(self):
         assert _offline((False, False), raises=True) is None
+
+
+class TestRotationPreventsStarvation:
+    """MEASURED, not hypothetical: at the deployed `lookback_days: 90` across
+    both sessions, 1,631 slots reach the receiver against a 600-slot budget, so
+    1,031 are deferred EVERY run. The daily job's task list is stable
+    alphabetical order, so serving it from the front each time would mean a
+    station past the cut is never recovered at all."""
+
+    def setup_method(self):
+        _reset_rotation()
+
+    def test_the_first_run_starts_at_the_front(self):
+        assert _rotate([1, 2, 3, 4]) == [1, 2, 3, 4]
+
+    def test_the_next_run_starts_where_the_last_left_off(self):
+        tasks = [1, 2, 3, 4, 5]
+        _rotate(tasks)
+        _advance_rotation(served=2, total=5)
+        assert _rotate(tasks) == [3, 4, 5, 1, 2]
+
+    def test_every_task_is_reached_within_a_few_runs(self):
+        """The property that matters: nothing is stranded."""
+        tasks = list(range(10))
+        seen = set()
+        for _ in range(5):
+            seen.update(_rotate(tasks)[:3])  # budget serves 3 per run
+            _advance_rotation(served=3, total=len(tasks))
+        assert seen == set(tasks), f"stranded: {set(tasks) - seen}"
+
+    def test_rotating_does_not_advance_on_its_own(self):
+        """Advancing belongs to _advance_rotation, called with the number of
+        tasks that actually consumed budget — most classify clean and cost
+        nothing, so rotating by the list length would skip them."""
+        tasks = [1, 2, 3]
+        assert _rotate(tasks) == _rotate(tasks) == [1, 2, 3]
+
+    def test_a_run_that_served_nothing_does_not_move_the_cursor(self):
+        tasks = [1, 2, 3]
+        _advance_rotation(served=0, total=3)
+        assert _rotate(tasks) == [1, 2, 3]
+
+    def test_the_cursor_wraps(self):
+        tasks = [1, 2, 3]
+        _advance_rotation(served=7, total=3)
+        assert _rotate(tasks) == [2, 3, 1]
+
+    def test_an_empty_task_list_is_safe(self):
+        assert _rotate([]) == []
+        _advance_rotation(served=1, total=0)

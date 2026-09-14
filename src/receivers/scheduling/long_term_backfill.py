@@ -115,7 +115,19 @@ logger = logging.getLogger("receivers.scheduler.long_term_backfill")
 # in this module is therefore still dead code.** They are left in place for the
 # day load_monitoring returns; nothing here depends on them.
 
-DEFAULT_MAX_RUN_SECONDS = 1800.0  # 30 min — half the reconnection interval
+# Wall-clock ceilings, per job — they cannot share one number.
+#
+# The daily backstop fires once at 04:00 and may take 30 min. The reconnection
+# trigger fires every 15 MINUTES (`reconnection_schedule: "15m"`), so a ceiling
+# has to sit comfortably under 900 s or a run is still going when its successor
+# is due. That does not pile up — `max_instances=1, coalesce=True` means the
+# intervening firings are silently DROPPED — which is worse than piling up,
+# because the trigger then quietly stops being a 15-minute trigger.
+#
+# 600 s leaves 5 min of margin. An earlier revision used 1800 s for both and
+# described it as "half the reconnection interval"; it is twice.
+DEFAULT_MAX_RUN_SECONDS = 1800.0
+DEFAULT_RECONNECT_MAX_RUN_SECONDS = 600.0
 DEFAULT_MAX_SLOTS_PER_RUN = 600
 
 
@@ -132,9 +144,10 @@ class RunBudget:
     **Wall-clock is the primary bound, slots the secondary.** A slot's cost
     varies by two orders of magnitude — an `already_ok` classification is
     microseconds, a real download is minutes — so a slot count alone cannot
-    bound duration. The clock can, and `max_seconds` defaults to half the
-    15-minute reconnection interval so a run cannot still be going when its
-    successor is due.
+    bound duration, and the slot cap is NOT what protects against the observed
+    worst case ("one THEY pass ran 49 minutes", scheduler.yaml). The clock is.
+    Each job passes its own ceiling; see the constants above for why they
+    differ.
 
     Shared across the daily job's worker threads, so every accessor takes the
     lock. `take()` is the only way to reserve work: it hands back how much the
@@ -772,6 +785,57 @@ def _reset_attempt_history() -> None:
         _last_attempt.clear()
 
 
+# Where the next run starts in the task list.
+#
+# MEASURED, not hypothetical: at the deployed `lookback_days: 90` across both
+# sessions, 1,631 slots reach the receiver against a 600-slot budget, so 1,031
+# are deferred every run. The daily job builds its task list as
+# `[(sid, session) for sid in active for s in sessions]` — a STABLE
+# alphabetical order. Serving it from the front each time means everything past
+# the cut is never served at all, so a station late in the alphabet with a real
+# gap would never be recovered while an earlier one is re-checked daily.
+#
+# Rotating the start point makes the deferral a queue instead of a cliff: over
+# ~3 runs every station gets its turn. Kept in-process; a restart resets to the
+# front, which costs at most one run's worth of fairness.
+_rotation_lock = threading.Lock()
+_rotation_cursor = 0
+
+
+def _rotate(tasks: list) -> list:
+    """Return `tasks` rotated to this run's start. Does NOT advance the cursor.
+
+    Advancing is :func:`_advance_rotation`, called AFTER the run with the
+    number of tasks that actually consumed budget. It cannot be done here: the
+    cursor must move by tasks *served*, and most tasks classify to zero queued
+    slots and cost nothing — advancing by the slot cap, or by the list length,
+    would skip over stations that were never reached.
+    """
+    if not tasks:
+        return tasks
+    with _rotation_lock:
+        start = _rotation_cursor % len(tasks)
+    return tasks[start:] + tasks[:start]
+
+
+def _advance_rotation(served: int, total: int) -> None:
+    """Move the start point on by the number of tasks that did work."""
+    global _rotation_cursor
+    if total <= 0 or served <= 0:
+        return
+    with _rotation_lock:
+        # `_rotate` re-applies this modulo, so it is belt-and-braces —
+        # it keeps the stored cursor bounded rather than growing forever.
+        _rotation_cursor = (_rotation_cursor + served) % total
+
+
+def _reset_rotation() -> None:
+    """For tests; never called in production."""
+    global _rotation_cursor
+    with _rotation_lock:
+        _rotation_cursor = 0
+
+
 def _station_is_offline(sid: str) -> Optional[bool]:
     """Is `sid` down, per `station_connectivity`? ``None`` when we cannot say.
 
@@ -1027,7 +1091,11 @@ def _run_long_term_backfill_job(
         budget.describe(),
     )
 
+    served = 0
+    served_lock = threading.Lock()
+
     def _one(sid: str, session: str):
+        nonlocal served
         if budget.exhausted():
             return None
         if _load_monitor_overloaded():
@@ -1043,17 +1111,26 @@ def _run_long_term_backfill_job(
                 settle_hours=settle_hours,
                 budget=budget,
             )
+            # "Served" = consumed budget. A station that classified clean, was
+            # skipped offline, or was capped to zero did not have its turn and
+            # must not move the cursor past the stations behind it.
+            if report.queued and not report.skipped_offline:
+                with served_lock:
+                    served += 1
             return len(report.queued)
         except Exception as e:  # noqa: BLE001
             logger.warning("Long-term backfill %s/%s: %s", sid, session, e)
             return None
 
-    tasks = [(sid, s) for sid in active for s in sessions]
+    # Rotate the start point: the budget is measured to bind at the deployed
+    # config, so a stable order would strand everything past the cut forever.
+    tasks = _rotate([(sid, s) for sid in active for s in sessions])
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         results = [
             f.result()
             for f in as_completed(ex.submit(_one, sid, s) for sid, s in tasks)
         ]
+    _advance_rotation(served, len(tasks))
     logger.info(
         "Long-term backfill(daily) done: %d station/session had queued gaps, %s%s",
         sum(1 for r in results if r),
@@ -1073,7 +1150,7 @@ def _run_reconnection_backfill_job(
     max_days_per_station: Optional[int] = None,
     reconnection_window_minutes: int = 20,
     settle_hours: int = DEFAULT_SETTLE_HOURS,
-    max_run_seconds: Optional[float] = DEFAULT_MAX_RUN_SECONDS,
+    max_run_seconds: Optional[float] = DEFAULT_RECONNECT_MAX_RUN_SECONDS,
     max_slots_per_run: Optional[int] = DEFAULT_MAX_SLOTS_PER_RUN,
     reattempt_cooldown_minutes: int = DEFAULT_REATTEMPT_COOLDOWN_MINUTES,
 ) -> None:
