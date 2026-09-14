@@ -129,16 +129,30 @@ def _probe_station(sid, session, rows, timeout):
             if not names:
                 out.append((sid, d, h, "unknown", "day-dir empty"))
                 continue
-            # A daily session has one file per day-dir; an hourly one has the
-            # hour in the filename. Either way, presence of ANY file for this
-            # slot contradicts "terminally absent".
+            # Match the file for THIS station and THIS slot — not merely "the
+            # day-dir is non-empty". The first version of this check counted any
+            # file, and reported RFEL/2026-09-08 as PRESENT on the strength of a
+            # file called TEST2510.26_.gz. Septentrio names daily files
+            # {SID}{DOY}0.{yy}_ and hourly {SID}{DOY}{a-x}.{yy}_.
+            doy = d.strftime("%j")
+            mine = [n for n in names if n.lower().startswith(sid.lower())]
             if h is None:
-                hit = names
+                hit = [n for n in mine if n[4:7] == doy]
             else:
-                hit = [n for n in names if f"{d.strftime('%Y%m%d')}{h:02d}" in n]
+                hit = [
+                    n
+                    for n in mine
+                    if n[4:7] == doy and len(n) > 7 and n[7] == chr(ord("a") + h)
+                ]
             verdict = "PRESENT" if hit else "ABSENT"
-            note = (hit[0] if hit else f"{len(names)} other file(s)") + f" conf={conf}"
-            out.append((sid, d, h, verdict, note))
+            # A day-dir holding files for a DIFFERENT station id is its own
+            # finding: the receiver is writing under the wrong MarkerName, so
+            # the data exists but not under the name anything looks for.
+            foreign = sorted({n[:4].upper() for n in names if n[:4].upper() != sid})
+            note = hit[0] if hit else f"{len(names)} file(s) present"
+            if foreign:
+                note += f" [FOREIGN MARKER: {','.join(foreign)}]"
+            out.append((sid, d, h, verdict, f"{note} conf={conf}"))
     finally:
         try:
             ftp.quit()
