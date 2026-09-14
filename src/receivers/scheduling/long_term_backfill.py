@@ -16,10 +16,26 @@ the worker that runs the full pipeline per ``queued`` day. The scheduler wiring
 (reconnection trigger + daily backstop) is added separately — see
 ``docs/design/long-term-backfill.md``. Track via receivers todo #136.
 
-The classification deliberately distinguishes "couldn't reach" (no signal here —
-the health oracle gates that in the worker) from "reached and confirmed absent"
-(``confirmed_gone``): a transient connection failure never records an absence,
-so it never pollutes this worklist.
+The classification deliberately distinguishes "couldn't reach" (no signal here)
+from "reached and confirmed absent" (``confirmed_gone``): a transient connection
+failure never records an absence, so it never pollutes this worklist.
+
+.. warning::
+   **There is NO reachability gate anywhere in this module, and this docstring
+   used to claim there was one** ("the health oracle gates that in the worker").
+   Verified 2026-09-14: ``_run_long_term_backfill_job`` filters only on the
+   STATIC cfg fields ``station_status``/``health_check``;
+   ``_run_reconnection_backfill_job`` reads ``station_connectivity`` purely to
+   *find* recently-reconnected stations, as a trigger, not as a gate; and
+   ``_backfill_station_day_generic`` checks nothing. So an unreachable station's
+   queue is attempted in full.
+
+   That is a blocker for the #174 re-enable, not a theoretical one. On
+   2026-09-14 SKDA, SVIN and THNA carried NO ``station_status`` at all despite
+   having produced nothing since 2026-05-25 — 2,286 log lines in 24 h between
+   them — and HRIC (todo #167) had 197 queued hours while the station was down.
+   Add the gate in S3, and do not trust a docstring's safety claim without
+   grepping for the check.
 
 Read-only: never calls ``sync_archive_to_db`` (``sync_first=False``), so it
 cannot mutate ``file_tracking``.
