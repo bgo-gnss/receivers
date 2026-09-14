@@ -20,22 +20,31 @@ The classification deliberately distinguishes "couldn't reach" (no signal here)
 from "reached and confirmed absent" (``confirmed_gone``): a transient connection
 failure never records an absence, so it never pollutes this worklist.
 
-.. warning::
-   **There is NO reachability gate anywhere in this module, and this docstring
-   used to claim there was one** ("the health oracle gates that in the worker").
-   Verified 2026-09-14: ``_run_long_term_backfill_job`` filters only on the
-   STATIC cfg fields ``station_status``/``health_check``;
-   ``_run_reconnection_backfill_job`` reads ``station_connectivity`` purely to
-   *find* recently-reconnected stations, as a trigger, not as a gate; and
-   ``_backfill_station_day_generic`` checks nothing. So an unreachable station's
-   queue is attempted in full.
+.. note::
+   **Where the reachability gate actually is** — this docstring used to say
+   "the health oracle gates that in the worker", which was vague enough to be
+   misleading in both directions. Verified 2026-09-14:
 
-   That is a blocker for the #174 re-enable, not a theoretical one. On
-   2026-09-14 SKDA, SVIN and THNA carried NO ``station_status`` at all despite
-   having produced nothing since 2026-05-25 — 2,286 log lines in 24 h between
-   them — and HRIC (todo #167) had 197 queued hours while the station was down.
-   Add the gate in S3, and do not trust a docstring's safety claim without
-   grepping for the check.
+   * NOTHING in *this module* gates on reachability.
+     ``_run_long_term_backfill_job`` filters only on the STATIC cfg fields
+     ``station_status``/``health_check``; ``_run_reconnection_backfill_job``
+     reads ``station_connectivity`` purely to *find* recently-reconnected
+     stations, as a trigger, not a gate.
+   * But the gate DOES exist one level down, per day, in every driver's
+     ``download_data`` (``polarx5.py``, ``netrs.py``, ``netr9.py``, ``g10.py``:
+     ``if not self._quick_ping(): ... skipping download``). So an unreachable
+     station is not hammered with real transfers.
+
+   The residual cost is therefore a **ping per queued slot, not a download** —
+   measured at 5-9 s each in production. That still matters at LTB's scale:
+   a dead station with a full 720-hour queue burns ~1 h of a worker per run,
+   and the daily job runs only ``max_workers=2``. Real today — on 2026-09-14
+   SKDA, SVIN and THNA each queued 720 hours having been ping-unreachable for
+   **111 days** with no ``station_status`` set at all.
+
+   So S3 wants a per-STATION short-circuit (skip the station once, not once
+   per slot), and the three dead stations want ``station_status = inactive``
+   in gps-config-data. Neither is a download storm; both are waste.
 
 Read-only: never calls ``sync_archive_to_db`` (``sync_first=False``), so it
 cannot mutate ``file_tracking``.
