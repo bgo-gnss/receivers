@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional, Union
 
 from ..config.receivers_config import get_receivers_config
+from .obs_epoch import resolve_tos_lookup_epoch
 
 
 class RinexVersion(Enum):
@@ -498,11 +499,11 @@ class RawToRinexConverter(ABC):
         if (
             first_obs is not None
             and observation_date is not None
-            and first_obs != observation_date.date()
+            and first_obs.date() != observation_date.date()
         ):
             rinex_file.unlink(missing_ok=True)
             raise RawValidationError(
-                f"converted output starts {first_obs} but this file claims "
+                f"converted output starts {first_obs.date()} but this file claims "
                 f"{observation_date.date()} — misfiled raw",
                 rinex_file,
                 category="wrong-date",
@@ -585,30 +586,16 @@ class RawToRinexConverter(ABC):
     def _read_identity_header(
         rinex_file: Path,
     ) -> "tuple[Optional[Any], Optional[tuple], Optional[str]]":
-        """(first_obs_date, approx_xyz, marker_name) from a RINEX obs header."""
-        from datetime import date as _date
+        """(first_obs_epoch, approx_xyz, marker_name) from a RINEX obs header.
 
-        first_obs = xyz = marker = None
-        with open(rinex_file, encoding="latin-1", errors="replace") as fh:
-            for i, line in enumerate(fh):
-                label = line[60:].strip()
-                if label == "TIME OF FIRST OBS":
-                    parts = line[:60].split()
-                    try:
-                        first_obs = _date(int(parts[0]), int(parts[1]), int(parts[2]))
-                    except (ValueError, IndexError):
-                        pass
-                elif label == "APPROX POSITION XYZ":
-                    try:
-                        x, y, z = (float(v) for v in line[:60].split()[:3])
-                        xyz = (x, y, z)
-                    except (ValueError, IndexError):
-                        pass
-                elif label == "MARKER NAME":
-                    marker = line[:60].strip()
-                elif label == "END OF HEADER" or i > 300:
-                    break
-        return first_obs, xyz, marker
+        ``first_obs_epoch`` is a full ``datetime``. The identity gate below only
+        compares the DATE, but the same header read is what lets the TOS lookup
+        land on the correct side of a mid-day session boundary — so there is one
+        parser, in :mod:`receivers.rinex.obs_epoch`, and both callers use it.
+        """
+        from .obs_epoch import read_obs_header_identity
+
+        return read_obs_header_identity(rinex_file)
 
     def _expected_station_xyz(self) -> Optional[tuple]:
         """Station's surveyed coordinates as ECEF, from stations.cfg."""
@@ -700,11 +687,21 @@ class RawToRinexConverter(ABC):
             # evidence (TOS marker + surveyed coords), so check first.
             self._verify_conversion_identity(rinex_file, observation_date)
 
-            # Apply header corrections if enabled
+            # Apply header corrections if enabled.
+            #
+            # TOS is asked with the file's OWN first-observation epoch, not the
+            # filename's midnight: device sessions are bounded by real
+            # timestamps, so a receiver swapped at 15:00 makes midnight resolve
+            # to the hardware that is no longer there (RFEL 2026-09-08 →
+            # TRIMBLE NETRS for data that started 19:26 on a PolaRX5). The
+            # refinement never moves the DAY — see obs_epoch — so naming,
+            # canonicalisation and the identity gate keep using
+            # `observation_date` unchanged.
             corrections_applied = 0
             if self.apply_header_corrections:
                 corrections_applied = self._apply_header_corrections(
-                    rinex_file, observation_date
+                    rinex_file,
+                    resolve_tos_lookup_epoch(rinex_file, observation_date, self.logger),
                 )
 
             # Canonicalize header order via gfzrnx (piece 3: matches the EPOS
