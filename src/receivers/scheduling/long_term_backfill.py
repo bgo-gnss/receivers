@@ -9,6 +9,7 @@ DB-driven and **classified**: query ``file_tracking`` / ``file_absence`` /
                            → skip (ran off the receiver auto-delete cycle)
   ``provisional_absent`` — ``file_absence`` row, not yet terminal → low-priority retry
   ``already_ok``         — present in ``archive_catalog`` → skip
+  ``not_settled``        — too recent for absence to mean anything yet → skip
 
 This module is the **read-only classification engine** (this file) plus, later,
 the worker that runs the full pipeline per ``queued`` day. The scheduler wiring
@@ -45,6 +46,12 @@ So the oracle is now the long-term archive's index, keyed on
 * **``imo_archive`` only.** ``local_raw`` / ``local_rinex`` are the same
   rolling window in DB form; reading them would reintroduce the very bug this
   replaces.
+* **Recent is not absent.** The archive lags local production: a file is
+  downloaded, converted and pushed, and the hourly ``archive-sync`` sweep
+  (:45) reconciles whatever the immediate push missed. So a slot from the last
+  couple of hours is routinely on local disk while still absent from
+  ``archive_catalog``. Slots newer than ``settle_hours`` are therefore counted
+  as ``not_settled`` and never queued — see :func:`_settle_cutoff`.
 * **Failure is not a gap.** If the catalog cannot be read, the report comes
   back EMPTY with a warning. Classifying everything as a gap on a failed query
   would queue a whole lookback window per station — the stampede this feature
@@ -76,6 +83,7 @@ class LongTermGapReport:
     confirmed_gone: int = 0  # terminal-absent or past the horizon
     provisional_absent: int = 0  # absent, not yet terminal
     already_ok: int = 0  # present in archive within the window
+    not_settled: int = 0  # too recent for archive absence to be evidence
 
     @property
     def total_window_days(self) -> int:
@@ -88,7 +96,8 @@ class LongTermGapReport:
             f"{self.sid} {self.session} [{self.start} → {self.end}] "
             f"({self.total_window_days}d) | last_archived={la} horizon={hz} | "
             f"queued={len(self.queued)} confirmed_gone={self.confirmed_gone} "
-            f"provisional_absent={self.provisional_absent} already_ok={self.already_ok}"
+            f"provisional_absent={self.provisional_absent} already_ok={self.already_ok} "
+            f"not_settled={self.not_settled}"
         )
 
 
@@ -236,6 +245,46 @@ def _rinex_keys(sid: str, dt, file_hour: Optional[int]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(keys))
 
 
+# How long after a slot ENDS before its absence from the long-term archive is
+# evidence of a real gap. Measured on rek-d01 2026-09-14 across 169 online
+# stations, newest 1Hz slot present in `imo_archive`:
+#
+#     1.4 h behind now -> 152 stations   3.4 h -> 3
+#     2.4 h behind now ->  12 stations   4.4 h -> 1,  8.4 h -> 1
+#
+# So 6 h covers all but one outlier, with ~2.5x margin on the common case.
+#
+# Being generous here is nearly free: the ordinary backfill window (:25-:55)
+# already reaches back `files_back=36` HOURS for hourly sessions, so anything
+# LTB declines to look at inside that reach is covered by the normal path.
+# Raise this toward 36 to stop LTB competing with gap detection at all; do NOT
+# lower it below ~4 without re-measuring, or healthy stations resume reporting
+# their own most recent hour as a gap.
+DEFAULT_SETTLE_HOURS = 6
+
+
+def _settle_cutoff(settle_hours: int):
+    """Slots ENDING after this instant are too recent to classify."""
+    from datetime import datetime
+
+    return datetime.now(UTC) - timedelta(hours=settle_hours)
+
+
+def _slot_end(file_date: date, file_hour: Optional[int]):
+    """When the data for this slot finished being recorded (UTC, aware).
+
+    An hourly slot for hour H ends at H+1; a daily slot ends at midnight the
+    next day. Absence before this instant is meaningless — the file does not
+    exist yet, anywhere.
+    """
+    from datetime import datetime
+
+    base = datetime.combine(file_date, datetime.min.time(), tzinfo=UTC)
+    if file_hour is None:
+        return base + timedelta(days=1)
+    return base + timedelta(hours=file_hour + 1)
+
+
 def _expected_slots(
     sid: str,
     session: str,
@@ -369,6 +418,7 @@ def query_long_term_gaps(
     session: str,
     lookback_days: int = 365,
     receiver_type: Optional[str] = None,
+    settle_hours: int = DEFAULT_SETTLE_HOURS,
 ) -> LongTermGapReport:
     """Classify the long-term gap for one station/session.
 
@@ -379,6 +429,13 @@ def query_long_term_gaps(
     Presence comes from ``archive_catalog`` (see the module docstring), so a
     station whose local rolling window has been pruned no longer false-gaps.
     If the catalog cannot be read the report comes back empty — never full.
+
+    Slots that ended less than ``settle_hours`` ago are reported as
+    ``not_settled`` rather than queued: the long-term archive lags local
+    production, so their absence is not yet evidence. Without this every
+    healthy station reports its own most recent hour as a gap — measured
+    2026-09-14, THOB/OLKE/GONH each queued exactly ``(2026-09-13, 23)``, a
+    file collected ~50 min earlier and sitting on local disk.
 
     The raw/rinex intersection is per SLOT, i.e. ``(file_date, file_hour)``.
     It used to be ``{g.file_date for g in rinex_gaps}``, a set of *dates*, so
@@ -394,6 +451,10 @@ def query_long_term_gaps(
             path/extension per receiver family. Auto-looked-up from station
             config when None (required — the PolaRX5 default path would
             false-gap every NetRS/NetR9 day).
+        settle_hours: How long after a slot ends before its absence counts.
+            See :data:`DEFAULT_SETTLE_HOURS` for the measurement behind the
+            default. ``0`` disables the guard (tests only — in production it
+            re-creates the trailing-edge false gap).
     """
     sid = sid.upper()
     last_archived = _last_archived_date(sid, session)
@@ -457,9 +518,16 @@ def query_long_term_gaps(
     from ..health.file_tracker import GapInfo
 
     queued: list[Any] = []
+    cutoff = _settle_cutoff(settle_hours)
     for sl in slots:
         if sl.raw_key in raw_present or rinex_present.intersection(sl.rinex_keys):
             report.already_ok += 1
+            continue
+        # Absence is only evidence once the archive has had time to catch up.
+        # Checked AFTER presence so a slot already in the catalog still counts
+        # as already_ok rather than being masked as "too recent".
+        if _slot_end(sl.file_date, sl.file_hour) > cutoff:
+            report.not_settled += 1
             continue
         if (sl.file_date, sl.file_hour) in known_missing:
             continue
@@ -504,6 +572,7 @@ def run_long_term_backfill_station(
     dry_run: bool = False,
     max_days: Optional[int] = None,
     receiver_type: Optional[str] = None,
+    settle_hours: int = DEFAULT_SETTLE_HOURS,
 ) -> LongTermGapReport:
     """Recover one station's classified gaps through the full per-day pipeline.
 
@@ -523,7 +592,11 @@ def run_long_term_backfill_station(
         max_days: cap how many queued days to process this run (throttle).
     """
     report = query_long_term_gaps(
-        sid, session, lookback_days, receiver_type=receiver_type
+        sid,
+        session,
+        lookback_days,
+        receiver_type=receiver_type,
+        settle_hours=settle_hours,
     )
     n = len(report.queued)
     if n == 0:
@@ -599,6 +672,7 @@ def _run_long_term_backfill_job(
     max_workers: int = 2,
     max_days_per_station: Optional[int] = None,
     run_rinex: bool = True,
+    settle_hours: int = DEFAULT_SETTLE_HOURS,
 ) -> None:
     """APScheduler **daily backstop**: classify every active station, recover gaps.
 
@@ -636,6 +710,7 @@ def _run_long_term_backfill_job(
                 lookback_days=lookback_days,
                 run_rinex=run_rinex,
                 max_days=max_days_per_station,
+                settle_hours=settle_hours,
             )
             return len(report.queued)
         except Exception as e:  # noqa: BLE001
@@ -660,6 +735,7 @@ def _run_reconnection_backfill_job(
     run_rinex: bool = True,
     max_days_per_station: Optional[int] = None,
     reconnection_window_minutes: int = 20,
+    settle_hours: int = DEFAULT_SETTLE_HOURS,
 ) -> None:
     """APScheduler **reconnection trigger**: recover stations that just came online.
 
@@ -704,7 +780,9 @@ def _run_reconnection_backfill_job(
             )
             break
         try:
-            report = query_long_term_gaps(sid, "15s_24hr", lookback_days=lookback_days)
+            report = query_long_term_gaps(
+                sid, "15s_24hr", lookback_days=lookback_days, settle_hours=settle_hours
+            )
             # only act on a real outage: a queued day older than min_outage_days,
             # so a brief flap doesn't trigger a heavy multi-month recovery.
             if report.queued and any(g.file_date <= floor for g in report.queued):
@@ -714,6 +792,7 @@ def _run_reconnection_backfill_job(
                     lookback_days=lookback_days,
                     run_rinex=run_rinex,
                     max_days=max_days_per_station,
+                    settle_hours=settle_hours,
                 )
         except Exception as e:  # noqa: BLE001
             logger.warning("Long-term backfill(reconnect) %s: %s", sid, e)

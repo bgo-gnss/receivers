@@ -32,24 +32,20 @@ with a known outage must still report a real queue. Without the second,
 present — which is how the pre-S1 filesystem oracle failed, in the other
 direction.
 
-The trailing edge, and why "clean" is not "queued == 0"
--------------------------------------------------------
+The trailing edge — FIXED, and this checker is how you know
+-----------------------------------------------------------
 The window ends at `today - 1`, but the presence oracle is the LONG-TERM
 archive, which lags local production by up to the archive-sync interval (hourly
-at :45) plus push latency. So the final day's last hour is routinely downloaded
-and on local disk while not yet in `archive_catalog`. Measured 2026-09-14
-00:36: THOB, OLKE and GONH each queued exactly `(2026-09-13, 23)`, ~50 min
-after that hour was collected.
+at :45) plus push latency. Measured 2026-09-14 00:36, before the fix: THOB,
+OLKE and GONH each queued exactly `(2026-09-13, 23)` — an hour collected ~50
+min earlier and sitting on local disk. That was ~180 futile downloads per fleet
+run.
 
-"Clean" therefore means **every queued slot falls on the window's last day**.
-That still fails loudly on the pre-S1 shape (216 slots spread over 30 days) but
-does not flap on the trailing hour.
-
-KNOWN GAP for the #174 re-enable: the classifier does not itself exclude that
-trailing edge, so at ~180 stations a run would attempt ~180 downloads for files
-already on local disk and about to be pushed. Small, but close it in S2/S3 —
-either end the window at `today - 2` or clamp it to the last successful
-archive-sync watermark.
+`query_long_term_gaps` now buckets slots that ended less than `settle_hours`
+ago as **`not_settled`** and never queues them. So a healthy station should
+show `queued=0` again, with a small non-zero `not_settled`. A healthy station
+reporting `not_settled=0` at every hour of the day would mean the guard has
+been disabled — check `DEFAULT_SETTLE_HOURS`.
 """
 
 from __future__ import annotations
@@ -123,19 +119,20 @@ def main() -> int:
             failures += 1
             continue
         n = len(r.queued)
-        # Only the window's LAST DAY may carry gaps on a healthy station — see
-        # "The trailing edge" in the module docstring. Anything older is real.
+        # With the settling guard in place a healthy station queues NOTHING;
+        # the trailing edge lands in not_settled instead. Keep checking the
+        # "no slot older than the last day" property too, so a regression that
+        # merely widens the window is still caught.
         stale = [g for g in r.queued if g.file_date < r.end]
         if expect == "clean":
-            ok = not stale and r.already_ok > 0
+            ok = n == 0 and r.already_ok > 0
         else:
-            ok = n > 0
+            ok = len(stale) > 0
         failures += 0 if ok else 1
-        tail = n - len(stale)
         print(
             f"  [{'ok  ' if ok else 'FAIL'}] {sid}/{session}: "
-            f"queued={n} (stale={len(stale)} trailing={tail}) "
-            f"already_ok={r.already_ok} (expect {expect}) — {why}"
+            f"queued={n} (stale={len(stale)}) already_ok={r.already_ok} "
+            f"not_settled={r.not_settled} (expect {expect}) — {why}"
         )
         if stale:
             print(f"         oldest stale: {stale[0].file_date} h{stale[0].file_hour}")
@@ -169,6 +166,10 @@ def main() -> int:
                         already_ok=r.already_ok,
                         gone=r.confirmed_gone,
                         prov=r.provisional_absent,
+                        not_settled=r.not_settled,
+                        last_archived=(
+                            r.last_archived.isoformat() if r.last_archived else None
+                        ),
                     )
                 )
             except Exception as e:  # noqa: BLE001
@@ -195,9 +196,12 @@ def main() -> int:
                 "genuinely dead, not a naming blind spot:"
             )
             for r in sorted(blind, key=lambda r: -r["queued"])[:10]:
+                # last_archived is the discriminator: a station that stopped
+                # producing months ago is DEAD (fix stations.cfg), whereas one
+                # still producing is a naming blind spot in the oracle.
                 print(
                     f"    {r['sid']:5s} queued={r['queued']:5d} gone={r['gone']} "
-                    f"prov={r['prov']}"
+                    f"prov={r['prov']} last_archived={r['last_archived']}"
                 )
 
     if errs:

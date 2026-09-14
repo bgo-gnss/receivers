@@ -397,3 +397,109 @@ def test_a_rinex_only_station_is_not_all_gaps(monkeypatch, patched):
     rep = ltb.query_long_term_gaps("GONH", "1Hz_1hr", lookback_days=1)
     assert rep.queued == []
     assert rep.already_ok == 24
+
+
+# --------------------------------------------------------------------------
+# the settling horizon (the trailing edge)
+# --------------------------------------------------------------------------
+def _recent_slots(hours_ago):
+    """One slot per entry, each ENDING that many hours before now."""
+    from datetime import datetime, timedelta
+
+    now = datetime.now(ltb.UTC)
+    out = []
+    for h in hours_ago:
+        end = now - timedelta(hours=h)
+        # _slot_end(d, hour) == midnight(d) + (hour+1)h, so invert it
+        slot_start = end - timedelta(hours=1)
+        out.append(
+            ltb._Slot(
+                file_date=slot_start.date(),
+                file_hour=slot_start.hour,
+                raw_key=f"raw{h}",
+                rinex_keys=(f"rnx{h}",),
+                raw_path=f"/a/raw{h}",
+            )
+        )
+    return out
+
+
+def test_slot_end_is_when_recording_finished():
+    """Absence before this instant is meaningless — the file does not exist."""
+    from datetime import datetime
+
+    assert ltb._slot_end(date(2026, 9, 10), 0) == datetime(
+        2026, 9, 10, 1, tzinfo=ltb.UTC
+    )
+    assert ltb._slot_end(date(2026, 9, 10), 23) == datetime(
+        2026, 9, 11, 0, tzinfo=ltb.UTC
+    )
+    # a daily slot covers the whole day, so it ends at the next midnight
+    assert ltb._slot_end(date(2026, 9, 10), None) == datetime(
+        2026, 9, 11, 0, tzinfo=ltb.UTC
+    )
+
+
+def test_recent_absence_is_not_settled_rather_than_queued(monkeypatch, patched):
+    """The trailing edge: THOB/OLKE/GONH each queued (2026-09-13, 23) at 00:36.
+
+    That hour was collected ~50 min earlier and was sitting on local disk; it
+    was simply not yet in archive_catalog, because the hourly archive-sync
+    sweep runs at :45. Absent the guard, EVERY healthy station reports its own
+    most recent hour as a gap — ~180 futile downloads per fleet run.
+    """
+    slots = _recent_slots([1, 2, 30])  # 1h and 2h ago are unsettled at 6h
+    monkeypatch.setattr(ltb, "_expected_slots", lambda *a, **k: slots)
+    monkeypatch.setattr(ltb, "_catalog_present_keys", lambda s, cat, keys: set())
+    rep = ltb.query_long_term_gaps("THOB", "1Hz_1hr", lookback_days=2, settle_hours=6)
+    assert rep.not_settled == 2
+    assert len(rep.queued) == 1, "the 30h-old slot is settled and IS a real gap"
+    assert rep.queued[0].expected_path == "/a/raw30", "the wrong slot survived"
+
+
+def test_settled_absence_is_still_a_gap(monkeypatch, patched):
+    """The guard must not swallow real gaps just outside the horizon."""
+    slots = _recent_slots([7, 8, 40])
+    monkeypatch.setattr(ltb, "_expected_slots", lambda *a, **k: slots)
+    monkeypatch.setattr(ltb, "_catalog_present_keys", lambda s, cat, keys: set())
+    rep = ltb.query_long_term_gaps("THOB", "1Hz_1hr", lookback_days=3, settle_hours=6)
+    assert rep.not_settled == 0
+    assert len(rep.queued) == 3
+
+
+def test_presence_wins_over_recency(monkeypatch, patched):
+    """A recent slot ALREADY in the catalog is already_ok, not not_settled.
+
+    Order matters: checking recency first would under-report already_ok and
+    make the oracle look less effective than it is.
+    """
+    slots = _recent_slots([1])
+    monkeypatch.setattr(ltb, "_expected_slots", lambda *a, **k: slots)
+    monkeypatch.setattr(
+        ltb,
+        "_catalog_present_keys",
+        lambda s, cat, keys: {"raw1"} if cat == "raw" else set(),
+    )
+    rep = ltb.query_long_term_gaps("THOB", "1Hz_1hr", lookback_days=2, settle_hours=6)
+    assert rep.already_ok == 1
+    assert rep.not_settled == 0
+    assert rep.queued == []
+
+
+def test_settle_hours_zero_restores_the_old_behaviour(monkeypatch, patched):
+    """Explicit escape hatch, so the guard is provably the thing doing the work."""
+    slots = _recent_slots([1])
+    monkeypatch.setattr(ltb, "_expected_slots", lambda *a, **k: slots)
+    monkeypatch.setattr(ltb, "_catalog_present_keys", lambda s, cat, keys: set())
+    rep = ltb.query_long_term_gaps("THOB", "1Hz_1hr", lookback_days=2, settle_hours=0)
+    assert rep.not_settled == 0
+    assert len(rep.queued) == 1
+
+
+def test_default_settle_hours_covers_the_measured_archive_lag():
+    """Measured 2026-09-14: 168 of 169 online stations within 4.4 h; one at 8.4.
+
+    Lowering this below ~4 without re-measuring brings the trailing-edge false
+    gap straight back.
+    """
+    assert ltb.DEFAULT_SETTLE_HOURS >= 4
