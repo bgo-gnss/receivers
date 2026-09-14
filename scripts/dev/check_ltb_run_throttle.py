@@ -37,6 +37,14 @@ def main() -> int:
     ap.add_argument("--max-workers", type=int, default=2)
     ap.add_argument("--max-run-seconds", type=float, default=1800.0)
     ap.add_argument("--max-slots-per-run", type=int, default=600)
+    ap.add_argument(
+        "--max-days-per-station",
+        type=int,
+        default=30,
+        help="the DEPLOYED scheduler.yaml value. It caps each station's queue "
+        "per run and must be applied, or the unthrottled figure is inflated by "
+        "an order of magnitude.",
+    )
     args = ap.parse_args()
 
     from receivers.cli.main import get_all_station_configs
@@ -71,7 +79,13 @@ def main() -> int:
         for sid in stations:
             try:
                 r = query_long_term_gaps(sid, session, args.lookback_days)
-                rows.append((sid, session, len(r.queued), offline.get(sid)))
+                # max_days_per_station already caps a station's per-run queue;
+                # counting the full classification would overstate every figure
+                # below (measured: 6,852 raw vs 840 capped on 1Hz).
+                n = len(r.queued)
+                if args.max_days_per_station:
+                    n = min(n, args.max_days_per_station)
+                rows.append((sid, session, n, offline.get(sid)))
             except Exception as e:  # noqa: BLE001
                 print(f"  ERROR {sid}/{session}: {e}", file=sys.stderr)
 
@@ -87,7 +101,10 @@ def main() -> int:
         hi = slots * PING_SECONDS_HIGH / args.max_workers / 3600
         return f"{lo:.1f}-{hi:.1f} h"
 
-    print("WITHOUT the throttle")
+    print(
+        f"per-station cap in force: max_days_per_station={args.max_days_per_station}\n"
+    )
+    print("WITHOUT the throttle (but WITH the existing per-station cap)")
     print(f"  queued slots attempted : {saved + would_run}")
     print(
         f"  worst-case ping time   : {hours(saved + would_run)}"
