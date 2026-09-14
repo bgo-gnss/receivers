@@ -185,9 +185,18 @@ class TestIdentityGate:
         assert out.exists()
 
     def test_header_reader(self, tmp_path):
+        """The reader returns a full EPOCH, not a date.
+
+        The gate below only compares days, but the TOS session lookup needs the
+        time: sessions are bounded by real timestamps, so a receiver swapped at
+        15:00 is unresolvable from a date alone (see
+        ``receivers.rinex.obs_epoch``). Do not narrow this back to ``date`` —
+        the gate is what takes ``.date()``.
+        """
         out = _write_rinex(tmp_path / "RHOF0920.10o", marker="RHOF RAUFARHOFN")
         first, xyz, marker = RawToRinexConverter._read_identity_header(out)
-        assert first == date(2010, 4, 2)
+        assert first == datetime(2010, 4, 2, 0, 0)
+        assert first.date() == date(2010, 4, 2)
         assert xyz is not None and abs(xyz[0] - RHOF_XYZ[0]) < 0.01
         assert marker == "RHOF RAUFARHOFN"
 
