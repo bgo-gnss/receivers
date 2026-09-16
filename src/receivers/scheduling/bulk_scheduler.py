@@ -3021,6 +3021,7 @@ class BulkDownloadScheduler:
                 # stations x 2 sessions it still authorises ~10,800 slots.
                 "max_run_seconds": cfg.get("max_run_seconds", 1800),
                 "max_slots_per_run": cfg.get("max_slots_per_run", 600),
+                "max_attempts": cfg.get("max_download_attempts", 5),
             },
             id="long_term_backfill",
             replace_existing=True,
@@ -3058,6 +3059,7 @@ class BulkDownloadScheduler:
                 "max_run_seconds": cfg.get("reconnection_max_run_seconds", 600),
                 "max_slots_per_run": cfg.get("max_slots_per_run", 600),
                 "reattempt_cooldown_minutes": cfg.get("reattempt_cooldown_minutes", 90),
+                "max_attempts": cfg.get("max_download_attempts", 5),
             },
             id="reconnection_backfill",
             replace_existing=True,

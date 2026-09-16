@@ -247,6 +247,7 @@ class LongTermGapReport:
     unreachable_slots: int = 0  # slots that hit the driver ping gate this run
     budget_capped: int = 0  # queued slots the run budget declined to start
     nothing_on_receiver: int = 0  # reached the receiver, no file there
+    attempts_exhausted: int = 0  # retried max_attempts times, still missing
 
     @property
     def total_window_days(self) -> int:
@@ -268,6 +269,11 @@ class LongTermGapReport:
                 else ""
             )
             + (f" | budget_capped={self.budget_capped}" if self.budget_capped else "")
+            + (
+                f" | attempts_exhausted={self.attempts_exhausted}"
+                if self.attempts_exhausted
+                else ""
+            )
             + (
                 f" | nothing_on_receiver={self.nothing_on_receiver}"
                 if self.nothing_on_receiver
@@ -588,12 +594,82 @@ def _known_missing_slots(
         return set()
 
 
+# How many failed attempts before a slot stops being worth retrying.
+#
+# MEASURED on rek-d01 2026-09-16, across all sessions:
+#
+#     attempts   now present   still missing   cumulative recoveries
+#       1            666,326          72,375        87.4 %
+#       2             74,204          33,623        97.1 %
+#       3-5           12,491          49,085        98.8 %
+#       6-9              738          48,961        98.8 %
+#
+# Attempts 6-9 recover 738 slots while re-attempting ~49,000 — a ~1.5 % hit
+# rate. Stopping at 5 keeps 98.8 % of recoveries and drops most of the futile
+# tail. The 04:00 run that prompted this spent 249 of 258 slots on files that
+# were not there (recovered=9, nothing_on_receiver=249).
+#
+# This is deliberately NOT `use_terminal_absence`. That flag is a PERMANENT
+# lockout keyed on a signal already proven to produce false positives
+# (4 of 5 probed terminal rows still had the file — the unfinalised-filename
+# bug). A bounded attempt count is evidence-based and self-limiting: the
+# receiver horizon still ages a slot out regardless, and raising the cap
+# re-opens anything that was cut off.
+DEFAULT_MAX_DOWNLOAD_ATTEMPTS = 5
+
+
+def _attempts_exhausted_slots(
+    sid: str, session: str, slots: list[_Slot], max_attempts: int
+) -> set[tuple[date, Optional[int]]]:
+    """Slots retried ``max_attempts`` times and still missing.
+
+    Fails OPEN like :func:`_known_missing_slots`: any error returns an empty
+    set, so a DB problem can only make the worklist larger, never silently drop
+    a recoverable day.
+
+    ``download_count`` increments on a 'downloaded' OR 'missing' write, so on a
+    healthy file it counts re-verifications rather than failures. That is why
+    this is restricted to ``status = 'missing'`` — otherwise a frequently
+    re-checked GOOD file would look exhausted.
+    """
+    if not slots or max_attempts <= 0:
+        return set()
+
+    from ..health.file_tracker import FileTracker
+
+    try:
+        tracker = FileTracker()
+        if not tracker.connect():
+            return set()
+        with tracker.read_cursor() as cur:
+            cur.execute(
+                "SELECT ft.file_date, ft.file_hour FROM file_tracking ft "
+                "JOIN unnest(%s::date[], %s::smallint[]) AS t(file_date, file_hour) "
+                "  ON ft.file_date = t.file_date "
+                " AND ft.file_hour IS NOT DISTINCT FROM t.file_hour "
+                "WHERE ft.sid = %s AND ft.session_type = %s "
+                "  AND ft.status = 'missing' AND ft.download_count >= %s",
+                (
+                    [sl.file_date for sl in slots],
+                    [sl.file_hour for sl in slots],
+                    sid,
+                    session,
+                    max_attempts,
+                ),
+            )
+            return {(r[0], r[1]) for r in cur.fetchall()}
+    except Exception as e:  # noqa: BLE001
+        logger.debug("attempts_exhausted_slots %s/%s: %s", sid, session, e)
+        return set()
+
+
 def query_long_term_gaps(
     sid: str,
     session: str,
     lookback_days: int = 365,
     receiver_type: Optional[str] = None,
     settle_hours: int = DEFAULT_SETTLE_HOURS,
+    max_attempts: int = DEFAULT_MAX_DOWNLOAD_ATTEMPTS,
 ) -> LongTermGapReport:
     """Classify the long-term gap for one station/session.
 
@@ -688,6 +764,7 @@ def query_long_term_gaps(
     report.provisional_absent = prov
 
     known_missing = _known_missing_slots(sid, session, slots)
+    exhausted = _attempts_exhausted_slots(sid, session, slots, max_attempts)
     horizon_floor = horizon or date.min
 
     from ..health.file_tracker import GapInfo
@@ -705,6 +782,13 @@ def query_long_term_gaps(
             report.not_settled += 1
             continue
         if (sl.file_date, sl.file_hour) in known_missing:
+            continue
+        # Retried max_attempts times and still not there. Bounded, not
+        # permanent: the cap is a config knob and raising it re-opens every
+        # slot it cut off, unlike a terminal-absence lockout. See
+        # DEFAULT_MAX_DOWNLOAD_ATTEMPTS for the measured distribution.
+        if (sl.file_date, sl.file_hour) in exhausted:
+            report.attempts_exhausted += 1
             continue
         if sl.file_date < horizon_floor:
             continue
@@ -893,6 +977,7 @@ def run_long_term_backfill_station(
     receiver_type: Optional[str] = None,
     settle_hours: int = DEFAULT_SETTLE_HOURS,
     budget: Optional[RunBudget] = None,
+    max_attempts: int = DEFAULT_MAX_DOWNLOAD_ATTEMPTS,
 ) -> LongTermGapReport:
     """Recover one station's classified gaps through the full per-day pipeline.
 
@@ -928,6 +1013,7 @@ def run_long_term_backfill_station(
         lookback_days,
         receiver_type=receiver_type,
         settle_hours=settle_hours,
+        max_attempts=max_attempts,
     )
     n = len(report.queued)
     if n == 0:
@@ -1078,6 +1164,7 @@ def _run_long_term_backfill_job(
     settle_hours: int = DEFAULT_SETTLE_HOURS,
     max_run_seconds: Optional[float] = DEFAULT_MAX_RUN_SECONDS,
     max_slots_per_run: Optional[int] = DEFAULT_MAX_SLOTS_PER_RUN,
+    max_attempts: int = DEFAULT_MAX_DOWNLOAD_ATTEMPTS,
 ) -> None:
     """APScheduler **daily backstop**: classify every active station, recover gaps.
 
@@ -1130,6 +1217,7 @@ def _run_long_term_backfill_job(
                 max_days=max_days_per_station,
                 settle_hours=settle_hours,
                 budget=budget,
+                max_attempts=max_attempts,
             )
             # "Served" = consumed budget. A station that classified clean, was
             # skipped offline, or was capped to zero did not have its turn and
@@ -1173,6 +1261,7 @@ def _run_reconnection_backfill_job(
     max_run_seconds: Optional[float] = DEFAULT_RECONNECT_MAX_RUN_SECONDS,
     max_slots_per_run: Optional[int] = DEFAULT_MAX_SLOTS_PER_RUN,
     reattempt_cooldown_minutes: int = DEFAULT_REATTEMPT_COOLDOWN_MINUTES,
+    max_attempts: int = DEFAULT_MAX_DOWNLOAD_ATTEMPTS,
 ) -> None:
     """APScheduler **reconnection trigger**: recover stations that just came online.
 
@@ -1232,7 +1321,11 @@ def _run_reconnection_backfill_job(
             continue
         try:
             report = query_long_term_gaps(
-                sid, "15s_24hr", lookback_days=lookback_days, settle_hours=settle_hours
+                sid,
+                "15s_24hr",
+                lookback_days=lookback_days,
+                settle_hours=settle_hours,
+                max_attempts=max_attempts,
             )
             # only act on a real outage: a queued day older than min_outage_days,
             # so a brief flap doesn't trigger a heavy multi-month recovery.
@@ -1246,6 +1339,7 @@ def _run_reconnection_backfill_job(
                     max_days=max_days_per_station,
                     settle_hours=settle_hours,
                     budget=budget,
+                    max_attempts=max_attempts,
                 )
         except Exception as e:  # noqa: BLE001
             logger.warning("Long-term backfill(reconnect) %s: %s", sid, e)
