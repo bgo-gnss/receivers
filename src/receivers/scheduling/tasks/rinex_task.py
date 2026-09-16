@@ -303,6 +303,20 @@ class RINEXTask(ScheduledTask):
 
         return resolve_trimble_converter(fallback, log=self.logger)
 
+    def _rinex_config(self) -> Dict[str, Any]:
+        """The resolved ``[rinex]`` settings, or ``{}`` when unreadable.
+
+        Read lazily and never allowed to raise: a config problem must not turn
+        a backfill conversion into an exception, and every consumer of this
+        already has a working default.
+        """
+        try:
+            from ...config.receivers_config import get_receivers_config
+
+            return dict(get_receivers_config().get_rinex_config() or {})
+        except Exception:  # noqa: BLE001 - defaults are correct without config
+            return {}
+
     def _get_converter(self, station_config: Dict[str, Any]):
         """Get the appropriate converter for the receiver type.
 
@@ -312,7 +326,11 @@ class RINEXTask(ScheduledTask):
         Returns:
             Converter instance or None
         """
-        from ...rinex.converter_base import OutputFormat, RinexVersion
+        from ...rinex.converter_base import (
+            NamingConvention,
+            OutputFormat,
+            RinexVersion,
+        )
 
         receiver_type = station_config.get("receiver_type", "").lower()
 
@@ -343,13 +361,34 @@ class RINEXTask(ScheduledTask):
                 # Measured 2026-08-16: 566 distinct files retried, 1,132 failed
                 # spawns per 3 h, and the gaps never filled. The native
                 # converter is also the only one that produces RINEX 3 here.
+                from ...rinex.converter_select import (
+                    resolve_trimble_rinex_version,
+                )
                 from ...rinex.trimble_converter import TrimbleConverter
 
                 trimble_cls = self._resolve_trimble_converter(TrimbleConverter)
+                # The caller's version is a receiver-blind default — the
+                # scheduler's backfill job passes a hardcoded 3. A NetRS must
+                # be converted at RINEX 2 whatever was asked: its codeless L2
+                # codes as C2D in RINEX 3 and GAMIT drops it. The live path
+                # has resolved this since 3d6a3f7; THIS path did not, which is
+                # why 34,382 hourly + 1,472 daily archived NetRS files are
+                # RINEX 3. RINEX 2 forces SHORT naming, same as the live path.
+                version = resolve_trimble_rinex_version(
+                    self.rinex_version,
+                    receiver_type=receiver_type,
+                    rinex_config=self._rinex_config(),
+                )
+                naming = (
+                    NamingConvention.SHORT
+                    if version == 2
+                    else None  # None = converter's own default for the version
+                )
 
                 return trimble_cls(
                     station_id=self.station_id,
-                    rinex_version=RinexVersion(self.rinex_version),
+                    rinex_version=RinexVersion(version),
+                    naming_convention=naming,
                     output_format=output_format,
                     apply_header_corrections=self.apply_header_corrections,
                     session_type=session_type,
