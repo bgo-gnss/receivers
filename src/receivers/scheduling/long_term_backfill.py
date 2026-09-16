@@ -246,6 +246,7 @@ class LongTermGapReport:
     skipped_offline: bool = False  # connectivity says down: whole queue skipped
     unreachable_slots: int = 0  # slots that hit the driver ping gate this run
     budget_capped: int = 0  # queued slots the run budget declined to start
+    nothing_on_receiver: int = 0  # reached the receiver, no file there
 
     @property
     def total_window_days(self) -> int:
@@ -267,6 +268,11 @@ class LongTermGapReport:
                 else ""
             )
             + (f" | budget_capped={self.budget_capped}" if self.budget_capped else "")
+            + (
+                f" | nothing_on_receiver={self.nothing_on_receiver}"
+                if self.nothing_on_receiver
+                else ""
+            )
         )
 
 
@@ -982,7 +988,7 @@ def run_long_term_backfill_station(
 
     from .backfill import _backfill_station_day_generic
 
-    recovered = failed = 0
+    recovered = failed = nothing_there = 0
     for i, gap in enumerate(queued):
         # (3) Live reachability. `download_data` returns status='unreachable'
         # when its own ping gate refuses, which the shared primitive folds into
@@ -1015,17 +1021,31 @@ def run_long_term_backfill_station(
                 if budget is not None:
                     budget.give_back(remaining)
                 break
-            recovered += 1
+            # A slot that reached the receiver and found NOTHING is not a
+            # recovery. Counting it as one made the primary success signal lie:
+            # measured 2026-09-15 04:00, AKUR and EYVI each logged
+            # "recovered=30 failed=0" having recovered zero files
+            # (files_found=0, 0 rows newly catalogued, every touched
+            # file_tracking row status='missing'). Those are stations that
+            # genuinely produce no 1Hz data, so the queue is futile-by-nature
+            # and the log has to say so, or nobody can tell a working run from
+            # a wasted one.
+            if outcome.get("files_downloaded", 0) > 0:
+                recovered += 1
+            else:
+                nothing_there += 1
         except Exception as e:  # noqa: BLE001
             failed += 1
             logger.warning(
                 "Long-term backfill %s/%s/%s failed: %s", sid, session, gap.file_date, e
             )
+    report.nothing_on_receiver = nothing_there
     logger.info(
-        "Long-term backfill %s/%s done: recovered=%d failed=%d%s",
+        "Long-term backfill %s/%s done: recovered=%d nothing_on_receiver=%d failed=%d%s",
         sid,
         session,
         recovered,
+        nothing_there,
         failed,
         f" unreachable={report.unreachable_slots}" if report.unreachable_slots else "",
     )

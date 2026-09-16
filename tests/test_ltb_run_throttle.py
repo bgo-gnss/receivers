@@ -121,10 +121,12 @@ def _report(sid="SKDA", n_queued=720):
 class _Runner:
     """Drives run_long_term_backfill_station with everything external stubbed."""
 
-    def __init__(self, offline=False, statuses=None, n_queued=720):
+    def __init__(self, offline=False, statuses=None, n_queued=720,
+                 nothing_there=False):
         self.offline = offline
         self.statuses = statuses or {}
         self.n_queued = n_queued
+        self.nothing_there = nothing_there
         self.calls = 0
 
     def _day(self, sid, d, end, session, immediate_archive=False,
@@ -133,7 +135,9 @@ class _Runner:
         status = self.statuses.get(self.calls, "completed")
         if outcome is not None:
             outcome["status"] = status
-            outcome["files_downloaded"] = 1 if status == "completed" else 0
+            outcome["files_downloaded"] = (
+                0 if self.nothing_there else (1 if status == "completed" else 0)
+            )
         return True
 
     def run(self, **kw):
@@ -379,3 +383,47 @@ class TestRotationPreventsStarvation:
     def test_an_empty_task_list_is_safe(self):
         assert _rotate([]) == []
         _advance_rotation(served=1, total=0)
+
+
+class TestRecoveredCountIsHonest:
+    """MEASURED 2026-09-15 04:00, the first fleet run: AKUR and EYVI each logged
+    "recovered=30 failed=0" having recovered ZERO files — files_found=0, zero
+    rows newly catalogued, every touched file_tracking row status='missing'.
+    Both genuinely produce no 1Hz data, so their queue is futile by nature.
+
+    A success signal that cannot distinguish a working run from a wasted one is
+    worse than no signal, because it is the line an operator reads first."""
+
+    def _convert(self, converter, tmp_path):
+        raw = tmp_path / "x.sbf"
+        raw.write_bytes(b"stub")
+        return raw
+
+    def test_a_slot_that_found_nothing_is_not_a_recovery(self, caplog):
+        import logging
+
+        r = _Runner(n_queued=5, nothing_there=True)
+        with caplog.at_level(
+            logging.INFO, logger="receivers.scheduler.long_term_backfill"
+        ):
+            report = r.run()
+        done = [m for m in caplog.messages if "done: recovered=" in m]
+        assert done, "no done line"
+        assert "recovered=0" in done[0], done[0]
+        assert "nothing_on_receiver=5" in done[0], done[0]
+        assert report.nothing_on_receiver == 5
+
+    def test_a_real_download_still_counts_as_recovered(self, caplog):
+        import logging
+
+        r = _Runner(n_queued=4)
+        with caplog.at_level(
+            logging.INFO, logger="receivers.scheduler.long_term_backfill"
+        ):
+            r.run()
+        done = [m for m in caplog.messages if "done: recovered=" in m]
+        assert "recovered=4" in done[0], done[0]
+
+    def test_the_summary_surfaces_it(self):
+        r = _Runner(n_queued=3, nothing_there=True)
+        assert "nothing_on_receiver=3" in r.run().summary()
