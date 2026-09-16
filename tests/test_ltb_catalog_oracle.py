@@ -47,6 +47,8 @@ def patched(monkeypatch):
     monkeypatch.setattr(ltb, "_receiver_horizon", lambda *a, **k: None)
     monkeypatch.setattr(ltb, "_absence_counts", lambda *a, **k: (0, 0))
     monkeypatch.setattr(ltb, "_known_missing_slots", lambda *a, **k: set())
+    # Added with the attempt cap: without this these tests reach the real DB.
+    monkeypatch.setattr(ltb, "_attempts_exhausted_slots", lambda *a, **k: set())
 
 
 # --------------------------------------------------------------------------
