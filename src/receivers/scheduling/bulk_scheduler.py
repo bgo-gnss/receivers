@@ -3580,15 +3580,22 @@ class BulkDownloadScheduler:
 
         stations = []
         skipped = []
+        # Stations excluded by LIFECYCLE (not by a dev filter, a cap, or an
+        # unsupported receiver type). Only these get their persisted jobs
+        # dropped — see the removal block at the end of this method.
+        lifecycle_skipped = []
 
         for station_id, config in self.stations.items():
             if not config.get("enabled", True):
+                lifecycle_skipped.append(station_id)
                 continue
 
             # Skip non-active stations (lifecycle or monitoring mode)
             if config.get("station_status") in ("discontinued", "inactive"):
+                lifecycle_skipped.append(station_id)
                 continue
             if config.get("health_check") == "passive":
+                lifecycle_skipped.append(station_id)
                 continue
             # Stream-capture stations: session-aware download. The stream pipeline
             # (BNC) provides sessions the receiver does NOT log to disk (e.g. 1Hz);
@@ -3614,6 +3621,41 @@ class BulkDownloadScheduler:
                     continue
 
             stations.append(station_id)
+
+        # Queue removal of the PERSISTED DOWNLOAD jobs of lifecycle-excluded
+        # stations. Registration skipping them is not enough: the SQLite
+        # jobstore is authoritative across restarts, so `{session}_{SID}` from
+        # a run when the station WAS active reloads and keeps firing.
+        #
+        # Measured on HLFJ, `station_status = inactive` since 2026-08-27: a
+        # `1Hz_1hr_HLFJ` download still ran at 23:02:06 on 2026-09-15, half an
+        # hour before it was re-activated. The health path has guarded this
+        # since the lockout incident (`_schedule_status_monitoring` queues
+        # `health_<SID>`); downloads had no equivalent.
+        #
+        # Deliberately LIFECYCLE ONLY. `station_filter` (a dev/laptop knob),
+        # `max_stations_per_session` and the receiver-type check also skip
+        # stations, but those are "not this run", not "not wanted" — sweeping
+        # them would delete jobs a later unfiltered start expects to keep.
+        if lifecycle_skipped:
+            stale = []
+            for sid in lifecycle_skipped:
+                stale.append(f"{session_type}_{sid}")
+                stale.append(f"{session_type}_midnight_{sid}")
+                stale.append(f"catchup_{session_type}_{sid}")
+            # Lazily initialised for the same reason _keep_job_family does it:
+            # the test suite builds this class with __new__ and wires only what
+            # a case needs, so this may run on a partially-constructed shell.
+            if not hasattr(self, "_disabled_jobs"):
+                self._disabled_jobs: List[str] = []
+            self._disabled_jobs.extend(stale)
+            self.logger.info(
+                "Queued removal of persisted %s jobs for %d lifecycle-excluded "
+                "station(s): %s",
+                session_type,
+                len(lifecycle_skipped),
+                ", ".join(sorted(lifecycle_skipped)[:8]),
+            )
 
         # Log skipped stations
         if skipped:
