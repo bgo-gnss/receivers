@@ -4132,6 +4132,12 @@ def _create_rinex_converter(
                 f"{station_id}: NetRS pinned to RINEX {rinex_version.value} "
                 "(pass --version 3 to override)"
             )
+        else:
+            _warn = netrs_version_override_warning(
+                receiver_type, getattr(args, "rinex_version", None)
+            )
+            if _warn:
+                logger.warning("%s: %s", station_id, _warn)
         if use_native_trimble:
             if not TrimbleNativeConverter.is_available():
                 logger.error("Native Trimble converter not available")
@@ -6101,6 +6107,41 @@ def _push_reconverted(work_dir, args, logger, only_rel=None) -> Dict[str, Any]:
         except OSError:
             pass
     return stats
+
+
+def netrs_version_override_warning(receiver_type, explicit_version):
+    """Warn text when a NetRS is forced off its RINEX 2 pin, else ``None``.
+
+    The pin (``elif "netrs" in receiver_type`` in :func:`cmd_rinex`) is a
+    DEFAULT, not a prohibition — ``--version 3`` is still honoured. But it
+    silently produces files GAMIT discards, so an explicit override should be
+    loud rather than pass as a normal run.
+
+    That is how BALD acquired **81** RINEX 3 files across 2026 and HAUD one:
+    ``station onboard`` has a "Re-rinex (R2->R3 from raw, recovers
+    GLO/GAL/BDS)" stage that passes ``--version 3`` without looking at the
+    receiver type. For a NetRS there is nothing to recover — it is GPS-only —
+    so the up-convert is pure loss. Combined with ``--naming short`` the result
+    is an R3 file wearing an R2 filename, which is why it went unnoticed for
+    weeks: the EPOS portal was the first place it surfaced, because
+    dissemination detects the SOURCE version and publishes R3 under long names.
+
+    Returns None for a non-NetRS, for no explicit version (the pin applies and
+    logs its own line), and for an explicit ``--version 2`` (which asks for
+    exactly what the pin would have chosen).
+    """
+    if "netrs" not in (receiver_type or "").lower():
+        return None
+    if explicit_version is None or int(explicit_version) == 2:
+        return None
+    return (
+        f"NetRS + explicit --version {explicit_version} — RINEX 3 codes this "
+        "receiver's CODELESS L2 as C2D, which GAMIT cannot map to P2 (it "
+        "deletes the data with 'no P2 range'). A NetRS is GPS-only, so there "
+        "are no GLONASS/Galileo/BeiDou observations to recover by "
+        "up-converting. Unless you specifically need R3, drop --version and "
+        "let the NetRS R2 pin apply."
+    )
 
 
 def cmd_rinex(args) -> int:
