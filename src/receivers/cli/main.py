@@ -6287,10 +6287,22 @@ def cmd_rinex(args) -> int:
         print(
             f"Date range: {start_time.strftime('%Y-%m-%d')} to {end_time.strftime('%Y-%m-%d')}"
         )
-        print(f"RINEX version: {rinex_version.value}, Naming: {naming_str}")
+        # REQUESTED, not effective. `_create_rinex_converter` pins a NetRS to
+        # RINEX 2 per station AFTER this prints, so a run that says "version 3"
+        # here can still write RINEX 2 — and does, for every NetRS. That
+        # ambiguity cost three sessions: `haud_rerinex.log` and
+        # `hvel_rerinex.log` both carry this line at 3 AND the pin line at 2,
+        # and the banner was read as the root cause of an R3 contamination the
+        # scheduler backfill had actually produced. Say which one this is.
+        _ver = (
+            f"RINEX version requested: {rinex_version.value}, Naming: "
+            f"{naming_str} (per-station receiver pins may override — look for "
+            f"'pinned to RINEX' below)"
+        )
+        print(_ver)
         logger.info(f"RINEX conversion for {len(stations)} stations")
         logger.info(f"Date range: {start_time} to {end_time}")
-        logger.info(f"RINEX version: {rinex_version.value}, Naming: {naming_str}")
+        logger.info(_ver)
 
     # --fix-headers: in-place TOS header correction of archived RINEX (no
     # re-conversion). Walks the RINEX archive, not raw files, so it has its own
