@@ -1825,6 +1825,7 @@ class BulkDownloadScheduler:
         # so external stations are never marked 'suppressed' merely for being
         # in cfg but not receiver-polled.
         cfg_station_sections: set[str] = set()
+        cfg_all_sections: set[str] = set()
         cfg_path = self._get_stations_cfg_path()
         if cfg_path and cfg_path.exists():
             import configparser as _cp
@@ -1833,6 +1834,12 @@ class BulkDownloadScheduler:
 
             _parser = _cp.ConfigParser(strict=False)
             _parser.read(str(cfg_path))
+            # EVERY section name, unfiltered by role or receiver_type. This is
+            # the only set that answers "was this station DELETED from
+            # stations.cfg?" — cfg_station_sections below drops passive roles
+            # and self.stations drops anything get_all_station_configs() rejects,
+            # so neither can distinguish "deleted" from "not eligible".
+            cfg_all_sections: set[str] = {s.upper() for s in _parser.sections()}
             for section in _parser.sections():
                 sid = section.upper()
                 cfg_identity[sid] = {
@@ -1854,6 +1861,9 @@ class BulkDownloadScheduler:
                 ):
                     cfg_station_sections.add(sid)
         self._cfg_station_sections = cfg_station_sections
+        # Empty when the cfg could not be read at all — the deleted-station
+        # sweep treats that as "no evidence" and does nothing.
+        self._cfg_all_sections = cfg_all_sections
 
         try:
             # Use the existing station loading from CLI
@@ -4068,6 +4078,89 @@ class BulkDownloadScheduler:
                 except JobLookupError:
                     pass  # raced with a one-shot completing — already gone
 
+    def _retire_deleted_station_jobs(self) -> None:
+        """Drop persisted per-station jobs for a station DELETED from stations.cfg.
+
+        ``d0a53d3`` retires the jobs of a station that is still IN stations.cfg
+        but lifecycle-excluded (``enabled: false``, ``station_status``
+        inactive/discontinued, ``health_check: passive``). It cannot see a
+        station whose section was removed outright: the registration loop walks
+        ``self.stations``, and a deleted station is not there to be skipped.
+
+        MEASURED 2026-09-16: ``SFEH`` has no section in stations.cfg and still
+        holds ``15s_24hr_SFEH``, ``status_1hr_SFEH`` and ``health_SFEH`` — the
+        15-minute health job alone is ~410 log lines a day against a station
+        that no longer exists.
+
+        Three guards, because this is the one sweep that can delete a job for a
+        station the scheduler has no record of at all:
+
+        * **Only literal absence counts.** The oracle is
+          ``_cfg_all_sections`` — every section name in stations.cfg,
+          unfiltered. ``self.stations`` is the wrong oracle: it drops passive
+          roles and anything ``get_all_station_configs()`` rejects for a missing
+          ``receiver_type``, and it is set to ``{}`` outright when the config
+          load raises. Sweeping on that would retire the whole fleet on a
+          transient config error.
+        * **No evidence, no sweep.** An empty section set means the cfg was
+          unreadable, not that every station was deleted.
+        * **Only recognised per-station job families are touched**, built from
+          the session types this run knows about. ``15s_24hr_batch_summary``
+          must never be mistaken for a station job.
+
+        Removal is deferred to post-start for the same reason as
+        :meth:`_remove_disabled_jobs`: APScheduler 3.x refuses ``remove_job()``
+        while the scheduler is stopped.
+        """
+        known: set = getattr(self, "_cfg_all_sections", set())
+        if not known:
+            self.logger.debug(
+                "Deleted-station job sweep skipped: no stations.cfg sections "
+                "were read (absent config is not evidence of deletion)"
+            )
+            return
+
+        import re as _re
+
+        # The session types THIS run knows about. Deriving the alternation
+        # rather than matching a loose `_<SID>$` suffix is what keeps
+        # `15s_24hr_batch_summary` and `15s_24hr_second_chance` out of the
+        # sweep. An empty mapping (a partially-constructed test shell) degrades
+        # to the health family only — never to a wider match.
+        sessions = sorted(getattr(self, "schedule_configs", {}) or {})
+        patterns = [_re.compile(r"^health_(?P<sid>[A-Z0-9]{4})$")]
+        if sessions:
+            alt = "|".join(_re.escape(s) for s in sessions)
+            patterns.append(
+                _re.compile(rf"^(?:{alt})_(?:midnight_)?(?P<sid>[A-Z0-9]{{4}})$")
+            )
+            patterns.append(_re.compile(rf"^catchup_(?:{alt})_(?P<sid>[A-Z0-9]{{4}})$"))
+
+        from apscheduler.jobstores.base import JobLookupError
+
+        removed: Dict[str, List[str]] = {}
+        for job in sorted(self.scheduler.get_jobs(), key=lambda j: j.id):
+            sid = next(
+                (m.group("sid") for m in (p.match(job.id) for p in patterns) if m),
+                None,
+            )
+            if sid is None or sid in known:
+                continue
+            try:
+                self.scheduler.remove_job(job.id)
+            except JobLookupError:
+                continue  # raced with a one-shot completing — already gone
+            removed.setdefault(sid, []).append(job.id)
+
+        for sid, job_ids in sorted(removed.items()):
+            self.logger.info(
+                "Removed %d persisted job(s) for '%s' — no such station in "
+                "stations.cfg: %s",
+                len(job_ids),
+                sid,
+                ", ".join(job_ids),
+            )
+
     def start(self):
         """Start the scheduler.
 
@@ -4077,6 +4170,7 @@ class BulkDownloadScheduler:
         try:
             self.scheduler.start()
             self._remove_disabled_jobs()
+            self._retire_deleted_station_jobs()
             self.logger.info(f"Scheduler started successfully (PID {os.getpid()})")
             self._log_misfire_status()
         except Exception as e:
