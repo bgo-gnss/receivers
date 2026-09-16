@@ -631,8 +631,16 @@ def _create_converter(
         # the L2 range stays P2. Use trimble_cls (the native converter when Docker
         # is available — the teqc path produces no .T00 output here). Configurable
         # via [rinex] netrs_rinex_version (default 2); RINEX 2 forces SHORT naming.
+        # Same resolver the BACKFILL path uses. These two copies of the
+        # version decision drifted for months — backfill kept a hardcoded 3 —
+        # exactly as the converter-CLASS decision drifted before be6fd7c.
+        from .converter_select import resolve_trimble_rinex_version
+
         netrs_version = version_map.get(
-            int(rinex_config.get("netrs_rinex_version", 2)), RinexVersion.RINEX_2
+            resolve_trimble_rinex_version(
+                3, receiver_type=receiver_type, rinex_config=rinex_config
+            ),
+            RinexVersion.RINEX_2,
         )
         netrs_naming = (
             NamingConvention.SHORT if netrs_version == RinexVersion.RINEX_2 else naming

@@ -43,6 +43,50 @@ def wants_native_trimble(receiver_type: str) -> bool:
     return any(t in rt for t in NATIVE_TRIMBLE_TYPES)
 
 
+# Trimble receivers whose L2 is CODELESS. RINEX 3 codes that L2 range as C2D,
+# which GAMIT deletes ("no P2 range"); RINEX 2 keeps a real P2. NOT NetR5 —
+# a NetR5 is multi-GNSS (it logs GLONASS) and codes L2 as C2W/C2X, so RINEX 3
+# is the right output for it and pinning it to 2 would DISCARD its GLONASS.
+# Verified on the archive 2026-09-16: 40/40 sampled R3 NetR5 files carry an
+# `R` block with C2W/C2X; every R3 NetRS file carries `G ... C2D`.
+CODELESS_L2_TYPES = ("netrs",)
+
+
+def resolve_trimble_rinex_version(
+    requested: int,
+    *,
+    receiver_type: Optional[str],
+    rinex_config: Optional[dict] = None,
+) -> int:
+    """The RINEX version this Trimble receiver must actually be converted at.
+
+    ``requested`` is what the caller asked for. For a codeless-L2 receiver it is
+    OVERRIDDEN, because the request is almost always a receiver-blind default:
+    the live download path resolves the pin itself, while the scheduler's
+    backfill job passes a hardcoded ``rinex_version=3``
+    (``bulk_scheduler.py``) and ``station onboard``'s re-rinex stage passes
+    ``--version 3``.
+
+    This is the SAME divergence :func:`resolve_trimble_converter` was written
+    for, one level up. ``be6fd7c`` unified which converter CLASS the live and
+    backfill paths pick; it left the VERSION decision duplicated, so backfill
+    kept producing RINEX 3 for NetRS. Measured on rek-d01 2026-09-16:
+    **34,382 hourly + 1,472 daily** archived NetRS files are RINEX 3 with C2D,
+    the newest written that morning by ``receivers.scheduler.backfill``.
+
+    Configurable via ``[rinex] netrs_rinex_version`` (default 2) exactly as the
+    live path is, so one knob still governs both.
+    """
+    rt = (receiver_type or "").lower()
+    if not any(t in rt for t in CODELESS_L2_TYPES):
+        return requested
+    cfg = rinex_config or {}
+    try:
+        return int(cfg.get("netrs_rinex_version", 2))
+    except (TypeError, ValueError):
+        return 2
+
+
 def resolve_trimble_converter(
     fallback: Any,
     *,
