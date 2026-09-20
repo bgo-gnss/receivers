@@ -4342,6 +4342,76 @@ def _backup_existing_rinex_for_date(
     return moved
 
 
+def _merge_extra_recording(
+    raw_file: Path,
+    output_dir: Path,
+    staged: Path,
+    converter: Any,
+    *,
+    force: bool,
+) -> bool:
+    """Convert a SECOND recording for an already-staged date and merge it in.
+
+    A 15s_24hr day normally has one raw file, so one product. When it has two
+    (a receiver restarted mid-day, or the first hours were recorded in two
+    parts), the product must cover BOTH windows — see
+    :mod:`receivers.rinex.multi_recording` for the RJUC 2015-09-15 case where it
+    silently covered only one.
+
+    Returns True when ``staged`` now covers both windows. Returns False — and
+    the caller then reports a LOUD skip — unless the parts are provably
+    DISJOINT: an overlapping pair is most likely a truncated re-fetch of the
+    same data, and concatenating it would duplicate epochs rather than extend
+    coverage.
+
+    The second recording is converted into a temporary directory INSIDE
+    ``output_dir`` so it lands on the same volume as the product (staging on
+    ``/home`` is never allowed) and so a failed merge leaves nothing behind.
+    """
+    import tempfile
+
+    from ..rinex.multi_recording import merge_disjoint, read_time_span, spans_overlap
+
+    try:
+        with tempfile.TemporaryDirectory(prefix=".merge_rec_", dir=str(output_dir)) as tmp:
+            result = converter.convert_file(raw_file, output_dir=Path(tmp), force=force)
+            if not result.success or result.rinex_file is None:
+                _logger.warning(
+                    "second recording %s did not convert (%s) — not merged",
+                    Path(raw_file).name,
+                    getattr(result, "message", "no message"),
+                )
+                return False
+
+            other = Path(result.rinex_file)
+            ours, theirs = read_time_span(staged), read_time_span(other)
+            overlap = spans_overlap(ours, theirs)
+            if overlap is not False:
+                # True (overlapping) or None (a span could not be read, e.g. a
+                # RINEX 2 header with no TIME OF LAST OBS). Either way we cannot
+                # PROVE the join is safe, so we refuse rather than guess.
+                _logger.warning(
+                    "%s: cannot merge into %s — %s",
+                    Path(raw_file).name,
+                    staged.name,
+                    "the two recordings overlap"
+                    if overlap
+                    else "a time span could not be determined",
+                )
+                return False
+
+            merge_disjoint([staged, other], staged)
+            return True
+    except Exception as exc:  # noqa: BLE001 - a failed merge must not abort the run
+        _logger.warning(
+            "merging %s into %s failed: %s — the date keeps its existing product",
+            Path(raw_file).name,
+            staged.name,
+            exc,
+        )
+        return False
+
+
 def _staged_rinex_for_date(
     output_dir: Path,
     obs_date: datetime,
@@ -4599,6 +4669,23 @@ def _rinex_convert_station_period(
                 matches = list(raw_dir.glob(filename))
                 raw_files.extend(matches)
 
+        # A day can carry the SAME recording twice on disk — X.T00 beside
+        # X.T00.gz. JOKU alone has ~365 such days. They are ONE recording, so
+        # collapse them before the loop: otherwise the resume check below reads
+        # the second copy as a second recording, the counters overstate the
+        # work, and a date looks like it needs merging when it does not.
+        if _is_rerinex_mode(args):
+            from ..rinex.multi_recording import collapse_compression_twins
+
+            _before = len(raw_files)
+            raw_files = collapse_compression_twins(raw_files)
+            if len(raw_files) != _before:
+                logger.info(
+                    "collapsed %d duplicate-compression raw file(s) to %d recording(s)",
+                    _before - len(raw_files),
+                    len(raw_files),
+                )
+
         if not raw_files:
             print(f"  No raw files found for {station_id}")
             logger.warning(f"No raw files found for {station_id} in date range")
@@ -4649,6 +4736,13 @@ def _rinex_convert_station_period(
         # --no-header-correction legitimately produces 0.
         expect_corrections = not getattr(args, "no_header_correction", False)
 
+        # Dates THIS run has already staged. The resume check below is keyed on
+        # the DATE, so without this it cannot tell "a previous run did this" from
+        # "an earlier recording in this run produced this" — and silently counts
+        # a genuine second recording as already-staged work (RJUC 2015-09-15:
+        # 1h 7m of the station's first day lost while the run reported success).
+        _dates_done_this_run: set[Any] = set()
+
         for file_idx, raw_file in enumerate(raw_files):
             # Select the converter from THIS file's format (per-file dispatch),
             # else the single passed converter. An unrecognised raw is skipped
@@ -4686,6 +4780,13 @@ def _rinex_convert_station_period(
             except Exception:  # noqa: BLE001
                 _obs = None
 
+            # The DAY, not the timestamp. `_extract_date_from_filename` returns a
+            # full datetime, so two recordings of one session-date carry different
+            # values (RJUC's are 00:00 and 20:49) — keying the merge below on the
+            # raw value would never match and the second recording would fall
+            # straight back into the silent "already staged" skip.
+            _obs_day = _obs.date() if hasattr(_obs, "date") else _obs
+
             # Idempotent resume: in re-rinex mode, skip a date already staged
             # (complete) from a previous run unless --force. Lets an interrupted
             # run (e.g. TOS/network drop) be finished by re-running the SAME
@@ -4695,6 +4796,47 @@ def _rinex_convert_station_period(
                     output_dir, _obs, station_id, args.session
                 )
                 if staged is not None:
+                    if _obs_day in _dates_done_this_run:
+                        # NOT a resume: a second DISTINCT recording for a date
+                        # this run already staged. Merge it in, or refuse loudly.
+                        # Never silently drop it — that was the defect.
+                        if _merge_extra_recording(
+                            Path(raw_file),
+                            output_dir,
+                            Path(staged),
+                            converter,
+                            force=force,
+                        ):
+                            print(
+                                f"  ➕ {Path(raw_file).name}: merged into "
+                                f"{Path(staged).name} (2nd recording, same date)"
+                            )
+                            logger.info(
+                                f"➕ {raw_file} merged into {staged.name}",
+                                extra=_log_extra,
+                            )
+                            converted += 1
+                            if progress is not None:
+                                progress.advance()
+                            continue
+                        print(
+                            f"  ⚠️  {Path(raw_file).name}: NOT converted — "
+                            f"{Path(staged).name} already covers {_obs.date()} from a "
+                            "different recording, and the two spans could not be "
+                            "proven disjoint. Check this day by hand."
+                        )
+                        logger.warning(
+                            f"⚠️ {raw_file}: second recording for {_obs.date()} not "
+                            f"merged into {staged.name} — overlapping or unreadable "
+                            "time span; the day keeps its existing "
+                            "single-recording product",
+                            extra=_log_extra,
+                        )
+                        skipped += 1
+                        if progress is not None:
+                            progress.advance()
+                        continue
+                    # Genuine resume: a PREVIOUS run staged this date.
                     if progress is None:
                         print(
                             f"  ⏭️  {Path(raw_file).name}: already staged ({staged.name})"
@@ -4768,6 +4910,10 @@ def _rinex_convert_station_period(
                         f"   Applied {result.header_corrections_applied} header corrections"
                     )
                 converted += 1
+                if _obs is not None:
+                    # Remember the date so a SECOND recording for it is merged
+                    # rather than mistaken for an idempotent resume.
+                    _dates_done_this_run.add(_obs_day)
                 # --push incremental flush: every `flush_every` conversions, push
                 # the files staged so far to the archive (only the not-yet-pushed
                 # ones; the closure serializes + tracks them). Steady progress on a
