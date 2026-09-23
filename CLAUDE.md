@@ -269,6 +269,20 @@ receivers archive-repair-stale --read-root /mnt/rawgpsdata --limit 500 --catalog
 receivers archive-repair-stale --read-root /mnt/rawgpsdata --catalog-prod --yes
 receivers archive-repair-stale --read-root /mnt/rawgpsdata --include-unconfirmed  # no file_tracking record: opt-in
 
+# GC PHANTOM catalog rows (file gone from the archive; ~14k rows, every one carrying
+# the empty-content digest). Selects the empty-digest rows only (no 9.2M-row walk),
+# re-derives each from the filesystem under --read-root: absent + empty digest → row
+# deleted; a PRESENT file is NEVER deleted (a present empty-digest file is a live stub,
+# reported for archive-rm); absent + real digest → report only (relocated/lost, needs a
+# repoint). Guards: --max-size (re-checked on each host at delete time), --fraction-limit
+# 2% brake (--force overrides). Deletes on every catalog host by natural key, never id;
+# a per-host count difference is DIVERGENCE. Reads the archive, never writes it.
+# Dry-run by default; --yes deletes. Why it matters: archive-prune gates LOCAL deletion
+# on catalog presence alone, so a phantom row can authorise deleting the last local copy.
+receivers archive-catalog-gc --read-root /mnt/rawgpsdata --catalog-prod            # dry-run report
+receivers archive-catalog-gc --read-root /mnt/rawgpsdata --catalog-prod --limit 500 --yes  # staged
+receivers archive-catalog-gc --read-root /mnt/rawgpsdata --catalog-prod --json
+
 # Full-archive identity audit (stray + stacked; report-only, emits fix commands)
 receivers archive-audit NYLA --identity --years 2022      # stray/stacked sweep
 receivers archive-audit NYLA --identity --deep --check-version  # + corruption + R2

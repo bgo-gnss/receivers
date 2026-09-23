@@ -13,6 +13,17 @@ NOT to be confused with ``receivers.scheduling.tasks.SyncTask`` — that is a
 dormant per-station pipeline task; this is the authoritative host-level feed.
 """
 
+from .catalog_gc import (
+    GcRow,
+    GcStats,
+    HostGcResult,
+    apply_gc,
+    classify_rows,
+    count_location_rows,
+    gc_catalog_rows,
+    gc_hosts_diverged,
+    select_stub_rows,
+)
 from .config import SyncTarget, load_sync_config
 from .engine import ArchiveSync, SyncRunResult
 from .reindex import (
@@ -53,6 +64,15 @@ from .verify import VerifyStats, verify_archive_catalog
 
 __all__ = [
     "SyncTarget",
+    "GcRow",
+    "GcStats",
+    "HostGcResult",
+    "apply_gc",
+    "classify_rows",
+    "count_location_rows",
+    "gc_catalog_rows",
+    "gc_hosts_diverged",
+    "select_stub_rows",
     "load_sync_config",
     "ArchiveSync",
     "SyncRunResult",

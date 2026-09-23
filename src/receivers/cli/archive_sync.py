@@ -2675,3 +2675,337 @@ def create_archive_repair_stale_parser(subparsers) -> argparse.ArgumentParser:
     )
     parser.set_defaults(func=cmd_archive_repair_stale)
     return parser
+
+
+def _read_root_looks_mounted(read_root: str) -> bool:
+    """True when ``read_root`` holds at least one ``YYYY`` year directory.
+
+    An unmounted or empty read root makes EVERY row classify ABSENT — the one
+    input error that would turn this GC into a bulk delete of live-stub rows.
+    Cheap to probe, so it is a hard preflight, not a warning.
+    """
+    import os
+
+    try:
+        names = os.listdir(read_root)
+    except OSError:
+        return False
+    return any(
+        len(n) == 4 and n.isdigit() and os.path.isdir(os.path.join(read_root, n))
+        for n in names
+    )
+
+
+def cmd_archive_catalog_gc(args: argparse.Namespace) -> int:
+    """Delete archive_catalog PHANTOM rows — rows whose archive file is gone.
+
+    Selection is the empty-digest sweep (``content_sha256 = EMPTY_CONTENT_SHA256``,
+    the provable-stub population); every row is then re-derived from the
+    filesystem under ``--read-root``. Absent + empty digest → deleted. A PRESENT
+    file is never deleted, whatever its digest. Absent + real digest is reported
+    only. Bounded by ``--max-size`` (re-checked at delete time on each host) and
+    the ``--fraction-limit`` blast-radius brake. Dry-run by default; ``--yes``
+    deletes on every catalog host by natural key, never by id.
+    """
+    import os
+
+    from ..archive import load_sync_config, resolve_catalog_hosts
+    from ..archive.catalog_gc import (
+        count_location_rows,
+        gc_catalog_rows,
+        select_stub_rows,
+    )
+    from ..db.connection import get_connection
+
+    read_root = str(Path(args.read_root).expanduser())
+    if not os.path.isdir(read_root):
+        print(f"❌ --read-root not a directory: {read_root}")
+        return 2
+    if not _read_root_looks_mounted(read_root):
+        print(
+            f"❌ --read-root {read_root} holds no YYYY year directory — looks "
+            "unmounted/empty. Every row would classify ABSENT; refusing."
+        )
+        return 2
+
+    config_path = Path(args.config) if args.config else None
+    targets = load_sync_config(config_path)
+    target = None
+    if targets:
+        target = next(
+            (t for t in targets if t.name == args.storage_location), targets[0]
+        )
+    dest_prefix = args.dest_prefix or (target.dest if target else None)
+    if not dest_prefix:
+        print(
+            "❌ no archive dest prefix: pass --dest-prefix or configure the "
+            "archive target in sync.yaml"
+        )
+        return 2
+
+    hosts = resolve_catalog_hosts(args.catalog_host, prod=args.catalog_prod)
+    if args.catalog_prod and not hosts:
+        print(
+            "⚠️  --catalog-prod but [archive] catalog_hosts is unset in "
+            "receivers.cfg — refusing (would silently hit dev). Set "
+            "catalog_hosts = rek-d01.vedur.is, pgdev.vedur.is."
+        )
+        return 2
+    dry_run = not args.yes
+    if hosts == [None] and not args.catalog_prod and not args.json:
+        print(
+            "↻ catalog: targeting the DEFAULT gps_health (database.cfg). Add "
+            "--catalog-prod to GC the production catalog set instead."
+        )
+    max_size = max(0, int(args.max_size))
+    if args.fraction_limit < 0 or args.fraction_limit > 1:
+        print("❌ --fraction-limit must be a fraction in [0, 1] (e.g. 0.02)")
+        return 2
+
+    # Selection reads the FIRST resolved catalog host (or --host): the set is
+    # identical by contract, and selecting from a different DB than the one
+    # being written would make every candidate 'absent on host'.
+    sel_host = args.host if args.host else hosts[0]
+    conn = get_connection(host_override=sel_host, single_host=True)
+    try:
+        rows = select_stub_rows(
+            conn, storage_location=args.storage_location, limit=args.limit
+        )
+        total = count_location_rows(conn, storage_location=args.storage_location)
+    finally:
+        conn.close()
+
+    stats = gc_catalog_rows(
+        rows,
+        hosts=hosts,
+        read_root=read_root,
+        storage_location=args.storage_location,
+        dest_prefix=dest_prefix,
+        total_rows=total,
+        max_size=max_size,
+        fraction_limit=args.fraction_limit,
+        force=args.force,
+        dry_run=dry_run,
+    )
+
+    if args.json:
+        out = stats.to_dict()
+        out["read_root"] = read_root
+        out["dest_prefix"] = dest_prefix
+        out["selected"] = len(rows)
+        out["limit"] = args.limit
+        out["hosts_targeted"] = [h or "localhost" for h in hosts]
+        print(json.dumps(out, indent=2, default=_json_default))
+        return 0 if stats.ok else 1
+
+    _print_catalog_gc_report(stats, rows, hosts, args, read_root)
+    return 0 if stats.ok else 1
+
+
+def _print_catalog_gc_report(stats, rows, hosts, args, read_root) -> None:
+    dry = stats.dry_run
+    label_list = ", ".join(h or "localhost" for h in hosts)
+    icon = "✅" if stats.ok else "🛑"
+    print(
+        f"{icon} archive-catalog-gc"
+        + (" (DRY-RUN — nothing deleted)" if dry else "")
+        + f": {stats.storage_location} @ {read_root} → {label_list}"
+    )
+    print(
+        f"   selection: {len(rows)} empty-digest row(s)"
+        + (f" (--limit {args.limit})" if args.limit is not None else "")
+        + f" of {stats.total_rows} at {stats.storage_location}"
+    )
+    print(
+        f"   guards:    --max-size {stats.max_size} B (re-checked at delete time), "
+        f"--fraction-limit {stats.fraction_limit:.2%}"
+        + (" — OVERRIDDEN by --force" if stats.force else "")
+    )
+    c = stats.counts()
+    would = "would delete" if dry else "delete"
+    print(f"   classification of {len(stats.items)} row(s):")
+    print(f"      {would:<13} {c['gc_candidate']}  (absent + empty digest — phantom)")
+    print(
+        f"      present-kept  {c['present_kept']}  (file EXISTS — never deleted"
+        + (f"; {len(stats.live_stubs)} live stub(s))" if stats.live_stubs else ")")
+    )
+    print(
+        f"      report-only   {c['report_only']}  (real digest / unmappable / "
+        "rinex_org — never deleted)"
+    )
+    print(f"      oversized     {c['oversized_refused']}  (claimed size > cap)")
+    if stats.fraction is not None and stats.candidates:
+        print(
+            f"   blast radius: {len(stats.candidates)} / {stats.total_rows} "
+            f"= {stats.fraction:.3%}"
+        )
+    if stats.candidates:
+        bd = stats.breakdown()
+        print("   candidates by session:")
+        for k, n in bd["by_session"].items():
+            print(f"      {k:<12} {n}")
+        print("   candidates by year:")
+        for k, n in bd["by_year"].items():
+            print(f"      {k:<12} {n}")
+        print("   candidates by station:")
+        for k, n in bd["by_station"].items():
+            print(f"      {k:<12} {n}")
+
+    mark = {
+        "gc_candidate": "🅳",
+        "present_kept": "✓",
+        "report_only": "❌",
+        "oversized_refused": "⏭️",
+    }
+    shown = [r for r in stats.items if r.cls != "gc_candidate"]
+    if shown:
+        print(f"   non-candidate rows ({len(shown)}):")
+        for r in shown[:200]:
+            print(f"      {mark[r.cls]} {r.cls:<18} {r.file_path}")
+            print(f"           {r.reason}")
+        if len(shown) > 200:
+            print(f"      … {len(shown) - 200} more (use --json for the full list)")
+    if args.verbose_rows:
+        print("   candidate rows:")
+        for r in stats.candidates:
+            print(f"      {mark[r.cls]} {r.file_path} ({r.file_size} B claimed)")
+
+    if stats.hosts:
+        verb = "would delete" if dry else "deleted"
+        print(f"   per host ({'DRY-RUN' if dry else 'applied'}, natural-key deletes):")
+        for label, h in stats.hosts.items():
+            if h.error:
+                print(f"      ⚠️  {label}: FAILED — {h.error}; catalogs may DIVERGE")
+                continue
+            n = h.would_delete if dry else h.deleted
+            print(
+                f"      ↻ {label}: {n} {verb}"
+                + (f", {len(h.absent_on_host)} NO ROW here" if h.absent_on_host else "")
+                + (
+                    f", {len(h.digest_changed)} digest changed"
+                    if h.digest_changed
+                    else ""
+                )
+                + (f", {len(h.file_appeared)} file appeared" if h.file_appeared else "")
+                + (
+                    f", {len(h.refused_oversized)} over cap at delete time"
+                    if h.refused_oversized
+                    else ""
+                )
+            )
+        if stats.diverged:
+            print("   🛑 CATALOG HOSTS DIVERGED — the delete did not land identically.")
+
+    for p in stats.problems:
+        print(f"   🛑 {p}")
+    if dry and stats.candidates and not stats.refused_fraction:
+        print(f"   → re-run with --yes to delete ({len(stats.candidates)} row(s)).")
+
+
+def create_archive_catalog_gc_parser(subparsers) -> argparse.ArgumentParser:
+    from ..archive.catalog_gc import DEFAULT_FRACTION_LIMIT, DEFAULT_MAX_SIZE
+
+    parser = subparsers.add_parser(
+        "archive-catalog-gc",
+        help="Delete archive_catalog PHANTOM rows (empty-content digest, file "
+        "absent on the archive) — never a row whose file exists",
+        description=(
+            "Garbage-collect archive_catalog rows whose archive file is gone. "
+            "Selects the empty-content-digest rows (the provable-stub population, "
+            "no full-table scan), then re-derives each from the filesystem under "
+            "--read-root: absent + empty digest → the row is deleted; a PRESENT "
+            "file is never deleted whatever its digest (a present empty-digest "
+            "file is a live stub — reported for archive-rm); absent + real digest "
+            "is reported only (relocated or lost — needs a repoint/re-walk, never "
+            "a delete). Bounded by --max-size (re-checked on each host right "
+            "before the delete) and by --fraction-limit (refuses a run that would "
+            "delete more than that share of the catalog unless --force). Deletes "
+            "fan out to every catalog host, keyed on the natural logical key, "
+            "never on id; per-host counts are compared and any difference is "
+            "reported as divergence. Reads the archive, never writes to it. "
+            "Dry-run by default; --yes deletes."
+        ),
+    )
+    parser.add_argument(
+        "--read-root",
+        required=True,
+        help="Local (read-only) mount of the archive the rows are checked "
+        "against (rek-d01: /mnt/rawgpsdata; laptop: /mnt_data/rawgpsdata). Must "
+        "hold at least one YYYY year directory (an unmounted root is refused).",
+    )
+    parser.add_argument(
+        "--storage-location",
+        default="imo_archive",
+        help="archive_catalog.storage_location to GC (default: imo_archive); "
+        "also selects the sync target whose dest maps to --read-root",
+    )
+    parser.add_argument(
+        "--dest-prefix",
+        help="Archive dest prefix stored in file_path (default: target.dest from "
+        "sync.yaml), swapped for --read-root to locate each file",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Max empty-digest rows to select, oldest first (default: all) — "
+        "bounds a staged rollout",
+    )
+    parser.add_argument(
+        "--max-size",
+        type=int,
+        default=DEFAULT_MAX_SIZE,
+        metavar="BYTES",
+        help="Delete only rows whose claimed file_size ≤ BYTES; re-checked on "
+        f"each host at delete time. Default {DEFAULT_MAX_SIZE} covers every "
+        "measured stub shape (0 / 3 / 33 / 42 B).",
+    )
+    parser.add_argument(
+        "--fraction-limit",
+        type=float,
+        default=DEFAULT_FRACTION_LIMIT,
+        metavar="FRAC",
+        help="Refuse (non-zero exit) when the run would delete more than this "
+        f"fraction of the location's rows (default {DEFAULT_FRACTION_LIMIT}; the "
+        "measured phantom set is ~0.0016). --force overrides.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Override the --fraction-limit brake (never the --max-size cap or "
+        "the present-file guard)",
+    )
+    parser.add_argument(
+        "--catalog-host",
+        help="Explicit gps_health host(s) to GC, comma-separated (e.g. "
+        "localhost for a dev test). Default (no flag): database.cfg host.",
+    )
+    parser.add_argument(
+        "--catalog-prod",
+        action="store_true",
+        help="GC the PRODUCTION catalog set ([archive] catalog_hosts, e.g. "
+        "rek-d01 + pgdev). Explicit opt-in; refuses when catalog_hosts is unset.",
+    )
+    parser.add_argument(
+        "--config", help="Path to sync.yaml (default: GPS_CONFIG_PATH/sync.yaml)"
+    )
+    parser.add_argument(
+        "--host",
+        help="gps_health host the candidate rows are SELECTED from (default: "
+        "the first catalog host targeted)",
+    )
+    parser.add_argument(
+        "--verbose-rows",
+        action="store_true",
+        help="Also list every candidate row (default: only non-candidates)",
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON results"
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Delete the candidate rows (default: dry-run — classify and report)",
+    )
+    parser.set_defaults(func=cmd_archive_catalog_gc)
+    return parser
