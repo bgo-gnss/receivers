@@ -255,6 +255,15 @@ def cmd_archive_verify(args: argparse.Namespace) -> int:
         )
         for f in stats.findings[:50]:
             print(f"   ⚠ {f}")
+        # `missing` is a COUNT here by design (a run can reach four figures and
+        # would bury the findings). The paths are not lost: --json carries every
+        # missing/stale row in full, which is what a repair pass consumes.
+        if stats.missing or stats.mismatched:
+            print(
+                f"   → re-run with --json for the {stats.missing} missing and "
+                f"{len(stats.mismatched_rows)} stale row(s) in full "
+                "(missing_rows / mismatched_rows)"
+            )
     # Non-zero exit on any real integrity problem.
     return 1 if (stats.mismatched or stats.local_divergent) else 0
 

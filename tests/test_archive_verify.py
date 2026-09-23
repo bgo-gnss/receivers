@@ -196,3 +196,133 @@ class TestParallelReadBack:
         assert stats.verified == 3
         assert stats.mismatched == 1
         assert stats.missing == 1
+
+
+class TestEnumerableOutcomes:
+    """`missing` and the stale-hash class must be ENUMERABLE, not just counted.
+
+    Both were previously invisible to any caller: `missing` was counted, logged
+    at DEBUG and dropped, and the corrupt path put its file path inside a prose
+    `findings` string. A repair pass (build a symlink tree of the stale files
+    and re-hash them) and a phantom-GC pass (classify absent rows by digest)
+    both need the rows themselves, so they land in structured lists that
+    `--json` carries.
+    """
+
+    def test_missing_row_is_enumerable_serial(self, db_conn, tmp_path):
+        rel = "2026/jun/ELDC/15s_24hr/raw/ELDC_m1.sbf.gz"
+        _, digest = _seed_gz(tmp_path, rel, b"payload" * 100)
+        _seed_catalog(db_conn, rel, digest)
+        (tmp_path / rel).unlink()
+
+        stats = verify_archive_catalog(
+            db_conn,
+            storage_location="test_verify",
+            read_root=str(tmp_path),
+            dest_prefix="~/gpsdata",
+        )
+        assert stats.missing == 1
+        assert len(stats.missing_rows) == 1
+        row = stats.missing_rows[0]
+        assert row["file_path"] == f"~/gpsdata/{rel}"
+        assert row["canonical_key"]
+        # The digest is what a GC pass classifies on: empty-content digest =
+        # a stub that never had bytes; a real digest = relocated or lost.
+        assert row["content_sha256"] == digest
+        # local_path tells a real absence from a dest_prefix/read_root misconfig.
+        assert row["local_path"] == str(tmp_path / rel)
+
+    def test_missing_row_is_enumerable_parallel(self, db_conn, tmp_path):
+        """workers>1 takes the pre-hash branch — a SECOND recording site."""
+        rel = "2026/jun/ELDC/15s_24hr/raw/ELDC_m2.sbf.gz"
+        _, digest = _seed_gz(tmp_path, rel, b"payload" * 100)
+        _seed_catalog(db_conn, rel, digest)
+        (tmp_path / rel).unlink()
+
+        stats = verify_archive_catalog(
+            db_conn,
+            storage_location="test_verify",
+            read_root=str(tmp_path),
+            dest_prefix="~/gpsdata",
+            workers=2,
+        )
+        assert stats.missing == 1
+        assert [r["file_path"] for r in stats.missing_rows] == [f"~/gpsdata/{rel}"]
+
+    def test_stale_row_is_enumerable_with_both_hashes(self, db_conn, tmp_path):
+        rel = "2026/jun/ELDC/15s_24hr/raw/ELDC_s1.sbf.gz"
+        path, digest = _seed_gz(tmp_path, rel, b"original payload" * 100)
+        _seed_catalog(db_conn, rel, digest)
+        with gzip.GzipFile(path, "wb") as fh:
+            fh.write(b"TAMPERED payload" * 100)
+
+        stats = verify_archive_catalog(
+            db_conn,
+            storage_location="test_verify",
+            read_root=str(tmp_path),
+            dest_prefix="~/gpsdata",
+        )
+        assert len(stats.mismatched_rows) == 1
+        row = stats.mismatched_rows[0]
+        assert row["file_path"] == f"~/gpsdata/{rel}"
+        # Both sides, so a repair pass can tell a stale catalog hash (re-hash
+        # the archive bytes) from real corruption (restore the file).
+        assert row["content_sha256"] == digest
+        assert row["on_disk_sha256"] != digest
+        assert row["local_path"] == str(path)
+
+    def test_intact_file_records_nothing(self, db_conn, tmp_path):
+        rel = "2026/jun/ELDC/15s_24hr/raw/ELDC_ok.sbf.gz"
+        _, digest = _seed_gz(tmp_path, rel, b"intact" * 100)
+        _seed_catalog(db_conn, rel, digest)
+
+        stats = verify_archive_catalog(
+            db_conn,
+            storage_location="test_verify",
+            read_root=str(tmp_path),
+            dest_prefix="~/gpsdata",
+        )
+        assert stats.verified == 1
+        assert stats.missing_rows == []
+        assert stats.mismatched_rows == []
+
+    def test_to_dict_carries_both_lists(self, db_conn, tmp_path):
+        """--json prints to_dict() verbatim — that is the enumerable surface."""
+        import json
+
+        rel = "2026/jun/ELDC/15s_24hr/raw/ELDC_j1.sbf.gz"
+        _, digest = _seed_gz(tmp_path, rel, b"payload" * 100)
+        _seed_catalog(db_conn, rel, digest)
+        (tmp_path / rel).unlink()
+
+        stats = verify_archive_catalog(
+            db_conn,
+            storage_location="test_verify",
+            read_root=str(tmp_path),
+            dest_prefix="~/gpsdata",
+        )
+        d = stats.to_dict()
+        assert "missing_rows" in d and "mismatched_rows" in d
+        assert d["missing_rows"][0]["file_path"] == f"~/gpsdata/{rel}"
+        # Must survive json.dumps — file_date is a date object on the row.
+        json.dumps(d)
+
+    def test_findings_text_is_unchanged(self, db_conn, tmp_path):
+        """Operators diff `findings`; the new lists are additive, not a rewrite."""
+        rel = "2026/jun/ELDC/15s_24hr/raw/ELDC_f1.sbf.gz"
+        path, digest = _seed_gz(tmp_path, rel, b"original" * 100)
+        _seed_catalog(db_conn, rel, digest)
+        with gzip.GzipFile(path, "wb") as fh:
+            fh.write(b"TAMPERED" * 100)
+
+        stats = verify_archive_catalog(
+            db_conn,
+            storage_location="test_verify",
+            read_root=str(tmp_path),
+            dest_prefix="~/gpsdata",
+        )
+        assert any(f.startswith("ARCHIVE CORRUPT ") for f in stats.findings)
+        # `missing` still contributes NO finding line — it is a count plus the
+        # structured list, deliberately, so a four-figure run cannot bury the
+        # real corruption findings.
+        assert not any("not found" in f for f in stats.findings)
