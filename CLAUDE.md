@@ -275,6 +275,15 @@ receivers archive-sort NYLA --check-station
 # --no-scan-rinex restores raw-only.
 receivers archive-sort VMOS --check-station --no-scan-rinex
 receivers archive-sort --file 2025/jan/THOC/15s_24hr/raw/THOC202501070000a.T02 --check-station
+# The catalog half of the move: --yes also REPOINTS the archive_catalog row of every
+# pair the gateway CONFIRMED moved (old logical key → new, identity from dst via
+# parse_archive_path, hashes/size carried — never re-hashed) on --catalog-host /
+# --catalog-prod (default: the database.cfg host). Dry-run previews. A row already
+# at the destination key is removed only if proven a phantom (absent on --root),
+# else the pair is REFUSED; an unreported pair is listed UNKNOWN and never touched;
+# an uncatalogued src is skipped (catalog it with archive-index-backfill). Exit 1
+# when the catalog set is not consistent afterwards. See archive/restamp.py.
+receivers archive-sort --apply-plan plan.tsv --yes --catalog-prod
 
 # EPOS onboarding pipeline — the 8-step sequence as one verb with a dry-run/pause
 # gate per stage (todo #150). Stages: tos-review → rinex-review → re-rinex →
@@ -1064,7 +1073,7 @@ All receivers use Phase 1 utilities by default:
 
 ---
 
-**Last updated**: 2026-08-27
+**Last updated**: 2026-09-23
 **Package version**: Development (gpslibrary_new)
 **Phase Status**: Phase 3C Complete - Distribution window optimization, midnight offset, multi-session backfill, gap detection, archive reconciler, integrity checker, archive format system, unified logging, adaptive download timeouts
 

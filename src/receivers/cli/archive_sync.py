@@ -1502,6 +1502,176 @@ def _persist_remediation_records(
         print(f"   ⚠️  gps-tos-corrections commit failed: {exc}")
 
 
+def _restamp_catalog_after_relocate(
+    args, res, *, target, root: Path, plans=None
+) -> bool:
+    """Repoint ``archive_catalog`` rows for the pairs the gateway CONFIRMED it
+    moved (``res.moved``) on every catalog host — the catalog half of an
+    ``archive-sort`` move (see :mod:`receivers.archive.restamp`).
+
+    Shared by both relocation call sites: ``cmd_archive_sort`` (has MovePlans;
+    used here for reporting only) and ``_apply_plan_file`` (TSV pairs, no
+    plans). Identity is derived from ``dst`` in both cases.
+
+    Without ``--yes`` nothing has moved, so this is a read-only PREVIEW over
+    ``res.would_move`` (what the restamp would do, incl. any collision it would
+    refuse). ``res.unreported`` is listed as UNKNOWN and never touched.
+
+    Returns True when the catalog set is consistent afterwards (every host
+    wrote the same thing, nothing refused, nothing unknown); False otherwise —
+    the caller folds that into its exit code.
+    """
+    from ..archive import (
+        hosts_diverged,
+        resolve_catalog_hosts,
+        restamp_relocated_rows_multi,
+    )
+
+    execute = bool(args.yes)
+    # list(): a MagicMock result in tests iterates empty rather than truthy.
+    pairs = list(res.moved) if execute else list(res.would_move)
+    unreported = list(res.unreported)
+    if not pairs and not unreported:
+        return True
+
+    as_json = bool(getattr(args, "json", False))
+    catalog_prod = bool(getattr(args, "catalog_prod", False))
+    catalog_host = getattr(args, "catalog_host", None)
+    hosts = resolve_catalog_hosts(catalog_host, prod=catalog_prod)
+    if catalog_prod and not hosts:
+        print(
+            "\n   ⚠️  --catalog-prod but [archive] catalog_hosts is unset in "
+            "receivers.cfg — refusing to restamp archive_catalog (would silently "
+            "hit dev). Set catalog_hosts = rek-d01.vedur.is, pgdev.vedur.is."
+        )
+        if execute and pairs:
+            print(
+                f"   🛑 {len(pairs)} MOVED file(s) now have STALE catalog rows "
+                "(old path = phantom, new path uncatalogued). Fix catalog_hosts, "
+                "catalog the new paths with archive-index-backfill, and remove "
+                "the old-key rows."
+            )
+        return False
+    if hosts == [None] and not catalog_prod:
+        print(
+            "\n   ↻ catalog: restamping the DEFAULT gps_health (database.cfg). "
+            "Add --catalog-prod to write the production catalog set instead."
+        )
+
+    # The read-only mount is used for ONE thing: proving that a row already
+    # sitting at the destination key is a phantom. No mount → every collision
+    # is refused (never delete the only pointer to a possibly-live file).
+    probe = (lambda rel: (root / rel).exists()) if root.is_dir() else None
+    if probe is None and not as_json:
+        print(
+            f"   ⚠️  local read mount {root} not found — a destination-key "
+            "collision cannot be proven a phantom and will be REFUSED (--root)"
+        )
+
+    label_list = ", ".join(h or "localhost" for h in hosts)
+    if not as_json:
+        print(
+            "\n🗂  CATALOG RESTAMP"
+            + ("" if execute else " (DRY-RUN — nothing written)")
+            + f": {len(pairs)} pair(s) on {label_list}"
+        )
+    results = restamp_relocated_rows_multi(
+        hosts,
+        pairs,
+        storage_location=target.name,
+        dest_prefix=target.dest,
+        exists_locally=probe,
+        unreported=unreported,
+        dry_run=not execute,
+    )
+    diverged = hosts_diverged(results)
+
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "catalog_restamp": {
+                        "dry_run": not execute,
+                        "storage_location": target.name,
+                        "hosts": {
+                            label: (st.to_dict() if st is not None else None)
+                            for label, st in results.items()
+                        },
+                        "diverged": diverged,
+                    }
+                },
+                indent=2,
+                default=str,
+            )
+        )
+    else:
+        reasons = {p.dst_rel: ",".join(p.reasons) for p in (plans or [])}
+        would = "" if execute else "would be "
+        for label, st in results.items():
+            if st is None:
+                print(
+                    f"   ⚠️  restamp FAILED on {label} — catalogs may DIVERGE; re-run."
+                )
+                continue
+            c = st.counts()
+            print(
+                f"   ↻ {label}: {c['repointed']} "
+                + ("repointed" if execute else "would repoint")
+                + f", {c['collision_phantom_removed']} phantom row(s) {would}removed"
+                f", {c['refused_collision']} refused, {c['uncatalogued']} "
+                f"uncatalogued, {c['unknown_unreported']} unknown"
+                + (f", {c['unparsable']} unparsable" if c["unparsable"] else "")
+                + (f", {c['errors']} error(s)" if c["errors"] else "")
+            )
+            if getattr(args, "verbose", False):
+                for src, dst in st.repointed:
+                    why = reasons.get(dst)
+                    print(f"      ✓ {dst}" + (f"  [{why}]" if why else ""))
+            for dst, occ in st.collision_phantom_removed:
+                print(f"      🧹 phantom row at destination key ({occ}) {would}removed")
+            for src, dst in st.uncatalogued:
+                print(f"      · uncatalogued (no row to repoint): {src}")
+            for src, dst, occ, why in st.refused_collision:
+                print(
+                    f"      🛑 REFUSED {src} -> {dst}: destination key already "
+                    f"held by {occ} — {why}"
+                )
+            for src, dst in st.unparsable:
+                print(f"      ❌ unparsable identity: {src} -> {dst}")
+            for err in st.errors:
+                print(f"      ❌ {err}")
+        if unreported:
+            print(
+                f"\n   🛑 UNKNOWN catalog state for {len(unreported)} pair(s): the "
+                "gateway returned no status, so the file may or may not have "
+                "moved. Catalog NOT touched for:"
+            )
+            for src, dst in unreported:
+                print(f"      ? {src} -> {dst}")
+            print(
+                "      → re-run the same plan (the move is idempotent): a pair "
+                "still at src is moved + restamped; a pair the gateway reports "
+                "MISSING had already moved — its row is still at the OLD key: "
+                "catalog the new path with archive-index-backfill and remove "
+                "the old-key row."
+            )
+        if diverged:
+            print(
+                "\n   🛑 CATALOG HOSTS DIVERGED — the restamp did not land "
+                "identically on every host. Re-run once the failing host is "
+                "reachable; the repoint is idempotent."
+            )
+
+    return (
+        not diverged
+        and not unreported
+        and all(
+            st is not None and st.ok and not st.refused_collision
+            for st in results.values()
+        )
+    )
+
+
 def _apply_plan_file(plan_path: Path, args) -> int:
     """Execute a reviewed plan.tsv verbatim (no re-decode) via the gateway.
 
@@ -1558,7 +1728,12 @@ def _apply_plan_file(plan_path: Path, args) -> int:
         print("\n   → re-run with --yes to actually move.")
     if execute and res.moved:
         _record_plan_applied(plan_path, res)
-    return 0 if res.ok else 1
+    # Catalog half of the move: repoint the rows of the CONFIRMED pairs (or
+    # preview on a dry run). No MovePlan here — identity comes from dst.
+    catalog_ok = _restamp_catalog_after_relocate(
+        args, res, target=target, root=Path(args.root)
+    )
+    return 0 if (res.ok and catalog_ok) else 1
 
 
 def cmd_archive_sort(args: argparse.Namespace) -> int:
@@ -1826,12 +2001,14 @@ def cmd_archive_sort(args: argparse.Namespace) -> int:
 
     if not execute and res.would_move:
         print("\n   → re-run with --yes to actually move the files.")
-    if res.moved:
-        print(
-            "\n   → catalog note: archive_catalog rows for the OLD paths are now "
-            "stale — run archive-reindex / re-audit for the affected stations."
-        )
-    return 0 if res.ok else 1
+    # Catalog half of the move: repoint the rows of the CONFIRMED pairs (or
+    # preview on a dry run). Replaces the old "rows are now stale — run
+    # archive-reindex" note, which left every executed sort with a phantom row
+    # at the old path (a prune hazard) and no row at the new one.
+    catalog_ok = _restamp_catalog_after_relocate(
+        args, res, target=target, root=root, plans=plans
+    )
+    return 0 if (res.ok and catalog_ok) else 1
 
 
 def create_archive_sort_parser(subparsers) -> argparse.ArgumentParser:
@@ -1948,9 +2125,31 @@ def create_archive_sort_parser(subparsers) -> argparse.ArgumentParser:
     )
     parser.add_argument("--config", help="Path to sync.yaml (default: standard)")
     parser.add_argument(
+        "--catalog-host",
+        help="Explicit gps_health host(s), comma-separated, for the "
+        "archive_catalog restamp of moved files (default: database.cfg). This "
+        "is the CATALOG DB, not the move target (that is the rawdata gateway "
+        "from sync.yaml).",
+    )
+    parser.add_argument(
+        "--catalog-prod",
+        action="store_true",
+        help="Restamp catalog rows on the PRODUCTION set ([archive] "
+        "catalog_hosts). Explicit opt-in; default restamps the database.cfg "
+        "host only. Refuses (loudly) when catalog_hosts is unset.",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the catalog restamp report as JSON (per-host buckets: "
+        "repointed, collision_phantom_removed, refused_collision, "
+        "uncatalogued, unknown_unreported)",
+    )
+    parser.add_argument(
         "--yes",
         action="store_true",
-        help="Execute the moves (default: dry-run)",
+        help="Execute the moves AND repoint their archive_catalog rows on the "
+        "catalog host(s) (default: dry-run — nothing moved, nothing written)",
     )
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.set_defaults(func=cmd_archive_sort)

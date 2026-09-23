@@ -34,6 +34,12 @@ from .remove import (
     remove_catalog_rows,
     validate_archive_relpath,
 )
+from .restamp import (
+    RestampStats,
+    hosts_diverged,
+    restamp_relocated_rows,
+    restamp_relocated_rows_multi,
+)
 from .sort import MovePlan, SkipInfo, plan_relocations, plan_rinex_relocations
 from .verify import VerifyStats, verify_archive_catalog
 
@@ -60,6 +66,10 @@ __all__ = [
     "validate_archive_relpath",
     "RelocateResult",
     "relocate_archive_files",
+    "RestampStats",
+    "hosts_diverged",
+    "restamp_relocated_rows",
+    "restamp_relocated_rows_multi",
     "MovePlan",
     "SkipInfo",
     "plan_relocations",
