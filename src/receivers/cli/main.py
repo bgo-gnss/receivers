@@ -5768,6 +5768,31 @@ def _resolve_archive_target():
     return None, None, None
 
 
+def _rsync_transferred(stdout, rel: list[str]) -> list[str]:
+    """The subset of ``rel`` that ``rsync -av`` reported as actually sent.
+
+    ``rsync -av`` prints one line per file it transfers and nothing for a file
+    already identical on the destination. Intersecting the output with the
+    requested list — rather than parsing rsync's format — drops the "sending
+    incremental file list" header, directory entries and the byte-count trailer
+    for free. Order follows ``rel``. ``stdout`` may be ``None`` (a
+    ``TimeoutExpired`` carries only what was captured before the kill, possibly
+    nothing) or bytes (no text mode).
+
+    This is exactly what a partial-failure path must reindex: these files are
+    durable on the archive with their NEW content, so their catalog rows hold a
+    stale ``content_sha256`` until re-hashed. Anything more would stamp hashes
+    for files that never landed — the same stale-row class from the other side.
+    """
+    if stdout is None:
+        return []
+    if isinstance(stdout, bytes):
+        stdout = stdout.decode("utf-8", "replace")
+    rel_set = set(rel)
+    seen = {ln.strip() for ln in stdout.splitlines() if ln.strip() in rel_set}
+    return [r for r in rel if r in seen]
+
+
 def _flush_fixed_batch(
     batch_details: list[dict],
     *,
@@ -5810,6 +5835,35 @@ def _flush_fixed_batch(
     src = str(work).rstrip("/") + "/"
     dest = archive_dest.rstrip("/") + "/"
 
+    def _reindex_partial(stdout) -> dict:
+        """rsync stopped early: reindex ONLY what it reported as sent.
+
+        Those files are on the archive with their NEW content, so their catalog
+        rows are stale right now and nothing later repairs them (this is one of
+        the two reindex call sites) — ``archive-verify`` would flag them CORRUPT
+        for a fix that succeeded. The rest of the batch is retried on re-run.
+
+        Never the whole list (that would stamp hashes for files that never
+        landed) and never ``--cleanup`` here: cleanup deletes staged files, and
+        the un-transferred ones must survive for the retry to have anything to
+        send.
+        """
+        transferred = _rsync_transferred(stdout, push_rel)
+        if transferred:
+            print(
+                f"   ↻ {len(transferred)}/{len(push_rel)} file(s) did land — "
+                "reindexing those; the rest will retry on re-run"
+            )
+            _push_reindex(
+                args,
+                [str(work / r) for r in transferred],
+                root=str(work),
+                storage_location=archive_name,
+                dest_prefix=archive_destpath,
+            )
+        fixed_set = set(rel_fixed)
+        return {"pushed": sum(1 for r in transferred if r in fixed_set)}
+
     listf = tempfile.NamedTemporaryFile(
         "w", suffix=".rsync-files", delete=False, encoding="utf-8"
     )
@@ -5835,10 +5889,12 @@ def _flush_fixed_batch(
                 text=True,
                 timeout=3600,
             )
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
             print("   ⚠️  batch rsync timed out — not durable, will retry on re-run")
-            return {"pushed": 0}
+            # exc.stdout is whatever was captured before the kill — may be None.
+            return _reindex_partial(getattr(exc, "stdout", None))
         except FileNotFoundError:
+            # rsync never ran: nothing landed, nothing to reindex.
             print("   ⚠️  rsync not found — cannot push")
             return {"pushed": 0}
         dt = time.monotonic() - t0
@@ -5849,7 +5905,7 @@ def _flush_fixed_batch(
                 f"   ⚠️  batch rsync exit {proc.returncode} ({dt:.0f}s): "
                 f"{clean_ssh_stderr(proc.stderr)}"
             )
-            return {"pushed": 0}
+            return _reindex_partial(proc.stdout)
         print(f"   ✓ pushed {len(rel_fixed)} file(s) in {dt:.0f}s")
         _push_reindex(
             args,
@@ -6210,19 +6266,40 @@ def _push_reconverted(work_dir, args, logger, only_rel=None) -> Dict[str, Any]:
                 text=True,
                 timeout=3600,
             )
-        except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        except FileNotFoundError as exc:
+            # rsync never ran: nothing landed, nothing to reindex.
             print(f"  ⚠️  rsync failed: {exc}")
             stats["note"] = f"rsync failed: {exc}"
+            return stats
+        except subprocess.TimeoutExpired as exc:
+            print(f"  ⚠️  rsync failed: {exc}")
+            stats["note"] = f"rsync failed: {exc}"
+            stats["seconds"] = time.monotonic() - t0
+            # Files listed before the kill DID land and now carry a stale
+            # catalog hash; exc.stdout may be None (nothing captured yet).
+            transferred = _rsync_transferred(getattr(exc, "stdout", None), rel)
+            stats["pushed"] = len(transferred)
+            if transferred:
+                print(
+                    f"     {len(transferred)}/{len(rel)} transferred before the "
+                    "timeout are durable — reindexing those; re-run the push to "
+                    "send the rest"
+                )
+                _push_reindex(
+                    args,
+                    [str(work / r) for r in transferred],
+                    root=str(work),
+                    storage_location=name,
+                    dest_prefix=destpath,
+                )
             return stats
         stats["seconds"] = time.monotonic() - t0
         stats["rc"] = proc.returncode
         # rsync -av lists each file it actually transferred; files already
         # identical on the archive are skipped silently. Count real transfers
         # so the summary distinguishes "pushed" from "already there".
-        rel_set = set(rel)
-        stats["pushed"] = sum(
-            1 for ln in proc.stdout.splitlines() if ln.strip() in rel_set
-        )
+        transferred = _rsync_transferred(proc.stdout, rel)
+        stats["pushed"] = len(transferred)
         if proc.returncode != 0:
             from ..archive.remove import clean_ssh_stderr
 
@@ -6237,6 +6314,18 @@ def _push_reconverted(work_dir, args, logger, only_rel=None) -> Dict[str, Any]:
                 "     already-transferred files are durable; re-run the push "
                 "to send the rest (rsync skips what is already there)"
             )
+            # Durable means their catalog rows are stale NOW (pre-fix
+            # content_sha256) and this is the only place that refreshes them.
+            # Reindex exactly the transferred subset — never the whole list,
+            # which would stamp hashes for files that never landed.
+            if transferred:
+                _push_reindex(
+                    args,
+                    [str(work / r) for r in transferred],
+                    root=str(work),
+                    storage_location=name,
+                    dest_prefix=destpath,
+                )
             return stats
         print(
             f"  ✓ pushed {stats['pushed']} file(s) in {stats['seconds']:.0f}s "
