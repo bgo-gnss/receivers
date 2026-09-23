@@ -2383,3 +2383,295 @@ def create_archive_catalog_backfill_parser(subparsers) -> argparse.ArgumentParse
     )
     parser.set_defaults(func=cmd_archive_catalog_backfill)
     return parser
+
+
+def cmd_archive_repair_stale(args: argparse.Namespace) -> int:
+    """Repair archive_catalog rows whose content_sha256 went STALE — and only those.
+
+    Candidate collection IS an in-process ``archive-verify`` pass (bounded by
+    ``--limit``); its structured ``mismatched_rows`` feed the classifier in
+    :mod:`receivers.archive.repair_stale`. A mismatch is re-hashed only when it
+    carries the measured stale signature (decompresses cleanly; file_tracking
+    hash == catalog hash; on-disk differs from both). A file that will not
+    decompress is possible REAL corruption and is never touched — re-hashing it
+    would bless the corruption. Dry-run by default; ``--yes`` applies, then the
+    write is PROVED by re-hashing every repaired file against every catalog
+    host by file_path.
+
+    NOTE: the verify pass keeps its own contract — rows that read back clean are
+    stamped ``last_verified_at`` exactly as ``archive-verify`` does. The repair's
+    writes (``content_sha256``) happen only with ``--yes``.
+    """
+    import os
+
+    from ..archive import (
+        load_sync_config,
+        resolve_catalog_hosts,
+        verify_archive_catalog,
+    )
+    from ..archive.repair_stale import repair_stale_rows
+
+    read_root = str(Path(args.read_root).expanduser())
+    if not os.path.isdir(read_root):
+        print(f"❌ --read-root not a directory: {read_root}")
+        return 2
+
+    config_path = Path(args.config) if args.config else None
+    targets = load_sync_config(config_path)
+    target = None
+    if targets:
+        target = next(
+            (t for t in targets if t.name == args.storage_location), targets[0]
+        )
+    dest_prefix = args.dest_prefix or (target.dest if target else None)
+    if not dest_prefix:
+        print(
+            "❌ no archive dest prefix: pass --dest-prefix or configure the "
+            "archive target in sync.yaml"
+        )
+        return 2
+
+    hosts = resolve_catalog_hosts(args.catalog_host, prod=args.catalog_prod)
+    if args.catalog_prod and not hosts:
+        print(
+            "⚠️  --catalog-prod but [archive] catalog_hosts is unset in "
+            "receivers.cfg — refusing (would silently hit dev). Set "
+            "catalog_hosts = rek-d01.vedur.is, pgdev.vedur.is."
+        )
+        return 2
+    dry_run = not args.yes
+    if hosts == [None] and not args.catalog_prod and not args.json:
+        print(
+            "↻ catalog: targeting the DEFAULT gps_health (database.cfg). Add "
+            "--catalog-prod to repair the production catalog set instead."
+        )
+
+    conn = _get_conn(args.host, required=True)
+    try:
+        vstats = verify_archive_catalog(
+            conn,
+            storage_location=args.storage_location,
+            read_root=read_root,
+            dest_prefix=dest_prefix,
+            limit=args.limit,
+        )
+        # verify.mismatched also counts files it could not READ (prose findings
+        # only); the enumerable stale class is mismatched_rows.
+        unreadable = vstats.mismatched - len(vstats.mismatched_rows)
+        rstats = repair_stale_rows(
+            vstats.mismatched_rows,
+            hosts=hosts,
+            read_root=read_root,
+            storage_location=args.storage_location,
+            dest_prefix=dest_prefix,
+            tracking_conn=conn,
+            dry_run=dry_run,
+            include_unconfirmed=args.include_unconfirmed,
+            verify_unreadable=unreadable,
+        )
+    finally:
+        if conn is not None:
+            conn.close()
+
+    if args.json:
+        out = rstats.to_dict()
+        out["verify"] = {
+            "checked": vstats.checked,
+            "verified": vstats.verified,
+            "mismatched": vstats.mismatched,
+            "mismatched_enumerable": len(vstats.mismatched_rows),
+            "unreadable": unreadable,
+            "missing": vstats.missing,
+            "local_divergent": vstats.local_divergent,
+            "findings": vstats.findings,
+        }
+        out["storage_location"] = args.storage_location
+        out["read_root"] = read_root
+        out["hosts_targeted"] = [h or "localhost" for h in hosts]
+        print(json.dumps(out, indent=2, default=_json_default))
+        return 0 if rstats.ok else 1
+
+    _print_repair_stale_report(rstats, vstats, unreadable, hosts, args)
+    return 0 if rstats.ok else 1
+
+
+def _print_repair_stale_report(rstats, vstats, unreadable, hosts, args) -> None:
+    dry = rstats.dry_run
+    label_list = ", ".join(h or "localhost" for h in hosts)
+    icon = "✅" if rstats.ok else "🛑"
+    print(
+        f"{icon} archive-repair-stale"
+        + (" (DRY-RUN — nothing written)" if dry else "")
+        + f": {args.storage_location} @ {args.read_root} → {label_list}"
+    )
+    print(
+        f"   verify: {vstats.checked} checked, {vstats.verified} verified, "
+        f"{vstats.mismatched} CORRUPT ({len(vstats.mismatched_rows)} enumerable"
+        + (f" + {unreadable} unreadable" if unreadable else "")
+        + f"), {vstats.missing} missing, {vstats.local_divergent} local-divergent"
+    )
+    c = rstats.counts()
+    would = "would repair" if dry else "repaired"
+    print(f"   classification of {len(rstats.items)} mismatch candidate(s):")
+    print(f"      {would:<13} {c['repaired']}  (provably stale — re-hashed)")
+    print(
+        f"      unconfirmed   {c['unconfirmed_skipped']}  (no file_tracking "
+        "corroboration — skipped; --include-unconfirmed to repair)"
+    )
+    print(f"      report-only   {c['report_only']}  (not the stale signature)")
+    print(
+        f"      undecompress. {c['undecompressable']}  (possible REAL corruption "
+        "— NEVER re-hashed)"
+    )
+    print(f"      already-curr. {c['already_current']}")
+    mark = {
+        "stale_confirmed": "✓",
+        "stale_unconfirmed": "·",
+        "already_current": "=",
+        "undecompressable": "🛑",
+        "report_only": "❌",
+    }
+    for it in rstats.items:
+        tag = ""
+        if it.cls == "stale_unconfirmed":
+            tag = " [repair: opt-in]" if rstats.include_unconfirmed else " [skipped]"
+        print(f"      {mark[it.cls]} {it.cls:<18} {it.local_path}{tag}")
+        print(f"           {it.reason}")
+        if it.on_disk_sha256 or it.local_sha256:
+            print(
+                f"           catalog={it.catalog_sha256[:12]} "
+                f"on-disk={(it.on_disk_sha256 or '-')[:12]} "
+                f"file_tracking={(it.local_sha256 or '-')[:12]}"
+            )
+        for n in it.notes:
+            print(f"           note: {n}")
+
+    if rstats.hosts:
+        verb = "would update" if dry else "updated"
+        print(f"   reindex ({'DRY-RUN' if dry else 'applied'}, only_existing):")
+        for label, st in rstats.hosts.items():
+            if st is None:
+                print(f"      ⚠️  {label}: FAILED — catalogs may DIVERGE; re-run.")
+                continue
+            print(
+                f"      ↻ {label}: {st.updated} {verb}, {st.unchanged} unchanged"
+                + (
+                    f", {st.skipped_new} NO ROW on this host (not inserted)"
+                    if st.skipped_new
+                    else ""
+                )
+                + (f", {st.skipped} unparsable" if st.skipped else "")
+                + (f", {len(st.errors)} error(s)" if st.errors else "")
+            )
+            for msg in st.errors[:20]:
+                print(f"         ⚠ {msg}")
+        if rstats.diverged:
+            print(
+                "   🛑 CATALOG HOSTS DIVERGED — the reindex did not land "
+                "identically on every host."
+            )
+
+    if not dry and rstats.repair_set:
+        n = len(rstats.repair_set)
+        print("   re-check (fresh on-disk hash vs every host, by file_path):")
+        for label, res in rstats.recheck.items():
+            if res.ok:
+                print(f"      ✅ {label}: {res.matched}/{n} matched")
+                continue
+            print(
+                f"      🛑 {label}: {res.matched}/{n} matched, "
+                f"{len(res.mismatched)} MISMATCH, {len(res.absent)} absent"
+                + (f" — {res.error}" if res.error else "")
+            )
+            for fp, cat, disk in res.mismatched:
+                print(f"         ✗ {fp}: catalog={cat[:12]} on-disk={disk[:12]}")
+            for fp in res.absent:
+                print(f"         ? {fp}: no row on this host")
+        for lp, why in rstats.recheck_unhashable:
+            print(f"      🛑 could not re-hash {lp}: {why}")
+
+    for p in rstats.problems:
+        print(f"   🛑 {p}")
+    if dry and rstats.repair_set:
+        print(f"   → re-run with --yes to apply ({len(rstats.repair_set)} row(s)).")
+
+
+def create_archive_repair_stale_parser(subparsers) -> argparse.ArgumentParser:
+    parser = subparsers.add_parser(
+        "archive-repair-stale",
+        help="Re-hash catalog rows whose content_sha256 is provably STALE "
+        "(archive rewritten after cataloguing) — never a corrupt file",
+        description=(
+            "Run an in-process archive-verify pass (bounded by --limit) and "
+            "classify every hash mismatch. A row is repaired ONLY when its file "
+            "decompresses cleanly AND the local file_tracking hash equals the "
+            "catalog hash while the on-disk hash differs from both — the "
+            "measured fingerprint of 'archive rewritten after the catalog "
+            "captured it'. A mismatch with no file_tracking record is "
+            "'unconfirmed' and skipped unless --include-unconfirmed. A file that "
+            "will not decompress is possible REAL corruption and is reported, "
+            "never re-hashed (re-hashing would bless the corruption). Repairs go "
+            "through reindex with only_existing (no new rows ever). After --yes "
+            "every repaired file is re-hashed and checked against EVERY catalog "
+            "host by file_path. Dry-run by default. The verify pass stamps "
+            "last_verified_at on clean rows exactly as archive-verify does."
+        ),
+    )
+    parser.add_argument(
+        "--read-root",
+        required=True,
+        help="Local (read-only) mount of the archive the rows are re-hashed "
+        "from (rek-d01: /mnt/rawgpsdata; laptop: /mnt_data/rawgpsdata)",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=500,
+        help="Max catalog rows the verify pass examines (default: 500)",
+    )
+    parser.add_argument(
+        "--storage-location",
+        default="imo_archive",
+        help="archive_catalog.storage_location to repair (default: imo_archive); "
+        "also selects the sync target whose dest maps to --read-root",
+    )
+    parser.add_argument(
+        "--dest-prefix",
+        help="Archive dest prefix stored in file_path (default: target.dest from "
+        "sync.yaml), swapped for --read-root to locate each file",
+    )
+    parser.add_argument(
+        "--catalog-host",
+        help="Explicit gps_health host(s) to repair, comma-separated (e.g. "
+        "localhost for a dev test). Default (no flag): database.cfg host.",
+    )
+    parser.add_argument(
+        "--catalog-prod",
+        action="store_true",
+        help="Repair the PRODUCTION catalog set ([archive] catalog_hosts, e.g. "
+        "rek-d01 + pgdev). Explicit opt-in; refuses when catalog_hosts is unset.",
+    )
+    parser.add_argument(
+        "--config", help="Path to sync.yaml (default: GPS_CONFIG_PATH/sync.yaml)"
+    )
+    parser.add_argument(
+        "--host",
+        help="gps_health host for the verify pass and the file_tracking "
+        "corroboration (default: from config)",
+    )
+    parser.add_argument(
+        "--include-unconfirmed",
+        action="store_true",
+        help="Also repair mismatches with NO file_tracking record to corroborate "
+        "the stale shape (weaker evidence — off by default)",
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="Emit machine-readable JSON results"
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Apply the repair (default: dry-run — classify and report only)",
+    )
+    parser.set_defaults(func=cmd_archive_repair_stale)
+    return parser

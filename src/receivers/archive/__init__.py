@@ -34,6 +34,14 @@ from .remove import (
     remove_catalog_rows,
     validate_archive_relpath,
 )
+from .repair_stale import (
+    Candidate,
+    RecheckResult,
+    RepairStats,
+    classify_candidates,
+    recheck_repaired,
+    repair_stale_rows,
+)
 from .restamp import (
     RestampStats,
     hosts_diverged,
@@ -66,6 +74,12 @@ __all__ = [
     "validate_archive_relpath",
     "RelocateResult",
     "relocate_archive_files",
+    "Candidate",
+    "RecheckResult",
+    "RepairStats",
+    "classify_candidates",
+    "recheck_repaired",
+    "repair_stale_rows",
     "RestampStats",
     "hosts_diverged",
     "restamp_relocated_rows",

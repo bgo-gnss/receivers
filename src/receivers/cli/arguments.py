@@ -1731,6 +1731,7 @@ For subcommand help: receivers <command> --help
         create_archive_index_backfill_parser,
         create_archive_prune_parser,
         create_archive_reindex_parser,
+        create_archive_repair_stale_parser,
         create_archive_rm_parser,
         create_archive_sort_parser,
         create_archive_sync_parser,
@@ -1740,6 +1741,8 @@ For subcommand help: receivers <command> --help
     create_archive_sync_parser(subparsers)
     # archive-verify (re-hash archived files + local↔archive cross-check)
     create_archive_verify_parser(subparsers)
+    # archive-repair-stale (re-hash provably-stale catalog rows; never a corrupt file)
+    create_archive_repair_stale_parser(subparsers)
 
     # archive-audit (junk + regen-candidate scan, emits fix commands)
     create_archive_audit_parser(subparsers)
