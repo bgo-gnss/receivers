@@ -45,6 +45,22 @@ class VerifyStats:
     local_divergent: int = 0  # file_tracking hash != catalog hash
     read_back: bool = False  # whether read-back ran (read_root provided)
     findings: List[str] = field(default_factory=list)
+    # Structured, machine-readable counterparts to the free-text `findings`.
+    # `findings` stays exactly as it was (operators diff it); these exist so the
+    # two classes are ENUMERABLE instead of merely counted — without them a
+    # caller had to regex prose, and `missing` was not recorded anywhere at all
+    # (counted, then logged at DEBUG and dropped). Both are bounded by `limit`.
+    #
+    #: Rows whose archive file is ABSENT at read_root. The input a phantom-GC
+    #: pass classifies: an absent row carrying the empty-content digest is a
+    #: stub that never had bytes; one carrying a real digest is relocated or
+    #: lost and must be reported, never deleted.
+    missing_rows: List[dict] = field(default_factory=list)
+    #: Rows whose archive file READ BACK with a different hash than the catalog
+    #: holds — the re-hashable stale-hash class. NOT every `mismatched`: that
+    #: counter also covers files that could not be read at all (those stay in
+    #: `findings` only, since re-hashing cannot fix an unreadable file).
+    mismatched_rows: List[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -55,6 +71,8 @@ class VerifyStats:
             "local_divergent": self.local_divergent,
             "read_back": self.read_back,
             "findings": self.findings,
+            "missing_rows": self.missing_rows,
+            "mismatched_rows": self.mismatched_rows,
         }
 
 
@@ -65,6 +83,37 @@ def _local_session(session_type: str, file_category: str) -> str:
     splits the same into session_type + file_category.
     """
     return f"{session_type}_rinex" if file_category == "rinex" else session_type
+
+
+def _row_record(
+    station,
+    session_type,
+    file_category,
+    file_date,
+    file_path: str,
+    cat_hash,
+    canonical_key: str,
+    local_path: str,
+) -> dict:
+    """One catalog row, as a JSON-safe dict for the enumerable outcome lists.
+
+    ``file_path`` is the stored archive path (what a catalog write keys on);
+    ``local_path`` is where this run looked for it, so a reader can tell a real
+    absence from a dest_prefix/read_root misconfiguration. ``file_date`` is
+    stringified because these dicts land in ``--json``.
+    """
+    return {
+        "station": station,
+        "session_type": session_type,
+        "file_category": file_category,
+        "file_date": (
+            file_date.isoformat() if hasattr(file_date, "isoformat") else file_date
+        ),
+        "file_path": file_path,
+        "canonical_key": canonical_key,
+        "content_sha256": cat_hash,
+        "local_path": local_path,
+    }
 
 
 def _local_archive_path(
@@ -233,6 +282,18 @@ def verify_archive_catalog(
             _status, _payload = _pre
             if _status == "missing":
                 stats.missing += 1
+                stats.missing_rows.append(
+                    _row_record(
+                        station,
+                        session_type,
+                        file_category,
+                        file_date,
+                        file_path,
+                        cat_hash,
+                        canonical_key,
+                        local_path,
+                    )
+                )
                 log.debug(f"verify: archive file not found at {local_path}")
                 continue
             if _status == "error":
@@ -248,6 +309,18 @@ def verify_archive_catalog(
         else:
             if not os.path.isfile(local_path):
                 stats.missing += 1
+                stats.missing_rows.append(
+                    _row_record(
+                        station,
+                        session_type,
+                        file_category,
+                        file_date,
+                        file_path,
+                        cat_hash,
+                        canonical_key,
+                        local_path,
+                    )
+                )
                 log.debug(f"verify: archive file not found at {local_path}")
                 continue
             try:
@@ -292,6 +365,18 @@ def verify_archive_catalog(
             stats.verified += 1
         else:
             stats.mismatched += 1
+            _rec = _row_record(
+                station,
+                session_type,
+                file_category,
+                file_date,
+                file_path,
+                cat_hash,
+                canonical_key,
+                local_path,
+            )
+            _rec["on_disk_sha256"] = actual
+            stats.mismatched_rows.append(_rec)
             stats.findings.append(
                 f"ARCHIVE CORRUPT {station}/{session_type}/{file_category}/{file_date}: "
                 f"on-disk={actual[:12]} catalog={cat_hash[:12]} ({local_path})"
