@@ -24,6 +24,19 @@ if TYPE_CHECKING:  # avoid a runtime import cycle: yield_guard imports config
 from .compression_detector import CompressionDetector
 from .file_validator import FileValidator
 
+#: A raw file of exactly zero bytes is NEVER legitimate data, under any
+#: station's baseline, on any receiver model. That certainty is why this guard
+#: is absolute and — unlike the statistical data-yield guard below — does NOT
+#: fail open: the yield guard answers "is this file too small for this station?",
+#: a judgement that must defer to reality when it has no baseline, no DB or too
+#: few samples; this one answers "is there any data here at all?", which needs
+#: no baseline to decide. Measured 2026-07-05: two stations (ROTH, NVEL) archived
+#: a 0-byte SBF that gzip turned into a valid 42-byte empty archive, which then
+#: pushed to the long-term archive and was catalogued as the real file — the good
+#: local copy survived only by luck. The statistical guard could not have caught
+#: it: it did not exist yet, and its fail-open paths would have passed it anyway.
+ZERO_BYTE_REFUSAL = 0
+
 
 class ArchiveMode(Enum):
     """Archiving strategy mode."""
@@ -246,6 +259,49 @@ class FileArchiver:
             error=f"quarantined by yield guard: {verdict.reason}",
         )
 
+    def _refuse_empty(
+        self, tmp_file: Path, archive_path: Path, remove_tmp: bool
+    ) -> ArchiveResult:
+        """Refuse a zero-byte file and move it aside if we have somewhere to put it.
+
+        Independent of the yield guard: it runs even when that guard is disabled,
+        unconfigured or has no DB, because "zero bytes" is not a statistical
+        judgement. Quarantine is best-effort — when no quarantine root is
+        configured the file is simply not archived (and removed if the caller
+        asked), which is the outcome that matters.
+        """
+        station = "UNKNOWN"
+        dest = None
+        try:
+            from .yield_guard import parse_archive_path
+
+            station = parse_archive_path(archive_path)[0] or "UNKNOWN"
+        except Exception:  # noqa: BLE001 - never let naming break the refusal
+            pass
+        root = getattr(self.yield_guard, "quarantine_root", None)
+        if root:
+            try:
+                from .yield_guard import quarantine
+
+                dest = quarantine(tmp_file, root, station)
+            except Exception as exc:  # noqa: BLE001
+                self.logger.debug(f"quarantine failed for {tmp_file.name}: {exc}")
+        self.logger.error(
+            f"🚫 REFUSED {tmp_file.name}: 0 bytes — no data at all, never archived"
+            + (f" → {dest}" if dest else " (not archived)")
+        )
+        if dest is None and remove_tmp:
+            try:
+                tmp_file.unlink()
+            except OSError:
+                pass
+        return ArchiveResult(
+            success=False,
+            tmp_file=tmp_file,
+            source_size=0,
+            error="refused: zero-byte file, no data to archive",
+        )
+
     def register_compression_strategy(
         self, extension: str, strategy: CompressionStrategy
     ) -> None:
@@ -375,6 +431,15 @@ class FileArchiver:
             # Get tmp file size
             tmp_file_size = tmp_file.stat().st_size
             self.logger.info(f"File to archive {filename} ({tmp_file_size:,} bytes)")
+
+            # Absolute empty-file guard, BEFORE the statistical one. Zero bytes
+            # needs no baseline to judge, so this refusal never fails open — see
+            # ZERO_BYTE_REFUSAL. Placed ahead of the yield guard because that one
+            # abstains (allows) whenever it lacks a DB, a baseline or enough
+            # samples, which is exactly the state a brand-new station or one
+            # returning from a long outage is in.
+            if tmp_file_size <= ZERO_BYTE_REFUSAL:
+                return self._refuse_empty(tmp_file, archive_path, remove_tmp)
 
             # Data-yield guard: a receiver that has lost its sky view keeps
             # producing files on schedule, they are just nearly empty. Reject

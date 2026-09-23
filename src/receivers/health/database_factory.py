@@ -598,13 +598,38 @@ class DatabaseConnectionFactory:
                 host_params.pop("password", None)
             return host_params
 
+        # The fallback reuses the primary's PASSWORD with the host swapped. That
+        # is right only when the primary is the same server under another name
+        # (rek-d01 reaching "rek-d01.vedur.is"); when the primary is a different
+        # machine — a laptop whose primary is localhost — the password is simply
+        # wrong for `host`, and libpq reports it as "server closed the connection
+        # unexpectedly", which reads like an outage rather than a credential.
+        #
+        # Do NOT paper over that with either of the obvious-looking knobs:
+        #   * mirror_host means DUAL-WRITE. Naming production there would make
+        #     this process write production on every ordinary write.
+        #   * local_aliases asserts "same server as the primary" and returns the
+        #     primary params UNCHANGED — so the connection silently goes to the
+        #     PRIMARY, not to `host`. Correct on rek-d01, catastrophic on a laptop
+        #     (you would read and write the laptop's own gps_health believing you
+        #     were on production).
+        # local_aliases is right only when `host` really is the primary machine.
+        # Otherwise run the command ON the host where the identity is declared;
+        # there is no config key yet for "a third host, credentials via ~/.pgpass".
         logger.warning(
-            "get_connection_params_for_host: %s is neither the primary nor the "
-            "mirror_host in database.cfg — falling back to primary credentials "
-            "(user=%s). Its access identity is not declared; add it as "
-            "mirror_host (or extend the config) to make this unambiguous.",
+            "get_connection_params_for_host: %s is not declared in database.cfg "
+            "(neither the primary, a local_alias, nor mirror_host) — reusing the "
+            "PRIMARY's credentials (user=%s) with the host swapped. That works "
+            "only if %s is the same server as the primary; otherwise the password "
+            "is wrong for it and the failure looks like a dropped connection. "
+            "local_aliases fixes it ONLY when %s really is the primary machine "
+            "(it connects to the primary, not to %s); mirror_host would enable "
+            "dual-write. Otherwise run this on the host itself.",
             host,
             params.get("user"),
+            host,
+            host,
+            host,
         )
         return {**params, "host": host}
 
