@@ -34,6 +34,7 @@ from typing import Callable, Optional
 from ..db.tx import read_only_cursor
 from ..utils.canonical_key import canonical_key
 from ..utils.content_hash import (
+    EMPTY_CONTENT_SHA256,
     CorruptArchiveFileError,
     compressed_sha256,
     content_sha256,
@@ -42,6 +43,13 @@ from .catalog import upsert_catalog_row
 from .path_parse import parse_archive_path
 
 logger = logging.getLogger(__name__)
+
+#: Raw (on-disk) size below which the backfill walker treats a file as a stub
+#: and never opens it. MEASURED, not chosen by feel — see the survey in
+#: :func:`backfill_archive_catalog`. The exact guard (``content_sha256 ==
+#: EMPTY_CONTENT_SHA256``) is the real discriminator; this only saves the
+#: decompress for the obvious cases. Overridable per run (``--min-size-bytes``).
+DEFAULT_MIN_ARCHIVE_FILE_BYTES = 128
 
 
 @dataclass
@@ -466,14 +474,25 @@ class BackfillStats:
     hashed: int = 0  # files newly hashed + upserted to >=1 host this run
     skipped_done: int = 0  # every target host already held both hashes
     skipped_parse: int = 0  # path is not a catalogable archive file
+    # Stub guards (never catalogued, unless include_stubs). Two counters because
+    # they answer different questions: how many files the cheap floor caught
+    # without opening, and how many got through it but decompressed to nothing.
+    skipped_small: int = 0  # raw size < min_size_bytes — not even opened
+    skipped_empty: int = 0  # content_sha256 == EMPTY_CONTENT_SHA256 (the phantom class)
     writes: dict = field(default_factory=dict)  # {label: {"ok": int, "fail": int}}
     errors: list[str] = field(default_factory=list)
+
+    @property
+    def skipped_stubs(self) -> int:
+        return self.skipped_small + self.skipped_empty
 
     def to_dict(self) -> dict:
         return {
             "hashed": self.hashed,
             "skipped_done": self.skipped_done,
             "skipped_parse": self.skipped_parse,
+            "skipped_small": self.skipped_small,
+            "skipped_empty": self.skipped_empty,
             "writes": self.writes,
             "errors": self.errors,
         }
@@ -560,6 +579,8 @@ def backfill_archive_catalog(
     progress_every: int = 500,
     progress_callback: Optional[Callable[[str], None]] = None,
     unparsable_callback: Optional[Callable[[str], None]] = None,
+    min_size_bytes: int = DEFAULT_MIN_ARCHIVE_FILE_BYTES,
+    include_stubs: bool = False,
     log: logging.Logger = logger,
 ) -> BackfillStats:
     """Index already-on-disk archive files into ``archive_catalog`` on every host.
@@ -587,6 +608,71 @@ def backfill_archive_catalog(
     inert here because the ``archive_verify`` scheduler job stays disabled for
     this rollout.
 
+    **Stub guards — why a size floor exists and what it is NOT.** The walker
+    used to hash every file it met, so 0-byte and 3-byte stub RINEX (a failed
+    conversion leaves ``1f 9d 90`` — what ``compress`` emits for empty input —
+    or a gzip-of-nothing) were catalogued as legitimate archive members. That
+    is the most likely origin of the ~14,385 *phantom* rows (rows whose archive
+    file no longer exists), and phantom rows are dangerous: ``archive-prune``
+    gates LOCAL deletion on catalog presence alone (``_archived_keys`` in
+    ``archive/prune.py`` selects ``canonical_key`` with no existence or hash
+    check), so a phantom row can authorise deleting the last local copy of data
+    whose archive copy is gone. Two guards, with different jobs:
+
+    * **Exact guard (the real one):** skip when the file decompresses to
+      nothing — ``content_sha256(f) == EMPTY_CONTENT_SHA256``. Zero false
+      positives against legitimately small products, because it tests content,
+      not size. Every one of the phantom rows carries exactly this digest and
+      no other (the 3-byte stubs too: the hash is over DECOMPRESSED bytes, and
+      a stub decompresses to nothing). Counted in ``stats.skipped_empty``.
+    * **Cheap pre-filter:** skip without opening when the raw size is below
+      ``min_size_bytes`` (default :data:`DEFAULT_MIN_ARCHIVE_FILE_BYTES` =
+      128). Counted in ``stats.skipped_small``. The number is MEASURED, not
+      chosen by feel: a survey of four months of the read-only archive mount
+      (2015/jun, 2019/jul, 2021/sep, 2024/jan; ~400k files) found the stub
+      population at 0, 3 and 33 bytes (gzip-of-empty carries its stored
+      filename, so that class can reach ~60 bytes for a RINEX-3 long name),
+      one 74-byte stray that is an HTTP error body saved as a file, and the
+      smallest real catalogable member at 839 bytes (an hourly ``30s_1hr``
+      ``.d.Z``; smallest daily 1,197 B, smallest raw 1,448 B).
+
+      The band the floor actually turns on is **75-127 B, and it is empty**:
+      re-surveyed over three further months (2017/mar, 2022/oct, 2026/jul) it
+      held zero files, so a 128 B floor skips nothing legitimate. Do NOT read
+      that as "128-838 B is empty" — it is not. 2017/mar holds
+      ``HLID/15s_24hr/rinex/HLID0900.17D.Z``, 268 B compressed / 545 B
+      decompressed: a CRINEX header truncated after 7 lines, with no
+      ``END OF HEADER`` and zero observation epochs, written by a 2018 bulk
+      reconversion. It is a stub, but a **third class that NEITHER guard
+      catches** — its digest is real (not :data:`EMPTY_CONTENT_SHA256`) and
+      268 B clears any floor that does not also eat real products. Finding
+      that class needs a look past the header (no ``END OF HEADER``, or no
+      epochs after it), not a size or a hash. So treat "every phantom row
+      carries the empty digest" as a description of today's population, not
+      as a complete account of how stubs are made — a GC verb keyed only on
+      that constant will miss this one.
+
+      Configurable because the survey is a sample, not the whole 9M-file
+      archive: ``--min-size-bytes 0`` disables just this guard.
+
+    ``include_stubs=True`` disables BOTH guards (the escape hatch: index
+    exactly what is on disk). The floor is applied only to files that would
+    otherwise be hashed (after the already-indexed skip), so a resume sweep
+    pays no extra stat per already-done file; in ``dry_run`` only the floor can
+    run (the exact guard needs the decompress), so a dry-run's ``skipped_empty``
+    is always 0 and its ``hashed`` count is an upper bound.
+
+    **Pre-existing phantoms.** These guards prevent NEW phantom rows; they do
+    not remove existing ones — there is no file to hash, so no reindex can fix
+    them. Spot them with::
+
+        SELECT count(*) FROM archive_catalog
+         WHERE storage_location = 'imo_archive'
+           AND content_sha256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+
+    (the empty-content digest, :data:`EMPTY_CONTENT_SHA256`). Removing them
+    needs a GC verb, not yet written; it should classify on that same constant.
+
     Args:
         hosts: catalog hosts from :func:`resolve_catalog_hosts` (``None`` in the
             list = the default connection).
@@ -597,6 +683,9 @@ def backfill_archive_catalog(
         dest_prefix: the canonical archive dest for ``file_path``.
         limit: stop after this many files are newly hashed (``None`` = no cap).
         dry_run: classify + count, do not hash or write.
+        min_size_bytes: raw-size floor below which a file is skipped unopened
+            (``0`` disables the floor; the exact guard still applies).
+        include_stubs: disable both stub guards and index whatever is on disk.
 
     Returns:
         :class:`BackfillStats`.
@@ -637,7 +726,8 @@ def backfill_archive_catalog(
                 msg = (
                     f"progress: {scanned} scanned — {stats.hashed} {verb}, "
                     f"{stats.skipped_done} already-indexed, "
-                    f"{stats.skipped_parse} unparsable"
+                    f"{stats.skipped_parse} unparsable, "
+                    f"{stats.skipped_stubs} stub(s) skipped"
                 )
                 log.info("backfill %s", msg)
                 if progress_callback is not None:
@@ -656,6 +746,24 @@ def backfill_archive_catalog(
                 stats.skipped_done += 1
                 continue
 
+            # Stub guard 1 — the cheap raw-size floor. Applied only to files
+            # that would otherwise be hashed, so a resume sweep pays no extra
+            # stat for already-done files. See the docstring for the number.
+            try:
+                fsize = os.path.getsize(f)
+            except OSError as exc:
+                stats.errors.append(f"could not stat {f}: {exc}")
+                continue
+            if not include_stubs and fsize < min_size_bytes:
+                stats.skipped_small += 1
+                log.info(
+                    "backfill: stub skipped (%d B < %d B floor): %s",
+                    fsize,
+                    min_size_bytes,
+                    f,
+                )
+                continue
+
             if dry_run:
                 stats.hashed += 1
                 log.debug("backfill[DRY]: would index %s → %s", key, needing)
@@ -663,6 +771,18 @@ def backfill_archive_catalog(
 
             try:
                 csha = content_sha256(f)
+                # Stub guard 2 — the exact one: a file whose DECOMPRESSED content
+                # is empty is a stub whatever its raw size (a 3-byte `compress`
+                # header, a gzip-of-nothing). Catalogued, it would be a phantom
+                # row. Checked before the second hash so the stub costs one read.
+                if not include_stubs and csha == EMPTY_CONTENT_SHA256:
+                    stats.skipped_empty += 1
+                    log.info(
+                        "backfill: stub skipped (decompresses to nothing, %d B): %s",
+                        fsize,
+                        f,
+                    )
+                    continue
                 zsha = compressed_sha256(f)
             except CorruptArchiveFileError as exc:
                 stats.errors.append(f"corrupt, not indexed: {f}: {exc}")
@@ -673,7 +793,6 @@ def backfill_archive_catalog(
                 continue
 
             archive_path = f"{dest_prefix}/{parsed.relative_path}"
-            fsize = os.path.getsize(f)
             for label in needing:
                 conn = conns[label]
                 try:

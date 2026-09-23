@@ -10,6 +10,7 @@ connect-failure behaviour.
 """
 
 import gzip
+import hashlib
 
 import pytest
 
@@ -18,6 +19,12 @@ from receivers.archive.reindex import backfill_archive_catalog
 from receivers.utils.content_hash import content_sha256
 
 LOC = "test_backfill"
+
+# 256 incompressible bytes. Fixtures must clear the backfill's stub floor
+# (DEFAULT_MIN_ARCHIVE_FILE_BYTES) the way every real product does: a 40x
+# repeated string gzips to ~40 B, which IS a stub by the archive's own size
+# distribution (smallest real member 839 B; stubs sit at 0/3/33 B).
+_PAD = b"".join(hashlib.sha256(bytes([i])).digest() for i in range(8))
 
 
 def _local_conn():
@@ -51,7 +58,7 @@ def _seed_gz(root, rel, payload):
     path = root / rel
     path.parent.mkdir(parents=True, exist_ok=True)
     with gzip.GzipFile(path, "wb") as fh:
-        fh.write(payload)
+        fh.write(payload + _PAD)
     return path, content_sha256(path)
 
 
@@ -218,7 +225,7 @@ def test_hashes_once_and_fans_out_to_all_hosts(monkeypatch, tmp_path):
 
     p = tmp_path / REL_A
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_bytes(b"x" * 32)
+    p.write_bytes(_PAD)  # content is stubbed above; size must clear the floor
 
     stats = backfill_archive_catalog(
         ["h1.is", "h2.is"],

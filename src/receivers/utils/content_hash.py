@@ -40,6 +40,20 @@ BinaryStream = Union[
 
 _CHUNK = 1 << 20  # 1 MiB streaming reads — never load a whole file into memory
 
+#: :func:`content_sha256` of a file whose DECOMPRESSED content is empty — the
+#: SHA-256 of zero bytes. A 0-byte file, a 3-byte ``compress`` header
+#: (``1f 9d 90``, what ``compress`` emits for empty input) and a ~20-60-byte
+#: gzip-of-nothing all hash to exactly this, because the hash is over the
+#: decompressed bytes. It is the single discriminator for "stub, not data":
+#: every one of the ~14k phantom ``archive_catalog`` rows (rows whose archive
+#: file no longer exists) carries this digest and no other. Import THIS name
+#: wherever that classification is made (the backfill guard, a future
+#: phantom-GC verb) so all of them agree.
+EMPTY_CONTENT_SHA256 = hashlib.sha256(b"").hexdigest()
+assert EMPTY_CONTENT_SHA256 == (
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+)
+
 
 class CorruptArchiveFileError(Exception):
     """A compressed archive file could not be fully decompressed.

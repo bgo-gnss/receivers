@@ -606,6 +606,8 @@ def cmd_archive_index_backfill(args: argparse.Namespace) -> int:
             progress_every=args.progress_every,
             progress_callback=_progress,
             unparsable_callback=unparsable_cb,
+            min_size_bytes=args.min_size_bytes,
+            include_stubs=args.include_stubs,
         )
     finally:
         if unparsable_fh is not None:
@@ -620,6 +622,13 @@ def cmd_archive_index_backfill(args: argparse.Namespace) -> int:
             f"{stats.hashed} {verb}, {stats.skipped_done} already-done, "
             f"{stats.skipped_parse} unparsable"
         )
+        if stats.skipped_stubs:
+            print(
+                f"   ⊘ {stats.skipped_stubs} stub(s) NOT indexed: "
+                f"{stats.skipped_small} below the {args.min_size_bytes}-byte raw "
+                f"floor, {stats.skipped_empty} decompressed to nothing "
+                "(would have become phantom rows; --include-stubs overrides)"
+            )
         for label, w in stats.writes.items():
             note = (
                 f" ({w['fail']} FAILED — catalogs may DIVERGE, re-run)"
@@ -885,6 +894,8 @@ def create_archive_reindex_parser(subparsers) -> argparse.ArgumentParser:
 
 
 def create_archive_index_backfill_parser(subparsers) -> argparse.ArgumentParser:
+    from ..archive import DEFAULT_MIN_ARCHIVE_FILE_BYTES
+
     parser = subparsers.add_parser(
         "archive-index-backfill",
         help="One-time index of already-on-disk archive files into archive_catalog",
@@ -980,6 +991,25 @@ def create_archive_index_backfill_parser(subparsers) -> argparse.ArgumentParser:
         metavar="N",
         help="Log a progress line every N files scanned (default: 500) — so a long "
         "walk reports periodically instead of only at the end.",
+    )
+    parser.add_argument(
+        "--min-size-bytes",
+        type=int,
+        default=DEFAULT_MIN_ARCHIVE_FILE_BYTES,
+        metavar="BYTES",
+        help="Raw-size floor: files smaller than this are stubs and are skipped "
+        f"without being opened (default: {DEFAULT_MIN_ARCHIVE_FILE_BYTES}, "
+        "measured — the smallest real archive product seen is 839 B, the stub "
+        "population is 0/3/33 B). 0 disables the floor; a file that decompresses "
+        "to NOTHING is still skipped (that exact guard is what keeps phantom "
+        "rows out of the catalog).",
+    )
+    parser.add_argument(
+        "--include-stubs",
+        action="store_true",
+        help="Disable BOTH stub guards and index every file on disk, empty ones "
+        "included. Escape hatch only: an empty-content row is a phantom the "
+        "moment its stub is cleaned up, and archive-prune trusts catalog rows.",
     )
     parser.add_argument(
         "--report-unparsable",
