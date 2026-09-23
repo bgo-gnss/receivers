@@ -4396,9 +4396,11 @@ def _merge_extra_recording(
                     "%s: cannot merge into %s — %s",
                     Path(raw_file).name,
                     staged.name,
-                    "the two recordings overlap"
-                    if overlap
-                    else "a time span could not be determined",
+                    (
+                        "the two recordings overlap"
+                        if overlap
+                        else "a time span could not be determined"
+                    ),
                 )
                 return False
 
