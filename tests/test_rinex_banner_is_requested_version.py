@@ -52,9 +52,9 @@ class TestTheBannerDistinguishesRequestedFromEffective:
     def test_the_bare_wording_is_gone(self):
         """`RINEX version: N` is what was misread; it must not come back."""
         src = BANNER_SITE.read_text()
-        assert not re.search(
-            r'f"RINEX version: \{rinex_version\.value\}', src
-        ), "the ambiguous banner wording is back"
+        assert not re.search(r'f"RINEX version: \{rinex_version\.value\}', src), (
+            "the ambiguous banner wording is back"
+        )
 
 
 class TestThePinStillLogsItself:

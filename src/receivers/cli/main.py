@@ -4373,7 +4373,9 @@ def _merge_extra_recording(
     from ..rinex.multi_recording import merge_disjoint, read_time_span, spans_overlap
 
     try:
-        with tempfile.TemporaryDirectory(prefix=".merge_rec_", dir=str(output_dir)) as tmp:
+        with tempfile.TemporaryDirectory(
+            prefix=".merge_rec_", dir=str(output_dir)
+        ) as tmp:
             result = converter.convert_file(raw_file, output_dir=Path(tmp), force=force)
             if not result.success or result.rinex_file is None:
                 _logger.warning(

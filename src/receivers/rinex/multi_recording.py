@@ -135,9 +135,7 @@ def _open_maybe_compressed(path: Path):
         try:
             return gzip.open(path, "rt", encoding="latin-1", errors="replace")
         except OSError as exc:
-            raise RuntimeError(
-                f"cannot open gzip {Path(path).name}: {exc}"
-            ) from exc
+            raise RuntimeError(f"cannot open gzip {Path(path).name}: {exc}") from exc
     if magic == _LZW_MAGIC:
         proc = subprocess.run(
             ["uncompress", "-c", str(path)],
@@ -260,9 +258,7 @@ def _uncompress_to(src: Path, dest: Path) -> None:
             with gzip.open(src, "rb") as fin, open(dest, "wb") as out:
                 shutil.copyfileobj(fin, out)
         except OSError as exc:
-            raise RuntimeError(
-                f"cannot unpack gzip {Path(src).name}: {exc}"
-            ) from exc
+            raise RuntimeError(f"cannot unpack gzip {Path(src).name}: {exc}") from exc
         return
     try:
         shutil.copyfile(src, dest)
@@ -347,7 +343,9 @@ def merge_disjoint(parts: Sequence[Path], dest: Path, *, version: int = 3) -> No
             hat.rename(upper)
 
         # Step 5: real compress(1) LZW — never gzip bytes under a .Z name.
-        subprocess.run([_tool("compress"), "-f", str(upper)], check=True, capture_output=True)
+        subprocess.run(
+            [_tool("compress"), "-f", str(upper)], check=True, capture_output=True
+        )
         produced = upper.parent / (upper.name + ".Z")
         if not produced.exists():
             raise RuntimeError("compress produced no output for the merged file")

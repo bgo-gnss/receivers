@@ -39,7 +39,9 @@ def _hdr(value: str, label: str) -> str:
 
 def _write_rinex(path: Path, first: str, last: str | None = None) -> Path:
     lines = [
-        _hdr("     3.04           OBSERVATION DATA    M (MIXED)", "RINEX VERSION / TYPE"),
+        _hdr(
+            "     3.04           OBSERVATION DATA    M (MIXED)", "RINEX VERSION / TYPE"
+        ),
         _hdr("RJUC", "MARKER NAME"),
     ]
     if first:
@@ -170,7 +172,9 @@ def test_read_time_span_from_a_gzip_header(tmp_path: Path) -> None:
 
 def test_read_time_span_is_none_without_time_of_last_obs(tmp_path: Path) -> None:
     """RINEX 2 headers carry no TIME OF LAST OBS — the caller must not merge."""
-    p = _write_rinex(tmp_path / "c.15O", "  2015     9    15    20    49   15.0000000     GPS")
+    p = _write_rinex(
+        tmp_path / "c.15O", "  2015     9    15    20    49   15.0000000     GPS"
+    )
     assert read_time_span(p) is None
 
 
