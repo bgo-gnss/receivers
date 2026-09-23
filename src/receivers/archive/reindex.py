@@ -632,13 +632,26 @@ def backfill_archive_catalog(
       (2015/jun, 2019/jul, 2021/sep, 2024/jan; ~400k files) found the stub
       population at 0, 3 and 33 bytes (gzip-of-empty carries its stored
       filename, so that class can reach ~60 bytes for a RINEX-3 long name),
-      one 74-byte stray that is an HTTP error body saved as a file, and then
-      NOTHING until the smallest legitimate catalogable member at 839 bytes
-      (an hourly ``30s_1hr`` ``.d.Z``; smallest daily 1,197 B, smallest raw
-      1,448 B). 128 sits inside that empty 75-838 band with a 6.5x margin
-      below any real product and comfortably above every stub form. A minimal
-      RINEX header alone (11 mandatory lines, ~700 B of text) cannot compress
-      below ~200 B, so the margin holds by format as well as by observation.
+      one 74-byte stray that is an HTTP error body saved as a file, and the
+      smallest real catalogable member at 839 bytes (an hourly ``30s_1hr``
+      ``.d.Z``; smallest daily 1,197 B, smallest raw 1,448 B).
+
+      The band the floor actually turns on is **75-127 B, and it is empty**:
+      re-surveyed over three further months (2017/mar, 2022/oct, 2026/jul) it
+      held zero files, so a 128 B floor skips nothing legitimate. Do NOT read
+      that as "128-838 B is empty" — it is not. 2017/mar holds
+      ``HLID/15s_24hr/rinex/HLID0900.17D.Z``, 268 B compressed / 545 B
+      decompressed: a CRINEX header truncated after 7 lines, with no
+      ``END OF HEADER`` and zero observation epochs, written by a 2018 bulk
+      reconversion. It is a stub, but a **third class that NEITHER guard
+      catches** — its digest is real (not :data:`EMPTY_CONTENT_SHA256`) and
+      268 B clears any floor that does not also eat real products. Finding
+      that class needs a look past the header (no ``END OF HEADER``, or no
+      epochs after it), not a size or a hash. So treat "every phantom row
+      carries the empty digest" as a description of today's population, not
+      as a complete account of how stubs are made — a GC verb keyed only on
+      that constant will miss this one.
+
       Configurable because the survey is a sample, not the whole 9M-file
       archive: ``--min-size-bytes 0`` disables just this guard.
 
