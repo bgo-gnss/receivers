@@ -258,6 +258,17 @@ receivers scheduler integrity --session 15s_24hr --days 7
 receivers scheduler integrity --session all --days 30 --no-receiver
 receivers scheduler integrity --stations ENTC ELDC --tolerance 20
 
+# Repair STALE catalog hashes (archive rewritten after cataloguing, reindex never ran —
+# verify calls them CORRUPT, a false alarm). Re-hashes ONLY the provably-stale rows:
+# file decompresses + file_tracking hash == catalog hash while on-disk differs from
+# both. A file that will not decompress is possible REAL corruption and is reported,
+# never re-hashed (that would bless the corruption). Repairs via reindex with
+# only_existing (no new rows), then PROVES the write by re-hashing every repaired file
+# against every catalog host by file_path. Dry-run by default; --yes applies.
+receivers archive-repair-stale --read-root /mnt/rawgpsdata --limit 500 --catalog-prod
+receivers archive-repair-stale --read-root /mnt/rawgpsdata --catalog-prod --yes
+receivers archive-repair-stale --read-root /mnt/rawgpsdata --include-unconfirmed  # no file_tracking record: opt-in
+
 # Full-archive identity audit (stray + stacked; report-only, emits fix commands)
 receivers archive-audit NYLA --identity --years 2022      # stray/stacked sweep
 receivers archive-audit NYLA --identity --deep --check-version  # + corruption + R2
