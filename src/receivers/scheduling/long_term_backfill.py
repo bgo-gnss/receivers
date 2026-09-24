@@ -93,7 +93,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, timedelta
 from typing import Any, Optional, Union
 
-from .lookback import Lookback
+from .lookback import Lookback, LookbackConfigError
 
 logger = logging.getLogger("receivers.scheduler.long_term_backfill")
 
@@ -325,6 +325,18 @@ def _lookback_for(lookback, session: str) -> int:
     """
     count_for = getattr(lookback, "count_for", None)
     if count_for is not None:
+        # This job works in calendar days end to end (query_long_term_gaps
+        # does ``timedelta(days=lookback_days - 1)``), so a ``files`` unit
+        # cannot be honoured: ``files_back: 36`` would be read as 36 DAYS on
+        # 1Hz_1hr, 24x the window the operator wrote. Refuse rather than
+        # misread — the same "no silent reinterpretation" rule as lookback.py.
+        unit = getattr(lookback, "unit", "days")
+        if unit != "days":
+            raise LookbackConfigError(
+                f"long_term_backfill: lookback unit {unit!r} is not supported — "
+                "this job counts calendar days, so 'files_back' would be "
+                "misread as days on an hourly session; use 'lookback_days'."
+            )
         return int(count_for(session))
     return int(lookback)
 
