@@ -91,7 +91,9 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, date, timedelta
-from typing import Any, Optional
+from typing import Any, Optional, Union
+
+from .lookback import Lookback
 
 logger = logging.getLogger("receivers.scheduler.long_term_backfill")
 
@@ -302,6 +304,35 @@ def _last_archived_date(sid: str, session: str) -> Optional[date]:
     except Exception as e:  # noqa: BLE001
         logger.warning("last_archived_date %s/%s: %s", sid, session, e)
         return None
+
+
+def _lookback_for(lookback, session: str) -> int:
+    """Calendar days to look back for ``session``.
+
+    Accepts either a plain int (every historical caller, and the deployed
+    ``lookback_days: 30``) or a :class:`~receivers.scheduling.lookback.Lookback`
+    carrying per-session overrides. The kwarg keeps its original NAME on both
+    job functions on purpose: those kwargs are pickled into the APScheduler
+    jobstore, and renaming one would make a job persisted by the previous
+    version call the new signature with an unexpected keyword.
+
+    Why per-session at all — MEASURED on rek-d01 2026-09-24 from
+    ``receiver_horizon``: for ``15s_24hr`` 140 of 149 stations still hold MORE
+    than 90 days, so a 30-day window leaves recoverable data on the receiver;
+    for ``1Hz_1hr`` 105 of 149 hold 30 days or LESS (52 of them 7 or less), so
+    the same 30 mostly buys requests for data that is already gone. One number
+    cannot serve both.
+    """
+    count_for = getattr(lookback, "count_for", None)
+    if count_for is not None:
+        return int(count_for(session))
+    return int(lookback)
+
+
+def _describe_lookback(lookback, sessions) -> str:
+    """Render the effective lookback per session for the run banner."""
+    parts = [f"{sess}={_lookback_for(lookback, sess)}d" for sess in sessions]
+    return " ".join(parts) if parts else "none"
 
 
 def _receiver_horizon(sid: str, session: str) -> Optional[date]:
@@ -877,9 +908,14 @@ def _reset_attempt_history() -> None:
 
 # Where the next run starts in the task list.
 #
-# MEASURED, not hypothetical: at the deployed `lookback_days: 90` across both
-# sessions, 1,631 slots reach the receiver against a 600-slot budget, so 1,031
-# are deferred every run. The daily job builds its task list as
+# MEASURED, not hypothetical: at `lookback_days: 90` across BOTH sessions,
+# 1,631 slots reach the receiver against a 600-slot budget, so 1,031 are
+# deferred every run. That 90/90 shape was the measurement, never the deployed
+# config — production ran a flat 30 until per-session windows landed, and the
+# 04:00 pass on 2026-09-24 logged `lookback=30d` with 217/600 slots used. With
+# 90 on the daily session and 30 on 1Hz the real figure sits between the two,
+# so the rotation below still matters: the point is that the budget CAN be
+# oversubscribed, not the exact number. The daily job builds its task list as
 # `[(sid, session) for sid in active for s in sessions]` — a STABLE
 # alphabetical order. Serving it from the front each time means everything past
 # the cut is never served at all, so a station late in the alphabet with a real
@@ -1157,7 +1193,7 @@ def _load_monitor_overloaded() -> bool:
 
 def _run_long_term_backfill_job(
     sessions=None,
-    lookback_days: int = 365,
+    lookback_days: Union[int, Lookback] = 365,
     max_workers: int = 2,
     max_days_per_station: Optional[int] = None,
     run_rinex: bool = True,
@@ -1191,10 +1227,10 @@ def _run_long_term_backfill_job(
     ]
     budget = RunBudget(max_seconds=max_run_seconds, max_slots=max_slots_per_run)
     logger.info(
-        "Long-term backfill(daily): %d stations, sessions=%s, lookback=%dd, %s",
+        "Long-term backfill(daily): %d stations, sessions=%s, lookback=%s, %s",
         len(active),
         sessions,
-        lookback_days,
+        _describe_lookback(lookback_days, sessions),
         budget.describe(),
     )
 
@@ -1212,7 +1248,7 @@ def _run_long_term_backfill_job(
             report = run_long_term_backfill_station(
                 sid,
                 session,
-                lookback_days=lookback_days,
+                lookback_days=_lookback_for(lookback_days, session),
                 run_rinex=run_rinex,
                 max_days=max_days_per_station,
                 settle_hours=settle_hours,
@@ -1253,7 +1289,7 @@ def _run_long_term_backfill_job(
 
 def _run_reconnection_backfill_job(
     min_outage_days: int = 3,
-    lookback_days: int = 365,
+    lookback_days: Union[int, Lookback] = 365,
     run_rinex: bool = True,
     max_days_per_station: Optional[int] = None,
     reconnection_window_minutes: int = 20,
@@ -1323,7 +1359,7 @@ def _run_reconnection_backfill_job(
             report = query_long_term_gaps(
                 sid,
                 "15s_24hr",
-                lookback_days=lookback_days,
+                lookback_days=_lookback_for(lookback_days, "15s_24hr"),
                 settle_hours=settle_hours,
                 max_attempts=max_attempts,
             )
@@ -1334,7 +1370,7 @@ def _run_reconnection_backfill_job(
                 run_long_term_backfill_station(
                     sid,
                     "15s_24hr",
-                    lookback_days=lookback_days,
+                    lookback_days=_lookback_for(lookback_days, "15s_24hr"),
                     run_rinex=run_rinex,
                     max_days=max_days_per_station,
                     settle_hours=settle_hours,
