@@ -147,6 +147,35 @@ logger=context  msg="Request error" error="Context.HTML - Error rendering templa
 
 ---
 
+## Dashboard: GPS Long-term Backfill Runs
+
+**File**: `gps_ltb_runs_dashboard.json` · **UID**: `gps-ltb-runs` · **Refresh**: 15 min ·
+**Default range**: last 30 days · **Source table**: `ltb_runs` (migration 075)
+
+A dedicated dashboard rather than a row on Data Delivery: that dashboard is per-station and
+"today", this one is per-*run* and a 30-day trend, for a different reader (whoever is tuning
+`long_term_backfill.lookback_days` / `max_run_seconds`), and it must be possible to see it
+blank without the delivery dashboard looking broken.
+
+What it answers: **did a run hit a cap, and is that getting worse?**
+
+- **Last daily run** stat row — stopped on (`completed` / `wall-clock` / `slots`), time used %,
+  slots used %, recovered, nothing-on-receiver, and "daily runs stopped early in 30 d"
+- **Seconds used vs cap** and **Slots used vs cap** — the run against the dashed cap line
+- **Outcomes per run** (stacked bars) — recovered / nothing on receiver / failed / unreachable /
+  budget capped — and **Yield %** = recovered / (recovered + nothing on receiver)
+- **Stopped early** table — empty is the healthy state
+- **Reconnection trigger** — the same, against ITS ceiling (`reconnection_max_run_seconds`, 600 s)
+
+Rows are written best-effort by `receivers.scheduling.ltb_run_metrics` at the end of each run;
+a DB failure there is a WARNING in `receivers.log`, never a failed run.
+
+**Production caveat (pgdev)**: the LTB runs on rek-d01 and writes rek-d01's `gps_health`;
+grafana.vedur.is reads pgdev. The row reaches pgdev only through the `mirror_host` dual-write
+in `database_factory` (the writer deliberately does NOT use `single_host=True`), and only once
+migration 075 has been applied on pgdev as well — pgdev migrations are hand-applied. Until
+both hold, treat the dashboard as dev-only.
+
 ## Syncing to grafana.vedur.is
 
 The `scripts/grafana_sync.py` tool pushes local dashboard JSON to the production Grafana instance. It remaps datasource UIDs and inter-dashboard link UIDs automatically.

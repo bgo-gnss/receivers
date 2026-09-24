@@ -67,6 +67,18 @@
       "tooltip": "Per-station deep dive",
       "type": "link",
       "url": "/d/gps-station-detail/gps-station-detail"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external-link",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "LTB Runs",
+      "tooltip": "Long-term backfill run metrics (budget vs cap)",
+      "type": "link",
+      "url": "/d/gps-ltb-runs/gps-long-term-backfill-runs"
     }
   ],
   "liveNow": false,

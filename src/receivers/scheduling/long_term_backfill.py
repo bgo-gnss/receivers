@@ -90,10 +90,11 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Optional, Union
 
 from .lookback import Lookback, LookbackConfigError
+from .ltb_run_metrics import record_run
 
 logger = logging.getLogger("receivers.scheduler.long_term_backfill")
 
@@ -250,6 +251,14 @@ class LongTermGapReport:
     budget_capped: int = 0  # queued slots the run budget declined to start
     nothing_on_receiver: int = 0  # reached the receiver, no file there
     attempts_exhausted: int = 0  # retried max_attempts times, still missing
+    # --- worker outcomes (set by the worker, aggregated per run) ---
+    # These were locals inside run_long_term_backfill_station, logged and
+    # then dropped, so a run could count its queued gaps but never what came
+    # of them. They live here so ltb_run_metrics can sum them (todo: run
+    # metrics). The per-station log line below is unchanged — operators read
+    # it — these are the same numbers, kept.
+    recovered: int = 0  # slots whose download brought back >= 1 file
+    failed: int = 0  # slots whose per-day pipeline raised
 
     @property
     def total_window_days(self) -> int:
@@ -345,6 +354,19 @@ def _describe_lookback(lookback, sessions) -> str:
     """Render the effective lookback per session for the run banner."""
     parts = [f"{sess}={_lookback_for(lookback, sess)}d" for sess in sessions]
     return " ".join(parts) if parts else "none"
+
+
+def _safe_describe_lookback(lookback, sessions) -> str:
+    """`_describe_lookback` for a metrics row: never raises.
+
+    The reconnection job resolves its lookback INSIDE its per-station try, so
+    a files-unit Lookback surfaces there as a per-station warning and the job
+    still returns. Its metrics row must not be the first place that raises.
+    """
+    try:
+        return _describe_lookback(lookback, sessions)
+    except Exception as e:  # noqa: BLE001
+        return f"unresolved ({e.__class__.__name__})"
 
 
 def _receiver_horizon(sid: str, session: str) -> Optional[date]:
@@ -1174,6 +1196,8 @@ def run_long_term_backfill_station(
                 "Long-term backfill %s/%s/%s failed: %s", sid, session, gap.file_date, e
             )
     report.nothing_on_receiver = nothing_there
+    report.recovered = recovered
+    report.failed = failed
     logger.info(
         "Long-term backfill %s/%s done: recovered=%d nothing_on_receiver=%d failed=%d%s",
         sid,
@@ -1237,20 +1261,27 @@ def _run_long_term_backfill_job(
         and cfg.get("station_status") not in ("discontinued", "inactive")
         and cfg.get("health_check") != "passive"
     ]
+    started_at = datetime.now(UTC)
     budget = RunBudget(max_seconds=max_run_seconds, max_slots=max_slots_per_run)
+    lookback_desc = _describe_lookback(lookback_days, sessions)
     logger.info(
         "Long-term backfill(daily): %d stations, sessions=%s, lookback=%s, %s",
         len(active),
         sessions,
-        _describe_lookback(lookback_days, sessions),
+        lookback_desc,
         budget.describe(),
     )
 
     served = 0
     served_lock = threading.Lock()
+    # Every per-station report, kept for the run row. `_one` used to return
+    # only len(report.queued) and drop the rest, so the run could not
+    # aggregate its own outcomes (recovered / nothing_on_receiver / failed).
+    reports: list = []
+    errors = 0
 
     def _one(sid: str, session: str):
-        nonlocal served
+        nonlocal served, errors
         if budget.exhausted():
             return None
         if _load_monitor_overloaded():
@@ -1270,11 +1301,14 @@ def _run_long_term_backfill_job(
             # "Served" = consumed budget. A station that classified clean, was
             # skipped offline, or was capped to zero did not have its turn and
             # must not move the cursor past the stations behind it.
-            if report.queued and not report.skipped_offline:
-                with served_lock:
+            with served_lock:
+                reports.append(report)
+                if report.queued and not report.skipped_offline:
                     served += 1
             return len(report.queued)
         except Exception as e:  # noqa: BLE001
+            with served_lock:
+                errors += 1
             logger.warning("Long-term backfill %s/%s: %s", sid, session, e)
             return None
 
@@ -1296,6 +1330,18 @@ def _run_long_term_backfill_job(
             if budget.exhausted_reason
             else ""
         ),
+    )
+    # The row behind that log line. Best-effort: a DB failure here is a
+    # WARNING and the job returns exactly as it did above.
+    record_run(
+        "daily",
+        budget,
+        started_at,
+        reports,
+        stations=len(active),
+        sessions=sessions,
+        lookback=lookback_desc,
+        errors=errors,
     )
 
 
@@ -1347,7 +1393,10 @@ def _run_reconnection_backfill_job(
     )
 
     floor = date.today() - timedelta(days=min_outage_days)
+    started_at = datetime.now(UTC)
     budget = RunBudget(max_seconds=max_run_seconds, max_slots=max_slots_per_run)
+    reports: list = []
+    errors = 0
     for sid in candidates:
         if budget.exhausted():
             logger.info(
@@ -1379,7 +1428,7 @@ def _run_reconnection_backfill_job(
             # so a brief flap doesn't trigger a heavy multi-month recovery.
             if report.queued and any(g.file_date <= floor for g in report.queued):
                 _mark_attempted(sid)
-                run_long_term_backfill_station(
+                worked = run_long_term_backfill_station(
                     sid,
                     "15s_24hr",
                     lookback_days=_lookback_for(lookback_days, "15s_24hr"),
@@ -1389,5 +1438,23 @@ def _run_reconnection_backfill_job(
                     budget=budget,
                     max_attempts=max_attempts,
                 )
+                reports.append(worked)
         except Exception as e:  # noqa: BLE001
+            errors += 1
             logger.warning("Long-term backfill(reconnect) %s: %s", sid, e)
+    # Recorded only when the trigger had candidates (above the early return):
+    # a 15-minute tick with nothing to do never builds a budget and is not a
+    # run — 96 empty rows a day would bury the ones that matter. `stations`
+    # is the candidate count; a candidate the cooldown or the outage floor
+    # skipped contributes no report, so the outcome columns cover only the
+    # stations actually worked.
+    record_run(
+        "reconnect",
+        budget,
+        started_at,
+        reports,
+        stations=len(candidates),
+        sessions=["15s_24hr"],
+        lookback=_safe_describe_lookback(lookback_days, ["15s_24hr"]),
+        errors=errors,
+    )
