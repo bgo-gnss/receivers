@@ -109,6 +109,7 @@ class Lookback:
         *,
         default_days: int,
         section_name: str = "<section>",
+        legacy_days_key: Optional[str] = None,
     ) -> Lookback:
         """Build from a scheduler.yaml section.
 
@@ -129,12 +130,33 @@ class Lookback:
               default: 36        # status_1hr, 1Hz_1hr -> 36 hours
               15s_24hr: 7        # the daily session -> 7 days
 
+        ``legacy_days_key`` names a section-specific key that predates this
+        module and means calendar days — ``long_term_backfill``'s
+        ``lookback_days``. It is accepted as a third spelling of ``days_back``
+        so a DEPLOYED config keeps working untouched while gaining the mapping
+        form above. It is deliberately not a global alias: only the section that
+        already ships the key passes it, so no new spelling leaks anywhere else.
+        Combining it with ``days_back``/``files_back`` is the same hard error —
+        a silent precedence is what this module exists to remove.
+
         Raises:
-            LookbackConfigError: if both keys are set, or a mapping has no
-                ``default``.
+            LookbackConfigError: if more than one key is set, or a mapping has
+                no ``default``.
         """
         has_days = section.get(DAYS_KEY) is not None
         has_files = section.get(FILES_KEY) is not None
+        has_legacy = (
+            legacy_days_key is not None and section.get(legacy_days_key) is not None
+        )
+
+        if has_legacy and (has_days or has_files):
+            other = DAYS_KEY if has_days else FILES_KEY
+            raise LookbackConfigError(
+                f"{section_name}: set either '{legacy_days_key}' or '{other}', not "
+                f"both (got {legacy_days_key}={section[legacy_days_key]!r}, "
+                f"{other}={section[other]!r}). '{legacy_days_key}' is this "
+                f"section's own spelling of '{DAYS_KEY}' — calendar days."
+            )
 
         if has_days and has_files:
             raise LookbackConfigError(
@@ -148,6 +170,8 @@ class Lookback:
             key, unit = FILES_KEY, "files"
         elif has_days:
             key, unit = DAYS_KEY, "days"
+        elif has_legacy:
+            key, unit = str(legacy_days_key), "days"
         else:
             return cls(count=int(default_days), unit="days")
 

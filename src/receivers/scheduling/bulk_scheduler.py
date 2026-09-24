@@ -3015,6 +3015,21 @@ class BulkDownloadScheduler:
             )
             return
         from .long_term_backfill import _run_long_term_backfill_job
+        from .lookback import Lookback
+
+        # Per-session windows. `lookback_days` keeps its deployed spelling and
+        # its plain-int form; as a mapping it gains per-session overrides:
+        #   lookback_days:
+        #     default: 30        # 1Hz_1hr — most receivers hold <= 30d
+        #     15s_24hr: 90       # daily — 140/149 stations hold > 90d
+        # Resolved HERE, at config-load, so the job gets one object and the
+        # "both keys set" error surfaces at scheduling time, not mid-run.
+        ltb_lookback = Lookback.from_config(
+            cfg,
+            default_days=365,
+            section_name="long_term_backfill",
+            legacy_days_key="lookback_days",
+        )
 
         base = parse_schedule(cfg.get("daily_schedule", "04:00"))
         self.scheduler.add_job(
@@ -3022,7 +3037,7 @@ class BulkDownloadScheduler:
             trigger=base.trigger_type,
             kwargs={
                 "sessions": cfg.get("sessions", ["15s_24hr", "1Hz_1hr"]),
-                "lookback_days": cfg.get("lookback_days", 365),
+                "lookback_days": ltb_lookback,
                 "max_workers": cfg.get("max_workers", 2),
                 "max_days_per_station": cfg.get("max_days_per_station"),
                 "run_rinex": cfg.get("run_rinex", True),
@@ -3050,6 +3065,16 @@ class BulkDownloadScheduler:
         if not cfg.get("enabled", False):
             return
         from .long_term_backfill import _run_reconnection_backfill_job
+        from .lookback import Lookback
+
+        # Same section, same resolution — the reconnection trigger only ever
+        # works 15s_24hr, so it picks up that session's override.
+        ltb_lookback = Lookback.from_config(
+            cfg,
+            default_days=365,
+            section_name="long_term_backfill",
+            legacy_days_key="lookback_days",
+        )
 
         base = parse_schedule(cfg.get("reconnection_schedule", "15m"))
         self.scheduler.add_job(
@@ -3057,7 +3082,7 @@ class BulkDownloadScheduler:
             trigger=base.trigger_type,
             kwargs={
                 "min_outage_days": cfg.get("min_outage_days", 3),
-                "lookback_days": cfg.get("lookback_days", 365),
+                "lookback_days": ltb_lookback,
                 "run_rinex": cfg.get("run_rinex", True),
                 "max_days_per_station": cfg.get("max_days_per_station"),
                 "reconnection_window_minutes": cfg.get(
