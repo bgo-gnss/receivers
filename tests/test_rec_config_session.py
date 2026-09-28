@@ -283,10 +283,63 @@ def test_check_and_enable_mutually_exclusive():
 
 
 def test_one_mode_required():
-    """At least one mode must be supplied."""
+    """At least one mode must be supplied.
+
+    Enforced in the handler rather than by argparse since --bind-sbf and
+    --create-ntrip left the mutually-exclusive group (they COMBINE: creating an
+    NTRIP connection and feeding it is one operation). The property is unchanged
+    — only the layer that enforces it, and the message, which now lists the
+    modes instead of argparse's "one of the arguments ... is required".
+    """
+    from receivers.cli.main import rec_config_mode_missing
+
+    p = _build_parser()
+    ns = p.parse_args(["rec-config", "THOB"])  # argparse no longer rejects it
+    assert rec_config_mode_missing(ns) is True
+
+
+def test_a_real_mode_satisfies_the_check():
+    from receivers.cli.main import rec_config_mode_missing
+
+    p = _build_parser()
+    assert (
+        rec_config_mode_missing(p.parse_args(["rec-config", "THOB", "--extract"]))
+        is False
+    )
+
+
+def test_create_and_bind_combine():
+    """The VOGC case: configure the connection AND feed it in one run. These
+    were mutually exclusive, which made that impossible."""
+    p = _build_parser()
+    ns = p.parse_args(
+        [
+            "rec-config",
+            "VOGC",
+            "--create-ntrip",
+            "NTR2",
+            "--caster",
+            "c",
+            "--mount",
+            "VOGC1",
+            "--ntrip-user",
+            "u",
+            "--ntrip-password",
+            "pw",
+            "--bind-sbf",
+            "NTR2",
+            "--sbf-from",
+            "SENG",
+        ]
+    )
+    assert ns.create_ntrip == "NTR2" and ns.bind_sbf == "NTR2"
+    assert ns.sbf_from == "SENG"
+
+
+def test_the_other_modes_stay_mutually_exclusive():
     p = _build_parser()
     with pytest.raises(SystemExit):
-        p.parse_args(["rec-config", "THOB"])
+        p.parse_args(["rec-config", "THOB", "--extract", "--tracking", "on"])
 
 
 def test_update_session_flag_parses():
