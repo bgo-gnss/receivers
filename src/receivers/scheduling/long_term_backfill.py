@@ -225,9 +225,7 @@ class RunBudget:
     def describe(self) -> str:
         cap_s = f"{self.max_seconds:.0f}s" if self.max_seconds else "unbounded"
         cap_n = str(self.max_slots) if self.max_slots else "unbounded"
-        return (
-            f"budget {self.slots_used}/{cap_n} slots, " f"{self.elapsed():.0f}s/{cap_s}"
-        )
+        return f"budget {self.slots_used}/{cap_n} slots, {self.elapsed():.0f}s/{cap_s}"
 
 
 @dataclass
