@@ -2895,6 +2895,7 @@ def _ntrip_provision_configs(
                     user=args.ntrip_user or "",
                     password=args.ntrip_password or "",
                     port=getattr(args, "ntrip_port", None),
+                    enabled=not getattr(args, "ntrip_disabled", False),
                 )
                 # The bind below must see the connection this run creates.
                 config_text = config_text + "\n" + "\n".join(cmds)

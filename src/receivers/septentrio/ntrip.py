@@ -251,6 +251,7 @@ def build_ntrip_server_commands(
     user: str,
     password: str,
     port: Optional[int] = None,
+    enabled: bool = True,
 ) -> List[str]:
     """Configure an NTRIP SERVER connection (caster, credentials, mountpoint).
 
@@ -270,6 +271,11 @@ def build_ntrip_server_commands(
         ValueError: malformed ids, empty required fields, or a connection that
             already carries a mountpoint — overwriting one would silently
             repoint a live feed and discard its caster credentials.
+
+    Args:
+        enabled: ``True`` (default) sets mode ``Server`` and the receiver starts
+            pushing. ``False`` writes the settings with the mode ``off`` — use it
+            when the real password is applied in a separate step.
     """
     if not _NTR_RE.match(conn):
         raise ValueError(f"invalid NTRIP connection {conn!r}; expected NTR1/NTR2/…")
@@ -292,8 +298,14 @@ def build_ntrip_server_commands(
             f"--ntrip-stream to toggle the existing one."
         )
 
+    # `enabled=False` writes every setting but leaves the mode off, so the
+    # receiver does NOT start connecting. That is the right shape when the real
+    # caster password is applied separately: a Server-mode connection with a
+    # placeholder credential retries against the caster forever — wasted
+    # transmit power on a solar station, and a plausible way to get the user or
+    # IP banned. Turn it on afterwards with `--ntrip-stream <conn> on`.
     cmds = [
-        f"setNtripSettings, {conn}, Server",
+        f"setNtripSettings, {conn}, {'Server' if enabled else 'off'}",
         f'setNtripSettings, {conn}, , "{caster}"',
     ]
     if port is not None:

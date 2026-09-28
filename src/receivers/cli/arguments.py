@@ -783,6 +783,15 @@ Examples:
         "receiver, so prefer a shell that does not record history.",
     )
     parser.add_argument(
+        "--ntrip-disabled",
+        action="store_true",
+        help="With --create-ntrip: write every setting but leave the connection "
+        "mode 'off', so the receiver does not start connecting. Use when the "
+        "real caster password is applied separately — a Server-mode connection "
+        "with a placeholder retries forever, wasting transmit power and risking "
+        "a caster-side ban. Enable later with '--ntrip-stream <conn> on'.",
+    )
+    parser.add_argument(
         "--ntrip-port",
         type=int,
         metavar="PORT",

@@ -266,3 +266,50 @@ class TestCopyingAModelStation:
         cmds = build_sbf_bind_commands(GEVK, "Stream8", "NTR2", blocks, interval)
         assert f"setSBFOutput, Stream8, , {blocks}" in cmds
         assert f"setSBFOutput, Stream8, , , {interval}" in cmds
+
+
+class TestCreatingItDisabled:
+    """Write every setting but do not start connecting.
+
+    A Server-mode connection carrying a placeholder password retries against
+    the caster forever — wasted transmit power on a solar station and a
+    plausible route to a caster-side ban. So when the real credential is
+    applied in a separate step, the connection is created 'off'.
+    """
+
+    def _create(self, **kw):
+        from receivers.septentrio.ntrip import build_ntrip_server_commands
+
+        return build_ntrip_server_commands(
+            VOGC,
+            "NTR2",
+            caster="ntrcaster.vedur.is",
+            mountpoint="VOGC1",
+            user="gpsops",
+            password="placeholder",
+            **kw,
+        )
+
+    def test_default_is_enabled(self):
+        assert self._create()[0] == "setNtripSettings, NTR2, Server"
+
+    def test_disabled_writes_off_not_server(self):
+        cmds = self._create(enabled=False)
+        assert cmds[0] == "setNtripSettings, NTR2, off"
+        assert not any("Server" in c for c in cmds)
+
+    def test_disabled_still_writes_every_other_setting(self):
+        """The point is that only the MODE differs — so enabling it later is
+        one command, with caster/user/mount/password already in place."""
+        on, off = self._create(), self._create(enabled=False)
+        assert on[1:] == off[1:], "only the mode line may differ"
+        for expected in ("ntrcaster.vedur.is", "gpsops", "VOGC1"):
+            assert any(expected in c for c in off), expected
+
+    def test_the_result_still_reads_back_as_a_mount(self):
+        """parse_ntrip_mounts must see it, so a later bind is legal."""
+        from receivers.septentrio.ntrip import parse_ntrip_mounts
+
+        assert parse_ntrip_mounts("\n".join(self._create(enabled=False))) == {
+            "VOGC1": "NTR2"
+        }
