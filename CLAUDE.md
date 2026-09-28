@@ -524,7 +524,11 @@ logger = setup_logging(
 
 - **Idempotent**: safe to call multiple times (second call is a no-op)
 - **Console handler**: `ProductionFormatter` with emoji level icons (stderr)
-- **File handler**: JSON, rotating (20 MB, 3 backups) → `receivers.log`
+- **File handler**: JSON → `receivers.log`. Rotation differs by host: `WatchedFileHandler` **on the
+  server** (logrotate owns it), `RotatingFileHandler` 20 MB × 3 when self-rotating on dev — see
+  `make_log_file_handler()`
+- **Per-station logs**: `logs/stations/{STATION}.log` via `StationLogDispatcher` — UTC-midnight
+  rotation, `station_log_days` retained (default 30, `database.cfg [logging]`)
 - **Third-party suppression**: urllib3, ftplib, gps_parser, apscheduler → WARNING
 - **Audit trail**: Separate `receivers.audit` logger → `download_audit.jsonl`
 
@@ -975,7 +979,7 @@ cartesian-join footgun: any query that joins two or more `block_*_status` tables
 `USING (sid)` without an additional `ts` predicate will produce a multi-billion-row
 plan that can take `pgdev` down. This actually happened on 2026-05-27 and IT had to
 kill the query manually. See vault note
-[[1779904424-gps-health-cartesian-incident-session]] for the incident write-up.
+[the cartesian-join incident session note](/home/bgo/notes/bgovault/2.Areas/VI_GPS_Library/1779904424-gps-health-cartesian-incident-session.md) for the incident write-up.
 
 **Defense in depth, in order of how likely each layer is to save you:**
 
@@ -1042,8 +1046,14 @@ receivers download STATION --sync --archive -v
 ```
 
 ### Log Locations
-- **Main logs**: `~/.cache/gps_receivers/logs/receivers.log` (JSON, rotating 20 MB × 3)
-- **Audit trail**: `~/.cache/gps_receivers/logs/download_audit.jsonl` (JSON, rotating 50 MB × 5)
+- **Main logs**: `~/.cache/gps_receivers/logs/receivers.log` (JSON). Rotation is host-dependent:
+  `WatchedFileHandler` on the server (logrotate rotates it), `RotatingFileHandler` 20 MB × 3 when
+  self-rotating (dev/laptop) — not the same thing as "rotates at 20 MB" everywhere
+- **Audit trail**: `~/.cache/gps_receivers/logs/download_audit.jsonl` (JSON) — same split,
+  50 MB × 5 when self-rotating
+- **Per-station logs**: `~/.cache/gps_receivers/logs/stations/{STATION}.log` (JSON) — UTC-midnight
+  rotation, `station_log_days` retained (default 30, override in `database.cfg [logging]`);
+  written by `StationLogDispatcher`, which routes on the trailing component of `record.name`
 - **Console output**: `ProductionFormatter` (emoji icons) or JSON (`--json-log`)
 - Scheduler and all components write to the same `receivers.log` — filter by `logger` field in JSON
 
@@ -1098,14 +1108,14 @@ All receivers use Phase 1 utilities by default:
 
 ---
 
-**Last updated**: 2026-09-23
+**Last updated**: 2026-09-24
 **Package version**: Development (gpslibrary_new)
 **Phase Status**: Phase 3C Complete - Distribution window optimization, midnight offset, multi-session backfill, gap detection, archive reconciler, integrity checker, archive format system, unified logging, adaptive download timeouts
 
 ## TODO / Known Issues
 
 **Canonical todo list lives in the vault**, not in this file:
-[[1778505454-receivers-todos|Receivers Todos]] in `1.Projects/Work_GPS_Receivers/`.
+[Receivers Todos](/home/bgo/notes/bgovault/1.Projects/Work_GPS_Receivers/1778505454-receivers-todos.md) in `1.Projects/Work_GPS_Receivers/`.
 Add new items with `/project-todo Work_GPS_Receivers <task>`. This section keeps
 only design context needed to interpret todos (the *why*, not the *what to do*).
 
@@ -1129,7 +1139,7 @@ Key facts:
 - Credentials: configure `[tos]` section in `database.cfg` to avoid interactive prompts
 - Full reference: `tostools/docs/architecture/tos-write-api.md`
 
-Pattern 2 (instrument change), Pattern 4 (historical fixes), device entity writes, and the scheduled TOS consistency sweep are all tracked as todos — see [[1778505454-receivers-todos#Cfg reconciliation / TOS|todos file]].
+Pattern 2 (instrument change), Pattern 4 (historical fixes), device entity writes, and the scheduled TOS consistency sweep are all tracked as todos — see the [Receivers Todos](/home/bgo/notes/bgovault/1.Projects/Work_GPS_Receivers/1778505454-receivers-todos.md) note, section *Cfg reconciliation / TOS*.
 
 ### Resolved items (historical reference)
 
