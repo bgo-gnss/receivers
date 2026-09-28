@@ -640,7 +640,10 @@ Examples:
     )
 
     # Operation mode (mutually exclusive)
-    mode_group = parser.add_mutually_exclusive_group(required=True)
+    # NOT required: --bind-sbf/--create-ntrip live outside this group (they
+    # combine with each other — creating a connection and feeding it is one
+    # operation), so 'at least one mode' is checked in the handler instead.
+    mode_group = parser.add_mutually_exclusive_group(required=False)
     mode_group.add_argument(
         "--extract",
         action="store_true",
@@ -724,7 +727,7 @@ Examples:
         "SBF stream that fed it.",
     )
 
-    mode_group.add_argument(
+    parser.add_argument(
         "--bind-sbf",
         metavar="NTR",
         help="Feed an SBF stream to an existing NTRIP connection, e.g. "
@@ -734,7 +737,7 @@ Examples:
         "first FREE stream unless --sbf-stream says otherwise; an occupied "
         "stream is refused, never re-pointed (Stream1->LOG1 is the daily log).",
     )
-    mode_group.add_argument(
+    parser.add_argument(
         "--create-ntrip",
         metavar="NTR",
         help="Configure an NTRIP SERVER connection (caster/credentials/mount), "

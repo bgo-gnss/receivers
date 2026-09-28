@@ -2611,6 +2611,30 @@ def cmd_rec_config(args) -> int:
 
     # Handle --ntrip-stream / --disable-mount: identity-safe NTRIP server on/off
     # (+ optional --drop-sbf), pushed via the same temp-file path as --tracking.
+    _MODES = (
+        "extract",
+        "push",
+        "tracking",
+        "set_antenna",
+        "set_domes",
+        "check_session",
+        "enable_session",
+        "update_session",
+        "audit_session",
+        "ntrip_stream",
+        "disable_mount",
+        "bind_sbf",
+        "create_ntrip",
+    )
+    if not any(getattr(args, m, None) for m in _MODES):
+        logger.error(
+            "rec-config needs an operation mode — one of "
+            "--extract/--push/--tracking/--set-antenna/--set-domes/"
+            "--check-session/--enable-session/--update-session/--audit-session/"
+            "--ntrip-stream/--disable-mount/--bind-sbf/--create-ntrip"
+        )
+        return 2
+
     if getattr(args, "bind_sbf", None) or getattr(args, "create_ntrip", None):
         return _ntrip_provision_configs(
             args, targets, logger, tcp_username, tcp_password, rec_config_dir
@@ -3100,7 +3124,12 @@ def _push_configs(
     # Dry run - show commands and exit
     if args.dry_run:
         print("\n--- DRY RUN - Commands to send ---")
-        for cmd in commands:
+        # An NTRIP caster password is positional field 6 of setNtripSettings and
+        # would otherwise land in terminal scrollback and the log. The command
+        # sent to the receiver is unchanged — only what a human sees is masked.
+        from ..septentrio.ntrip import redact_secrets
+
+        for cmd in redact_secrets(list(commands)):
             if cmd.strip() and not cmd.strip().startswith("#"):
                 print(f"  {cmd}")
         print("--- End of commands ---\n")
