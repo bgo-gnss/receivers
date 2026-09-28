@@ -2611,6 +2611,11 @@ def cmd_rec_config(args) -> int:
 
     # Handle --ntrip-stream / --disable-mount: identity-safe NTRIP server on/off
     # (+ optional --drop-sbf), pushed via the same temp-file path as --tracking.
+    if getattr(args, "bind_sbf", None) or getattr(args, "create_ntrip", None):
+        return _ntrip_provision_configs(
+            args, targets, logger, tcp_username, tcp_password, rec_config_dir
+        )
+
     if getattr(args, "ntrip_stream", None) or getattr(args, "disable_mount", None):
         return _ntrip_stream_configs(
             args, targets, logger, tcp_username, tcp_password, rec_config_dir
@@ -2742,6 +2747,145 @@ def _ntrip_stream_configs(
             f"# rec-config ntrip {conn}={state} "
             f"(mount={args.disable_mount or '-'}, drop_sbf={drop_streams or '-'})\n"
         )
+        tf.write("\n".join(cmds) + "\n")
+        tf.close()
+        args.push = tf.name
+        try:
+            rc = _push_configs(
+                args,
+                [(station_id, ip, port)],
+                logger,
+                tcp_username,
+                tcp_password,
+                rec_config_dir,
+            )
+            overall = overall or rc
+        finally:
+            _os.unlink(tf.name)
+
+    return overall
+
+
+def _ntrip_provision_configs(
+    args, targets, logger, tcp_username, tcp_password, rec_config_dir
+) -> int:
+    """Configure an NTRIP SBF feed: create the connection and/or feed it.
+
+    The other half of :func:`_ntrip_stream_configs`. Both builders REQUIRE the
+    receiver's current config, so this always reads first — the refusals (an
+    occupied SBF slot, an already-configured connection) cannot be made without
+    it, and re-pointing an occupied stream stops that output with no error.
+
+    ``--sbf-from`` reads a MODEL station's own SBF feed and copies its block
+    list and rate. That read never writes to the model.
+
+    Commands go through :func:`_push_configs` like every other mode, so
+    ``--dry-run`` / ``--no-save`` behave identically. Everything printed here is
+    passed through :func:`redact_secrets` first — a caster password must not
+    reach the terminal or the log.
+    """
+    import os as _os
+    import tempfile
+
+    from ..septentrio.ntrip import (
+        build_ntrip_server_commands,
+        build_sbf_bind_commands,
+        free_sbf_streams,
+        model_sbf_feed,
+        redact_secrets,
+    )
+    from ..septentrio.tcp_client import PolaRX5TCPClient
+
+    def _read(sid: str, ip: str, port: int) -> str:
+        client = PolaRX5TCPClient(
+            ip,
+            sid,
+            port,
+            timeout=getattr(args, "timeout", 30),
+            username=tcp_username,
+            password=tcp_password,
+            firmware_version=_station_firmware(sid),
+        )
+        try:
+            return client.extract_config("Current")
+        finally:
+            client.disconnect()
+
+    # Resolve the block list/rate ONCE — one read of the model, not one per target.
+    blocks = getattr(args, "sbf_blocks", None) or ""
+    interval = getattr(args, "sbf_interval", None) or "sec1"
+    model = getattr(args, "sbf_from", None)
+    if model:
+        m_cfg = get_station_config(model)
+        if m_cfg is None:
+            logger.error(f"--sbf-from {model}: station not in configuration")
+            return 1
+        m_ip = m_cfg.get("ip") or m_cfg.get("router", {}).get("ip") or m_cfg.get("host")
+        if not m_ip:
+            logger.error(f"--sbf-from {model}: station has no IP configured")
+            return 1
+        m_port = int(m_cfg.get("receiver", {}).get("controlport") or targets[0][2])
+        try:
+            conn, blocks, interval = model_sbf_feed(_read(model, m_ip, m_port))
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"--sbf-from {model}: could not read model config: {exc}")
+            return 1
+        if not conn or not blocks:
+            logger.error(
+                f"--sbf-from {model}: that station pushes no SBF over NTRIP — "
+                f"nothing to copy. Give --sbf-blocks explicitly."
+            )
+            return 1
+        logger.info(f"model {model}: {conn} → {blocks[:60]}… @{interval}")
+
+    overall = 0
+    for station_id, ip, port in targets:
+        try:
+            config_text = _read(station_id, ip, port)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"{station_id}: could not read config: {exc}")
+            overall = 1
+            continue
+
+        cmds: list = []
+        try:
+            if getattr(args, "create_ntrip", None):
+                cmds += build_ntrip_server_commands(
+                    config_text,
+                    args.create_ntrip,
+                    caster=args.caster or "",
+                    mountpoint=args.mount or "",
+                    user=args.ntrip_user or "",
+                    password=args.ntrip_password or "",
+                    port=getattr(args, "ntrip_port", None),
+                )
+                # The bind below must see the connection this run creates.
+                config_text = config_text + "\n" + "\n".join(cmds)
+            if getattr(args, "bind_sbf", None):
+                slot = getattr(args, "sbf_stream", None)
+                if not slot:
+                    free = free_sbf_streams(config_text)
+                    if not free:
+                        raise ValueError(
+                            "no free SBF stream slot — every slot is already wired"
+                        )
+                    slot = free[0]
+                    logger.info(f"{station_id}: first free slot is {slot}")
+                cmds += build_sbf_bind_commands(
+                    config_text, slot, args.bind_sbf, blocks, interval
+                )
+        except ValueError as exc:
+            logger.error(f"{station_id}: {exc}")
+            overall = 1
+            continue
+
+        for line in redact_secrets(cmds):
+            logger.info(f"{station_id}:   {line}")
+
+        tf = tempfile.NamedTemporaryFile(
+            "w", suffix=".txt", prefix="ntrip_provision_", delete=False
+        )
+        tf.write(f"# rec-config ntrip provision for {station_id}\n")
         tf.write("\n".join(cmds) + "\n")
         tf.close()
         args.push = tf.name

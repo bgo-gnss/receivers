@@ -221,3 +221,48 @@ class TestAStrayCommaCannotShiftTheFields:
         line = [c for c in cmds if c.rstrip().endswith("sec1")][0]
         fields = [f.strip() for f in line.split(",")]
         assert len(fields) == 5 and fields[2] == "" and fields[3] == ""
+
+
+SENG = (
+    GEVK.replace("GEVK", "SENG")
+    + """
+setSBFOutput, Stream6, NTR2
+setSBFOutput, Stream6, , MeasEpoch+GPSNav+GALNav
+setSBFOutput, Stream6, , , sec1
+"""
+)
+
+
+class TestCopyingAModelStation:
+    """`--sbf-from SENG` reads the model's own SBF feed and copies its content."""
+
+    def test_finds_the_connection_that_actually_pushes_sbf(self):
+        from receivers.septentrio.ntrip import model_sbf_feed
+
+        conn, blocks, interval = model_sbf_feed(SENG)
+        assert conn == "NTR2"
+        assert blocks == "MeasEpoch+GPSNav+GALNav"
+        assert interval == "sec1"
+
+    def test_a_station_pushing_no_sbf_reports_nothing_to_copy(self):
+        from receivers.septentrio.ntrip import model_sbf_feed
+
+        # GEVK has NTR2/GEVK1 but nothing wired to it — the real situation
+        assert model_sbf_feed(GEVK) == (None, "", "")
+
+    def test_content_is_read_by_field_position_not_by_splitting(self):
+        """The destination field must not bleed into the block list — that is
+        the stray-comma bug, caught against a live config."""
+        from receivers.septentrio.ntrip import sbf_stream_content
+
+        blocks, interval = sbf_stream_content(SENG, "Stream6")
+        assert not blocks.startswith(","), blocks
+        assert blocks == "MeasEpoch+GPSNav+GALNav" and interval == "sec1"
+
+    def test_copied_content_survives_a_round_trip_into_a_bind(self):
+        from receivers.septentrio.ntrip import build_sbf_bind_commands, model_sbf_feed
+
+        _, blocks, interval = model_sbf_feed(SENG)
+        cmds = build_sbf_bind_commands(GEVK, "Stream8", "NTR2", blocks, interval)
+        assert f"setSBFOutput, Stream8, , {blocks}" in cmds
+        assert f"setSBFOutput, Stream8, , , {interval}" in cmds
