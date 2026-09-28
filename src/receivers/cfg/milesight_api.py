@@ -275,6 +275,47 @@ class MilesightClient:
         self._session.cookies.set("td", td, domain=self.host)
         logger.info("milesight %s: authenticated", self.host)
 
+    def cgi(self, core: str, function: str, values: list, idn: int = 9) -> dict:
+        """Raw ``POST /cgi`` JSON-RPC call; returns the parsed response."""
+        if not self._td:
+            self.login()
+        payload = {"id": idn, "execute": 1, "core": core, "function": function, "values": values}
+        r = self._session.post(f"{self._base()}/cgi", json=payload, timeout=self.timeout)
+        return r.json()
+
+    def get_config(self, core: str, base: Optional[str] = None) -> list:
+        """GET a config domain; returns ``result[0].get`` (list of {type,index,value}).
+
+        The SPA addresses each page by a ``yruo_*`` core (e.g. ``yruo_cell``,
+        ``yruo_bridge``, ``yruo_dhcpserver``, ``yruo_firewall_security``). Discover
+        new ones by capturing the page's own ``get`` XHR.
+        """
+        j = self.cgi(core, "get", [{"base": base or core}])
+        try:
+            return j["result"][0]["get"]
+        except (KeyError, IndexError, TypeError):
+            raise MilesightError(f"{self.host}: get {core} unexpected: {str(j)[:120]}")
+
+    def set_singleton(self, core: str, index, value: dict, base: Optional[str] = None) -> None:
+        """SET one SINGLETON config object (cell/bridge/dhcp/security/…).
+
+        Proven for singletons. LIST configs (e.g. ``yruo_firewall_port_mapping``)
+        use a different, not-yet-mapped save format — do NOT use this for those.
+        Read-modify-write: fetch with :meth:`get_config`, patch the value, pass it
+        here with the same ``index`` the get returned.
+        """
+        j = self.cgi(core, "set", [{"base": base or core, "index": index, "value": value}])
+        if j.get("status") != 0:
+            raise MilesightError(f"{self.host}: set {core} failed status={j.get('status')}")
+
+    def patch_singleton(self, core: str, patch: dict, base: Optional[str] = None) -> dict:
+        """Read-modify-write a singleton: GET, apply ``patch``, SET; return new value."""
+        entry = self.get_config(core, base)[0]
+        value = dict(entry["value"])
+        value.update(patch)
+        self.set_singleton(core, entry["index"], value, base)
+        return value
+
     def export_config(self, out_path: str) -> int:
         """Download the config backup blob to ``out_path``; return byte count."""
         if not self._td:
