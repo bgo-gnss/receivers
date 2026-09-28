@@ -31,7 +31,7 @@ Grammar (verified against three live PolaRx5 configs, 2026-09-28)::
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 _NTR_RE = re.compile(r"^NTR\d+$")
 _STREAM_RE = re.compile(r"^Stream\d+$")
@@ -261,9 +261,10 @@ def build_ntrip_server_commands(
     so a later ``parse_ntrip_mounts`` reads back exactly what was written, and a
     diff against the config stays line-for-line legible.
 
-    **The mountpoint must also exist on the caster.** This configures the
-    receiver end only; a receiver pushing to an unprovisioned mount fails at the
-    caster, not here.
+    No caster-side provisioning is needed first: the mountpoint is created on the
+    caster when the receiver connects and authenticates, so configuring the
+    receiver end is sufficient (confirmed by bgo, 2026-09-28 — an earlier note
+    here claimed the opposite).
 
     Raises:
         ValueError: malformed ids, empty required fields, or a connection that
@@ -323,3 +324,43 @@ def redact_secrets(commands: List[str]) -> List[str]:
         else:
             out.append(cmd)
     return out
+
+
+def sbf_stream_content(config_text: str, stream: str) -> Tuple[str, str]:
+    """``(blocks, interval)`` for ``stream``, read by FIELD POSITION.
+
+    ``setSBFOutput, StreamN, , <blocks>`` is four fields with an empty third;
+    ``setSBFOutput, StreamN, , , <interval>`` is five. Splitting on the first
+    two commas instead would carry the empty destination field into the value —
+    which is exactly how a stray leading comma reached a built command once.
+
+    Returns empty strings for whichever part the config does not set.
+    """
+    blocks = interval = ""
+    for line in config_text.splitlines():
+        fields = [f.strip() for f in line.split(",")]
+        if fields[0] != "setSBFOutput" or len(fields) < 4 or fields[1] != stream:
+            continue
+        if fields[2]:
+            continue  # a destination line, not content
+        if len(fields) == 4 and fields[3]:
+            blocks = fields[3]
+        elif len(fields) == 5 and fields[4]:
+            interval = fields[4]
+    return blocks, interval
+
+
+def model_sbf_feed(config_text: str) -> Tuple[Optional[str], str, str]:
+    """The SBF feed a station already pushes: ``(conn, blocks, interval)``.
+
+    Finds the NTRIP connection that has an SBF stream wired to it — the thing
+    worth copying to another station. Returns ``(None, "", "")`` when the
+    station pushes no SBF at all (so the caller can say so rather than emit an
+    empty stream).
+    """
+    for mount, conn in sorted(parse_ntrip_mounts(config_text).items()):
+        streams = sbf_streams_for_conn(config_text, conn)
+        if streams:
+            blocks, interval = sbf_stream_content(config_text, streams[0])
+            return conn, blocks, interval
+    return None, "", ""

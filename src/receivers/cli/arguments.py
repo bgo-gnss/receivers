@@ -640,7 +640,10 @@ Examples:
     )
 
     # Operation mode (mutually exclusive)
-    mode_group = parser.add_mutually_exclusive_group(required=True)
+    # NOT required: --bind-sbf/--create-ntrip live outside this group (they
+    # combine with each other — creating a connection and feeding it is one
+    # operation), so 'at least one mode' is checked in the handler instead.
+    mode_group = parser.add_mutually_exclusive_group(required=False)
     mode_group.add_argument(
         "--extract",
         action="store_true",
@@ -722,6 +725,68 @@ Examples:
         "(e.g. '--disable-mount HRIC1') — reads the receiver to resolve the mountpoint "
         "to its NTRx connection, then sets it off. Add --drop-sbf to also stop the "
         "SBF stream that fed it.",
+    )
+
+    parser.add_argument(
+        "--bind-sbf",
+        metavar="NTR",
+        help="Feed an SBF stream to an existing NTRIP connection, e.g. "
+        "'--bind-sbf NTR2' — the half that makes a configured-but-silent "
+        "mountpoint carry data. Content comes from --sbf-from (copy a model "
+        "station) or --sbf-blocks/--sbf-interval. The slot is the receiver's "
+        "first FREE stream unless --sbf-stream says otherwise; an occupied "
+        "stream is refused, never re-pointed (Stream1->LOG1 is the daily log).",
+    )
+    parser.add_argument(
+        "--create-ntrip",
+        metavar="NTR",
+        help="Configure an NTRIP SERVER connection (caster/credentials/mount), "
+        "e.g. '--create-ntrip NTR2 --caster ntrcaster.vedur.is --mount VOGC1 "
+        "--ntrip-user gpsops --ntrip-password …'. Needed when the station has no "
+        "SBF connection at all. Refuses to overwrite one that already serves a "
+        "mountpoint. No caster-side provisioning first — the mount is created "
+        "when the receiver connects and authenticates.",
+    )
+
+    parser.add_argument(
+        "--sbf-from",
+        metavar="STATION",
+        help="With --bind-sbf: copy the SBF block list and interval from "
+        "STATION's own SBF-feeding NTRIP stream (e.g. '--sbf-from SENG'). Reads "
+        "that receiver; never writes to it.",
+    )
+    parser.add_argument(
+        "--sbf-blocks",
+        metavar="BLOCKS",
+        help="With --bind-sbf: explicit '+'-separated SBF block list "
+        "(e.g. 'MeasEpoch+GPSNav+GALNav'). Alternative to --sbf-from.",
+    )
+    parser.add_argument(
+        "--sbf-interval",
+        metavar="RATE",
+        default="sec1",
+        help="With --bind-sbf: output rate token (default: sec1).",
+    )
+    parser.add_argument(
+        "--sbf-stream",
+        metavar="StreamN",
+        help="With --bind-sbf: force a specific slot instead of the first free "
+        "one. Still refused if that slot is already wired.",
+    )
+    parser.add_argument("--caster", metavar="HOST", help="With --create-ntrip.")
+    parser.add_argument("--mount", metavar="NAME", help="With --create-ntrip.")
+    parser.add_argument("--ntrip-user", metavar="USER", help="With --create-ntrip.")
+    parser.add_argument(
+        "--ntrip-password",
+        metavar="PASS",
+        help="With --create-ntrip. Masked in all output; it still reaches the "
+        "receiver, so prefer a shell that does not record history.",
+    )
+    parser.add_argument(
+        "--ntrip-port",
+        type=int,
+        metavar="PORT",
+        help="With --create-ntrip: caster port (omit for the receiver default).",
     )
 
     parser.add_argument(
