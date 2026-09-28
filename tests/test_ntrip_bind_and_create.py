@@ -190,3 +190,34 @@ class TestTheSecretNeverReachesAnOperator:
 
     def test_redaction_leaves_unrelated_commands_alone(self):
         assert redact_secrets(["eccf, Current, Boot"]) == ["eccf, Current, Boot"]
+
+
+class TestAStrayCommaCannotShiftTheFields:
+    """Found by running the builder against a live config, not by fixtures: a
+    scraped block list kept its leading ', ', and the emitted command became
+    `setSBFOutput, S, , , <blocks>` — three commas, so the receiver would read
+    the block list as the interval."""
+
+    def test_leading_comma_in_blocks_is_refused(self):
+        with pytest.raises(ValueError, match="must not contain a comma"):
+            build_sbf_bind_commands(GEVK, "Stream8", "NTR2", ", " + RAW_BLOCKS, "sec1")
+
+    def test_comma_in_interval_is_refused(self):
+        with pytest.raises(ValueError, match="must not contain a comma"):
+            build_sbf_bind_commands(GEVK, "Stream8", "NTR2", RAW_BLOCKS, "sec1, sec2")
+
+    def test_a_clean_block_list_lands_in_the_blocks_FIELD(self):
+        """The real invariant is the field position, not a comma count:
+        `setSBFOutput, StreamN, , <blocks>` is FOUR fields with an empty 3rd."""
+        cmds = build_sbf_bind_commands(GEVK, "Stream8", "NTR2", RAW_BLOCKS, "sec1")
+        blocks_line = [c for c in cmds if RAW_BLOCKS in c][0]
+        fields = [f.strip() for f in blocks_line.split(",")]
+        assert len(fields) == 4, fields
+        assert fields[2] == "", "3rd field must be empty (it is the destination)"
+        assert fields[3] == RAW_BLOCKS
+
+    def test_the_interval_lands_in_the_interval_FIELD(self):
+        cmds = build_sbf_bind_commands(GEVK, "Stream8", "NTR2", RAW_BLOCKS, "sec1")
+        line = [c for c in cmds if c.rstrip().endswith("sec1")][0]
+        fields = [f.strip() for f in line.split(",")]
+        assert len(fields) == 5 and fields[2] == "" and fields[3] == ""

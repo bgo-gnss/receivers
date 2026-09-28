@@ -206,6 +206,18 @@ def build_sbf_bind_commands(
         )
     if not interval.strip():
         raise ValueError("interval must not be empty (e.g. 'sec1')")
+    # A comma inside either field shifts every later field along by one, so
+    # `setSBFOutput, S, , <blocks>` silently becomes `…, , , <blocks>` — the
+    # receiver then reads the block list as the INTERVAL. Block lists are
+    # '+'-separated and rates are single tokens, so a comma is always a caller
+    # bug (it caught a leading ", " from a config-scraping one-liner of mine).
+    for label, value in (("blocks", blocks), ("interval", interval)):
+        if "," in value:
+            raise ValueError(
+                f"{label} must not contain a comma ({value.strip()[:40]!r}): it "
+                f"would shift the remaining setSBFOutput fields and be read as "
+                f"the wrong parameter. Block lists are '+'-separated."
+            )
 
     occupied = parse_sbf_destinations(config_text)
     if stream in occupied:
