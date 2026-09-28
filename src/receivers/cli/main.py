@@ -2410,9 +2410,46 @@ def cmd_validate(args) -> int:
         return 1
 
 
+#: rec-config operation modes. Most are mutually exclusive in argparse, but
+#: --bind-sbf and --create-ntrip are NOT: creating an NTRIP connection and
+#: feeding it an SBF stream is ONE operation (a station with no SBF mount needs
+#: both in the same run). That is why "at least one mode" can no longer be
+#: argparse's `required=True` and is checked here instead.
+REC_CONFIG_MODES = (
+    "extract",
+    "push",
+    "tracking",
+    "set_antenna",
+    "set_domes",
+    "check_session",
+    "enable_session",
+    "update_session",
+    "audit_session",
+    "ntrip_stream",
+    "disable_mount",
+    "bind_sbf",
+    "create_ntrip",
+)
+
+
+def rec_config_mode_missing(args) -> bool:
+    """True when no rec-config operation mode was supplied."""
+    return not any(getattr(args, m, None) for m in REC_CONFIG_MODES)
+
+
 def cmd_rec_config(args) -> int:
     """Receiver configuration command - extract or push config for Septentrio receivers."""
     logger = setup_logging(args.loglevel)
+
+    # FIRST — before any station lookup or receiver contact. A missing mode is a
+    # usage error, and resolving targets for it would read stations.cfg and log
+    # "Targets: …" for a run that cannot do anything.
+    if rec_config_mode_missing(args):
+        logger.error(
+            "rec-config needs an operation mode — one of "
+            + ", ".join("--" + m.replace("_", "-") for m in REC_CONFIG_MODES)
+        )
+        return 2
 
     from pathlib import Path
 
@@ -2611,30 +2648,6 @@ def cmd_rec_config(args) -> int:
 
     # Handle --ntrip-stream / --disable-mount: identity-safe NTRIP server on/off
     # (+ optional --drop-sbf), pushed via the same temp-file path as --tracking.
-    _MODES = (
-        "extract",
-        "push",
-        "tracking",
-        "set_antenna",
-        "set_domes",
-        "check_session",
-        "enable_session",
-        "update_session",
-        "audit_session",
-        "ntrip_stream",
-        "disable_mount",
-        "bind_sbf",
-        "create_ntrip",
-    )
-    if not any(getattr(args, m, None) for m in _MODES):
-        logger.error(
-            "rec-config needs an operation mode — one of "
-            "--extract/--push/--tracking/--set-antenna/--set-domes/"
-            "--check-session/--enable-session/--update-session/--audit-session/"
-            "--ntrip-stream/--disable-mount/--bind-sbf/--create-ntrip"
-        )
-        return 2
-
     if getattr(args, "bind_sbf", None) or getattr(args, "create_ntrip", None):
         return _ntrip_provision_configs(
             args, targets, logger, tcp_username, tcp_password, rec_config_dir
