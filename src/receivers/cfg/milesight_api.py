@@ -308,12 +308,62 @@ class MilesightClient:
         if j.get("status") != 0:
             raise MilesightError(f"{self.host}: set {core} failed status={j.get('status')}")
 
-    def patch_singleton(self, core: str, patch: dict, base: Optional[str] = None) -> dict:
-        """Read-modify-write a singleton: GET, apply ``patch``, SET; return new value."""
+    def apply(self) -> bool:
+        """COMMIT staged config to the running config (the UI's "Apply" button).
+
+        **A ``set`` only stages.** It updates the config store — a subsequent
+        ``get`` reads the new value back, which makes it look applied — but the
+        RUNNING config does not take it until this commit, and a reboot REVERTS
+        anything uncommitted. Measured 2026-09-29: cellular ``pri_dns1``/
+        ``sec_dns1`` were set, read back correctly, and were empty after a
+        reboot, because only the UI-saved values had been committed.
+
+        The call is ``function="apply"`` — NOT ``"set"``. Guessing ``set``/``add``/
+        ``get`` against ``yruo_apply`` returns ``status=-1``, which is why this
+        was recorded as unmapped for two sessions. The true form was recovered
+        from the router's own SPA bundle (``/assets/routes-*.js``)::
+
+            {execute:1, core:"yruo_apply", function:"apply", values:[]}
+
+        Returns:
+            ``True`` when the router signals it needs a reboot to finish
+            applying (``result[0].reboot``), else ``False``.
+
+        Note:
+            This commits SINGLETON writes. It does NOT rescue a LIST config
+            (``yruo_firewall_port_mapping``) — those never reach the store in
+            the first place, so there is nothing for apply to commit. See
+            :meth:`set_singleton`.
+        """
+        j = self.cgi("yruo_apply", "apply", [])
+        if j.get("status") != 0:
+            raise MilesightError(f"{self.host}: apply failed status={j.get('status')}")
+        try:
+            return bool(j["result"][0].get("reboot"))
+        except (KeyError, IndexError, TypeError):
+            return False
+
+    def patch_singleton(
+        self,
+        core: str,
+        patch: dict,
+        base: Optional[str] = None,
+        commit: bool = False,
+    ) -> dict:
+        """Read-modify-write a singleton: GET, apply ``patch``, SET; return new value.
+
+        Args:
+            commit: Also call :meth:`apply`, committing the change to the running
+                config. Defaults to ``False`` so existing callers keep their
+                stage-only behaviour; pass ``True`` for a write that must survive
+                a reboot.
+        """
         entry = self.get_config(core, base)[0]
         value = dict(entry["value"])
         value.update(patch)
         self.set_singleton(core, entry["index"], value, base)
+        if commit:
+            self.apply()
         return value
 
     def export_config(self, out_path: str) -> int:
