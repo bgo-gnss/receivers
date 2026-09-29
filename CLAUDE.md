@@ -834,6 +834,52 @@ All scheduler functionality maintains complete compatibility with manual operati
 - Same validation and error handling for both modes
 - Shared logging and audit systems
 
+### Cellular Router Management (Milesight UR-series)
+
+`src/receivers/cfg/milesight_api.py` — HTTP-API client for **Milesight UR32/UR32L/UR35**
+routers (fleet's Milesights are on stations THOC + NORS), the counterpart to the
+Teltonika RutOS `cfg/telemetry_probe.py`. Drives login, config **export/import**, and
+config **read/write** so a spare can be firmware-flashed and configured from a live
+station's settings without hand-transcription.
+
+```python
+from receivers.cfg.milesight_api import MilesightClient
+with MilesightClient("192.168.1.1") as c:      # scheme auto-detected (http/https)
+    c.connect()                                # login (creds from receivers.cfg)
+    c.export_config("/tmp/thoc.bin")           # opaque OpenSSL blob
+    v = c.patch_singleton("yruo_cell", {"apn1": "apn.vedur.is"})  # read-modify-write
+```
+
+- **Creds**: `receivers.cfg [milesight]` → falls back to `[teltonika]` (shared fleet
+  router login); cleartext `username`/`password` or `*_pass_path` via pass(1). No
+  secret is ever logged.
+- **Auth quirk**: vendor AES-CBC-encrypts the password client-side (fixed key — the
+  weak CVE-2023-43261 scheme, reproduced only to log in to our own routers). Session
+  token `td` comes **in the body on fw ≥3.0.14, as a cookie on fw 3.0.8** — both handled.
+- **TLS**: the old LEDE stack needs a legacy adapter (`SECLEVEL=0` + legacy renegotiation);
+  `curl -k` works but stock `requests` does not. **fw 3.0.14 is HTTPS-only**.
+- **Config cores** are `yruo_*` (`yruo_cell`, `yruo_bridge`, `yruo_dhcpserver`,
+  `yruo_firewall_security`, `yruo_if_backup`). SINGLETON writes work via
+  `patch_singleton`; **LIST configs (`yruo_firewall_port_mapping`) have a save format
+  not yet mapped** — use the UI for port-forwards.
+
+**Operational gotchas (all learned the hard way — see the `milesight-ur-api-and-firmware`
+memory for detail):**
+- **A raw API `set` STAGES but does not COMMIT** — the running config only takes it on
+  the UI's Apply, and a reboot reverts uncommitted sets. Do config *writes* through the
+  UI (clean Save/Apply) or wire `yruo_apply`; the API is solid for read / firmware /
+  export-import.
+- **Config clone does NOT cross firmware majors** — a 3.0.8 `cfgbackup` blob is rejected
+  by 3.0.14. Match firmware, or configure fresh from the source's read-back values.
+- **Firmware upgrade is hardware-locked and two-hop** from ≤3.0.9: `3.0.8 → 3.0.10 →
+  3.0.14` (3.0.13/14 refuse to install from below 3.0.10). Images: milesight.com
+  `/support/resources/firmware`.
+- **Cellular inbound reachability needs the Link Failover Primary/Secondary Server
+  (ping-detection) fields set** — with them unset the router treats the cellular link as
+  not-up and won't route/respond inbound on its cellular IP, even with remote HTTPS
+  enabled and the firewall matching a working station. Check this first when a unit is
+  outbound-OK but unreachable inbound.
+
 ## Deployment (rek-d01.vedur.is)
 
 **SSH targets**: `bgo@rek-d01.vedur.is` (code/install), `gpsops@rek-d01.vedur.is` (operational checks)
@@ -1108,7 +1154,7 @@ All receivers use Phase 1 utilities by default:
 
 ---
 
-**Last updated**: 2026-09-24
+**Last updated**: 2026-09-29
 **Package version**: Development (gpslibrary_new)
 **Phase Status**: Phase 3C Complete - Distribution window optimization, midnight offset, multi-session backfill, gap detection, archive reconciler, integrity checker, archive format system, unified logging, adaptive download timeouts
 
