@@ -1651,9 +1651,7 @@ def _parse_since(spec: str) -> datetime:
         delta = (
             timedelta(days=n)
             if unit == "d"
-            else timedelta(hours=n)
-            if unit == "h"
-            else timedelta(minutes=n)
+            else timedelta(hours=n) if unit == "h" else timedelta(minutes=n)
         )
         return datetime.now(UTC) - delta
     try:
@@ -2057,6 +2055,7 @@ def cmd_cfg_add_tos_station(args) -> int:
     from contextlib import nullcontext, redirect_stdout
     from pathlib import Path
 
+    from tostools.station_kind import GPS_STATION_SUBTYPE
     from tostools.tos import main as tos_main
 
     from ..config.receivers_config import create_station_section
@@ -2244,8 +2243,14 @@ def cmd_cfg_add_tos_station(args) -> int:
             "--location-name",
             site_name,
         ]
+        # `tos station add` REQUIRES --subtype: the geophysical domain holds
+        # 'GPS stöð', 'SIL stöð', 'DOAS' and 'Multigas', and defaulting it
+        # used to stamp GPS on whatever was being created. `receivers` is a
+        # GPS tool, so it supplies the GPS subtype exactly as `tosGPS` does —
+        # from tostools' own constant, so there is one definition of it.
+        # Without this the whole verb exits 2 on the tos call.
         for flag, value in (
-            ("--subtype", getattr(args, "subtype", None)),
+            ("--subtype", getattr(args, "subtype", None) or GPS_STATION_SUBTYPE),
             ("--operational-class", getattr(args, "operational_class", None)),
             ("--in-network-epos", getattr(args, "in_network_epos", None)),
             ("--server", getattr(args, "server", None)),
@@ -4640,7 +4645,14 @@ and every RINEX header comes out incomplete.
         default="continuous",
         help="Measurement continuity (default: continuous)",
     )
-    ats.add_argument("--subtype", help="Station kind attribute (TOS catalog default)")
+    ats.add_argument(
+        "--subtype",
+        help=(
+            "Station kind. Defaults to 'GPS stöð' — receivers is a GPS tool. "
+            "Override only to create a non-GPS geophysical station "
+            "('SIL stöð', 'DOAS', 'Multigas')."
+        ),
+    )
     ats.add_argument("--operational-class", help="Operational class (TOS default: B)")
     ats.add_argument(
         "--in-network-epos",

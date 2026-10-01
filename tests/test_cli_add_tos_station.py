@@ -356,3 +356,40 @@ def test_control_port_is_not_the_tos_port(parser, patched):
     assert captured["config"]["receiver"]["controlport"] == "28784"
     (argv,) = patched["tos_calls"]
     assert argv[argv.index("--port") + 1] == "443"
+
+
+# ---------------------------------------------------------------------------
+# The subtype `tos station add` requires
+# ---------------------------------------------------------------------------
+
+
+def test_subtype_is_always_passed_to_tos(parser, patched):
+    """`tos station add` REQUIRES --subtype, so this verb must always send it.
+
+    It used to append the flag only `if value`, with `--subtype` optional
+    here — so with the flag unset the tos call exited 2 and the whole verb
+    failed. Nothing caught it, because every test in this file patches
+    `tostools.tos.main` and therefore never meets the real refusal. Hence
+    this asserts the ARGV rather than the exit code.
+
+    `receivers` is a GPS tool, so the default is the GPS subtype, exactly as
+    `tosGPS station add` supplies it.
+    """
+    from tostools.station_kind import GPS_STATION_SUBTYPE
+
+    rc = cmd_cfg_add_tos_station(_args(parser, *BASE))
+    assert rc == 0
+    (argv,) = patched["tos_calls"]
+    assert "--subtype" in argv, (
+        "tos station add would exit 2 — the geophysical domain holds several "
+        "station kinds and it refuses to guess"
+    )
+    assert argv[argv.index("--subtype") + 1] == GPS_STATION_SUBTYPE
+
+
+def test_an_explicit_subtype_overrides_the_gps_default(parser, patched):
+    """A non-GPS geophysical station is still creatable through this verb."""
+    rc = cmd_cfg_add_tos_station(_args(parser, *BASE, "--subtype", "SIL stöð"))
+    assert rc == 0
+    (argv,) = patched["tos_calls"]
+    assert argv[argv.index("--subtype") + 1] == "SIL stöð"
