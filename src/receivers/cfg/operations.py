@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from tostools.api.tos_writer import TOSWriter
+from tostools.station_kind import gps_station_predicate
 
 logger = logging.getLogger(__name__)
 
@@ -271,12 +272,29 @@ def _resolve_cfg_path(cfg_path: Optional[Path]) -> Path:
 
 
 def _resolve_station(writer: TOSWriter, station_id: str) -> int:
-    """Resolve a 4-char marker to a TOS station ``id_entity``."""
-    eid = writer.find_station_by_marker(station_id)
+    """Resolve a 4-char marker to a **GPS** station ``id_entity``.
+
+    Filtered to the GPS domain, which is both levels TOS confusingly calls
+    "subtype": ``code_entity_subtype == geophysical`` AND the station
+    attribute ``subtype == 'GPS stöð'``. Neither alone is enough — SIL
+    seismic and DOAS gas stations are ``geophysical`` too.
+
+    Unfiltered this took the first hit, and markers are **not** unique in
+    TOS. Marker ``soho`` carries TWO geophysical entities: 5356 (``DOAS``, a
+    volcanic-gas station) and 4416 (``GPS stöð``, receiver 3075357), and the
+    first hit was 5356. Every ``cfg`` verb reaching this helper — seventeen
+    call sites, including ``install-device``, ``replace-antenna``,
+    ``add-monument`` and ``update-device`` — would therefore have read from,
+    and WRITTEN to, a gas station whenever an operator typed SOHO. Checked
+    2026-10-01: no such write has landed yet.
+    """
+    eid = writer.find_station_by_marker(station_id, predicate=gps_station_predicate())
     if eid is None:
         raise CfgOperationError(
-            f"No TOS station matches marker {station_id!r}. "
-            f"Check spelling or the station's marker attribute in TOS."
+            f"No TOS GPS station matches marker {station_id!r}. "
+            f"Check spelling or the station's marker attribute in TOS. "
+            f"(A station of another discipline may carry this marker — "
+            f"`tos station show {station_id}` covers every discipline.)"
         )
     return eid
 
@@ -1924,7 +1942,12 @@ def move_device(
             companion_radome = _find_companion_radome(w, int(probe_id))
 
     # Auto-detect target type: station marker first, then location name.
-    station_eid = w.find_station_by_marker(to)
+    # GPS-filtered, like _resolve_station: a marker carried only by another
+    # discipline is not a station destination here, and must fall through to
+    # location-name detection rather than silently becoming one. Ungated,
+    # `move-device --to SOHO` would have joined the device to the DOAS gas
+    # station 5356 instead of the GPS station 4416.
+    station_eid = w.find_station_by_marker(to, predicate=gps_station_predicate())
     if station_eid is not None:
         station_result = _move_to_station(
             w,

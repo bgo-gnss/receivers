@@ -153,7 +153,7 @@ def test_canonical_receiver_type_none():
 
 def test_resolve_station_raises_on_unknown():
     w = _writer_mock()
-    with pytest.raises(CfgOperationError, match="No TOS station matches"):
+    with pytest.raises(CfgOperationError, match="No TOS GPS station matches"):
         _resolve_station(w, "NONEXIST")
 
 
@@ -1094,7 +1094,7 @@ def test_add_visit_default_reason_is_repairs():
 def test_add_visit_raises_when_station_unknown():
     w = MagicMock()
     w.find_station_by_marker.return_value = None
-    with pytest.raises(CfgOperationError, match="No TOS station matches"):
+    with pytest.raises(CfgOperationError, match="No TOS GPS station matches"):
         add_visit("XXXX", work="anything", writer=w, dry_run=True)
 
 
@@ -1154,7 +1154,7 @@ def test_list_visits_resolves_station_then_calls_writer():
 def test_list_visits_raises_on_unknown_station():
     w = MagicMock()
     w.find_station_by_marker.return_value = None
-    with pytest.raises(CfgOperationError, match="No TOS station"):
+    with pytest.raises(CfgOperationError, match="No TOS GPS station"):
         list_visits("XXXX", writer=w)
 
 
