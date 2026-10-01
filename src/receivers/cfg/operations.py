@@ -30,7 +30,6 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from tostools.api.tos_writer import TOSWriter
-from tostools.station_kind import gps_station_predicate
 
 logger = logging.getLogger(__name__)
 
@@ -288,6 +287,14 @@ def _resolve_station(writer: TOSWriter, station_id: str) -> int:
     and WRITTEN to, a gas station whenever an operator typed SOHO. Checked
     2026-10-01: no such write has landed yet.
     """
+    # Imported here, not at module level: rek-d01's venv carries an older
+    # tostools where `station_kind` does not exist, and a module-level import
+    # would make every importer of this module raise ImportError — including
+    # paths the scheduler touches, which systemd would then crash-loop
+    # (Restart=always). Function-local tostools imports are this file's
+    # existing idiom for exactly that reason.
+    from tostools.station_kind import gps_station_predicate
+
     eid = writer.find_station_by_marker(station_id, predicate=gps_station_predicate())
     if eid is None:
         raise CfgOperationError(
@@ -1947,6 +1954,8 @@ def move_device(
     # location-name detection rather than silently becoming one. Ungated,
     # `move-device --to SOHO` would have joined the device to the DOAS gas
     # station 5356 instead of the GPS station 4416.
+    from tostools.station_kind import gps_station_predicate
+
     station_eid = w.find_station_by_marker(to, predicate=gps_station_predicate())
     if station_eid is not None:
         station_result = _move_to_station(
