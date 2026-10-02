@@ -51,7 +51,9 @@ class _SmsRouter:
       therefore had ``len() == 1``, so send verification compared 1 to 1 and
       reported "accepted and discarded" for every attempt. Every test passed,
       because fake and code shared the same wrong assumption. What 10.6.1.211
-      actually returns::
+      actually returns (the zone was ``Europe/London`` when this was first
+      captured; it now reads ``Atlantic/Iceland``, and either way the row
+      timestamps are router-local and run +1 h from UTC)::
 
           [{"timezone": "UTC Europe/London", "count": 0, "get": []}]
 
