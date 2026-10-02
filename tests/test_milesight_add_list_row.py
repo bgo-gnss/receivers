@@ -147,3 +147,98 @@ def test_each_add_gets_a_fresh_token():
         call["values"][0]["index"] for call in router.calls if call["function"] == "add"
     ]
     assert len(set(indexes)) == 2
+
+
+# ---------------------------------------------------------------------------
+# SMS — the core the SPA bundle does not contain
+# ---------------------------------------------------------------------------
+#
+# `yruo_sms`, `query_inbox` and `query_outbox` appear in NO file the router
+# serves: not index.html, not index-*.js, not the 1.5 MB routes-*.js. They are
+# assembled at runtime, so grep cannot find them at any download size — an
+# earlier attempt also drew a conclusion from a TRUNCATED routes.js (389 KB of
+# 1,583 KB, a silent `curl --max-time` cut) and wrongly reported that the
+# firmware had no SMS support.
+#
+# Captured by hooking XMLHttpRequest.send in the live UI and clicking the
+# harmless Inbox/Outbox Search. `function` always equals `base`; the Send
+# form's DOM ids are `1_destination` / `1_content`.
+
+
+class _SmsRouter(_FakeRouter):
+    def __init__(self, outbox=None, *, status=0, stores=True):
+        super().__init__(status=status)
+        self.outbox = list(outbox or [])
+        self.stores = stores
+
+    def cgi(self, core, function, values, idn=9):
+        self.calls.append({"core": core, "function": function, "values": values})
+        if function in ("query_outbox", "query_inbox"):
+            rows = self.outbox if function == "query_outbox" else []
+            return {"status": 0, "result": [{function: list(rows)}]}
+        if function == "send":
+            if self.status == 0 and self.stores:
+                self.outbox.insert(
+                    0,
+                    {
+                        "recipient": (
+                            values[0]["value"]
+                            if "value" in values[0]
+                            else values[0].get("destination")
+                        )
+                    },
+                )
+            return {"status": self.status}
+        raise AssertionError(f"unexpected function {function!r}")
+
+
+def test_send_sms_uses_the_captured_core_and_field_names():
+    router = _SmsRouter()
+    _client(router).send_sms("+3548400754", "hello")
+
+    send = next(c for c in router.calls if c["function"] == "send")
+    assert send["core"] == "yruo_sms"
+    v = send["values"][0]
+    assert v["base"] == "send", "function and base are always the same token"
+    # From the form's own DOM ids, not guessed.
+    assert v["destination"] == "+3548400754"
+    assert v["content"] == "hello"
+
+
+def test_send_sms_verifies_against_the_outbox():
+    """The Milesight advantage over Teltonika's gsmctl: delivery is checkable.
+
+    This router family answers `status 0` to payloads it then discards, so a
+    bare status is not evidence — the same trap that made the LIST-write
+    format look unsolvable for three sessions.
+    """
+    router = _SmsRouter(stores=False)
+    with pytest.raises(MilesightError) as exc:
+        _client(router).send_sms("+3548400754", "hello")
+    msg = str(exc.value)
+    assert "outbox" in msg
+    assert "accepted and" in msg and "discarded" in msg
+    assert "function=" in msg, "name the token most likely to be wrong"
+
+
+def test_send_sms_returns_the_outbox_row():
+    router = _SmsRouter()
+    row = _client(router).send_sms("+3548400754", "hello")
+    assert row is not None
+
+
+def test_send_sms_can_skip_verification():
+    router = _SmsRouter(stores=False)
+    _client(router).send_sms("+3548400754", "hello", verify=False)
+    assert not any(c["function"] == "query_outbox" for c in router.calls)
+
+
+def test_a_nonzero_status_on_send_raises():
+    router = _SmsRouter(status=-1)
+    with pytest.raises(MilesightError, match="status=-1"):
+        _client(router).send_sms("+3548400754", "hello")
+
+
+def test_query_sms_rejects_an_unknown_box():
+    with pytest.raises(ValueError):
+        _client(_SmsRouter()).query_sms("drafts")

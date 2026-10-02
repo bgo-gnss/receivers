@@ -1989,6 +1989,49 @@ def test_replace_sim_creates_new_entity_and_closes_old():
     assert result.tos_changes["plan"]["new_ip"] == "10.4.1.240"
 
 
+def test_replace_sim_skip_vitjun_records_no_visit():
+    """`--no-vitjun`: the SIM is recorded, the field visit is NOT asserted.
+
+    A SIM that went in with the station and is only missing from TOS is a
+    metadata backfill, not a trip. VFLS is the case that prompted the flag —
+    the auto-vitjun invented a second on-site visit on the install date that
+    nobody made, and it had to be deleted afterwards.
+
+    The device half must still happen: entity created, join opened. Only the
+    claim that somebody travelled is withheld.
+    """
+    w = _telemetry_writer(old_child_id=None, old_subtype="sim_card", old_attrs=[])
+    result = replace_sim(
+        "VFLN",
+        ip_address="10.4.1.224",
+        serial_number="89354010000000000000",
+        date="2026-09-30T17:46:18",
+        writer=w,
+        dry_run=False,
+        skip_vitjun=True,
+    )
+    w.add_maintenance_visit.assert_not_called()
+    assert result.vitjun_id is None
+    assert result.tos_changes["vitjun"] is None
+    # The SIM itself is still written.
+    assert w.create_device.call_args.kwargs["entity_subtype"] == "sim_card"
+    w.create_entity_connection.assert_called_once()
+
+
+def test_replace_sim_writes_a_vitjun_by_default():
+    """The flag is opt-in — a real swap still records the visit."""
+    w = _telemetry_writer(old_child_id=None, old_subtype="sim_card", old_attrs=[])
+    result = replace_sim(
+        "VFLN",
+        ip_address="10.4.1.224",
+        date="2026-09-30",
+        writer=w,
+        dry_run=False,
+    )
+    w.add_maintenance_visit.assert_called_once()
+    assert result.tos_changes["vitjun"] is not None
+
+
 def test_replace_sim_cfg_ip_off_by_default(cfg_file):
     """router_ip in cfg is NOT written unless --update-cfg-ip given."""
     cfg_file.write_text(

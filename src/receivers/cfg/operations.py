@@ -3744,6 +3744,7 @@ def replace_sim(
     date: Optional[str] = None,
     vitjun: Optional[str] = None,
     participants: str = "",
+    skip_vitjun: bool = False,
     update_cfg_ip: bool = False,
     dry_run: bool = True,
     writer: Optional[TOSWriter] = None,
@@ -3759,7 +3760,8 @@ def replace_sim(
          entity is left retired, not reparented).
       2. Creates a new ``sim_card`` device (:func:`build_sim_card_attributes`)
          and opens a station join at ``date``.
-      3. Writes a vitjun on the station ("Skipt um SIM-kort, nýtt IP …").
+      3. Writes a vitjun on the station ("Skipt um SIM-kort, nýtt IP …"),
+         unless ``skip_vitjun``.
       4. When ``update_cfg_ip`` is True, writes the new IP to
          ``stations.cfg[router_ip]``. **Off by default**: cfg ``router_ip`` is
          frequently a DNS hostname (e.g. ``GSIG.gps.vedur.is``) that should not
@@ -3776,6 +3778,13 @@ def replace_sim(
         date: When the swap happened. Default now; bare date → noon.
         vitjun: Override the auto-derived vitjun text.
         participants: Comma-separated emails for the vitjun.
+        skip_vitjun: Create NO vitjun. For recording a SIM that was already
+            physically installed — a metadata backfill, not a field event.
+            VFLS prompted this: its SIM went in with the station on
+            2026-09-30 and only the TOS record was missing, so the
+            auto-vitjun invented a second on-site visit that never happened
+            and had to be deleted afterwards. A vitjun asserts that somebody
+            travelled to the station; do not assert it for a desk fix.
         update_cfg_ip: Write ``router_ip`` in stations.cfg (default False).
         dry_run / writer / cfg_path: As :func:`move_device`.
 
@@ -3837,20 +3846,26 @@ def replace_sim(
     result.tos_changes["new_sim_create"] = created
     result.tos_changes["new_sim_join"] = join
 
-    work = vitjun or (
-        f"Skipt um SIM-kort, nýtt IP {ip_address}"
-        + (f" (var {old_ip})" if old_ip else "")
-    )
-    vit = w.add_maintenance_visit(
-        station_eid,
-        start_time=eff_date,
-        maintenance_type="on_site",
-        participants=participants,
-        reasons=["change"],
-        work=work,
-    )
-    result.tos_changes["vitjun"] = vit
-    result.vitjun_id = vit.get("id_maintenance")
+    if skip_vitjun:
+        # No field visit happened — see the skip_vitjun docstring. The SIM
+        # entity and its station join are already written above; only the
+        # claim that somebody travelled is withheld.
+        result.tos_changes["vitjun"] = None
+    else:
+        work = vitjun or (
+            f"Skipt um SIM-kort, nýtt IP {ip_address}"
+            + (f" (var {old_ip})" if old_ip else "")
+        )
+        vit = w.add_maintenance_visit(
+            station_eid,
+            start_time=eff_date,
+            maintenance_type="on_site",
+            participants=participants,
+            reasons=["change"],
+            work=work,
+        )
+        result.tos_changes["vitjun"] = vit
+        result.vitjun_id = vit.get("id_maintenance")
 
     if update_cfg_ip and not dry_run:
         target_cfg = _resolve_cfg_path(cfg_path)
