@@ -3425,25 +3425,29 @@ def _discover_phone_milesight(
             f"(modem counter {result['sent_count']})."
         )
     else:
-        # `status 0` means ACCEPTED, which is NOT the same as sent, and on
-        # this firmware it is not even a promise. Measured on 10.6.1.211
-        # 2026-10-02: three API sends were delivered, then every later API
-        # send returned status 0 and never transmitted — the modem counter
-        # and outbox both stayed put for 20+ minutes, and an `apply()` commit
-        # made no difference. A send from the router's own UI in the same
-        # window DID go. So do not tell the operator the message is safe.
+        # `status 0` only means the request parsed — this core returns it for
+        # a send it then silently discards, so an unconfirmed send is a real
+        # signal, not firmware flakiness. Kept advisory rather than fatal
+        # because the operator reads the sender number off the catcher phone
+        # and a slow modem should not fail the verb. An earlier version of
+        # this branch told the operator delivery was unreliable and to use
+        # the router UI; that advice was wrong — the API had the recipient
+        # field name wrong (`number` instead of `destination`), which the
+        # status-0 response hid.
         print(
             f"⚠️  SMS ACCEPTED by the {host} router for {to}, but NOT "
             f"confirmed as transmitted."
         )
         print(
-            "   On this firmware `status 0` only means the API took it. "
-            "Delivery is unreliable: sends have been observed to stop going "
-            "out while still returning success."
+            "   The modem's monthly SMS counter did not move within the "
+            "verification window. With the correct payload every observed "
+            "send confirmed inside 25 s, so treat this as a real failure "
+            "rather than a slow queue."
         )
         print(
-            "   If nothing arrives, send it from the router UI "
-            "(System → Phone & SMS → SMS), which still works."
+            f"   Check the router's own outbox for a row addressed to {to}: "
+            f"System → Phone & SMS → SMS, or "
+            f"MilesightClient('{host}').query_sms()."
         )
     if result.get("outbox"):
         print(f"   latest outbox entry: {result['outbox']}")
