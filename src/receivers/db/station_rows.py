@@ -73,6 +73,38 @@ STATION_COLUMNS = (
 #: absent cfg key never erases a value another writer established (notably
 #: ``ip_address``, which ``db_writer`` fills from a live probe).
 #:
+#: ``receiver_type`` is the ODD ONE OUT and its COALESCE is deliberately
+#: REVERSED (``stations`` first, ``EXCLUDED`` second): it is the only column
+#: here that ``health/db_writer.py`` sources from the LIVE PROBE rather than
+#: from cfg, and it writes it unconditionally. Letting cfg win would make the
+#: two writers alternate on it across every scheduler restart, each flip fanning
+#: out to the pgdev mirror. Measured on rek-d01 2026-10-02, three stations
+#: disagree — BLAL (probe ``PolaRX5`` vs cfg ``mosaic-X5``), HAMR (probe
+#: ``none`` vs cfg ``NetRS``), INGC (probe ``NONE`` vs cfg ``PolaRX5``). Two of
+#: those DB values are plainly wrong, but reconciling them is a data question
+#: for an operator, not something to settle by making two background writers
+#: fight. So cfg fills ``receiver_type`` only when the DB has none — which is
+#: the new-station case, where there is no probe result yet.
+#:
+#: ``observer`` and ``agency`` are reversed for the SAME reason, and it is a
+#: nastier one: there are **two config APIs that disagree**. ``db_writer`` reads
+#: the NESTED ``config_utils.get_station_config()``, which APPLIES DEFAULTS —
+#: ``rinex.observer`` → ``GNSSatIMO`` and ``rinex.agency`` → ``Icelandic
+#: Meteorological Office`` — while the flat ``getStationInfo()`` used here and
+#: by the seeder returns the raw cfg value, which is often the shorthand
+#: ``IMO`` or nothing. Measured 2026-10-02: for NPSK the flat API gives
+#: ``observer='IMO'``, the nested one ``'GNSSatIMO'``. These are RINEX HEADER
+#: fields, so letting cfg win would have DEGRADED the proper IGS strings to the
+#: shorthand on NPSK, VFLS and VFLN — and then flapped, because ``db_writer``
+#: writes the defaulted value back. Filling only a NULL keeps the better value
+#: and still populates a brand-new station.
+#:
+#: ``antenna_type``, ``marker_name`` and ``marker_number`` are safe as cfg-wins:
+#: the two APIs return IDENTICAL values for them (checked across the fleet), so
+#: there is nothing to flap. They read NULL in the DB today only because
+#: ``_ensure_station`` is memoised per process and last ran before the cfg
+#: changed.
+#:
 #: The ``DO UPDATE … WHERE`` is what keeps a config change from rewriting all
 #: ~200 rows and fanning all of them out to the pgdev mirror: an UPDATE only
 #: happens for a row that actually differs. An INSERT is unconditional, which
@@ -91,13 +123,13 @@ STATION_UPSERT_SQL = """
         %s, %s, %s
     )
     ON CONFLICT (sid) DO UPDATE SET
-        receiver_type = COALESCE(EXCLUDED.receiver_type, stations.receiver_type),
+        receiver_type = COALESCE(stations.receiver_type, EXCLUDED.receiver_type),
         power_type    = COALESCE(EXCLUDED.power_type, stations.power_type),
         antenna_type  = COALESCE(EXCLUDED.antenna_type, stations.antenna_type),
         marker_name   = COALESCE(EXCLUDED.marker_name, stations.marker_name),
         marker_number = COALESCE(EXCLUDED.marker_number, stations.marker_number),
-        observer      = COALESCE(EXCLUDED.observer, stations.observer),
-        agency        = COALESCE(EXCLUDED.agency, stations.agency),
+        observer      = COALESCE(stations.observer, EXCLUDED.observer),
+        agency        = COALESCE(stations.agency, EXCLUDED.agency),
         ip_address    = COALESCE(EXCLUDED.ip_address, stations.ip_address),
         http_port     = COALESCE(EXCLUDED.http_port, stations.http_port),
         station_name  = COALESCE(EXCLUDED.station_name, stations.station_name),
@@ -108,13 +140,13 @@ STATION_UPSERT_SQL = """
         longitude     = COALESCE(EXCLUDED.longitude, stations.longitude),
         height        = COALESCE(EXCLUDED.height, stations.height),
         updated_at    = NOW()
-    WHERE stations.receiver_type  IS DISTINCT FROM COALESCE(EXCLUDED.receiver_type, stations.receiver_type)
+    WHERE stations.receiver_type  IS DISTINCT FROM COALESCE(stations.receiver_type, EXCLUDED.receiver_type)
        OR stations.power_type     IS DISTINCT FROM COALESCE(EXCLUDED.power_type, stations.power_type)
        OR stations.antenna_type   IS DISTINCT FROM COALESCE(EXCLUDED.antenna_type, stations.antenna_type)
        OR stations.marker_name    IS DISTINCT FROM COALESCE(EXCLUDED.marker_name, stations.marker_name)
        OR stations.marker_number  IS DISTINCT FROM COALESCE(EXCLUDED.marker_number, stations.marker_number)
-       OR stations.observer       IS DISTINCT FROM COALESCE(EXCLUDED.observer, stations.observer)
-       OR stations.agency         IS DISTINCT FROM COALESCE(EXCLUDED.agency, stations.agency)
+       OR stations.observer       IS DISTINCT FROM COALESCE(stations.observer, EXCLUDED.observer)
+       OR stations.agency         IS DISTINCT FROM COALESCE(stations.agency, EXCLUDED.agency)
        OR stations.ip_address     IS DISTINCT FROM COALESCE(EXCLUDED.ip_address, stations.ip_address)
        OR stations.http_port      IS DISTINCT FROM COALESCE(EXCLUDED.http_port, stations.http_port)
        OR stations.station_name   IS DISTINCT FROM COALESCE(EXCLUDED.station_name, stations.station_name)

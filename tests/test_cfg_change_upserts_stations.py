@@ -159,6 +159,34 @@ def test_the_upsert_inserts_and_only_updates_a_differing_row():
 # would pass with the watcher still wired to the old UPDATE-only statement.
 
 
+def _merge_modes() -> Dict[str, str]:
+    """Per-column merge semantics, PARSED OUT OF ``STATION_UPSERT_SQL``.
+
+    The point of deriving this instead of listing it: a fake with the modes
+    hardcoded models what the author INTENDED, not what the SQL says, so the
+    behavioural tests below pass against a reverted ``COALESCE`` order. That
+    happened on the first run here — only the SQL-text assertion caught the
+    revert, and the behavioural test sailed through proving nothing.
+    """
+    modes: Dict[str, str] = {}
+    sql = " ".join(STATION_UPSERT_SQL.split())
+    for col in STATION_COLUMNS:
+        if col == "sid":
+            continue
+        if f"{col} = COALESCE(stations.{col}, EXCLUDED.{col})" in sql:
+            modes[col] = "fill_if_null"
+        elif f"{col} = COALESCE(EXCLUDED.{col}, stations.{col})" in sql:
+            modes[col] = "cfg_wins"
+        elif f"{col} = EXCLUDED.{col}" in sql:
+            modes[col] = "authoritative"
+        else:
+            raise AssertionError(f"no merge rule found for {col} in the upsert")
+    return modes
+
+
+_MERGE_MODE = _merge_modes()
+
+
 class _FakeCursor:
     def __init__(self, existing: Dict[str, Dict[str, Any]]) -> None:
         self.existing = existing
@@ -177,8 +205,12 @@ class _FakeCursor:
             else:
                 merged = dict(self.existing[sid])
                 for k, v in row.items():
-                    if k in ("station_status", "health_check"):
-                        merged[k] = v
+                    mode = _MERGE_MODE.get(k, "cfg_wins")
+                    if mode == "authoritative":
+                        merged[k] = v  # EXCLUDED wins, including NULL
+                    elif mode == "fill_if_null":
+                        if merged.get(k) is None:
+                            merged[k] = v
                     elif v is not None:
                         merged[k] = v
                 if merged == self.existing[sid]:
@@ -433,3 +465,131 @@ def test_only_the_seed_opts_into_the_owner_fallback():
     assert (
         "default_owner=True" not in sync
     ), "the background sync must not renormalise station_owner fleet-wide"
+
+
+# --- the two writers must not fight ----------------------------------------
+
+
+def test_receiver_type_fills_a_null_but_never_overwrites_the_probe():
+    """`receiver_type` is the LIVE PROBE's column, so its COALESCE is reversed.
+
+    `health/db_writer.py` writes `receiver_type = EXCLUDED.receiver_type` from
+    the probe result, unconditionally. If cfg won here the two background
+    writers would alternate on that column across every scheduler restart, each
+    flip fanning out to the pgdev mirror. Measured on rek-d01: BLAL (probe
+    PolaRX5 vs cfg mosaic-X5), HAMR (probe `none` vs cfg NetRS), INGC (probe
+    `NONE` vs cfg PolaRX5). Two of those DB values are wrong, but that is an
+    operator's data question — not something to settle by flapping.
+    """
+    sql = " ".join(STATION_UPSERT_SQL.split())
+    assert (
+        "receiver_type = COALESCE(stations.receiver_type, EXCLUDED.receiver_type)"
+        in sql
+    ), (
+        "stations FIRST: cfg may fill a NULL receiver_type (the new-station "
+        "case, where no probe has run) but must never overwrite the probe's"
+    )
+    # observer/agency are reversed too, for a nastier reason: the two config
+    # APIs disagree. db_writer reads the NESTED get_station_config(), which
+    # DEFAULTS rinex.observer -> 'GNSSatIMO' and rinex.agency -> 'Icelandic
+    # Meteorological Office'; the flat getStationInfo() used here returns the
+    # raw cfg value, often the shorthand 'IMO'. These are RINEX HEADER fields,
+    # so cfg-wins would DEGRADE the proper IGS strings (measured: NPSK, VFLS,
+    # VFLN) and then flap as db_writer wrote the defaulted value back.
+    for col in ("observer", "agency"):
+        assert f"{col} = COALESCE(stations.{col}, EXCLUDED.{col})" in sql, (
+            f"{col} must fill a NULL only — the nested config API supplies a "
+            f"better value than the raw cfg key"
+        )
+    # These three the two APIs agree on, so cfg-wins is correct and safe.
+    for col in ("antenna_type", "marker_name", "marker_number"):
+        assert f"{col} = COALESCE(EXCLUDED.{col}, stations.{col})" in sql
+
+
+def test_a_new_station_still_gets_its_receiver_type_from_cfg(monkeypatch):
+    """Reversing that COALESCE must not break the case the feature is for."""
+    cur = _FakeCursor(existing={})
+    sched = _scheduler_with({"VFLS": VFLS_CFG}, ["VFLS"], cur, monkeypatch)
+    sched._sync_station_status_to_db()
+    assert cur.existing["VFLS"]["receiver_type"] == "PolaRX5"
+
+
+def test_the_auto_inactive_rule_survives(monkeypatch):
+    """A station with no usable receiver_type must stay 'inactive'.
+
+    `station_status` and `health_check` are the upsert's only non-COALESCE
+    columns, so a wrong value OVERWRITES. `_load_station_configs` applies the
+    documented auto-detection (receiver_type None/empty/unknown -> inactive)
+    and raw cfg does NOT, so the sync has to take these two from
+    `self.stations`. Reading raw cfg would write NULL over 'inactive' and flip
+    the station back to active on every dashboard.
+    """
+    cur = _FakeCursor(existing={})
+    cfg_without_status = {"receiver_type": "unknown", "latitude": "64.0"}
+    sched = _scheduler_with({"DEAD": cfg_without_status}, ["DEAD"], cur, monkeypatch)
+    # what _load_station_configs would have derived:
+    sched.stations["DEAD"]["station_status"] = "inactive"
+
+    sched._sync_station_status_to_db()
+
+    assert (
+        cur.existing["DEAD"]["station_status"] == "inactive"
+    ), "the auto-detected status must reach the DB; raw cfg says nothing here"
+
+
+def test_health_check_also_comes_from_the_loaded_config(monkeypatch):
+    cur = _FakeCursor(existing={})
+    sched = _scheduler_with(
+        {"PASV": {"receiver_type": "NetRS"}}, ["PASV"], cur, monkeypatch
+    )
+    sched.stations["PASV"]["health_check"] = "passive"
+
+    sched._sync_station_status_to_db()
+
+    assert cur.existing["PASV"]["health_check"] == "passive"
+
+
+def test_the_sync_overrides_both_authoritative_fields():
+    """Pins the mechanism, so a refactor cannot quietly drop the override."""
+    from receivers.scheduling import bulk_scheduler
+
+    sync = _code_of(bulk_scheduler.BulkDownloadScheduler._sync_station_status_to_db)
+    assert (
+        "STATION_COLUMNS.index('station_status')" in sync
+        or 'STATION_COLUMNS.index("station_status")' in sync
+    )
+    assert (
+        "STATION_COLUMNS.index('health_check')" in sync
+        or 'STATION_COLUMNS.index("health_check")' in sync
+    )
+
+
+def test_the_rinex_header_fields_are_not_degraded_to_the_cfg_shorthand(monkeypatch):
+    """A good observer/agency in the DB must survive a sync.
+
+    The regression this prevents, measured on rek-d01: the sync would have
+    written `observer: 'GNSSatIMO' -> 'IMO'` and `agency: 'Icelandic
+    Meteorological Office' -> 'IMO'` on NPSK, VFLS and VFLN, because the flat
+    config API returns the raw cfg shorthand while db_writer's nested one
+    applies the real IGS defaults.
+    """
+    cur = _FakeCursor(existing={})
+    sched = _scheduler_with(
+        {"NPSK": {"receiver_type": "PolaRX5"}}, ["NPSK"], cur, monkeypatch
+    )
+    sched._sync_station_status_to_db()
+    # db_writer got there first with the defaulted values
+    cur.existing["NPSK"]["observer"] = "GNSSatIMO"
+    cur.existing["NPSK"]["agency"] = "Icelandic Meteorological Office"
+
+    sched._cfg_station_rows = lambda: {  # type: ignore[method-assign]
+        "NPSK": {
+            "receiver_type": "PolaRX5",
+            "rinex_observer": "IMO",
+            "rinex_agency": "IMO",
+        }
+    }
+    sched._sync_station_status_to_db()
+
+    assert cur.existing["NPSK"]["observer"] == "GNSSatIMO"
+    assert cur.existing["NPSK"]["agency"] == "Icelandic Meteorological Office"
