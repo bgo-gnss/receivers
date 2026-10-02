@@ -494,16 +494,19 @@ class MilesightClient:
     # The SEND is NOT flat. It is value-wrapped, like the LIST writes:
     #
     #   {"core":"yruo_sms","function":"send",
-    #    "values":[{"base":"send","value":{"number":..., "content":...}}]}
+    #    "values":[{"base":"send","value":{"destination":..., "content":...}}]}
     #
     # Confirmed live against 10.6.1.211 on 2026-10-02 — the message reached
     # the outbox with status "success".
     #
-    # The field is `number`, NOT `destination`. Reading the API field names
-    # off the Send form's DOM ids (`1_destination` / `1_content`) was wrong:
-    # a form id is the UI's own name for an input, and it happened to match
-    # for `content` only by luck. Every flat variant, and every variant using
-    # `destination`, returned status 0 with `result:[{}]` and stored nothing.
+    # The field IS `destination`, and the Send form's DOM ids
+    # (`1_destination` / `1_content`) named it correctly all along. An earlier
+    # revision of this comment asserted the opposite — that the field was
+    # `number` and the DOM ids were a red herring — on the strength of a
+    # status-0 response. That was wrong, and it cost a session: this core
+    # returns status 0 for a send whose recipient field it does not recognise,
+    # discards it, and writes nothing anywhere. See `send_sms` for the
+    # three-trial matrix that settled it.
 
     SMS_CORE = "yruo_sms"
 
@@ -553,16 +556,21 @@ class MilesightClient:
     def sms_sent_count(self) -> int:
         """The modem's own count of SMS sent this month.
 
-        More trustworthy than the outbox: measured on 10.6.1.211, the modem
-        reported 4 sent while the outbox listed only 3. The outbox is a UI
-        convenience and drops messages; this counter tracked every send.
+        The confirmation source for :meth:`send_sms`, because it comes from
+        the modem rather than the UI. It agrees with the outbox: 7 sends, 7
+        rows on 10.6.1.211 on 2026-10-02. An earlier docstring here claimed
+        the outbox "drops messages" on the strength of a 4-vs-3 disagreement,
+        but that was the pre-``bfa5a9f`` :meth:`query_sms` returning the
+        reply WRAPPER instead of the message list — a length of 1 for any
+        mailbox. Both signals are sound; this one is used because a count
+        comparison needs no row matching.
         """
         v = (self.get_config("yruo_status", base="summary")[0] or {}).get("value") or {}
         return int(((v.get("cell") or {}).get("sim_monthly_sms")) or 0)
 
     def send_sms(
         self,
-        number: str,
+        destination: str,
         content: str,
         verify: bool = True,
         verify_timeout: float = 20.0,
@@ -570,9 +578,9 @@ class MilesightClient:
         """Send one SMS. Costs a message.
 
         Args:
-            number: recipient number, as typed into the UI's "Phone Number"
-                field. The API field is `number`, even though the form's DOM
-                id is `1_destination`.
+            destination: recipient number, as typed into the UI's "Phone
+                Number" field. The wire field is ``destination`` — see the
+                Note; the form's ``1_destination`` DOM id was the clue.
             content: message body.
             verify: poll for CONFIRMATION of transmission. Advisory — an
                 unconfirmed send is reported, never raised. See below.
@@ -581,35 +589,44 @@ class MilesightClient:
         Returns:
             ``{"confirmed": bool, "sent_count": int, "outbox": row|None,
             "response": raw}``. ``confirmed`` means the modem's counter rose
-            within ``verify_timeout``; ``False`` means QUEUED, not failed.
+            within ``verify_timeout``.
 
         Raises:
             MilesightError: only when the router itself reports failure
                 (``status != 0``).
 
         Note:
-            **``status 0`` means ACCEPTED, not sent — and on this firmware
-            it is not even a promise.** Measured on 10.6.1.211, 2026-10-02:
-            three API sends were delivered, and every API send after that
-            returned ``status 0`` and never transmitted. The modem counter
-            and the outbox both stayed put for 20+ minutes, an ``apply()``
-            commit changed nothing, and a send from the router's own UI in
-            the same window went out fine. The cause is not established —
-            an anti-flood limit and a wedged SMS queue both fit.
+            **The wire field is ``destination``. ``number`` is ACCEPTED and
+            silently DISCARDED.** Measured on 10.6.1.211 (VFLS), 2026-10-02,
+            three trials each, every outcome identified by the CONTENT of the
+            new outbox row rather than by the counter alone::
 
-            So this method CANNOT guarantee delivery, and
-            ``confirmed=False`` must not be read as "queued, will arrive".
-            It means exactly "the API took it and the modem has not (yet)
-            reported sending it".
+                {"destination": N, "content": C}            -> sent, 3/3
+                {"number": N, "destination": N, "content": C} -> sent
+                {"number": N, "content": C}                 -> NOTHING, 3/3
 
-            Confirmation is advisory rather than enforced because the
-            opposite choice misled me twice: reading an unconfirmed send as
-            a discarded payload produced two wrong diagnoses in a row, and
-            each time I tightened the check instead of questioning its
-            premise. For `discover-phone` the operator reads the sender
-            number off the catcher phone, so an unconfirmed send is worth
-            reporting rather than failing — but it is worth reporting
-            HONESTLY.
+            Every one of those returned ``status 0`` with ``result [{}]``. The
+            no-op case never reaches the outbox and never moves the modem's
+            monthly counter, even after polling 60 s. So on this core
+            ``status 0`` says only "the request parsed" — it is not an
+            acknowledgement that a message exists.
+
+            This is what made the field name expensive to find. ``f01e5c7``
+            sent ``destination`` (at the item's top level) and messages went
+            out; ``fda6e36`` "fixed" it to a value-wrapped ``number`` and
+            sends stopped, but because the response was unchanged the symptom
+            looked like a flaky modem rather than a regression. Three further
+            hypotheses were chased and each disproved — an anti-flood limit
+            (``statistics.sim1_sms_overflow`` reads ``0``), a wedged queue
+            (``modem_status`` ``Ready``, registered, RSSI -62 dBm), and a
+            missing ``apply()`` commit (no effect). The form's own
+            ``1_destination`` DOM id had named the field all along.
+
+            ``verify`` remains advisory: an unconfirmed send is reported, not
+            raised, because for ``discover-phone`` the operator reads the
+            sender number off the catcher phone and a slow confirmation is
+            worth reporting rather than failing. With the correct field every
+            observed send confirmed within 25 s.
         """
         import time as _time
 
@@ -618,7 +635,15 @@ class MilesightClient:
         j = self.cgi(
             self.SMS_CORE,
             "send",
-            [{"base": "send", "value": {"number": number, "content": content}}],
+            # ``destination``, NOT ``number`` — see the Note. A wrong or
+            # absent field name here is a SILENT discard: status 0, nothing
+            # sent, nothing logged by the router.
+            [
+                {
+                    "base": "send",
+                    "value": {"destination": destination, "content": content},
+                }
+            ],
         )
         if j.get("status") != 0:
             raise MilesightError(
