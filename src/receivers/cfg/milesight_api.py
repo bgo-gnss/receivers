@@ -527,10 +527,16 @@ class MilesightClient:
                 f"{self.host}: {base} failed status={j.get('status')} "
                 f"{str(j.get('result'))[:80]}"
             )
+        # The reply is a WRAPPER, not the messages:
+        #   [{"timezone": "UTC Europe/London", "count": 0, "get": []}]
+        # Returning it unchanged makes len() == 1 for an EMPTY mailbox, which
+        # silently defeated the send verification — it compared 1 to 1 and
+        # reported "the payload was accepted and discarded" for every attempt,
+        # including ones that might have worked. Unwrap to the message list.
         try:
-            return j["result"][0][base]
+            return j["result"][0]["get"] or []
         except (KeyError, IndexError, TypeError):
-            return j.get("result") or []
+            return []
 
     def send_sms(self, destination: str, content: str, verify: bool = True) -> dict:
         """Send one SMS. Costs a message.

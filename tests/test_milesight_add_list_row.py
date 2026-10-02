@@ -166,27 +166,51 @@ def test_each_add_gets_a_fresh_token():
 
 
 class _SmsRouter(_FakeRouter):
+    """Models the router's REAL reply shape, which is a WRAPPER.
+
+    This matters more than it looks. The first version of this fake returned
+    ``{"result": [{"query_outbox": [...]}]}`` — invented, never observed —
+    and the client returned that wrapper unchanged. An EMPTY mailbox
+    therefore had ``len() == 1``, so the send verification compared 1 to 1
+    and reported "accepted and discarded" for every attempt, including ones
+    that might have worked. Every test passed throughout, because fake and
+    code shared the same wrong assumption. Only the live router exposed it.
+
+    What 10.6.1.211 actually returns:
+
+        [{"timezone": "UTC Europe/London", "count": 0, "get": []}]
+    """
+
     def __init__(self, outbox=None, *, status=0, stores=True):
         super().__init__(status=status)
         self.outbox = list(outbox or [])
         self.stores = stores
 
+    @staticmethod
+    def _wrap(messages):
+        return {
+            "status": 0,
+            "result": [
+                {
+                    "timezone": "UTC Atlantic/Iceland",
+                    "count": len(messages),
+                    "get": list(messages),
+                }
+            ],
+        }
+
     def cgi(self, core, function, values, idn=9):
         self.calls.append({"core": core, "function": function, "values": values})
-        if function in ("query_outbox", "query_inbox"):
-            rows = self.outbox if function == "query_outbox" else []
-            return {"status": 0, "result": [{function: list(rows)}]}
+        if function == "query_outbox":
+            return self._wrap(self.outbox)
+        if function == "query_inbox":
+            return self._wrap([])
         if function == "send":
             if self.status == 0 and self.stores:
+                v = values[0]
                 self.outbox.insert(
                     0,
-                    {
-                        "recipient": (
-                            values[0]["value"]
-                            if "value" in values[0]
-                            else values[0].get("destination")
-                        )
-                    },
+                    {"recipient": v.get("destination"), "content": v.get("content")},
                 )
             return {"status": self.status}
         raise AssertionError(f"unexpected function {function!r}")
@@ -242,3 +266,15 @@ def test_a_nonzero_status_on_send_raises():
 def test_query_sms_rejects_an_unknown_box():
     with pytest.raises(ValueError):
         _client(_SmsRouter()).query_sms("drafts")
+
+
+def test_an_empty_mailbox_reads_as_zero_messages_not_one_wrapper():
+    """The bug this file previously hid.
+
+    The reply is a wrapper carrying `count` and `get`. Returning it unchanged
+    made an EMPTY mailbox look like one message, which silently defeated the
+    send verification against the live router — it compared 1 to 1 and blamed
+    the payload every time.
+    """
+    assert _client(_SmsRouter()).query_sms("outbox") == []
+    assert _client(_SmsRouter(outbox=[{"recipient": "x"}])).query_sms("outbox") != []
