@@ -2012,7 +2012,11 @@ class BulkDownloadScheduler:
         only the scheduler's own fields (no position, marker, agency or owner).
         """
         try:
-            from ..db.station_rows import STATION_UPSERT_SQL, station_row_from_cfg
+            from ..db.station_rows import (
+                STATION_COLUMNS,
+                STATION_UPSERT_SQL,
+                station_row_from_cfg,
+            )
             from ..health.database_factory import DatabaseConnectionFactory
 
             cfg_rows = self._cfg_station_rows()
@@ -2030,10 +2034,28 @@ class BulkDownloadScheduler:
                             # it would write NULL over real values on an
                             # existing row via the authoritative status fields.
                             continue
-                        cur.execute(
-                            STATION_UPSERT_SQL,
-                            station_row_from_cfg(station_id, raw, resolve_ip=False),
+                        params = list(
+                            station_row_from_cfg(station_id, raw, resolve_ip=False)
                         )
+                        # station_status / health_check are the only two
+                        # non-COALESCE columns in the upsert, so a wrong value
+                        # here OVERWRITES rather than fills. They must come from
+                        # self.stations, not from raw cfg: _load_station_configs
+                        # applies the documented auto-detection — a station whose
+                        # receiver_type is None/empty/unknown is 'inactive' even
+                        # though cfg says nothing. Reading raw cfg instead would
+                        # write NULL over that and flip the station back to
+                        # active on every dashboard. (0 rows affected on rek-d01
+                        # today, because cfg currently carries a receiver_type
+                        # for every such station — a latent regression, not a
+                        # visible one, which is exactly the kind that survives.)
+                        params[STATION_COLUMNS.index("station_status")] = config.get(
+                            "station_status"
+                        )
+                        params[STATION_COLUMNS.index("health_check")] = config.get(
+                            "health_check"
+                        )
+                        cur.execute(STATION_UPSERT_SQL, tuple(params))
                         row = cur.fetchone()
                         if row is None:
                             pass  # already in sync — the WHERE skipped it
