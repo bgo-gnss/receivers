@@ -185,6 +185,10 @@ class _SmsRouter(_FakeRouter):
         super().__init__(status=status)
         self.outbox = list(outbox or [])
         self.stores = stores
+        # The modem's own counter, which is the ORACLE for a send. The outbox
+        # is best effort: measured on 10.6.1.211 the modem reported 4 sent
+        # while the outbox listed 3, so a missing row is not a failed send.
+        self.sent_count = 0
 
     @staticmethod
     def _wrap(messages):
@@ -201,16 +205,31 @@ class _SmsRouter(_FakeRouter):
 
     def cgi(self, core, function, values, idn=9):
         self.calls.append({"core": core, "function": function, "values": values})
+        if core == "yruo_status" and function == "get":
+            return {
+                "status": 0,
+                "result": [
+                    {"get": [{"value": {"cell": {"sim_monthly_sms": self.sent_count}}}]}
+                ],
+            }
         if function == "query_outbox":
             return self._wrap(self.outbox)
         if function == "query_inbox":
             return self._wrap([])
         if function == "send":
             if self.status == 0 and self.stores:
-                v = values[0]
+                self.sent_count += 1
+                v = values[0].get("value") or {}
                 self.outbox.insert(
                     0,
-                    {"recipient": v.get("destination"), "content": v.get("content")},
+                    {
+                        "type": "sms_outbox",
+                        "value": {
+                            "from": v.get("number"),
+                            "content": v.get("content"),
+                            "status": "success",
+                        },
+                    },
                 )
             return {"status": self.status}
         raise AssertionError(f"unexpected function {function!r}")
@@ -224,31 +243,34 @@ def test_send_sms_uses_the_captured_core_and_field_names():
     assert send["core"] == "yruo_sms"
     v = send["values"][0]
     assert v["base"] == "send", "function and base are always the same token"
-    # From the form's own DOM ids, not guessed.
-    assert v["destination"] == "+3548400754"
-    assert v["content"] == "hello"
+    # The SEND is value-wrapped, unlike the flat reads — confirmed live.
+    assert "value" in v, "a flat payload is accepted (status 0) and discarded"
+    assert v["value"]["number"] == "+3548400754", "the field is `number`"
+    assert v["value"]["content"] == "hello"
 
 
-def test_send_sms_verifies_against_the_outbox():
-    """The Milesight advantage over Teltonika's gsmctl: delivery is checkable.
+def test_an_unconfirmed_send_is_reported_not_raised():
+    """`status 0` means QUEUED, so an unconfirmed send must not be an error.
 
-    This router family answers `status 0` to payloads it then discards, so a
-    bare status is not evidence — the same trap that made the LIST-write
-    format look unsolvable for three sessions.
+    Measured on 10.6.1.211: four messages were accepted, neither the outbox
+    nor the modem counter moved for minutes, and then all four arrived at the
+    catcher phone at once — only after an unrelated SMS was sent by hand from
+    the router UI. Treating "not yet confirmed" as failure produced two
+    successive wrong diagnoses, so confirmation is advisory.
     """
     router = _SmsRouter(stores=False)
-    with pytest.raises(MilesightError) as exc:
-        _client(router).send_sms("+3548400754", "hello")
-    msg = str(exc.value)
-    assert "outbox" in msg
-    assert "accepted and" in msg and "discarded" in msg
-    assert "function=" in msg, "name the token most likely to be wrong"
+    out = _client(router).send_sms("+3548400754", "hello", verify_timeout=0.1)
+    assert out["confirmed"] is False, "queued, not failed"
+    assert out["response"]["status"] == 0
 
 
-def test_send_sms_returns_the_outbox_row():
+def test_a_confirmed_send_reports_the_modem_counter():
+    """The modem's own counter is the oracle — the outbox drops messages."""
     router = _SmsRouter()
-    row = _client(router).send_sms("+3548400754", "hello")
-    assert row is not None
+    out = _client(router).send_sms("+3548400754", "hello")
+    assert out["confirmed"] is True
+    assert out["sent_count"] == 1
+    assert out["outbox"] is not None
 
 
 def test_send_sms_can_skip_verification():

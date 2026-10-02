@@ -3414,15 +3414,32 @@ def _discover_phone_milesight(
     try:
         with MilesightClient(host) as c:
             c.connect()
-            row = c.send_sms(to, message)
+            result = c.send_sms(to, message)
     except MilesightError as e:
         print(f"❌ {e}", file=sys.stderr)
         return 1
-    print(
-        f"✅ SMS sent from {host} SIM to {to}, and CONFIRMED in the router's "
-        f"outbox:"
-    )
-    print(f"   {row}")
+
+    if result.get("confirmed"):
+        print(
+            f"✅ SMS sent from {host} SIM to {to} — transmission CONFIRMED "
+            f"(modem counter {result['sent_count']})."
+        )
+    else:
+        # `status 0` means QUEUED, not sent. This modem defers transmission
+        # and the queue can sit: on 10.6.1.211 four messages were accepted,
+        # nothing moved for minutes, then all arrived at the catcher phone at
+        # once after an unrelated SMS was sent by hand from the router UI.
+        # So an unconfirmed send is REPORTED, never failed.
+        print(
+            f"📨 SMS QUEUED on the {host} SIM for {to} — accepted by the "
+            f"router, not yet transmitted."
+        )
+        print(
+            "   This modem defers sending and the queue can take a while to "
+            "drain; the message is not lost."
+        )
+    if result.get("outbox"):
+        print(f"   latest outbox entry: {result['outbox']}")
     print(
         f"   Check {to}: the SENDER number of that message is this SIM's own "
         f"phone number."

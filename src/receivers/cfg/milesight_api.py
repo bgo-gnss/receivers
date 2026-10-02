@@ -489,9 +489,21 @@ class MilesightClient:
     #               "start_date":"","end_date":"","from":""}]}
     #
     # Two invariants came out of it: `function` always equals `base`, and
-    # the Send form's own DOM ids are `1_destination` / `1_content`, which
-    # is Milesight's `<index>_<apifield>` convention — hence the field names
-    # below.
+    # READS are flat — `values:[{base, ...params}]`.
+    #
+    # The SEND is NOT flat. It is value-wrapped, like the LIST writes:
+    #
+    #   {"core":"yruo_sms","function":"send",
+    #    "values":[{"base":"send","value":{"number":..., "content":...}}]}
+    #
+    # Confirmed live against 10.6.1.211 on 2026-10-02 — the message reached
+    # the outbox with status "success".
+    #
+    # The field is `number`, NOT `destination`. Reading the API field names
+    # off the Send form's DOM ids (`1_destination` / `1_content`) was wrong:
+    # a form id is the UI's own name for an input, and it happened to match
+    # for `content` only by luck. Every flat variant, and every variant using
+    # `destination`, returned status 0 with `result:[{}]` and stored nothing.
 
     SMS_CORE = "yruo_sms"
 
@@ -538,39 +550,67 @@ class MilesightClient:
         except (KeyError, IndexError, TypeError):
             return []
 
-    def send_sms(self, destination: str, content: str, verify: bool = True) -> dict:
+    def sms_sent_count(self) -> int:
+        """The modem's own count of SMS sent this month.
+
+        More trustworthy than the outbox: measured on 10.6.1.211, the modem
+        reported 4 sent while the outbox listed only 3. The outbox is a UI
+        convenience and drops messages; this counter tracked every send.
+        """
+        v = (self.get_config("yruo_status", base="summary")[0] or {}).get("value") or {}
+        return int(((v.get("cell") or {}).get("sim_monthly_sms")) or 0)
+
+    def send_sms(
+        self,
+        number: str,
+        content: str,
+        verify: bool = True,
+        verify_timeout: float = 20.0,
+    ) -> dict:
         """Send one SMS. Costs a message.
 
         Args:
-            destination: recipient number, as typed into the UI's
-                "Phone Number" field.
+            number: recipient number, as typed into the UI's "Phone Number"
+                field. The API field is `number`, even though the form's DOM
+                id is `1_destination`.
             content: message body.
-            verify: re-read the OUTBOX afterwards and raise unless the
-                message is there. On by default, because this router family
-                answers ``status 0`` to payloads it then discards — the
-                exact failure that made the LIST-write format look
-                unsolvable for three sessions (see :meth:`add_list_row`).
+            verify: poll for CONFIRMATION of transmission. Advisory — an
+                unconfirmed send is reported, never raised. See below.
+            verify_timeout: how long to poll for confirmation, in seconds.
 
         Returns:
-            The outbox row for the sent message when ``verify``, else the
-            raw response.
+            ``{"confirmed": bool, "sent_count": int, "outbox": row|None,
+            "response": raw}``. ``confirmed`` means the modem's counter rose
+            within ``verify_timeout``; ``False`` means QUEUED, not failed.
 
         Raises:
-            MilesightError: the router reported failure, or accepted the
-                call and the message never reached the outbox.
+            MilesightError: only when the router itself reports failure
+                (``status != 0``).
 
         Note:
-            ``function="send"`` is the ONE token here that was inferred
-            rather than captured — from the `function == base` invariant —
-            because confirming it required actually sending a message. The
-            ``verify`` read-back is what makes that inference safe: a wrong
-            verb cannot pass silently.
+            **``status 0`` means QUEUED, not sent.** The modem defers
+            transmission, and the queue can sit for a long time before it
+            drains — on 10.6.1.211 four messages were accepted, nothing moved
+            for minutes, and all of them arrived at the catcher phone at once
+            only after an unrelated SMS was sent by hand from the router's
+            UI. Neither the outbox nor the monthly counter updates until the
+            modem actually transmits, so neither can prove a send failed.
+
+            This cost two wrong diagnoses in a row — first a "no SMS support
+            on this firmware" claim, then "the payload is accepted and
+            discarded" — and the verification was tightened twice on the
+            strength of them. Hence: confirmation is REPORTED, never
+            enforced. For `discover-phone` that is sufficient anyway, since
+            the operator reads the sender number off the catcher phone.
         """
-        before = len(self.query_sms("outbox")) if verify else 0
+        import time as _time
+
+        before = self.sms_sent_count() if verify else 0
+
         j = self.cgi(
             self.SMS_CORE,
             "send",
-            [{"base": "send", "destination": destination, "content": content}],
+            [{"base": "send", "value": {"number": number, "content": content}}],
         )
         if j.get("status") != 0:
             raise MilesightError(
@@ -578,18 +618,24 @@ class MilesightClient:
                 f"{str(j.get('result'))[:120]}"
             )
         if not verify:
-            return j
+            return {
+                "confirmed": None,
+                "sent_count": None,
+                "outbox": None,
+                "response": j,
+            }
+        deadline = _time.monotonic() + verify_timeout
+        sent = self.sms_sent_count()
+        while sent <= before and _time.monotonic() < deadline:
+            _time.sleep(2.0)
+            sent = self.sms_sent_count()
         rows = self.query_sms("outbox")
-        if len(rows) <= before:
-            raise MilesightError(
-                f"{self.host}: send_sms reported success but the outbox still "
-                f"holds {len(rows)} row(s). The payload was accepted and "
-                f'discarded — most likely `function="send"` is wrong. '
-                f"Re-capture the UI's Send XHR (hook "
-                f"XMLHttpRequest.prototype.send AFTER landing on "
-                f"#system/contact/sms, then click Send)."
-            )
-        return rows[0]
+        return {
+            "confirmed": sent > before,
+            "sent_count": sent,
+            "outbox": rows[0] if rows else None,
+            "response": j,
+        }
 
     def export_config(self, out_path: str) -> int:
         """Download the config backup blob to ``out_path``; return byte count."""
