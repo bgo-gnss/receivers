@@ -588,20 +588,28 @@ class MilesightClient:
                 (``status != 0``).
 
         Note:
-            **``status 0`` means QUEUED, not sent.** The modem defers
-            transmission, and the queue can sit for a long time before it
-            drains — on 10.6.1.211 four messages were accepted, nothing moved
-            for minutes, and all of them arrived at the catcher phone at once
-            only after an unrelated SMS was sent by hand from the router's
-            UI. Neither the outbox nor the monthly counter updates until the
-            modem actually transmits, so neither can prove a send failed.
+            **``status 0`` means ACCEPTED, not sent — and on this firmware
+            it is not even a promise.** Measured on 10.6.1.211, 2026-10-02:
+            three API sends were delivered, and every API send after that
+            returned ``status 0`` and never transmitted. The modem counter
+            and the outbox both stayed put for 20+ minutes, an ``apply()``
+            commit changed nothing, and a send from the router's own UI in
+            the same window went out fine. The cause is not established —
+            an anti-flood limit and a wedged SMS queue both fit.
 
-            This cost two wrong diagnoses in a row — first a "no SMS support
-            on this firmware" claim, then "the payload is accepted and
-            discarded" — and the verification was tightened twice on the
-            strength of them. Hence: confirmation is REPORTED, never
-            enforced. For `discover-phone` that is sufficient anyway, since
-            the operator reads the sender number off the catcher phone.
+            So this method CANNOT guarantee delivery, and
+            ``confirmed=False`` must not be read as "queued, will arrive".
+            It means exactly "the API took it and the modem has not (yet)
+            reported sending it".
+
+            Confirmation is advisory rather than enforced because the
+            opposite choice misled me twice: reading an unconfirmed send as
+            a discarded payload produced two wrong diagnoses in a row, and
+            each time I tightened the check instead of questioning its
+            premise. For `discover-phone` the operator reads the sender
+            number off the catcher phone, so an unconfirmed send is worth
+            reporting rather than failing — but it is worth reporting
+            HONESTLY.
         """
         import time as _time
 

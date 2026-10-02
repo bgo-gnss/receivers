@@ -3425,18 +3425,25 @@ def _discover_phone_milesight(
             f"(modem counter {result['sent_count']})."
         )
     else:
-        # `status 0` means QUEUED, not sent. This modem defers transmission
-        # and the queue can sit: on 10.6.1.211 four messages were accepted,
-        # nothing moved for minutes, then all arrived at the catcher phone at
-        # once after an unrelated SMS was sent by hand from the router UI.
-        # So an unconfirmed send is REPORTED, never failed.
+        # `status 0` means ACCEPTED, which is NOT the same as sent, and on
+        # this firmware it is not even a promise. Measured on 10.6.1.211
+        # 2026-10-02: three API sends were delivered, then every later API
+        # send returned status 0 and never transmitted — the modem counter
+        # and outbox both stayed put for 20+ minutes, and an `apply()` commit
+        # made no difference. A send from the router's own UI in the same
+        # window DID go. So do not tell the operator the message is safe.
         print(
-            f"📨 SMS QUEUED on the {host} SIM for {to} — accepted by the "
-            f"router, not yet transmitted."
+            f"⚠️  SMS ACCEPTED by the {host} router for {to}, but NOT "
+            f"confirmed as transmitted."
         )
         print(
-            "   This modem defers sending and the queue can take a while to "
-            "drain; the message is not lost."
+            "   On this firmware `status 0` only means the API took it. "
+            "Delivery is unreliable: sends have been observed to stop going "
+            "out while still returning success."
+        )
+        print(
+            "   If nothing arrives, send it from the router UI "
+            "(System → Phone & SMS → SMS), which still works."
         )
     if result.get("outbox"):
         print(f"   latest outbox entry: {result['outbox']}")
