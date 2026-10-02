@@ -6709,6 +6709,17 @@ Examples:
         help="Override the auto-derived 'Skipt um SIM-kort' vitjun text.",
     )
     rs.add_argument(
+        "--no-vitjun",
+        dest="no_vitjun",
+        action="store_true",
+        help=(
+            "Create NO vitjun. For a SIM that was already physically "
+            "installed and is only missing from TOS — a metadata backfill, "
+            "not a field event. A vitjun asserts somebody drove to the "
+            "station; do not assert it for a desk fix."
+        ),
+    )
+    rs.add_argument(
         "--participants",
         metavar="EMAIL[,EMAIL...]",
         help="Participant emails for the vitjun.",
@@ -8322,6 +8333,7 @@ def cmd_cfg_replace_sim(args) -> int:
             args.station,
             ip_address=ip_address,
             phone_number=phone,
+            skip_vitjun=getattr(args, "no_vitjun", False),
             serial_number=args.serial or (probe.sim_iccid if probe else None),
             provider=args.provider or (probe.provider if probe else None),
             model=args.model,
