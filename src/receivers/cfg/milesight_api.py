@@ -94,7 +94,9 @@ def _find_receivers_cfg(cfg_path: Optional[str] = None) -> Optional[str]:
     """Locate receivers.cfg (explicit → GPS_CONFIG_PATH → default)."""
     if cfg_path:
         return cfg_path
-    base = os.environ.get("GPS_CONFIG_PATH") or os.path.expanduser("~/.config/gpsconfig")
+    base = os.environ.get("GPS_CONFIG_PATH") or os.path.expanduser(
+        "~/.config/gpsconfig"
+    )
     candidate = os.path.join(base, "receivers.cfg")
     return candidate if os.path.isfile(candidate) else None
 
@@ -126,12 +128,16 @@ def resolve_credentials(
             if not cp.has_section(section):
                 continue
             u_pp = cp.get(section, "username_pass_path", fallback=None)
-            cfg_user = load_password_from_pass(u_pp.strip()) if u_pp else cp.get(
-                section, "username", fallback=None
+            cfg_user = (
+                load_password_from_pass(u_pp.strip())
+                if u_pp
+                else cp.get(section, "username", fallback=None)
             )
             p_pp = cp.get(section, "password_pass_path", fallback=None)
-            cfg_pass = load_password_from_pass(p_pp.strip()) if p_pp else cp.get(
-                section, "password", fallback=None
+            cfg_pass = (
+                load_password_from_pass(p_pp.strip())
+                if p_pp
+                else cp.get(section, "password", fallback=None)
             )
             if cfg_user or cfg_pass:
                 break
@@ -194,7 +200,7 @@ class MilesightClient:
         self._session.mount("https://", _LegacyAdapter())
         self._td: Optional[str] = None
 
-    def __enter__(self) -> "MilesightClient":
+    def __enter__(self) -> MilesightClient:
         return self
 
     def __exit__(self, *exc) -> None:
@@ -225,9 +231,11 @@ class MilesightClient:
                 continue
             except ValueError:
                 continue
-        raise MilesightUnreachableError(f"{self.host}: /islogin gave no JSON on any scheme")
+        raise MilesightUnreachableError(
+            f"{self.host}: /islogin gave no JSON on any scheme"
+        )
 
-    def connect(self) -> "MilesightClient":
+    def connect(self) -> MilesightClient:
         """Probe identity (fixing scheme) then :meth:`login`."""
         self.get_identity()
         self.login()
@@ -249,12 +257,18 @@ class MilesightClient:
             "execute": 1,
             "core": "user",
             "function": "login",
-            "values": [{"username": self._user, "password": _encrypt_password(self._pass)}],
+            "values": [
+                {"username": self._user, "password": _encrypt_password(self._pass)}
+            ],
         }
         try:
-            r = self._session.post(f"{self._base()}/cgi", json=payload, timeout=self.timeout)
+            r = self._session.post(
+                f"{self._base()}/cgi", json=payload, timeout=self.timeout
+            )
         except requests.exceptions.RequestException as exc:
-            raise MilesightUnreachableError(f"{self.host}: login failed: {exc}") from exc
+            raise MilesightUnreachableError(
+                f"{self.host}: login failed: {exc}"
+            ) from exc
         try:
             j = r.json()
         except ValueError as exc:
@@ -279,8 +293,16 @@ class MilesightClient:
         """Raw ``POST /cgi`` JSON-RPC call; returns the parsed response."""
         if not self._td:
             self.login()
-        payload = {"id": idn, "execute": 1, "core": core, "function": function, "values": values}
-        r = self._session.post(f"{self._base()}/cgi", json=payload, timeout=self.timeout)
+        payload = {
+            "id": idn,
+            "execute": 1,
+            "core": core,
+            "function": function,
+            "values": values,
+        }
+        r = self._session.post(
+            f"{self._base()}/cgi", json=payload, timeout=self.timeout
+        )
         return r.json()
 
     def get_config(self, core: str, base: Optional[str] = None) -> list:
@@ -296,17 +318,23 @@ class MilesightClient:
         except (KeyError, IndexError, TypeError):
             raise MilesightError(f"{self.host}: get {core} unexpected: {str(j)[:120]}")
 
-    def set_singleton(self, core: str, index, value: dict, base: Optional[str] = None) -> None:
+    def set_singleton(
+        self, core: str, index, value: dict, base: Optional[str] = None
+    ) -> None:
         """SET one SINGLETON config object (cell/bridge/dhcp/security/…).
 
-        Proven for singletons. LIST configs (e.g. ``yruo_firewall_port_mapping``)
-        use a different, not-yet-mapped save format — do NOT use this for those.
-        Read-modify-write: fetch with :meth:`get_config`, patch the value, pass it
-        here with the same ``index`` the get returned.
+        Read-modify-write: fetch with :meth:`get_config`, patch the value, pass
+        it here with the same ``index`` the get returned. For a LIST config
+        (e.g. ``yruo_firewall_port_mapping``) use :meth:`add_list_row`, which
+        has its own index convention.
         """
-        j = self.cgi(core, "set", [{"base": base or core, "index": index, "value": value}])
+        j = self.cgi(
+            core, "set", [{"base": base or core, "index": index, "value": value}]
+        )
         if j.get("status") != 0:
-            raise MilesightError(f"{self.host}: set {core} failed status={j.get('status')}")
+            raise MilesightError(
+                f"{self.host}: set {core} failed status={j.get('status')}"
+            )
 
     def apply(self) -> bool:
         """COMMIT staged config to the running config (the UI's "Apply" button).
@@ -366,6 +394,77 @@ class MilesightClient:
             self.apply()
         return value
 
+    def add_list_row(
+        self,
+        core: str,
+        value: dict,
+        base: Optional[str] = None,
+        commit: bool = True,
+    ) -> list:
+        """ADD one row to a LIST config (port-forwards, firewall rules, …).
+
+        LIST configs do not take the singleton save format, and getting this
+        wrong is near-silent: a payload the router does not like returns
+        ``status 0`` and stores NOTHING. That is why this stayed unmapped for
+        three sessions and ~10 blind attempts, and it is why this method
+        RE-READS the collection and raises unless the row actually appeared.
+
+        The format was recovered by hooking ``XMLHttpRequest.prototype.send``
+        and performing one real Save in the router's own UI. Two parts of it
+        are unguessable:
+
+        * the OUTER ``index`` is a **synthetic string**: the core name plus a
+          random token. A plain integer is silently ignored — ``index: 1`` in
+          particular is a no-op that reports success.
+        * the INNER ``value.index`` must be **``null``**. The router assigns
+          the real row index itself.
+
+        Args:
+            core: the LIST core, e.g. ``yruo_firewall_port_mapping``.
+            value: the row. ``index`` is forced to ``None``; anything else you
+                pass is sent as given.
+            base: config base, defaulting to ``core``.
+            commit: call :meth:`apply` afterwards. Defaults to **True** here,
+                unlike :meth:`patch_singleton` — a staged firewall rule that
+                reverts on the next reboot is a trap, and there is no reason
+                to add a row you do not mean to keep.
+
+        Returns:
+            The collection as re-read after the write, so the caller sees the
+            row indexes the router assigned.
+
+        Raises:
+            MilesightError: the router reported failure, or accepted the call
+                and stored nothing.
+        """
+        import random
+        import string
+
+        before = self.get_config(core, base)
+        row = dict(value)
+        row["index"] = None
+        token = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+        j = self.cgi(
+            core,
+            "add",
+            [{"base": base or core, "index": f"{core}{token}", "value": row}],
+        )
+        if j.get("status") != 0:
+            raise MilesightError(
+                f"{self.host}: add {core} failed status={j.get('status')}"
+            )
+        if commit:
+            self.apply()
+        after = self.get_config(core, base)
+        if len(after) <= len(before):
+            # The documented failure mode: status 0, nothing stored.
+            raise MilesightError(
+                f"{self.host}: add {core} reported success but the collection "
+                f"still holds {len(after)} row(s) — the payload was accepted "
+                f"and discarded. Re-capture the UI's save XHR for this core."
+            )
+        return after
+
     def export_config(self, out_path: str) -> int:
         """Download the config backup blob to ``out_path``; return byte count."""
         if not self._td:
@@ -377,14 +476,18 @@ class MilesightClient:
             "filename": "type=backup&file=cfgbackup",
         }
         r = self._session.post(
-            f"{self._base()}/cgi-bin/file-export", data=form, timeout=max(self.timeout, 60)
+            f"{self._base()}/cgi-bin/file-export",
+            data=form,
+            timeout=max(self.timeout, 60),
         )
         body = r.content
         if r.status_code != 200 or body.startswith(b"Export"):
             raise MilesightError(f"{self.host}: export failed: {body[:80]!r}")
         with open(out_path, "wb") as fh:
             fh.write(body)
-        logger.info("milesight %s: exported %d bytes -> %s", self.host, len(body), out_path)
+        logger.info(
+            "milesight %s: exported %d bytes -> %s", self.host, len(body), out_path
+        )
         return len(body)
 
     def import_config(self, in_path: str) -> None:
@@ -413,8 +516,13 @@ class MilesightClient:
                 timeout=max(self.timeout, 90),
             )
         except requests.exceptions.ConnectionError:
-            logger.info("milesight %s: connection reset — router applying + rebooting", self.host)
+            logger.info(
+                "milesight %s: connection reset — router applying + rebooting",
+                self.host,
+            )
             return
         if r.status_code != 200:
-            raise MilesightError(f"{self.host}: import HTTP {r.status_code}: {r.content[:80]!r}")
+            raise MilesightError(
+                f"{self.host}: import HTTP {r.status_code}: {r.content[:80]!r}"
+            )
         logger.info("milesight %s: import accepted", self.host)
