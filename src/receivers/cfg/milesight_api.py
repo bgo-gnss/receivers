@@ -623,16 +623,30 @@ class MilesightClient:
             missing ``apply()`` commit (no effect). The form's own
             ``1_destination`` DOM id had named the field all along.
 
-            **Outbox and inbox timestamps are ROUTER-LOCAL, and these units
-            run +1 h from UTC.** Measured 2026-10-02: laptop 12:42:00 UTC
-            against ``yruo_status base=summary`` ``system.local_time``
-            13:42:04 (VFLS) / 13:42:09 (VFLN), with the timezone already set
-            to ``Atlantic/Iceland`` — which is UTC+0 and has no DST, so this
-            is a genuine one-hour clock error and not a zone label. It matters
-            for exactly this kind of correlation: the four deliveries read
-            10:56-11:01 in the outbox, i.e. **09:56-10:01 UTC**, which is
-            after ``f01e5c7`` and before ``fda6e36``. Subtract an hour before
-            comparing an outbox row to a log or a commit.
+            **Mailbox row timestamps are rendered +1 h — but the router's
+            clock is CORRECT.** Two fields disagree, sampled in the same
+            second on both units, 2026-10-02:
+
+                laptop UTC                              12:53:04
+                yruo_system  base=time   current_time   12:53:05   <- true
+                yruo_status  base=summary system.local_time 13:53:07  <- +1 h
+
+            The clock is the first one. Proof independent of any config read:
+            `summary.system.uptime` wound back from laptop UTC gives boot
+            2026-09-30 18:45:27 (VFLS) and 17:45:52 (VFLN), matching the known
+            install instants 18:45:29 / 17:46:18 to within seconds, whereas
+            winding back from ``local_time`` puts boot an hour late. Timezone
+            is ``Atlantic/Iceland`` (UTC+0, no DST), ``ntp_enable 1`` against
+            10.170.255.210/.220 — all correct, nothing to fix on the device.
+            The +1 h is a firmware RENDERING fault in that status field and in
+            the SMS mailbox rows, most likely falling back to the zone's DST
+            sibling (Europe/London, BST until 2026-10-25).
+
+            So: **subtract an hour from an outbox/inbox row before comparing
+            it to a server log, and never "correct" the router clock on the
+            strength of `local_time`** — that would push the real clock an
+            hour wrong. The four deliveries read 10:56-11:01 in the outbox,
+            i.e. 09:56-10:01 UTC: after ``f01e5c7``, before ``fda6e36``.
 
             ``verify`` remains advisory: an unconfirmed send is reported, not
             raised, because for ``discover-phone`` the operator reads the

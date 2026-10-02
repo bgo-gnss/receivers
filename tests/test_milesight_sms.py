@@ -52,8 +52,9 @@ class _SmsRouter:
       reported "accepted and discarded" for every attempt. Every test passed,
       because fake and code shared the same wrong assumption. What 10.6.1.211
       actually returns (the zone was ``Europe/London`` when this was first
-      captured; it now reads ``Atlantic/Iceland``, and either way the row
-      timestamps are router-local and run +1 h from UTC)::
+      captured and now reads ``Atlantic/Iceland``; either way the row
+      timestamps come back rendered +1 h from the router's own correct clock —
+      see `send_sms`, and subtract the hour before comparing one to a log)::
 
           [{"timezone": "UTC Europe/London", "count": 0, "get": []}]
 
