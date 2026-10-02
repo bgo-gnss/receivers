@@ -631,11 +631,16 @@ class MilesightClient:
                 yruo_system  base=time   current_time   12:53:05   <- true
                 yruo_status  base=summary system.local_time 13:53:07  <- +1 h
 
-            The clock is the first one. Proof independent of any config read:
-            `summary.system.uptime` wound back from laptop UTC gives boot
-            2026-09-30 18:45:27 (VFLS) and 17:45:52 (VFLN), matching the known
-            install instants 18:45:29 / 17:46:18 to within seconds, whereas
-            winding back from ``local_time`` puts boot an hour late. Timezone
+            The clock is the first one, and the decisive evidence is that
+            one line: ``current_time`` agrees with an independent UTC source to
+            within a second, on two units, with NTP enabled and reachable.
+            `summary.system.uptime` wound back from laptop UTC additionally
+            gives boot 2026-09-30 18:45:27 (VFLS) / 17:45:52 (VFLN) against the
+            install instants 18:45:29 / 17:46:18 — but that is a CONSISTENCY
+            check, not independent proof, because those instants were
+            themselves derived from uptime (it would have exposed a
+            disagreement, which is its value; it cannot by itself establish
+            which field is right). Timezone
             is ``Atlantic/Iceland`` (UTC+0, no DST), ``ntp_enable 1`` against
             10.170.255.210/.220 — all correct, nothing to fix on the device.
             The +1 h is a firmware RENDERING fault in that status field and in
