@@ -158,7 +158,9 @@ class Seeder:
                         # config-change sync (db/station_rows.py). The seeder
                         # resolves router_ip; the scheduler cannot afford 200
                         # blocking DNS lookups on its watcher thread.
-                        params = station_row_from_cfg(sid, raw, resolve_ip=True)
+                        params = station_row_from_cfg(
+                            sid, raw, resolve_ip=True, default_owner=True
+                        )
 
                         if dry_run:
                             print(

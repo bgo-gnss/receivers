@@ -379,3 +379,57 @@ def test_the_sync_uses_the_mirrored_connection():
         "the seeder must STAY single-host — a mirrored seed/DDL is a silent "
         "cross-host mutation"
     )
+
+
+# --- the owner fallback is a WRITE, not a default --------------------------
+
+
+def test_the_sync_does_not_invent_an_owner():
+    """A cfg naming no owner must leave `station_owner` to the DB.
+
+    `stations.station_owner` on rek-d01 holds two spellings of one
+    organisation — `IMO` on 100 rows and `Icelandic Meteorological Office` on
+    53, the latter from `health/db_writer.py` — while 53 cfg sections name no
+    owner at all. With an unconditional `"IMO"` fallback the background sync
+    would renormalise those 53 on its first run: a fleet-wide data change
+    shipped as a side effect of an unrelated feature, on a column Grafana
+    filters by. Measured: it took the sync's blast radius from 15 rows to 68.
+    """
+    row = dict(zip(STATION_COLUMNS, station_row_from_cfg("XXXX", {})))
+    assert row["station_owner"] is None, (
+        "no owner in cfg must mean NULL, so the upsert's COALESCE keeps "
+        "whatever the DB already has"
+    )
+
+
+def test_the_cli_seed_still_defaults_the_owner():
+    """The explicit, operator-run seed keeps its existing behaviour."""
+    row = dict(
+        zip(STATION_COLUMNS, station_row_from_cfg("XXXX", {}, default_owner=True))
+    )
+    assert row["station_owner"] == "IMO"
+
+
+def test_a_cfg_agency_still_becomes_the_owner_either_way():
+    """A non-IMO agency is a real statement about ownership, not a fallback."""
+    for default_owner in (False, True):
+        row = dict(
+            zip(
+                STATION_COLUMNS,
+                station_row_from_cfg(
+                    "XXXX", {"rinex_agency": "KAUST"}, default_owner=default_owner
+                ),
+            )
+        )
+        assert row["station_owner"] == "KAUST"
+
+
+def test_only_the_seed_opts_into_the_owner_fallback():
+    from receivers.db import seeder
+    from receivers.scheduling import bulk_scheduler
+
+    assert "default_owner=True" in _code_of(seeder.Seeder.seed_stations)
+    sync = _code_of(bulk_scheduler.BulkDownloadScheduler._sync_station_status_to_db)
+    assert (
+        "default_owner=True" not in sync
+    ), "the background sync must not renormalise station_owner fleet-wide"

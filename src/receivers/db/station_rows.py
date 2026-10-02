@@ -139,7 +139,11 @@ def safe_float(value: Any) -> Optional[float]:
 
 
 def station_row_from_cfg(
-    sid: str, raw: Mapping[str, Any], *, resolve_ip: bool = False
+    sid: str,
+    raw: Mapping[str, Any],
+    *,
+    resolve_ip: bool = False,
+    default_owner: bool = False,
 ) -> tuple:
     """Build the :data:`STATION_UPSERT_SQL` parameter tuple from a cfg section.
 
@@ -150,9 +154,25 @@ def station_row_from_cfg(
         resolve_ip: resolve ``router_ip`` to an address via DNS. **Blocking,
             one lookup per station** — on for the CLI seed, off on the
             scheduler's config-watcher thread (see the module docstring).
+        default_owner: when cfg names neither ``station_owner`` nor a non-IMO
+            ``rinex_agency``, fall back to the literal ``"IMO"``. On for the
+            explicit CLI seed, **off everywhere else** — see below.
 
     Returns:
         A tuple in :data:`STATION_COLUMNS` order.
+
+    Note:
+        ``default_owner`` exists because the fallback is a WRITE dressed as a
+        default. Measured on rek-d01 2026-10-02, ``stations.station_owner``
+        holds two spellings of the same organisation — ``IMO`` on 100 rows and
+        ``Icelandic Meteorological Office`` on 53, the latter written by
+        ``health/db_writer.py`` — while 53 cfg sections name no owner at all.
+        With the fallback always on, the background config sync would
+        "normalise" those 53 rows on its first run: a fleet-wide data change
+        shipped silently as a side effect of an unrelated feature, and
+        ``station_owner`` is a Grafana filter. So the sync passes None and lets
+        the upsert's COALESCE keep whatever is there; deciding between the two
+        spellings is a separate, deliberate job.
     """
     receiver_type = raw.get("receiver_type") or None
     power_type = raw.get("power_type") or None
@@ -177,7 +197,7 @@ def station_row_from_cfg(
     station_owner = raw.get("station_owner") or None
     if not station_owner and agency and agency != "IMO":
         station_owner = agency
-    if not station_owner:
+    if not station_owner and default_owner:
         station_owner = "IMO"
 
     # The SID is not a name. Storing it makes every label in Grafana read the
