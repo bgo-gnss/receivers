@@ -465,6 +465,126 @@ class MilesightClient:
             )
         return after
 
+    # ------------------------------------------------------------------
+    # SMS
+    # ------------------------------------------------------------------
+    #
+    # The `yruo_sms` core is NOT discoverable from the SPA bundle. Unlike
+    # `yruo_apply` (MJ-570), the strings "yruo_sms", "query_inbox" and
+    # "query_outbox" appear in NO file the router serves — not
+    # `index.html`, not `index-*.js`, not the 1.5 MB `routes-*.js` — so they
+    # are assembled at runtime from minified fragments. Grepping cannot find
+    # them at any download size, and an earlier attempt also drew a
+    # conclusion from a TRUNCATED `routes.js` (389 KB of 1,583 KB, a silent
+    # `curl --max-time` cut) and wrongly reported that the firmware had no
+    # SMS support at all.
+    #
+    # Captured instead by hooking XMLHttpRequest.send in the live UI
+    # (10.6.1.211, fw 32.3.0.14, 2026-10-02) and clicking Inbox/Outbox
+    # Search — both harmless reads:
+    #
+    #   {"id":10,"execute":1,"core":"yruo_sms","function":"query_inbox",
+    #    "values":[{"base":"query_inbox","limit":10,"start":0,
+    #               "language":"en","key":"time","order":0,
+    #               "start_date":"","end_date":"","from":""}]}
+    #
+    # Two invariants came out of it: `function` always equals `base`, and
+    # the Send form's own DOM ids are `1_destination` / `1_content`, which
+    # is Milesight's `<index>_<apifield>` convention — hence the field names
+    # below.
+
+    SMS_CORE = "yruo_sms"
+
+    def query_sms(self, box: str = "outbox", limit: int = 10) -> list:
+        """Read the SMS ``outbox`` or ``inbox``.
+
+        Both are plain reads and cost nothing. The outbox is what makes
+        :meth:`send_sms` verifiable, which Teltonika's ``gsmctl`` path
+        cannot offer.
+        """
+        if box not in ("inbox", "outbox"):
+            raise ValueError("box must be 'inbox' or 'outbox'")
+        base = f"query_{box}"
+        j = self.cgi(
+            self.SMS_CORE,
+            base,
+            [
+                {
+                    "base": base,
+                    "limit": limit,
+                    "start": 0,
+                    "language": "en",
+                    "key": "time",
+                    "order": 0,
+                    "start_date": "",
+                    "end_date": "",
+                    "from": "",
+                }
+            ],
+        )
+        if j.get("status") != 0:
+            raise MilesightError(
+                f"{self.host}: {base} failed status={j.get('status')} "
+                f"{str(j.get('result'))[:80]}"
+            )
+        try:
+            return j["result"][0][base]
+        except (KeyError, IndexError, TypeError):
+            return j.get("result") or []
+
+    def send_sms(self, destination: str, content: str, verify: bool = True) -> dict:
+        """Send one SMS. Costs a message.
+
+        Args:
+            destination: recipient number, as typed into the UI's
+                "Phone Number" field.
+            content: message body.
+            verify: re-read the OUTBOX afterwards and raise unless the
+                message is there. On by default, because this router family
+                answers ``status 0`` to payloads it then discards — the
+                exact failure that made the LIST-write format look
+                unsolvable for three sessions (see :meth:`add_list_row`).
+
+        Returns:
+            The outbox row for the sent message when ``verify``, else the
+            raw response.
+
+        Raises:
+            MilesightError: the router reported failure, or accepted the
+                call and the message never reached the outbox.
+
+        Note:
+            ``function="send"`` is the ONE token here that was inferred
+            rather than captured — from the `function == base` invariant —
+            because confirming it required actually sending a message. The
+            ``verify`` read-back is what makes that inference safe: a wrong
+            verb cannot pass silently.
+        """
+        before = len(self.query_sms("outbox")) if verify else 0
+        j = self.cgi(
+            self.SMS_CORE,
+            "send",
+            [{"base": "send", "destination": destination, "content": content}],
+        )
+        if j.get("status") != 0:
+            raise MilesightError(
+                f"{self.host}: send_sms failed status={j.get('status')} "
+                f"{str(j.get('result'))[:120]}"
+            )
+        if not verify:
+            return j
+        rows = self.query_sms("outbox")
+        if len(rows) <= before:
+            raise MilesightError(
+                f"{self.host}: send_sms reported success but the outbox still "
+                f"holds {len(rows)} row(s). The payload was accepted and "
+                f'discarded — most likely `function="send"` is wrong. '
+                f"Re-capture the UI's Send XHR (hook "
+                f"XMLHttpRequest.prototype.send AFTER landing on "
+                f"#system/contact/sms, then click Send)."
+            )
+        return rows[0]
+
     def export_config(self, out_path: str) -> int:
         """Download the config backup blob to ``out_path``; return byte count."""
         if not self._td:

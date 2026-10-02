@@ -3375,6 +3375,61 @@ def _resolve_marker_for_host(host: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
+def _is_milesight(host: str, args) -> bool:
+    """Is ``host`` a Milesight router?
+
+    Asked of the DEVICE (its unauthenticated identity endpoint), not of
+    stations.cfg: `router_type` is hand-maintained and was absent for both
+    Vatnsfellsvirkjun stations until TOS filled it in. A probe failure means
+    "not Milesight", so the Teltonika path stays the default and an
+    unreachable host fails there with its own diagnostics.
+    """
+    explicit = (getattr(args, "router_type", None) or "").lower()
+    if explicit:
+        return "milesight" in explicit or explicit.startswith("ur3")
+    try:
+        from ..cfg.milesight_api import MilesightClient
+
+        return bool(MilesightClient(host).get_identity().model)
+    except Exception:  # noqa: BLE001 — probe failure ⇒ assume Teltonika
+        return False
+
+
+def _discover_phone_milesight(
+    host: str, to: str, message: str, *, dry_run: bool
+) -> int:
+    """`discover-phone` for a Milesight router, via /cgi instead of gsmctl."""
+    import sys
+
+    from ..cfg.milesight_api import MilesightClient, MilesightError
+
+    if dry_run:
+        print(
+            f"DRY RUN: would send SMS from the Milesight at {host} to {to} via "
+            f"its /cgi API (core yruo_sms). Add --no-dry-run to send "
+            f"(costs a message)."
+        )
+        print(f"   message: {message}")
+        return 0
+    try:
+        with MilesightClient(host) as c:
+            c.connect()
+            row = c.send_sms(to, message)
+    except MilesightError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        return 1
+    print(
+        f"✅ SMS sent from {host} SIM to {to}, and CONFIRMED in the router's "
+        f"outbox:"
+    )
+    print(f"   {row}")
+    print(
+        f"   Check {to}: the SENDER number of that message is this SIM's own "
+        f"phone number."
+    )
+    return 0
+
+
 def cmd_cfg_discover_phone(args) -> int:
     """``cfg discover-phone`` — reveal a router SIM's own phone number (MSISDN).
 
@@ -3458,6 +3513,15 @@ def cmd_cfg_discover_phone(args) -> int:
             bits.append(args.station)
         bits += [host, "GPS SIM MSISDN discovery", _date.today().isoformat()]
         message = " ".join(bits)
+
+    # Milesight routers take a different road: no `gsmctl`, no SSH shell tool.
+    # They expose SMS through the same /cgi API as the rest of their config
+    # (core `yruo_sms`), and — unlike Teltonika — they keep an OUTBOX, so the
+    # send can be CONFIRMED rather than assumed. Detected from the router
+    # itself, not from cfg, so a stations.cfg router_type that is stale or
+    # absent cannot send us down the wrong path.
+    if _is_milesight(host, args):
+        return _discover_phone_milesight(host, to, message, dry_run=dry_run)
 
     try:
         result = send_sms_ssh(
@@ -5477,10 +5541,12 @@ def _add_discover_phone_parser(cfg_subparsers) -> None:
         help="Reveal a router SIM's own phone number by texting a catcher mobile",
         description=(
             "A SIM can't read its own MSISDN locally, so the field router texts a "
-            "catcher number (--to) and you read the sender off that phone. Sent "
-            "via gsmctl over SSH — works on every Teltonika router, including "
-            "legacy units whose REST API is off (e.g. a RUT240). Outward-facing "
-            "and costs a message; defaults to dry-run."
+            "catcher number (--to) and you read the sender off that phone. The "
+            "router family is detected from the DEVICE, not from stations.cfg: "
+            "Teltonika sends via gsmctl over SSH (works even on legacy units "
+            "whose REST API is off, e.g. a RUT240); Milesight sends via its /cgi "
+            "API and the send is CONFIRMED against the router's own SMS outbox. "
+            "Outward-facing and costs a message; defaults to dry-run."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
