@@ -559,11 +559,12 @@ class MilesightClient:
         The confirmation source for :meth:`send_sms`, because it comes from
         the modem rather than the UI. It agrees with the outbox: 7 sends, 7
         rows on 10.6.1.211 on 2026-10-02. An earlier docstring here claimed
-        the outbox "drops messages" on the strength of a 4-vs-3 disagreement,
-        but that was the pre-``bfa5a9f`` :meth:`query_sms` returning the
-        reply WRAPPER instead of the message list — a length of 1 for any
-        mailbox. Both signals are sound; this one is used because a count
-        comparison needs no row matching.
+        the outbox "drops messages" on the strength of a single 4-vs-3
+        disagreement; that is **not reproduced**, and no cause for it has been
+        established — the obvious candidate, the pre-``bfa5a9f``
+        :meth:`query_sms` returning the reply WRAPPER, does not fit (it gives
+        a length of 1 for any mailbox, not 3). Treat both signals as sound.
+        This one is used because a count comparison needs no row matching.
         """
         v = (self.get_config("yruo_status", base="summary")[0] or {}).get("value") or {}
         return int(((v.get("cell") or {}).get("sim_monthly_sms")) or 0)
@@ -612,15 +613,26 @@ class MilesightClient:
             acknowledgement that a message exists.
 
             This is what made the field name expensive to find. ``f01e5c7``
-            sent ``destination`` (at the item's top level) and messages went
-            out; ``fda6e36`` "fixed" it to a value-wrapped ``number`` and
-            sends stopped, but because the response was unchanged the symptom
+            (09:31 UTC) sent ``destination`` (at the item's top level) and
+            messages went out; ``fda6e36`` (10:05 UTC) "fixed" it to a
+            value-wrapped ``number`` and sends stopped, but because the response was unchanged the symptom
             looked like a flaky modem rather than a regression. Three further
             hypotheses were chased and each disproved — an anti-flood limit
             (``statistics.sim1_sms_overflow`` reads ``0``), a wedged queue
             (``modem_status`` ``Ready``, registered, RSSI -62 dBm), and a
             missing ``apply()`` commit (no effect). The form's own
             ``1_destination`` DOM id had named the field all along.
+
+            **Outbox and inbox timestamps are ROUTER-LOCAL, and these units
+            run +1 h from UTC.** Measured 2026-10-02: laptop 12:42:00 UTC
+            against ``yruo_status base=summary`` ``system.local_time``
+            13:42:04 (VFLS) / 13:42:09 (VFLN), with the timezone already set
+            to ``Atlantic/Iceland`` — which is UTC+0 and has no DST, so this
+            is a genuine one-hour clock error and not a zone label. It matters
+            for exactly this kind of correlation: the four deliveries read
+            10:56-11:01 in the outbox, i.e. **09:56-10:01 UTC**, which is
+            after ``f01e5c7`` and before ``fda6e36``. Subtract an hour before
+            comparing an outbox row to a log or a commit.
 
             ``verify`` remains advisory: an unconfirmed send is reported, not
             raised, because for ``discover-phone`` the operator reads the
