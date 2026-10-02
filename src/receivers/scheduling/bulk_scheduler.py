@@ -1937,70 +1937,149 @@ class BulkDownloadScheduler:
         self.logger.info(f"Loaded {len(stations)} station configurations")
         return stations
 
-    def _sync_station_status_to_db(self) -> None:
-        """Sync station_status and health_check values from config to the database.
+    def _cfg_station_rows(self) -> Dict[str, Dict[str, Any]]:
+        """Read every stations.cfg section as a raw field dict, keyed by SID.
 
-        Two separate fields:
-        - station_status: lifecycle (NULL=active, discontinued, inactive)
-        - health_check: monitoring mode (NULL=active, passive)
+        ``self.stations`` carries only the fields the SCHEDULER needs — no
+        position, marker, observer, agency or owner — so the DB sync cannot be
+        built from it. ``gps_parser.getStationInfo()`` is the shape
+        ``station_row_from_cfg`` expects, and is how ``db/seeder.py`` reads the
+        same values, so both writers see identical input.
 
-        This runs at startup and when config file changes are detected.
+        Returns an empty dict on any failure, which the caller treats as "no
+        evidence" and skips the sync rather than writing a partial view.
         """
         try:
+            import gps_parser
+
+            from ..db.seeder import _seedable_station_ids
+
+            parser = gps_parser.ConfigParser()
+            rows: Dict[str, Dict[str, Any]] = {}
+            # Same selector the seeder uses, so the two writers agree on WHICH
+            # sections are stations — notably both skip `station_role = passive`
+            # (data-source-only GLOBK descriptors, not operated stations).
+            for section in _seedable_station_ids(parser):
+                try:
+                    info = parser.getStationInfo(section)
+                except Exception:
+                    continue
+                if info:
+                    rows[section.upper()] = info.get("station", {}) or {}
+            return rows
+        except Exception as e:
+            self.logger.warning(f"Could not read stations.cfg for the DB sync: {e}")
+            return {}
+
+    def _sync_station_status_to_db(self) -> None:
+        """Upsert each configured station's cfg-owned columns into the database.
+
+        Runs at startup and whenever the ``stations.cfg`` mtime watcher fires,
+        so **adding a section to stations.cfg creates the DB row within about a
+        minute** without a seed run or a scheduler restart.
+
+        It used to be a plain ``UPDATE … WHERE sid = %s`` of four fields, which
+        silently did nothing for a station that had no row yet — exactly the
+        case an operator adding a station is in. A row did eventually appear,
+        but from ``health/db_writer.py``'s auto-create, whose column list omits
+        ``latitude`` / ``longitude`` / ``height``; and since nothing filled them
+        afterwards they stayed NULL. Measured on rek-d01 2026-10-02: four of 200
+        rows, with the coordinates present in cfg all along — VFLS and VFLN from
+        that day, **NPSK since 2026-08-09 and VOTT since 2026-06-17**. It never
+        showed as an outage because ``station_dashboard_data`` does
+        ``COALESCE(s.latitude, m.latitude)`` and quietly fell back to the
+        receiver's own live PVT fix, so the map placed those stations at a
+        single-epoch position instead of their configured one.
+
+        Mapping and SQL are shared with ``db/seeder.py`` via
+        ``db/station_rows.py`` — one definition of what a ``stations`` row is.
+        Two deliberate differences from the seeder:
+
+        * **This connection is MIRRORED.** ``DatabaseConnectionFactory`` fans
+          out to the pgdev mirror, which is the database production Grafana
+          reads; the seeder is pinned ``single_host=True`` because a mirrored
+          seed/DDL is a silent cross-host mutation. A new station has to reach
+          pgdev or it is invisible to the dashboards that matter.
+        * **No DNS.** ``resolve_ip`` is off: one blocking ``gethostbyname`` per
+          station is 200 of them on this thread. ``ip_address`` stays
+          ``db_writer``'s, and the upsert's COALESCE never erases it.
+
+        The upsert's ``DO UPDATE … WHERE`` means an unchanged row is not
+        written and therefore not fanned out, so a cfg edit touching one
+        station costs one mirrored write rather than 200.
+
+        Reads the cfg directly rather than ``self.stations``, which carries
+        only the scheduler's own fields (no position, marker, agency or owner).
+        """
+        try:
+            from ..db.station_rows import STATION_UPSERT_SQL, station_row_from_cfg
             from ..health.database_factory import DatabaseConnectionFactory
+
+            cfg_rows = self._cfg_station_rows()
 
             with DatabaseConnectionFactory.connection() as conn:
                 with conn.cursor() as cur:
-                    status_synced = 0
-                    hc_synced = 0
+                    inserted = 0
+                    updated = 0
                     identity_synced = 0
                     for station_id, config in self.stations.items():
-                        station_status = config.get("station_status")
-                        health_check = config.get("health_check")
+                        raw = cfg_rows.get(station_id)
+                        if raw is None:
+                            # In self.stations but not readable from cfg: do not
+                            # invent a row from the scheduler's partial view —
+                            # it would write NULL over real values on an
+                            # existing row via the authoritative status fields.
+                            continue
+                        cur.execute(
+                            STATION_UPSERT_SQL,
+                            station_row_from_cfg(station_id, raw, resolve_ip=False),
+                        )
+                        row = cur.fetchone()
+                        if row is None:
+                            pass  # already in sync — the WHERE skipped it
+                        elif row[0]:
+                            inserted += 1
+                            self.logger.info(
+                                f"New station {station_id} added to the database "
+                                f"from stations.cfg"
+                            )
+                        else:
+                            updated += 1
+
+                        # configured_serial / configured_firmware are not part of
+                        # the shared row (they are receivers-only columns the
+                        # seeder does not own), so they keep their own narrow
+                        # UPDATE — which is safe now the row is guaranteed to
+                        # exist by the upsert immediately above.
                         configured_serial = config.get("configured_serial")
                         configured_firmware = config.get("configured_firmware")
                         cur.execute(
                             """
                             UPDATE stations
-                            SET station_status    = %s,
-                                health_check      = %s,
-                                configured_serial   = %s,
+                            SET configured_serial   = %s,
                                 configured_firmware = %s
                             WHERE sid = %s
-                              AND (station_status    IS DISTINCT FROM %s
-                                OR health_check      IS DISTINCT FROM %s
-                                OR configured_serial   IS DISTINCT FROM %s
+                              AND (configured_serial   IS DISTINCT FROM %s
                                 OR configured_firmware IS DISTINCT FROM %s)
                         """,
                             (
-                                station_status,
-                                health_check,
                                 configured_serial,
                                 configured_firmware,
                                 station_id,
-                                station_status,
-                                health_check,
                                 configured_serial,
                                 configured_firmware,
                             ),
                         )
                         if cur.rowcount > 0:
-                            if station_status:
-                                status_synced += 1
-                            if health_check:
-                                hc_synced += 1
-                            if configured_serial or configured_firmware:
-                                identity_synced += 1
+                            identity_synced += 1
 
-                    if status_synced or hc_synced or identity_synced:
+                    if inserted or updated or identity_synced:
                         self.logger.info(
-                            f"Synced to DB: {status_synced} station_status, "
-                            f"{hc_synced} health_check, {identity_synced} configured_identity"
+                            f"Synced to DB: {inserted} station(s) added, "
+                            f"{updated} updated, {identity_synced} configured_identity"
                         )
                     else:
-                        self.logger.debug(
-                            "station_status/health_check/configured_identity already in sync with DB"
-                        )
+                        self.logger.debug("stations table already in sync with cfg")
 
                     # Suppress stations that disappeared from stations.cfg —
                     # judged against the FULL cfg section list (including external

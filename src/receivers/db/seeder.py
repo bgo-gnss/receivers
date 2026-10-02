@@ -34,6 +34,9 @@ CONFIG_DIR = Path(__file__).parent.parent.parent.parent / "config"
 EXCLUDED_SECTIONS = {"DEFAULT", "DEFAULTS", "Configs", "PATHS", "FILES"}
 
 
+from .station_rows import STATION_UPSERT_SQL, station_row_from_cfg
+
+
 def resolve_areas_yaml() -> Path:
     """Locate ``station_areas.yaml``, preferring the synced config over the repo.
 
@@ -138,7 +141,7 @@ class Seeder:
             return {"inserted": 0, "updated": 0, "skipped": 0}
 
         conn = self._get_conn()
-        inserted = updated = skipped = 0
+        inserted = updated = skipped = unchanged = 0
 
         try:
             with conn.cursor() as cur:
@@ -151,116 +154,32 @@ class Seeder:
 
                         raw = station_info.get("station", {})
 
-                        # Extract all fields (None if missing)
-                        receiver_type = raw.get("receiver_type") or None
-                        power_type = raw.get("power_type") or None
-                        antenna_type = raw.get("antenna_type") or None
-                        marker_name = raw.get("rinex_marker_name") or None
-                        marker_number = raw.get("rinex_marker_number") or None
-                        observer = raw.get("rinex_observer") or None
-                        agency = raw.get("rinex_agency") or None
-                        station_name = raw.get("station_name") or None
-                        station_status = raw.get("station_status") or None
-                        health_check = raw.get("health_check") or None
-
-                        # Station owner logic (same as db_writer._ensure_station)
-                        station_owner = raw.get("station_owner") or None
-                        if not station_owner and agency and agency != "IMO":
-                            station_owner = agency
-                        if not station_owner:
-                            station_owner = "IMO"
-
-                        # Don't store SID as station_name
-                        if station_name == sid:
-                            station_name = None
-
-                        # IP address — resolve hostname if needed
-                        ip_address = None
-                        ip_raw = raw.get("router_ip") or None
-                        if ip_raw:
-                            try:
-                                ip_address = socket.gethostbyname(ip_raw)
-                            except socket.gaierror:
-                                ip_address = None
-
-                        # HTTP port
-                        http_port = None
-                        http_port_raw = raw.get("receiver_httpport")
-                        if http_port_raw is not None:
-                            try:
-                                http_port = int(http_port_raw)
-                            except (ValueError, TypeError):
-                                pass
-
-                        # Coordinates from stations.cfg (if populated)
-                        latitude = _safe_float(raw.get("latitude"))
-                        longitude = _safe_float(raw.get("longitude"))
-                        height = _safe_float(raw.get("height"))
+                        # ONE mapping + ONE upsert, shared with the scheduler's
+                        # config-change sync (db/station_rows.py). The seeder
+                        # resolves router_ip; the scheduler cannot afford 200
+                        # blocking DNS lookups on its watcher thread.
+                        params = station_row_from_cfg(
+                            sid, raw, resolve_ip=True, default_owner=True
+                        )
 
                         if dry_run:
                             print(
                                 f"  {'Update' if self._station_exists(cur, sid) else 'Insert'} "
-                                f"{sid}: type={receiver_type}, power={power_type}"
+                                f"{sid}: type={params[1]}, power={params[2]}"
                             )
                             updated += 1
                             continue
 
-                        cur.execute(
-                            """
-                            INSERT INTO stations (
-                                sid, receiver_type, power_type, antenna_type,
-                                marker_name, marker_number, observer, agency,
-                                ip_address, http_port, station_name, station_owner,
-                                station_status, health_check,
-                                latitude, longitude, height
-                            )
-                            VALUES (
-                                %s, %s, %s, %s, %s, %s, %s, %s,
-                                %s::inet, %s, %s, %s, %s, %s,
-                                %s, %s, %s
-                            )
-                            ON CONFLICT (sid) DO UPDATE SET
-                                receiver_type = COALESCE(EXCLUDED.receiver_type, stations.receiver_type),
-                                power_type = COALESCE(EXCLUDED.power_type, stations.power_type),
-                                antenna_type = COALESCE(EXCLUDED.antenna_type, stations.antenna_type),
-                                marker_name = COALESCE(EXCLUDED.marker_name, stations.marker_name),
-                                marker_number = COALESCE(EXCLUDED.marker_number, stations.marker_number),
-                                observer = COALESCE(EXCLUDED.observer, stations.observer),
-                                agency = COALESCE(EXCLUDED.agency, stations.agency),
-                                ip_address = COALESCE(EXCLUDED.ip_address, stations.ip_address),
-                                http_port = COALESCE(EXCLUDED.http_port, stations.http_port),
-                                station_name = COALESCE(EXCLUDED.station_name, stations.station_name),
-                                station_owner = COALESCE(EXCLUDED.station_owner, stations.station_owner),
-                                station_status = EXCLUDED.station_status,
-                                health_check = EXCLUDED.health_check,
-                                latitude = COALESCE(EXCLUDED.latitude, stations.latitude),
-                                longitude = COALESCE(EXCLUDED.longitude, stations.longitude),
-                                height = COALESCE(EXCLUDED.height, stations.height),
-                                updated_at = NOW()
-                            RETURNING (xmax = 0) AS is_insert
-                        """,
-                            (
-                                sid,
-                                receiver_type,
-                                power_type,
-                                antenna_type,
-                                marker_name,
-                                marker_number,
-                                observer,
-                                agency,
-                                ip_address,
-                                http_port,
-                                station_name,
-                                station_owner,
-                                station_status,
-                                health_check,
-                                latitude,
-                                longitude,
-                                height,
-                            ),
-                        )
+                        cur.execute(STATION_UPSERT_SQL, params)
+                        # The upsert's `DO UPDATE … WHERE` skips a row that
+                        # already matches, and a skipped conflict action
+                        # RETURNS NOTHING — so None means "already in sync",
+                        # not "failed". Counting it as an update would report
+                        # 200 writes on every no-op run.
                         row = cur.fetchone()
-                        if row and row[0]:
+                        if row is None:
+                            unchanged += 1
+                        elif row[0]:
                             inserted += 1
                         else:
                             updated += 1
@@ -310,11 +229,13 @@ class Seeder:
         counts = {
             "inserted": inserted,
             "updated": updated,
+            "unchanged": unchanged,
             "skipped": skipped,
             "suppressed": suppressed,
         }
         print(
-            f"Stations: {inserted} inserted, {updated} updated, {skipped} skipped, {suppressed} suppressed"
+            f"Stations: {inserted} inserted, {updated} updated, "
+            f"{unchanged} unchanged, {skipped} skipped, {suppressed} suppressed"
         )
         return counts
 
