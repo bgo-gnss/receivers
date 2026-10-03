@@ -162,7 +162,7 @@ def _probe_station(sid, session, rows, timeout):
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("--session", default="15s_24hr")
     ap.add_argument("--limit", type=int, default=12, help="rows to sample (small!)")
     ap.add_argument("--max-stations", type=int, default=4)
@@ -181,7 +181,7 @@ def main() -> int:
         print("no terminal rows match that filter — nothing to verify")
         return 0
 
-    by_station = {}
+    by_station: dict[str, list] = {}
     for r in rows:
         by_station.setdefault(r[0], []).append(r)
     stations = list(by_station)[: args.max_stations]

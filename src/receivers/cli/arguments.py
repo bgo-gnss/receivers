@@ -54,7 +54,7 @@ def normalize_station_tokens(tokens: Optional[Iterable[str]]) -> List[str]:
 def get_default_values():
     """Get default values from gps_parser or use fallbacks."""
     try:
-        if HAS_GPS_PARSER:
+        if HAS_GPS_PARSER and gps_parser is not None:
             parser_config = gps_parser.ConfigParser()
             return {
                 "days": parser_config.getDefaultValue("default_days_back") or 10,
@@ -73,7 +73,7 @@ def get_default_values():
     }
 
 
-def add_verbose_flag(parser: argparse.ArgumentParser) -> None:
+def add_verbose_flag(parser: "argparse._ActionsContainer") -> None:
     """Add standard verbose flag."""
     parser.add_argument(
         "-v",
@@ -86,7 +86,7 @@ def add_verbose_flag(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def add_force_flag(parser: argparse.ArgumentParser) -> None:
+def add_force_flag(parser: "argparse._ActionsContainer") -> None:
     """Add standard force flag."""
     parser.add_argument(
         "-f",
@@ -96,7 +96,9 @@ def add_force_flag(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def add_date_flags(parser: argparse.ArgumentParser, include_days: bool = True) -> None:
+def add_date_flags(
+    parser: "argparse._ActionsContainer", include_days: bool = True
+) -> None:
     """Add standard date range flags.
 
     Args:
@@ -131,7 +133,9 @@ def add_date_flags(parser: argparse.ArgumentParser, include_days: bool = True) -
         )
 
 
-def setup_download_parser(subparsers) -> argparse.ArgumentParser:
+def setup_download_parser(
+    subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]",
+) -> argparse.ArgumentParser:
     """Set up the download subcommand parser."""
     defaults = get_default_values()
 
@@ -345,7 +349,9 @@ def add_host_flags(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def setup_status_parser(subparsers) -> argparse.ArgumentParser:
+def setup_status_parser(
+    subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]",
+) -> argparse.ArgumentParser:
     """Set up the status subcommand parser."""
     parser = subparsers.add_parser(
         "status",
@@ -392,7 +398,9 @@ Examples:
     return parser
 
 
-def setup_health_parser(subparsers) -> argparse.ArgumentParser:
+def setup_health_parser(
+    subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]",
+) -> argparse.ArgumentParser:
     """Set up the health subcommand parser."""
     parser = subparsers.add_parser(
         "health",
@@ -538,7 +546,9 @@ All stations (parallel):
     return parser
 
 
-def setup_validate_parser(subparsers) -> argparse.ArgumentParser:
+def setup_validate_parser(
+    subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]",
+) -> argparse.ArgumentParser:
     """Set up the validate subcommand parser."""
     parser = subparsers.add_parser(
         "validate",
@@ -586,7 +596,9 @@ Examples:
     return parser
 
 
-def setup_rec_config_parser(subparsers) -> argparse.ArgumentParser:
+def setup_rec_config_parser(
+    subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]",
+) -> argparse.ArgumentParser:
     """Set up the rec-config subcommand parser."""
     parser = subparsers.add_parser(
         "rec-config",
@@ -865,7 +877,9 @@ Examples:
     return parser
 
 
-def setup_rec_provision_parser(subparsers) -> argparse.ArgumentParser:
+def setup_rec_provision_parser(
+    subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]",
+) -> argparse.ArgumentParser:
     """Set up the rec-provision subcommand parser."""
     parser = subparsers.add_parser(
         "rec-provision",
@@ -994,7 +1008,9 @@ Desk/bench setup (one-shot bootstrap):
     return parser
 
 
-def setup_rec_upgrade_firmware_parser(subparsers) -> argparse.ArgumentParser:
+def setup_rec_upgrade_firmware_parser(
+    subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]",
+) -> argparse.ArgumentParser:
     """Set up the rec-upgrade-firmware subcommand parser."""
     parser = subparsers.add_parser(
         "rec-upgrade-firmware",
@@ -1199,7 +1215,9 @@ Examples:
     return parser
 
 
-def setup_rinex_parser(subparsers) -> argparse.ArgumentParser:
+def setup_rinex_parser(
+    subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]",
+) -> argparse.ArgumentParser:
     """Set up the rinex subcommand parser."""
     defaults = get_default_values()
 
@@ -1643,7 +1661,9 @@ zero) and keep the same --work-dir (the staging tree IS the resume state).
     return parser
 
 
-def setup_tools_parser(subparsers) -> argparse.ArgumentParser:
+def setup_tools_parser(
+    subparsers: "argparse._SubParsersAction[argparse.ArgumentParser]",
+) -> argparse.ArgumentParser:
     """Set up argument parser for tools management subcommand."""
     parser = subparsers.add_parser(
         "tools",

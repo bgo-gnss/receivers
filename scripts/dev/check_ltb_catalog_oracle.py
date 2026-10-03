@@ -75,7 +75,7 @@ PROBES = [
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument(
         "--lookback",
         type=int,
@@ -211,8 +211,12 @@ def main() -> int:
             print("  ", r["sid"], r["session"], r["error"])
 
     if args.json_out:
-        with open(args.json_out, "w") as fh:
-            json.dump(rows, fh, indent=1)
+        try:
+            with open(args.json_out, "w") as fh:
+                json.dump(rows, fh, indent=1)
+        except OSError as e:
+            print(f"\nERROR: could not write {args.json_out!r}: {e}")
+            return 2
         print(f"\nwrote {args.json_out}")
 
     print("\nRESULT:", "PASS" if failures == 0 else f"FAIL ({failures})")
