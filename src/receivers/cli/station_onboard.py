@@ -308,6 +308,64 @@ def _preview_rinex_review(ctx: OnboardContext) -> str:
 # --------------------------------------------------------------------------- #
 
 
+def _archive_sync_bounds(ctx: OnboardContext) -> Optional[tuple[str, str]]:
+    """(start, end) as YYYY-MM-DD — ``archive-sync`` wants dashes, ``rinex`` does not."""
+    start, end = ctx.start, ctx.end
+    if not (start and end) and ctx.root:
+        bounds = _resolve_raw_bounds(ctx.station, ctx.root, ctx.session)
+        if bounds:
+            start, end = start or bounds[0], end or bounds[1]
+    if not (start and end):
+        return None
+
+    def dash(d: str) -> str:
+        d = d.replace("-", "")
+        return f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+
+    return dash(start), dash(end)
+
+
+def _archive_sync_argv(ctx: OnboardContext) -> List[str]:
+    # NOTE: deliberately NO --session. The scheduled sweep's blind spot is
+    # per-session, and the case this stage exists for was 1Hz_1hr while the
+    # onboard default session is 15s_24hr — restricting to ctx.session would
+    # miss exactly what we are here to catch.
+    argv = ctx.receivers_argv("archive-sync", "--station", ctx.station)
+    bounds = _archive_sync_bounds(ctx)
+    if bounds:
+        argv += ["--start", bounds[0], "--end", bounds[1]]
+    return argv
+
+
+def _preview_archive_sync(ctx: OnboardContext) -> str:
+    argv = _archive_sync_argv(ctx)
+    bounds = _archive_sync_bounds(ctx)
+    span = f"{bounds[0]}..{bounds[1]}" if bounds else "the target watermark window"
+    return (
+        f"Push any raw for {ctx.station} that is on the LOCAL tree but never "
+        f"reached the archive gateway, and index it ({span}):\n"
+        f"   $ {' '.join(argv)}\n"
+        f"\nWhy a new station needs this explicitly, and why the hourly :45 "
+        f"sweep does NOT cover it:\n"
+        f"   \u00b7 the backfill/catchup paths do not push directly — the push is "
+        f"deliberately downstream of them (long_term_backfill.py docstring)\n"
+        f"   \u00b7 the scheduled `archive-sync` sweep is WATERMARK-driven: "
+        f"floor = max(last_success - overlap_minutes, cutover), and "
+        f"'files older than this never enter the delta' (archive/config.py). "
+        f"With overlap_minutes: 5, anything backfilled further back than that "
+        f"is structurally invisible to it, permanently.\n"
+        f"   \u00b7 a new station fills its first hours in ONE catchup burst AFTER "
+        f"the watermark has already advanced, so precisely those files strand. "
+        f"Measured on VFLS/VFLN 2026-10-01: 11 and 10 raw files stranded in a "
+        f"contiguous 00-10 UTC block while their RINEX was pushed fine.\n"
+        f"   \u00b7 `--station` is SELECTION mode, which SKIPS the watermark sweep "
+        f"— that is what makes the recovery possible at all.\n"
+        f"\nIt must run BEFORE re-rinex: that stage reads raw with "
+        f"`--from-archive`, so stranded raw is silently skipped there too.\n"
+        f"A no-op (transferred=0) is the healthy outcome."
+    )
+
+
 def _rerinex_argv(ctx: OnboardContext) -> List[str]:
     argv = ctx.receivers_argv(
         "rinex",
@@ -534,6 +592,13 @@ def _preview_visit(ctx: OnboardContext) -> str:
 STAGES: List[Stage] = [
     Stage("tos-review", "TOS review", False, _preview_tos_review),
     Stage("rinex-review", "RINEX review", False, _preview_rinex_review),
+    Stage(
+        "archive-sync",
+        "Archive push (raw the backfill left local-only)",
+        True,
+        _preview_archive_sync,
+        exec_argv=_archive_sync_argv,
+    ),
     Stage(
         "re-rinex",
         "Re-rinex (R2→R3 from raw)",
