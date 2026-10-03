@@ -658,6 +658,14 @@ def add_antenna(
     comment: Optional[str] = None,
     force: bool = False,
     dry_run: bool = True,
+    # Literal, NOT tostools.device.DEFAULT_ANTENNA_REFERENCE_POINT: a signature
+    # default is evaluated at import time, so referencing it would need a
+    # MODULE-level tostools import — and rek-d01's pinned tostools predates
+    # that constant, so every importer of this module (including paths the
+    # scheduler touches) would raise ImportError and systemd would crash-loop.
+    # Same reason station_kind is imported lazily below. The builder validates
+    # the value against GAMIT_HEIGHT_CODES, so a drifted literal cannot get in.
+    antenna_reference_point: str = "DHARP",
 ) -> OperationResult:
     """Create a GNSS antenna (and radome, when present) in TOS and join to a station.
 
@@ -793,6 +801,7 @@ def add_antenna(
         owner=owner,
         date_start=eff_date,
         antenna_height=antenna_height,
+        antenna_reference_point=antenna_reference_point,
     )
     # Only meaningful for a station install. At warehouse intake the antenna has
     # no mast to be offset above, so the absence is correct, not a gap to warn
@@ -4155,6 +4164,14 @@ def replace_antenna(
     dry_run: bool = True,
     writer: Optional[TOSWriter] = None,
     cfg_path: Optional[Path] = None,
+    # Literal, NOT tostools.device.DEFAULT_ANTENNA_REFERENCE_POINT: a signature
+    # default is evaluated at import time, so referencing it would need a
+    # MODULE-level tostools import — and rek-d01's pinned tostools predates
+    # that constant, so every importer of this module (including paths the
+    # scheduler touches) would raise ImportError and systemd would crash-loop.
+    # Same reason station_kind is imported lazily below. The builder validates
+    # the value against GAMIT_HEIGHT_CODES, so a drifted literal cannot get in.
+    antenna_reference_point: str = "DHARP",
 ) -> OperationResult:
     """Swap a station's GNSS antenna in TOS (Pattern-2) + ``stations.cfg``.
 
@@ -4472,6 +4489,7 @@ def replace_antenna(
         owner=owner,
         date_start=eff_date,
         antenna_height=str(antenna_height),
+        antenna_reference_point=antenna_reference_point,
     )
     if comment:
         attrs.append(
