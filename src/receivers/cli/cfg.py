@@ -2936,6 +2936,7 @@ def cmd_cfg_add_antenna(args) -> int:
             serial=args.serial,
             radome_serial=args.radome_serial,
             antenna_height=args.antenna_height,
+            antenna_reference_point=args.antenna_reference_point,
             owner=owner,
             date_start=args.date_start,
             comment=args.comment,
@@ -5092,6 +5093,21 @@ Examples:
         help=(
             "Antenna ARP height in metres (RINEX 'ANTENNA: DELTA H'). Omit if "
             "unknown — the antenna is created without it (DELTA H defaults to 0.0)."
+        ),
+    )
+    add_ant.add_argument(
+        "--antenna-reference-point",
+        dest="antenna_reference_point",
+        metavar="CODE",
+        default="DHARP",
+        choices=["DHARP", "DHPAB", "DHBCR", "DHTCR"],
+        help=(
+            "GAMIT station.info HtCod — how the antenna height was measured. "
+            "Defaults to DHARP (the fleet convention: height measured directly "
+            "to the antenna reference point), so you only pass this when it "
+            "differs. NOT an IGS ARP code: BPA/BAM/BCR/TOP come from "
+            "antenna.gra and belong in the site log, which derives them from "
+            "DHARP itself. Storing one broke a GAMIT run (VFLS/VFLN 2026-10-03)."
         ),
     )
     add_ant.add_argument(
@@ -7377,6 +7393,20 @@ Examples:
             "Required — a swap recorded without it would default to 0.0."
         ),
     )
+    ra.add_argument(
+        "--antenna-reference-point",
+        dest="antenna_reference_point",
+        metavar="CODE",
+        default="DHARP",
+        choices=["DHARP", "DHPAB", "DHBCR", "DHTCR"],
+        help=(
+            "GAMIT station.info HtCod — how the antenna height was measured. "
+            "Defaults to DHARP (the fleet convention), so you only pass this "
+            "when it differs. NOT an IGS ARP code: BPA/BAM/BCR/TOP come from "
+            "antenna.gra and belong in the site log, which derives them from "
+            "DHARP itself. Storing one broke a GAMIT run (VFLS/VFLN 2026-10-03)."
+        ),
+    )
     ra_radome = ra.add_mutually_exclusive_group()
     ra_radome.add_argument(
         "--radome",
@@ -8778,6 +8808,7 @@ def cmd_cfg_replace_antenna(args) -> int:
             new_model=args.new_model,
             new_serial=args.new_serial,
             antenna_height=args.antenna_height,
+            antenna_reference_point=args.antenna_reference_point,
             radome=args.radome,
             radome_serial=args.radome_serial,
             keep_radome=args.keep_radome,
