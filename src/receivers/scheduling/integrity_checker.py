@@ -745,6 +745,7 @@ def _get_remote_size_ftp(
     """Get file size via FTP SIZE command."""
     from ftplib import FTP
 
+    ftp = None
     try:
         ip = station_config.get("router", {}).get("ip")
         if not ip:
@@ -753,7 +754,6 @@ def _get_remote_size_ftp(
         receiver_config = station_config.get("receiver", {})
         ftp_port = int(receiver_config.get("ftpport", 2160))
 
-        ftp = None
         ftp = FTP()
         ftp.connect(ip, ftp_port, timeout=15)
         ftp.login()

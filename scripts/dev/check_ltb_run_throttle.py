@@ -30,7 +30,7 @@ PING_SECONDS_HIGH = 9.0
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("--session", action="append", dest="sessions")
     ap.add_argument("--stations", nargs="*")
     ap.add_argument("--lookback-days", type=int, default=30)
@@ -89,9 +89,9 @@ def main() -> int:
             except Exception as e:  # noqa: BLE001
                 print(f"  ERROR {sid}/{session}: {e}", file=sys.stderr)
 
-    skipped = [r for r in rows if r[3] is True and r[2]]
+    skipped = [r for r in rows if r[3] is not None and r[3] and r[2]]
     unknown = [r for r in rows if r[3] is None and r[2]]
-    running = [r for r in rows if r[3] is False and r[2]]
+    running = [r for r in rows if r[3] is not None and not r[3] and r[2]]
 
     saved = sum(r[2] for r in skipped)
     would_run = sum(r[2] for r in running) + sum(r[2] for r in unknown)
