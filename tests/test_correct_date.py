@@ -168,7 +168,13 @@ class FakeWriter:
     def _tos_date(dt):
         return _tos_date(dt)
 
-    def find_station_by_marker(self, marker, type_filter="stöð"):
+    def find_station_by_marker(self, marker, type_filter="stöð", *, predicate=None):
+        # `predicate` is keyword-only on the real TOSWriter (present since the
+        # pinned b5b7f87) and operations._resolve_station always passes it, to
+        # gate out non-GPS disciplines that can carry the same marker. A fake
+        # without it raises TypeError inside _resolve_station, i.e. BEFORE any
+        # of this module's planning or write logic is reached — which is how
+        # five tests went red while covering nothing.
         return 100
 
     def get_entity_history(self, eid):
