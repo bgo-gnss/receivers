@@ -20,12 +20,25 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple, Union, cast
 
 from .lookback import Lookback
 from .schedule_parser import ScheduleTrigger, apply_distribution_window, parse_schedule
 
 if TYPE_CHECKING:
+    # Apscheduler is a hard runtime dependency of this module (guarded by
+    # HAS_APSCHEDULER + an explicit `raise ImportError` in __init__ before
+    # anything that uses these names can run — see the try/except below), but
+    # that guard lives in a method body far from the module-level try/except,
+    # which static analysis can't trace across. This TYPE_CHECKING-only import
+    # is purely for pyright/mypy: it changes no runtime behavior (TYPE_CHECKING
+    # is always False at runtime) and lets the type checker see these names as
+    # bound wherever they're used below, instead of flagging every use site.
+    from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
+    from apscheduler.executors.pool import ThreadPoolExecutor
+    from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+    from apscheduler.schedulers.background import BackgroundScheduler
+
     from .load_monitor import LoadMonitor
     from .pipeline import PipelineStateStore
 
@@ -41,9 +54,7 @@ _load_monitor: Optional["LoadMonitor"] = None
 # Per-session batch result accumulator (thread-safe, reset after each daily summary)
 import threading as _threading
 
-_BATCH_STATS: dict = (
-    {}
-)  # {session_type: {"ok": [...], "fail": {...}, "expected": [...], "skipped": [...]}}
+_BATCH_STATS: dict = {}  # {session_type: {"ok": [...], "fail": {...}, "expected": [...], "skipped": [...]}}
 _BATCH_LOCK = _threading.Lock()
 
 
@@ -1519,20 +1530,37 @@ class ScheduleConfig:
                     f"both 'schedule_minute' and 'frequency'"
                 )
 
+    @property
+    def effective_schedule(self) -> Union[str, List[str], Dict[str, Any]]:
+        """``self.schedule`` after ``__post_init__`` normalization.
+
+        ``schedule`` stays ``Optional`` on the field itself because the
+        legacy ``schedule_minute``/``frequency`` constructor path needs to
+        accept it unset — but ``__post_init__`` always either fills it in or
+        raises, so by the time any instance exists this is guaranteed
+        non-None. Use this (not ``self.schedule`` directly) wherever the
+        value is handed to :func:`parse_schedule`, which does not accept
+        ``None``.
+        """
+        assert self.schedule is not None, (
+            "schedule is always populated by __post_init__ or that raises"
+        )
+        return self.schedule
+
 
 class BulkDownloadScheduler:
     """APScheduler-based bulk download system with full manual compatibility."""
 
     def __init__(
         self,
-        database_url: str = None,
-        log_dir: Path = None,
+        database_url: Optional[str] = None,
+        log_dir: Optional[Path] = None,
         production_mode: bool = True,
-        max_workers: int = None,
-        station_filter: List[str] = None,
-        max_stations_per_session: int = None,
-        config_path: Path = None,
-        scheduler_types: List[str] = None,
+        max_workers: Optional[int] = None,
+        station_filter: Optional[List[str]] = None,
+        max_stations_per_session: Optional[int] = None,
+        config_path: Optional[Path] = None,
+        scheduler_types: Optional[List[str]] = None,
     ):
         if not HAS_APSCHEDULER:
             raise ImportError(
@@ -1614,7 +1642,9 @@ class BulkDownloadScheduler:
                     (
                         10
                         if session_type == "15s_24hr"
-                        else 15 if session_type == "1Hz_1hr" else 25
+                        else 15
+                        if session_type == "1Hz_1hr"
+                        else 25
                     ),
                 )
                 frequency = session_cfg.get(
@@ -1634,7 +1664,9 @@ class BulkDownloadScheduler:
                         (
                             3
                             if session_type == "15s_24hr"
-                            else 4 if session_type == "1Hz_1hr" else 5
+                            else 4
+                            if session_type == "1Hz_1hr"
+                            else 5
                         ),
                     ),
                     timeout_minutes=session_cfg.get(
@@ -1642,7 +1674,9 @@ class BulkDownloadScheduler:
                         (
                             45
                             if session_type == "15s_24hr"
-                            else 30 if session_type == "1Hz_1hr" else 15
+                            else 30
+                            if session_type == "1Hz_1hr"
+                            else 15
                         ),
                     ),
                     lookback_periods=session_cfg.get("lookback_periods", 1),
@@ -1663,7 +1697,9 @@ class BulkDownloadScheduler:
                         (
                             3
                             if session_type == "15s_24hr"
-                            else 4 if session_type == "1Hz_1hr" else 5
+                            else 4
+                            if session_type == "1Hz_1hr"
+                            else 5
                         ),
                     ),
                     timeout_minutes=session_cfg.get(
@@ -1671,7 +1707,9 @@ class BulkDownloadScheduler:
                         (
                             45
                             if session_type == "15s_24hr"
-                            else 30 if session_type == "1Hz_1hr" else 15
+                            else 30
+                            if session_type == "1Hz_1hr"
+                            else 15
                         ),
                     ),
                     lookback_periods=session_cfg.get("lookback_periods", 1),
@@ -1707,7 +1745,9 @@ class BulkDownloadScheduler:
         else:
             _load_monitor = None
 
-    def _parse_scheduler_types(self, scheduler_types: List[str] = None) -> dict:
+    def _parse_scheduler_types(
+        self, scheduler_types: Optional[List[str]] = None
+    ) -> dict:
         """Parse scheduler types filter into a structured dict.
 
         Args:
@@ -1965,7 +2005,15 @@ class BulkDownloadScheduler:
                 except Exception:
                     continue
                 if info:
-                    rows[section.upper()] = info.get("station", {}) or {}
+                    # gps_parser.getStationInfo() has no return-type annotation;
+                    # pyright infers it as a union including the list[str] the
+                    # SAME function returns for station_id="" (a different
+                    # branch). `section` here is always non-empty (drawn from
+                    # _seedable_station_ids), which is the dict-returning
+                    # branch at runtime — this cast documents that, it doesn't
+                    # change behavior.
+                    info_dict = cast(Dict[str, Any], info)
+                    rows[section.upper()] = info_dict.get("station", {}) or {}
             return rows
         except Exception as e:
             self.logger.warning(f"Could not read stations.cfg for the DB sync: {e}")
@@ -2251,9 +2299,7 @@ class BulkDownloadScheduler:
             self.logger.info("Config change: refreshing stream capture configs")
             _run_stream_config_refresh_job()
             _run_stream_supervise_job()
-        except (
-            Exception
-        ) as e:  # noqa: BLE001 — never let stream refresh kill the watcher
+        except Exception as e:  # noqa: BLE001 — never let stream refresh kill the watcher
             self.logger.error(f"Stream refresh after config change failed: {e}")
 
     def _reseed_areas(self) -> None:
@@ -2324,6 +2370,8 @@ class BulkDownloadScheduler:
 
                 parser_config = gps_parser.ConfigParser()
                 gps_config_dir = parser_config.config_path
+                if gps_config_dir is None:
+                    raise ValueError("gps_parser reported no config_path")
                 config_path = Path(gps_config_dir) / "receivers.cfg"
             except (ImportError, Exception) as e:
                 self.logger.debug(f"Could not get config dir from gps_parser: {e}")
@@ -2440,7 +2488,7 @@ class BulkDownloadScheduler:
         # Log summary + register batch summary jobs for daily sessions
         for session_type, stations in session_stations.items():
             config = self.schedule_configs[session_type]
-            base_trigger = parse_schedule(config.schedule)
+            base_trigger = parse_schedule(config.effective_schedule)
             extra = ""
             if config.midnight_offset > 0:
                 extra = f", midnight_offset={config.midnight_offset}m"
@@ -2586,7 +2634,7 @@ class BulkDownloadScheduler:
         counters.
         """
         config = self.schedule_configs[session_type]
-        base_trigger = parse_schedule(config.schedule)
+        base_trigger = parse_schedule(config.effective_schedule)
 
         # Midnight offset handling: for hourly sessions with midnight_offset,
         # create two job sets — one for hours 1-23 (normal) and one for
@@ -2912,9 +2960,7 @@ class BulkDownloadScheduler:
                     session_type="15s_24hr_rinex",
                 )
                 self.logger.info("external %s: fetched %d file(s)", sid, len(files))
-            except (
-                Exception
-            ) as exc:  # noqa: BLE001 - one station must not sink the sweep
+            except Exception as exc:  # noqa: BLE001 - one station must not sink the sweep
                 self.logger.warning("external %s: fetch failed: %s", sid, exc)
 
         # Mirror dual-write counters — silent unless something actually failed.
@@ -3716,7 +3762,7 @@ class BulkDownloadScheduler:
             if not config.enabled or not stations:
                 continue
 
-            base_trigger = parse_schedule(config.schedule)
+            base_trigger = parse_schedule(config.effective_schedule)
 
             # Only catch up daily sessions — those with a specific hour in the cron trigger
             if base_trigger.trigger_type != "cron":
@@ -3927,7 +3973,7 @@ class BulkDownloadScheduler:
         """Schedule downloads for a specific session type using flexible schedule format."""
 
         # Parse the schedule configuration
-        base_trigger = parse_schedule(config.schedule)
+        base_trigger = parse_schedule(config.effective_schedule)
 
         for i, station_id in enumerate(stations):
             # Apply distribution window to spread stations across time
@@ -4175,7 +4221,7 @@ class BulkDownloadScheduler:
             config = self.schedule_configs.get(session_type)
             if config is None:
                 continue
-            base_trigger = parse_schedule(config.schedule)
+            base_trigger = parse_schedule(config.effective_schedule)
             tkw = base_trigger.trigger_kwargs
             if base_trigger.trigger_type != "cron" or "hour" not in tkw:
                 continue

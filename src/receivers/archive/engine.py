@@ -26,7 +26,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
+from typing import AbstractSet, Optional
 
 from ..utils.content_hash import CorruptArchiveFileError, content_sha256
 from .catalog import upsert_catalog_row
@@ -580,7 +580,7 @@ class ArchiveSync:
         digests: dict[str, str],
         *,
         read_root: str,
-        sessions: set[str],
+        sessions: AbstractSet[str],
         retries: int = 0,
         retry_wait: float = 1.0,
     ) -> PushVerifyStats:
