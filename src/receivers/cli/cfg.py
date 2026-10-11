@@ -330,7 +330,7 @@ def _all_station_ids() -> List[str]:
     from ..config_utils import is_passive_role
 
     try:
-        import gps_parser  # type: ignore
+        import gps_parser
     except ImportError:
         print("❌ gps_parser not available — cannot enumerate stations")
         return []
@@ -876,11 +876,18 @@ def _sync_devices_to_tos(
             )
 
         try:
+            # NOTE: `build_required_attributes` takes (serial, model, owner,
+            # date_start) — there is no `location` parameter. This call used to
+            # pass `location=station_id`, which raised TypeError on EVERY
+            # invocation. The surrounding `except Exception` swallowed it and
+            # reported "device creation failed", so `cfg reconcile
+            # --sync-devices` silently created nothing, ever. The device's
+            # location is expressed by the JOIN, not by an attribute, so
+            # dropping the argument is the whole fix.
             attributes = build_required_attributes(
                 serial=serial_raw or "",
                 model=model_igs,
                 owner=station_id,
-                location=station_id,
                 date_start=date_from,
             )
             result = writer.create_device(
@@ -1706,7 +1713,7 @@ def _print_records_table(records, *, show_resolution: bool) -> None:
 
 def cmd_cfg_list(args) -> int:
     """``cfg list`` — open discrepancies, optionally filtered."""
-    from ..cfg import discrepancy_log as _dlog  # type: ignore[attr-defined]
+    from ..cfg import discrepancy_log as _dlog
     from .arguments import normalize_station_tokens
 
     station_ids = normalize_station_tokens(args.station) if args.station else None
@@ -1744,7 +1751,7 @@ def cmd_cfg_list(args) -> int:
 
 def cmd_cfg_history(args) -> int:
     """``cfg history`` — full audit trail for a station and/or field."""
-    from ..cfg import discrepancy_log as _dlog  # type: ignore[attr-defined]
+    from ..cfg import discrepancy_log as _dlog
 
     if not args.station and not args.field:
         print("❌ specify a station ID, --field KEY, or both")
@@ -1964,7 +1971,7 @@ def cmd_cfg_extract(args) -> int:
         return 1
 
     try:
-        import gps_parser  # type: ignore
+        import gps_parser
 
         cfg_path = Path(gps_parser.ConfigParser().get_stations_config_path())
     except Exception as exc:
@@ -2087,7 +2094,7 @@ def cmd_cfg_add_tos_station(args) -> int:
     cfg_path: Optional[Path] = None
     if write_cfg:
         try:
-            import gps_parser  # type: ignore
+            import gps_parser
 
             cfg_path = Path(gps_parser.ConfigParser().get_stations_config_path())
         except Exception as exc:
@@ -4091,7 +4098,7 @@ def _plan_station_status(
 
 
 def _local_stations_cfg_path() -> Path:
-    import gps_parser as _gps  # type: ignore
+    import gps_parser as _gps
 
     return Path(_gps.ConfigParser().get_stations_config_path())
 

@@ -2602,6 +2602,7 @@ class BulkDownloadScheduler:
         self._schedule_archive_verify()
         self._schedule_local_prune()
         self._schedule_receiver_horizon_probe()
+        self._schedule_lifecycle_sweep()
         self._schedule_morning_recovery()
         self._schedule_long_term_backfill()
         self._schedule_reconnection_backfill()
@@ -3254,6 +3255,49 @@ class BulkDownloadScheduler:
             f"Scheduled receiver horizon probe ({base_trigger.description}, "
             "immediate first run in 5 min)"
         )
+
+    def _schedule_lifecycle_sweep(self) -> None:
+        """Schedule the report-only station-lifecycle drift sweep (Step 3).
+
+        Compares each operated station's cfg ``station_status`` against the
+        lifecycle derived from TOS (open ``gnss_receiver`` join + station
+        ``date_end``) and records any disagreement as a ``cfg_discrepancy``
+        row tagged ``detected_by=lifecycle_sweep``. **Never writes cfg or TOS**
+        — see ``cfg/lifecycle_sweep.py`` for why an unattended reader is safe
+        where a writer would not be. Surfaced by ``cfg reconcile --open`` /
+        ``cfg list`` and Icinga.
+
+        Disabled by default; inert until scheduler.yaml enables it
+        (``[lifecycle_sweep] enabled: true``). Daily is the right cadence —
+        this detects slow config drift, and it costs one TOS metadata call per
+        in-scope station (~190 on the production fleet).
+
+        **Deliberately has no startup/immediate run** (unlike the horizon
+        probe): that cadence would fire the whole ~190-call pass on every
+        scheduler restart, and every deploy restarts the scheduler. A nightly
+        drift detector waiting for its next daily slot costs nothing.
+        """
+        sweep_cfg = self.yaml_config.get("lifecycle_sweep", {})
+        if not sweep_cfg.get("enabled", False):
+            self._mark_disabled("Lifecycle sweep", "lifecycle_sweep")
+            return
+
+        from ..cfg.lifecycle_sweep import _run_lifecycle_sweep_job
+
+        schedule = sweep_cfg.get("schedule", "05:20")
+        base_trigger = parse_schedule(schedule)
+        self.scheduler.add_job(
+            func=_run_lifecycle_sweep_job,
+            trigger=base_trigger.trigger_type,
+            args=[sweep_cfg],
+            id="lifecycle_sweep",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            executor="backfill",
+            **base_trigger.trigger_kwargs,
+        )
+        self.logger.info(f"Scheduled lifecycle sweep ({base_trigger.description})")
 
     def _schedule_long_term_backfill(self) -> None:
         """Schedule the daily long-term-backfill backstop (design #136).

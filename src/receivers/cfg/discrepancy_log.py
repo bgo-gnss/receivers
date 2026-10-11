@@ -40,6 +40,12 @@ DETECTED_BY_SCHEDULER = "scheduler"
 # succeeds where the cfg-declared mode failed). receiver_value carries the
 # observed working mode; cfg_value carries the originally-configured mode.
 DETECTED_BY_FTP_HANDSHAKE = "ftp_handshake"
+# Recorded by the scheduled lifecycle sweep (`cfg/lifecycle_sweep.py`): a
+# station whose cfg `station_status` disagrees with the lifecycle derived from
+# TOS (open gnss_receiver join + station date_end). Report-only — the sweep
+# never writes cfg or TOS; it only makes the drift visible to `cfg reconcile
+# --open` / Icinga. See the 2026-10-10 station_status architecture review.
+DETECTED_BY_LIFECYCLE_SWEEP = "lifecycle_sweep"
 
 # resolved_action values
 ACTION_CFG_UPDATED = "cfg_updated"
@@ -244,7 +250,10 @@ def _resolve_on_cursor(
         """,
         (resolved_by, action, resolved_value, note, station_id, cfg_key),
     )
-    return cur.rowcount > 0
+    # int(): psycopg's ``rowcount`` is untyped from mypy's side, so the bare
+    # comparison is Any and this function is declared ``-> bool``. rowcount is
+    # always an int in practice (row count, or -1 when not applicable).
+    return int(cur.rowcount) > 0
 
 
 def record_detection(
@@ -576,12 +585,9 @@ def open_station_ids(
 ) -> List[str]:
     """Unique station IDs that have at least one open discrepancy."""
     records = list_open(cfg_keys=cfg_keys, verdicts=verdicts)
-    seen: set = set()
-    return [
-        r.station_id
-        for r in records
-        if not (r.station_id in seen or seen.add(r.station_id))
-    ]
+    # dict.fromkeys dedups while preserving first-seen order. Clearer than the
+    # former ``seen.add(x) or …`` trick, which depended on add() returning None.
+    return list(dict.fromkeys(r.station_id for r in records))
 
 
 def open_field_keys(
@@ -590,7 +596,4 @@ def open_field_keys(
 ) -> List[str]:
     """Unique cfg_key values that have at least one open discrepancy."""
     records = list_open(station_ids=station_ids, verdicts=verdicts)
-    seen: set = set()
-    return [
-        r.cfg_key for r in records if not (r.cfg_key in seen or seen.add(r.cfg_key))
-    ]
+    return list(dict.fromkeys(r.cfg_key for r in records))
