@@ -4009,6 +4009,87 @@ def _fetch_sim_ip(station_id: str):
         return None
 
 
+def _station_status_in_scope(station_config: dict) -> bool:
+    """True iff `station_status` lifecycle inference applies to this station.
+
+    Scope guard from the 2026-10-10 architecture review: inference is only a
+    meaningful signal for OPERATED stations. External/reference stations
+    (today ``health_check=passive`` / ``station_role=passive`` in cfg) may
+    legitimately have no ``gnss_receiver`` registered in TOS at all — we
+    don't run their hardware — so applying this derivation to them would
+    wrongly conclude "inactive" and break their (working) external-fetch path.
+
+    Proxies today, pending the ``operational_status`` TOS-attribute migration
+    (id 189, created 2026-08-19 per docs/architecture/operational-status-model.md,
+    not yet backfilled/consumed) that will eventually replace them with the
+    canonical ``operational_status != 'operated'`` check.
+    """
+    if (station_config.get("health_check") or "").strip().lower() == "passive":
+        return False
+    role = station_config.get("station_role")
+    if str(role).strip().lower() == "passive":
+        return False
+    return True
+
+
+def _plan_station_status(
+    cfg_status, lifecycle: str, contradiction: bool, in_scope: bool
+):
+    """Decide what to do with cfg's ``station_status`` given TOS's derived
+    lifecycle (:func:`receivers.cfg.tos_adapter.current_lifecycle`).
+
+    Returns ``("clear", None)`` to remove a stale cfg value, ``("set", value)``
+    to write a new one, ``("flag", reason)`` to report-only, or ``None``
+    (in sync / out of scope / nothing to do).
+
+    **Directional asymmetry is the load-bearing rule here** (2026-10-10
+    architecture review): activation — clearing a stale ``inactive`` — is the
+    ONLY direction safe to auto-apply. TOS entry lag (a field tech swaps a
+    receiver hours before anyone updates TOS) means a stale READ could
+    produce a deactivation plan for a station that is actually live right
+    now — silently stopping polling on a live station, which is strictly
+    worse than today's "forgot to clear cfg" failure. Callers MUST treat
+    every ``("set", ...)`` result as confirm-only, NEVER applied unattended,
+    regardless of ``--yes`` — the same distrust-TOS-staleness posture this
+    file's ``--all --yes`` refusal already encodes.
+
+    A contradiction (``date_end`` set AND an open ``gnss_receiver`` join still
+    exists — a TOS hygiene violation) is ALWAYS flag-only: the discontinued
+    verdict wins, but this function never guesses which side of contradictory
+    TOS evidence to trust, it only reports it for a human to fix in TOS.
+    """
+    if not in_scope:
+        return None
+    cfg_status = (str(cfg_status).strip().lower() if cfg_status else None) or None
+    if cfg_status == "suppressed":
+        return None  # scheduler-owned (station vanished from cfg) — not ours to touch
+    if contradiction:
+        return (
+            "flag",
+            f"TOS date_end is set but an open gnss_receiver join still exists "
+            f"(lifecycle={lifecycle!r}) — TOS hygiene issue, fix in TOS (not "
+            f"auto-resolved; see `tos audit`)",
+        )
+    if lifecycle == "discontinued":
+        if cfg_status == "discontinued":
+            return None
+        return ("set", "discontinued")
+    if lifecycle == "active":
+        if cfg_status == "inactive":
+            return ("clear", None)
+        if cfg_status == "discontinued":
+            return (
+                "flag",
+                "cfg says discontinued but TOS shows an open gnss_receiver "
+                "join — resurrection candidate, needs a human decision",
+            )
+        return None
+    # lifecycle == "inactive"
+    if cfg_status in (None, "active"):
+        return ("set", "inactive")
+    return None  # already inactive or discontinued in cfg — at least as restrictive, in sync
+
+
 def _local_stations_cfg_path() -> Path:
     import gps_parser as _gps  # type: ignore
 
@@ -4061,7 +4142,7 @@ def cmd_cfg_sync_from_tos(args) -> int:
     only = getattr(args, "only", None)
     only_set = None
     if only:
-        valid_keys = overwrite_keys | {"router_ip"}
+        valid_keys = overwrite_keys | {"router_ip", "station_status"}
         unknown = [f for f in only if f not in valid_keys]
         if unknown:
             print(
@@ -4073,6 +4154,7 @@ def cmd_cfg_sync_from_tos(args) -> int:
         overwrite_keys &= only_set
         if "router_ip" not in only_set:
             include_sim = False  # skip the SIM lookup entirely when not selected
+    include_status = only_set is None or "station_status" in only_set
 
     # local always; also the gps-config-data repo when --global.
     write_targets = [None] + ([global_target] if global_target is not None else [])
@@ -4112,6 +4194,29 @@ def cmd_cfg_sync_from_tos(args) -> int:
             and (only_set is None or d.cfg_key in only_set)
         ]
 
+        # station_status lifecycle inference (2026-10-10 architecture review).
+        # Reuses tos_data already fetched above — current_lifecycle() needs
+        # nothing beyond the metadata call every other field here already makes.
+        status_clear = False  # safe to auto-apply (activation)
+        status_deactivate = None  # ALWAYS confirm-only, never via --yes
+        status_flag = None
+        if include_status:
+            from ..cfg import tos_adapter
+
+            lifecycle, contradiction = tos_adapter.current_lifecycle(tos_data)
+            in_scope = _station_status_in_scope(station_config)
+            status_plan = _plan_station_status(
+                station_config.get("station_status"), lifecycle, contradiction, in_scope
+            )
+            if status_plan is not None:
+                kind, value = status_plan
+                if kind == "clear":
+                    status_clear = True
+                elif kind == "set":
+                    status_deactivate = value
+                elif kind == "flag":
+                    status_flag = value
+
         # SIM -> router_ip (single-station only)
         sim_overwrite = None  # literal IP to write
         sim_flag = None  # (cfg_hostname, tos_ip) — reported, not changed
@@ -4141,6 +4246,9 @@ def cmd_cfg_sync_from_tos(args) -> int:
             and not flagged
             and sim_flag is None
             and not strip_marker
+            and not status_clear
+            and status_deactivate is None
+            and status_flag is None
         ):
             print(f"✅ {sid}: already in sync with TOS")
             continue
@@ -4153,6 +4261,11 @@ def cmd_cfg_sync_from_tos(args) -> int:
         if sim_overwrite is not None:
             cur = station_config.get("router_ip") or "(missing)"
             print(f"  → router_ip: {cur!r} → {sim_overwrite!r}  (TOS SIM)")
+        if status_clear:
+            print(
+                f"  → station_status: {station_config.get('station_status')!r} → "
+                f"(cleared — TOS shows an open receiver join)"
+            )
         for d in flagged:
             print(
                 f"  ⚠ {d.cfg_key}: cfg={d.cfg_value!r} TOS={d.tos_value!r} — flag only "
@@ -4163,23 +4276,57 @@ def cmd_cfg_sync_from_tos(args) -> int:
                 f"  ⚠ router_ip: cfg hostname {sim_flag[0]!r} vs TOS SIM {sim_flag[1]!r}"
                 " — not changed (fix DNS or pin the IP manually)"
             )
+        if status_flag is not None:
+            print(f"  ⚠ station_status: {status_flag}")
         if strip_marker:
             print(
                 f"  ✂ rinex_marker_number: {station_config.get('rinex_marker_number')!r}"
                 " → (removed — not an IERS DOMES)"
             )
+        if status_deactivate is not None:
+            print(
+                f"  ⚠️  DEACTIVATION: station_status {station_config.get('station_status')!r} "
+                f"→ {status_deactivate!r} (TOS shows no open receiver join). "
+                f"This stops the scheduler polling {sid} — confirm-only, never "
+                f"applied via --yes (TOS can be stale/lagging a field visit)."
+            )
 
-        if dry or (not planned and sim_overwrite is None and not strip_marker):
+        if dry or (
+            not planned
+            and sim_overwrite is None
+            and not strip_marker
+            and not status_clear
+            and status_deactivate is None
+        ):
             continue
         if not args.yes:
             n = (
                 len(planned)
                 + (1 if sim_overwrite is not None else 0)
                 + (1 if strip_marker else 0)
+                + (1 if status_clear else 0)
             )
-            if input(f"  Apply {n} change(s) to {sid}? [y/N] ").strip().lower() != "y":
+            if n > 0 and (
+                input(f"  Apply {n} change(s) to {sid}? [y/N] ").strip().lower() != "y"
+            ):
                 print(f"  skipped {sid}")
+                status_deactivate = None  # the 'skip the rest' answer covers this too
                 continue
+        # Deactivation is confirm-only REGARDLESS of --yes (directional
+        # asymmetry, see _plan_station_status) — its own prompt, never folded
+        # into the batch above.
+        if status_deactivate is not None:
+            if (
+                input(
+                    f"  Set station_status = {status_deactivate!r} for {sid}? "
+                    f"This stops scheduler polling. [y/N] "
+                )
+                .strip()
+                .lower()
+                != "y"
+            ):
+                print(f"  station_status left unchanged for {sid}")
+                status_deactivate = None
 
         for d in planned:
             new_val = d.spec.cfg_format(d.tos_value)
@@ -4205,6 +4352,20 @@ def cmd_cfg_sync_from_tos(args) -> int:
                 ):
                     any_global_change = True
             print("  ✓ rinex_marker_number removed (not an IERS DOMES)")
+        if status_clear:
+            for tgt in write_targets:
+                path = tgt if tgt is not None else _local_stations_cfg_path()
+                if _remove_cfg_field(path, sid, "station_status") and (tgt is not None):
+                    any_global_change = True
+            print("  ✓ station_status cleared (active again)")
+        if status_deactivate is not None:
+            for tgt in write_targets:
+                path = tgt if tgt is not None else _local_stations_cfg_path()
+                if _update_cfg_field(
+                    path, sid, "station_status", status_deactivate
+                ) and (tgt is not None):
+                    any_global_change = True
+            print(f"  ✓ station_status = {status_deactivate!r}")
 
     if dry:
         print(
