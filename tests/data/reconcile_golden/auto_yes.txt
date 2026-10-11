@@ -16,6 +16,7 @@
  · Longitude                —                      —                      —                     
  · Height                   —                      —                      —                     
  · Station Name             —                      —                      —                     
+ · Operational Status       —                      —                      —                     
  · Marker Number (DOMES)    —                      —                      —                     
  · FTP Mode                 —                      —                      —                     
 

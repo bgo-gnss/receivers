@@ -6,6 +6,7 @@
  ≈ Receiver Type            PolaRX5                SSRC7                  —                     
  ✗ Receiver Firmware        5.5.0                  5.6.0                  —                     
  · Station Name             —                      —                      —                     
+ · Operational Status       —                      —                      —                     
  · FTP Mode                 —                      —                      —                     
 
    1 field(s) need attention (dry-run, no writes)
