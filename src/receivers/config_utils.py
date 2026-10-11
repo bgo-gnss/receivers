@@ -11,6 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from .operational_scope import is_operated
+
 # Import gtimes for path construction
 try:
     import gtimes.timefunc as gt
@@ -181,7 +183,7 @@ def get_station_config(
         required_fields = ["router_ip", "receiver_type"]
         missing_fields = [field for field in required_fields if field not in raw_config]
         if missing_fields:
-            if raw_config.get("health_check") == "passive":
+            if not is_operated(raw_config):
                 logger.debug(
                     f"Station {station_id} is passive (no direct connection): skipping"
                 )
@@ -752,7 +754,7 @@ def select_active_stations(
             continue
         if cfg.get("station_status") in ("discontinued", "inactive"):
             continue
-        if exclude_passive and cfg.get("health_check") == "passive":
+        if exclude_passive and not is_operated(cfg):
             continue
         if has_rinex_converter is not None and not has_rinex_converter(
             cfg.get("receiver_type", "")

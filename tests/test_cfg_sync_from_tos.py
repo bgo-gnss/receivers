@@ -30,6 +30,11 @@ class TestOverwriteSpecs:
             "antenna_radome",
             "station_name",
             "rinex_marker_number",
+            # Operational scope — who runs the station (TOS-canonical; the
+            # signal that supersedes the health_check=passive proxy). Added
+            # 2026-10-11, once TOS coverage was complete (0 stations missing),
+            # which is the precondition for enabling its sync at all.
+            "operational_status",
         }
 
     def test_never_surveyed_position(self):

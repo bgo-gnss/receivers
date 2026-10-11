@@ -22,6 +22,7 @@ from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple, Union, cast
 
+from ..operational_scope import is_operated
 from .lookback import Lookback
 from .schedule_parser import ScheduleTrigger, apply_distribution_window, parse_schedule
 
@@ -3930,7 +3931,7 @@ class BulkDownloadScheduler:
             if config.get("station_status") in ("discontinued", "inactive"):
                 lifecycle_skipped.append(station_id)
                 continue
-            if config.get("health_check") == "passive":
+            if not is_operated(config):
                 lifecycle_skipped.append(station_id)
                 continue
             # Stream-capture stations: session-aware download. The stream pipeline
@@ -4088,11 +4089,10 @@ class BulkDownloadScheduler:
 
             # Skip non-active stations (lifecycle or monitoring mode)
             station_status = config.get("station_status")
-            health_check = config.get("health_check")
             if station_status in ("discontinued", "inactive"):
                 skipped_stations.append(station_id)
                 continue
-            if health_check == "passive":
+            if not is_operated(config):
                 skipped_stations.append(station_id)
                 continue
 
