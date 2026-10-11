@@ -41,6 +41,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 from ..db.tx import read_only_cursor
+from ..operational_scope import is_operated
 
 logger = logging.getLogger("receivers.scheduler.horizon")
 
@@ -93,7 +94,7 @@ def _run_horizon_probe_job(
         if cfg.get("enabled", True)
         and cfg.get("station_status") not in ("discontinued", "inactive")
         and (cfg.get("receiver_type") or "").strip()
-        and (cfg.get("health_check") != "passive")
+        and is_operated(cfg)
     }
     if station_filter:
         wanted = {s.upper() for s in station_filter}

@@ -293,6 +293,37 @@ def station_name(station: Dict[str, Any]) -> Optional[str]:
     return str(val)
 
 
+def operational_status(station: Dict[str, Any]) -> Optional[str]:
+    """Return TOS's ``operational_status``: operated | external | reference.
+
+    The canonical "who runs this station's hardware" signal, surfaced at the
+    top level of the station dict by tostools since 2026-10-11 (before that
+    the passthrough allowlist did not carry it). It supersedes the hand-kept
+    cfg ``health_check = passive`` proxy, which encodes the same fact but only
+    distinguishes one of the three values and has to be maintained by hand.
+
+    ``None`` means TOS says nothing, and callers MUST treat that as UNKNOWN —
+    never as "not operated". See
+    :func:`receivers.operational_scope.is_externally_operated` for the fallback
+    rule and why its direction matters.
+    """
+    val = station.get("operational_status")
+    if val in (None, ""):
+        return None
+    return str(val)
+
+
+def external_data_type(station: Dict[str, Any]) -> Optional[str]:
+    """Return TOS's ``external_data_type`` (how an external station's data
+    arrives, e.g. ``'rinex'``). ``None`` when absent — only external stations
+    carry it, so absence is normal rather than missing data.
+    """
+    val = station.get("external_data_type")
+    if val in (None, ""):
+        return None
+    return str(val)
+
+
 def iers_domes_number(station: Dict[str, Any]) -> Optional[str]:
     """Return the station's IERS DOMES number (RINEX MARKER NUMBER).
 

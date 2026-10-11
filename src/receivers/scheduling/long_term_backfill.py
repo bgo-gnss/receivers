@@ -93,6 +93,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Optional, Union
 
+from ..operational_scope import is_operated
+
 from .lookback import Lookback, LookbackConfigError
 from .ltb_run_metrics import record_run
 
@@ -1257,7 +1259,7 @@ def _run_long_term_backfill_job(
         for sid, cfg in get_all_station_configs().items()
         if cfg.get("enabled", True)
         and cfg.get("station_status") not in ("discontinued", "inactive")
-        and cfg.get("health_check") != "passive"
+        and is_operated(cfg)
     ]
     started_at = datetime.now(UTC)
     budget = RunBudget(max_seconds=max_run_seconds, max_slots=max_slots_per_run)

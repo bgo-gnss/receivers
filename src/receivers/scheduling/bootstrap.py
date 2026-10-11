@@ -18,6 +18,8 @@ import logging
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from ..operational_scope import is_operated
+
 logger = logging.getLogger(__name__)
 
 # Threshold: fewer than this many entries in file_tracking → cold start
@@ -113,7 +115,7 @@ def schedule_bootstrap(
     for station_id, config in sorted(stations.items()):
         if config.get("station_status") in ("discontinued", "inactive"):
             continue
-        if config.get("health_check") == "passive":
+        if not is_operated(config):
             continue
         if station_filter and station_id not in station_filter:
             continue

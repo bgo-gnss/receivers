@@ -581,6 +581,33 @@ FIELDS: List[FieldSpec] = [
         tos_attribute_code="name",
         tos_target_entity="station",
     ),
+    # Operational scope — who runs this station (the operational-status model's
+    # single canonical question; see docs/architecture/operational-status-model.md
+    # and receivers/operational_scope.py).
+    #
+    # sync_from_tos=True is safe here only because TOS coverage is COMPLETE:
+    # verified 2026-10-11 at 215 operated / 4 external / 0 missing across the
+    # 219-station fleet, with the 2 stations that lacked it (VFLN, VFLS)
+    # backfilled first. Had that not been done, enabling the sync would have
+    # emitted fleet-wide "missing" findings for stations TOS simply had not
+    # been asked about yet.
+    #
+    # tos_attribute_code is set, so this is also pushable cfg→TOS (Pattern 1/2
+    # via reconcile --push-tos), which is right: unlike the DOMES, neither
+    # side is more correct in principle — TOS holds the canonical value and cfg
+    # mirrors it.
+    FieldSpec(
+        cfg_key="operational_status",
+        label="Operational Status",
+        tos_extract=tos_adapter.operational_status,
+        description=(
+            "Who runs this station: operated | external | reference "
+            "(TOS-canonical; supersedes the health_check=passive proxy)"
+        ),
+        sync_from_tos=True,
+        tos_attribute_code="operational_status",
+        tos_target_entity="station",
+    ),
     # IERS DOMES number → RINEX MARKER NUMBER. TOS/IGS is canonical; cfg follows
     # TOS via ``cfg sync-from-tos`` but is NEVER pushed up (no tos_attribute_code,
     # so not tos_writable — reconcile --push-tos won't offer to send cfg's value,

@@ -14,6 +14,8 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ..operational_scope import is_operated
+
 try:
     from ..scheduling.bulk_scheduler import HAS_APSCHEDULER, BulkDownloadScheduler
     from ..scheduling.config_loader import (
@@ -631,7 +633,7 @@ def cmd_scheduler_reconcile(args) -> int:
                 if cfg.get("enabled", True)
                 and has_rinex_converter(cfg.get("receiver_type", ""))
                 and cfg.get("station_status") not in ("discontinued", "inactive")
-                and cfg.get("health_check") != "passive"
+                and is_operated(cfg)
             }
 
         session_types = ["15s_24hr", "1Hz_1hr"]

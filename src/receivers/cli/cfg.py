@@ -48,6 +48,7 @@ from ..cfg.intake_request import FILE_FILLABLE, IntakeRequest
 from ..cfg.reconcile_apply import CfgTargets, resolve_effective_date, silent_emit
 from ..cfg.reconcile_plan import decide_field
 from ..cfg.reconcile_policy import ReconcilePolicy
+from ..operational_scope import is_operated
 from ..cfg.reconciler import (
     FieldDiff,
     SourceUnavailableError,
@@ -4031,7 +4032,7 @@ def _station_status_in_scope(station_config: dict) -> bool:
     not yet backfilled/consumed) that will eventually replace them with the
     canonical ``operational_status != 'operated'`` check.
     """
-    if (station_config.get("health_check") or "").strip().lower() == "passive":
+    if not is_operated(station_config):
         return False
     role = station_config.get("station_role")
     if str(role).strip().lower() == "passive":
