@@ -876,11 +876,18 @@ def _sync_devices_to_tos(
             )
 
         try:
+            # NOTE: `build_required_attributes` takes (serial, model, owner,
+            # date_start) — there is no `location` parameter. This call used to
+            # pass `location=station_id`, which raised TypeError on EVERY
+            # invocation. The surrounding `except Exception` swallowed it and
+            # reported "device creation failed", so `cfg reconcile
+            # --sync-devices` silently created nothing, ever. The device's
+            # location is expressed by the JOIN, not by an attribute, so
+            # dropping the argument is the whole fix.
             attributes = build_required_attributes(
                 serial=serial_raw or "",
                 model=model_igs,
                 owner=station_id,
-                location=station_id,
                 date_start=date_from,
             )
             result = writer.create_device(
