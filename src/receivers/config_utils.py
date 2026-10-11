@@ -9,7 +9,7 @@ import logging
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, cast
 
 from .operational_scope import is_operated
 
@@ -66,7 +66,10 @@ _BOOL_FALSE = {"false", "no", "0", "off"}
 
 def is_passive_role(value: Any) -> bool:
     """True when a raw ``station_role`` value marks a passive station."""
-    return parse_station_role(value) == STATION_ROLE_PASSIVE
+    # bool(): parse_station_role comes via gps_parser, which is untyped from
+    # mypy's side (it is in the ignore_missing_imports override), so the bare
+    # comparison is Any and this function is declared -> bool.
+    return bool(parse_station_role(value) == STATION_ROLE_PASSIVE)
 
 
 def _parse_cfg_bool(value: Any, default: bool) -> bool:
@@ -92,7 +95,7 @@ def _learned_ftp_mode_override(station_id: str) -> Optional[str]:
     this lookup.
     """
     try:
-        from .cfg import discrepancy_log as _dlog  # type: ignore
+        from .cfg import discrepancy_log as _dlog
     except Exception:
         return None
 
@@ -177,7 +180,12 @@ def get_station_config(
             )
             return None
 
-        raw_config = station_info["station"]
+        # gps_parser.getStationInfo() has no return annotation, and it returns a
+        # LIST of section names for station_id="" — a different branch. Here
+        # station_id is always non-empty, i.e. the dict-returning branch, so the
+        # cast documents what is true at runtime (same fix as
+        # bulk_scheduler._cfg_station_rows).
+        raw_config = cast(Dict[str, Any], station_info)["station"]
 
         # Validate required fields (receiver_ftpport is optional - Trimble uses HTTP)
         required_fields = ["router_ip", "receiver_type"]
@@ -492,7 +500,7 @@ def get_session_config(session_type: str) -> Dict[str, str]:
     """
     try:
         config_parser = gps_parser.ConfigParser()
-        return config_parser.getSessionConfig(session_type)
+        return cast(Dict[str, str], config_parser.getSessionConfig(session_type))
     except Exception as e:
         logger.error(f"Failed to get session config for {session_type}: {e}")
         raise
@@ -509,7 +517,7 @@ def get_system_path(path_name: str) -> str:
     """
     try:
         config_parser = gps_parser.ConfigParser()
-        return config_parser.getSystemPath(path_name)
+        return cast(str, config_parser.getSystemPath(path_name))
     except Exception as e:
         logger.error(f"Failed to get system path {path_name}: {e}")
         raise
@@ -543,7 +551,7 @@ def validate_station_config(station_id: str) -> Dict[str, Any]:
     """
     try:
         config_parser = gps_parser.ConfigParser()
-        return config_parser.validateStationConfig(station_id)
+        return cast(Dict[str, Any], config_parser.validateStationConfig(station_id))
     except Exception as e:
         logger.error(f"Failed to validate configuration for {station_id}: {e}")
         raise
@@ -604,7 +612,7 @@ def build_data_paths(
         logger.debug(
             f"Generated {len(paths)} data paths for {station_id} session {session_type}"
         )
-        return paths
+        return cast(List[str], paths)
 
     except Exception as e:
         logger.error(f"Failed to build data paths for {station_id}: {e}")
@@ -650,7 +658,7 @@ def build_receiver_paths(
         )
 
         logger.debug(f"Generated {len(receiver_paths)} receiver paths for {station_id}")
-        return receiver_paths
+        return cast(List[str], receiver_paths)
 
     except Exception as e:
         logger.error(f"Failed to build receiver paths for {station_id}: {e}")
@@ -681,6 +689,12 @@ def build_archive_paths(
     try:
         # Get configuration
         station_config = get_station_config(station_id)
+        if not station_config:
+            # Guard rather than lean on the outer except: without it the next
+            # line raises "'NoneType' object is not subscriptable", which the
+            # broad handler below reports as a generic failure. A missing
+            # station is a caller error and should say so.
+            raise ValueError(f"No configuration found for station {station_id}")
         session_config = get_session_config(session_type)
         data_prepath = station_config["paths"]["data_prepath"]
 
@@ -702,7 +716,7 @@ def build_archive_paths(
         )
 
         logger.debug(f"Generated {len(archive_paths)} archive paths for {station_id}")
-        return archive_paths
+        return cast(List[str], archive_paths)
 
     except Exception as e:
         logger.error(f"Failed to build archive paths for {station_id}: {e}")
