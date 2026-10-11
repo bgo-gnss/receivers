@@ -592,21 +592,25 @@ FIELDS: List[FieldSpec] = [
     # emitted fleet-wide "missing" findings for stations TOS simply had not
     # been asked about yet.
     #
-    # tos_attribute_code is set, so this is also pushable cfg→TOS (Pattern 1/2
-    # via reconcile --push-tos), which is right: unlike the DOMES, neither
-    # side is more correct in principle — TOS holds the canonical value and cfg
-    # mirrors it.
+    # NO tos_attribute_code, deliberately: cfg must never push this up to TOS.
+    # Whether IMO operates a station is an ORGANISATIONAL fact that only TOS
+    # owns — the same situation as the rinex_marker_number / IERS DOMES field
+    # above, and the same rule applies (sync_from_tos=True, never writable).
+    # Setting tos_attribute_code would additionally put `cfg reconcile
+    # --push-tos` in a position to rewrite WHO RUNS A STATION from a config
+    # file, which is not a decision this pipeline gets to make. So cfg mirrors
+    # operational_status and can never change it.
+    #
+    # (This also keeps test_writable_fields_count at 10.)
     FieldSpec(
         cfg_key="operational_status",
         label="Operational Status",
         tos_extract=tos_adapter.operational_status,
         description=(
             "Who runs this station: operated | external | reference "
-            "(TOS-canonical; supersedes the health_check=passive proxy)"
+            "(TOS-canonical; read-only mirror — cfg follows, never pushes)"
         ),
         sync_from_tos=True,
-        tos_attribute_code="operational_status",
-        tos_target_entity="station",
     ),
     # IERS DOMES number → RINEX MARKER NUMBER. TOS/IGS is canonical; cfg follows
     # TOS via ``cfg sync-from-tos`` but is NEVER pushed up (no tos_attribute_code,
