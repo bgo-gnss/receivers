@@ -403,6 +403,28 @@ def _canonical_receiver_type(igs_name: Optional[str]) -> Optional[str]:
     return canonical if canonical is not None else igs_name
 
 
+def _read_cfg_field(cfg_path: Path, station_id: str, key: str) -> Optional[str]:
+    """Read one raw field from a station's stations.cfg section, or ``None``
+    if the section/key is absent or the file can't be read.
+
+    Intentionally lighter than :func:`receivers.config_utils.get_station_config`,
+    which requires ``router_ip``/``receiver_type`` to already be present in
+    the section and returns ``None`` otherwise — exactly the state a
+    first-time receiver install is in (the fields this function needs to
+    check, e.g. ``station_status``, must be readable even then).
+    """
+    import configparser
+
+    try:
+        parser = configparser.ConfigParser(strict=False)
+        parser.read(str(cfg_path))
+        if not parser.has_section(station_id):
+            return None
+        return parser.get(station_id, key, fallback=None)
+    except Exception:
+        return None
+
+
 def _apply_cfg_updates(
     cfg_path: Path,
     station_id: str,
@@ -2112,6 +2134,34 @@ def _move_to_station(
             f"`… --to <ELSE>`."
         )
 
+    # Lifecycle guard, checked unconditionally (including dry-run) so the
+    # warning surfaces in the preview, not just on a live write. Found
+    # 2026-10-10 (HAMR): a receiver install writes receiver_*/
+    # rinex_config_valid_from into stations.cfg, but a stale explicit
+    # `station_status = inactive` next to them is never cleared, so the
+    # scheduler keeps skipping the now-live station until someone
+    # remembers to hand-edit cfg. Only gnss_receiver installs touch cfg
+    # at all (antenna/modem/SIM have their own verbs), and only when the
+    # caller hasn't opted out with --skip-cfg.
+    target_cfg = _resolve_cfg_path(cfg_path) if subtype == "gnss_receiver" else None
+    current_station_status: Optional[str] = None
+    if not skip_cfg and target_cfg is not None:
+        current_station_status = _read_cfg_field(
+            target_cfg, station_id, "station_status"
+        )
+        if (
+            current_station_status
+            and current_station_status.strip().lower() == "discontinued"
+        ):
+            raise CfgOperationError(
+                f"{station_id} is marked 'station_status = discontinued' in "
+                f"stations.cfg. Installing a receiver here would either "
+                f"silently resurrect a decommissioned station, or you have "
+                f"the wrong marker. If this station is genuinely coming back "
+                f"into service, clear/edit station_status in gps-config-data's "
+                f"stations.cfg first, then retry."
+            )
+
     device = _resolve_device_for_move(
         w, subtype=subtype, serial=serial, id_entity=id_entity
     )
@@ -2193,7 +2243,7 @@ def _move_to_station(
     # antenna/modem/SIM must not write them. Those subtypes have their own
     # verbs (replace-antenna / replace-modem / replace-sim) for the cfg side.
     if not skip_cfg and not dry_run and subtype == "gnss_receiver":
-        target_cfg = _resolve_cfg_path(cfg_path)
+        assert target_cfg is not None  # resolved above when subtype matches
         cfg_updates: Dict[str, Optional[str]] = {
             "receiver_serial": serial,
             "receiver_type": _canonical_receiver_type(new_model),
@@ -2203,6 +2253,21 @@ def _move_to_station(
             ),
         }
         result.cfg_changes = _apply_cfg_updates(target_cfg, station_id, cfg_updates)
+        # Clear a stale `station_status = inactive` left over from before this
+        # receiver was installed (the discontinued case already refused
+        # above, before any TOS write happened; any other explicit value
+        # should not normally occur and is left untouched rather than guessed
+        # at). Without this the scheduler's job registration never notices
+        # the station is live again until someone remembers to edit cfg by
+        # hand — found 2026-10-10, HAMR.
+        if (
+            current_station_status
+            and current_station_status.strip().lower() == "inactive"
+        ):
+            from ..config.receivers_config import _remove_cfg_field
+
+            if _remove_cfg_field(target_cfg, station_id, "station_status"):
+                result.cfg_changes["station_status"] = "(cleared)"
     return result
 
 

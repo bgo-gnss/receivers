@@ -124,6 +124,22 @@ receiver_type = NetR9
 receiver_serial = 5039K70763
 receiver_firmware_version = 4.1.7
 rinex_config_valid_from = 2007-09-07
+
+[TSTI]
+station_id = TSTI
+station_status = inactive
+receiver_type = NetRS
+receiver_serial = OLD12345
+receiver_firmware_version = 1.0.0
+rinex_config_valid_from = 2020-01-01
+
+[TSTD]
+station_id = TSTD
+station_status = discontinued
+receiver_type = NetRS
+receiver_serial = OLD67890
+receiver_firmware_version = 1.0.0
+rinex_config_valid_from = 2019-01-01
 """
     )
     return p
@@ -319,6 +335,114 @@ def test_move_device_to_station_live_updates_cfg(cfg_file):
     assert "rinex_config_valid_from = 2026-05-24" in text
     assert "# top-of-file comment" in text
     assert "# a trailing comment" in text
+
+
+# ---------------------------------------------------------------------------
+# station_status lifecycle guard (2026-10-10, HAMR reactivation)
+# ---------------------------------------------------------------------------
+
+
+def test_move_device_to_station_clears_stale_inactive_status(cfg_file):
+    """Installing a receiver onto a station cfg still marks `inactive`
+    clears the stale key — otherwise the scheduler never notices the
+    station is live again until someone remembers to hand-edit cfg."""
+    w = _station_writer()
+    w.find_device_by_serial.return_value = _device_with_attrs(
+        id_entity=21501, model="SEPT POLARX5", firmware="5.6.0"
+    )
+    result = move_device(
+        "4101524",
+        to="TSTI",
+        date="2026-05-23",
+        writer=w,
+        dry_run=False,
+        cfg_path=cfg_file,
+    )
+    text = cfg_file.read_text()
+    assert "station_status" not in text.split("[TSTI]")[1].split("[")[0]
+    assert "receiver_serial = 4101524" in text
+    assert result.cfg_changes["station_status"] == "(cleared)"
+
+
+def test_move_device_to_station_discontinued_refuses(cfg_file):
+    """Installing onto a cfg-`discontinued` station is refused loudly —
+    either someone is resurrecting a decommissioned station or has the
+    wrong marker; never silently write through it."""
+    w = _station_writer()
+    w.find_device_by_serial.return_value = _device_with_attrs(
+        id_entity=21501, model="SEPT POLARX5", firmware="5.6.0"
+    )
+    original = cfg_file.read_text()
+    with pytest.raises(CfgOperationError, match="discontinued"):
+        move_device(
+            "4101524",
+            to="TSTD",
+            date="2026-05-23",
+            writer=w,
+            dry_run=False,
+            cfg_path=cfg_file,
+        )
+    assert cfg_file.read_text() == original
+    w.move_device.assert_not_called()
+    w.add_maintenance_visit.assert_not_called()
+
+
+def test_move_device_to_station_discontinued_refuses_in_dry_run_too(cfg_file):
+    """The refusal must surface in the dry-run preview, not just on a live
+    write — an operator previewing the plan needs the loud warning before
+    going live, not a silent success followed by a live-mode surprise."""
+    w = _station_writer()
+    w.find_device_by_serial.return_value = _device_with_attrs(
+        id_entity=21501, model="SEPT POLARX5", firmware="5.6.0"
+    )
+    with pytest.raises(CfgOperationError, match="discontinued"):
+        move_device(
+            "4101524",
+            to="TSTD",
+            date="2026-05-23",
+            writer=w,
+            dry_run=True,
+            cfg_path=cfg_file,
+        )
+    w.move_device.assert_not_called()
+
+
+def test_move_device_to_station_active_station_status_untouched(cfg_file):
+    """A station with no explicit station_status (already active) gets no
+    spurious station_status entry in the plan/result."""
+    w = _station_writer()
+    w.find_device_by_serial.return_value = _device_with_attrs(
+        id_entity=21501, model="SEPT POLARX5", firmware="5.6.0"
+    )
+    result = move_device(
+        "4101524",
+        to="HRAC",
+        date="2026-05-23",
+        writer=w,
+        dry_run=False,
+        cfg_path=cfg_file,
+    )
+    assert "station_status" not in result.cfg_changes
+
+
+def test_move_device_to_station_dry_run_does_not_clear_inactive(cfg_file):
+    """dry-run must not write anything — the stale status line survives
+    the preview unchanged, same discipline as the other cfg fields."""
+    w = _station_writer()
+    w.find_device_by_serial.return_value = _device_with_attrs(
+        id_entity=21501, model="SEPT POLARX5", firmware="5.6.0"
+    )
+    original = cfg_file.read_text()
+    result = move_device(
+        "4101524",
+        to="TSTI",
+        date="2026-05-23",
+        writer=w,
+        dry_run=True,
+        cfg_path=cfg_file,
+    )
+    assert cfg_file.read_text() == original
+    assert result.cfg_changes == {}
 
 
 def test_move_device_from_station_is_metadata_only():
