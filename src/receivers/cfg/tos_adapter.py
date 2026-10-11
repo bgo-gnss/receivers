@@ -13,7 +13,7 @@ to say about that field.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 
 def current_session(station: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -23,6 +23,70 @@ def current_session(station: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if session.get("time_to") is None:
             return session
     return None
+
+
+def has_open_receiver(station: Dict[str, Any]) -> bool:
+    """True if the station's current open session has a gnss_receiver device.
+
+    The TOS signal for lifecycle active/inactive (2026-10-10 station_status
+    inference review): an operated station with no open receiver join has
+    nothing attached to poll, same as ``current_receiver_model`` et al. being
+    unable to find a current ``gnss_receiver`` dict — this just names that
+    check for the lifecycle use case instead of pulling one field out of it.
+    """
+    session = current_session(station)
+    if not session:
+        return False
+    return isinstance(session.get("gnss_receiver"), dict)
+
+
+def station_date_end(station: Dict[str, Any]) -> Optional[str]:
+    """Return the station entity's open ``date_end`` attribute value, or None.
+
+    Set when TOS has permanently closed the station entity (decommission).
+    Passed through by tostools' ``_create_legacy_station_structure`` (added
+    2026-10-10 alongside this helper) — absence here means TOS currently
+    considers the station open/live, not "unknown". Verified live against
+    BLAL (a station confirmed discontinued in stations.cfg): TOS carries
+    ``date_end`` as a real, current attribute on the station entity, same
+    shape as ``date_start``.
+    """
+    val = station.get("date_end")
+    if val is None or val == "":
+        return None
+    return str(val)
+
+
+def current_lifecycle(station: Dict[str, Any]) -> Tuple[str, bool]:
+    """Derive the station's lifecycle from TOS signals.
+
+    Returns ``(lifecycle, contradiction)``:
+
+    - ``lifecycle`` is one of ``"discontinued"``, ``"active"``, ``"inactive"``.
+    - ``contradiction`` is True when ``date_end`` is set AND the station
+      still has an open ``gnss_receiver`` join — a TOS hygiene violation (a
+      closed station shouldn't have live equipment attached). Callers must
+      surface this for review rather than silently resolving it one way;
+      this function never guesses when the evidence disagrees with itself.
+
+    Precedence: ``date_end`` set → discontinued, regardless of open joins
+    (with the contradiction flag set if one exists). Otherwise: an open
+    receiver join → active; no open join → inactive.
+
+    Scope note (caller's responsibility, not this function's): this is only
+    a meaningful signal for *operated* stations. External/reference stations
+    (today ``health_check=passive`` / ``station_role=passive`` in cfg) may
+    legitimately have no ``gnss_receiver`` in TOS at all — we don't run their
+    hardware — so applying this derivation to them would wrongly conclude
+    "inactive". Callers must gate on operational scope before using this.
+    """
+    date_end = station_date_end(station)
+    open_receiver = has_open_receiver(station)
+    if date_end is not None:
+        return "discontinued", open_receiver
+    if open_receiver:
+        return "active", False
+    return "inactive", False
 
 
 def _device_field(station: Dict[str, Any], device: str, field: str) -> Optional[str]:
