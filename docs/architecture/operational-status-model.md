@@ -84,17 +84,77 @@ orthogonal fields stay, and lifecycle becomes derived rather than hand-kept.
 ## Rollout
 
 1. ✅ Create `operational_status` (id 189) + `external_data_type` (id 190) in TOS.
-2. Add `operational_status` to `stations.cfg`; keep old fields as read-only
-   aliases for one transition window, then drop them.
-3. One-time backfill: set `operational_status` (+ `external_data_type`) on each
-   station from today's cfg (confirm the `external`→raw mapping first).
-4. Wire receivers to read `operational_status` (bootstrap/scheduler/gap/
-   backfill/horizon-probe) and remove the `station_role`/`health_check` skip
-   logic, replacing it with a single "is this station operated?" check.
-5. Eventually generate `stations.cfg` from TOS (operational_status +
-   acquisition_mode + device metadata), retiring the hand-maintained fields.
+2. ✅ Add `operational_status` to `stations.cfg`; keep old fields as read-only
+   aliases for one transition window, then drop them. Landed 2026-10-11 as a
+   `FieldSpec` with `sync_from_tos=True` and **no** `tos_attribute_code` — cfg
+   mirrors TOS one-way and can never push it, because *who runs a station* is an
+   organisational fact only TOS owns (same rule as `rinex_marker_number`).
+3. ✅ One-time backfill. Verified live 2026-10-11: **215 operated / 4 external /
+   0 missing** across the 219 GPS stations. `VFLN` and `VFLS` lacked it entirely
+   and were backfilled to `operated` from their own station `date_start`.
+4. ✅/− Wire receivers to read `operational_status` … **but see the correction
+   below: `station_role` must NOT be removed.**
+   The `health_check == "passive"` skip checks were replaced by
+   `receivers.operational_scope.is_operated()` at 8 call sites
+   (config_utils, cli/scheduler, bootstrap, bulk_scheduler,
+   long_term_backfill, receiver_horizon_probe, cli/cfg).
+5. ❌ **REVISED — "generate `stations.cfg` from TOS" was the wrong frame, and
+   the step is already satisfied.** See below.
+
+### Correction 1 — `station_role` is load-bearing, not a legacy alias
+
+The list of old fields is NOT uniform. `stations.cfg` holds **two different
+populations** that share the file by historical accident:
+
+| population | sections | unique keys | in TOS? |
+|---|---|---|---|
+| IMO stations | 199 | 44 (receiver/antenna/router/ports/credentials/acquisition) | ✅ yes |
+| global reference sites | 147 | 4 (`station_role`, `is_reference_site`, `is_in_iceland`, `sitelog_id`) | ❌ **no TOS entity at all** |
+
+`station_role = passive` is the **only** marker identifying the 147. They are
+IGS/EPN stations (ALGO, ALIC, AUCK, BRUX, CEDU, CHUR, DAEJ, DARW, …) whose data
+we consume for **GLOBK network ties**; none has a `receiver_type`, and none
+exists as a TOS station. Removing that marker would make them indistinguishable
+from IMO stations — which are then expected to have a router, ports and a
+receiver — and they would be silently lost from `stations.cfg`.
+
+**So:** keep `station_role`. Only `health_check`, `download_method` and
+`is_reference_site` are retirement candidates. Because `station_role` is the
+marker for a population with no TOS record, it can never converge to
+`operational_status` — that axis stays cfg-local by necessity.
+
+### Correction 2 — step 5 needs no new mechanism; two of its three named fields are done
+
+Step 5 named three things. Checked on 2026-10-11:
+
+| named field | status |
+|---|---|
+| `operational_status` | ✅ already synced (step 2) |
+| "device metadata" (receiver/antenna type, serial, firmware, radome) | ✅ already synced |
+| `acquisition_mode` | ❌ **not a TOS attribute** — TOS reports *"not a geophysical station attribute — no station carries it and the catalog does not list it"* |
+
+`acquisition_mode` is a **cfg-only implementation detail** of our own pipeline
+(does the receivers scheduler download directly, or does BNC stream capture
+provide the session?). Exactly 3 stations carry it (GONH, HRIC, SEY9 — all
+`stream`). It describes how *we* acquire data, not a property TOS could know, so
+it can never be generated from TOS.
+
+Therefore the existing **field-level** `cfg sync-from-tos` mechanism already
+delivers step 5's intent, and a wholesale file-rewrite was never required. A
+rewrite would additionally be unsafe: the IMO sections carry host-specific keys
+TOS does not hold (`router_ip`, `receiver_ftpport`/`httpport`/`controlport`,
+`tmp_dir`, `data_prepath`, credentials, `remote_*`, `base_path`) which a
+generator would have to preserve perfectly or destroy.
+
+The 147 are structurally safe under the field-level approach: they have no TOS
+record, so a TOS→cfg sync has nothing to write and cannot touch them.
 
 ---
 
 *Created 2026-08-19 (bgo, with pi). Attributes live in TOS; cfg + receivers
 wiring are follow-ups.*
+
+*Rollout status reviewed and corrected 2026-10-11 (bgo, with pi) after landing
+steps 2–4. Corrections 1 and 2 above supersede the original step 4 ("remove the
+`station_role`/`health_check` skip logic") and step 5 ("generate `stations.cfg`
+from TOS").*
