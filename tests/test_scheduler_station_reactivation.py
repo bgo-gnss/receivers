@@ -16,15 +16,24 @@ unrelated cfg edit).
 """
 
 import logging
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
 
+# `bs` is bound up front to keep it DEFINITELY bound for type checkers. The
+# try/except only exists so an environment without APScheduler skips this file
+# (via the pytestmark below) instead of erroring at collection — but the bare
+# `from ... import ... as bs` in a try block leaves `bs` 'possibly unbound' to
+# a checker, which then flags every use site. Typed Any: when the import fails
+# every test here is skipped, so the `bs.<attr>` uses are never evaluated.
+bs: Any = None
 try:
-    from receivers.scheduling import bulk_scheduler as bs
+    from receivers.scheduling import bulk_scheduler as _bs  # type: ignore[import-untyped]
 
+    bs = _bs
     SCHEDULER_AVAILABLE = bs.HAS_APSCHEDULER
-except ImportError:
+except ImportError:  # pragma: no cover — apscheduler is a hard dep of receivers
     SCHEDULER_AVAILABLE = False
 
 pytestmark = pytest.mark.skipif(
@@ -57,6 +66,19 @@ def _schedule_configs():
             midnight_offset=10,
         ),
     }
+
+
+def _mock_scheduler(sched) -> MagicMock:
+    """The MagicMock standing in for ``sched.scheduler`` (installed by _stub).
+
+    Cast is needed because ``BulkDownloadScheduler.scheduler`` is annotated
+    with the real APScheduler type: pyright therefore reads ``.add_job`` /
+    ``.get_jobs`` / ``.remove_job`` as BOUND METHODS of that class rather than
+    as mock attributes, so ``.call_args_list`` is 'unknown on MethodType'.
+    Casting to MagicMock once, here, keeps every call site clean and states
+    the intent in one place.
+    """
+    return cast(MagicMock, sched.scheduler)
 
 
 def _stub(stations_cfg):
@@ -96,7 +118,7 @@ class TestResyncStationJobs:
 
         sched._resync_station_jobs({"HAMR"})
 
-        added = {c.kwargs.get("id") for c in sched.scheduler.add_job.call_args_list}
+        added = {c.kwargs.get("id") for c in _mock_scheduler(sched).add_job.call_args_list}
         assert "health_HAMR" in added
         assert "15s_24hr_HAMR" in added
         assert "1Hz_1hr_HAMR" in added
@@ -117,7 +139,7 @@ class TestResyncStationJobs:
         sched._resync_station_jobs({"HAMR"})
 
         added_ids = {
-            c.kwargs.get("id") for c in sched.scheduler.add_job.call_args_list
+            c.kwargs.get("id") for c in _mock_scheduler(sched).add_job.call_args_list
         }
         assert not any(
             job_id.startswith(("15s_24hr_AKUR", "1Hz_1hr_AKUR")) for job_id in added_ids
@@ -135,7 +157,7 @@ class TestResyncStationJobs:
         sched._resync_station_jobs({"HAMR"})
 
         added_ids = {
-            c.kwargs.get("id") for c in sched.scheduler.add_job.call_args_list
+            c.kwargs.get("id") for c in _mock_scheduler(sched).add_job.call_args_list
         }
         assert "health_HAMR" not in added_ids
         assert "15s_24hr_HAMR" not in added_ids
@@ -162,14 +184,16 @@ class TestResyncStationJobs:
         """_resync_station_jobs must call _remove_disabled_jobs() itself —
         nothing else drains the queue mid-run."""
         sched = _stub({"HAMR": _station(station_status="discontinued")})
-        sched.scheduler.get_jobs.return_value = [
+        _mock_scheduler(sched).get_jobs.return_value = [
             MagicMock(id="health_HAMR"),
             MagicMock(id="15s_24hr_HAMR"),
         ]
 
         sched._resync_station_jobs({"HAMR"})
 
-        removed = {c.args[0] for c in sched.scheduler.remove_job.call_args_list}
+        removed = {
+            c.args[0] for c in _mock_scheduler(sched).remove_job.call_args_list
+        }
         assert "health_HAMR" in removed
         assert "15s_24hr_HAMR" in removed
 

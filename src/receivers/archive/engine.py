@@ -237,7 +237,14 @@ class ArchiveSync:
             lo = self.target.cutover
         if hi is None and lo is not None:
             hi = datetime.now()
-        if lo is None:
+        if lo is None or hi is None:
+            # Both bounds are required from here on. `lo` alone was the original
+            # check; `hi` is stated too because the two guards above are
+            # COMPLEMENTARY — each fires only when the other value is already
+            # set — so reaching this line with `hi is None` is unreachable.
+            # Spelling it out is behaviour-identical and lets a type checker
+            # follow an invariant that per-variable narrowing cannot derive
+            # across the pair.
             return [root]
         roots: list[str] = []
         y, m = lo.year, lo.month
