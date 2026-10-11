@@ -13,7 +13,7 @@ to say about that field.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, cast
 
 
 def current_session(station: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -21,7 +21,11 @@ def current_session(station: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     history = station.get("device_history") or []
     for session in reversed(history):
         if session.get("time_to") is None:
-            return session
+            # `session` is Any: `station` is a plain dict, so .get() gives no
+            # element type. Cast documents what the shape actually is (the
+            # same dict-of-devices every other helper here unpacks) — no
+            # runtime effect.
+            return cast(Dict[str, Any], session)
     return None
 
 
@@ -255,7 +259,9 @@ def station_latitude(station: Dict[str, Any]) -> Optional[str]:
     if val in (None, 0, 0.0, "", "0", "0.0"):
         return None
     try:
-        return f"{float(val):.6f}"
+        # cast: the guard above already excludes None, but it is a tuple
+        # membership test, which static narrowing does not follow through.
+        return f"{float(cast(Any, val)):.6f}"
     except (TypeError, ValueError):
         return None
 
@@ -265,7 +271,7 @@ def station_longitude(station: Dict[str, Any]) -> Optional[str]:
     if val in (None, 0, 0.0, "", "0", "0.0"):
         return None
     try:
-        return f"{float(val):.6f}"
+        return f"{float(cast(Any, val)):.6f}"
     except (TypeError, ValueError):
         return None
 
@@ -275,7 +281,7 @@ def station_height(station: Dict[str, Any]) -> Optional[str]:
     if val in (None, "", 0, 0.0, "0", "0.0"):
         return None
     try:
-        return f"{float(val):.2f}"
+        return f"{float(cast(Any, val)):.2f}"
     except (TypeError, ValueError):
         return None
 

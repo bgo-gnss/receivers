@@ -27,7 +27,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union, cast
 
 from tostools.api.tos_writer import TOSWriter
 
@@ -2893,7 +2893,7 @@ def show_visit(
         raise CfgOperationError(
             f"No vitjun in TOS with id_maintenance={id_maintenance}."
         )
-    return detail
+    return cast(Dict[str, Any], detail)
 
 
 def list_visits(
@@ -2918,7 +2918,7 @@ def list_visits(
     """
     w = _resolve_writer(writer, dry_run=True)
     station_eid = _resolve_station(w, station_id)
-    return w.list_maintenance_visits(station_eid)
+    return cast(List[Dict[str, Any]], w.list_maintenance_visits(station_eid))
 
 
 def update_visit(
@@ -3531,14 +3531,21 @@ def _create_and_join_device(
     """
     existing = w.find_device_by_serial(subtype, _attr_serial(attributes) or "")
     if existing is not None:
-        device_id = int(existing["id_entity"])
+        device_id: Optional[int] = int(existing["id_entity"])
         join = w.move_device(device_id, station_eid, eff_date)
         return device_id, existing, join
 
     created = w.create_device(
         entity_subtype=subtype, attributes=attributes, force=False
     )
-    device_id = created.get("id_entity") if isinstance(created, dict) else None
+    # cast: create_device returns an untyped dict-ish payload (and a
+    # DryRunResult in dry-run), so .get() carries no type. The annotation on
+    # the first assignment above is what the later uses rely on; this keeps
+    # the Optional[int] contract without changing runtime behaviour.
+    device_id = cast(
+        Optional[int],
+        created.get("id_entity") if isinstance(created, dict) else None,
+    )
     if device_id is None and not dry_run:
         raise CfgOperationError(
             f"create_device({subtype}) returned no id_entity — cannot join to station."
