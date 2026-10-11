@@ -26,7 +26,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import AbstractSet, Optional
+from typing import AbstractSet
 
 from ..utils.content_hash import CorruptArchiveFileError, content_sha256
 from .catalog import upsert_catalog_row
@@ -100,9 +100,9 @@ class ArchiveSync:
         *,
         catalog_conns=None,
         dry_run: bool = False,
-        dest_override: Optional[str] = None,
+        dest_override: str | None = None,
         force: bool = False,
-        cutover_override: Optional[datetime] = None,
+        cutover_override: datetime | None = None,
         rsync_timeout: int = 1800,
     ) -> None:
         self.target = target
@@ -197,7 +197,7 @@ class ArchiveSync:
     # ---- selection (targeted explicit push) --------------------------------
 
     @staticmethod
-    def _file_window(parsed) -> Optional[tuple[datetime, datetime]]:
+    def _file_window(parsed) -> tuple[datetime, datetime] | None:
         """(start, end) interval a file's content covers, or None if undatable.
 
         Daily sessions cover their whole calendar day; hourly sessions cover the
@@ -216,9 +216,9 @@ class ArchiveSync:
 
     def _selection_roots(
         self,
-        station: Optional[str],
-        start: Optional[datetime],
-        end: Optional[datetime],
+        station: str | None,
+        start: datetime | None,
+        end: datetime | None,
     ) -> list[str]:
         """Directory roots to walk for a selection, bounded as tightly as we can.
 
@@ -261,10 +261,10 @@ class ArchiveSync:
 
     def enumerate_selection(
         self,
-        station: Optional[str] = None,
-        session: Optional[str] = None,
-        start: Optional[datetime] = None,
-        end: Optional[datetime] = None,
+        station: str | None = None,
+        session: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
     ) -> list[str]:
         """Absolute paths under source_root matching the selection filters.
 
@@ -311,10 +311,10 @@ class ArchiveSync:
 
     def select(
         self,
-        station: Optional[str] = None,
-        session: Optional[str] = None,
-        start: Optional[datetime] = None,
-        end: Optional[datetime] = None,
+        station: str | None = None,
+        session: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
     ) -> SyncRunResult:
         """Push files matching an explicit station/session/time-window selection.
 
@@ -358,7 +358,7 @@ class ArchiveSync:
         self,
         files_from: str,
         immutability: str,
-        extra_args: Optional[list[str]] = None,
+        extra_args: list[str] | None = None,
     ) -> list[str]:
         cmd = [
             "rsync",
@@ -398,8 +398,8 @@ class ArchiveSync:
         rel_paths: list[str],
         immutability: str,
         *,
-        timeout: Optional[int] = None,
-        extra_args: Optional[list[str]] = None,
+        timeout: int | None = None,
+        extra_args: list[str] | None = None,
     ) -> tuple[bool, list[str], str]:
         """Run rsync for the given relative paths; return (ok, transferred, stderr).
 

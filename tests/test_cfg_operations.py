@@ -42,6 +42,19 @@ from receivers.cfg.operations import (
 # ---------------------------------------------------------------------------
 
 
+def _tap(calls: list, item: Any, ret: Any) -> Any:
+    """Append ``item`` to ``calls`` and return ``ret``.
+
+    Replaces the ``calls.append(x) or ret`` idiom this file used to read a call
+    ORDER (append returns None, so the ``or`` smuggles the value through on
+    None's falsiness). Behaviourally identical, but the intent is stated rather
+    than implied — and linters are right that an expression whose value comes
+    from ``append``'s return is a trap for the next reader.
+    """
+    calls.append(item)
+    return ret
+
+
 def _writer_mock(**spec) -> MagicMock:
     """Return a TOSWriter-shaped MagicMock with sensible defaults.
 
@@ -1747,7 +1760,7 @@ def test_fill_install_attrs_noop_when_equal():
     from receivers.cfg.operations import fill_install_attributes
 
     w = _install_writer()
-    confirm_calls = []
+    confirm_calls: list = []
 
     changes = fill_install_attributes(
         w,
@@ -1755,7 +1768,7 @@ def test_fill_install_attrs_noop_when_equal():
         _station_cfg(lat="64.130000", lon="-21.900000", height="100.0"),
         _tos_record(lat="64.130000", lon="-21.900000", altitude="100.4"),
         "2026-05-31T12:00:00",
-        confirm=lambda p: confirm_calls.append(p) or "add",
+        confirm=lambda p: _tap(confirm_calls, p, "add"),
         position_tolerance_m=2.0,
     )
     # height 100.0 vs 100.4 is within 2 m; lat/lon identical → all unchanged
@@ -1835,14 +1848,14 @@ def test_fill_install_attrs_skips_fields_absent_from_cfg():
     from receivers.cfg.operations import fill_install_attributes
 
     w = _install_writer()
-    seen = []
+    seen: list = []
     changes = fill_install_attributes(
         w,
         "HRAC",
         _station_cfg(lat="64.130000"),  # lon/height absent
         _tos_record(),
         "2026-05-31T12:00:00",
-        confirm=lambda p: seen.append(p.cfg_key) or "add",
+        confirm=lambda p: _tap(seen, p.cfg_key, "add"),
     )
     assert seen == ["latitude"]
     assert "longitude" not in changes and "height" not in changes
@@ -2272,12 +2285,12 @@ def test_replace_modem_retires_old_before_creating_new():
         old_subtype="modem_gsm",
         old_attrs=[_attr("serial_number", "6001254079")],
     )
-    call_order = []
-    w.move_device.side_effect = lambda *a, **k: (
-        call_order.append("retire") or {"closed": "ok"}
+    call_order: list = []
+    w.move_device.side_effect = lambda *a, **k: _tap(
+        call_order, "retire", {"closed": "ok"}
     )
-    w.create_device.side_effect = lambda *a, **k: (
-        call_order.append("create") or {"id_entity": 22000}
+    w.create_device.side_effect = lambda *a, **k: _tap(
+        call_order, "create", {"id_entity": 22000}
     )
     replace_modem(
         "GSIG",
@@ -2296,12 +2309,12 @@ def test_replace_sim_retires_old_before_creating_new():
         old_subtype="sim_card",
         old_attrs=[_attr("ip_address", "10.4.1.225")],
     )
-    call_order = []
-    w.patch_entity_connection.side_effect = lambda *a, **k: (
-        call_order.append("retire") or {"closed": "ok"}
+    call_order: list = []
+    w.patch_entity_connection.side_effect = lambda *a, **k: _tap(
+        call_order, "retire", {"closed": "ok"}
     )
-    w.create_device.side_effect = lambda *a, **k: (
-        call_order.append("create") or {"id_entity": 22001}
+    w.create_device.side_effect = lambda *a, **k: _tap(
+        call_order, "create", {"id_entity": 22001}
     )
     replace_sim("GSIG", ip_address="10.4.1.240", writer=w, dry_run=False)
     assert call_order == ["retire", "create"]
