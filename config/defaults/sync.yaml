@@ -56,7 +56,7 @@ targets:
     tier: dissemination           # derived, regenerable, format-converted
 
     # EPOS files server (CONFIRM host/path + secret model before activating).
-    host: epos-portal.vedur.is
+    host: epos-ingest-p01.vedur.is
     user: epos
     dest: /mnt/epos_01/gps
 
