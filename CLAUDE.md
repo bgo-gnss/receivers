@@ -317,6 +317,15 @@ receivers archive-sort --apply-plan plan.tsv --yes --catalog-prod
 receivers station onboard THOC --dry-run       # report every stage
 receivers station onboard THOC --from re-rinex  # resume mid-pipeline
 receivers station onboard THOC --yes            # unattended (skip pauses)
+
+# Stream stations (acquisition_mode=stream: SEY9, GONH, HRIC): 15s dailies spliced
+# from the archived 1 Hz BNC hours, RINEX 2.11 (GAMIT discards R3). Rebuilds
+# missing / truncated (the live cycle froze a mid-day snapshot) / RINEX-3.01 BNC
+# dailies; never a non-BNC daily or a day with 15s raw. -e is INCLUSIVE; today +
+# yesterday belong to the live cycle. Plan by default; --build stages; --push publishes.
+receivers stream-splice SEY9 GONH HRIC -v
+receivers stream-splice SEY9 --push --catalog-prod \
+  --work-dir /mnt/data/gpsops_scratch/stream_splice --local-root /mnt/data/gpsdata
 ```
 
 ## Architecture
@@ -1154,7 +1163,7 @@ All receivers use Phase 1 utilities by default:
 
 ---
 
-**Last updated**: 2026-09-29
+**Last updated**: 2026-10-14
 **Package version**: Development (gpslibrary_new)
 **Phase Status**: Phase 3C Complete - Distribution window optimization, midnight offset, multi-session backfill, gap detection, archive reconciler, integrity checker, archive format system, unified logging, adaptive download timeouts
 

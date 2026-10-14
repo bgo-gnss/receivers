@@ -6143,13 +6143,24 @@ def _parallel_workers_for_chunks(args, n_chunks: int, logger) -> int:
     return resolve_workers(getattr(args, "parallel", None), n_chunks, logger)
 
 
-def _push_reconverted(work_dir, args, logger, only_rel=None) -> Dict[str, Any]:
+def _push_reconverted(
+    work_dir, args, logger, only_rel=None, verified_replacements=None
+) -> Dict[str, Any]:
     """Push re-rinexed files from a --work-dir staging tree back to the archive.
 
     Archive-side --backup-old (move old ``rinex/FILE`` → ``rinex_bak/FILE`` via the
     rawdata SSH gateway) runs BEFORE the rsync, preserving the superseded file on
     the archive. Then rsync the staged tree to the archive tier and reindex.
     Dry-run supported. Never raises.
+
+    ``verified_replacements`` is a set of relative paths whose replacement the
+    caller has ALREADY proven safe by a stronger test than the two gates below
+    can make, so both gates pass them through (and say so). Only
+    ``stream-splice`` uses it: a BNC daily has no 15 s raw, so the regenerability
+    gate calls it irreplaceable although its 1 Hz hours regenerate it; and an
+    R3 -> R2 rebuild always shrinks the Hatanaka layer the degradation gate
+    measures. The caller instead proves the old file is a stream product and
+    that the new one carries at least as many epochs with satellites.
 
     Returns push stats for the run summary: ``staged`` (files in the list),
     ``pushed`` (files rsync actually transferred — files already identical on
@@ -6257,6 +6268,12 @@ def _push_reconverted(work_dir, args, logger, only_rel=None) -> Dict[str, Any]:
     # too would refuse precisely the files it has just preserved, silently
     # blocking legitimate header repairs on raw-less products. The gate is for
     # the re-conversion path, which has no preservation of its own.
+    verified = set(verified_replacements or ())
+    if verified & set(rel):
+        print(
+            f"  ✓ {len(verified & set(rel))} replacement(s) proven by the caller "
+            "(epochs with satellites, stream source) — gates pass them through"
+        )
     refuses_apply = bool(rel) and not getattr(args, "fix_headers", False)
     gate_applies = refuses_apply and bool(
         getattr(args, "from_archive", False) or getattr(args, "source_dir", None)
@@ -6269,6 +6286,9 @@ def _push_reconverted(work_dir, args, logger, only_rel=None) -> Dict[str, Any]:
             src_root = Path(_reconvert_source_root(args, ""))
             kept: List[str] = []
             for r in rel:
+                if r in verified:
+                    kept.append(r)  # caller-proven: regenerable from 1 Hz hours
+                    continue
                 arch = src_root / r
                 parts = r.split("/")
                 sid = parts[2] if len(parts) > 4 else ""
@@ -6342,6 +6362,9 @@ def _push_reconverted(work_dir, args, logger, only_rel=None) -> Dict[str, Any]:
             src_root_deg = Path(_reconvert_source_root(args, ""))
             kept_deg: List[str] = []
             for r in rel:
+                if r in verified:
+                    kept_deg.append(r)  # caller-proven: epochs with sats >= old
+                    continue
                 arch_f = src_root_deg / r
                 new_f = work / r
                 if not arch_f.is_file() or not new_f.is_file():

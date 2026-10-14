@@ -1,7 +1,7 @@
 """Tests for the stream-capture composition root + scheduler wiring."""
 
-from datetime import UTC, datetime
-from unittest.mock import Mock
+from datetime import UTC, date, datetime
+from unittest.mock import Mock, patch
 
 from receivers.scheduling.stream_scheduler import (
     StreamSettings,
@@ -76,6 +76,30 @@ class TestBuildPipeline:
         assert pipe.archive_base == tmp_path / "arch"
         assert pipe.downloader is sentinel_dl
         assert pipe.ingestor.session_type == "1Hz_1hr"
+
+    def test_live_pipeline_corrects_headers_from_config(self, tmp_path):
+        """The wiring, not just the helper: the scheduler's pipeline must carry
+        a header hook that calls the corrector with the station config."""
+        settings = StreamSettings(
+            archive_base=str(tmp_path / "arch"),
+            rt_base=str(tmp_path / "rt"),
+            workdir=str(tmp_path / "wd"),
+        )
+        pipe = build_stream_pipeline(
+            settings, tracker_recorder=Mock(), downloader=Mock()
+        )
+        assert pipe.header_hook_factory is not None
+        cfg = {"rinex": {"observer": "GNSSatIMO", "agency": "IMO"}}
+        obs = tmp_path / "GONH1620.26O"
+        with (
+            patch("receivers.config_utils.get_station_config", return_value=cfg),
+            patch("tostools.rinex.correct_rinex_from_tos", return_value=obs) as corr,
+        ):
+            pipe.header_hook_factory("GONH", date(2026, 6, 11))(obs)
+        kw = corr.call_args.kwargs
+        assert kw["station_id"] == "GONH" and kw["rinex_file"] == obs
+        assert kw["station_config"] is cfg
+        assert kw["extra_corrections"] == {"OBSERVER / AGENCY": ["GNSSatIMO", "IMO"]}
 
 
 class TestFileTrackingRecorder:

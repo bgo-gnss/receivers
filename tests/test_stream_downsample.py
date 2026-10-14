@@ -229,3 +229,38 @@ class TestDownsample:
         assert res.status == "failed"
         assert "gfzrnx" in (res.error or "").lower()
         assert not out.exists()
+
+
+def test_header_hook_runs_on_r2_obs_before_hatanaka(tmp_path):
+    """The TOS/config correction must hit the final RINEX 2 obs, before it is
+    Hatanaka-compressed (afterwards the header is no longer plain text)."""
+    runner = FakeRunner()
+    seen = []
+
+    def hook(obs):
+        seen.append((obs.name, list(runner.tools)))
+
+    res = RinexDownsampler(runner=runner).downsample_day(
+        "GONH",
+        _sources(tmp_path),
+        tmp_path / "GONH1620.26D.Z",
+        tmp_path / "wd",
+        header_hook=hook,
+    )
+    assert res.status == "created"
+    assert len(seen) == 1
+    name, tools_so_far = seen[0]
+    assert name == "GONH1620.26O"  # the R2 product, not the .r3 intermediate
+    assert tools_so_far.count("GFZRNX") == 2 and "RNX2CRX" not in tools_so_far
+
+
+def test_header_hook_failure_fails_the_day(tmp_path):
+    def hook(obs):
+        raise RuntimeError("TOS down")
+
+    out = tmp_path / "GONH1620.26D.Z"
+    res = RinexDownsampler(runner=FakeRunner()).downsample_day(
+        "GONH", _sources(tmp_path), out, tmp_path / "wd", header_hook=hook
+    )
+    assert res.status == "failed" and "TOS down" in res.error
+    assert not out.exists()
