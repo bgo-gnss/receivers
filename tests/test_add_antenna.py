@@ -54,6 +54,10 @@ def test_build_antenna_attributes_height_optional():
         "owner",
         "status",
         "date_start",
+        # Every new antenna must carry a GAMIT height code (HtCod), default DHARP —
+        # added in tostools 4181b0b. This set is deliberately exhaustive (it should
+        # also catch an UNINTENDED addition), so it must follow tostools changes.
+        "antenna_reference_point",
     }
     with_h = build_antenna_attributes(
         "s1", "SEPPOLANT_X_MF", "owner", "2021-03-25", antenna_height="0.0083"
@@ -204,7 +208,7 @@ def test_add_antenna_force_bypasses_open_guard():
         date_start="2021-03-25",
         force=True,
     )
-    assert res.serial.startswith("antenna-SEY9-")
+    assert res.serial is not None and res.serial.startswith("antenna-SEY9-")
     w.create_device.assert_called_once()
 
 
@@ -218,7 +222,10 @@ def test_add_antenna_defaults_date_to_station_date_start():
 def test_add_antenna_unknown_station_raises():
     w = _writer()
     w.find_station_by_marker.return_value = None
-    with pytest.raises(CfgOperationError, match="No TOS station matches marker"):
+    # The message names GPS deliberately: the resolver uses a GPS-only predicate so
+    # that a volcanic-gas station carrying the same marker cannot be matched (the
+    # SOHO/5356 case). Asserting "GPS" here is therefore load-bearing, not incidental.
+    with pytest.raises(CfgOperationError, match="No TOS GPS station matches marker"):
         add_antenna(
             w, station_id="ZZZZ", model="SEPPOLANT_X_MF", date_start="2021-03-25"
         )
