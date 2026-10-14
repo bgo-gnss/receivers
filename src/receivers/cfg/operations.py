@@ -1060,17 +1060,15 @@ def add_monument(
     if serial and str(serial).strip():
         mon_serial = str(serial).strip()
     else:
-        if station_id is None:
-            # synthetic_serial f-strings the marker, so a warehouse intake (no
-            # station) would silently mint "monument-None-<date>" — the SAME key
-            # for every warehouse monument on a given date, and serial_number is
-            # TOS's duplicate-check and lookup key. Refuse instead of colliding.
-            raise CfgOperationError(
-                "a synthetic monument serial is derived from the station marker, "
-                "which a warehouse intake does not have — pass an explicit "
-                "--serial for a warehouse monument."
-            )
-        mon_serial = synthetic_serial("monument", station_id, eff_date)
+        # station_id cannot be None here, which is why this is a cast and not a
+        # runtime guard. Two upstream checks already exclude it: the XOR guard
+        # rejects "neither destination", and the warehouse branch rejects a missing
+        # serial (`--serial is required for intake`) — so a warehouse intake can
+        # never reach this line with serial blank, and a station path always has a
+        # marker. synthetic_serial f-strings the marker, so None WOULD mint
+        # "monument-None-<date>", but that case is unreachable; a branch for it
+        # would be dead code. Naming the invariant is what the checker needs.
+        mon_serial = synthetic_serial("monument", cast(str, station_id), eff_date)
     if comment is None and synthetic:
         comment = (
             "raðnúmer búið til úr skammstöfun stöðvar + dagsetningu (height epoch)"

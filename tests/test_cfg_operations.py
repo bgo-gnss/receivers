@@ -652,7 +652,10 @@ def test_cfg_verbs_agree_on_rinex_valid_from_for_a_mid_day_install():
     # tolerates a str time_from (TOS may hand back either)
     assert _session_valid_from({"time_from": "2026-10-13T08:39:21"}) == "2026-10-14"
     # a midnight install keeps its own date
-    assert _session_valid_from({"time_from": datetime(2026, 10, 13, 0, 0, 0)}) == "2026-10-13"
+    assert (
+        _session_valid_from({"time_from": datetime(2026, 10, 13, 0, 0, 0)})
+        == "2026-10-13"
+    )
     # nothing to derive
     assert _session_valid_from({}) is None
     assert _session_valid_from(None) is None

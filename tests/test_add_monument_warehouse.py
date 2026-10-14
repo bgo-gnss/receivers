@@ -44,7 +44,16 @@ def test_warehouse_intake_joins_the_warehouse_not_a_station(writer):
 
 
 def test_warehouse_requires_a_real_serial(writer):
-    """Synthetic serials need a station marker, and the later move matches by serial."""
+    """Synthetic serials need a station marker, and the later move matches by serial.
+
+    LOAD-BEARING for a type invariant: this is the check that makes
+    ``synthetic_serial("monument", cast(str, station_id), ...)`` in
+    ``add_monument`` safe. Without it, a warehouse intake could reach that call
+    with station_id=None, and since synthetic_serial f-strings the marker it would
+    mint "monument-None-<date>" — one shared serial per date for every warehouse
+    monument, colliding on TOS's lookup key. If this refusal is ever weakened,
+    that cast stops being sound and needs a real guard instead.
+    """
     with pytest.raises(CfgOperationError, match="--serial is required"):
         add_monument(writer, warehouse=WAREHOUSE, dry_run=False)
     with pytest.raises(CfgOperationError, match="--serial is required"):
@@ -87,7 +96,7 @@ def test_station_path_still_works(writer):
     assert r.station_id == "NPSK"
     # Serial omitted at a station → synthetic placeholder, as before.
     assert r.tos_changes["synthetic_serial"] is True
-    assert r.serial.startswith("monument-NPSK-")
+    assert r.serial is not None and r.serial.startswith("monument-NPSK-")
 
 
 def test_warehouse_serial_is_not_synthetic(writer):
