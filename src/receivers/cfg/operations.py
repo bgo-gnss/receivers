@@ -261,7 +261,7 @@ def _resolve_cfg_path(cfg_path: Optional[Path]) -> Path:
             return candidate
 
     try:
-        import gps_parser as _gps  # type: ignore
+        import gps_parser as _gps
     except ImportError as exc:
         raise CfgOperationError(
             "gps_parser not importable and no cfg_path / "
@@ -303,7 +303,9 @@ def _resolve_station(writer: TOSWriter, station_id: str) -> int:
             f"(A station of another discipline may carry this marker — "
             f"`tos station show {station_id}` covers every discipline.)"
         )
-    return eid
+    # find_station_by_marker is untyped, so this is Any to the checker. It is
+    # an entity id (an int) and the None case was just rejected above.
+    return int(eid)
 
 
 def _find_open_children(writer: TOSWriter, station_eid: int, subtype: str) -> List[int]:
@@ -383,7 +385,8 @@ def _device_attribute(device_hist: Dict[str, Any], code: str) -> Optional[str]:
     open_rows = [a for a in candidates if a.get("date_to") is None]
     pool = open_rows or candidates
     latest = max(pool, key=lambda a: a.get("date_from") or "")
-    return latest.get("value")
+    # attribute rows are untyped dicts, so .get returns Any; the value is a str.
+    return cast(Optional[str], latest.get("value"))
 
 
 def _canonical_receiver_type(igs_name: Optional[str]) -> Optional[str]:
@@ -622,6 +625,31 @@ def _default_rinex_valid_from(install_iso: str) -> str:
     if dt.hour == 0 and dt.minute == 0 and dt.second == 0:
         return dt.date().isoformat()
     return (dt.date() + _td(days=1)).isoformat()
+
+
+def _session_valid_from(session) -> Optional[str]:
+    """``rinex_config_valid_from`` for a TOS session: the FIRST FULL DAY of it.
+
+    Single home for this rule across the cfg verbs. ``add_station`` used to
+    truncate the session start to a date itself (``time_from[:10]``), which made it
+    disagree with ``add-receiver`` / ``replace-receiver`` / ``move-device`` — all of
+    which call :func:`_default_rinex_valid_from` — by a whole day for any mid-day
+    install. Measured: SKDA's 2026-10-13T08:39:21 install yielded 2026-10-13 from
+    ``add-station`` and 2026-10-14 from ``replace-receiver``.
+
+    It matters because the value is the era key for RINEX header configuration: a
+    one-day disagreement is a one-day era disagreement, silently written by hand or
+    by whichever verb ran last. A mid-day install leaves that day split between old
+    and new equipment, so the first day FULLY under the new configuration is the
+    next one — see :func:`_default_rinex_valid_from`.
+
+    Returns None when the session carries no start (nothing to derive).
+    """
+    tf = (session or {}).get("time_from")
+    if tf is None:
+        return None
+    iso = tf.isoformat() if hasattr(tf, "isoformat") else str(tf)
+    return _default_rinex_valid_from(iso)
 
 
 #: Sentinel prefix for ``--serial``: ``default-NPSK`` means "mint the fleet
@@ -1032,6 +1060,16 @@ def add_monument(
     if serial and str(serial).strip():
         mon_serial = str(serial).strip()
     else:
+        if station_id is None:
+            # synthetic_serial f-strings the marker, so a warehouse intake (no
+            # station) would silently mint "monument-None-<date>" — the SAME key
+            # for every warehouse monument on a given date, and serial_number is
+            # TOS's duplicate-check and lookup key. Refuse instead of colliding.
+            raise CfgOperationError(
+                "a synthetic monument serial is derived from the station marker, "
+                "which a warehouse intake does not have — pass an explicit "
+                "--serial for a warehouse monument."
+            )
         mon_serial = synthetic_serial("monument", station_id, eff_date)
     if comment is None and synthetic:
         comment = (
@@ -1621,14 +1659,12 @@ def add_station(
             if isinstance(modem_hist, dict):
                 router_type = _short_router_type(_device_attribute(modem_hist, "model"))
 
-    # rinex_config_valid_from = the open session's start (NB: may be the TOS
-    # data-entry date, not the true continuous-install date). TOS hands time_from
-    # back as a datetime via _build_history_from_connections; tolerate str too.
-    _tf = session.get("time_from")
-    if _tf is None:
-        valid_from = None
-    else:
-        valid_from = (_tf.isoformat() if hasattr(_tf, "isoformat") else str(_tf))[:10]
+    # rinex_config_valid_from = the first FULL day of this session, via the shared
+    # helper the other cfg verbs use. Do NOT truncate the session start to a date:
+    # a mid-day install leaves that day split between old and new equipment, so the
+    # first full day is the next one. Truncating here made add-station disagree with
+    # replace-receiver by a day (SKDA 2026-10-13T08:39:21 -> 10-13 vs 10-14).
+    valid_from = _session_valid_from(session)
 
     raw: Dict[str, Optional[str]] = {
         "router_ip": router_ip,

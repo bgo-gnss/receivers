@@ -6,6 +6,7 @@ calls happen, and use a tmp ``stations.cfg`` for the file-write paths.
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -21,6 +22,7 @@ from receivers.cfg.operations import (
     _find_open_gnss_receiver_child,
     _find_recently_left_receiver,
     _resolve_station,
+    _session_valid_from,
     _validate_marker_match,
     _visit_default_time,
     add_visit,
@@ -629,6 +631,31 @@ def test_default_rinex_valid_from_non_midnight_rolls_to_next_day():
 def test_default_rinex_valid_from_bare_date_treated_as_midnight():
     """YYYY-MM-DD (no time) → treated as midnight → same date."""
     assert _default_rinex_valid_from("2026-05-22") == "2026-05-22"
+
+
+def test_cfg_verbs_agree_on_rinex_valid_from_for_a_mid_day_install():
+    """add-station and replace-receiver must derive the SAME date.
+
+    Regression: add_station truncated the TOS session start to a date itself
+    (time_from[:10]) while add-receiver/replace-receiver/move-device apply the
+    first-full-day rule — so a mid-day install gave two different era boundaries
+    depending on which verb ran. SKDA is the live case: install 2026-10-13T08:39:21.
+    """
+    install = datetime(2026, 10, 13, 8, 39, 21)
+
+    # the shared home for the rule
+    assert _session_valid_from({"time_from": install}) == "2026-10-14"
+    # and it must equal what the other cfg verbs derive, so they cannot drift
+    assert _session_valid_from({"time_from": install}) == _default_rinex_valid_from(
+        install.isoformat()
+    )
+    # tolerates a str time_from (TOS may hand back either)
+    assert _session_valid_from({"time_from": "2026-10-13T08:39:21"}) == "2026-10-14"
+    # a midnight install keeps its own date
+    assert _session_valid_from({"time_from": datetime(2026, 10, 13, 0, 0, 0)}) == "2026-10-13"
+    # nothing to derive
+    assert _session_valid_from({}) is None
+    assert _session_valid_from(None) is None
 
 
 def test_visit_default_time_promotes_bare_date_to_noon():
