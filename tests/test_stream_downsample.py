@@ -1,12 +1,19 @@
 """Tests for the 1Hz→15s RINEX downsampler (mocked external tools)."""
 
+import os
 from pathlib import Path
+
+import pytest
 
 from receivers.streaming.downsample import (
     RinexDownsampler,
     _obs_name_for_target,
     _swap_obs_to_hatanaka,
+    is_stream_product,
 )
+
+BNC = lambda _p: "BNC 2.12.7"  # noqa: E731 - header probe: a stream product
+SBF2RIN = lambda _p: "sbf2rin-15.4.1"  # noqa: E731 - header probe: downloaded SBF
 
 
 class FakeRunner:
@@ -66,13 +73,69 @@ class TestNameHelpers:
 
 class TestDownsample:
     def test_skip_if_exists(self, tmp_path):
+        """A complete stream daily newer than every source is left alone."""
+        srcs = _sources(tmp_path)
         out = tmp_path / "GONH1620.26D.Z"
         out.write_bytes(b"X" * 400_000)
         runner = FakeRunner()
-        ds = RinexDownsampler(runner=runner)
-        res = ds.downsample_day("GONH", _sources(tmp_path), out, tmp_path / "wd")
+        ds = RinexDownsampler(runner=runner, header_probe=BNC)
+        res = ds.downsample_day("GONH", srcs, out, tmp_path / "wd")
         assert res.status == "skipped_exists"
         assert runner.calls == []  # no tools invoked
+
+    def test_rebuilds_stream_daily_when_sources_are_newer(self, tmp_path):
+        """Regression (SEY9 2026 day 182): the cycle built the daily at ~08:00,
+        the size-only skip (>300 kB) then froze it, and the archive kept an
+        8-hour day. A source newer than the daily must trigger a rebuild."""
+        out = tmp_path / "GONH1620.26D.Z"
+        out.write_bytes(b"X" * 400_000)
+        os.utime(out, (1_000, 1_000))
+        srcs = _sources(tmp_path)  # mtime = now, newer than the daily
+        runner = FakeRunner()
+        res = RinexDownsampler(runner=runner, header_probe=BNC).downsample_day(
+            "GONH", srcs, out, tmp_path / "wd"
+        )
+        assert res.status == "created", res.error
+        assert runner.tools.count("GFZRNX") == 2
+
+    @pytest.mark.parametrize("probe", [SBF2RIN, lambda _p: None])
+    def test_never_overwrites_a_non_stream_daily(self, tmp_path, probe):
+        """A downloaded-SBF daily outranks a splice, even when an hourly source
+        is newer (a late-ingested hour 23). An unreadable header fails closed."""
+        out = tmp_path / "GONH1620.26D.Z"
+        out.write_bytes(b"sbf-daily")
+        os.utime(out, (1_000, 1_000))
+        runner = FakeRunner()
+        res = RinexDownsampler(runner=runner, header_probe=probe).downsample_day(
+            "GONH", _sources(tmp_path), out, tmp_path / "wd"
+        )
+        assert res.status == "skipped_authoritative"
+        assert res.ok
+        assert runner.calls == []
+        assert out.read_bytes() == b"sbf-daily"
+
+    def test_skip_if_exists_false_rebuilds_regardless(self, tmp_path):
+        out = tmp_path / "GONH1620.26D.Z"
+        out.write_bytes(b"X" * 400_000)
+        res = RinexDownsampler(
+            runner=FakeRunner(), header_probe=SBF2RIN
+        ).downsample_day(
+            "GONH", _sources(tmp_path), out, tmp_path / "wd", skip_if_exists=False
+        )
+        assert res.status == "created"
+
+    def test_scratch_removed_after_run(self, tmp_path):
+        wd = tmp_path / "wd"
+        RinexDownsampler(runner=FakeRunner()).downsample_day(
+            "GONH", _sources(tmp_path), tmp_path / "GONH1620.26D.Z", wd
+        )
+        assert list(wd.iterdir()) == []
+
+    def test_is_stream_product(self):
+        assert is_stream_product("BNC 2.12.7")
+        assert not is_stream_product("sbf2rin-15.4.1")
+        assert not is_stream_product(None)
+        assert not is_stream_product("")
 
     def test_no_source(self, tmp_path):
         out = tmp_path / "GONH1620.26D.Z"
@@ -91,14 +154,34 @@ class TestDownsample:
         assert res.status == "created"
         assert res.ok and res.source_count == 3
         assert out.exists()
-        # 3 decompress + 3 crx2rnx + 1 gfzrnx + 1 rnx2crx + 1 compress
+        # 3 decompress + 3 crx2rnx + 2 gfzrnx + 1 rnx2crx + 1 compress
         assert runner.tools.count("CRX2RNX") == 3
-        assert runner.tools.count("GFZRNX") == 1
+        assert runner.tools.count("GFZRNX") == 2
         assert runner.tools.count("RNX2CRX") == 1
-        # gfzrnx invoked with the decimation flags (RINEX3 out, 15s sampling)
-        gfz_cmd = next(c for c in runner.calls if Path(c[0]).name == "gfzrnx")
-        assert "-smp" in gfz_cmd and "15" in gfz_cmd
-        assert "-vo" in gfz_cmd and "3" in gfz_cmd
+        splice, to_r2 = [c for c in runner.calls if Path(c[0]).name == "gfzrnx"]
+        # Step 1 splices + samples into RINEX 3 ...
+        assert splice[splice.index("-smp") + 1] == "15"
+        assert splice[splice.index("-vo") + 1] == "3"
+        # ... step 2 converts that single file to the RINEX 2.11 product. One
+        # call with all three crashes gfzrnx (RINEX_DB.pm line 3663).
+        assert to_r2[to_r2.index("-finp") + 1] == splice[splice.index("-fout") + 1]
+        assert to_r2[to_r2.index("-vo") + 1] == "2"
+        assert "-smp" not in to_r2
+        # RNX2CRX gets the R2 obs, not the R3 intermediate
+        rnx2crx = next(c for c in runner.calls if Path(c[0]).name == "RNX2CRX")
+        assert rnx2crx[-1] == to_r2[to_r2.index("-fout") + 1]
+
+    def test_rinex3_product_is_one_gfzrnx_call(self, tmp_path):
+        runner = FakeRunner()
+        res = RinexDownsampler(rinex_version=3, runner=runner).downsample_day(
+            "GONH", _sources(tmp_path), tmp_path / "GONH1620.26D.Z", tmp_path / "wd"
+        )
+        assert res.status == "created"
+        assert runner.tools.count("GFZRNX") == 1
+
+    def test_rejects_unknown_rinex_version(self):
+        with pytest.raises(ValueError):
+            RinexDownsampler(rinex_version=4)
 
     def test_uppercase_bnc_hatanaka_sources(self, tmp_path):
         """BNC writes uppercase-O RINEX2, so stream-ingested hourly files are
