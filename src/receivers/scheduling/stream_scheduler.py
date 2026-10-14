@@ -204,7 +204,41 @@ def build_stream_pipeline(
         rt_base=settings.rt_base,
         archive_base=settings.archive_base,
         workdir=settings.workdir,
+        header_hook_factory=_make_header_hook_factory(),
     )
+
+
+def _make_header_hook_factory():
+    """Per-(station, day) TOS/config header correction for the live daily.
+
+    Live days are past ``rinex_config_valid_from``, so the correction resolves
+    from stations.cfg; the per-station cache keeps any TOS fallback to one
+    fetch per station per run. A failed correction fails that rebuild and the
+    next cycle retries it. If no daily existed yet, a day that ages out of the
+    live window this way is ``missing`` to ``receivers stream-splice``; an
+    earlier uncorrected build of the same day stays in place.
+    """
+    from ..streaming.tos_header import make_tos_header_hook
+
+    configs: Dict[str, Any] = {}
+    caches: Dict[str, dict] = {}
+
+    def factory(station_id: str, day):
+        if station_id not in configs:
+            try:
+                from ..config_utils import get_station_config
+
+                configs[station_id] = get_station_config(station_id)
+            except Exception:  # noqa: BLE001 - the TOS path still applies
+                configs[station_id] = None
+        return make_tos_header_hook(
+            station_id,
+            day,
+            station_config=configs[station_id],
+            tos_metadata_cache=caches.setdefault(station_id, {}),
+        )
+
+    return factory
 
 
 # -- module-level job functions (APScheduler) -------------------------------

@@ -224,3 +224,56 @@ def test_count_epochs_with_sats(tmp_path, body, expected):
     f.write_bytes(gzip.compress(body.encode()))
     # `cat` stands in for CRX2RNX: the body is already plain RINEX.
     assert count_epochs_with_sats(f, crx2rnx="cat") == expected
+
+
+def test_refuses_replacement_under_another_name(tmp_path):
+    """An archived .26d.Z would get a .26D.Z pushed BESIDE it, not over it."""
+    d = tmp_path / "arch" / "2026/jul/SEY9/15s_24hr/rinex"
+    d.mkdir(parents=True)
+    old = d / "SEY91820.26d.Z"
+    old.write_bytes(b"x")
+    ds = FakeDownsampler()
+    o = build_day(
+        SpliceDay("SEY9", DAY, "truncated", [Path("x")], old),
+        tmp_path / "w",
+        ds,
+        epoch_counter=lambda p: 9,
+    )
+    assert not o.ok and "name mismatch" in o.error
+    assert ds.calls == []
+
+
+def test_tos_hook_omits_cache_for_old_tostools(tmp_path):
+    """Older tostools has no tos_metadata_cache kwarg; passing it raises."""
+    from unittest.mock import patch
+
+    from receivers.streaming.tos_header import make_tos_header_hook
+
+    seen = {}
+
+    def old_corrector(
+        rinex_file,
+        station_id,
+        observation_date=None,
+        output_file=None,
+        station_config=None,
+        loglevel=0,
+        only_fields=None,
+        extra_corrections=None,
+    ):
+        seen["ok"] = True
+        return rinex_file
+
+    with patch("tostools.rinex.correct_rinex_from_tos", old_corrector):
+        make_tos_header_hook("SEY9", DAY, tos_metadata_cache={})(tmp_path / "x.26O")
+    assert seen == {"ok": True}
+
+
+def test_tos_hook_raises_when_correction_fails(tmp_path):
+    from unittest.mock import patch
+
+    from receivers.streaming.tos_header import make_tos_header_hook
+
+    with patch("tostools.rinex.correct_rinex_from_tos", return_value=None):
+        with pytest.raises(RuntimeError):
+            make_tos_header_hook("SEY9", DAY)(tmp_path / "x.26O")

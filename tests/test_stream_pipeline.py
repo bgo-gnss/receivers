@@ -101,3 +101,22 @@ class TestRun:
         results = p.run(["BAD", "GOOD"], DAY)
         # BAD raised and was skipped; GOOD still processed
         assert [r.station_id for r in results] == ["GOOD"]
+
+
+class TestHeaderHook:
+    """The live daily must get the TOS/config header (DOMES-only MARKER NUMBER
+    applies on every write path), not BNC's skeleton."""
+
+    def test_factory_hook_reaches_downsample(self, tmp_path):
+        hook = Mock()
+        factory = Mock(return_value=hook)
+        p = _pipeline(tmp_path, header_hook_factory=factory)
+        p.process_station("GONH", DAY, gap_fill=False)
+        factory.assert_called_once_with("GONH", DAY)
+        kw = p.downsampler.downsample_day.call_args.kwargs
+        assert kw["header_hook"] is hook
+
+    def test_no_factory_no_hook(self, tmp_path):
+        p = _pipeline(tmp_path)
+        p.process_station("GONH", DAY, gap_fill=False)
+        assert p.downsampler.downsample_day.call_args.kwargs["header_hook"] is None

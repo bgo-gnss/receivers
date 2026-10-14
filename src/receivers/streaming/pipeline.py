@@ -18,9 +18,9 @@ import logging
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
-from .downsample import DownsampleResult, RinexDownsampler
+from .downsample import DownsampleResult, HeaderHook, RinexDownsampler
 from .gap import Downloader, GapFiller, GapFillResult
 from .ingest import IngestResult, StreamIngestor
 from .supervisor import StreamSupervisor, SuperviseResult
@@ -98,6 +98,7 @@ class StreamPipeline:
         rt_base: Path | str,
         archive_base: Path | str,
         workdir: Path | str,
+        header_hook_factory: Optional[Callable[[str, date], HeaderHook]] = None,
     ):
         self.supervisor = supervisor
         self.ingestor = ingestor
@@ -107,6 +108,10 @@ class StreamPipeline:
         self.rt_base = Path(rt_base)
         self.archive_base = Path(archive_base)
         self.workdir = Path(workdir)
+        # Builds the per-day header correction (TOS/config). Without it the
+        # daily keeps BNC's skeleton header: MARKER NUMBER = the 4-char id,
+        # which the DOMES-only rule forbids on every write path.
+        self.header_hook_factory = header_hook_factory
 
     def supervise(self) -> SuperviseResult:
         """Ensure BNC daemons are alive for all configured stream stations."""
@@ -133,8 +138,13 @@ class StreamPipeline:
         )
         target = daily_15s_target(self.archive_base, station_id, day)
         sources = hourly_1hz_sources(self.archive_base, station_id, day)
+        hook = (
+            self.header_hook_factory(station_id, day)
+            if self.header_hook_factory is not None
+            else None
+        )
         downsample = self.downsampler.downsample_day(
-            station_id, sources, target, self.workdir / station_id
+            station_id, sources, target, self.workdir / station_id, header_hook=hook
         )
         gap = None
         if gap_fill:
