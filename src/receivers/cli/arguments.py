@@ -1855,6 +1855,10 @@ For subcommand help: receivers <command> --help
     create_archive_catalog_backfill_parser(subparsers)
     # archive-index-backfill (one-time index of on-disk archive files → catalog)
     create_archive_index_backfill_parser(subparsers)
+    # stream-splice (15s dailies from archived 1 Hz stream hours)
+    from .stream_splice import create_stream_splice_parser
+
+    create_stream_splice_parser(subparsers)
     # missing (query the unified-file-index differential worklists — no ls)
     from .missing import create_missing_parser
 

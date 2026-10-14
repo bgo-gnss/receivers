@@ -43,7 +43,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence
+from typing import IO, Callable, Dict, List, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -59,35 +59,69 @@ DEFAULT_MIN_OUTPUT_SIZE = 1000
 HeaderProbe = Callable[[Path], Optional[str]]
 
 
-def read_rinex_pgm(path: Path) -> Optional[str]:
-    """``PGM / RUN BY / DATE`` program field of a (.Z/.gz, Hatanaka) RINEX file.
+#: Corrects a daily obs file's header in place (e.g. from TOS) before it is
+#: Hatanaka-compressed. Raises on failure; the day is then reported failed.
+HeaderHook = Callable[[Path], None]
 
-    Only the header is needed, so the decompressed stream is cut after
-    ``END OF HEADER``. Hatanaka keeps the RINEX header lines verbatim, so no
-    CRX2RNX is needed. Returns None when the file cannot be read.
+
+def read_rinex_header(path: Path) -> Dict[str, str]:
+    """Selected header values of a (.Z/.gz, Hatanaka or plain) RINEX file.
+
+    Keys present when found: ``pgm`` (``PGM / RUN BY / DATE`` program field),
+    ``version`` (``RINEX VERSION / TYPE``), ``first_obs`` / ``last_obs`` (the
+    ``TIME OF FIRST/LAST OBS`` values, whitespace-normalised). Only the header
+    is read: the decompressed stream is cut after ``END OF HEADER``, and
+    Hatanaka keeps header lines verbatim so no CRX2RNX is needed. An unreadable
+    file gives ``{}``.
     """
+    cmd = ["gzip", "-dc", str(path)] if path.suffix in (".Z", ".gz") else None
+    proc: Optional[subprocess.Popen] = None
+    stream: IO[bytes]
     try:
-        proc = subprocess.Popen(
-            ["gzip", "-dc", str(path)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        )
+        if cmd is None:
+            stream = open(path, "rb")
+        else:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+            )
+            assert proc.stdout is not None
+            stream = proc.stdout
     except OSError:
-        return None
-    pgm: Optional[str] = None
+        return {}
+    labels = {
+        "PGM / RUN BY / DATE": "pgm",
+        "RINEX VERSION / TYPE": "version",
+        "TIME OF FIRST OBS": "first_obs",
+        "TIME OF LAST OBS": "last_obs",
+    }
+    out: Dict[str, str] = {}
     try:
-        assert proc.stdout is not None
-        for i, raw in enumerate(proc.stdout):
-            line = raw.decode("latin-1")
-            if "PGM / RUN BY / DATE" in line:
-                pgm = line[:20].strip()
+        for i, raw in enumerate(stream):
+            line = raw.decode("latin-1").rstrip("\n")
+            label = line[60:].strip()
+            if label == "END OF HEADER" or i > 400:
                 break
-            if "END OF HEADER" in line or i > 200:
-                break
+            key = labels.get(label)
+            if key is None or key in out:
+                continue
+            if key == "pgm":
+                out[key] = line[:20].strip()
+            elif key == "version":
+                out[key] = line[:9].strip()
+            else:
+                out[key] = " ".join(line[:43].split())
     finally:
-        proc.kill()
-        proc.wait()
-    return pgm
+        if proc is not None:
+            proc.kill()
+            proc.wait()
+        else:
+            stream.close()
+    return out
+
+
+def read_rinex_pgm(path: Path) -> Optional[str]:
+    """``PGM / RUN BY / DATE`` program field of a RINEX file, or None."""
+    return read_rinex_header(path).get("pgm")
 
 
 def is_stream_product(pgm: Optional[str]) -> bool:
@@ -167,6 +201,7 @@ class RinexDownsampler:
         *,
         skip_if_exists: bool = True,
         min_existing_size: int = 300_000,
+        header_hook: Optional[HeaderHook] = None,
     ) -> DownsampleResult:
         """Create ``output_file`` (decimated daily RINEX) from hourly ``source_files``.
 
@@ -177,6 +212,9 @@ class RinexDownsampler:
         daily built while its day was still filling is completed on a later cycle.
         ``skip_if_exists=False`` rebuilds regardless. Returns a ``no_source``
         result (not an error) when no hourly inputs are present.
+
+        ``header_hook`` runs on the uncompressed daily obs before Hatanaka, the
+        point where the archive converter applies its TOS header corrections.
         """
         output_file = Path(output_file)
         existing = [Path(f) for f in source_files if Path(f).exists()]
@@ -219,6 +257,8 @@ class RinexDownsampler:
             # exactly output_file.name (e.g. GONH1620.26D.Z -> obs GONH1620.26O).
             daily_obs = scratch / _obs_name_for_target(output_file.name)
             self._decimate(obs_files, daily_obs)
+            if header_hook is not None:
+                header_hook(daily_obs)
             produced = self._to_hatanaka_compressed(daily_obs, scratch)
             output_file.parent.mkdir(parents=True, exist_ok=True)
             # Land beside the target, then rename: a rebuild replaces a live
