@@ -375,7 +375,10 @@ class ArchiveSync:
             "rsync",
             "-a",  # archive mode (no -z: raw is already compressed)
             immutability,  # per-tier: raw --ignore-existing, rinex --update
-            "--partial",  # resume interrupted transfers
+            # NO --partial: on an interrupted transfer it renames the partial
+            # file to the REAL name, newer than its source, so --update and
+            # --ignore-existing then skip it forever (truncated HOFN/REYK
+            # dailies 2026-10-15). Without it rsync discards the temp file.
             "--itemize-changes",  # so we learn what actually transferred
             f"--skip-compress={_SKIP_COMPRESS}",
             f"--files-from={files_from}",
@@ -431,14 +434,23 @@ class ArchiveSync:
                 self.remote_dest,
                 " [dry-run]" if self.dry_run else "",
             )
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=_subprocess_timeout(
-                    self.rsync_timeout if timeout is None else timeout
-                ),
+            limit = _subprocess_timeout(
+                self.rsync_timeout if timeout is None else timeout
             )
+            try:
+                proc = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=limit
+                )
+            except subprocess.TimeoutExpired:
+                # Callers (push_explicit, the download hooks) are best-effort and
+                # must not raise. Nothing is cataloged: files rsync finished before
+                # the kill are on the archive uncataloged — rerun the push.
+                msg = (
+                    f"rsync timed out after {limit}s ({len(rel_paths)} file(s)); "
+                    "rerun, or raise archive-sync --timeout (0 = unlimited)"
+                )
+                logger.error(msg)
+                return False, [], msg
             transferred = self._parse_transferred(proc.stdout)
             if proc.returncode != 0:
                 logger.error("rsync rc=%d: %s", proc.returncode, proc.stderr.strip())

@@ -384,3 +384,55 @@ class TestCliTimeout:
         assert rc == 1
         assert seen == []
         assert "--timeout" in capsys.readouterr().out
+
+
+# --------------------------------------------------------- interrupted transfer
+@pytest.mark.skipif(__import__("shutil").which("rsync") is None, reason="needs rsync")
+class TestInterruptedTransfer:
+    """A timed-out rsync must not leave a truncated file under the real name.
+
+    With ``--partial`` the killed transfer left a truncated file newer than its
+    source on the archive, so every later --update / --ignore-existing run
+    skipped it (HOFN/REYK, 2026-10-15). The timeout must also not raise out of
+    the best-effort push path.
+    """
+
+    REL = "2026/aug/MYVA/15s_24hr/raw/MYVA202608120000a.sbf.gz"
+
+    def _engine(self, tmp_path):
+        src = tmp_path / "src"
+        f = src / self.REL
+        f.parent.mkdir(parents=True)
+        f.write_bytes(os.urandom(20_000_000))
+        eng = ArchiveSync(_target(tmp_path), conn=None, catalog_conns=[])
+        return eng, tmp_path / "dest" / self.REL
+
+    def test_build_cmd_has_no_partial(self, tmp_path):
+        eng = ArchiveSync(_target(tmp_path), conn=None, catalog_conns=[])
+        cmd = eng._build_rsync_cmd("/dev/null", "--update")
+        assert not any(a.startswith("--partial") for a in cmd)
+
+    def test_killed_transfer_leaves_no_truncated_file(self, tmp_path):
+        eng, dest = self._engine(tmp_path)
+        ok, transferred, msg = eng._rsync(
+            [self.REL], "--ignore-existing", timeout=1, extra_args=["--bwlimit=2000"]
+        )
+        assert ok is False
+        assert transferred == []
+        assert "timed out" in msg
+        import time
+
+        time.sleep(1)  # let the orphaned receiver finish its cleanup
+        assert not dest.exists(), f"truncated {dest.stat().st_size} B left behind"
+
+    def test_push_explicit_does_not_raise_on_timeout(self, tmp_path, monkeypatch):
+        import receivers.archive.engine as eng_mod
+
+        def boom(cmd, **kw):
+            raise eng_mod.subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+
+        eng, _dest = self._engine(tmp_path)
+        monkeypatch.setattr(eng_mod.subprocess, "run", boom)
+        pushed, errors, digests = eng.push_explicit([str(tmp_path / "src" / self.REL)])
+        assert (pushed, digests) == (0, {})
+        assert len(errors) == 1 and "timed out" in errors[0]
