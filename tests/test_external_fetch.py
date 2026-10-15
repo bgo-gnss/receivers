@@ -231,3 +231,130 @@ class TestNormalizeExternalFile:
         p.write_text(PLAIN_R3_HEADER)  # not Hatanaka
         with pytest.raises(ValueError, match="unsupported external format"):
             normalize_external_file(p, "MYVA", datetime(2026, 8, 18), tmp_path, "1D")
+
+
+class TestArchiveDirPerFile:
+    """The archive is laid out by month: each file's directory comes from ITS date.
+
+    A range crossing a month boundary (the scheduler's 2-day window on the 1st,
+    a multi-month backfill) used to land every file in one month's directory.
+    """
+
+    def test_archive_dir(self, tmp_path):
+        from receivers.external_fetch import archive_dir
+
+        assert archive_dir(tmp_path, "reyk", datetime(2024, 2, 1)) == (
+            tmp_path / "2024/feb/REYK/15s_24hr/rinex"
+        )
+
+    def test_range_across_month_splits_directories(self, tmp_path):
+        from unittest.mock import patch
+
+        from receivers.external_fetch import archive_dir, fetch_external_station
+
+        def fake_fetch(url, dest, **kw):
+            dest.mkdir(parents=True, exist_ok=True)
+            p = dest / url.rsplit("/", 1)[1]
+            p.write_bytes(_lzw(CRINEX_HEADER.encode()))
+            return p
+
+        cfg = {
+            "external_url_template": "ftp://h/%Y/%j/{station}{rin2}e",
+            "external_frequency": "1D",
+        }
+        with patch("receivers.external_fetch._fetch_one", side_effect=fake_fetch):
+            files = fetch_external_station(
+                "REYK",
+                cfg,
+                datetime(2024, 1, 31),
+                datetime(2024, 2, 1),
+                lambda dt: archive_dir(tmp_path, "REYK", dt),
+            )
+        rel = sorted(str(f.relative_to(tmp_path)) for f in files)
+        assert rel == [
+            "2024/feb/REYK/15s_24hr/rinex/REYK0320.24D.Z",
+            "2024/jan/REYK/15s_24hr/rinex/REYK0310.24D.Z",
+        ]
+
+
+def _capture_dest():
+    """Patch target for fetch_external_station recording the ``dest_dir`` it got."""
+    seen = {}
+
+    def fake(sid, cfg, start, end, dest_dir, **kw):
+        seen[sid] = dest_dir
+        return []
+
+    return seen, fake
+
+
+class TestCallersPassPerFileDirectory:
+    """Both call sites must hand fetch_external_station a per-date directory."""
+
+    CFG = {"external_url_template": "ftp://h/%Y/%j/{station}{rin2}e"}
+
+    def test_cli_download_external(self, tmp_path):
+        from argparse import Namespace
+        from unittest.mock import MagicMock, patch
+
+        from receivers.cli.main import cmd_download
+
+        seen, fake = _capture_dest()
+        rc_cfg = MagicMock()
+        rc_cfg.get_data_prepath.return_value = str(tmp_path)
+        args = Namespace(
+            production=False,
+            json_log=False,
+            loglevel=30,
+            stations=["REYK"],
+            all_stations=False,
+            session="15s_24hr",
+            start="20240130",
+            end="20240203",
+            days=None,
+            afrequency=None,
+            ffrequency=None,
+            external=True,
+            sync=True,
+            archive=False,
+        )
+        with (
+            patch("receivers.external_fetch.raw_station_config", return_value=self.CFG),
+            patch("receivers.external_fetch.fetch_external_station", side_effect=fake),
+            patch(
+                "receivers.config.receivers_config.get_receivers_config",
+                return_value=rc_cfg,
+            ),
+        ):
+            assert cmd_download(args) == 0
+        dest = seen["REYK"]
+        assert dest(datetime(2024, 1, 31)) == tmp_path / "2024/jan/REYK/15s_24hr/rinex"
+        assert dest(datetime(2024, 2, 2)) == tmp_path / "2024/feb/REYK/15s_24hr/rinex"
+
+    def test_scheduler_external_fetch(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+
+        import receivers.scheduling.bulk_scheduler as bs
+
+        seen, fake = _capture_dest()
+        rc_cfg = MagicMock()
+        rc_cfg.get_data_prepath.return_value = str(tmp_path)
+        sched = bs.BulkDownloadScheduler.__new__(bs.BulkDownloadScheduler)
+        sched.logger = MagicMock()
+        sched.scheduler = MagicMock()
+        with (
+            patch(
+                "receivers.external_fetch.external_station_configs",
+                return_value={"HOFN": self.CFG},
+            ),
+            patch("receivers.external_fetch.fetch_external_station", side_effect=fake),
+            patch(
+                "receivers.config.receivers_config.get_receivers_config",
+                return_value=rc_cfg,
+            ),
+            patch("receivers.health.file_tracker.FileTracker", MagicMock()),
+        ):
+            sched._run_external_fetch()
+        dest = seen["HOFN"]
+        assert dest(datetime(2026, 9, 30)) == tmp_path / "2026/sep/HOFN/15s_24hr/rinex"
+        assert dest(datetime(2026, 10, 1)) == tmp_path / "2026/oct/HOFN/15s_24hr/rinex"

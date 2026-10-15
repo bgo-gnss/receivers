@@ -2934,7 +2934,11 @@ class BulkDownloadScheduler:
         from pathlib import Path
 
         from ..config.receivers_config import get_receivers_config
-        from ..external_fetch import external_station_configs, fetch_external_station
+        from ..external_fetch import (
+            archive_dir,
+            external_station_configs,
+            fetch_external_station,
+        )
         from ..health.file_tracker import FileTracker
 
         end = datetime.now()
@@ -2943,14 +2947,9 @@ class BulkDownloadScheduler:
         tracker = FileTracker()
 
         for sid, config in external_station_configs().items():
-            dest = (
-                data_prepath
-                / end.strftime("%Y")
-                / end.strftime("%b").lower()
-                / sid.upper()
-                / "15s_24hr"
-                / "rinex"
-            )
+            def dest(dt, _sid=sid):
+                return archive_dir(data_prepath, _sid, dt)
+
             try:
                 files = fetch_external_station(
                     sid,
