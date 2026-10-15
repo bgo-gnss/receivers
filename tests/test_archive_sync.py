@@ -36,7 +36,8 @@ def _target(tmp_root, **over):
 class TestConfig:
     def test_load(self, tmp_path):
         cfg = tmp_path / "sync.yaml"
-        cfg.write_text("""
+        cfg.write_text(
+            """
 overlap_minutes: 7
 targets:
   - name: imo_archive
@@ -50,7 +51,8 @@ targets:
     file_categories: [raw, rinex]
     exclude_stations: [DYNA, HRNC, HAUR]
     cutover: "2026-06-22T00:00:00"
-""")
+"""
+        )
         targets = load_sync_config(cfg)
         assert len(targets) == 1
         t = targets[0]
@@ -64,7 +66,8 @@ targets:
 
     def test_legacy_singular_file_category(self, tmp_path):
         cfg = tmp_path / "sync.yaml"
-        cfg.write_text("""
+        cfg.write_text(
+            """
 targets:
   - name: imo_archive
     active: true
@@ -75,7 +78,8 @@ targets:
     sessions: [15s_24hr]
     file_category: raw
     cutover: "2026-06-22T00:00:00"
-""")
+"""
+        )
         t = load_sync_config(cfg)[0]
         assert t.file_categories == ("raw",)
 
@@ -573,7 +577,8 @@ class TestSchedulerWiring:
         from receivers.archive.job import run_archive_sync_job
 
         cfg = tmp_path / "sync.yaml"
-        cfg.write_text("""
+        cfg.write_text(
+            """
 targets:
   - name: imo_archive
     active: false
@@ -583,7 +588,8 @@ targets:
     source_root: /mnt/data/gpsdata
     sessions: [15s_24hr]
     cutover: "2026-06-22T00:00:00"
-""")
+"""
+        )
         # all inactive -> returns before opening any DB connection
         run_archive_sync_job(config_path=str(cfg))
 
@@ -782,3 +788,157 @@ class TestVerifyPushed:
         )
         assert stats.checked == 0
         assert stats.verified == 0
+
+
+# ------------------------------------------- selection: files already on archive
+@pytest.mark.skipif(__import__("shutil").which("rsync") is None, reason="needs rsync")
+class TestSelectCatalogsPresent:
+    """rsync reports only what it moved, so a selected file already on the archive
+    was never cataloged. With a read root it is proven against the archive copy
+    and cataloged FROM that copy; a differing copy is never cataloged."""
+
+    REL = "2026/jun/AKUR/15s_24hr/raw/AKUR202606230000a.sbf.gz"
+
+    def _setup(self, tmp_path, conn, *, archive_bytes=None, **eng_kw):
+        import gzip
+
+        src, dst = tmp_path / "src", tmp_path / "dst"
+        payload = gzip.compress(os.urandom(4000))
+        for root, data in ((src, payload), (dst, archive_bytes or payload)):
+            f = root / self.REL
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(data)
+        target = _target(src, name="test_target", host="", dest=str(dst))
+        conns = [conn] if conn is not None else []
+        eng = ArchiveSync(target, conn=conn, catalog_conns=conns, **eng_kw)
+        return eng, src, dst, payload
+
+    def _rows(self, conn):
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT content_sha256, file_path, file_size FROM archive_catalog "
+                "WHERE storage_location = 'test_target'"
+            )
+            rows = cur.fetchall()
+        conn.commit()
+        return rows
+
+    def test_present_identical_copy_is_cataloged(self, tmp_path, db_conn):
+        from receivers.utils.content_hash import content_sha256
+
+        eng, src, dst, payload = self._setup(tmp_path, db_conn)
+        res = eng.select(station="AKUR", read_root=str(dst))
+        assert res.transferred == 0  # --ignore-existing: rsync skipped it
+        assert res.present_cataloged == 1
+        assert res.ok
+        assert self._rows(db_conn) == [
+            (content_sha256(dst / self.REL), f"{dst}/{self.REL}", len(payload))
+        ]
+        # second run: already cataloged, nothing re-hashed or re-written
+        res2 = eng.select(station="AKUR", read_root=str(dst))
+        assert (res2.present_already, res2.present_cataloged) == (1, 0)
+
+    def test_transferred_file_is_not_rechecked(self, tmp_path, db_conn):
+        eng, src, dst, _ = self._setup(tmp_path, db_conn)
+        (dst / self.REL).unlink()  # not on the archive yet: rsync moves it
+        res = eng.select(station="AKUR", read_root=str(dst))
+        assert (res.transferred, res.cataloged) == (1, 1)
+        assert (res.present_cataloged, res.present_already) == (0, 0)
+
+    def test_truncated_archive_copy_is_reported_not_cataloged(self, tmp_path, db_conn):
+        import gzip
+
+        whole = gzip.compress(os.urandom(4000))
+        eng, src, dst, _ = self._setup(tmp_path, db_conn, archive_bytes=whole[:512])
+        res = eng.select(station="AKUR", read_root=str(dst))
+        assert res.present_cataloged == 0
+        assert len(res.archive_differs) == 1
+        assert "unreadable" in res.archive_differs[0]
+        assert res.ok is False
+        assert self._rows(db_conn) == []
+
+    def test_dry_run_classifies_but_writes_nothing(self, tmp_path, db_conn):
+        eng, src, dst, _ = self._setup(tmp_path, db_conn, dry_run=True)
+        res = eng.select(station="AKUR", read_root=str(dst))
+        assert res.present_cataloged == 1
+        assert "would catalog 1" in res.message
+        assert self._rows(db_conn) == []
+
+    def test_without_read_root_nothing_is_cataloged(self, tmp_path, db_conn):
+        eng, src, dst, _ = self._setup(tmp_path, db_conn)
+        res = eng.select(station="AKUR")
+        assert res.present_cataloged == 0
+        assert "NOT checked" in res.message
+        assert self._rows(db_conn) == []
+
+    def test_absent_under_read_root_is_counted(self, tmp_path, db_conn):
+        eng, src, dst, _ = self._setup(tmp_path, db_conn)
+        res = eng.select(station="AKUR", read_root=str(tmp_path / "empty_mount"))
+        assert (res.present_absent, res.present_cataloged) == (1, 0)
+        assert self._rows(db_conn) == []
+
+    def test_interrupted_rsync_still_catalogs_completed_files(
+        self, tmp_path, db_conn, monkeypatch
+    ):
+        """A timed-out rsync reports nothing transferred; a file it finished
+        before the kill is on the archive and must still get its row."""
+        eng, src, dst, _ = self._setup(tmp_path, db_conn)
+        monkeypatch.setattr(
+            eng, "_rsync", lambda rels, imm, **kw: (False, [], "rsync timed out")
+        )
+        res = eng.select(station="AKUR", read_root=str(dst))
+        assert res.present_cataloged == 1
+        assert res.ok is False  # the rsync error still fails the run
+        assert len(self._rows(db_conn)) == 1
+
+
+class TestCliReadRoot:
+    def _run(self, monkeypatch, *argv):
+        import argparse
+        import contextlib
+
+        import receivers.archive as archive_pkg
+        from receivers.archive.engine import SyncRunResult
+        from receivers.cli.archive_sync import create_archive_sync_parser
+
+        seen: list = []
+
+        def fake_select(self, **kw):
+            seen.append(kw.get("read_root"))
+            return SyncRunResult(target="t", floor=CUTOVER, ok=True)
+
+        monkeypatch.setattr(ArchiveSync, "select", fake_select)
+        monkeypatch.setattr(
+            archive_pkg, "load_sync_config", lambda path: [_target("/nonexistent")]
+        )
+        monkeypatch.setattr(
+            archive_pkg, "open_catalog_conns", lambda **kw: contextlib.nullcontext([])
+        )
+        ap = argparse.ArgumentParser()
+        create_archive_sync_parser(ap.add_subparsers())
+        args = ap.parse_args(["archive-sync", "--station", "AKUR", "--dry-run", *argv])
+        assert args.func(args) == 0
+        return seen
+
+    def test_explicit_read_root_reaches_select(self, monkeypatch):
+        assert self._run(monkeypatch, "--read-root", "/mnt/x") == ["/mnt/x"]
+
+    def test_default_comes_from_archive_verify(self, monkeypatch):
+        import receivers.scheduling.config_loader as cl
+
+        monkeypatch.setattr(
+            cl,
+            "load_scheduler_config",
+            lambda *a, **k: {"archive_verify": {"read_root": "/mnt/rawgpsdata"}},
+        )
+        assert self._run(monkeypatch) == ["/mnt/rawgpsdata"]
+
+    def test_empty_disables(self, monkeypatch):
+        import receivers.scheduling.config_loader as cl
+
+        monkeypatch.setattr(
+            cl,
+            "load_scheduler_config",
+            lambda *a, **k: {"archive_verify": {"read_root": "/mnt/rawgpsdata"}},
+        )
+        assert self._run(monkeypatch, "--read-root", "") == [None]

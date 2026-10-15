@@ -168,6 +168,12 @@ class TestEnumerateSelection:
         assert eng.enumerate_selection(station="ZZZZ") == []
 
 
+def _all_transferred(paths, **kw):
+    """Stub ``_push``: every selected file transferred."""
+    rels = {os.path.relpath(p, str(Path(p).parents[5])) for p in paths}
+    return len(paths), [], {}, rels
+
+
 # --------------------------------------------------------------------------- select
 class TestSelect:
     def _eng(self, tmp_path, **kw):
@@ -179,9 +185,7 @@ class TestSelect:
 
         _tree(tmp_path)
         eng = self._eng(tmp_path)
-        monkeypatch.setattr(
-            eng, "push_explicit", lambda paths, **kw: (len(paths), [], {})
-        )
+        monkeypatch.setattr(eng, "_push", _all_transferred)
         monkeypatch.setattr(
             eng_mod,
             "record_run",
@@ -210,9 +214,7 @@ class TestSelect:
     def test_select_dry_run_reports_zero_cataloged(self, tmp_path, monkeypatch):
         _tree(tmp_path)
         eng = self._eng(tmp_path, dry_run=True)
-        monkeypatch.setattr(
-            eng, "push_explicit", lambda paths, **kw: (len(paths), [], {})
-        )
+        monkeypatch.setattr(eng, "_push", _all_transferred)
         res = eng.select(
             station="MYVA",
             start=datetime(2026, 8, 12),

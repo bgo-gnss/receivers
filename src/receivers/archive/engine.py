@@ -78,6 +78,11 @@ class SyncRunResult:
     transferred: int = 0
     cataloged: int = 0
     bad_format: int = 0  # .Z files refused by the format guard (wrong magic)
+    # Selection mode, files rsync did NOT transfer (already on the archive):
+    present_cataloged: int = 0  # archive copy == local, row written (or would be)
+    present_already: int = 0  # already cataloged on every catalog host
+    present_absent: int = 0  # not visible under the read root
+    archive_differs: list[str] = field(default_factory=list)  # never cataloged
     ok: bool = False
     dry_run: bool = False
     message: str = ""
@@ -323,12 +328,19 @@ class ArchiveSync:
         session: str | None = None,
         start: datetime | None = None,
         end: datetime | None = None,
+        *,
+        read_root: str | None = None,
     ) -> SyncRunResult:
         """Push files matching an explicit station/session/time-window selection.
 
         The targeted escape hatch for the :45 sweep: enumerate matching files and
         push them via the write-through path WITHOUT advancing the sweep watermark
         — so the next full sweep still covers the window and cannot be masked.
+
+        rsync reports only what it transferred, so a file already on the archive
+        (an earlier interrupted run, a manual copy) was never cataloged. With
+        ``read_root`` (the archive's read-only mount) every selected file rsync
+        skipped is checked there: see :meth:`catalog_present`.
         """
         result = SyncRunResult(
             target=self.target.name,
@@ -350,18 +362,142 @@ class ArchiveSync:
         # A manual bulk selection is not a download worker: it gets the long
         # ``rsync_timeout`` (CLI ``--timeout``; 0 = unlimited), never the 60 s
         # write-through limit, which killed rsync mid-transfer on bulk pushes.
-        pushed, errors, _digests = self.push_explicit(paths, timeout=self.rsync_timeout)
+        pushed, errors, _digests, transferred = self._push(
+            paths, timeout=self.rsync_timeout
+        )
         result.transferred = pushed
         # dry-run: push_explicit counts would-transfer (nothing cataloged);
         # match run()'s convention — cataloged stays 0 on a preview.
         result.cataloged = 0 if self.dry_run else pushed
         result.errors = list(errors)
-        result.ok = not errors
         result.message = (
             f"{'would transfer' if self.dry_run else 'transferred'} "
             f"{pushed} file(s) (watermark NOT advanced)"
         )
+        root = self.target.source_root
+        skipped = [
+            rel
+            for rel in (os.path.relpath(p, root) for p in paths)
+            if rel not in transferred
+        ]
+        if skipped and read_root:
+            self.catalog_present(skipped, read_root, result)
+            verb = "would catalog" if self.dry_run else "cataloged"
+            result.message += (
+                f"; already on archive: {verb} {result.present_cataloged}, "
+                f"{result.present_already} already cataloged, "
+                f"{result.present_absent} absent, "
+                f"{len(result.archive_differs)} DIFFER"
+            )
+        elif skipped:
+            result.message += (
+                f"; {len(skipped)} not transferred and NOT checked/cataloged "
+                "(no read root)"
+            )
+        result.ok = not result.errors and not result.archive_differs
         return result
+
+    def catalog_present(
+        self, rels: list[str], read_root: str, result: SyncRunResult
+    ) -> None:
+        """Catalog selected files that are already on the archive, after proof.
+
+        The row must describe the ARCHIVE copy, never the local one: an
+        interrupted rsync can leave a truncated file there that every later run
+        skips. So each file is hashed on both sides (``read_root`` is the
+        archive's read-only mount):
+
+        * already cataloged on every host → left alone (verify owns re-hashing);
+        * absent under ``read_root``     → counted (NFS lag, or a failed push);
+        * archive == local               → cataloged from the archive copy via
+          :func:`reindex.reindex_files` on every catalog host;
+        * archive != local / unreadable  → ``archive_differs``, NOT cataloged.
+          Truncation, or a legitimately newer archive rinex — a human decides.
+
+        Dry-run classifies (reads only) and writes nothing. Results accumulate
+        into ``result``.
+        """
+        from ..utils.canonical_key import canonical_key
+        from .reindex import _existing_sha, reindex_files
+
+        root = self.target.source_root
+        conns = self._catalog_conns
+        matched: list[str] = []
+        for rel in rels:
+            local = os.path.join(root, rel)
+            parsed = parse_archive_path(local, root)
+            if parsed is None:
+                continue
+            key = canonical_key(os.path.basename(rel))
+            if conns and all(
+                _existing_sha(
+                    c,
+                    self.target.name,
+                    parsed.session_type,
+                    parsed.file_category,
+                    key,
+                )
+                is not None
+                for c in conns
+            ):
+                result.present_already += 1
+                continue
+            archive_file = os.path.join(read_root, rel)
+            if not os.path.isfile(archive_file):
+                result.present_absent += 1
+                continue
+            try:
+                local_digest = content_sha256(local)
+            except (CorruptArchiveFileError, OSError) as exc:
+                result.errors.append(f"cannot hash local {rel}: {exc}")
+                continue
+            try:
+                archive_digest: str | None = content_sha256(archive_file)
+            except (CorruptArchiveFileError, OSError):
+                archive_digest = None
+            if archive_digest != local_digest:
+                result.archive_differs.append(
+                    f"{rel}: archive {os.path.getsize(archive_file)} B "
+                    f"{'unreadable' if archive_digest is None else archive_digest[:12]}"
+                    f" != local {os.path.getsize(local)} B {local_digest[:12]}"
+                )
+                continue
+            matched.append(archive_file)
+        for c in conns:
+            try:
+                c.rollback()  # end the read-only lookups' open transaction
+            except Exception:  # noqa: BLE001
+                pass
+        if self.dry_run or not matched:
+            result.present_cataloged = len(matched)
+            return
+        base = (
+            self.dest_override if self.dest_override is not None else self.target.dest
+        )
+        for idx, c in enumerate(conns):
+            label = "primary" if idx == 0 else f"mirror#{idx}"
+            try:
+                stats = reindex_files(
+                    c,
+                    matched,
+                    root=read_root,
+                    storage_location=self.target.name,
+                    dest_prefix=base,
+                    log=logger,
+                )
+            except Exception as exc:  # noqa: BLE001
+                result.errors.append(
+                    f"catalog of present files to {label} failed — catalogs may "
+                    f"DIVERGE: {exc}"
+                )
+                try:
+                    c.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
+                continue
+            result.errors.extend(f"{label}: {e}" for e in stats.errors)
+            if idx == 0:
+                result.present_cataloged = stats.touched + stats.unchanged
 
     # ---- rsync -------------------------------------------------------------
 
@@ -567,6 +703,15 @@ class ArchiveSync:
         ``timeout`` is per rsync call (one per file category); the default is the
         short write-through limit. ``<= 0`` means unlimited.
         """
+        pushed, errors, digests, _transferred = self._push(local_paths, timeout=timeout)
+        return pushed, errors, digests
+
+    def _push(
+        self, local_paths: list[str], *, timeout: int
+    ) -> tuple[int, list[str], dict[str, str], set[str]]:
+        """:meth:`push_explicit` plus the relative paths rsync transferred (or,
+        on a dry-run, would transfer) — what :meth:`select` needs to find the
+        files that were already on the archive."""
         root = self.target.source_root
         sessions = set(self.target.sessions)
         cats = set(self.target.file_categories)
@@ -589,6 +734,7 @@ class ArchiveSync:
         pushed = 0
         errors: list[str] = []
         digests: dict[str, str] = {}
+        moved: set[str] = set()
         for category, rels in groups.items():
             ok, transferred, stderr = self._rsync(
                 rels,
@@ -600,6 +746,7 @@ class ArchiveSync:
                     stderr or f"rsync failed for {len(rels)} {category} file(s)"
                 )
                 continue
+            moved.update(transferred)
             if self.dry_run:
                 # --dry-run: rsync itemized what WOULD transfer; never write the
                 # catalog (a selection-mode preview must be side-effect free).
@@ -609,7 +756,7 @@ class ArchiveSync:
             pushed += n
             errors.extend(errs)
             digests.update(cat_digests)
-        return pushed, errors, digests
+        return pushed, errors, digests, moved
 
     def verify_pushed(
         self,
