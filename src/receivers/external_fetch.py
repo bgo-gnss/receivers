@@ -30,7 +30,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 
 logger = logging.getLogger(__name__)
 
@@ -238,6 +238,24 @@ def normalize_external_file(
     return target
 
 
+def archive_dir(
+    data_prepath: Path, station_id: str, dt: datetime, session: str = "15s_24hr"
+) -> Path:
+    """The archive directory ``<prepath>/<YYYY>/<mon>/<SID>/<session>/rinex`` for ``dt``.
+
+    Derived per FILE date: a range crossing a month boundary spans several
+    directories, so a caller must never compute one directory for the range.
+    """
+    return (
+        Path(data_prepath)
+        / dt.strftime("%Y")
+        / dt.strftime("%b").lower()
+        / station_id.upper()
+        / session
+        / "rinex"
+    )
+
+
 def _datetimes(frequency: str, start: datetime, end: datetime) -> List[datetime]:
     """The per-file datetimes covered by ``[start, end]`` at ``frequency``."""
     import gtimes.timefunc as gt
@@ -251,12 +269,16 @@ def fetch_external_station(
     config: Dict[str, Any],
     start: datetime,
     end: Optional[datetime],
-    dest_dir: Path,
+    dest_dir: Union[Path, Callable[[datetime], Path]],
     *,
     tracker: Optional[Any] = None,
     session_type: str = "15s_24hr_rinex",
 ) -> List[Path]:
     """Download one external station's files over ``[start, end]`` into ``dest_dir``.
+
+    ``dest_dir`` is either one directory, or a callable mapping each file's
+    datetime to its directory (see :func:`archive_dir`) — required whenever the
+    range can cross a month, since the archive is laid out by month.
 
     Returns the list of local files written. A station without
     ``external_url_template`` yields an empty list (not an error).
@@ -277,12 +299,13 @@ def fetch_external_station(
         url = build_external_urls(
             station_id, ext["url_template"], ext["frequency"], dt, dt
         )[0]
+        day_dir = dest_dir(dt) if callable(dest_dir) else dest_dir
         try:
             tmp = _fetch_one(
-                url, dest_dir, username=ext["username"], password=ext["password"]
+                url, day_dir, username=ext["username"], password=ext["password"]
             )
             final = normalize_external_file(
-                tmp, station_id, dt, dest_dir, ext["frequency"]
+                tmp, station_id, dt, day_dir, ext["frequency"]
             )
             downloaded.append(final)
             logger.info("external %s: fetched %s", station_id, final.name)

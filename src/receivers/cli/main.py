@@ -356,6 +356,7 @@ def cmd_download(args) -> int:
 
         from ..config.receivers_config import get_receivers_config
         from ..external_fetch import (
+            archive_dir,
             build_external_urls,
             external_station_config,
             fetch_external_station,
@@ -386,14 +387,9 @@ def cmd_download(args) -> int:
                 )
                 total_errors += 1
                 continue
-            dest = (
-                data_prepath
-                / start_time.strftime("%Y")
-                / start_time.strftime("%b").lower()
-                / sid.upper()
-                / args.session
-                / "rinex"
-            )
+            def dest(dt, _sid=sid):
+                return archive_dir(data_prepath, _sid, dt, args.session)
+
             if not sync:
                 # Dry-run: report the remote files that would be fetched.
                 urls = build_external_urls(
