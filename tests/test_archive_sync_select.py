@@ -436,3 +436,24 @@ class TestInterruptedTransfer:
         pushed, errors, digests = eng.push_explicit([str(tmp_path / "src" / self.REL)])
         assert (pushed, digests) == (0, {})
         assert len(errors) == 1 and "timed out" in errors[0]
+
+    def test_sweep_timeout_does_not_advance_watermark(self, tmp_path, monkeypatch):
+        """A caught timeout reaches the :45 sweep as ok=False — never an advance."""
+        import receivers.archive.engine as eng_mod
+
+        eng, _dest = self._engine(tmp_path)
+        eng.conn = object()  # only handed to the stubbed state functions
+        monkeypatch.setattr(eng_mod, "get_last_success", lambda conn, name: None)
+        monkeypatch.setattr(
+            eng, "find_delta", lambda floor, cat: [str(tmp_path / "src" / self.REL)]
+        )
+
+        def boom(cmd, **kw):
+            raise eng_mod.subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+
+        monkeypatch.setattr(eng_mod.subprocess, "run", boom)
+        runs: list = []
+        monkeypatch.setattr(eng_mod, "record_run", lambda *a, **k: runs.append(k))
+        res = eng.run()
+        assert res.ok is False
+        assert runs and all(r["advance_to"] is None and r["ok"] is False for r in runs)
