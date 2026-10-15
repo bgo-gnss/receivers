@@ -73,6 +73,10 @@ def cmd_archive_sync(args: argparse.Namespace) -> int:
     start_dt = _parse_bound(args.start, is_start=True) if args.start else None
     end_dt = _parse_bound(args.end, is_start=False) if args.end else None
 
+    if args.timeout < 0:
+        print("Invalid --timeout: must be >= 0 (0 = unlimited)")
+        return 1
+
     cutover_override = None
     if args.cutover:
         from ..archive.config import _parse_cutover
@@ -105,6 +109,7 @@ def cmd_archive_sync(args: argparse.Namespace) -> int:
                 dest_override=args.dest_override,
                 force=args.force,
                 cutover_override=cutover_override,
+                rsync_timeout=args.timeout,
             )
             if selection_mode:
                 result = engine.select(
@@ -1192,6 +1197,15 @@ def create_archive_sync_parser(subparsers) -> argparse.ArgumentParser:
         help="Override the target's cutover (ISO ts, e.g. 2026-06-18T00:00:00) for "
         "this run — e.g. a pre-stage verify with a recent cutover so there is a "
         "real delta. Does not change sync.yaml.",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=1800,
+        metavar="SECONDS",
+        help="Per-rsync-call timeout in seconds, sweep and selection mode alike "
+        "(default: 1800; 0 = unlimited). The scheduler's push-on-download keeps "
+        "its own 60 s limit.",
     )
     parser.add_argument(
         "--config", help="Path to sync.yaml (default: GPS_CONFIG_PATH/sync.yaml)"
