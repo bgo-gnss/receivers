@@ -179,7 +179,9 @@ class TestSelect:
 
         _tree(tmp_path)
         eng = self._eng(tmp_path)
-        monkeypatch.setattr(eng, "push_explicit", lambda paths: (len(paths), [], {}))
+        monkeypatch.setattr(
+            eng, "push_explicit", lambda paths, **kw: (len(paths), [], {})
+        )
         monkeypatch.setattr(
             eng_mod,
             "record_run",
@@ -208,7 +210,9 @@ class TestSelect:
     def test_select_dry_run_reports_zero_cataloged(self, tmp_path, monkeypatch):
         _tree(tmp_path)
         eng = self._eng(tmp_path, dry_run=True)
-        monkeypatch.setattr(eng, "push_explicit", lambda paths: (len(paths), [], {}))
+        monkeypatch.setattr(
+            eng, "push_explicit", lambda paths, **kw: (len(paths), [], {})
+        )
         res = eng.select(
             station="MYVA",
             start=datetime(2026, 8, 12),
@@ -250,3 +254,133 @@ class TestPushExplicitDryRun:
         )
         assert pushed == 1
         assert errors == []
+
+
+# ------------------------------------------------------------------- rsync timeout
+class _Proc:
+    returncode = 0
+    stdout = ""
+    stderr = ""
+
+
+def _capture_run(monkeypatch):
+    """Record the ``timeout`` every ``subprocess.run`` in the engine receives."""
+    import receivers.archive.engine as eng_mod
+
+    seen: list = []
+
+    def fake_run(cmd, **kw):
+        seen.append(kw.get("timeout"))
+        return _Proc()
+
+    monkeypatch.setattr(eng_mod.subprocess, "run", fake_run)
+    return seen
+
+
+class TestRsyncTimeout:
+    """Selection mode used the 60 s write-through limit, so a bulk push was killed
+    mid-transfer. It must use ``rsync_timeout`` (CLI ``--timeout``, 0 = unlimited)."""
+
+    def _select(self, tmp_path, monkeypatch, **kw):
+        _tree(tmp_path)
+        seen = _capture_run(monkeypatch)
+        eng = ArchiveSync(_target(tmp_path), conn=None, catalog_conns=[], **kw)
+        eng.select(station="MYVA")
+        return seen
+
+    def test_select_uses_rsync_timeout_not_push_limit(self, tmp_path, monkeypatch):
+        seen = self._select(tmp_path, monkeypatch, rsync_timeout=900)
+        assert seen and set(seen) == {900}
+
+    def test_select_default_is_long_timeout(self, tmp_path, monkeypatch):
+        seen = self._select(tmp_path, monkeypatch)
+        assert seen and set(seen) == {1800}
+
+    def test_select_zero_is_unlimited(self, tmp_path, monkeypatch):
+        seen = self._select(tmp_path, monkeypatch, rsync_timeout=0)
+        assert seen and set(seen) == {None}
+
+    def test_push_on_download_keeps_short_limit(self, tmp_path, monkeypatch):
+        from receivers.archive.engine import _PUSH_RSYNC_TIMEOUT
+
+        src = _tree(tmp_path)
+        seen = _capture_run(monkeypatch)
+        eng = ArchiveSync(
+            _target(tmp_path), conn=None, catalog_conns=[], rsync_timeout=0
+        )
+        eng.push_explicit(
+            [str(src / "2026/aug/MYVA/15s_24hr/raw/MYVA202608120000a.sbf.gz")]
+        )
+        assert seen == [_PUSH_RSYNC_TIMEOUT]
+
+    def test_explicit_zero_overrides_engine_default(self, tmp_path, monkeypatch):
+        """0 passed per call means unlimited even when the engine default is not."""
+        src = _tree(tmp_path)
+        seen = _capture_run(monkeypatch)
+        eng = ArchiveSync(_target(tmp_path), conn=None, catalog_conns=[])
+        eng.push_explicit(
+            [str(src / "2026/aug/MYVA/15s_24hr/raw/MYVA202608120000a.sbf.gz")],
+            timeout=0,
+        )
+        assert seen == [None]
+
+    def test_sweep_zero_is_unlimited(self, tmp_path, monkeypatch):
+        """The watermark sweep's ``find`` and rsync share the same knob."""
+        _tree(tmp_path)
+        seen = _capture_run(monkeypatch)
+        eng = ArchiveSync(
+            _target(tmp_path), conn=None, catalog_conns=[], rsync_timeout=0
+        )
+        eng.find_delta(CUTOVER, "raw")
+        eng._rsync(["x"], "--ignore-existing")
+        assert seen == [None, None]
+
+
+class TestCliTimeout:
+    def _parse(self, *argv):
+        import argparse
+
+        from receivers.cli.archive_sync import create_archive_sync_parser
+
+        ap = argparse.ArgumentParser()
+        sub = ap.add_subparsers()
+        create_archive_sync_parser(sub)
+        return ap.parse_args(["archive-sync", *argv])
+
+    def _run(self, tmp_path, monkeypatch, *argv):
+        """Run cmd_archive_sync end-to-end with rsync and the DB stubbed out."""
+        import contextlib
+
+        import receivers.archive as archive_pkg
+
+        _tree(tmp_path)
+        seen = _capture_run(monkeypatch)
+        monkeypatch.setattr(
+            archive_pkg, "load_sync_config", lambda path: [_target(tmp_path)]
+        )
+        monkeypatch.setattr(
+            archive_pkg,
+            "open_catalog_conns",
+            lambda **kw: contextlib.nullcontext([]),
+        )
+        args = self._parse("--station", "MYVA", "--dry-run", *argv)
+        return args.func(args), seen
+
+    def test_default_is_1800(self):
+        assert self._parse().timeout == 1800
+
+    def test_cli_timeout_reaches_rsync(self, tmp_path, monkeypatch):
+        rc, seen = self._run(tmp_path, monkeypatch, "--timeout", "120")
+        assert rc == 0
+        assert seen and set(seen) == {120}
+
+    def test_cli_zero_is_unlimited(self, tmp_path, monkeypatch):
+        rc, seen = self._run(tmp_path, monkeypatch, "--timeout", "0")
+        assert rc == 0
+        assert seen and set(seen) == {None}
+
+    def test_cli_negative_rejected(self, tmp_path, monkeypatch, capsys):
+        rc, seen = self._run(tmp_path, monkeypatch, "--timeout", "-5")
+        assert rc == 1
+        assert seen == []
+        assert "--timeout" in capsys.readouterr().out

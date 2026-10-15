@@ -63,6 +63,11 @@ def _immutability_flag(category: str) -> str:
 _PUSH_RSYNC_TIMEOUT = 60
 
 
+def _subprocess_timeout(seconds: int) -> int | None:
+    """Map a configured rsync timeout to ``subprocess.run``'s: ``<= 0`` = unlimited."""
+    return None if seconds <= 0 else seconds
+
+
 @dataclass
 class SyncRunResult:
     """Outcome of one ArchiveSync.run()."""
@@ -172,7 +177,10 @@ class ArchiveSync:
             floor.strftime("%Y-%m-%d %H:%M:%S"),
         ]
         proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=self.rsync_timeout
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=_subprocess_timeout(self.rsync_timeout),
         )
         if proc.returncode != 0:
             logger.error("find failed: %s", proc.stderr.strip())
@@ -339,7 +347,10 @@ class ArchiveSync:
             result.ok = True
             result.message = "0 files matched the selection"
             return result
-        pushed, errors, _digests = self.push_explicit(paths)
+        # A manual bulk selection is not a download worker: it gets the long
+        # ``rsync_timeout`` (CLI ``--timeout``; 0 = unlimited), never the 60 s
+        # write-through limit, which killed rsync mid-transfer on bulk pushes.
+        pushed, errors, _digests = self.push_explicit(paths, timeout=self.rsync_timeout)
         result.transferred = pushed
         # dry-run: push_explicit counts would-transfer (nothing cataloged);
         # match run()'s convention — cataloged stays 0 on a preview.
@@ -403,9 +414,10 @@ class ArchiveSync:
     ) -> tuple[bool, list[str], str]:
         """Run rsync for the given relative paths; return (ok, transferred, stderr).
 
-        ``timeout`` overrides the default (the push path uses a short one so a
-        hung archive can't stall a download worker); ``extra_args`` injects extra
-        rsync flags (the push path adds ``-e ssh …`` for SSH multiplexing).
+        ``timeout`` overrides the default ``rsync_timeout`` (the push path uses a
+        short one so a hung archive can't stall a download worker); ``<= 0`` means
+        unlimited. ``extra_args`` injects extra rsync flags (the push path adds
+        ``-e ssh …`` for SSH multiplexing).
         """
         with tempfile.NamedTemporaryFile("w", suffix=".files-from", delete=False) as fh:
             fh.write("\n".join(rel_paths) + "\n")
@@ -423,7 +435,9 @@ class ArchiveSync:
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=timeout or self.rsync_timeout,
+                timeout=_subprocess_timeout(
+                    self.rsync_timeout if timeout is None else timeout
+                ),
             )
             transferred = self._parse_transferred(proc.stdout)
             if proc.returncode != 0:
@@ -521,7 +535,7 @@ class ArchiveSync:
     # ---- push-on-download (low-latency write-through) -----------------------
 
     def push_explicit(
-        self, local_paths: list[str]
+        self, local_paths: list[str], *, timeout: int = _PUSH_RSYNC_TIMEOUT
     ) -> tuple[int, list[str], dict[str, str]]:
         """Push an explicit list of just-produced local files to the archive NOW.
 
@@ -537,6 +551,9 @@ class ArchiveSync:
         must not be harmed by the push. Returns ``(pushed, errors, digests)``,
         where ``digests`` maps each cataloged relative path to its local
         content_sha256 — feed it to ``verify_pushed`` for an immediate read-back.
+
+        ``timeout`` is per rsync call (one per file category); the default is the
+        short write-through limit. ``<= 0`` means unlimited.
         """
         root = self.target.source_root
         sessions = set(self.target.sessions)
@@ -564,7 +581,7 @@ class ArchiveSync:
             ok, transferred, stderr = self._rsync(
                 rels,
                 _immutability_flag(category),
-                timeout=_PUSH_RSYNC_TIMEOUT,
+                timeout=timeout,
             )
             if not ok:
                 errors.append(
