@@ -283,6 +283,13 @@ receivers archive-catalog-gc --read-root /mnt/rawgpsdata --catalog-prod         
 receivers archive-catalog-gc --read-root /mnt/rawgpsdata --catalog-prod --limit 500 --yes  # staged
 receivers archive-catalog-gc --read-root /mnt/rawgpsdata --catalog-prod --json
 
+# Targeted bulk push (selection mode; watermark untouched). --timeout is per rsync
+# call (default 1800 s, 0 = unlimited; push-on-download keeps 60 s). Files already on
+# the archive are hashed under --read-root (default archive_verify.read_root) and
+# cataloged from the archive copy only when it matches local; a differing copy
+# (e.g. truncated) is listed "archive differs, NOT cataloged" and exits 1.
+receivers archive-sync --station HOFN --session 15s_24hr --start 2024-01-01 --end 2024-12-31 --timeout 0
+
 # Full-archive identity audit (stray + stacked; report-only, emits fix commands)
 receivers archive-audit NYLA --identity --years 2022      # stray/stacked sweep
 receivers archive-audit NYLA --identity --deep --check-version  # + corruption + R2

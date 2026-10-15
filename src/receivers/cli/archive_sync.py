@@ -76,6 +76,7 @@ def cmd_archive_sync(args: argparse.Namespace) -> int:
     if args.timeout < 0:
         print("Invalid --timeout: must be >= 0 (0 = unlimited)")
         return 1
+    read_root = _resolve_read_root(args.read_root) if selection_mode else None
 
     cutover_override = None
     if args.cutover:
@@ -117,6 +118,7 @@ def cmd_archive_sync(args: argparse.Namespace) -> int:
                     session=args.session,
                     start=start_dt,
                     end=end_dt,
+                    read_root=read_root,
                 )
             else:
                 result = engine.run()
@@ -133,6 +135,24 @@ def cmd_archive_sync(args: argparse.Namespace) -> int:
             )
         )
     return exit_code
+
+
+def _resolve_read_root(cli_value: str | None) -> str | None:
+    """The archive's read-only mount for checking already-present files.
+
+    ``--read-root`` wins (``''`` disables the check); otherwise the scheduler's
+    ``archive_verify.read_root`` — the same mount the read-back verify uses.
+    """
+    if cli_value is not None:
+        return cli_value or None
+    try:
+        from ..scheduling.config_loader import load_scheduler_config
+
+        root = load_scheduler_config().get("archive_verify", {}).get("read_root")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not read archive_verify.read_root: %s", exc)
+        return None
+    return root or None
 
 
 def _cmd_status(args: argparse.Namespace, targets) -> int:
@@ -191,6 +211,8 @@ def _print_result(result) -> None:
     )
     for err in result.errors:
         print(f"   ⚠ {err}")
+    for diff in result.archive_differs:
+        print(f"   ❗ archive differs, NOT cataloged: {diff}")
 
 
 def _result_dict(result) -> dict:
@@ -200,6 +222,10 @@ def _result_dict(result) -> dict:
         "delta_count": result.delta_count,
         "transferred": result.transferred,
         "cataloged": result.cataloged,
+        "present_cataloged": result.present_cataloged,
+        "present_already": result.present_already,
+        "present_absent": result.present_absent,
+        "archive_differs": result.archive_differs,
         "ok": result.ok,
         "dry_run": result.dry_run,
         "message": result.message,
@@ -1206,6 +1232,15 @@ def create_archive_sync_parser(subparsers) -> argparse.ArgumentParser:
         help="Per-rsync-call timeout in seconds, sweep and selection mode alike "
         "(default: 1800; 0 = unlimited). The scheduler's push-on-download keeps "
         "its own 60 s limit.",
+    )
+    parser.add_argument(
+        "--read-root",
+        metavar="PATH",
+        help="Selection mode: the archive's read-only mount (e.g. /mnt/rawgpsdata). "
+        "Selected files rsync did not transfer because they are already on the "
+        "archive are hashed there and cataloged when the archive copy matches the "
+        "local one; a differing copy is reported, never cataloged. Default: "
+        "scheduler.yaml archive_verify.read_root; '' disables.",
     )
     parser.add_argument(
         "--config", help="Path to sync.yaml (default: GPS_CONFIG_PATH/sync.yaml)"
