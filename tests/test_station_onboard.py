@@ -260,7 +260,12 @@ NON_EPOS_STAGES = (
     "sitelog",
     "record-visit",
 )
-FULL_EPOS_STAGES = NON_EPOS_STAGES[:7] + ("m3g", "sync-yaml", "epos-disseminate", "record-visit")
+FULL_EPOS_STAGES = NON_EPOS_STAGES[:7] + (
+    "m3g",
+    "sync-yaml",
+    "epos-disseminate",
+    "record-visit",
+)
 
 
 def test_non_epos_visit_text_claims_no_epos_work():
