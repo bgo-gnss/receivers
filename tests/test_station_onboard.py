@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Any, Dict
 
 import pytest
 
@@ -17,7 +18,7 @@ from receivers.cli.station_onboard import STAGES, OnboardContext
 
 
 def _ctx(tmp_path: Path, **kw) -> OnboardContext:
-    defaults = dict(
+    defaults: Dict[str, Any] = dict(
         station="VMEY",
         root=str(tmp_path),
         start=None,
@@ -35,6 +36,7 @@ def test_stage_order_matches_recipe():
     assert [s.key for s in STAGES] == [
         "tos-review",
         "rinex-review",
+        "archive-sync",
         "re-rinex",
         "constellation-audit",
         "fix-headers",
@@ -50,6 +52,7 @@ def test_stage_order_matches_recipe():
     ]
     mutating = {s.key for s in STAGES if s.mutating}
     assert mutating == {
+        "archive-sync",
         "re-rinex",
         "fix-headers",
         "sitelog",
@@ -224,11 +227,76 @@ def test_sync_yaml_stanza_contains_station():
 
 
 def test_record_visit_argv_carries_standard_fields():
-    ctx = _ctx(Path("/tmp"), participants="bgo@vedur.is", visit_date="2026-08-24")
+    ctx = _ctx(
+        Path("/tmp"),
+        participants="bgo@vedur.is",
+        visit_date="2026-08-24",
+        stage_keys=("tos-review", "re-rinex", "fix-headers"),
+    )
     argv = so._visit_argv(ctx)
     assert "--type" in argv and "remote" in argv
     assert "--participants" in argv and "bgo@vedur.is" in argv
     assert "--start" in argv and "2026-08-24" in argv
     assert "--no-dry-run" in argv
-    assert so.VISIT_WORK_TEXT in argv
-    assert "TOS reviewed, re-rinexed to R3" in so.VISIT_WORK_TEXT
+    assert "--work" in argv
+    assert "TOS reviewed, re-rinexed to R3, headers fixed" in argv
+
+
+# --------------------------------------------------------------------------- #
+# The record-visit text is DERIVED from the stages that ran (bgo 2026-10-16).
+#
+# Hardcoded stage tuples below on purpose: they pin the exact subsets the two
+# lanes run, so renaming or reordering a stage fails here. STAGES is the source of
+# truth for the pipeline; these are the contract for the RECORD.
+# --------------------------------------------------------------------------- #
+
+NON_EPOS_STAGES = (
+    "tos-review",
+    "rinex-review",
+    "archive-sync",
+    "re-rinex",
+    "constellation-audit",
+    "fix-headers",
+    "sitelog",
+    "record-visit",
+)
+FULL_EPOS_STAGES = NON_EPOS_STAGES[:7] + ("m3g", "sync-yaml", "epos-disseminate", "record-visit")
+
+
+def test_non_epos_visit_text_claims_no_epos_work():
+    """The non-EPOS sweep must not record M3G/EPOS work it never did.
+
+    That lane exists so a station's TOS review and sitelog can be done WITHOUT
+    publishing to M3G or pushing to the EPOS portal. The vitjun record is the only
+    durable evidence of what was done to a station, so recording "M3G site log
+    published, EPOS disseminated" would be a false audit trail.
+    """
+    text = so._visit_work_text(NON_EPOS_STAGES)
+    assert text == "TOS reviewed, re-rinexed to R3, headers fixed, site log created"
+    assert "M3G" not in text
+    assert "EPOS" not in text
+
+
+def test_sitelog_is_recorded_in_both_lanes():
+    """The sitelog stage runs in both lanes; only its M3G publication is EPOS-only."""
+    assert "site log created" in so._visit_work_text(NON_EPOS_STAGES)
+    assert "M3G site log published" in so._visit_work_text(FULL_EPOS_STAGES)
+
+
+def test_visit_text_tracks_the_stages_run_in_order():
+    """Deriving means the record follows the stages, in STAGES order."""
+    assert (
+        so._visit_work_text(("sitelog", "tos-review"))
+        == "TOS reviewed, site log created"
+    )
+    # no phrase-bearing stage: TOS still needs a non-empty work value
+    assert so._visit_work_text(())
+    assert so._visit_work_text(("rinex-review",)) == "TOS reviewed"
+
+
+def test_full_epos_text_keeps_its_claims_and_now_the_sitelog():
+    """The EPOS lane keeps M3G/EPOS, and now also records the sitelog it always ran."""
+    assert so._visit_work_text(FULL_EPOS_STAGES) == (
+        "TOS reviewed, re-rinexed to R3, headers fixed, site log created, "
+        "M3G site log published, EPOS disseminated"
+    )

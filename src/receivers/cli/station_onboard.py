@@ -45,9 +45,9 @@ import os
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple, cast
 
 logger = logging.getLogger("receivers.cli.station_onboard")
 
@@ -140,6 +140,10 @@ class OnboardContext:
     tos_bin: str = "tos"
     participants: str = "bgo@vedur.is"
     visit_date: str = "now"
+    #: Keys of the stages actually SELECTED for this run, in STAGES order. Set by
+    #: ``cmd_station_onboard`` once --stages/--from are resolved; the record-visit
+    #: text is derived from these so it can never claim work that did not run.
+    stage_keys: Tuple[str, ...] = ()
 
     @property
     def log_path(self) -> Path:
@@ -174,7 +178,13 @@ def _run(argv: List[str], *, detached: bool = False, log: Optional[Path] = None)
         return subprocess.call(argv, env=env)
     log = log or Path("/dev/null")
     log.parent.mkdir(parents=True, exist_ok=True)
-    fh = open(log, "a")
+    try:
+        fh = open(log, "a")
+    except OSError as exc:
+        # Fail loudly rather than launch a detached stage with no log: the caller
+        # cannot check a return code on this path, so a silent fallback would leave a
+        # long-running job invisible.
+        raise RuntimeError(f"cannot open the detached stage log {log}: {exc}") from exc
     proc = subprocess.Popen(
         argv, env=env, stdout=fh, stderr=subprocess.STDOUT, start_new_session=True
     )
@@ -547,13 +557,45 @@ def _preview_epos(ctx: OnboardContext) -> str:
 # Stage 10 — record-visit (remote vitjun)
 # --------------------------------------------------------------------------- #
 
-# Standard one-line record that a station completed the EPOS onboarding
-# pipeline. Mirrors the ELEY remote vitjun (2026-07-14) that codified the
-# practice — a completed, type=remote visit attached to the station.
-VISIT_WORK_TEXT = (
-    "TOS reviewed, re-rinexed to R3, headers fixed, M3G site log published, "
-    "EPOS disseminated"
-)
+# Phrase each stage contributes to the remote-vitjun record.
+#
+# DERIVED, not hardcoded (bgo 2026-10-16). The vitjun record is the only durable
+# evidence of what was actually done to a station, so it must describe the stages that
+# RAN: the non-EPOS sweep (TOS review + sitelog, no M3G publish, no EPOS push) must not
+# claim "M3G site log published". Deriving it also removes the failure mode where a
+# hardcoded string silently drifts from the pipeline it describes.
+#
+# The sitelog phrase is "site log created" rather than "published" because the sitelog
+# stage runs in BOTH lanes and only its M3G publication is EPOS-only (bgo). Note this
+# ADDS "site log created" to the full-EPOS record, which previously omitted the sitelog
+# stage even though it ran — so new EPOS records differ from the ~77 made before this
+# change. Mirrors the ELEY remote vitjun (2026-07-14) that codified the practice.
+#: INSERTION ORDER IS THE RECORD ORDER — keep this mapping in STAGES order.
+#: The text is assembled by iterating it, not the caller's sequence, so a subset given
+#: out of order (or sliced by --from) still reads in the order the pipeline ran.
+_STAGE_VISIT_PHRASE = {
+    "tos-review": "TOS reviewed",
+    "re-rinex": "re-rinexed to R3",
+    "fix-headers": "headers fixed",
+    "sitelog": "site log created",
+    "m3g": "M3G site log published",
+    "epos-disseminate": "EPOS disseminated",
+}
+
+
+def _visit_work_text(stage_keys: Tuple[str, ...]) -> str:
+    """The remote-vitjun record for the stages that ran, in STAGES order.
+
+    Order comes from ``_STAGE_VISIT_PHRASE``, NOT from ``stage_keys`` — so the record
+    does not depend on the caller's ordering (``--stages`` filters, ``--from`` slices).
+
+    Falls back to "TOS reviewed" when no phrase-bearing stage is present: every
+    invocation begins with the TOS review (the pipeline's whole first step), and TOS
+    needs a non-empty ``work`` value.
+    """
+    chosen = set(stage_keys)
+    phrases = [phrase for code, phrase in _STAGE_VISIT_PHRASE.items() if code in chosen]
+    return ", ".join(phrases) if phrases else "TOS reviewed"
 
 
 def _visit_argv(ctx: OnboardContext) -> List[str]:
@@ -569,7 +611,7 @@ def _visit_argv(ctx: OnboardContext) -> List[str]:
         "--participants",
         ctx.participants,
         "--work",
-        VISIT_WORK_TEXT,
+        _visit_work_text(ctx.stage_keys),
         "--no-dry-run",
     )
 
@@ -580,7 +622,7 @@ def _preview_visit(ctx: OnboardContext) -> str:
         f"{ctx.station} — completed, type=remote, so the work is auditable "
         f"in TOS:\n"
         f"   $ {' '.join(_visit_argv(ctx))}\n"
-        f"\nWork: {VISIT_WORK_TEXT}"
+        f"\nWork: {_visit_work_text(ctx.stage_keys)}"
     )
 
 
@@ -705,6 +747,10 @@ def cmd_station_onboard(args: argparse.Namespace) -> int:
             print(f"❌ unknown --from stage {args.from_stage}")
             return 2
         selected = [s for s in selected if s.key in {s2.key for s2 in STAGES[idx:]}]
+
+    # The record-visit text is derived from what actually ran, so it cannot claim a
+    # stage that was not selected — the non-EPOS subset must not claim M3G/EPOS.
+    ctx = replace(ctx, stage_keys=tuple(s.key for s in selected))
 
     print(f"🚀 station onboard {station}  ({'DRY-RUN' if args.dry_run else 'live'})")
     if args.dry_run:
@@ -871,4 +917,4 @@ def create_station_onboard_parser(subparsers) -> argparse.ArgumentParser:
         help="tos console script (default: tos on PATH)",
     )
     describe.set_defaults(func=cmd_station_describe)
-    return parser
+    return cast(argparse.ArgumentParser, parser)
