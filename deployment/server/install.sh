@@ -889,7 +889,8 @@ SKIPPED_COUNT=0
 for migration_file in "$MIGRATIONS_DIR"/[0-9][0-9][0-9]_*.sql; do
     [[ ! -f "$migration_file" ]] && continue
     basename=$(basename "$migration_file" .sql)
-    [[ "$basename" == *_rollback ]] && continue
+    # Rollbacks and read-only verification helpers are not forward migrations.
+    [[ "$basename" == *_rollback || "$basename" == *_verify ]] && continue
     echo "$APPLIED" | grep -qx "$basename" && continue
 
     # Prerequisite gate: a migration may declare `-- requires-extension: <name>`
@@ -898,7 +899,7 @@ for migration_file in "$MIGRATIONS_DIR"/[0-9][0-9][0-9]_*.sql; do
     # prerequisite is met. Used by 048 (TimescaleDB) so a routine code deploy
     # isn't blocked by infra that isn't stood up yet.
     REQ_EXT=$(grep -m1 -oE '^-- requires-extension:[[:space:]]*[a-zA-Z0-9_]+' "$migration_file" \
-        | sed -E 's/^-- requires-extension:[[:space:]]*//')
+        | sed -E 's/^-- requires-extension:[[:space:]]*//' || true)
     if [[ -n "$REQ_EXT" ]]; then
         HAS_EXT=$(sudo -u "$ADMIN_USER" psql -d "$DB_NAME" -tAc \
             "SELECT 1 FROM pg_extension WHERE extname='$REQ_EXT'" 2>/dev/null)
