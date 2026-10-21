@@ -103,3 +103,42 @@ def test_operator_role_ignored_for_owner():
         {"role_is": "Rekstraraðili stöðvar", "organization": "Operator Org"},
     ]
     assert _owner_org_at(c, datetime(2015, 1, 1)) == "Owner Org"
+
+
+def test_data_owner_role_ignored_for_owner():
+    # GRIV: IES owns it since install; IMO became data owner later. The later
+    # "Eigandi gagna" period must not displace the station owner.
+    c = [
+        _owner("Jarðvísindastofnun Háskóla Íslands", "2023-11-12T00:00:00"),
+        {
+            "role_is": "Eigandi gagna",
+            "organization": "Veðurstofa Íslands",
+            "per_time_from": "2025-09-08T13:40:51",
+            "per_time_to": None,
+        },
+    ]
+    assert (
+        _owner_org_at(c, datetime(2026, 10, 1)) == "Jarðvísindastofnun Háskóla Íslands"
+    )
+
+
+def test_role_code_wins_over_icelandic_label():
+    # Live TOS rows carry both; the stable ``role`` code decides even when the
+    # display label is not the Icelandic owner string.
+    c = [
+        {
+            "role": "data_owner",
+            "role_is": "Eigandi stöðvar",
+            "organization": "IMO",
+            "per_time_from": "2025-01-01T00:00:00",
+            "per_time_to": None,
+        },
+        {
+            "role": "owner",
+            "role_is": "Station owner",
+            "organization": "IES",
+            "per_time_from": "2020-01-01T00:00:00",
+            "per_time_to": None,
+        },
+    ]
+    assert _owner_org_at(c, datetime(2026, 1, 1)) == "IES"

@@ -414,7 +414,9 @@ def make_history_fn(client: Any = None):
 
                 client = TOSClient()
             meta = client.get_complete_station_metadata(station)
-        except Exception as exc:  # noqa: BLE001 - TOS failure ⇒ "" (re-checked next scan)
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 - TOS failure ⇒ "" (re-checked next scan)
             logger.warning("reactive history lookup failed for %s: %s", station, exc)
             return ""
         if not meta:
@@ -515,6 +517,19 @@ def _carry_station_coords(session: dict, meta: dict) -> None:
             session.setdefault(key, value)
 
 
+def _is_station_owner(contact: dict[str, Any]) -> bool:
+    """True for the station-owner role (``owner`` / *Eigandi stöðvar*) only.
+
+    *Eigandi gagna* (data owner) also starts with "Eigandi" — a substring test
+    let it win the date-scoped pick whenever its period started later, e.g.
+    GRIV (owner IES since 2023, data owner IMO since 2025-09) resolved to IMO.
+    """
+    role = str(contact.get("role") or "").strip().lower()
+    if role:
+        return role == "owner"
+    return str(contact.get("role_is") or "").strip().lower() == "eigandi stöðvar"
+
+
 def _owner_org_at(contacts: list[dict[str, Any]], when: datetime) -> str:
     """TOS owner organization (role 'Eigandi stöðvar') active at ``when``.
 
@@ -526,9 +541,7 @@ def _owner_org_at(contacts: list[dict[str, Any]], when: datetime) -> str:
     observation predating the first recorded period). ``""`` when there is no
     owner contact at all.
     """
-    owners = [
-        c for c in (contacts or []) if "eigandi" in str(c.get("role_is") or "").lower()
-    ]
+    owners = [c for c in (contacts or []) if _is_station_owner(c)]
     if not owners:
         return ""
     when_naive = when.replace(tzinfo=None) if when.tzinfo else when
