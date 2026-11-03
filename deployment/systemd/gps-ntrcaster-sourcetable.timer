@@ -1,0 +1,12 @@
+[Unit]
+Description=Deliver the NTRIP sourcetable to ntrcaster every 10 minutes
+
+[Timer]
+# Offset from gps-config-sync (every 10 min) so a fresh pull is usually picked
+# up on the following tick; the push is convergent, so phase does not matter.
+OnBootSec=5min
+OnUnitActiveSec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
