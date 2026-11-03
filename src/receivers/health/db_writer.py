@@ -491,19 +491,36 @@ class HealthDatabaseWriter:
             if isinstance(uptime_data, dict) and uptime_data.get("seconds"):
                 uptime = uptime_data["seconds"]
         rx_status = metrics.get("rx_status")
+        # The columns existed since migration 000 but were never written, so
+        # an ANTENNA (overcurrent) error was invisible in the DB (ENTC, 2026-11).
+        rx_error = metrics.get("rx_error")
+        ext_error = metrics.get("ext_error")
 
         with self._conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO block_receiver_status (sid, ts, cpu_load, temperature, uptime_seconds, rx_status)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                INSERT INTO block_receiver_status
+                    (sid, ts, cpu_load, temperature, uptime_seconds, rx_status,
+                     rx_error, ext_error)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (sid, ts) DO UPDATE SET
                     cpu_load = EXCLUDED.cpu_load,
                     temperature = EXCLUDED.temperature,
                     uptime_seconds = EXCLUDED.uptime_seconds,
-                    rx_status = EXCLUDED.rx_status
+                    rx_status = EXCLUDED.rx_status,
+                    rx_error = EXCLUDED.rx_error,
+                    ext_error = EXCLUDED.ext_error
             """,
-                (sid, ts, cpu_load, temperature, uptime, rx_status),
+                (
+                    sid,
+                    ts,
+                    cpu_load,
+                    temperature,
+                    uptime,
+                    rx_status,
+                    rx_error,
+                    ext_error,
+                ),
             )
 
     def _write_disk_status(self, sid: str, ts: datetime, disk: Dict[str, Any]) -> None:
@@ -880,6 +897,11 @@ class HealthDatabaseWriter:
             status = metric.get("status", "").lower()
             if status in ("critical", "warning"):
                 problems.append(label)
+
+        # ReceiverStatus2 error flags, named (e.g. "Receiver error: ANTENNA")
+        errors = metrics.get("receiver_errors")
+        if isinstance(errors, dict) and errors.get("flags"):
+            problems.append(f"Receiver error: {', '.join(errors['flags'])}")
 
         # Port checks
         ports = metrics.get("ports")
