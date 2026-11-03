@@ -40,6 +40,66 @@ from .metrics import MetricChecker, load_thresholds
 _firmware_requires_auth = firmware_requires_auth
 
 
+# ReceiverStatus2 (4014) bit meanings, PolaRx5 firmware 5.x reference guide.
+# Only bits whose position is documented AND matched against bin2asc's decode
+# are named; the raw words are stored as-is, so nothing is lost.
+RX_ERROR_BITS = {
+    3: "SOFTWARE",
+    4: "WATCHDOG",
+    5: "ANTENNA",  # antenna overcurrent: the receiver cuts antenna power
+    6: "CONGESTION",
+    8: "MISSEDEVENT",
+    9: "CPUOVERLOAD",
+    10: "INVALIDCONFIG",
+    11: "OUTOFGEOFENCE",
+}
+EXT_ERROR_BITS = {
+    0: "SISERROR",
+    1: "DIFFCORRERROR",
+    2: "EXTSENSORERROR",
+    3: "SETUPERROR",
+}
+#: RxError flags that take the station's data away — CRITICAL, not WARNING.
+CRITICAL_RX_ERRORS = frozenset({"ANTENNA"})
+RX_STATE_ACTIVEANTENNA = 1 << 1
+
+
+def receiver_error_metric(
+    rx_error: int, ext_error: int, rx_status: Optional[int] = None
+) -> Dict[str, Any]:
+    """Health metric for the ReceiverStatus2 error words.
+
+    ``status`` is ``critical`` for an ANTENNA error (no antenna power means no
+    observations at all), ``warning`` for any other set bit — including bits
+    with no documented name, reported as ``BIT<n>`` — and ``ok`` otherwise.
+    """
+    flags = [
+        RX_ERROR_BITS.get(bit, f"BIT{bit}")
+        for bit in range(32)
+        if rx_error & (1 << bit)
+    ]
+    flags += [
+        EXT_ERROR_BITS.get(bit, f"EXT_BIT{bit}")
+        for bit in range(8)
+        if ext_error & (1 << bit)
+    ]
+    if CRITICAL_RX_ERRORS.intersection(flags):
+        status = "critical"
+    elif flags:
+        status = "warning"
+    else:
+        status = "ok"
+    metric: Dict[str, Any] = {
+        "rx_error": rx_error,
+        "ext_error": ext_error,
+        "flags": flags,
+        "status": status,
+    }
+    if rx_status is not None:
+        metric["active_antenna"] = bool(rx_status & RX_STATE_ACTIVEANTENNA)
+    return metric
+
+
 class PolaRX5TCPExtractor:
     """Extract live health data from PolaRX5 via TCP command interface."""
 
@@ -223,8 +283,9 @@ class PolaRX5TCPExtractor:
                     health_data["metrics"]["uptime_seconds"] = receiver_data[
                         "uptime_seconds"
                     ]
-                if "rx_status" in receiver_data:
-                    health_data["metrics"]["rx_status"] = receiver_data["rx_status"]
+                for key in ("rx_status", "rx_error", "ext_error", "receiver_errors"):
+                    if key in receiver_data:
+                        health_data["metrics"][key] = receiver_data[key]
 
             # Query DiskStatus for disk usage
             disk_data = self._query_disk_status()
@@ -355,6 +416,17 @@ class PolaRX5TCPExtractor:
                 # RxStatus at offset 20-23 (uint32 bitfield)
                 rx_status = struct.unpack("<I", sbf_data[20:24])[0]
                 result["rx_status"] = rx_status
+
+                # ExtError (byte 15) and RxError (24-27). These went unread
+                # for years: ENTC lost its antenna feed to an overcurrent on
+                # 2026-11-02 and only showed up as "0 satellites".
+                ext_error = sbf_data[15]
+                rx_error = struct.unpack("<I", sbf_data[24:28])[0]
+                result["ext_error"] = ext_error
+                result["rx_error"] = rx_error
+                result["receiver_errors"] = receiver_error_metric(
+                    rx_error, ext_error, rx_status
+                )
 
                 # Temperature at offset 31 (int8, formula: temp = raw - 100)
                 # Verified against RxControl display
