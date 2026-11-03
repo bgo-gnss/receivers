@@ -9,7 +9,8 @@
 # status or install a validated sourcetable.
 #
 # CONVERGENT like sync-config.sh: every tick compares the repo file with the
-# hash the caster reports and pushes only on a difference — so a hand edit on
+# hash the caster reports for the file on disk AND for the table it last
+# confirmed loading, and pushes or re-rehashes only on a difference — so a hand edit on
 # ntrcaster, or a failed earlier push, is reconciled too. It never generates the
 # table: that is `tosGPS sourcetable` + a reviewed commit to gps-config-data.
 #
@@ -40,16 +41,24 @@ if ! live=$(ssh_caster status 2>/dev/null); then
     exit 0
 fi
 have=$(echo "$live" | awk '$1 == "sha256" {print $2}')
+loaded=$(echo "$live" | awk '$3 == "rehashed" {print $4}')
+# The clone is bgo's; as gpsops git refuses it without safe.directory.
+rev=$(git -c safe.directory="$REPO" -C "$REPO" log -1 --format=%h -- ntrcaster/sourcetable.dat 2>/dev/null || echo "?")
 
-if [ "$want" = "$have" ]; then
+# Two separate questions: is the right file on disk, and has the caster
+# loaded it? A file can be installed while its rehash failed or is pending
+# (no admin credential yet); install would then answer "unchanged" forever.
+if [ "$want" != "$have" ]; then
+    verb=install
+elif [ "$want" != "$loaded" ]; then
+    verb=rehash
+else
     exit 0
 fi
 
-# The clone is bgo's; as gpsops git refuses it without safe.directory.
-rev=$(git -c safe.directory="$REPO" -C "$REPO" log -1 --format=%h -- ntrcaster/sourcetable.dat 2>/dev/null || echo "?")
-if out=$(ssh_caster install < "$SRC" 2>&1); then
-    logger -t "$TAG" "delivered sourcetable.dat @ $rev: $out"
+if out=$(ssh_caster "$verb" < "$SRC" 2>&1); then
+    logger -t "$TAG" "$verb sourcetable.dat @ $rev: $out"
 else
-    logger -t "$TAG" "ERROR: install @ $rev failed: $out"
+    logger -t "$TAG" "ERROR: $verb @ $rev failed: $out"
     exit 1
 fi

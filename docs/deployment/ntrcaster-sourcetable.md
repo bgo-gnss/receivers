@@ -10,7 +10,7 @@ python, and it has no route to git.vedur.is.
 gps-config-data ──gps-config-sync (bgo, 10 min)──► rek-d01 clone
    rek-d01 gpsops: gps-ntrcaster-sourcetable.timer (10 min, convergent)
       ssh (forced-command key) ──► ntrcaster: ~gpsops/bin/ntrcaster-sourcetable
-         status | install: validate → backup → write in place → admin?mode=rehash
+         status | install | rehash: validate → backup → write in place → admin?mode=rehash
 ```
 
 | Piece | Where it lives | Runs on |
@@ -67,13 +67,19 @@ on ntrcaster.
 3. **Rehash credential on ntrcaster**: an account in the caster's admin group,
    one line `user:password`. A password must not contain `"` or `\`, because it
    is passed to curl as a `-K` config line. Without this file the script still
-   installs, but logs "NOT rehashed".
+   installs, but the rehash stays PENDING: `status` reports `rehashed none`, and
+   the timer retries the rehash on every tick until the file exists.
    ```bash
    mkdir -p ~/.config/ntrcaster && (umask 077; editor ~/.config/ntrcaster/admin.cred)
    ```
-4. **Smoke test from rek-d01**, then enable the timer:
+4. **Get the scripts onto rek-d01**: merge this branch, then `git pull` in
+   `~bgo/git/receivers`. That checkout is the scheduler's editable live code,
+   so follow the normal deploy order: check for long-running `receivers` jobs,
+   stop the scheduler, pull, start. The delivery files themselves are not
+   imported by the scheduler.
+   **Smoke test from rek-d01**, then enable the timer:
    ```bash
-   ssh -i ~/.ssh/ntrcaster_sourcetable gpsops@ntrcaster.vedur.is status   # sha256 … str N
+   ssh -i ~/.ssh/ntrcaster_sourcetable gpsops@ntrcaster.vedur.is status   # sha256 … rehashed … str N
    ssh -i ~/.ssh/ntrcaster_sourcetable gpsops@ntrcaster.vedur.is 'ls /'   # must print the usage line
    cp ~bgo/git/receivers/deployment/systemd/gps-ntrcaster-sourcetable.{service,timer} ~/.config/systemd/user/
    systemctl --user daemon-reload && systemctl --user enable --now gps-ntrcaster-sourcetable.timer
@@ -100,8 +106,16 @@ the live file is left alone.
   drops lines, so a large shrink means a truncated or wrong file. Removing
   mounts is a deliberate hand step.
 
-An identical file prints `unchanged` and does nothing, so the timer is a no-op
-on a converged system.
+An identical file prints `unchanged` and does nothing.
+
+**Installed is not the same as loaded.** `status` reports two hashes: the file
+on disk, and `rehashed`, the file the caster last *confirmed* loading. A rehash
+counts only when `/admin?mode=rehash` returns 2xx (a bad login returns 401)
+**and** the caster's own `Rehashing sourcetable` line appears in that day's
+`ntripcaster-YYMMDD.log` after the request. The pusher sends `install` when the
+file differs, and `rehash` when the file matches but has not been loaded. So a
+failed or pending rehash is retried every 10 minutes, never reported as done.
+The timer is a no-op only when both hashes match the repo.
 
 ## Rollback
 
