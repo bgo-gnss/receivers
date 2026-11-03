@@ -38,7 +38,9 @@ LIVE=${NTRCASTER_SOURCETABLE:-/etc/ntripcaster/sourcetable.dat}
 STATE=${NTRCASTER_STATE:-$HOME/sourcetable}
 BACKUPS=$STATE/backup
 LOG=$STATE/install.log
-# user:password of an account in the caster's admin group, mode 600.
+# user:password, mode 600: the caster user gpsops with its users.aut password.
+# rehash is an oper command, checked against /oper:imo → imo:gpsops → users.aut;
+# admin_password/oper_password in ntripcaster.conf are telnet-console only (401).
 ADMIN_CRED=${NTRCASTER_ADMIN_CRED:-$HOME/.config/ntrcaster/admin.cred}
 REHASHED=$STATE/rehashed.sha
 CASTER_LOG_DIR=${NTRCASTER_LOG_DIR:-/var/log/ntripcaster}

@@ -44,7 +44,9 @@ gps-config-data ──gps-config-sync (bgo, 10 min)──► rek-d01 clone
 So routine updates need **no restart**. The first deployment adds about 110
 lines for streams that are already connected, and those stay hidden until each
 source reconnects. Do **one restart** after that first install (kill the PID
-on :2101; casterwatch brings it back in about 4 s; see the `ntrcaster` memory).
+on :2101). casterwatch restarts the caster only once `watchdog.check` is more
+than 20 s old, so expect **about 23 s** with every stream down; see the
+`ntrcaster` memory.
 RTK pairs on rtk.vedur.is that lose their stream may need
 `~/bin/restart-rtk.sh pair NN`.
 
@@ -64,14 +66,30 @@ on ntrcaster.
    mkdir -p ~/bin && install -m 755 ntrcaster-sourcetable ~/bin/   # copied from this repo
    echo 'command="/home/gpsops/bin/ntrcaster-sourcetable",from="10.170.80.15",no-pty,no-port-forwarding,no-agent-forwarding,no-X11-forwarding <PUBKEY>' >> ~/.ssh/authorized_keys
    ```
-3. **Rehash credential on ntrcaster**: an account in the caster's admin group,
-   one line `user:password`. A password must not contain `"` or `\`, because it
-   is passed to curl as a `-K` config line. Without this file the script still
-   installs, but the rehash stays PENDING: `status` reports `rehashed none`, and
-   the timer retries the rehash on every tick until the file exists.
+3. **Rehash credential on ntrcaster**: `~/.config/ntrcaster/admin.cred`, one
+   line `user:password`, mode 600. It must be the **caster user `gpsops` with its
+   password from `/etc/ntripcaster/users.aut`**. Copy the line on the host, so
+   the password is never typed or displayed:
    ```bash
-   mkdir -p ~/.config/ntrcaster && (umask 077; editor ~/.config/ntrcaster/admin.cred)
+   mkdir -p -m 700 ~/.config/ntrcaster
+   (umask 077; grep -m1 '^gpsops:' /etc/ntripcaster/users.aut | tr -d '\r' > ~/.config/ntrcaster/admin.cred)
+   ~/bin/ntrcaster-sourcetable rehash      # must print "rehash OK (<sha>)"
    ```
+   Why that account (2.0.45 source): `rehash` is an *oper* command
+   (`commands.c:157`), so `/admin?mode=rehash` checks the login against the path
+   `/oper` (`http.c:516-527`). `clientmounts.aut` maps `/oper:imo`, `groups.aut`
+   has `imo:gpsops`, and the password is checked against `users.aut`
+   (`authenticate/user.c:user_authenticate`, plain text, no LDAP).
+   **`admin_password` and `oper_password` in `ntripcaster.conf` do NOT work
+   here.** They belong to the telnet-style admin console only (`admin.c:165`,
+   `commands.c:1546`); over HTTP they get a 401.
+
+   A password must not contain `"` or `\`, because it is passed to curl as a
+   `-K` config line. If the `gpsops` password in `users.aut` changes, copy the
+   line again: until then every rehash gets a 401 and the timer unit fails.
+   Without this file the script still installs, but the rehash stays PENDING:
+   `status` reports `rehashed none`, and the timer retries the rehash on every
+   tick until the file exists.
 4. **Get the scripts onto rek-d01**: merge this branch, then `git pull` in
    `~bgo/git/receivers`. That checkout is the scheduler's editable live code,
    so follow the normal deploy order: check for long-running `receivers` jobs,
@@ -85,10 +103,16 @@ on ntrcaster.
    systemctl --user daemon-reload && systemctl --user enable --now gps-ntrcaster-sourcetable.timer
    ```
 5. **First delivery**: run the service once by hand and watch it, then restart
-   the caster once (see above):
+   the caster once (see above). gpsops cannot read its own journal on rek-d01
+   (the `logger` lines go to syslog), so check the unit result here and the log
+   on the caster:
    ```bash
-   systemctl --user start gps-ntrcaster-sourcetable && journalctl --user-unit gps-ntrcaster-sourcetable -n 5
+   systemctl --user start gps-ntrcaster-sourcetable; systemctl --user show gps-ntrcaster-sourcetable -p Result
+   ssh gpsops@ntrcaster.vedur.is 'tail -3 ~/sourcetable/install.log'
    ```
+   A restart loads the file without a rehash, so `status` still says
+   `rehashed none` afterwards; the next timer tick sends one `rehash`, which
+   records the hash.
 
 ## What `install` refuses
 
@@ -108,6 +132,10 @@ the live file is left alone.
 
 An identical file prints `unchanged` and does nothing.
 
+**Before a manual rehash**, remember it also re-reads `ntripcaster.conf` and
+every `*.aut` file. Compare their modification times with the daemon's start
+time; anything newer takes effect with the rehash.
+
 **Installed is not the same as loaded.** `status` reports two hashes: the file
 on disk, and `rehashed`, the file the caster last *confirmed* loading. A rehash
 counts only when `/admin?mode=rehash` returns 2xx (a bad login returns 401)
@@ -117,6 +145,12 @@ file differs, and `rehash` when the file matches but has not been loaded. So a
 failed or pending rehash is retried every 10 minutes, never reported as done.
 The timer is a no-op only when both hashes match the repo.
 
+| `install.log` says | Cause |
+|---|---|
+| `rehash PENDING: no …/admin.cred` | the credential file is missing (setup step 3) |
+| `ERROR: rehash request failed` + curl 401 | wrong user or password in `admin.cred`; it must match the `gpsops` line in `users.aut` |
+| `ERROR: rehash not confirmed in …` | the request succeeded but no new `Rehashing sourcetable` line appeared (e.g. a day rollover); it is retried on the next tick |
+
 ## Rollback
 
 On ntrcaster, as gpsops: the newest backup is the file as it was before the
@@ -124,7 +158,8 @@ last install (30 are kept).
 ```bash
 ls -1t ~/sourcetable/backup/ | head -3
 cat ~/sourcetable/backup/sourcetable.dat.<STAMP> > /etc/ntripcaster/sourcetable.dat
-# then rehash (admin?mode=rehash). ALSO revert the gps-config-data commit,
+~/bin/ntrcaster-sourcetable rehash
+# ALSO revert the gps-config-data commit,
 # or the timer re-delivers the bad version within 10 minutes.
 ```
 To pause delivery: `systemctl --user stop gps-ntrcaster-sourcetable.timer` on rek-d01.
