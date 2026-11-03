@@ -1,0 +1,19 @@
+[Unit]
+# Deliver gps-config-data/ntrcaster/sourcetable.dat to ntrcaster.vedur.is.
+#
+# USER-LEVEL unit, installed at
+#   ~gpsops/.config/systemd/user/gps-ntrcaster-sourcetable.{service,timer}
+# managed by gpsops with NO sudo (same model as gps-archive-sync-alert):
+#   systemctl --user enable --now gps-ntrcaster-sourcetable.timer
+#   journalctl --user-unit gps-ntrcaster-sourcetable -n 20
+# Setup (key + forced command on ntrcaster): docs/deployment/ntrcaster-sourcetable.md
+Description=Deliver the NTRIP sourcetable to ntrcaster.vedur.is
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/bgo/git/receivers/deployment/server/push-ntrcaster-sourcetable.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gps-ntrcaster-sourcetable
