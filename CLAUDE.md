@@ -23,6 +23,13 @@ The `receivers` package provides GPS receiver management functionality for the I
 
 ## Command-Line Interface
 
+### Standalone tools
+
+`scripts/standalone_tools/` holds `prx5.py` and `prx5.sh`: self-contained download and
+health tools for one fw 5.7.0 PolaRx5, shipped as `receiver_standalone_tools.zip` (build
+with `build_zip.py`). They must stay free of this package, any database and any IMO
+reference; `tests/test_standalone_prx5.py` enforces this.
+
 ### Desk/Bench Provisioning
 
 ```bash
