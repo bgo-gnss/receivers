@@ -58,10 +58,16 @@ ldd /usr/local/rxtools/bin/bin2asc | grep 'not found'    # should print nothing
 
 ### The scripts
 
-They are single files, so copy them wherever you like:
+Download
+[`receiver_standalone_tools.zip`](https://github.com/bgo-gnss/receivers/raw/main/scripts/standalone_tools/receiver_standalone_tools.zip),
+unzip it and run them from that folder. They are single
+files, so you can also copy them wherever you like:
 
 ```bash
-cp prx5.py prx5.sh ~/.local/bin/
+unzip receiver_standalone_tools.zip
+cd receiver_standalone_tools
+./prx5.py --help
+cp prx5.py prx5.sh ~/.local/bin/      # optional
 ```
 
 ## Tutorial
@@ -230,11 +236,11 @@ then the default: FTP 2160, HTTP 8060, control 28784.
 
 The tools expect these logging sessions on the receiver:
 
-| Session | Directory | Frequency | Local name ends in |
-|---|---|---|---|
-| `15s_24hr` | `LOG1_15s_24hr` | daily | `a.sbf.gz` |
-| `1Hz_1hr` | `LOG2_1Hz_1hr` | hourly | `b.sbf.gz` |
-| `status_1hr` | `LOG5_status_1hr` | hourly | `c.sbf.gz` |
+| Session | Directory | Frequency | Kept on receiver | Local name ends in |
+|---|---|---|---|---|
+| `15s_24hr` | `LOG1_15s_24hr` | daily | 2 years | `a.sbf.gz` |
+| `1Hz_1hr` | `LOG2_1Hz_1hr` | hourly | 21 days | `b.sbf.gz` |
+| `status_1hr` | `LOG5_status_1hr` | hourly | 1 year | `c.sbf.gz` |
 
 gtimes builds both paths:
 
@@ -322,12 +328,6 @@ unless you pass `--anonymous`.
 | `absent` for a date you expect | The receiver's disk holds a limited history. |
 | No satellites, `errors ANTENNA`, `antenna power OFF` | Antenna overcurrent. A reset won't clear it while the fault remains, so check the antenna and cable. |
 
-## Development
+## License
 
-```bash
-pytest tests/test_standalone_prx5.py
-```
-
-The tests run both scripts against a fake receiver and FTP server on loopback, and
-never touch a real receiver. Keep the login count assertions: they are what caught
-the bash version logging in once per file with a wrong password.
+MIT. See `LICENSE`.
