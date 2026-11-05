@@ -10,14 +10,13 @@
 
 # --- Station identity: change these -------------------------------------------
 setMarkerParameters, "TEST"
-setMarkerParameters, , ""
-setMarkerParameters, , , ""
 setMarkerParameters, , , , "TEST"
 setObserverParameters, "OPERATOR"
 setObserverParameters, , "AGENCY"
-setAntennaOffset, Main, , , 0.0000
-setAntennaOffset, Main, , , , "UNKNOWN"
-setAntennaOffset, Main, , , , , ""
+# Antenna height, type and serial stay at the receiver's defaults. Set yours with:
+#   setAntennaOffset, Main, , , <height m>
+#   setAntennaOffset, Main, , , , "<IGS antenna name>"
+#   setAntennaOffset, Main, , , , , "<serial>"
 
 # --- Logging, tracking and services --------------------------------------------
 setDataInOut, IPS1, , RTCMv3+SBF+NMEA
@@ -64,6 +63,7 @@ setRTCMv3Output, IPS3, RTCM1004+RTCM1006+RTCM1008+RTCM1012+RTCM1013+RTCM1019+RTC
 setRTCMv3Output, IPS4, RTCM1004+RTCM1006+RTCM1008+RTCM1012+RTCM1013+RTCM1019+RTCM1020+RTCM1033
 setRTCMv3Output, IPS5, RTCM1004+RTCM1006+RTCM1008+RTCM1012+RTCM1013+RTCM1019+RTCM1020+RTCM1033
 setIPServices, , FTP
+setHttpsSettings, HTTP
 setIPServerSettings, IPS1, 5017
 setIPServerSettings, IPS2, 28785
 setPVTMode, Static
@@ -81,13 +81,12 @@ setLogSession, LOG2, , , "1Hz_1hr"
 setLogSession, LOG3, , , "20Hz_1hr"
 setLogSession, LOG4, , , "geod_15m"
 setLogSession, LOG5, , , "status_1hr"
-setLogSession, LOG1, , , , After1Year
-setLogSession, LOG2, , , , After30Days
+setLogSession, LOG1, , , , After2Years
+setLogSession, LOG2, , , , After21Days
 setLogSession, LOG3, , , , After7Days
 setLogSession, LOG4, , , , After1Year
 setLogSession, LOG5, , , , After1Year
 setLogSession, LOG1, , , , , High
-setLogSession, LOG2, , , , , High
 setLogSession, LOG5, , , , , High
 setFileNaming, LOG1, IGS24H
 setFileNaming, LOG2, IGS1H

@@ -2,7 +2,8 @@
 
 Both scripts run as subprocesses, so the no_network_plugin guard does not touch
 them and nothing here can reach a real receiver. The property that matters most
-is the login count: a few failed logins lock a 5.7.0 receiver for about 9 h.
+is the login count: a few failed logins lock a 5.7.0 receiver for about 9 h. Keep
+those assertions: they caught prx5.sh logging in once per file with a wrong password.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import struct
 import subprocess
 import sys
 import threading
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional
@@ -731,7 +733,7 @@ def test_ftp_mode_active_in_the_stations_file_skips_passive(kind, tmp_path):
 def test_shipped_files_carry_no_site_references(name):
     pattern = (
         r"\bIMO\b|vedur|rek-d01|rec-provision|gps-config|gpsconfig|gps-tools|gpslibrary"
-        r"|\bTOS\b|ENTC|NYLA|THOB|GJAC|receivers package|receivers/|receivers\.cfg"
+        r"|\bTOS\b|ENTC|NYLA|THOB|GJAC|receivers package|receivers/(?!raw/)|receivers\.cfg"
         r"|production|scheduler"
     )
     found = re.findall(pattern, (TOOLS / name).read_text())
@@ -762,11 +764,54 @@ def test_example_config_matches_the_tools_and_holds_no_secrets():
         assert f"setLogSession, {log}, Enabled" in text
     assert 'setMarkerParameters, "TEST"' in text
     assert "setIPServices, , FTP" in text
+    assert "setHttpsSettings, HTTP" in text
+    assert "setLogSession, LOG1, , , , After2Years" in text
+    assert "setLogSession, LOG2, , , , After21Days" in text
+    assert "Meas3Ranges" in text
     forbidden = (
         r"setNtrip|, NTR\d|setUserAccessLevel|AAAAC3|setWiFiAccessPoint|setIPSettings"
         r"|\d+\.\d+\.\d+\.\d+"
     )
     assert not re.findall(forbidden, text)
+
+
+def build_zip_module():
+    zip_spec = importlib.util.spec_from_file_location(
+        "build_zip", TOOLS / "build_zip.py"
+    )
+    assert zip_spec and zip_spec.loader
+    module = importlib.util.module_from_spec(zip_spec)
+    zip_spec.loader.exec_module(module)
+    return module
+
+
+def test_zip_holds_only_the_user_files_with_working_modes(tmp_path):
+    output = tmp_path / "out.zip"
+    build_zip_module().build(output)
+    with zipfile.ZipFile(output) as archive:
+        modes = {
+            i.filename.split("/", 1)[1]: (i.external_attr >> 16) & 0o777
+            for i in archive.infolist()
+        }
+    assert modes == {
+        "LICENSE": 0o644,
+        "README.md": 0o644,
+        "prx5.py": 0o755,
+        "prx5.sh": 0o755,
+        "stations.cfg.example": 0o644,
+        CONFIG_NAME: 0o644,
+    }
+
+
+def test_zip_is_reproducible_and_any_shipped_copy_is_current(tmp_path):
+    first, second = tmp_path / "a.zip", tmp_path / "b.zip"
+    module = build_zip_module()
+    module.build(first)
+    module.build(second)
+    assert first.read_bytes() == second.read_bytes()
+    shipped = TOOLS / "receiver_standalone_tools.zip"
+    if shipped.exists():
+        assert shipped.read_bytes() == first.read_bytes(), "run build_zip.py again"
 
 
 def test_the_scripts_use_no_database():
