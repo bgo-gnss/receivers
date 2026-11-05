@@ -1,0 +1,104 @@
+# PolaRx5 configuration for prx5.py and prx5.sh (fw 5.7.0).
+#
+# Sets up the logging sessions these tools expect: LOG1 15s_24hr, LOG2 1Hz_1hr
+# and LOG5 status_1hr, plus FTP access. Exported from a working receiver with its
+# identity, network and account settings removed.
+#
+# Before applying, change the values in "Station identity" below. This file does
+# NOT create a user: on fw 5.7.0 the receiver needs an account to log in with.
+# Applying it does not save it: send "eccf, Current, Boot" afterwards.
+
+# --- Station identity: change these -------------------------------------------
+setMarkerParameters, "TEST"
+setMarkerParameters, , ""
+setMarkerParameters, , , ""
+setMarkerParameters, , , , "TEST"
+setObserverParameters, "OPERATOR"
+setObserverParameters, , "AGENCY"
+setAntennaOffset, Main, , , 0.0000
+setAntennaOffset, Main, , , , "UNKNOWN"
+setAntennaOffset, Main, , , , , ""
+
+# --- Logging, tracking and services --------------------------------------------
+setDataInOut, IPS1, , RTCMv3+SBF+NMEA
+setSBFOutput, Stream1, LOG1
+setSBFOutput, Stream3, LOG2
+setSBFOutput, Stream4, LOG3
+setSBFOutput, Stream5, LOG4
+setSBFOutput, Stream7, LOG5
+setSBFOutput, Stream1, , GPSNav+GPSIon+GPSUtc+GLONav+PVTGeodetic+ReceiverSetup+Meas3Ranges+Meas3CN0HiRes+Meas3Doppler+Meas3PP+Meas3MP
+setSBFOutput, Stream3, , MeasEpoch+GPSNav+GPSIon+GPSUtc+GLONav+PVTGeodetic+ReceiverSetup
+setSBFOutput, Stream4, , MeasEpoch+GPSNav+GPSIon+GPSUtc+GLONav+PVTGeodetic+ReceiverSetup
+setSBFOutput, Stream5, , PVTCartesian+PosCovCartesian+PVTGeodetic+PosCovGeodetic+ReceiverTime
+setSBFOutput, Stream7, , PVTGeodetic+PosCovGeodetic+ReceiverTime+SatVisibility+ChannelStatus+ReceiverStatus+ReceiverSetup+IPStatus+PosLocal+QualityInd+NTRIPClientStatus+WiFiAPStatus+DiskStatus+NTRIPServerStatus+PowerStatus+LogStatus+SystemInfo
+setSBFOutput, Stream1, , , sec15
+setSBFOutput, Stream3, , , sec1
+setSBFOutput, Stream4, , , msec50
+setSBFOutput, Stream5, , , sec30
+setSBFOutput, Stream7, , , sec60
+setNMEATalkerID, GN
+setRTCMv2IntervalObs, RTCM18|19, 15
+setRTCMv2IntervalObs, RTCM20|21, 15
+setRTCMv3Formatting, , GPSL1CA+GPSL2PY+GPSL2C+GLOL1CA+GLOL2P+GLOL2CA+GALE1BC+GALE5a+GALE5b+BDSB1I+BDSB2I+BDSB3I+QZSL1CA+QZSL2C
+setRTCMv3Interval, RTCM1009|10, 0.8
+setRTCMv3Interval, RTCM1011|12, 1.5
+setRTCMv3Interval, RTCM1013, 0.8
+setRTCMv3Interval, RTCM1033, 10.0
+setRTCMv3Output, COM1, RTCM1004+RTCM1006+RTCM1008+RTCM1012+RTCM1013+RTCM1019+RTCM1020+RTCM1033
+setRTCMv3Output, COM2, RTCM1004+RTCM1006+RTCM1008+RTCM1012+RTCM1013+RTCM1019+RTCM1020+RTCM1033
+setRTCMv3Output, COM3, RTCM1004+RTCM1006+RTCM1008+RTCM1012+RTCM1013+RTCM1019+RTCM1020+RTCM1033
+setRTCMv3Output, COM4, RTCM1004+RTCM1006+RTCM1008+RTCM1012+RTCM1013+RTCM1019+RTCM1020+RTCM1033
+setRTCMv3Output, USB1, RTCM1004+RTCM1006+RTCM1008+RTCM1012+RTCM1013+RTCM1019+RTCM1020+RTCM1033
+setRTCMv3Output, USB2, RTCM1004+RTCM1006+RTCM1008+RTCM1012+RTCM1013+RTCM1019+RTCM1020+RTCM1033
+setRTCMv3Output, IP10, RTCM1004+RTCM1006+RTCM1008+RTCM1012+RTCM1013+RTCM1019+RTCM1020+RTCM1033
+setRTCMv3Output, IP11, RTCM1004+RTCM1006+RTCM1008+RTCM1012+RTCM1013+RTCM1019+RTCM1020+RTCM1033
+setRTCMv3Output, IP12, RTCM1004+RTCM1006+RTCM1008+RTCM1012+RTCM1013+RTCM1019+RTCM1020+RTCM1033
+setRTCMv3Output, IP13, RTCM1004+RTCM1006+RTCM1008+RTCM1012+RTCM1013+RTCM1019+RTCM1020+RTCM1033
+setRTCMv3Output, IP14, RTCM1004+RTCM1006+RTCM1008+RTCM1012+RTCM1013+RTCM1019+RTCM1020+RTCM1033
+setRTCMv3Output, IP15, RTCM1004+RTCM1006+RTCM1008+RTCM1012+RTCM1013+RTCM1019+RTCM1020+RTCM1033
+setRTCMv3Output, IP16, RTCM1004+RTCM1006+RTCM1008+RTCM1012+RTCM1013+RTCM1019+RTCM1020+RTCM1033
+setRTCMv3Output, IP17, RTCM1004+RTCM1006+RTCM1008+RTCM1012+RTCM1013+RTCM1019+RTCM1020+RTCM1033
+setRTCMv3Output, IPS1, RTCM1004+RTCM1006+RTCM1008+RTCM1012+RTCM1013+RTCM1019+RTCM1020+RTCM1033
+setRTCMv3Output, IPS2, RTCM1004+RTCM1006+RTCM1008+RTCM1012+RTCM1013+RTCM1019+RTCM1020+RTCM1033
+setRTCMv3Output, IPS3, RTCM1004+RTCM1006+RTCM1008+RTCM1012+RTCM1013+RTCM1019+RTCM1020+RTCM1033
+setRTCMv3Output, IPS4, RTCM1004+RTCM1006+RTCM1008+RTCM1012+RTCM1013+RTCM1019+RTCM1020+RTCM1033
+setRTCMv3Output, IPS5, RTCM1004+RTCM1006+RTCM1008+RTCM1012+RTCM1013+RTCM1019+RTCM1020+RTCM1033
+setIPServices, , FTP
+setIPServerSettings, IPS1, 5017
+setIPServerSettings, IPS2, 28785
+setPVTMode, Static
+setPVTMode, , StandAlone+RTKFloat+RTKFixed
+setReceiverDynamics, , Static
+setSignalTracking, GPSL1CA+GPSL1PY+GPSL2PY+GPSL2C+GPSL5+GPSL1C+GLOL1CA+GLOL1P+GLOL2P+GLOL2CA+GLOL3+GALE1BC+GALE6BC+GALE5a+GALE5b+GALE5
+setSignalUsage, , GPSL1CA+GPSL1PY+GPSL2PY+GPSL5+GLOL1CA+GLOL1P+GLOL2P+GLOL2CA+GLOL3+GALE1BC+GALE6BC+GALE5a+GALE5b+GALE5+GEOL1+GEOL5+BDSB1I+BDSB2I+QZSL1CA
+setLogSession, LOG1, Enabled
+setLogSession, LOG2, Enabled
+setLogSession, LOG3, Enabled
+setLogSession, LOG4, Disabled
+setLogSession, LOG5, Enabled
+setLogSession, LOG1, , , "15s_24hr"
+setLogSession, LOG2, , , "1Hz_1hr"
+setLogSession, LOG3, , , "20Hz_1hr"
+setLogSession, LOG4, , , "geod_15m"
+setLogSession, LOG5, , , "status_1hr"
+setLogSession, LOG1, , , , After1Year
+setLogSession, LOG2, , , , After30Days
+setLogSession, LOG3, , , , After7Days
+setLogSession, LOG4, , , , After1Year
+setLogSession, LOG5, , , , After1Year
+setLogSession, LOG1, , , , , High
+setLogSession, LOG2, , , , , High
+setLogSession, LOG5, , , , , High
+setFileNaming, LOG1, IGS24H
+setFileNaming, LOG2, IGS1H
+setFileNaming, LOG3, IGS1H
+setFileNaming, LOG4, IGS15M
+setFileNaming, LOG5, IGS1H
+setFileNaming, LOG1, , ""
+setFileNaming, LOG2, , ""
+setFileNaming, LOG1, , , on
+setFileNaming, LOG2, , , on
+setFileNaming, LOG3, , , on
+setFileNaming, LOG4, , , on
+setFileNaming, LOG5, , , on
+setRINEXLogging, LOG1, , sec5
