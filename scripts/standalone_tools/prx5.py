@@ -2,19 +2,19 @@
 """prx5.py - download data from, and check the health of, one PolaRx5 (fw 5.7.0).
 
 Stand-alone: Python standard library plus gtimes (download only). RxTools is
-optional and adds the disk check (bin2asc) and `--rinex` (sbf2rin). It does not
-import the `receivers` package and needs no database. Read README.md first.
+optional and adds the disk check (bin2asc) and `--rinex` (sbf2rin). It talks only
+to the receiver and uses no database. Run `prx5.py --help` for a tutorial.
 
-    prx5.py health   ENTC 192.0.2.10
-    prx5.py download ENTC 192.0.2.10:2160 --start 2026-11-01 --end 2026-11-03
-    prx5.py health   ENTC 192.0.2.10 --save   # remember the address
-    prx5.py health   ENTC                    # from then on
+    prx5.py health   TEST 192.0.2.10
+    prx5.py download TEST 192.0.2.10:2160 --start 2026-11-01 --end 2026-11-03
+    prx5.py health   TEST 192.0.2.10 --save   # remember the address
+    prx5.py health   TEST                    # from then on
 
 Exit codes: 0 ok; 1 warning, or some files not fetched; 2 critical;
 3 unreachable, login refused or unknown; 64 bad usage.
 
 LOCKOUT: a few failed logins on fw 5.7.0 lock EVERY account on the receiver for
-about nine hours, including the production scheduler's. So this tool logs in
+about nine hours, including those of any other client. So this tool logs in
 once per run, on one connection, and stops at the first refusal. Never add a
 retry around a login here.
 """
@@ -58,6 +58,14 @@ DEFAULT_CFG = CONFIG_HOME / "polarx5-tools" / "stations.cfg"
 DEFAULT_CRED = CONFIG_HOME / "polarx5-tools" / "credentials"
 # datetime.UTC needs Python 3.11; this tool runs on 3.9.
 UTC = timezone.utc  # noqa: UP017
+MANAGED_KEYS = {
+    "router_ip",
+    "receiver_ftpport",
+    "receiver_httpport",
+    "receiver_controlport",
+    "base_path",
+    "ftp_mode",
+}
 LOCAL_TEMPLATE = "%Y/#b/{station}/{session}/raw/{name}"
 
 
@@ -82,7 +90,7 @@ BLOCK_SATS = ("PVTSatCartesian", 4008)
 BLOCK_DISK = ("DiskStatus", 4059)
 BLOCK_SETUP = ("ReceiverSetup", 5902)
 
-# ReceiverStatus2 bit names, as in receivers/health/polarx5_tcp_extractor.py.
+# ReceiverStatus2 bit names, from the PolaRx5 reference guide.
 RX_ERROR_BITS = {
     3: "SOFTWARE",
     4: "WATCHDOG",
@@ -100,8 +108,8 @@ EXT_ERROR_BITS = {
     3: "SETUPERROR",
 }
 
-# Defaults of receivers/health/metrics.py ThresholdConfig. Voltage is reported
-# only: its limits depend on the power type, which this tool does not know.
+# Status limits. Voltage is reported only: its limits depend on the power supply,
+# which this tool does not know.
 TEMPERATURE_BAND = (-20.0, -10.0, 50.0, 60.0)
 CPU_WARN, CPU_CRIT = 75, 90
 DISK_WARN, DISK_CRIT = 90.0, 97.0
@@ -139,7 +147,7 @@ def cfg_path(args: argparse.Namespace) -> Path:
 
 
 def read_station(path: Path, station: str) -> Dict[str, str]:
-    """The station's section; key names match IMO's stations.cfg on purpose."""
+    """The station's section of an INI file."""
     if not path.exists():
         return {}
     parser = configparser.ConfigParser(interpolation=None, strict=False)
@@ -152,12 +160,16 @@ def read_station(path: Path, station: str) -> Dict[str, str]:
 
 def save_station(path: Path, station: str, values: Dict[str, str]) -> None:
     """Add or update the keys in one section, leaving every other line alone."""
-    if "gpsconfig" in path.resolve().parts:
-        raise ToolError(
-            f"refusing to write {path}: IMO's config is changed in gps-config-data, "
-            "not by this tool",
-            EXIT_USAGE,
-        )
+    if path.exists():
+        parser = configparser.ConfigParser(interpolation=None, strict=False)
+        parser.read(path)
+        if any(set(parser[name]) - MANAGED_KEYS for name in parser.sections()):
+            raise ToolError(
+                f"refusing to write {path}: it has keys this tool does not manage, so "
+                "it looks like a config maintained elsewhere. Use --cfg with a "
+                "separate file.",
+                EXIT_USAGE,
+            )
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = path.read_text().splitlines() if path.exists() else []
     start = next(
@@ -269,7 +281,7 @@ def load_credentials(args: argparse.Namespace) -> Optional[Tuple[str, str]]:
     return creds
 
 
-# --- SBF decoding (pure functions; offsets as in polarx5_tcp_extractor.py) -----
+# --- SBF decoding (pure functions) --------------------------------------------
 
 
 def find_block(data: bytes, block_id: int) -> Optional[bytes]:
@@ -578,8 +590,8 @@ def port_hints(ports: Dict[str, Dict[str, Any]], host: str) -> List[str]:
     hints = []
     if ports["ftp"]["state"] != "open":
         hints.append(
-            "FTP closed: rxupgrade to 5.7.0 disables it. `receivers rec-provision <SID>` "
-            "reopens it, and until then no data can be downloaded."
+            "FTP closed: upgrading to 5.7.0 turns it off. To reopen it, send `sis, all, FTP` "
+            "then `eccf, Current, Boot` on the control port. No download works until then."
         )
     if (
         ports["control"]["state"] != "open"
@@ -937,6 +949,10 @@ def valid_gzip(path: Path) -> bool:
 # --- download: FTP --------------------------------------------------------------
 
 
+class DataChannelError(Exception):
+    """The control connection works but no transfer could start."""
+
+
 class Receiver:
     """A lazily opened FTP connection. A refused login ends the whole run."""
 
@@ -951,6 +967,9 @@ class Receiver:
         self.host, self.port, self.creds = host, port, creds
         self.timeout, self.passive = timeout, passive
         self.ftp: Optional[ftplib.FTP] = None
+        self.label = ""
+        self.mode_switched = False
+        self.data_ok = False  # a transfer has worked in the current mode
 
     def connect(self) -> ftplib.FTP:
         if self.ftp is not None:
@@ -990,6 +1009,45 @@ class Receiver:
             return None
 
 
+def human_size(count: float) -> str:
+    return f"{count / 1e6:.2f} MB"
+
+
+class Meter:
+    """A progress line on stderr, redrawn at most four times a second."""
+
+    def __init__(self, done: int, total: Optional[int], enabled: bool) -> None:
+        self.done, self.total, self.enabled = done, total, enabled
+        self.started_at = done
+        self.start = time.monotonic()
+        self.drawn = 0.0
+
+    def add(self, count: int) -> None:
+        self.done += count
+        now = time.monotonic()
+        if self.enabled and now - self.drawn >= 0.25:
+            self.drawn = now
+            self.draw(now)
+
+    def draw(self, now: float) -> None:
+        moved = self.done - self.started_at
+        rate = moved / max(now - self.start, 0.001)
+        text = f"  {human_size(self.done)}"
+        if self.total:
+            eta = int((self.total - self.done) / rate) if rate else 0
+            text += (
+                f" of {human_size(self.total)}  {100 * self.done / self.total:3.0f} %"
+                f"  ETA {eta // 60}m{eta % 60:02d}s"
+            )
+        sys.stderr.write(f"\r{text}  {rate / 1000:.0f} kB/s\033[K")
+        sys.stderr.flush()
+
+    def close(self) -> None:
+        if self.enabled and self.drawn:
+            sys.stderr.write("\r\033[K")
+            sys.stderr.flush()
+
+
 def fetch(receiver: Receiver, remote: str, part: Path, size: Optional[int]) -> None:
     """RETR into `part`, resuming when the partial file can still be valid."""
     offset = part.stat().st_size if part.exists() else 0
@@ -1000,8 +1058,29 @@ def fetch(receiver: Receiver, remote: str, part: Path, size: Optional[int]) -> N
     if size is not None and offset == size:
         return
     ftp = receiver.connect()
+    wanted = human_size(size) if size is not None else "size unknown"
+    resume = f", resuming at {human_size(offset)}" if offset else ""
+    print(
+        f"{receiver.label} fetching {Path(remote).name} ({wanted}{resume})",
+        file=sys.stderr,
+        flush=True,
+    )
+    meter = Meter(offset, size, sys.stderr.isatty())
     with part.open("ab") as handle:
-        ftp.retrbinary(f"RETR {remote}", handle.write, rest=offset or None)
+
+        def write(chunk: bytes) -> None:
+            handle.write(chunk)
+            meter.add(len(chunk))
+
+        try:
+            ftp.retrbinary(f"RETR {remote}", write, rest=offset or None)
+        except (OSError, EOFError, ftplib.error_temp) as exc:
+            if meter.done == offset and not receiver.data_ok:
+                raise DataChannelError(str(exc) or type(exc).__name__) from exc
+            raise
+        finally:
+            meter.close()
+    receiver.data_ok = True
 
 
 def fetch_target(
@@ -1011,6 +1090,7 @@ def fetch_target(
     part = target.local.with_name(target.local.name + ".part")
     target.local.parent.mkdir(parents=True, exist_ok=True)
     last_error = ""
+    data_failure = ""
     for attempt in range(retries + 1):
         if attempt:
             time.sleep(min(30, 5 * attempt))
@@ -1048,6 +1128,22 @@ def fetch_target(
                 raise OSError("downloaded file is not valid gzip")
             part.replace(target.local)
             return "fetched", size
+        except DataChannelError as exc:
+            receiver.drop()
+            tried = "passive" if receiver.passive else "active"
+            if receiver.mode_switched:
+                # Active has been seen to time out now and then and work next time.
+                data_failure, last_error = f"{tried}: {exc}", str(exc)
+                continue
+            receiver.mode_switched = True
+            receiver.passive = not receiver.passive
+            other = "passive" if receiver.passive else "active"
+            print(
+                f"{tried} FTP data connection failed ({exc}): trying {other}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return fetch_target(receiver, target, unfinalised, force, retries)
         except ftplib.error_perm as exc:
             if str(exc).startswith("554"):
                 part.unlink(missing_ok=True)
@@ -1056,13 +1152,20 @@ def fetch_target(
         except (OSError, EOFError, ftplib.Error) as exc:
             last_error = str(exc) or type(exc).__name__
             receiver.drop()
+    if data_failure and not receiver.data_ok:
+        raise ToolError(
+            "FTP login works, but no data connection in either mode "
+            f"({data_failure}). NAT routers commonly refuse passive, and active needs "
+            "the receiver to reach this host, which can fail over VPN. Try again, or "
+            "run this tool from a computer on the receiver's own network."
+        )
     return f"failed: {last_error}", 0
 
 
 def quicklook_rinex(
     sbf2rin: str, target: Target, station: str, freq: str, version: str
 ) -> str:
-    """Uncorrected RINEX beside the raw file. Headers come from the receiver, not TOS."""
+    """Uncorrected RINEX beside the raw file. Headers come from the receiver."""
     # Beside raw/ in the date tree; inside --outdir with --flat.
     raw_dir = target.local.parent
     base = raw_dir.parent if raw_dir.name == "raw" else raw_dir
@@ -1122,17 +1225,19 @@ def command_download(args: argparse.Namespace) -> int:
     if state != "open":
         raise ToolError(
             f"FTP port {host}:{port} {state}. After a 5.7.0 upgrade FTP is off until "
-            "`receivers rec-provision <SID>`; `prx5.py health` shows the other ports."
+            "`sis, all, FTP`; `prx5.py health` shows the other ports."
         )
     if args.save and host_arg:
         save_station(
             path, args.station, {"router_ip": host, "receiver_ftpport": str(port)}
         )
 
-    receiver = Receiver(host, port, creds, args.timeout, not args.active)
+    active = args.active or cfg.get("ftp_mode", "").strip() == "active"
+    receiver = Receiver(host, port, creds, args.timeout, not active)
     results: List[Dict[str, Any]] = []
     try:
-        for target in targets:
+        for number, target in enumerate(targets, 1):
+            receiver.label = f"[{number}/{len(targets)}]"
             if args.dry_run:
                 size = receiver.size(target.remote)
                 outcome, count = (
@@ -1160,7 +1265,7 @@ def command_download(args: argparse.Namespace) -> int:
             results.append(item)
             if not args.json:
                 note = f" {item['rinex']}" if "rinex" in item else ""
-                print(f"{outcome:20} {count:>12} {target.local}{note}")
+                print(f"{outcome:20} {count:>12} {target.local}{note}", flush=True)
     finally:
         receiver.close()
 
@@ -1208,6 +1313,89 @@ def station_id(text: str) -> str:
     return text.upper()
 
 
+TUTORIAL = """\
+TUTORIAL (prx5.py)
+
+Replace TEST with your 4-character station ID and 192.0.2.10 with its address.
+All times are UTC.
+
+1. Check that the receiver can be reached. This sends no login.
+
+     prx5.py ports TEST 192.0.2.10
+
+   All three ports should say "open". If FTP is closed, downloads cannot work:
+   upgrading to fw 5.7.0 turns FTP off (see step 8).
+
+2. Check its health. -u asks for the password without showing it.
+
+     prx5.py health TEST 192.0.2.10 -u myuser
+
+   Read the [ok], [warning] or [critical] tags and the STATUS line at the end.
+   "errors ANTENNA" with "antenna power OFF" means an antenna short: no data is
+   being recorded. Voltage is shown as a value only and is never judged.
+   Disk and satellite counts are included.
+   Exit code: 0 ok, 1 warning, 2 critical, 3 unreachable or login refused.
+
+   CAREFUL: repeated failed logins lock the receiver for about 9 hours, for every
+   user. The tool stops at the first refusal. Check the password before you retry.
+
+3. Save the address, so you can leave it out from now on.
+
+     prx5.py health TEST 192.0.2.10 -u myuser --save
+     prx5.py health TEST -u myuser
+     prx5.py stations
+
+4. Stop typing the login. Create a file only you can read:
+
+     mkdir -p ~/.config/polarx5-tools
+     install -m 600 /dev/null ~/.config/polarx5-tools/credentials
+     printf 'username = myuser\\npassword = mypass\\n' \\
+       > ~/.config/polarx5-tools/credentials
+
+   Now "prx5.py health TEST" works alone. The rest of this tutorial assumes this.
+
+5. See what the receiver holds, without downloading anything.
+
+     prx5.py download TEST -D 3 --dry-run
+
+   -D 3 means the last 3 complete sessions, here the last 3 days.
+
+6. Download.
+
+     prx5.py download TEST                      yesterday's 15s_24hr file
+     prx5.py download TEST -D 7                 the last 7 days
+     prx5.py download TEST -s 1Hz_1hr -D 6      the last 6 hours of 1 Hz data
+     prx5.py download TEST --start 2026-11-01 --end 2026-11-03
+                                             those 3 days (--end is inclusive)
+     prx5.py download TEST -s 1Hz_1hr --start 2026-11-03T14 --end 2026-11-03T18
+                                             those 5 hours
+
+   Files go to ./gpsdata/YYYY/mon/STA/SESSION/raw/. Use -o DIR for another root,
+   or --flat to put them all directly in DIR. Run the same command again at any
+   time: finished files are skipped and interrupted ones resume.
+
+7. Use it in a script. Exit codes tell you the result:
+
+     prx5.py health TEST --json > status.json || echo "exit code $?"
+     prx5.py download TEST -D 1 -o /data/gnss || echo "some files are missing"
+
+   Add --rinex to also convert each file with sbf2rin, if RxTools is installed.
+
+8. When something goes wrong.
+
+     login refused        Wrong password. Fix it BEFORE you run again.
+     receiver locked      Wait for the countdown. Retrying does not help or hurt.
+     Not authorized       No login given. Use -u or a credentials file.
+     FTP port refused     FTP is off after a 5.7.0 upgrade. On the control port,
+                          send: sis, all, FTP   then: eccf, Current, Boot
+     trying active        Normal: the router refused passive FTP.
+     no data connection   Neither FTP mode works from this computer. Try again,
+                          or run from a computer on the receiver's own network.
+     unfinalised          The file is still being written. Add --unfinalised.
+     absent               The receiver does not hold that file.
+"""
+
+
 def build_parser() -> argparse.ArgumentParser:
     common = Parser(add_help=False)
     common.add_argument(
@@ -1237,7 +1425,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser = Parser(
-        prog="prx5.py", description="PolaRx5 (fw 5.7.0) download and health tool."
+        prog="prx5.py",
+        description="PolaRx5 (fw 5.7.0) download and health tool.",
+        epilog=TUTORIAL,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     commands = parser.add_subparsers(dest="command", required=True, parser_class=Parser)
 
@@ -1245,6 +1436,17 @@ def build_parser() -> argparse.ArgumentParser:
         "download",
         parents=[target, common, auth],
         help="fetch files over FTP; PORT is the FTP port (default 2160)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+examples:
+  prx5.py download TEST 192.0.2.10 -u myuser     yesterday's 15s_24hr file
+  prx5.py download TEST -D 7                     the last 7 days
+  prx5.py download TEST -s 1Hz_1hr -D 6          the last 6 hours
+  prx5.py download TEST --start 2026-11-01 --end 2026-11-03
+  prx5.py download TEST -D 3 --dry-run           ask, download nothing
+
+The full tutorial is in: prx5.py --help
+""",
     )
     download.add_argument("-s", "--session", choices=SESSIONS, default="15s_24hr")
     download.add_argument(
@@ -1305,6 +1507,15 @@ def build_parser() -> argparse.ArgumentParser:
         "health",
         parents=[target, common, auth],
         help="query the receiver; PORT is the control port (default 28784)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+examples:
+  prx5.py health TEST 192.0.2.10 -u myuser
+  prx5.py health TEST --json
+
+exit code: 0 ok, 1 warning, 2 critical, 3 unreachable or login refused.
+The full tutorial is in: prx5.py --help
+""",
     )
     health.add_argument("--ftp-port", type=int)
     health.add_argument("--http-port", type=int)

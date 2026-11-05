@@ -7,9 +7,12 @@ is the login count: a few failed logins lock a 5.7.0 receiver for about 9 h.
 
 from __future__ import annotations
 
+import gzip
 import importlib.util
 import json
 import os
+import pty
+import re
 import shutil
 import socket
 import socketserver
@@ -162,11 +165,28 @@ class FakeReceiver:
         self.server.server_close()
 
 
+CONFIG_NAME = "PolaRx5_TEST_config.txt"
+CONNECT_BACK = (
+    "import socket, sys;"
+    "c = socket.create_connection((sys.argv[1], int(sys.argv[2])));"
+    "c.sendall(sys.stdin.buffer.read()); c.close()"
+)
+
+
 class FakeFtp:
     """Just enough FTP for ftplib and curl, with passive transfers."""
 
-    def __init__(self, files: Dict[str, bytes]) -> None:
+    def __init__(
+        self,
+        files: Dict[str, bytes],
+        refuse_passive: bool = False,
+        refuse_active: bool = False,
+    ) -> None:
         self.files = files
+        self.refuse_passive = refuse_passive
+        self.refuse_active = refuse_active
+        self.active_timeouts = 0
+        self.commands: List[str] = []
         self.logins: List[str] = []
         self.rests: List[int] = []
         outer = self
@@ -179,10 +199,12 @@ class FakeFtp:
                 self.reply("220 fake")
                 rest = 0
                 data_sock: Optional[socket.socket] = None
+                port_target: Optional[tuple] = None
                 user = ""
                 for raw in self.rfile:
                     command, _, arg = raw.decode().strip().partition(" ")
                     command = command.upper()
+                    outer.commands.append(command)
                     if command == "USER":
                         user = arg
                         self.reply("331 password")
@@ -207,12 +229,43 @@ class FakeFtp:
                         rest = int(arg)
                         outer.rests.append(rest)
                         self.reply("350 ok")
+                    elif command == "PORT":
+                        numbers = [int(n) for n in arg.split(",")]
+                        port_target = (
+                            ".".join(map(str, numbers[:4])),
+                            numbers[4] * 256 + numbers[5],
+                        )
+                        self.reply("200 ok")
+                    elif command == "PASV" and outer.refuse_passive:
+                        # Advertise a port nothing listens on, as a NAT router does.
+                        with socket.socket() as probe:
+                            probe.bind(("127.0.0.1", 0))
+                            port = probe.getsockname()[1]
+                        self.reply(f"227 Entering (127,0,0,1,{port >> 8},{port & 255})")
                     elif command == "PASV":
                         data_sock = socket.socket()
                         data_sock.bind(("127.0.0.1", 0))
                         data_sock.listen(1)
                         port = data_sock.getsockname()[1]
                         self.reply(f"227 Entering (127,0,0,1,{port >> 8},{port & 255})")
+                    elif command == "RETR" and port_target is not None:
+                        self.reply("150 sending")
+                        if outer.refuse_active or outer.active_timeouts > 0:
+                            outer.active_timeouts -= 1
+                            continue  # never connects back: the client times out
+                        # In a subprocess: the no-network test guard blocks connect here.
+                        subprocess.run(
+                            [
+                                sys.executable,
+                                "-c",
+                                CONNECT_BACK,
+                                *map(str, port_target),
+                            ],
+                            input=outer.files[arg][rest:],
+                            check=True,
+                        )
+                        rest, port_target = 0, None
+                        self.reply("226 done")
                     elif command == "RETR":
                         if arg not in outer.files or data_sock is None:
                             self.reply("550 no file")
@@ -605,6 +658,184 @@ def test_download_refuses_without_credentials(kind, ftp, tmp_path):
     assert ftp.logins == []
 
 
+# --- FTP data connection ------------------------------------------------------
+
+
+@pytest.mark.parametrize("kind", BOTH)
+def test_refused_passive_switches_to_active(kind, tmp_path):
+    fake = FakeFtp({REMOTE: GZ_BODY}, refuse_passive=True)
+    try:
+        out = run(kind, *download_args(fake, tmp_path))
+    finally:
+        fake.stop()
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "trying active" in out.stderr
+    assert (tmp_path / LOCAL).read_bytes() == GZ_BODY
+
+
+@pytest.mark.parametrize("kind", BOTH)
+def test_no_data_connection_in_either_mode_stops_the_run(kind, tmp_path):
+    fake = FakeFtp({REMOTE: GZ_BODY}, refuse_passive=True, refuse_active=True)
+    try:
+        args = download_args(fake, tmp_path) + ["--timeout", "3", "--end", "2026-11-04"]
+        out = run(kind, *args)
+    finally:
+        fake.stop()
+    assert out.returncode == 3, out.stdout + out.stderr
+    assert "own network" in out.stderr
+    assert "Traceback" not in out.stderr
+    assert not (tmp_path / LOCAL).exists()
+
+
+@pytest.mark.parametrize("kind", BOTH)
+def test_one_active_timeout_is_retried_not_fatal(kind, tmp_path):
+    fake = FakeFtp({REMOTE: GZ_BODY}, refuse_passive=True)
+    fake.active_timeouts = 1
+    args = download_args(fake, tmp_path) + ["--timeout", "3", "--retries", "1"]
+    try:
+        out = run(kind, *args)
+    finally:
+        fake.stop()
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert (tmp_path / LOCAL).read_bytes() == GZ_BODY
+
+
+@pytest.mark.parametrize("kind", BOTH)
+def test_ftp_mode_active_in_the_stations_file_skips_passive(kind, tmp_path):
+    fake = FakeFtp({REMOTE: GZ_BODY})
+    cfg = tmp_path / "stations.cfg"
+    cfg.write_text(
+        f"[ENTC]\nrouter_ip = 127.0.0.1\nftp_mode = active\nreceiver_ftpport = {fake.port}\n"
+    )
+    args = [
+        "download",
+        "ENTC",
+        "--cfg",
+        str(cfg),
+        "--start",
+        "2026-11-03",
+        "-o",
+        str(tmp_path),
+    ]
+    try:
+        out = run(kind, *args)
+    finally:
+        fake.stop()
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "PORT" in fake.commands and "PASV" not in fake.commands
+
+
+@pytest.mark.parametrize(
+    "name", ["prx5.py", "prx5.sh", "README.md", "stations.cfg.example", CONFIG_NAME]
+)
+def test_shipped_files_carry_no_site_references(name):
+    pattern = (
+        r"\bIMO\b|vedur|rek-d01|rec-provision|gps-config|gpsconfig|gps-tools|gpslibrary"
+        r"|\bTOS\b|ENTC|NYLA|THOB|GJAC|receivers package|receivers/|receivers\.cfg"
+        r"|production|scheduler"
+    )
+    found = re.findall(pattern, (TOOLS / name).read_text())
+    assert not found, found
+
+
+@pytest.mark.parametrize("kind", BOTH)
+@pytest.mark.parametrize("flag", ["--help", "-h"])
+def test_help_contains_the_tutorial(kind, flag):
+    out = run(kind, flag, password=None)
+    assert out.returncode == 0, out.stderr
+    assert "TUTORIAL" in out.stdout
+    assert f"prx5.{kind} download TEST -D 7" in out.stdout
+    assert "TOOL" not in out.stdout
+
+
+@pytest.mark.parametrize("kind", BOTH)
+def test_usage_errors_do_not_print_the_tutorial(kind):
+    out = run(kind, "nonsense", password=None)
+    assert "TUTORIAL" not in out.stdout + out.stderr
+
+
+def test_example_config_matches_the_tools_and_holds_no_secrets():
+    text = (TOOLS / CONFIG_NAME).read_text()
+    for session, details in prx5.SESSIONS.items():
+        log = details.remote_dir.split("_", 1)[0]
+        assert f'setLogSession, {log}, , , "{session}"' in text
+        assert f"setLogSession, {log}, Enabled" in text
+    assert 'setMarkerParameters, "TEST"' in text
+    assert "setIPServices, , FTP" in text
+    forbidden = (
+        r"setNtrip|, NTR\d|setUserAccessLevel|AAAAC3|setWiFiAccessPoint|setIPSettings"
+        r"|\d+\.\d+\.\d+\.\d+"
+    )
+    assert not re.findall(forbidden, text)
+
+
+def test_the_scripts_use_no_database():
+    pattern = r"psycopg|sqlalchemy|sqlite|psql|pg_|gps_health|pgdev|import receivers"
+    for name in ("prx5.py", "prx5.sh"):
+        assert not re.search(pattern, (TOOLS / name).read_text()), name
+
+
+# --- progress ---------------------------------------------------------------
+
+
+def big_gzip() -> bytes:
+    return gzip.compress(os.urandom(4_000_000), compresslevel=1)
+
+
+@pytest.mark.parametrize("kind", BOTH)
+def test_terminal_shows_a_progress_bar(kind, tmp_path):
+    fake = FakeFtp({REMOTE: big_gzip()})
+    master, slave = pty.openpty()
+    script = (
+        [sys.executable, str(TOOLS / "prx5.py")]
+        if kind == "py"
+        else ["bash", str(TOOLS / "prx5.sh")]
+    )
+    env = dict(os.environ, PRX5_USER=USER, PRX5_PASS=PASSWORD)
+    try:
+        proc = subprocess.run(
+            script + download_args(fake, tmp_path),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=slave,
+            stdin=subprocess.DEVNULL,
+            timeout=60,
+        )
+    finally:
+        fake.stop()
+        os.close(slave)
+    seen = b""
+    while True:
+        try:
+            chunk = os.read(master, 65536)
+        except OSError:
+            break
+        if not chunk:
+            break
+        seen += chunk
+    os.close(master)
+    assert proc.returncode == 0
+    assert b"[1/1] fetching ENTC3070.26_.gz" in seen
+    assert b"%" in seen
+
+
+@pytest.mark.parametrize("kind", BOTH)
+def test_no_terminal_means_no_bar_but_a_fetching_line(kind, tmp_path):
+    fake = FakeFtp({REMOTE: big_gzip()})
+    try:
+        out = run(kind, *download_args(fake, tmp_path))
+    finally:
+        fake.stop()
+    assert out.returncode == 0, out.stderr
+    assert "[1/1] fetching ENTC3070.26_.gz" in out.stderr
+    assert "\r" not in out.stderr
+
+
+def test_json_on_stdout_stays_clean_while_fetching(ftp, tmp_path):
+    out = run("py", *download_args(ftp, tmp_path), "--json")
+    assert json.loads(out.stdout)["files"][0]["outcome"] == "fetched"
+
+
 # --- -D: sessions back ------------------------------------------------------
 
 
@@ -745,10 +976,9 @@ def test_save_then_use_the_stored_address(kind, receiver, tmp_path):
 
 
 @pytest.mark.parametrize("kind", BOTH)
-def test_save_refuses_imo_config(kind, receiver, tmp_path):
-    cfg = tmp_path / "gpsconfig" / "stations.cfg"
-    cfg.parent.mkdir()
-    cfg.write_text("[OTHR]\nrouter_ip = 192.0.2.1\n")
+def test_save_refuses_a_file_it_does_not_manage(kind, receiver, tmp_path):
+    cfg = tmp_path / "stations.cfg"
+    cfg.write_text("[OTHR]\nrouter_ip = 192.0.2.1\nstation_owner = someone\n")
     out = run(
         kind,
         "health",
@@ -759,7 +989,7 @@ def test_save_refuses_imo_config(kind, receiver, tmp_path):
         str(cfg),
     )
     assert out.returncode == 64
-    assert "gps-config-data" in out.stderr
+    assert "maintained elsewhere" in out.stderr
     assert "ENTC" not in cfg.read_text()
 
 

@@ -2,18 +2,19 @@
 # prx5.sh - download data from, and check the health of, one PolaRx5 (fw 5.7.0).
 #
 # Stand-alone: bash 4+, GNU coreutils, grep, awk, curl, and timecalc from gtimes
-# (download only). No Python code of ours and no RxTools. Read README.md first.
+# (download only). No Python code and no RxTools. It talks only to the receiver and
+# uses no database. Run `prx5.sh --help` for a tutorial.
 #
-#   prx5.sh health   ENTC 192.0.2.10
-#   prx5.sh download ENTC 192.0.2.10:2160 --start 2026-11-01 --end 2026-11-03
-#   prx5.sh health   ENTC 192.0.2.10 --save   # remember the address
-#   prx5.sh health   ENTC                    # from then on
+#   prx5.sh health   TEST 192.0.2.10
+#   prx5.sh download TEST 192.0.2.10:2160 --start 2026-11-01 --end 2026-11-03
+#   prx5.sh health   TEST 192.0.2.10 --save   # remember the address
+#   prx5.sh health   TEST                    # from then on
 #
 # Exit codes: 0 ok; 1 warning, or some files not fetched; 2 critical;
 # 3 unreachable, login refused or unknown; 64 bad usage.
 #
 # LOCKOUT: a few failed logins on fw 5.7.0 lock EVERY account on the receiver
-# for about nine hours, including the production scheduler's. So health logs in
+# for about nine hours, including those of any other client. So health logs in
 # once on one connection, and download stops at the first refused login. Never
 # add a retry around a login here. Never run this with `set -x`: the password
 # would be traced. It goes to curl on stdin and to the receiver via the printf
@@ -54,9 +55,93 @@ common:   -u|--user USER  -p|--password PASS  --cred-file FILE  --cfg FILE  --sa
 EOF
 }
 
+tutorial() {
+    usage
+    cat <<'EOF'
+
+TUTORIAL (prx5.sh)
+
+Replace TEST with your 4-character station ID and 192.0.2.10 with its address.
+All times are UTC.
+
+1. Check that the receiver can be reached. This sends no login.
+
+     prx5.sh ports TEST 192.0.2.10
+
+   All three ports should say "open". If FTP is closed, downloads cannot work:
+   upgrading to fw 5.7.0 turns FTP off (see step 8).
+
+2. Check its health. -u asks for the password without showing it.
+
+     prx5.sh health TEST 192.0.2.10 -u myuser
+
+   Read the [ok], [warning] or [critical] tags and the STATUS line at the end.
+   "errors ANTENNA" with "antenna power OFF" means an antenna short: no data is
+   being recorded. Voltage is shown as a value only and is never judged.
+   For disk and satellite counts, use prx5.py.
+   Exit code: 0 ok, 1 warning, 2 critical, 3 unreachable or login refused.
+
+   CAREFUL: repeated failed logins lock the receiver for about 9 hours, for every
+   user. The tool stops at the first refusal. Check the password before you retry.
+
+3. Save the address, so you can leave it out from now on.
+
+     prx5.sh health TEST 192.0.2.10 -u myuser --save
+     prx5.sh health TEST -u myuser
+     prx5.sh stations
+
+4. Stop typing the login. Create a file only you can read:
+
+     mkdir -p ~/.config/polarx5-tools
+     install -m 600 /dev/null ~/.config/polarx5-tools/credentials
+     printf 'username = myuser\npassword = mypass\n' \
+       > ~/.config/polarx5-tools/credentials
+
+   Now "prx5.sh health TEST" works alone. The rest of this tutorial assumes this.
+
+5. See what the receiver holds, without downloading anything.
+
+     prx5.sh download TEST -D 3 --dry-run
+
+   -D 3 means the last 3 complete sessions, here the last 3 days.
+
+6. Download.
+
+     prx5.sh download TEST                      yesterday's 15s_24hr file
+     prx5.sh download TEST -D 7                 the last 7 days
+     prx5.sh download TEST -s 1Hz_1hr -D 6      the last 6 hours of 1 Hz data
+     prx5.sh download TEST --start 2026-11-01 --end 2026-11-03
+                                             those 3 days (--end is inclusive)
+     prx5.sh download TEST -s 1Hz_1hr --start 2026-11-03T14 --end 2026-11-03T18
+                                             those 5 hours
+
+   Files go to ./gpsdata/YYYY/mon/STA/SESSION/raw/. Use -o DIR for another root,
+   or --flat to put them all directly in DIR. Run the same command again at any
+   time: finished files are skipped and interrupted ones resume.
+
+7. Use it in a script. Exit codes tell you the result:
+
+     prx5.sh health TEST --json > status.json || echo "exit code $?"
+     prx5.sh download TEST -D 1 -o /data/gnss || echo "some files are missing"
+
+8. When something goes wrong.
+
+     login refused        Wrong password. Fix it BEFORE you run again.
+     receiver locked      Wait for the countdown. Retrying does not help or hurt.
+     Not authorized       No login given. Use -u or a credentials file.
+     FTP port refused     FTP is off after a 5.7.0 upgrade. On the control port,
+                          send: sis, all, FTP   then: eccf, Current, Boot
+     trying active        Normal: the router refused passive FTP.
+     no data connection   Neither FTP mode works from this computer. Try again,
+                          or run from a computer on the receiver's own network.
+     unfinalised          The file is still being written. Add --unfinalised.
+     absent               The receiver does not hold that file.
+EOF
+}
+
 # --- configuration and credentials ---------------------------------------------
 
-cfg_get() { # cfg_get SECTION KEY: empty when absent. Keys match IMO's stations.cfg.
+cfg_get() { # cfg_get SECTION KEY: empty when absent.
     [ -f "$CFG" ] || return 0
     awk -v sec="[$1]" -v key="$2" '
         { line = $0; sub(/\r$/, "", line); gsub(/^[ \t]+|[ \t]+$/, "", line) }
@@ -71,12 +156,15 @@ cfg_get() { # cfg_get SECTION KEY: empty when absent. Keys match IMO's stations.
 }
 
 save_station() { # save_station SECTION KEY=VALUE...
-    local section=$1 tmp resolved pair
+    local section=$1 tmp pair
     shift
-    resolved=$(readlink -m "$CFG")
-    case "/$resolved/" in
-        */gpsconfig/*) die "$EXIT_USAGE" "refusing to write $CFG: IMO's config is changed in gps-config-data" ;;
-    esac
+    if [ -f "$CFG" ] && awk -F= '
+        /^[ \t]*[#;[]/ || !index($0, "=") { next }
+        { k = $1; gsub(/[ \t]/, "", k) }
+        k !~ /^(router_ip|receiver_ftpport|receiver_httpport|receiver_controlport|base_path|ftp_mode)$/ { found = 1; exit }
+        END { exit !found }' "$CFG"; then
+        die "$EXIT_USAGE" "refusing to write $CFG: it has keys this tool does not manage, so it looks like a config maintained elsewhere. Use --cfg with a separate file."
+    fi
     mkdir -p "$(dirname "$CFG")"
     [ -f "$CFG" ] || : >"$CFG"
     if ! grep -qxF "[$section]" "$CFG"; then
@@ -174,7 +262,7 @@ probe_port() { # prints open / refused / timeout. Retried once: 3G/4G links lose
 
 port_hints() { # port_hints FTP_STATE CONTROL_STATE
     if [ "$1" != open ]; then
-        echo "FTP closed: rxupgrade to 5.7.0 disables it. 'receivers rec-provision <SID>' reopens it, and until then no data can be downloaded."
+        echo "FTP closed: upgrading to 5.7.0 turns it off. To reopen it, send 'sis, all, FTP' then 'eccf, Current, Boot' on the control port. No download works until then."
     fi
     if [ "$2" != open ] && [ "$(probe_port "$SECURE_CONTROL_PORT")" = open ]; then
         echo "Control port closed but TLS port $SECURE_CONTROL_PORT open: the receiver is in 'sis, secure', as it is left after a firmware upgrade."
@@ -506,7 +594,64 @@ curl_ftp() { # curl_ftp ARGS...: credentials go on stdin as a config line
     else
         printf 'user = "anonymous:anonymous"\n'
     fi | curl -K - -sS --connect-timeout "$TIMEOUT" --speed-limit 1 --speed-time "$TIMEOUT" \
-        --ftp-method nocwd --disable-epsv --ftp-skip-pasv-ip "${FTP_MODE_ARGS[@]}" "$@"
+        --ftp-method nocwd --disable-epsv --disable-eprt --ftp-skip-pasv-ip "${FTP_MODE_ARGS[@]}" "$@"
+}
+
+# A progress bar only when someone is watching; a log file stays clean.
+BAR_ARGS=()
+[ ! -t 2 ] || BAR_ARGS=(--no-silent --progress-bar)
+
+announce() { # announce NAME SIZE [RESUME_AT]
+    awk -v label="$LABEL" -v name="$1" -v size="$2" -v at="${3:-0}" 'BEGIN {
+        text = (size == "") ? "size unknown" : sprintf("%.2f MB", size / 1e6)
+        if (at > 0) text = text sprintf(", resuming at %.2f MB", at / 1e6)
+        printf "%s fetching %s (%s)\n", label, name, text
+    }' >&2
+}
+
+DATA_OK=0 MODE_SWITCHED=0 SWITCH_RETRY=0 DATA_FAILURE=''
+
+# One transfer. Returns 0 on success. On failure with no bytes received and no
+# transfer yet working in this mode, it switches FTP mode once and sets
+# SWITCH_RETRY; if the other mode fails the same way, the run ends.
+transfer() { # transfer REMOTE OUTPUT OFFSET
+    local before=0 after=0 rc=0 tried other
+    [ ! -f "$2" ] || before=$(stat -c %s "$2")
+    if [ "$3" -gt 0 ]; then
+        curl_ftp ${BAR_ARGS[@]+"${BAR_ARGS[@]}"} --fail -C "$3" -o "$2" "$FTP_URL$1" || rc=$?
+    else
+        curl_ftp ${BAR_ARGS[@]+"${BAR_ARGS[@]}"} --fail -o "$2" "$FTP_URL$1" || rc=$?
+    fi
+    [ "$rc" -ne 67 ] || refused_login
+    if [ "$rc" -eq 0 ]; then
+        DATA_OK=1
+        return 0
+    fi
+    if [ "$rc" -eq 33 ] || [ "$rc" -eq 36 ]; then rm -f "$2"; fi
+    [ ! -f "$2" ] || after=$(stat -c %s "$2")
+    case $rc in
+        7 | 12 | 13 | 14 | 15 | 28 | 30)
+            if [ "$after" = "$before" ] && [ "$DATA_OK" = 0 ]; then
+                if [ "${FTP_MODE_ARGS[0]}" = --ftp-pasv ]; then tried=passive other=active; else tried=active other=passive; fi
+                if [ "$MODE_SWITCHED" = 1 ]; then
+                    # Active has been seen to time out now and then and work next time.
+                    DATA_FAILURE="$tried: curl error $rc"
+                    return 1
+                fi
+                MODE_SWITCHED=1 SWITCH_RETRY=1
+                if [ "$other" = active ]; then FTP_MODE_ARGS=(--ftp-port -); else FTP_MODE_ARGS=(--ftp-pasv); fi
+                echo "$tried FTP data connection failed (curl error $rc): trying $other" >&2
+            fi
+            ;;
+    esac
+    return 1
+}
+
+after_failed_transfer() { # Do not spend a retry on the mode switch.
+    if [ "$SWITCH_RETRY" = 1 ]; then
+        SWITCH_RETRY=0
+        attempt=$((attempt - 1))
+    fi
 }
 
 refused_login() {
@@ -556,10 +701,11 @@ fetch_one() { # fetch_one REMOTE LOCAL: sets OUTCOME and BYTES
             fi
             # Still being written, so it grows: no resume, and gzip it here.
             rm -f "$raw"
-            rc=0
-            curl_ftp --fail -o "$raw" "$FTP_URL${remote%.gz}" || rc=$?
-            [ "$rc" -ne 67 ] || refused_login
-            [ "$rc" -eq 0 ] || continue
+            announce "${remote##*/}" ""
+            if ! transfer "${remote%.gz}" "$raw" 0; then
+                after_failed_transfer
+                continue
+            fi
             [ "$(stat -c %s "$raw")" -ge "$bare" ] || continue
             gzip -c "$raw" >"$part"
             rm -f "$raw"
@@ -579,15 +725,11 @@ fetch_one() { # fetch_one REMOTE LOCAL: sets OUTCOME and BYTES
             have=0
         fi
         if [ "$have" -lt "$size" ]; then
-            rc=0
-            if [ "$have" -gt 0 ]; then
-                curl_ftp --fail -C "$have" -o "$part" "$FTP_URL$remote" || rc=$?
-            else
-                curl_ftp --fail -o "$part" "$FTP_URL$remote" || rc=$?
+            announce "${remote##*/}" "$size" "$have"
+            if ! transfer "$remote" "$part" "$have"; then
+                after_failed_transfer
+                continue
             fi
-            [ "$rc" -ne 67 ] || refused_login
-            if [ "$rc" -eq 33 ] || [ "$rc" -eq 36 ]; then rm -f "$part"; fi
-            [ "$rc" -eq 0 ] || continue
         fi
         [ "$(stat -c %s "$part")" = "$size" ] || continue
         if ! gzip -t "$part" 2>/dev/null; then
@@ -599,6 +741,9 @@ fetch_one() { # fetch_one REMOTE LOCAL: sets OUTCOME and BYTES
         OUTCOME=fetched BYTES=$size
         return 0
     done
+    if [ -n "$DATA_FAILURE" ] && [ "$DATA_OK" = 0 ]; then
+        die "$EXIT_UNKNOWN" "FTP login works, but no data connection in either mode ($DATA_FAILURE). NAT routers commonly refuse passive, and active needs the receiver to reach this host, which can fail over VPN. Try again, or run this tool from a computer on the receiver's own network."
+    fi
 }
 
 cmd_download() {
@@ -667,18 +812,19 @@ cmd_download() {
         [ -n "$CRED_USER" ] || die "$EXIT_USAGE" "no credentials: fw 5.7.0 refuses anonymous FTP. Set PRX5_USER and PRX5_PASS or create $DEFAULT_CRED (see README.md); use --anonymous for older firmware."
     fi
     state=$(probe_port "$port")
-    [ "$state" = open ] || die "$EXIT_UNKNOWN" "FTP port $HOST:$port $state. After a 5.7.0 upgrade FTP is off until 'receivers rec-provision <SID>'; 'prx5.sh health' shows the other ports."
+    [ "$state" = open ] || die "$EXIT_UNKNOWN" "FTP port $HOST:$port $state. After a 5.7.0 upgrade FTP is off until 'sis, all, FTP'; 'prx5.sh health' shows the other ports."
     if [ "$SAVE" = 1 ] && [ -n "$HOST_ARG" ]; then
         save_station "$STATION" "router_ip=$HOST" "receiver_ftpport=$port"
     fi
     FTP_URL="ftp://$HOST:$port/"
-    if [ "$ACTIVE" = 1 ]; then FTP_MODE_ARGS=(--ftp-port -); else FTP_MODE_ARGS=(--ftp-pasv); fi
+    if [ "$ACTIVE" = 1 ] || [ "$(cfg_get "$STATION" ftp_mode)" = active ]; then FTP_MODE_ARGS=(--ftp-port -); else FTP_MODE_ARGS=(--ftp-pasv); fi
 
     local total=0 good=0 size bare rc
     for ((epoch = first; epoch <= last; epoch += step)); do
         remote=$(gt_path "$remote_tmpl" "$freq" "$epoch")
         local_file="$OUTDIR/$(gt_path "$local_tmpl" "$freq" "$epoch")"
         total=$((total + 1))
+        LABEL="[$total/$(((last - first) / step + 1))]"
         if [ "$DRY_RUN" = 1 ]; then
             OUTCOME=absent BYTES=0 rc=0
             size=$(ftp_size "$remote") || rc=$?
@@ -721,7 +867,7 @@ COMMAND=${1:-}
 shift
 case "$COMMAND" in
     -h | --help)
-        usage
+        tutorial
         exit 0
         ;;
     download | health | ports | stations) ;;
@@ -742,7 +888,7 @@ need() { [ "$#" -ge 2 ] || die "$EXIT_USAGE" "$1 needs a value"; }
 is_number() { [[ $2 =~ ^[0-9]+$ ]] || die "$EXIT_USAGE" "$1 needs a number"; }
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        -h | --help) usage; exit 0 ;;
+        -h | --help) tutorial; exit 0 ;;
         --cfg) need "$@"; CFG_OPT=$2; shift 2 ;;
         --cred-file) need "$@"; CRED_FILE=$2; shift 2 ;;
         -u | --user) need "$@"; OPT_USER=$2; shift 2 ;;
