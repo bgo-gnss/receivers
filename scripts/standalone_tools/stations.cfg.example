@@ -1,0 +1,15 @@
+# Lightweight stations file for prx5.py and prx5.sh.
+# Copy to ~/.config/polarx5-tools/stations.cfg (or pass --cfg FILE).
+#
+# The key names are the ones in IMO's stations.cfg, so that file also works,
+# read-only, with: --cfg ~/.config/gpsconfig/stations.cfg
+#
+# Only router_ip is needed. The ports below are the defaults. Credentials do not
+# belong here: see "Credentials" in README.md.
+
+[TEST]
+router_ip = 192.0.2.10
+receiver_ftpport = 2160
+receiver_httpport = 8060
+receiver_controlport = 28784
+# base_path = /DSK1/SSN/
