@@ -25,6 +25,7 @@ import argparse
 import configparser
 import csv
 import ftplib
+import getpass
 import gzip
 import json
 import math
@@ -233,11 +234,24 @@ def read_cred_file(path: Path) -> Tuple[str, str]:
 
 
 def load_credentials(args: argparse.Namespace) -> Optional[Tuple[str, str]]:
-    """Environment, then --cred-file, then the default file. Never the command line."""
+    """--user/--password, then the environment, --cred-file, the default file."""
     user, password = os.environ.get("PRX5_USER"), os.environ.get("PRX5_PASS")
-    if bool(user) != bool(password):
+    if args.password and not args.user:
+        raise ToolError("--password needs --user", EXIT_USAGE)
+    if bool(user) != bool(password) and not args.user:
         raise ToolError("set both PRX5_USER and PRX5_PASS, or neither", EXIT_USAGE)
-    if user and password:
+    if args.user:
+        typed = args.password
+        if not typed:
+            if not sys.stdin.isatty():
+                raise ToolError(
+                    "--user needs --password when not at a terminal", EXIT_USAGE
+                )
+            typed = getpass.getpass(f"Password for {args.user}: ")
+        if not typed:
+            raise ToolError("empty password", EXIT_USAGE)
+        creds = (args.user, typed)
+    elif user and password:
         creds = (user, password)
     else:
         path = Path(args.cred_file).expanduser() if args.cred_file else DEFAULT_CRED
@@ -825,10 +839,12 @@ def period_times(
     end: Optional[str],
     now: datetime,
     unfinalised: bool,
+    back: Optional[int] = None,
 ) -> List[datetime]:
     """Period starts from start to end, BOTH INCLUSIVE, never in the future.
 
     With no dates: the last complete period, or the running one with `unfinalised`.
+    With `back`: the last N complete periods, plus the running one with `unfinalised`.
     """
     step = timedelta(days=1) if freq == "1D" else timedelta(hours=1)
     current = (
@@ -840,6 +856,11 @@ def period_times(
     def first(value: datetime) -> datetime:
         return value.replace(hour=0) if freq == "1D" else value
 
+    if back is not None:
+        if start is not None or end is not None:
+            raise ToolError("-D cannot be combined with --start or --end", EXIT_USAGE)
+        times = [current - step * n for n in range(back, 0, -1)]
+        return times + [current] if unfinalised else times
     if start is None and end is None:
         return [current if unfinalised else current - step]
     if start is None:
@@ -1067,7 +1088,9 @@ def command_download(args: argparse.Namespace) -> int:
     host_arg, port_arg = parse_address(args.address)
     now = datetime.now(UTC).replace(tzinfo=None)
     session = SESSIONS[args.session]
-    times = period_times(session.freq, args.start, args.end, now, args.unfinalised)
+    times = period_times(
+        session.freq, args.start, args.end, now, args.unfinalised, args.sessions_back
+    )
     base = args.base_path or cfg.get("base_path", "").strip() or DEFAULT_BASE_PATH
     outdir = Path(args.outdir).expanduser()
     targets = [
@@ -1171,6 +1194,14 @@ class Parser(argparse.ArgumentParser):
         self.exit(EXIT_USAGE, f"{self.prog}: error: {message}\n")
 
 
+def positive_int(text: str) -> int:
+    if not text.isdigit() or int(text) < 1:
+        raise argparse.ArgumentTypeError(
+            f"{text!r} is not a whole number of at least 1"
+        )
+    return int(text)
+
+
 def station_id(text: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9]{4}", text):
         raise argparse.ArgumentTypeError(f"{text!r} is not a four-character station ID")
@@ -1193,6 +1224,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     auth = Parser(add_help=False)
     auth.add_argument(
+        "-u", "--user", help="login user; asks for the password if -p is left out"
+    )
+    auth.add_argument(
+        "-p", "--password", help="login password; visible in ps and shell history"
+    )
+    auth.add_argument(
         "--cred-file", help=f"credentials file, mode 600 (default {DEFAULT_CRED})"
     )
     auth.add_argument(
@@ -1210,6 +1247,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="fetch files over FTP; PORT is the FTP port (default 2160)",
     )
     download.add_argument("-s", "--session", choices=SESSIONS, default="15s_24hr")
+    download.add_argument(
+        "-D",
+        "--sessions-back",
+        type=positive_int,
+        metavar="N",
+        help="the last N complete sessions: days for 15s_24hr, hours for the 1hr sessions",
+    )
     download.add_argument(
         "--start", help="first period, UTC: YYYY-MM-DD or YYYY-MM-DDTHH"
     )

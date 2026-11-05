@@ -43,12 +43,14 @@ usage: prx5.sh download STA [HOST[:FTPPORT]] [options]
        prx5.sh stations [--cfg FILE]
 
 download: -s|--session 15s_24hr|1Hz_1hr|status_1hr   --start WHEN  --end WHEN
+          -D|--sessions-back N (last N complete sessions: days for 15s_24hr, hours for 1hr)
           -o|--outdir DIR  --flat  --base-path PATH  --dry-run  --print-paths
           --unfinalised  --force  --retries N  --active  --anonymous
           WHEN is UTC, YYYY-MM-DD or YYYY-MM-DDTHH; --end is INCLUSIVE.
 health:   --ftp-port N  --http-port N  --no-login  --json
 ports:    --ftp-port N  --http-port N  --control-port N
-common:   --cfg FILE  --cred-file FILE  --save  --timeout SECONDS
+common:   -u|--user USER  -p|--password PASS  --cred-file FILE  --cfg FILE  --save  --timeout SECONDS
+          -u without -p asks for the password. -p is visible in ps and shell history.
 EOF
 }
 
@@ -95,9 +97,18 @@ save_station() { # save_station SECTION KEY=VALUE...
 }
 
 CRED_USER='' CRED_PASS=''
-load_credentials() { # Environment, then --cred-file, then the default file.
+load_credentials() { # --user/--password, environment, --cred-file, default file.
     local file=${CRED_FILE:-$DEFAULT_CRED} mode
-    if [ -n "${PRX5_USER:-}" ] || [ -n "${PRX5_PASS:-}" ]; then
+    if [ -n "$OPT_USER" ] || [ -n "$OPT_PASS" ]; then
+        [ -n "$OPT_USER" ] || die "$EXIT_USAGE" "--password needs --user"
+        CRED_USER=$OPT_USER CRED_PASS=$OPT_PASS
+        if [ -z "$CRED_PASS" ]; then
+            [ -t 0 ] || die "$EXIT_USAGE" "--user needs --password when not at a terminal"
+            read -rsp "Password for $CRED_USER: " CRED_PASS || true
+            echo >&2
+        fi
+        [ -n "$CRED_PASS" ] || die "$EXIT_USAGE" "empty password"
+    elif [ -n "${PRX5_USER:-}" ] || [ -n "${PRX5_PASS:-}" ]; then
         [ -n "${PRX5_USER:-}" ] && [ -n "${PRX5_PASS:-}" ] ||
             die "$EXIT_USAGE" "set both PRX5_USER and PRX5_PASS, or neither"
         CRED_USER=$PRX5_USER CRED_PASS=$PRX5_PASS
@@ -605,7 +616,11 @@ cmd_download() {
     local now current first last
     now=$(date -u +%s)
     current=$((now - now % step))
-    if [ -z "$START" ] && [ -z "$END" ]; then
+    if [ -n "$BACK" ]; then
+        [ -z "$START$END" ] || die "$EXIT_USAGE" "-D cannot be combined with --start or --end"
+        first=$((current - BACK * step))
+        if [ "$UNFINALISED" = 1 ]; then last=$current; else last=$((current - step)); fi
+    elif [ -z "$START" ] && [ -z "$END" ]; then
         if [ "$UNFINALISED" = 1 ]; then first=$current; else first=$((current - step)); fi
         last=$first
     else
@@ -718,6 +733,7 @@ esac
 
 STATION='' ADDRESS='' CFG_OPT='' CRED_FILE='' SAVE=0 TIMEOUT=30 JSON=0
 OPT_FTP_PORT='' OPT_HTTP_PORT='' OPT_CONTROL_PORT='' NO_LOGIN=0
+OPT_USER='' OPT_PASS='' BACK=''
 SESSION=15s_24hr START='' END='' OUTDIR=gpsdata FLAT=0 BASE_PATH='' DRY_RUN=0 PRINT_PATHS=0
 UNFINALISED=0 FORCE=0 RETRIES=2 ACTIVE=0 ANONYMOUS=0
 HOST_ARG='' PORT_ARG='' HOST='' CAPTURE='' READER_PID='' CONN_ID='' BLOCK=''
@@ -729,6 +745,15 @@ while [ "$#" -gt 0 ]; do
         -h | --help) usage; exit 0 ;;
         --cfg) need "$@"; CFG_OPT=$2; shift 2 ;;
         --cred-file) need "$@"; CRED_FILE=$2; shift 2 ;;
+        -u | --user) need "$@"; OPT_USER=$2; shift 2 ;;
+        -p | --password) need "$@"; OPT_PASS=$2; shift 2 ;;
+        -D | --sessions-back)
+            need "$@"
+            is_number "$1" "$2"
+            [ "$2" -ge 1 ] || die "$EXIT_USAGE" "$1 must be at least 1"
+            BACK=$2
+            shift 2
+            ;;
         --timeout) need "$@"; is_number "$1" "$2"; TIMEOUT=$2; shift 2 ;;
         --retries) need "$@"; is_number "$1" "$2"; RETRIES=$2; shift 2 ;;
         --ftp-port) need "$@"; is_number "$1" "$2"; OPT_FTP_PORT=$2; shift 2 ;;

@@ -87,10 +87,12 @@ Fw 5.7.0 requires a login for FTP and for control commands. Use the receiver's n
 user: the `tcp_username` and `tcp_password` that IMO keeps in `receivers.cfg`
 `[polarx5]`. They are looked up in this order:
 
-1. Environment variables `PRX5_USER` and `PRX5_PASS`, for example
+1. `-u USER` and `-p PASSWORD` on the command line. With `-u` alone, the tool asks for
+   the password without echoing it.
+2. Environment variables `PRX5_USER` and `PRX5_PASS`, for example
    `export PRX5_PASS="$(pass show some/path)"`.
-2. The file given with `--cred-file`.
-3. `~/.config/polarx5-tools/credentials`.
+3. The file given with `--cred-file`.
+4. `~/.config/polarx5-tools/credentials`.
 
 The file is read as data and must be mode 600, or the tool refuses it:
 
@@ -104,8 +106,9 @@ username = <user>
 password = <password>
 ```
 
-There is deliberately no `--password` option, because command lines are visible in
-`ps` and shell history. Without credentials, `health` sends no login at all and
+`-p` is convenient but leaves the password in your shell history and visible in `ps`
+while the tool runs, so prefer `-u` alone, the environment or the file on shared
+machines. Without credentials, `health` sends no login at all and
 reports `Not authorized` from a 5.7.0 receiver, which is safe. `download` refuses to
 start unless you pass `--anonymous` for older firmware.
 
@@ -156,6 +159,9 @@ depend on the site's power type.
 prx5.sh download ENTC 192.0.2.10:2160                     # yesterday's 15s_24hr
 prx5.sh download ENTC 192.0.2.10 -s 1Hz_1hr               # the last complete hour
 prx5.sh download ENTC --start 2026-11-01 --end 2026-11-03
+prx5.sh download ENTC -D 7                               # the last 7 complete days
+prx5.sh download ENTC -s 1Hz_1hr -D 6                    # the last 6 complete hours
+prx5.sh download ENTC 192.0.2.10 -u <user>               # asks for the password
 prx5.sh download ENTC -s 1Hz_1hr --start 2026-11-03T14 --end 2026-11-03T18
 prx5.py download ENTC --start 2026-11-03 --rinex         # + quick-look RINEX
 ```
@@ -164,6 +170,7 @@ prx5.py download ENTC --start 2026-11-03 --rinex         # + quick-look RINEX
 |---|---|
 | `-s`, `--session` | `15s_24hr` (default), `1Hz_1hr` or `status_1hr` |
 | `--start`, `--end` | UTC, `YYYY-MM-DD` or `YYYY-MM-DDTHH`. **`--end` is inclusive.** With only a date, an hourly session means the whole day. |
+| `-D`, `--sessions-back N` | The last N complete sessions: days for `15s_24hr`, hours for `1Hz_1hr` and `status_1hr`. Not with `--start` or `--end`. With `--unfinalised`, also the running session. |
 | `-o`, `--outdir` | Root of the tree, default `./gpsdata` |
 | `--flat` | Put all files directly in `--outdir` |
 | `--dry-run` | Log in and report what the receiver has, writing nothing |
@@ -172,6 +179,7 @@ prx5.py download ENTC --start 2026-11-03 --rinex         # + quick-look RINEX
 | `--force` | Fetch even when the local size already matches |
 | `--retries N` | After network errors, default 2. A refused login is never retried. |
 | `--active` | Active FTP instead of passive (rarely works through a router) |
+| `-u`, `-p` | Login user and password, see Credentials |
 | `--anonymous` | No login, for firmware before 5.7 |
 | `--base-path` | On the receiver, default `/DSK1/SSN/` |
 | `--timeout` | Network timeout in seconds, default 30 |

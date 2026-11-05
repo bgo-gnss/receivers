@@ -256,7 +256,12 @@ def run(
     if password is not None:
         full_env.update(PRX5_USER=USER, PRX5_PASS=password)
     return subprocess.run(
-        script + list(args), env=full_env, capture_output=True, text=True, timeout=90
+        script + list(args),
+        env=full_env,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        timeout=90,
     )
 
 
@@ -598,6 +603,122 @@ def test_download_refuses_without_credentials(kind, ftp, tmp_path):
     out = run(kind, *download_args(ftp, tmp_path), password=None)
     assert out.returncode == 64
     assert ftp.logins == []
+
+
+# --- -D: sessions back ------------------------------------------------------
+
+
+def test_sessions_back_lists_the_last_complete_sessions():
+    now = datetime(2026, 11, 5, 14, 30)
+    assert prx5.period_times("1D", None, None, now, False, 3) == [
+        datetime(2026, 11, 2),
+        datetime(2026, 11, 3),
+        datetime(2026, 11, 4),
+    ]
+    assert prx5.period_times("1H", None, None, now, False, 2) == [
+        datetime(2026, 11, 5, 12),
+        datetime(2026, 11, 5, 13),
+    ]
+    assert prx5.period_times("1H", None, None, now, True, 1) == [
+        datetime(2026, 11, 5, 13),
+        datetime(2026, 11, 5, 14),
+    ]
+
+
+@pytest.mark.parametrize("session,count", [("15s_24hr", 3), ("1Hz_1hr", 5)])
+def test_sessions_back_is_the_same_in_both_scripts(session, count):
+    args = ["download", "ENTC", "--print-paths", "-s", session, "-D", str(count)]
+    python, bash = (run(kind, *args, password=None) for kind in BOTH)
+    assert python.returncode == bash.returncode == 0, python.stderr + bash.stderr
+    assert python.stdout == bash.stdout
+    assert len(python.stdout.splitlines()) == count
+
+
+@pytest.mark.parametrize("kind", BOTH)
+@pytest.mark.parametrize(
+    "extra",
+    [["--start", "2026-11-03"], ["--end", "2026-11-03"], ["-D", "0"], ["-D", "x"]],
+)
+def test_sessions_back_rejects_bad_use(kind, extra):
+    args = ["download", "ENTC", "--print-paths"]
+    args += extra if extra[0] == "-D" else ["-D", "2"] + extra
+    assert run(kind, *args, password=None).returncode == 64
+
+
+# --- login on the command line ------------------------------------------------
+
+
+@pytest.mark.parametrize("kind", BOTH)
+def test_user_and_password_options_log_in(kind, receiver):
+    out = run(
+        kind,
+        "health",
+        "ENTC",
+        f"127.0.0.1:{receiver.port}",
+        "-u",
+        USER,
+        "-p",
+        PASSWORD,
+        password=None,
+    )
+    assert receiver.logins == [PASSWORD]
+    assert "Not authorized" not in out.stdout + out.stderr
+    assert PASSWORD not in out.stdout + out.stderr
+
+
+@pytest.mark.parametrize("kind", BOTH)
+def test_command_line_login_beats_the_environment(kind, receiver):
+    run(
+        kind,
+        "health",
+        "ENTC",
+        f"127.0.0.1:{receiver.port}",
+        "-u",
+        USER,
+        "-p",
+        PASSWORD,
+        password="from-environment",
+    )
+    assert receiver.logins == [PASSWORD]
+
+
+@pytest.mark.parametrize("kind", BOTH)
+def test_user_and_password_options_work_for_ftp(kind, ftp, tmp_path):
+    out = run(
+        kind, *download_args(ftp, tmp_path), "-u", USER, "-p", PASSWORD, password=None
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert (tmp_path / LOCAL).read_bytes() == GZ_BODY
+
+
+@pytest.mark.parametrize("kind", BOTH)
+def test_wrong_password_option_is_tried_once_and_not_printed(kind, receiver):
+    out = run(
+        kind,
+        "health",
+        "ENTC",
+        f"127.0.0.1:{receiver.port}",
+        "-u",
+        USER,
+        "-p",
+        "n0tright",
+        password=None,
+    )
+    assert out.returncode == 3
+    assert receiver.logins == ["n0tright"]
+    assert "n0tright" not in out.stdout + out.stderr
+
+
+@pytest.mark.parametrize("kind", BOTH)
+@pytest.mark.parametrize(
+    "extra", [["-p", PASSWORD], ["-u", USER], ["-u", USER, "-p", "a,b"]]
+)
+def test_incomplete_or_unusable_login_options_send_nothing(kind, receiver, extra):
+    out = run(
+        kind, "health", "ENTC", f"127.0.0.1:{receiver.port}", *extra, password=None
+    )
+    assert out.returncode == 64, out.stdout + out.stderr
+    assert receiver.logins == []
 
 
 # --- stations file and credentials ------------------------------------------
