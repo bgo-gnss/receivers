@@ -546,10 +546,10 @@ def _epos_argv(ctx: OnboardContext) -> List[str]:
 def _preview_epos(ctx: OnboardContext) -> str:
     return (
         f"Full-history EPOS push (RINEX3 long-name conversion + upload, "
-        f"batched supersede-cleanup):\n"
+        f"batched push):\n"
         f"   $ {' '.join(_epos_argv(ctx))}\n"
         f"\nLong-running — launches DETACHED with PYTHONUNBUFFERED=1. Verify the "
-        f"range summary (pushed/failed/superseded) at the end of the log."
+        f"range summary (pushed/failed) at the end of the log."
     )
 
 

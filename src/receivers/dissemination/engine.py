@@ -144,10 +144,6 @@ class DisseminateResult:
     dest: Optional[str] = None
     relative_path: Optional[str] = None  # dest-relative path of the published file
     rinex_version: Optional[int] = None
-    # Legacy short-name file this long-name product supersedes on the portal (same
-    # day/dir), to be removed after a durable push+index. None when the name is
-    # unchanged (R2-short overwrite) or the source was raw (no legacy RINEX).
-    superseded_name: Optional[str] = None
     # Convert-cache directories this product occupies: the output-layer entry and
     # its decode-layer entry. Carried so the caller can drop them once the file is
     # DURABLE on the portal — see receivers/dissemination/job.py `_on_flush`.
@@ -209,7 +205,7 @@ class EposDisseminate:
         # Optional utils.net_push.BatchPush: when set (by the range/sweep driver),
         # run_one STAGES the published file into the batcher instead of pushing it
         # per-file — the batcher flushes every N files in one rsync, and its
-        # on_flush callback does the index+supersede AFTER the batch is durable.
+        # on_flush callback writes the catalog row AFTER the batch is durable.
         # Unset (single-date CLI, reactive) → immediate per-file push, unchanged.
         self.pusher: Optional[Any] = None
 
@@ -532,18 +528,6 @@ class EposDisseminate:
         result.dest = self._dest_base
         result.relative_path = f"{rel_dir}/{pub_name}" if rel_dir else pub_name
 
-        # Supersede target: when an R3 long-name product replaces the legacy
-        # short-name file (the old container pushed archived RINEX under its
-        # original short name), record that name so the caller can remove it from
-        # the portal + DB after a durable push+index. Only when the source is an
-        # archive RINEX (not raw) AND the published name actually changed — an
-        # R2-short push keeps the same name (rsync overwrite, nothing to clean).
-        # Only the NATIVE-rate product may supersede: a decimated product
-        # (e.g. 30 s) is an ADDITIONAL file, not a replacement for the legacy
-        # short-name day file.
-        if source is not None and pub_name != Path(source).name and sample is None:
-            result.superseded_name = Path(source).name
-
         # Header-QC gate: verify the plain obs header vs TOS before packaging/push.
         # Reuses the session fetched above (no second TOS round-trip).
         if self.session_provider is not None:
@@ -570,8 +554,8 @@ class EposDisseminate:
         cache_note = " (cached)" if conv.cached else ""
         if self.pusher is not None:
             # Staged: the batcher rsyncs this file (with others) on its next flush,
-            # and its on_flush does the index+supersede once durable. Mark ok so the
-            # caller counts it; the actual transfer/index happen at flush time.
+            # and its on_flush writes the catalog row once durable. Mark ok so the
+            # caller counts it; the actual transfer/catalog write happen at flush time.
             self.pusher.add(published, rel_dir, pub_name, ref=result)
             result.ok = True
             result.message = f"staged {pub_name}{cache_note}"
