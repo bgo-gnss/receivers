@@ -11,9 +11,9 @@ Generic on purpose — the same shape ``fix-headers`` already used inline
 (``--push-batch``): epos-disseminate (scattered convert-cache files → portal),
 ``receivers rinex --push``, and any verb sending many files can share it. The
 optional ``on_flush(refs, stats)`` callback runs the per-batch post-push work
-(index, supersede, reindex, backup cleanup) AFTER the batch is durably on the
-far side — which is exactly the ordering EPOS needs (never remove a superseded
-file before its replacement is on the portal).
+(index, reindex, backup cleanup) AFTER the batch is durably on the far side —
+which is exactly the ordering EPOS needs (never index a file before it is on the
+portal).
 """
 
 from __future__ import annotations
@@ -98,7 +98,7 @@ class BatchPush:
     then the stage is cleared. ``close()`` flushes the remainder.
 
     ``ref`` is caller-defined and threaded back to ``on_flush`` in add order, so
-    the caller can do post-push work (index/supersede/reindex) for exactly the
+    the caller can do post-push work (index/reindex) for exactly the
     files that just landed. Use as a context manager.
     """
 

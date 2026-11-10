@@ -236,7 +236,7 @@ def get_default_config() -> Dict[str, Any]:
             "days_back": 3,
             "no_qc": False,
         },
-        # EPOS reactive sweep (T6): daily TOS-fingerprint diff that re-ETLs /
+        # EPOS reactive sweep (T6): daily TOS-fingerprint diff that
         # re-disseminates / stops only the stations whose TOS metadata or EPOS
         # eligibility changed. Same double gate as the sweep (this flag AND an
         # active dissemination target). backfill_days bounds the re-push window

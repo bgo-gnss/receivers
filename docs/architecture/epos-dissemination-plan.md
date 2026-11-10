@@ -1,5 +1,12 @@
 # EPOS RINEX Dissemination — Implementation Plan (phase 1)
 
+> **Update 2026-11: the EPOS `gnss-europe` database is retired.** receivers neither writes to
+> nor reads from it. Removed: the T4 `rinex_file` indexer, the T5 ETL (`epos_db`, `epos_etl`,
+> `--refresh-metadata`), `--no-index`, and supersede-cleanup (`--no-supersede`), which found older
+> siblings through `rinex_file`. `gps_health.archive_catalog(storage_location='epos_portal')` is
+> the only file index, and station metadata reaches EPOS through M3G site logs (T7/C6). Sections
+> below are kept as history.
+
 Tracer-bullet implementation plan for running EPOS dissemination entirely from
 `receivers`, replacing the legacy `epos-gnss` swarm container. Aligned design
 concept: `.interrogate-epos-dissemination.md` (repo root). Port analysis:
@@ -71,7 +78,9 @@ Target self-selects EPOS stations from TOS instead of a CLI arg.
 - **Verify:** `epos-disseminate --list-stations` count vs known TOS query.
 - Deps: T1. Risk: `search_stations` body shape vs legacy GET; `attributes` array present.
 
-### T4 — EPOS `rinex_file` md5 indexer ✅ BUILT (2026-06-28)
+### T4 — EPOS `rinex_file` md5 indexer ✅ BUILT (2026-06-28) — RETIRED 2026-11
+Only the md5 pair survives (`dissemination/rinex_md5.py`), stored on the `epos_portal` catalog row.
+
 Built `dissemination/rinex_index.py` (`index_rinex_file`, `rinex_md5s`): upserts
 data_center(IMO)/file_type/data_center_structure + `rinex_file` keyed on
 (name, relative_path) via SELECT-then-write (no UNIQUE in schema); re-index stamps
@@ -90,7 +99,9 @@ Index the **pushed R3 artifact** with `md5checksum` (compressed) + `md5uncompres
 - Deps: T1; DB-order dep on T5 (marker→id_station FK) — seed station row or sequence T5.
 - Risk: EPOS DB connection (decision #1); FK ordering.
 
-### T5 — TOS→EPOS metadata ETL ✅ station-core BUILT; ⚠️ items → T5b (2026-06-28)
+### T5 — TOS→EPOS metadata ETL ✅ station-core BUILT; ⚠️ items → T5b (2026-06-28) — RETIRED 2026-11
+Removed with the data-node DB; M3G (C6) is the station-metadata route.
+
 Built `dissemination/{epos_db,epos_etl}.py`. **epos_db** = dedicated connection
 (decision #1): `[epos_db]` in database.cfg, `search_path` to the schema (public on
 dev/local, `gnss-europe-v0-2-9` on prod), constraint-/sequence-agnostic
@@ -131,6 +142,9 @@ Populate station/coordinates/monument/bedrock/geological/contact/device-history 
   device child-history shape via TOSClient.
 
 ### T6 — Reactive TOS-fingerprint-diff sync (on→backfill, off→stop-only, retro re-push)
+**2026-11:** a reactive event no longer re-ETLs or touches `rinex_file`; it re-disseminates,
+regenerates + commits the site log, and publishes to M3G when `publish_m3g` is set.
+
 Daily diff re-ETLs only changed stations (+ manual `--refresh-metadata`). `in_epos`
 on → full-station backfill (floor = install date) + DB + site log; off → stop-only
 (mark rows inactive, **no delete**). A **header-affecting** change → recompute affected
@@ -208,6 +222,9 @@ disseminated file is TOS-authoritative (not just whatever the archive/raw baked 
 
 ## CLI wiring (2026-06-28) — one command drives the chain
 
+(2026-11: `--refresh-metadata`, `--no-index` and the EPOS DB resolution below are gone; a push is
+recorded in `archive_catalog`.)
+
 `receivers epos-disseminate`:
 - `--list-stations` — TOS EPOS filter (T3).
 - `--refresh-metadata [--station S]` — TOS→EPOS station ETL (T5); all EPOS stations if no `--station`.
@@ -240,7 +257,7 @@ archived RINEX or raw" (no local data). 41 tests pass.
 
 ## Open architectural decisions
 
-### #1 — EPOS DB connection — RESOLVED
+### #1 — EPOS DB connection — RESOLVED (moot since 2026-11: database retired, `epos_db.py` removed)
 **Decision: dedicated `src/receivers/dissemination/epos_db.py`, NOT a
 `DatabaseConnectionFactory` override.**
 
@@ -370,8 +387,8 @@ currently hardcoded defaults, not config-driven:
 
 **C6 — Site logs → M3G is mandatory (3.2), elevates T7.** EPOS's canonical station
 metadata lives in **M3G** (site logs), to be updated within one business day of a change.
-Our T5 ETL feeds the *data-node* DB (`gnss-europe`, the discovery side); M3G is a separate,
-required deliverable. So T7 (site-log generation via `tos sitelog` + M3G submission) is a
+Our T5 ETL fed the *data-node* DB (`gnss-europe`, the discovery side; both retired 2026-11, leaving
+M3G as the station-metadata route); M3G is a separate, required deliverable. So T7 (site-log generation via `tos sitelog` + M3G submission) is a
 core requirement, and the T6 reactive sweep should drive M3G updates — not only the node DB.
 
 **C7 — Data hygiene (separate from the pipeline).** `stations.cfg rinex_marker_number`

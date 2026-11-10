@@ -57,8 +57,7 @@ class VersionPolicy:
 class ProductSpec:
     """One published product per observation date (a ``format.products:`` entry).
 
-    ``sample=None`` ships the source rate unchanged (the native product —
-    the only one that may supersede a legacy short-name file on the portal);
+    ``sample=None`` ships the source rate unchanged (the native product);
     ``sample=30`` decimates to 30 s at the dissemination boundary. Each
     product gets its own convert-cache slot and its own ``{session}``
     directory segment (``<rate>s_24hr``).
