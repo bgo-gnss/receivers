@@ -205,12 +205,13 @@ def receiver_state(
 ) -> dict:
     """Whether the receiver still holds the file — from recorded facts only.
 
-    A refetch that already found the file missing wins over the horizon. A
-    horizon older than ``max_age`` is not trusted: UNKNOWN, so the item is
-    deferred rather than salvaged.
+    GONE comes ONLY from a fresh horizon that has passed the period. A refetch
+    that was answered "not found" can only DOWNGRADE a HOLDS to UNKNOWN (the
+    item is deferred and not fetched again): receivers answer 550 for files
+    they hold (SVIN, 2026-11-16), so one such answer must never lead to an
+    irreversible salvage. Once the horizon passes the period it becomes GONE
+    by itself. A horizon older than ``max_age`` is not trusted either.
     """
-    if rel in not_on_receiver:
-        return {"state": ReceiverState.GONE.value, "source": "ledger"}
     h = horizons.get((station, session))
     if h is None:
         return {"state": ReceiverState.UNKNOWN.value, "source": "no horizon"}
@@ -225,6 +226,13 @@ def receiver_state(
         holds = file_date >= oldest_date
     else:
         holds = (file_date, file_hour) >= (oldest_date, oldest_hour or 0)
+    if holds and rel in not_on_receiver:
+        return {
+            "state": ReceiverState.UNKNOWN.value,
+            "source": "receiver answered not-found but its horizon still covers it",
+            "oldest": f"{oldest_date}" + (f"T{oldest_hour:02d}" if oldest_hour else ""),
+            "observed_at": observed_at.isoformat(),
+        }
     return {
         "state": (ReceiverState.HOLDS if holds else ReceiverState.GONE).value,
         "source": "horizon",

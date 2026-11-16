@@ -379,9 +379,11 @@ def decide(
         for k in LOCATIONS
         if k in present and present[k].status == GzipStatus.COMPLETE
     ]
-    # Every location that should end up holding the file: wherever a copy
-    # exists now, plus the archive (the archive must always hold it).
-    everywhere = tuple(k for k in LOCATIONS if k == "archive" or k in present)
+    # Both locations always end up holding the repaired file: the archive is
+    # the record, and the local rolling window is where RINEX is converted
+    # from (_run_backfill_rinex reads data_prepath). An archive-only repair
+    # would otherwise be reported done while its RINEX never appears.
+    everywhere = LOCATIONS
 
     # (a) A complete copy exists.
     if complete:
@@ -397,7 +399,7 @@ def decide(
             Action.REPLACE,
             f"complete {src} copy replaces the broken {'+'.join(broken)} copy",
             source=src,
-            targets=tuple(broken),
+            targets=tuple(k for k in LOCATIONS if k in broken or k not in present),
         )
 
     # (b) The receiver may still hold it.

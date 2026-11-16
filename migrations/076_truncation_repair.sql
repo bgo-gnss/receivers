@@ -52,7 +52,9 @@ CREATE TABLE IF NOT EXISTS truncation_repair (
     new_size            BIGINT,
     detail              TEXT,
     applied_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CHECK (NOT is_partial OR (action = 'salvage' AND outcome = 'repaired'))
+    -- partial follows the CONTENT: a salvage, or a later replace that copies
+    -- salvaged bytes (e.g. after a failed archive swap) — never anything else
+    CHECK (NOT is_partial OR (action IN ('salvage', 'replace') AND outcome = 'repaired'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_truncation_repair_rel

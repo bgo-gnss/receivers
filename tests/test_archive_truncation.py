@@ -349,11 +349,16 @@ def test_receiver_state_from_horizon_ledger_and_staleness():
     # the ledger is keyed by path: another path in it does not affect this one
     assert receiver_state(file_date=date(2026, 10, 30), file_hour=5,
                           **{**kw, "not_on_receiver": {"other/path"}})["state"] == "holds"  # fmt: skip
-    # a recorded not-found beats a horizon that says the receiver holds it
+    # A not-found answer NEVER makes a file GONE (receivers answer 550 for
+    # files they hold): with the horizon still covering it, it is UNKNOWN...
     assert receiver_state(file_date=date(2026, 10, 30), file_hour=5,
-                          **{**kw, "not_on_receiver": {REL_H}})["state"] == "gone"  # fmt: skip
+                          **{**kw, "not_on_receiver": {REL_H}})["state"] == "unknown"  # fmt: skip
+    # ...without a horizon it stays UNKNOWN...
     assert receiver_state(file_date=date(2026, 10, 22), file_hour=17,
-                          **{**kw, "horizons": {}, "not_on_receiver": {REL_H}})["state"] == "gone"  # fmt: skip
+                          **{**kw, "horizons": {}, "not_on_receiver": {REL_H}})["state"] == "unknown"  # fmt: skip
+    # ...and only the horizon passing the period makes it GONE.
+    assert receiver_state(file_date=date(2026, 10, 22), file_hour=17,
+                          **{**kw, "not_on_receiver": {REL_H}})["state"] == "gone"  # fmt: skip
 
 
 # ---------------------------------------------------------------------------
@@ -494,7 +499,7 @@ class Recorder:
         self.reindexed, self.rinexed, self.ledger, self.downloads = [], [], [], []
 
 
-def _apply(plan, tmp_path, rec, *, downloader=None, swapper=None):
+def _apply(plan, tmp_path, rec, *, downloader=None, swapper=None, salvaged=frozenset()):
     cfg = ta.ApplyConfig(
         ssh_target="gpsops@rawdata", dest_root=plan.archive_root, catalog_hosts=["h1", "h2"],
         local_quarantine=str(tmp_path / "lq"), readback_tries=1, readback_wait_s=0,
@@ -514,6 +519,8 @@ def _apply(plan, tmp_path, rec, *, downloader=None, swapper=None):
             ),
             ledger=lambda hosts, rows: rec.ledger.extend(rows) or {},
             already_recorded=set(),
+            salvaged=salvaged,
+            ledger_check=lambda hosts: [],
         ),
         cfg,
     )
@@ -582,7 +589,17 @@ def test_apply_replace_from_the_complete_local_copy(tmp_path):
 
 
 @pytest.mark.unit
-def test_refetch_tries_each_station_once_and_restores_on_failure(tmp_path):
+@pytest.mark.parametrize(
+    "answer, first",
+    [
+        ("Station VONC is unreachable (ping failed)", "unreachable"),
+        ("Remote file X not found on server", "not_on_receiver"),
+        ("Login failed: 530 Login incorrect", "failed"),
+    ],
+)
+def test_refetch_tries_each_station_once_and_restores_on_failure(
+    tmp_path, answer, first
+):
     a, loc = _roots(tmp_path)
     rels = [f"2026/oct/VONC/1Hz_1hr/raw/VONC2026102{d}1700b.sbf.gz" for d in (7, 8)]
     for rel in rels:
@@ -594,11 +611,10 @@ def test_refetch_tries_each_station_once_and_restores_on_failure(tmp_path):
     plan = _plan(FakeConn([], hz), a, loc)
     assert {i.action for i in plan.items} == {"refetch"}
     rec = Recorder()
-    res, _ = _apply(plan, tmp_path, rec)
-    assert (
-        len(rec.downloads) == 1
-    ), "an unreachable station must be contacted once per run"
-    assert sorted(r.outcome for r in res.results) == ["deferred", "unreachable"]
+    res, _ = _apply(plan, tmp_path, rec,
+                    downloader=lambda it: rec.downloads.append(it.rel) or answer)  # fmt: skip
+    assert len(rec.downloads) == 1, "after any failed contact the station is left alone"
+    assert sorted(r.outcome for r in res.results) == sorted(["deferred", first])
     for rel in rels:
         assert (loc / rel).read_bytes() == local_before[rel]
 
@@ -640,9 +656,13 @@ def test_not_found_on_receiver_is_recorded_for_the_next_plan(tmp_path):
                     downloader=lambda it: "Remote file X not found on server")  # fmt: skip
     assert [r.outcome for r in res.results] == ["not_on_receiver"]
     assert rec.ledger[0][7] == "not_on_receiver"
-    # the next plan reads that fact and moves on to salvage
+    # The next plan DEFERS (no second login, no salvage) while the horizon
+    # still covers the hour...
     nxt = _plan(FakeConn([], hz, [rel]), a, loc)
-    assert nxt.items[0].action == "salvage"
+    assert nxt.items[0].action == "deferred"
+    # ...and salvages only once the receiver's horizon has passed it.
+    later = [("VONC", "1Hz_1hr", date(2026, 10, 29), 1, NOW - timedelta(hours=2))]
+    assert _plan(FakeConn([], later, [rel]), a, loc).items[0].action == "salvage"
 
 
 @pytest.mark.unit
@@ -770,8 +790,82 @@ def test_push_and_swap_builds_a_working_rsync_and_ssh_call(tmp_path, monkeypatch
         rinexer=lambda it: None,
         ledger=lambda h, rows: {},
         already_recorded=set(),
+        salvaged=frozenset(),
+        ledger_check=lambda hosts: [],
     )  # fmt: skip
     assert calls == ["rsync", "ssh"], "one rsync + one ssh per batch"
     assert [r.outcome for r in res.results] == ["repaired"]
     assert probe_gzip(a / REL_H).status == GzipStatus.COMPLETE
     assert (tmp_path / "aq" / cfg.run_id / REL_H).exists()
+
+
+@pytest.mark.unit
+def test_classify_download_output_does_not_read_byte_counts_as_550():
+    assert ta.classify_download_output("Archived 2,776,550 bytes") == "failed"
+    assert (
+        ta.classify_download_output("Remote file X not found on server")
+        == "not_on_receiver"
+    )
+
+
+@pytest.mark.unit
+def test_apply_refuses_without_the_ledger_on_every_catalog_host(tmp_path):
+    """A salvage whose ledger row cannot be written would land unmarked."""
+    a, loc = _roots(tmp_path)
+    write_gz(a / REL_H, sbf_stream(3000), cut=0.6)
+    _age(a / REL_H)
+    hz = [("VONC", "1Hz_1hr", date(2026, 10, 26), 1, NOW - timedelta(hours=2))]
+    plan = _plan(FakeConn([], hz), a, loc)
+    before = (a / REL_H).read_bytes()
+    cfg = ta.ApplyConfig(ssh_target="x", dest_root=str(a), catalog_hosts=["h1", "h2"],
+                         local_quarantine=str(tmp_path / "lq"))  # fmt: skip
+    with pytest.raises(RuntimeError, match="h2"):
+        ta.apply_plan(plan, cfg, execute=True, ledger_check=lambda hosts: ["h2"],
+                      swapper=lambda *x: pytest.fail("wrote without a ledger"))  # fmt: skip
+    assert (a / REL_H).read_bytes() == before
+
+
+@pytest.mark.unit
+def test_partial_marker_survives_a_failed_archive_swap(tmp_path):
+    """Salvage writes local, the swap fails; the next run REPLACEs the archive
+    from that local copy and must still record the content as partial."""
+    a, loc = _roots(tmp_path)
+    for root in (a, loc):
+        write_gz(root / REL_H, sbf_stream(3000), cut=0.6)
+        _age(root / REL_H)
+    hz = [("VONC", "1Hz_1hr", date(2026, 10, 26), 1, NOW - timedelta(hours=2))]
+    plan = _plan(FakeConn([], hz), a, loc)
+    salvaged_sha = plan.items[0].salvage["content_sha256"]
+    rec = Recorder()
+    res, _ = _apply(plan, tmp_path, rec,
+                    swapper=lambda swaps, cfg, wd: {s.item.rel: ("FAIL", "gateway down") for s in swaps})  # fmt: skip
+    assert [r.outcome for r in res.results] == ["failed"]
+    assert rec.ledger[0][17] == salvaged_sha  # the attempted content is recorded
+    _age(loc / REL_H)
+
+    plan2 = _plan(FakeConn([], hz), a, loc)
+    assert (
+        plan2.items[0].action == "replace"
+        and plan2.items[0].decision["source"] == "local"
+    )
+    rec2 = Recorder()
+    known = frozenset(r[17] for r in rec.ledger if r[6] == "salvage" and r[17])
+    res2, _ = _apply(plan2, tmp_path, rec2, salvaged=known)
+    assert [r.outcome for r in res2.results] == ["repaired"]
+    (row,) = rec2.ledger
+    assert row[6:9] == ("replace", "repaired", True)
+
+
+@pytest.mark.unit
+def test_archive_only_salvage_also_writes_local_for_rinex(tmp_path):
+    a, loc = _roots(tmp_path)
+    write_gz(a / REL_H, sbf_stream(3000), cut=0.6)
+    _age(a / REL_H)
+    hz = [("VONC", "1Hz_1hr", date(2026, 10, 26), 1, NOW - timedelta(hours=2))]
+    plan = _plan(FakeConn([], hz), a, loc)
+    assert plan.items[0].decision["targets"] == ["archive", "local"]
+    rec = Recorder()
+    res, _ = _apply(plan, tmp_path, rec)
+    assert [r.outcome for r in res.results] == ["repaired"]
+    assert probe_gzip(loc / REL_H).status == GzipStatus.COMPLETE
+    assert rec.rinexed == [("VONC", "1Hz_1hr", "2026-10-22")]

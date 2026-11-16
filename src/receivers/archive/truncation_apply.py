@@ -219,7 +219,7 @@ def classify_download_output(text: str) -> str:
     low = text.lower()
     if "unreachable" in low or "ping failed" in low:
         return "unreachable"
-    if "not found on server" in low or "550" in low:
+    if "not found on server" in low:
         return "not_on_receiver"
     return "failed"
 
@@ -359,11 +359,19 @@ _LEDGER_SQL = """INSERT INTO truncation_repair
 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
 
 
-def ledger_row(item: Item, res: ItemResult, run_id: str) -> tuple:
+def ledger_row(
+    item: Item, res: ItemResult, run_id: str, salvaged: frozenset = frozenset()
+) -> tuple:
+    """One ledger row. ``is_partial`` is a property of the CONTENT written:
+    true for a salvage, and for any later write of bytes a salvage produced
+    (a failed swap leaves a salvaged local copy that the next run REPLACEs
+    the archive from — it is still partial)."""
     a = item.copies.get("archive") or {}
     loc = item.copies.get("local") or {}
     s = item.salvage or {}
-    partial = res.outcome == "repaired" and item.action == Action.SALVAGE.value
+    partial = res.outcome == "repaired" and (
+        item.action == Action.SALVAGE.value or res.new_content_sha256 in salvaged
+    )
     return (
         run_id, item.rel, item.station, item.session_type, item.file_date,
         item.file_hour, item.action, res.outcome, partial, item.decision.get("source"),
@@ -396,6 +404,49 @@ def write_ledger(hosts: list, rows: list[tuple]) -> dict:
             if conn is not None:
                 conn.close()
     return status
+
+
+def ledger_missing_on(hosts: list) -> list:
+    """Catalog hosts on which the truncation_repair table is NOT usable.
+
+    ``apply --yes`` refuses unless this is empty: a salvage whose ledger row
+    cannot be written would land in the archive with no partial marker.
+    """
+    from ..db.connection import get_connection
+
+    missing = []
+    for host in hosts:
+        conn = None
+        try:
+            conn = get_connection(host_override=host, single_host=True)
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM truncation_repair LIMIT 1")
+        except Exception:  # noqa: BLE001
+            missing.append(host or "localhost")
+        finally:
+            if conn is not None:
+                conn.close()
+    return missing
+
+
+def salvaged_hashes(hosts: list) -> frozenset:
+    """Content hashes any salvage has produced (attempted or completed)."""
+    from ..db.connection import get_connection
+
+    if not hosts:
+        return frozenset()
+    conn = None
+    try:
+        conn = get_connection(host_override=hosts[0], single_host=True)
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT DISTINCT new_content_sha256 FROM truncation_repair "
+                "WHERE action = 'salvage' AND new_content_sha256 IS NOT NULL"
+            )
+            return frozenset(r[0].strip() for r in cur.fetchall())
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def recorded_rels(hosts: list) -> set:
@@ -453,6 +504,8 @@ def apply_plan(
     rinexer: Callable[[Item], None] = _default_rinex,
     ledger: Callable[[list, list], dict] = write_ledger,
     already_recorded: Optional[set] = None,
+    salvaged: Optional[frozenset] = None,
+    ledger_check: Callable[[list], list] = ledger_missing_on,
 ) -> ApplyResult:
     """Apply ``plan`` (dry-run unless ``execute``). See the module docstring."""
     result = ApplyResult()
@@ -469,28 +522,48 @@ def apply_plan(
             )
         return result
 
+    if not cfg.catalog_hosts:
+        raise RuntimeError("no catalog hosts: refusing to write without a ledger")
+    missing = ledger_check(cfg.catalog_hosts)
+    if missing:
+        raise RuntimeError(
+            "truncation_repair (migration 076) is missing on "
+            f"{', '.join(missing)} — refusing: a salvage would land unmarked"
+        )
     if already_recorded is None:
         already_recorded = recorded_rels(cfg.catalog_hosts)
+    if salvaged is None:
+        salvaged = salvaged_hashes(cfg.catalog_hosts)
+    # Hashes salvaged IN this run count too (local written, swap fails, ...).
+    salvaged = frozenset(salvaged) | frozenset(
+        (i.salvage or {}).get("content_sha256")
+        for i in actionable
+        if i.action == Action.SALVAGE.value and i.salvage
+    )
     ledger_rows: list[tuple] = []
     for it in record_only:
         if (it.rel, it.action) in already_recorded:
             continue
         r = ItemResult(it.rel, it.action, "recorded", it.decision["reason"])
         result.results.append(r)
-        ledger_rows.append(ledger_row(it, r, cfg.run_id))
+        ledger_rows.append(ledger_row(it, r, cfg.run_id, salvaged))
 
     own_tmp = cfg.work_dir is None
     work_dir = cfg.work_dir or tempfile.mkdtemp(prefix="truncation-")
     swaps: list[_Swap] = []
     pending: dict[str, ItemResult] = {}
-    unreachable: set[str] = set()
+    # Stations already contacted without success this run. ANY non-success
+    # (unreachable, not found, refused login, error) ends contact with that
+    # station for the run: repeated logins trip the receiver's global ~9 h
+    # lockout, so nothing here may loop around a login.
+    contacted_failed: set[str] = set()
     try:
         for it in actionable:
             why = recheck(it, plan)
             if why:
                 r = ItemResult(it.rel, it.action, "refused", why)
                 result.results.append(r)
-                ledger_rows.append(ledger_row(it, r, cfg.run_id))
+                ledger_rows.append(ledger_row(it, r, cfg.run_id, salvaged))
                 continue
             if not validate_archive_relpath(it.rel):
                 r = ItemResult(it.rel, it.action, "refused", "unsafe archive path")
@@ -498,25 +571,23 @@ def apply_plan(
                 continue
             try:
                 if it.action == Action.REFETCH.value:
-                    if it.station in unreachable:
+                    if it.station in contacted_failed:
                         r = ItemResult(
                             it.rel,
                             it.action,
                             "deferred",
-                            "station unreachable this run",
+                            "an earlier contact with this station failed this run",
                         )
                         result.results.append(r)
                         continue
+                    contacted_failed.add(it.station)  # cleared only on success
                     data, outcome, detail = _refetch(it, plan, cfg, downloader)
                     if data is None:
-                        if outcome == "unreachable":
-                            unreachable.add(
-                                it.station
-                            )  # one attempt per station per run
                         r = ItemResult(it.rel, it.action, outcome, detail)
                         result.results.append(r)
-                        ledger_rows.append(ledger_row(it, r, cfg.run_id))
+                        ledger_rows.append(ledger_row(it, r, cfg.run_id, salvaged))
                         continue
+                    contacted_failed.discard(it.station)
                     pr_local = probe_gzip(os.path.join(plan.local_root, it.rel))
                     content_sha, partial = pr_local.content_sha256, False
                 else:
@@ -528,7 +599,7 @@ def apply_plan(
             except Exception as exc:  # noqa: BLE001
                 r = ItemResult(it.rel, it.action, "failed", str(exc))
                 result.results.append(r)
-                ledger_rows.append(ledger_row(it, r, cfg.run_id))
+                ledger_rows.append(ledger_row(it, r, cfg.run_id, salvaged))
                 continue
 
             r = ItemResult(it.rel, it.action, "pending", "", content_sha, len(data))
@@ -588,7 +659,7 @@ def apply_plan(
                 r.outcome = "failed"
             result.results.append(r)
             it = next(i for i in actionable if i.rel == rel)
-            ledger_rows.append(ledger_row(it, r, cfg.run_id))
+            ledger_rows.append(ledger_row(it, r, cfg.run_id, salvaged))
             if r.outcome == "repaired":
                 audit.info(
                     "archive-truncation %s %s (%s)", it.action, rel, r.detail or "ok"

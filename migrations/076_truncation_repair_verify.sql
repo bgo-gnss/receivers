@@ -15,14 +15,14 @@ VALUES ('verify-076', '1999/jan/TEST/1Hz_1hr/raw/TEST199901011200b.sbf.gz', 'TES
     '1Hz_1hr', '1999-01-01', 12, 'salvage', 'repaired', true, 'archive', 100, 96, 3);
 SELECT 'PASS' AS insert_accepted;
 
--- 2. a partial flag on anything but a repaired salvage is refused
+-- 2. a partial flag on anything but a repaired salvage/replace is refused
 SAVEPOINT s;
 DO $$ BEGIN
   INSERT INTO truncation_repair (run_id, rel_path, station, session_type, file_date,
       action, outcome, is_partial)
-  VALUES ('verify-076', 'x', 'TEST', '1Hz_1hr', '1999-01-01', 'replace', 'repaired', true);
-  RAISE EXCEPTION 'FAIL: partial replace accepted';
-EXCEPTION WHEN check_violation THEN RAISE NOTICE 'PASS: partial replace refused';
+  VALUES ('verify-076', 'x', 'TEST', '1Hz_1hr', '1999-01-01', 'refetch', 'repaired', true);
+  RAISE EXCEPTION 'FAIL: partial refetch accepted';
+EXCEPTION WHEN check_violation THEN RAISE NOTICE 'PASS: partial refetch refused';
 END $$;
 ROLLBACK TO SAVEPOINT s;
 
