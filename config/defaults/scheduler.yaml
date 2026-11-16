@@ -146,8 +146,11 @@ stations: {}
 # It never repairs: review the plan, then `receivers archive-truncation apply`.
 truncation_scan:
   enabled: false
-  schedule: "cron: 40 6 * * 1"   # Monday 06:40, clear of the busy windows
+  schedule: "cron: 40 6 * * 1"   # Monday 06:40 (standard cron weekdays), clear of busy windows
   days: 30                       # look-back window (file dates)
   # read_root: /mnt/rawgpsdata   # default: archive_verify.read_root
   # plan_dir: ~/.cache/gps_receivers/truncation_plans
   keep_plans: 8
+  icinga: false                  # push "rek-d01!Truncation scan" (docs/monitoring/truncation-scan-alert.md)
+  icinga_host: rek-d01
+  icinga_ttl: 691200             # 8 days: stale if a weekly run is missed

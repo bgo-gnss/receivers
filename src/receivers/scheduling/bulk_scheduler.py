@@ -3656,6 +3656,9 @@ class BulkDownloadScheduler:
             "read_root": cfg.get("read_root"),
             "plan_dir": cfg.get("plan_dir"),
             "keep_plans": int(cfg.get("keep_plans", 8)),
+            "icinga": bool(cfg.get("icinga", False)),
+            "icinga_host": cfg.get("icinga_host", "rek-d01"),
+            "icinga_ttl": int(cfg.get("icinga_ttl", 8 * 86400)),
         }
         self.scheduler.add_job(
             func=run_truncation_scan_job,
@@ -3670,7 +3673,8 @@ class BulkDownloadScheduler:
         )
         self.logger.info(
             f"Scheduled truncation scan ({base_trigger.description}, "
-            f"last {kwargs['days']} days, read-only)"
+            f"last {kwargs['days']} days, read-only, "
+            f"icinga={'on' if kwargs['icinga'] else 'off'})"
         )
 
     def _schedule_morning_recovery(self) -> None:
