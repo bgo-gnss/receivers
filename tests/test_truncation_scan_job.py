@@ -164,3 +164,113 @@ def test_the_registrar_is_called_when_the_scheduler_sets_up():
 
     src = inspect.getsource(BulkDownloadScheduler.schedule_all_sessions)
     assert "self._schedule_truncation_scan()" in src
+
+
+# ---------------------------------------------------------------------------
+# Icinga
+# ---------------------------------------------------------------------------
+
+
+def _pushes(tmp_path, items=None, *, build=None, read_root=None, icinga=True):
+    sent = []
+    tj.run_truncation_scan_job(
+        read_root=read_root or str(tmp_path),
+        local_root="/local",
+        plan_dir=str(tmp_path / "plans"),
+        _build_plan=build or (lambda conn, **k: _plan(items or [])),
+        _connect=_Conn,
+        icinga=icinga,
+        icinga_host="rek-d01",
+        _push=lambda outcome, **kw: sent.append((outcome, kw)) or True,
+    )
+    return sent
+
+
+@pytest.mark.unit
+def test_clean_scan_pushes_ok_with_a_ttl(tmp_path):
+    ((outcome, kw),) = _pushes(tmp_path, [])
+    assert outcome.exit_status == tj.EXIT_OK
+    assert outcome.plugin_output.startswith("OK - no truncated raw files")
+    assert "broken=0" in outcome.perfdata
+    assert kw == {"icinga_host": "rek-d01", "ttl": tj.DEFAULT_TTL}
+
+
+@pytest.mark.unit
+def test_findings_push_warning_with_the_plan_to_review(tmp_path):
+    ((outcome, _),) = _pushes(tmp_path, [_item(), _item("refetch")])
+    assert outcome.exit_status == tj.EXIT_WARNING
+    assert "2 truncated raw file(s)" in outcome.plugin_output
+    assert outcome.plan_path and outcome.plan_path in outcome.plugin_output
+    assert "broken=2" in outcome.perfdata and "salvage=2" in outcome.perfdata
+
+
+@pytest.mark.unit
+def test_a_scan_that_could_not_run_is_unknown_never_ok(tmp_path):
+    ((unmounted, _),) = _pushes(tmp_path, read_root=str(tmp_path / "nope"))
+    assert (
+        unmounted.exit_status == tj.EXIT_UNKNOWN and "not mounted" in unmounted.summary
+    )
+
+    def boom(conn, **kw):
+        raise RuntimeError("db down")
+
+    ((failed, _),) = _pushes(tmp_path, build=boom)
+    assert failed.exit_status == tj.EXIT_UNKNOWN and "db down" in failed.summary
+
+
+@pytest.mark.unit
+def test_nothing_is_pushed_unless_icinga_is_enabled(tmp_path):
+    assert _pushes(tmp_path, [_item()], icinga=False) == []
+
+
+@pytest.mark.unit
+def test_push_builds_the_rek_d01_truncation_scan_service(monkeypatch):
+    from receivers.monitoring import icinga_client as ic
+
+    sent = []
+    monkeypatch.setattr(
+        ic.IcingaClient, "__init__", lambda self, *a, **k: None, raising=True
+    )
+    monkeypatch.setattr(
+        ic.IcingaClient,
+        "send_check_result",
+        lambda self, c: sent.append(c) or {"success": True},
+    )
+    out = tj.ScanOutcome(tj.EXIT_WARNING, "1 truncated raw file(s)", "broken=1")
+    assert tj.push_to_icinga(out, icinga_host="rek-d01", ttl=691200) is True
+    (c,) = sent
+    assert c.to_service_name() == "rek-d01.gps.vedur.is!Truncation scan"
+    assert (c.exit_status, c.ttl, c.performance_data) == (1, 691200, "broken=1")
+    assert c.plugin_output == "WARNING - 1 truncated raw file(s)"
+
+
+@pytest.mark.unit
+def test_an_unreachable_icinga_never_breaks_the_job(monkeypatch):
+    from receivers.monitoring import icinga_client as ic
+
+    def boom(self, *a, **k):
+        raise ConnectionError("icinga unreachable")
+
+    monkeypatch.setattr(ic.IcingaClient, "__init__", boom)
+    out = tj.ScanOutcome(tj.EXIT_OK, "clean")
+    assert tj.push_to_icinga(out, icinga_host="rek-d01", ttl=1) is False
+
+
+@pytest.mark.unit
+def test_registrar_passes_the_icinga_settings():
+    from receivers.scheduling.bulk_scheduler import BulkDownloadScheduler
+
+    fake = _fake_scheduler(
+        {"truncation_scan": {"enabled": True, "icinga": True, "icinga_host": "rek-d01"}}
+    )
+    BulkDownloadScheduler._schedule_truncation_scan(fake)
+    kw = fake.scheduler.add_job.call_args.kwargs["kwargs"]
+    assert (kw["icinga"], kw["icinga_host"], kw["icinga_ttl"]) == (
+        True,
+        "rek-d01",
+        8 * 86400,
+    )
+    # off unless configured: a dev scheduler must never report as rek-d01
+    fake2 = _fake_scheduler({"truncation_scan": {"enabled": True}})
+    BulkDownloadScheduler._schedule_truncation_scan(fake2)
+    assert fake2.scheduler.add_job.call_args.kwargs["kwargs"]["icinga"] is False
