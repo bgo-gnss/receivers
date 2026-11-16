@@ -30,8 +30,8 @@
 | # | Decision | Rationale |
 |---|----------|-----------|
 | D1 | **epos-portal truth = our own push events** → `storage_location='epos_portal'`. | `gnss-europe.rinex_file` is empty externally; our push is the only reliable record. |
-| D2 | **Checksums = dual-hash.** Unified index is sha256; **md5 kept only on the EPOS `rinex_file`** (external EPOS/M3G contract). | Standardise internally without breaking portal ingest. |
-| D3 | **`gps_health` is the single source of truth**; `gnss-europe.rinex_file` = derived export. But see D2-corollary in §3.4: md5 is **not derivable from sha256** — the epos_portal catalog row stores the md5s at push so the export is truly catalog-derived. | "merge **into** gps_health"; one query surface. |
+| D2 | **Checksums = dual-hash.** Unified index is sha256. **Updated 2026-11:** md5 lives only on the gps_health `epos_portal` row (was: on the EPOS `rinex_file`). | Standardise internally without breaking portal ingest. |
+| D3 | **`gps_health` is the single source of truth.** **Updated 2026-11:** gnss-europe is retired, so there is no `rinex_file` export; every plan item below about that export, its UNIQUE/IDENTITY migration or importing its history is void. Originally: `gnss-europe.rinex_file` = derived export. But see D2-corollary in §3.4: md5 is **not derivable from sha256** — the epos_portal catalog row stores the md5s at push so the export is truly catalog-derived. | "merge **into** gps_health"; one query surface. |
 | D4 | **`gnss_europe_local` added to nvim `connections.json`** (localhost, passwordless). | Done this session. |
 | D5 | **Generalize `archive_catalog`** (durable, sha256-keyed, one-row-per-location) — do not invent a parallel table. | It already lives off the `file_tracking` TRUNCATE cascade. |
 | **D6** | **Dual-host = ONE mechanism, not two.** Scheduler-on-rek-d01 uses the **existing best-effort mirror** (`database.cfg mirror_host=pgdev`) — made *non-silent for catalog writes* + a cross-host reconcile net. Laptop maintenance (reindex/archive-rm) uses the **explicit `catalog_hosts` fan-out** (no mirror on laptops). **Never stack a fan-out on top of the mirror** (double-writes pgdev). | Critique L3: the mirror already dual-writes; a naïve fan-out writes pgdev 2–3×. |
@@ -61,6 +61,11 @@ logged but never break the primary"* :21) that mirrors *every* write — catalog
 `migrator.py:42`** — to pgdev. The reindex path *also* has an explicit `catalog_hosts` fan-out
 (`reindex_files_multi`). So writes are **already dual**, silently and best-effort (with a mirror-failure
 cooldown) — not single-host.
+
+> **Retired 2026-11.** Index B no longer exists: receivers neither writes to nor reads from
+> gnss-europe, and the md5 pair (`dissemination/rinex_md5.py`) lives only on the gps_health
+> `archive_catalog(storage_location='epos_portal')` row. The paragraph below describes the state
+> when this plan was written.
 
 **Index B — EPOS portal (md5).** `dissemination/rinex_index.py` computes `md5checksum` (compressed
 bytes) + `md5uncompressed` (gzip- *and* CRX2RNX-decompressed obs) and `job.py:52` writes a `rinex_file`

@@ -3555,7 +3555,7 @@ class BulkDownloadScheduler:
     def _schedule_epos_reactive(self) -> None:
         """Schedule the reactive EPOS sweep (T6).
 
-        A daily TOS-fingerprint diff that re-ETLs / re-disseminates / stops only
+        A daily TOS-fingerprint diff that re-disseminates / stops only
         the stations whose TOS metadata or EPOS eligibility changed since the last
         run. Double-gated and inert by default: ``epos_reactive.enabled`` in
         scheduler.yaml AND ``active: true`` on a dissemination target in sync.yaml.

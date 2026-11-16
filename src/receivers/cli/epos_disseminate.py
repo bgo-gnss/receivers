@@ -2,9 +2,9 @@
 
 Drives the whole phase-1 chain for ``--station``/``--date``: convert the archived
 RINEX (or raw) to a RINEX 3.04 long-name file, QC the header against TOS, push to
-the dissemination target, and index the pushed file into the EPOS DB. Also:
-``--list-stations`` (TOS EPOS filter) and ``--refresh-metadata`` (TOS→EPOS station
-ETL). Dry-run-safe; the target is gated ``active: false`` in sync.yaml.
+the dissemination target, and record the pushed file in gps_health
+(``archive_catalog``, ``epos_portal``). Also: ``--list-stations`` (TOS EPOS filter).
+Dry-run-safe; the target is gated ``active: false`` in sync.yaml.
 See docs/architecture/epos-dissemination-plan.md.
 """
 
@@ -36,17 +36,6 @@ def _result_dict(r) -> dict:
         "message": r.message,
         "errors": r.errors,
     }
-
-
-def _epos_conn():
-    """Open an EPOS DB connection (``[epos_db]`` / ``EPOS_DB_*`` env), or None."""
-    try:
-        from ..dissemination import epos_db
-
-        return epos_db.connect()
-    except Exception as exc:  # noqa: BLE001 - DB optional for dry-run / no-index
-        logger.warning("no EPOS DB connection (%s) — metadata/index steps skipped", exc)
-        return None
 
 
 def _resolve_cli_date(value: str, role: str, args: argparse.Namespace, target):
@@ -86,31 +75,6 @@ def _resolve_cli_date(value: str, role: str, args: argparse.Namespace, target):
     return resolve_date(value, ctx)
 
 
-def _cmd_refresh_metadata(args: argparse.Namespace) -> int:
-    """Run the TOS→EPOS station metadata ETL for --station (or all EPOS stations)."""
-    from ..dissemination import run_etl
-
-    conn = _epos_conn()
-    if conn is None:
-        print("No EPOS DB connection — cannot refresh metadata.")
-        return 1
-    try:
-        markers = [args.station] if args.station else None
-        res = run_etl(conn, markers=markers)
-    finally:
-        conn.close()
-    if args.json:
-        print(json.dumps(res.__dict__, indent=2))
-    else:
-        print(
-            f"metadata ETL: {res.stations} station(s) "
-            f"({res.inserted} inserted, {res.updated} updated)"
-        )
-        for err in res.errors:
-            print(f"   ⚠ {err}")
-    return 0 if not res.errors else 1
-
-
 def cmd_epos_disseminate(args: argparse.Namespace) -> int:
     from ..dissemination import EposDisseminate, load_dissemination_config
 
@@ -137,14 +101,10 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
             print(" ".join(markers))
         return 0
 
-    # --refresh-metadata: TOS→EPOS station ETL (no file pipeline).
-    if args.refresh_metadata:
-        return _cmd_refresh_metadata(args)
-
-    # --reactive: TOS-fingerprint diff sweep — re-ETL / re-disseminate / stop the
+    # --reactive: TOS-fingerprint diff sweep — re-disseminate / stop the
     # stations whose TOS metadata or EPOS eligibility changed since the last run.
     if args.reactive:
-        from ..dissemination.job import _open_epos_conn, run_epos_reactive_job
+        from ..dissemination.job import run_epos_reactive_job
 
         summary = run_epos_reactive_job(
             config_path=args.config,
@@ -153,7 +113,6 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
             no_qc=args.no_qc,
             state_path=args.state_path,
             sitelogs_dir=args.sitelog_dir,
-            epos_conn_factory=_open_epos_conn,
         )
         if args.json:
             print(json.dumps(summary, indent=2))
@@ -370,9 +329,6 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
                 tos_metadata_cache=tos_meta_cache,
             )
 
-        def _no_conn():
-            return None
-
         print(
             f"Range dissemination: {args.station or 'allowlist sweep'} — "
             f"{len(run_dates)} date(s) "
@@ -384,27 +340,22 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
             no_qc=args.no_qc,
             markers=[args.station.upper()] if args.station else None,
             dates=run_dates,
-            supersede=not args.no_supersede and not args.dry_run,
             parallel=args.parallel,
             force=args.force,
             engine_factory=engine_factory,
-            epos_conn_factory=(_no_conn if (args.no_index or args.dry_run) else None),
         )
         icon = "✅" if summary["failed"] == 0 else "⚠️ "
         print(
             f"{icon} range summary: pushed={summary['pushed']} "
             f"cached={summary['cached']} skipped={summary['skipped']} "
-            f"failed={summary['failed']} superseded={summary['superseded']}"
+            f"failed={summary['failed']}"
         )
         if args.json:
             print(json.dumps(summary, indent=2))
         return 0 if summary["failed"] == 0 else 1
 
     if not args.station or not args.date:
-        print(
-            "--station and --date are required "
-            "(or use --list-stations / --refresh-metadata)"
-        )
+        print("--station and --date are required (or use --list-stations)")
         return 1
 
     if not target.active and not args.force:
@@ -421,7 +372,7 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
         return 1
 
     # Multi-product config (format.products with >1 entry): the sweep driver
-    # owns the per-product loop + index + batched supersede — reroute this
+    # owns the per-product loop + catalog write — reroute this
     # single date through it rather than duplicating that logic here.
     _prods = target.format.active_products()
     if len(_prods) > 1:
@@ -450,18 +401,13 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
             no_qc=args.no_qc,
             markers=[args.station.upper()],
             dates=[d],
-            supersede=not args.no_supersede and not args.dry_run,
             force=args.force,
             engine_factory=_ef,
-            epos_conn_factory=(
-                (lambda: None) if (args.no_index or args.dry_run) else None
-            ),
         )
         icon = "✅" if summary["failed"] == 0 else "⚠️ "
         print(
             f"{icon} pushed={summary['pushed']} cached={summary['cached']} "
-            f"skipped={summary['skipped']} failed={summary['failed']} "
-            f"superseded={summary['superseded']}"
+            f"skipped={summary['skipped']} failed={summary['failed']}"
         )
         return 0 if summary["failed"] == 0 else 1
 
@@ -481,74 +427,17 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
     )
     result = engine.run_one(args.station, d)
 
-    # Index-on-push: record the pushed file in the EPOS rinex_file table (T4).
-    # Best-effort and only for a real (non-dry-run) successful push; needs the
-    # station row (run --refresh-metadata first). --no-index disables it.
-    indexed_id = None
-    if result.ok and not args.dry_run and not args.no_index and result.artifact_path:
-        conn = _epos_conn()
-        if conn is not None:
-            try:
-                from ..dissemination import index_rinex_file
+    # Record the pushed file in the file index (archive_catalog, epos_portal).
+    # Best-effort, and only for a real push: a --dest-override pre-stage is not on
+    # the portal, and _record_pushed itself skips a dry run.
+    if result.ok and not args.dry_run and not args.dest_override:
+        from ..dissemination.job import _close_catalog_conn, _record_pushed
 
-                # EPOS portal stores paths under /files/ + the dest-relative layout.
-                rel = f"/files/{result.relative_path}"
-                indexed_id = index_rinex_file(
-                    conn,
-                    Path(result.artifact_path),
-                    result.station,
-                    datetime(d.year, d.month, d.day),
-                    relative_path=rel,
-                    session=(target.sessions[0] if target.sessions else "15s_24hr"),
-                    rinex_version=result.rinex_version or 3,
-                )
-            except Exception as exc:  # noqa: BLE001 - index must not fail the push
-                logger.warning("rinex_file index failed: %s", exc)
-            finally:
-                conn.close()
-
-    # Supersede-cleanup: an R3 long-name product replaces the legacy short-name
-    # file the old container pushed for the same day. Remove it (portal + DB) —
-    # but ONLY after a durable push+index of the new file (else we'd orphan the
-    # day). In --dry-run we show the intent without touching the portal or DB.
-    # --no-supersede disables; skipped for local-dest (no host) test configs.
-    supersede = None
-    if (
-        not args.no_supersede
-        and target.host
-        and result.ok
-        and result.relative_path
-        and result.long_name
-    ):
-        # G2 same-slot purge: remove any OTHER indexed portal file for this
-        # (station, obs-date, dir) — an R2->R3 leftover, a .d/.D case straggler,
-        # or decimated residue. result.ok ⟹ push succeeded (file present) and
-        # indexed_id ⟹ row exists, so the purge can't orphan the day. A conn is
-        # opened even in --dry-run to READ the stale siblings (no writes then).
-        do_it = result.ok and not args.dry_run and indexed_id is not None
-        rel_dir = str(Path(result.relative_path).parent)
-        conn2 = _epos_conn()
-        try:
-            from ..dissemination.rinex_index import purge_stale_siblings_batch
-
-            supersede = purge_stale_siblings_batch(
-                conn2,
-                [(result.station, result.file_date, rel_dir, result.long_name)],
-                ssh_target=f"{target.user}@{target.host}",
-                dest_root=target.dest,
-                dry_run=not do_it,
-            )
-        except Exception as exc:  # noqa: BLE001 - cleanup must not fail the push
-            logger.warning("supersede-cleanup failed: %s", exc)
-        finally:
-            if conn2 is not None:
-                conn2.close()
+        _record_pushed(target, result)
+        _close_catalog_conn()
 
     if args.json:
-        out = _result_dict(result)
-        out["indexed_id"] = indexed_id
-        out["supersede"] = supersede
-        print(json.dumps(out, indent=2))
+        print(json.dumps(_result_dict(result), indent=2))
     else:
         icon = "✅" if result.ok else "❌"
         tag = " [dry-run]" if result.dry_run else ""
@@ -561,21 +450,6 @@ def cmd_epos_disseminate(args: argparse.Namespace) -> int:
             )
         if result.dest:
             print(f"   dest={result.dest}")
-        if indexed_id is not None:
-            print(f"   indexed rinex_file id={indexed_id}")
-        if supersede is not None:
-            if supersede["removed"]:
-                print(
-                    f"   🧹 purged {len(supersede['removed'])} stale sibling(s): "
-                    f"{supersede['removed']} (de-indexed ids={supersede['deindexed']})"
-                )
-            elif supersede["would_remove"]:
-                print(
-                    f"   🧹 [dry-run] would purge {len(supersede['would_remove'])} "
-                    f"stale sibling(s): {supersede['would_remove']}"
-                )
-            elif supersede["skipped"]:
-                print(f"   🧹 purge skipped (missing/too-big): {supersede['skipped']}")
         for err in result.errors:
             print(f"   ⚠ {err}")
     return 0 if result.ok else 1
@@ -607,7 +481,7 @@ def create_epos_disseminate_parser(subparsers) -> argparse.ArgumentParser:
         "'device_start' = the TOS session start for --device SN — with an "
         "optional ±N offset (first+7). The full-history portal refresh after a "
         "re-rinex campaign is simply --start first --end last. Uses the sweep "
-        "driver: engine reuse, batched supersede-cleanup, optional --parallel.",
+        "driver: engine reuse, batched push, optional --parallel.",
     )
     parser.add_argument(
         "--end",
@@ -636,7 +510,7 @@ def create_epos_disseminate_parser(subparsers) -> argparse.ArgumentParser:
         default=None,
         metavar="N",
         help="Range mode: (station, year) chunks on a load-aware thread pool; "
-        "each chunk gets its own engine + EPOS DB connection.",
+        "each chunk gets its own engine.",
     )
     parser.add_argument(
         "--list-stations",
@@ -684,15 +558,9 @@ def create_epos_disseminate_parser(subparsers) -> argparse.ArgumentParser:
         help="M3G network short name for validation (default: EPOS)",
     )
     parser.add_argument(
-        "--refresh-metadata",
-        action="store_true",
-        help="Run the TOS→EPOS station metadata ETL (for --station, or all EPOS "
-        "stations) and exit — no file pipeline",
-    )
-    parser.add_argument(
         "--reactive",
         action="store_true",
-        help="Run the reactive TOS-fingerprint sweep: re-ETL / re-disseminate / "
+        help="Run the reactive TOS-fingerprint sweep: re-disseminate / "
         "stop the stations whose TOS metadata or EPOS eligibility changed (T6)",
     )
     parser.add_argument(
@@ -711,17 +579,6 @@ def create_epos_disseminate_parser(subparsers) -> argparse.ArgumentParser:
         "--no-qc",
         action="store_true",
         help="Skip the header-QC gate (e.g. offline pre-stage with TOS unreachable)",
-    )
-    parser.add_argument(
-        "--no-index",
-        action="store_true",
-        help="Do not index the pushed file into the EPOS rinex_file table",
-    )
-    parser.add_argument(
-        "--no-supersede",
-        action="store_true",
-        help="Do not remove the legacy short-name file the new long-name product "
-        "replaces (portal + DB). Default: remove it after a durable push+index.",
     )
     parser.add_argument(
         "--target", help="Dissemination target name (default: first in sync.yaml)"

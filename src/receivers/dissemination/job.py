@@ -3,7 +3,7 @@
 Module-level callable (APScheduler persists jobs by import path, like the
 archive-sync / reconciler jobs). For every EPOS-eligible station it disseminates
 a short trailing window of daily files to the active dissemination target and
-indexes each pushed file in the EPOS ``rinex_file`` table.
+records each pushed file in ``archive_catalog`` (``storage_location='epos_portal'``).
 
 **Double-gated, inert by default:** the scheduler only registers this when
 ``epos_disseminate.enabled`` is true in scheduler.yaml AND a dissemination target
@@ -88,14 +88,7 @@ class _SeqProgress:
             self._bar.close()
 
 
-# Serializes EPOS index writes within this process: the schema's explicit
-# next-id allocation (SELECT max(id)+1 — the dev schema lacks the sequences/
-# constraints ON CONFLICT would need) races under parallel chunks and blows
-# up on pk_files. The write itself is ~ms next to a multi-second convert, so
-# serializing costs nothing.
-_INDEX_LOCK = threading.Lock()
-
-# Unified-index dual-write: alongside the EPOS ``rinex_file`` write we also upsert
+# Catalog write at push: we upsert
 # an ``archive_catalog(storage_location='epos_portal')`` row in gps_health, so the
 # one sha256 index carries the portal tier (with BOTH sha256s AND both EPOS md5s).
 # The connection is opened lazily and CLOSED at sweep end (``_close_catalog_conn``)
@@ -144,8 +137,7 @@ def _catalog_epos_push(target: Any, result: Any) -> None:
     """Best-effort dual-write of a pushed EPOS file into ``archive_catalog``
     (``storage_location='epos_portal'``) with both sha256s + both EPOS md5s.
 
-    Independent of the ``rinex_file`` index (the external EPOS contract, written
-    separately) — NEVER raises, so it can't affect the sweep or supersede gating.
+    NEVER raises, so it can't affect the sweep.
     Skips a file not in hand (cached/aged-off) — those are the ``--epos`` backfill
     scope, not the forward hash-at-push path.
     """
@@ -158,7 +150,7 @@ def _catalog_epos_push(target: Any, result: Any) -> None:
     try:
         from ..archive.catalog import upsert_catalog_row
         from ..utils.content_hash import compressed_sha256, content_sha256
-        from .rinex_index import rinex_md5s
+        from .rinex_md5 import rinex_md5s
 
         md5checksum, md5uncompressed = rinex_md5s(p)
         csha = content_sha256(p)
@@ -192,54 +184,9 @@ def _catalog_epos_push(target: Any, result: Any) -> None:
         _close_catalog_conn()  # drop a possibly-poisoned conn; next file retries
 
 
-def _index_pushed(epos_conn: Any, target: Any, result: Any) -> Optional[int]:
-    """Best-effort index of a freshly pushed file in the EPOS rinex_file table.
-
-    Returns the ``rinex_file`` id (supersede-cleanup gates on it — legacy
-    removal must never run unless the replacement is durably indexed), or
-    None when indexing was skipped/failed. A statement error triggers a
-    connection recover (rollback + search_path re-assert) and ONE retry —
-    without it the first error poisons the transaction and every later index
-    on this connection fails with 'current transaction is aborted'.
-    """
-    # Unified-index dual-write (best-effort, independent of the rinex_file index
-    # and its epos_conn) — a pushed file lands in archive_catalog(epos_portal) too.
+def _record_pushed(target: Any, result: Any) -> None:
+    """Record a freshly pushed file in the file index (``archive_catalog``)."""
     _catalog_epos_push(target, result)
-
-    if epos_conn is None or not result.artifact_path or not result.relative_path:
-        return None
-    from .rinex_index import index_rinex_file
-
-    d = result.file_date
-
-    def _attempt() -> Optional[int]:
-        with _INDEX_LOCK:
-            return index_rinex_file(
-                epos_conn,
-                Path(result.artifact_path),
-                result.station,
-                datetime(d.year, d.month, d.day),
-                relative_path=f"/files/{result.relative_path}",
-                session=(target.sessions[0] if target.sessions else "15s_24hr"),
-                rinex_version=result.rinex_version or 3,
-            )
-
-    for attempt in (1, 2):
-        try:
-            return _attempt()
-        except Exception as exc:  # noqa: BLE001 - index must never fail the sweep
-            from . import epos_db
-
-            recovered = epos_db.recover(epos_conn)
-            if attempt == 2 or not recovered:
-                logger.warning(
-                    "index failed for %s %s: %s", result.station, result.file_date, exc
-                )
-                return None
-            logger.info(
-                "index retry for %s %s after: %s", result.station, result.file_date, exc
-            )
-    return None
 
 
 def _failure_reason(exc: BaseException) -> str:
@@ -288,33 +235,23 @@ def run_epos_disseminate_job(
     today: Optional[date] = None,
     markers: Optional[list[str]] = None,
     dates: Optional[list[date]] = None,
-    supersede: bool = True,
     parallel: Any = None,
     force: bool = False,
     engine_factory: Any = None,
-    epos_conn_factory: Any = None,
 ) -> dict:
     """Disseminate a date window for every EPOS station. Never raises.
 
     Dates: explicit ``dates`` list when given (the range/--dates driver — a
     full-history portal refresh after a re-rinex campaign is exactly this),
-    else the trailing ``days_back`` window (the T8 scheduler sweep).
-
-    Supersede-cleanup (``supersede=True``): a long-name product whose durable
-    push+index replaced a legacy short-name file queues that legacy file for
-    removal; queued items are removed in BATCHES (one argv-safe SSH call per
-    flush, not one per date) and de-indexed. Only ever gated on
-    ``result.ok and indexed`` — cleanup can never orphan a day.
+    else the ``days_back`` days up to yesterday (the T8 scheduler sweep).
 
     ``parallel`` (None | "auto" | N): chunk the work into date-disjoint
     (station, year) chunks on the load-aware thread pool; each chunk gets its
-    own engine and EPOS DB connection. Supersede flushes are serialized.
+    own engine.
 
-    Returns a summary ``{stations, pushed, cached, skipped, failed, superseded}``.
-    The injectable ``today`` / ``markers`` / ``engine_factory`` /
-    ``epos_conn_factory`` keep the sweep testable offline. When no
-    ``epos_conn_factory`` is given the production EPOS DB connection is used
-    (best-effort — no [epos_db] config means no indexing, as before).
+    Returns a summary ``{stations, pushed, cached, skipped, failed}``. The
+    injectable ``today`` / ``markers`` / ``engine_factory`` keep the sweep testable
+    offline.
     """
     from .config import load_dissemination_config
 
@@ -324,7 +261,6 @@ def run_epos_disseminate_job(
         "cached": 0,
         "skipped": 0,
         "failed": 0,
-        "superseded": 0,
         "failures": [],
         "skips": [],
     }
@@ -383,40 +319,16 @@ def run_epos_disseminate_job(
         def engine_factory(tgt):  # type: ignore[misc]
             return EposDisseminate(tgt, session_provider=session_provider)
 
-    if epos_conn_factory is None:
-        epos_conn_factory = _open_epos_conn  # best-effort None without [epos_db]
-
     if dates is None:
-        end = today or date.today()
+        # Ends yesterday: today has no finished day to publish. A stream station
+        # (HRIC) does have a partial file for it, which went out under its short
+        # name and needed removing the next morning.
+        end = (today or date.today()) - timedelta(days=1)
         dates = [end - timedelta(days=n) for n in range(days_back)]
     dates = sorted(set(dates))
 
-    do_supersede = bool(supersede and getattr(target, "host", ""))
-    ssh_target = f"{target.user}@{target.host}" if do_supersede else ""
     push_ssh = f"{target.user}@{target.host}" if getattr(target, "host", "") else None
-    flush_lock = threading.Lock()
     _PUSH_BATCH = 300  # files staged per rsync flush (both products of ~150 dates)
-
-    def _supersede_slots(conn: Any, slots: list) -> int:
-        """One batched same-slot purge for a flushed batch of pushed products."""
-        if not slots or conn is None:
-            return 0
-        from .rinex_index import purge_stale_siblings_batch
-
-        with flush_lock:  # concurrent gateway ssh is unreliable — serialize
-            out = purge_stale_siblings_batch(
-                conn,
-                list(slots),
-                ssh_target=ssh_target,
-                dest_root=target.dest,
-                dry_run=False,
-            )
-        if out["skipped"]:
-            logger.info(
-                "supersede: %d stale file(s) not on portal (already clean)",
-                len(out["skipped"]),
-            )
-        return len(out["removed"])
 
     # Multi-product (format.products): one published file per product per date.
     # Explicit products use the product kwarg; the default single-product shape
@@ -425,13 +337,13 @@ def run_epos_disseminate_job(
     _active_products = [p for p in _products if getattr(p, "enabled", True)]
 
     def _run_station_dates(station: str, chunk_dates: list, progress=None) -> dict:
-        """One worker unit: own engine + own EPOS conn + own batched pusher.
+        """One worker unit: own engine + own batched pusher.
 
         run_one STAGES each published file into the pusher; the pusher rsyncs a
         batch of ``_PUSH_BATCH`` files at a time (one connection, not one-per-
         file) and calls ``_on_flush`` for the batch once it is DURABLE on the
-        portal — that is where the index + same-slot supersede run, so a stale
-        file is never removed before its replacement has landed.
+        portal — that is where its catalog row is written, so the index never
+        lists a file that has not landed.
         """
         from ..utils.net_push import BatchPush
 
@@ -440,43 +352,18 @@ def run_epos_disseminate_job(
             "cached": 0,
             "skipped": 0,
             "failed": 0,
-            "superseded": 0,
             "failures": [],
             "skips": [],
         }
         engine = engine_factory(target)
-        try:
-            conn = epos_conn_factory()
-        except Exception:  # noqa: BLE001 - indexing is best-effort
-            conn = None
-        state = {"conn": conn}  # boxed so a mid-chunk reopen is visible to on_flush
 
         def _on_flush(refs: list, stats: dict) -> None:
-            # refs = result objects whose files just landed durably. Index each,
-            # then supersede their slots in one batched portal rm. Best-effort.
-            c = state["conn"]
-            slots = []
+            # refs = result objects whose files just landed durably. Catalog each.
+            # Best-effort.
             for result in refs:
                 if result is None:
                     continue
-                idx = _index_pushed(c, target, result)
-                if (
-                    do_supersede
-                    and not getattr(result, "dry_run", False)
-                    and idx is not None
-                    and result.relative_path
-                    and result.long_name
-                ):
-                    slots.append(
-                        (
-                            result.station,
-                            result.file_date,
-                            str(Path(result.relative_path).parent),
-                            result.long_name,
-                        )
-                    )
-            if slots:
-                local["superseded"] += _supersede_slots(c, slots)
+                _record_pushed(target, result)
             # Drop the convert-cache entries for this batch. Safe HERE and only
             # here: BatchPush calls _on_flush once the files are DURABLE on the
             # portal, so nothing is discarded before its replacement has landed.
@@ -507,15 +394,6 @@ def run_epos_disseminate_job(
             progress.set_total(len(chunk_dates))
         try:
             for d in chunk_dates:
-                # A severed EPOS conn (laptop sleep, NAT expiry) surfaces as
-                # closed after the keepalive/timeout kicks in — reopen so the
-                # rest of the chunk keeps indexing instead of skipping.
-                if state["conn"] is not None and getattr(state["conn"], "closed", 0):
-                    try:
-                        state["conn"] = epos_conn_factory()
-                        logger.info("EPOS conn reopened mid-chunk (%s)", station)
-                    except Exception:  # noqa: BLE001 - indexing stays best-effort
-                        state["conn"] = None
                 runs = [(p,) for p in _active_products] if _active_products else [()]
                 for run_args in runs:
                     try:
@@ -549,19 +427,13 @@ def run_epos_disseminate_job(
                         )
                         continue
                     # run_one staged the file into the pusher (which flushes every
-                    # _PUSH_BATCH → _on_flush indexes + supersedes). Count here.
+                    # _PUSH_BATCH → _on_flush writes the catalog rows). Count here.
                     local["cached" if result.cached else "pushed"] += 1
                 if progress is not None:
                     progress.advance()
             pusher.close()  # final flush → _on_flush for the remainder
         finally:
             engine.pusher = None
-            c = state["conn"]
-            if c is not None:
-                try:
-                    c.close()
-                except Exception:  # noqa: BLE001
-                    pass
         return local
 
     from ..utils.batch_parallel import resolve_workers
@@ -629,20 +501,19 @@ def run_epos_disseminate_job(
 
     logger.info(
         "epos-disseminate sweep: %d stations, pushed=%d cached=%d skipped=%d "
-        "failed=%d superseded=%d",
+        "failed=%d",
         summary["stations"],
         summary["pushed"],
         summary["cached"],
         summary["skipped"],
         summary["failed"],
-        summary["superseded"],
     )
     _emit_failure_digest(summary)
     return summary
 
 
 # --------------------------------------------------------------------------- #
-# Reactive sweep (T6) — TOS-fingerprint diff → re-ETL / re-disseminate / stop  #
+# Reactive sweep (T6) — TOS-fingerprint diff → re-disseminate / stop         #
 # --------------------------------------------------------------------------- #
 
 
@@ -687,7 +558,6 @@ def run_epos_reactive_job(
     state_path: Optional[str] = None,
     markers: Optional[list[str]] = None,
     engine_factory: Any = None,
-    epos_conn_factory: Any = None,
     sitelogs_dir: Optional[str] = None,
     publish_m3g: bool = False,
     fingerprint_fn: Any = None,
@@ -703,9 +573,9 @@ def run_epos_reactive_job(
     the fingerprint store (so a station that dropped out of EPOS is detected as
     DEACTIVATED), classifies each, and dispatches the production actions:
 
-    - NEW / ACTIVATED / CHANGED → re-ETL metadata, re-disseminate the backfill
-      window, regenerate + commit the site log.
-    - DEACTIVATED → stop-only (keep EPOS rows; just stop pushing).
+    - NEW / ACTIVATED / CHANGED → re-disseminate the backfill window, regenerate +
+      commit the site log (+ M3G publish when ``publish_m3g``).
+    - DEACTIVATED → stop-only (portal files kept; just stop pushing).
 
     Mirrors :func:`run_epos_disseminate_job`: every collaborator is injectable so
     the whole sweep is offline-testable, and a station advances in the store only
@@ -790,22 +660,11 @@ def run_epos_reactive_job(
             components_fn=components_fn,
         )
 
-    # EPOS DB connection (for metadata ETL + file indexing); best-effort.
-    epos_conn = None
-    if epos_conn_factory is not None:
-        try:
-            epos_conn = epos_conn_factory()
-        except Exception:  # noqa: BLE001
-            epos_conn = None
-    elif actions is None:
-        epos_conn = _open_epos_conn()
-
     try:
         if actions is None:
             actions = _build_reactive_actions(
                 target,
                 session_provider=session_provider,
-                epos_conn=epos_conn,
                 engine_factory=engine_factory,
                 sitelogs_dir=sitelogs_dir,
                 backfill_days=backfill_days,
@@ -815,29 +674,12 @@ def run_epos_reactive_job(
         return run_reactive_sync(scan_markers, fingerprint_fn, store, actions)
     finally:
         _close_catalog_conn()  # don't hold a gps_health conn between sweeps
-        if epos_conn is not None:
-            try:
-                epos_conn.close()
-            except Exception:  # noqa: BLE001
-                pass
-
-
-def _open_epos_conn() -> Any:
-    """Open the EPOS DB connection ([epos_db] / EPOS_DB_* env), or None."""
-    try:
-        from . import epos_db
-
-        return epos_db.connect()
-    except Exception as exc:  # noqa: BLE001 - DB optional; metadata/index steps skip
-        logger.warning("epos-reactive: no EPOS DB connection (%s)", exc)
-        return None
 
 
 def _build_reactive_actions(
     target: Any,
     *,
     session_provider: Any,
-    epos_conn: Any,
     engine_factory: Any,
     sitelogs_dir: Optional[str],
     backfill_days: int,
@@ -846,9 +688,9 @@ def _build_reactive_actions(
 ) -> Any:
     """Wire the production :class:`ReactiveActions` for one target.
 
-    Closures capture the live engine / EPOS DB / site-log repo. Each callback
-    raises on a hard failure so the orchestrator keeps the station unadvanced and
-    retries it next sweep; best-effort steps (indexing) swallow their own errors.
+    Closures capture the live engine / site-log repo. Each callback raises on a
+    hard failure so the orchestrator keeps the station unadvanced and retries it
+    next sweep; best-effort steps (the catalog write) swallow their own errors.
     ``publish_m3g`` opts the site-log action into auto-publishing a changed log to
     M3G (default off — M3G stays a manual verb until enabled).
     """
@@ -867,17 +709,6 @@ def _build_reactive_actions(
 
     engine = engine_factory(target)
     sitelog_repo = resolve_sitelogs_repo(sitelogs_dir)
-
-    def refresh_metadata(station: str) -> None:
-        if epos_conn is None:
-            raise RuntimeError(
-                "EPOS DB connection unavailable — cannot refresh metadata"
-            )
-        from .epos_etl import run_etl
-
-        res = run_etl(epos_conn, markers=[station.upper()])
-        if res.errors:
-            raise RuntimeError(f"metadata ETL errors: {'; '.join(res.errors)}")
 
     def disseminate(change: StationChange) -> bool:
         from .reactive import CHANGED, affected_floor
@@ -898,7 +729,10 @@ def _build_reactive_actions(
             cutover_date = cutover.date() if isinstance(cutover, datetime) else cutover
             if cutover_date is not None:
                 eff_backfill = max(backfill_days, (today - cutover_date).days)
-        dates = _reactive_date_range(target, today, eff_backfill, floor_from=floor_from)
+        # up to yesterday: today's file, where one exists, is partial
+        dates = _reactive_date_range(
+            target, today - timedelta(days=1), eff_backfill, floor_from=floor_from
+        )
         pushed = cached = skipped = 0
         for d in dates:
             result = engine.run_one(station, d)
@@ -909,7 +743,7 @@ def _build_reactive_actions(
                 cached += 1
             else:
                 pushed += 1
-            _index_pushed(epos_conn, target, result)
+            _record_pushed(target, result)
         logger.info(
             "epos-reactive %s (%s): %d dates — pushed=%d cached=%d skipped=%d",
             station,
@@ -948,7 +782,9 @@ def _build_reactive_actions(
                 gate.path,
                 f"{station.upper()}: site log update (reactive)",
             )
-        except Exception as exc:  # noqa: BLE001 - commit is best-effort (no repo ⇒ skip)
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 - commit is best-effort (no repo ⇒ skip)
             logger.warning(
                 "epos-reactive: site-log commit skipped for %s: %s", station, exc
             )
@@ -971,11 +807,10 @@ def _build_reactive_actions(
 
     def stop(station: str) -> None:
         # Stop-only: the station is simply absent from future marker sweeps, so it
-        # stops being disseminated. EPOS rows are intentionally NOT purged.
-        logger.info("epos-reactive: %s deactivated — stop-only (rows kept)", station)
+        # stops being disseminated. Portal files are intentionally NOT purged.
+        logger.info("epos-reactive: %s deactivated — stop-only (files kept)", station)
 
     return ReactiveActions(
-        refresh_metadata=refresh_metadata,
         disseminate=disseminate,
         regenerate_sitelog=regenerate_sitelog,
         stop=stop,

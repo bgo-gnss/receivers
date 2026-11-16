@@ -47,8 +47,8 @@ targets:
   # Reads the long-term archive (short-named throughout: RINEX2 before the
   # 2026-06-22 cutover, RINEX3 after) and ships a per-version product: R3 content
   # -> long .crx.gz, R2 content -> short .YYd.Z (version detected from CONTENT, not
-  # the always-short filename). Indexes into the EPOS gnss-europe DB. Keep inactive
-  # until the EPOS server + [epos_db] are wired and parity-verified; run with
+  # the always-short filename). Indexed in gps_health archive_catalog (epos_portal).
+  # Keep inactive until the EPOS server is wired and parity-verified; run with
   # `--force --dest-override <dir>` to pre-stage. Design:
   # docs/architecture/epos-dissemination-plan.md
   - name: epos

@@ -24,7 +24,6 @@ def _args(**over):
         config=None,
         target=None,
         list_stations=False,
-        refresh_metadata=False,
         reactive=False,
         station="NYLA",
         sitelog=False,

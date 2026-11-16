@@ -4,6 +4,10 @@ Analysis of `git.vedur.is/aut/ut-dev/dp/deliverables/epos-gnss` (cloned to
 `../epos-gnss`) in terms of running it inside the `receivers` package using the
 tooling we've already built.
 
+> **Update 2026-11:** the `gnss-europe` database is retired. The TOS→EPOS-DB ETL and the
+> `rinex_file` indexer proposed below were built and then removed; md5s now live on the gps_health
+> `epos_portal` catalog row and station metadata goes through M3G.
+
 **TL;DR:** epos-gnss is the legacy **EPOS dissemination** pipeline — exactly the
 `tier: dissemination` target already scoped in
 [[1781867391-data-dissemination-archive-sync-design]]. It is *not* the archive-write

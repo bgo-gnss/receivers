@@ -768,164 +768,10 @@ class TestEndToEnd:
         )
 
 
-# --------------------------------------------------------------------------- ETL + indexer (pure)
-class TestEtlPure:
-    def test_llh_to_xyz_reyk(self):
-        from receivers.dissemination.epos_etl import llh_to_xyz
-
-        x, y, z = llh_to_xyz(64.1388, -21.9555, 93.0)  # ~REYK
-        # ECEF magnitude ≈ Earth radius (~6.37e6 m).
-        assert abs((x**2 + y**2 + z**2) ** 0.5 - 6.37e6) < 5e4
-        assert z > 0  # northern hemisphere
-
-    def test_file_type_for(self):
-        from receivers.dissemination.rinex_index import _file_type_for
-
-        assert _file_type_for(3, "15s_24hr") == {
-            "format": "RINEX3",
-            "sampling_window": "24hour",
-            "sampling_frequency": "15s",
-        }
-
-
-def _local_epos_db_ov():
-    import getpass
-
-    return {
-        "host": "localhost",
-        "dbname": "gnss_europe_local",
-        "user": getpass.getuser(),
-        "schema": "public",
-    }
-
-
-def _local_epos_db_available() -> bool:
-    try:
-        from receivers.dissemination import epos_db
-
-        conn = epos_db.connect(_local_epos_db_ov())
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-
-@pytest.mark.skipif(
-    not _local_epos_db_available(),
-    reason="needs the local gnss_europe_local harness DB",
-)
-class TestEposDbHelpers:
-    def test_insert_get_update_roundtrip(self):
-        from receivers.dissemination import epos_db
-
-        conn = epos_db.connect(_local_epos_db_ov())
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SAVEPOINT t")
-                aid = epos_db.get_or_create(
-                    cur, "agency", {"abbreviation": "ZZ"}, {"name": "Z"}
-                )
-                aid2 = epos_db.get_or_create(cur, "agency", {"abbreviation": "ZZ"})
-                assert aid == aid2  # get-or-create returns the same row
-                epos_db.update_row(cur, "agency", aid, {"name": "Z2"})
-                cur.execute("SELECT name FROM agency WHERE id = %s", (aid,))
-                assert cur.fetchone()[0] == "Z2"
-                cur.execute("ROLLBACK TO SAVEPOINT t")  # leave the DB clean
-        finally:
-            conn.rollback()
-            conn.close()
-
-
-class TestVocabMapping:
-    def test_receiver_subtype_is_gnss_receiver(self):
-        from receivers.dissemination.epos_etl import _ATTR_MAP, WHITELISTED_ITEMS
-
-        assert "gnss_receiver" in WHITELISTED_ITEMS
-        assert "receiver" not in WHITELISTED_ITEMS  # TOS uses gnss_receiver
-        assert _ATTR_MAP["gnss_receiver"]["model"] == "receiver_type"
-        assert _ATTR_MAP["antenna"]["model"] == "antenna_type"
-        assert _ATTR_MAP["radome"]["model"] == "radome_type"
-
-    def test_type_resolve_covers_trigger_attributes(self):
-        from receivers.dissemination.epos_etl import _TYPE_RESOLVE
-
-        # The schema triggers fire on antenna_type/receiver_type/radome_type.
-        assert set(_TYPE_RESOLVE) == {"antenna_type", "receiver_type", "radome_type"}
-
-
-@pytest.mark.skipif(
-    not _local_epos_db_available(),
-    reason="needs the local gnss_europe_local harness DB (seeded vocab + type tables)",
-)
-class TestItemVocabETL:
-    def test_populate_items_resolves_types_and_fires_triggers(self):
-        from datetime import datetime as _dt
-
-        from receivers.dissemination import epos_db
-        from receivers.dissemination.epos_etl import _populate_items
-
-        conn = epos_db.connect(_local_epos_db_ov())
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SAVEPOINT t")
-                sid = epos_db.insert_row(cur, "station", {"name": "T", "marker": "TST"})
-                children = [
-                    (
-                        {"time_from": _dt(2021, 1, 1), "time_to": None},
-                        {
-                            "code_entity_subtype": "antenna",
-                            "id_entity": 1,
-                            "attributes": [
-                                {"code": "model", "value": "ASH701945C_M"},
-                                {"code": "serial_number", "value": "S1"},
-                            ],
-                        },
-                    ),
-                    (
-                        {"time_from": _dt(2021, 1, 1), "time_to": None},
-                        {
-                            "code_entity_subtype": "gnss_receiver",
-                            "id_entity": 2,
-                            "attributes": [
-                                {"code": "model", "value": "TRIMBLE NETR9"},
-                                {"code": "firmware_version", "value": "4.6"},
-                            ],
-                        },
-                    ),
-                ]
-                n = _populate_items(cur, sid, children)
-                assert n == 2
-                # Scope all checks to THIS station's items (the harness DB may hold
-                # committed fleet data from other ETL runs).
-                scoped = (
-                    "SELECT ia.value_varchar, ia.value_numeric FROM item_attribute ia "
-                    "JOIN station_item si ON si.id_item = ia.id_item "
-                    "WHERE si.id_station = %s AND ia.id_attribute = %s"
-                )
-                # antenna_type resolved to value_numeric (the trigger requires it)
-                cur.execute(scoped, (sid, 1))
-                assert cur.fetchone() == ("ASH701945C_M", 52)
-                # the trigger wrote a filter_antenna row for this item_attribute
-                cur.execute(
-                    "SELECT count(*) FROM filter_antenna fa "
-                    "JOIN item_attribute ia ON ia.id = fa.id_item_attribute "
-                    "JOIN station_item si ON si.id_item = ia.id_item "
-                    "WHERE si.id_station = %s",
-                    (sid,),
-                )
-                assert cur.fetchone()[0] == 1
-                # serial_number (id 5) carries no value_numeric
-                cur.execute(scoped, (sid, 5))
-                assert cur.fetchone()[1] is None
-                cur.execute("ROLLBACK TO SAVEPOINT t")
-        finally:
-            conn.rollback()
-            conn.close()
-
-
+# --------------------------------------------------------------------------- md5 pair (pure)
 class TestRinexMd5s:
     def test_plain_rinex_md5s_equal(self, tmp_path):
-        from receivers.dissemination.rinex_index import rinex_md5s
+        from receivers.dissemination.rinex_md5 import rinex_md5s
 
         f = tmp_path / "STAT00ISL_R_20261280000_01D_15S_MO.rnx"
         f.write_bytes(b"     3.04           OBSERVATION DATA\n")
@@ -935,7 +781,7 @@ class TestRinexMd5s:
     def test_gz_md5checksum_differs_uncompressed_matches_plain(self, tmp_path):
         import gzip as _gz
 
-        from receivers.dissemination.rinex_index import _md5_bytes, rinex_md5s
+        from receivers.dissemination.rinex_md5 import _md5_bytes, rinex_md5s
 
         body = b"     3.04           OBSERVATION DATA\nplain rinex body\n"
         gzf = tmp_path / "STAT00ISL_R_20261280000_01D_15S_MO.rnx.gz"
@@ -1063,9 +909,8 @@ targets:
             "cached": 2,
             "skipped": 2,
             "failed": 0,
-            "superseded": 0,
             "failures": [],
-            "skips": [("AKUR", "2026-06-27", ""), ("AKUR", "2026-06-28", "")],
+            "skips": [("AKUR", "2026-06-26", ""), ("AKUR", "2026-06-27", "")],
         }
         assert len(eng.calls) == 6  # 3 stations x 2 days
 
@@ -1401,9 +1246,8 @@ class TestReactiveOrchestrator:
             "AKUR": self._st("newA"),
             "FIHO": self._st("f", False),  # in_epos on→off
         }
-        calls = {"refresh": [], "disseminate": [], "sitelog": [], "stop": []}
+        calls = {"disseminate": [], "sitelog": [], "stop": []}
         actions = ReactiveActions(
-            refresh_metadata=lambda s: calls["refresh"].append(s),
             disseminate=lambda ch: (
                 calls["disseminate"].append((ch.station, ch.kind)) or True
             ),
@@ -1415,7 +1259,8 @@ class TestReactiveOrchestrator:
         )
         assert summary["changed"] == 1 and summary["new"] == 1
         assert summary["deactivated"] == 1 and summary["failed"] == 0
-        assert set(calls["refresh"]) == {"RHOF", "AKUR"}  # not the deactivated one
+        # not the deactivated one
+        assert {s for s, _ in calls["disseminate"]} == {"RHOF", "AKUR"}
         assert calls["stop"] == ["FIHO"]
         assert set(calls["sitelog"]) == {"RHOF", "AKUR"}
         # all three actions succeeded → store advanced
@@ -1434,7 +1279,6 @@ class TestReactiveOrchestrator:
         store = FingerprintStore(tmp_path / "s.json")
         store.save({"RHOF": self._st("old")})
         actions = ReactiveActions(
-            refresh_metadata=lambda s: None,
             disseminate=lambda ch: False,  # report failure
             regenerate_sitelog=lambda s: None,
             stop=lambda s: None,
@@ -1512,9 +1356,8 @@ class TestReactiveJob:
             "AKUR": StationState("newA", True),
             "FIHO": StationState("f", False),
         }
-        calls = {"refresh": [], "disseminate": [], "sitelog": [], "stop": []}
+        calls = {"disseminate": [], "sitelog": [], "stop": []}
         actions = ReactiveActions(
-            refresh_metadata=lambda s: calls["refresh"].append(s),
             disseminate=lambda ch: (
                 calls["disseminate"].append((ch.station, ch.kind)) or True
             ),
@@ -1531,7 +1374,7 @@ class TestReactiveJob:
         )
         assert s["new"] == 1 and s["changed"] == 1 and s["deactivated"] == 1
         assert calls["stop"] == ["FIHO"]  # detected despite leaving the marker set
-        assert set(calls["refresh"]) == {"AKUR", "RHOF"}
+        assert {s for s, _ in calls["disseminate"]} == {"AKUR", "RHOF"}
 
     def test_build_actions_disseminate_loops_range(self, tmp_path):
         from receivers.dissemination.job import _build_reactive_actions
@@ -1563,7 +1406,6 @@ class TestReactiveJob:
         actions = _build_reactive_actions(
             _T(),
             session_provider=None,
-            epos_conn=None,
             engine_factory=lambda _t: eng,
             sitelogs_dir=str(tmp_path),
             backfill_days=2,
@@ -1571,7 +1413,7 @@ class TestReactiveJob:
         )
         ok = actions.disseminate(StationChange("RHOF", NEW, None, None))
         assert ok is True
-        assert len(eng.calls) == 3  # today + 2 back
+        assert len(eng.calls) == 3  # yesterday + 2 back: not today, its file is partial
 
     def test_historical_changed_sweeps_from_cutover(self, tmp_path):
         # A CHANGED with no bound (affected_floor None = historical correction) must
@@ -1611,7 +1453,6 @@ class TestReactiveJob:
         actions = _build_reactive_actions(
             _T(),
             session_provider=None,
-            epos_conn=None,
             engine_factory=lambda _t: eng,
             sitelogs_dir=str(tmp_path),
             backfill_days=2,  # would only reach 2 days back without the extension
@@ -1621,27 +1462,8 @@ class TestReactiveJob:
             "RHOF", CHANGED, StationState("o", True, {}), StationState("n", True, {})
         )
         assert actions.disseminate(ch) is True
-        assert len(eng.calls) == 11  # cutover (06-20) .. today (06-30) inclusive
+        assert len(eng.calls) == 10  # cutover to yesterday, inclusive
         assert eng.calls[-1][1] == date(2026, 6, 20)
-
-    def test_build_actions_refresh_raises_without_conn(self, tmp_path):
-        from receivers.dissemination.job import _build_reactive_actions
-
-        class _T:
-            cutover = None
-            format = type("F", (), {"country_code": "ISL", "monument_number": "00"})()
-
-        actions = _build_reactive_actions(
-            _T(),
-            session_provider=None,
-            epos_conn=None,
-            engine_factory=lambda _t: object(),
-            sitelogs_dir=str(tmp_path),
-            backfill_days=1,
-            today=date(2026, 6, 30),
-        )
-        with pytest.raises(RuntimeError):
-            actions.refresh_metadata("RHOF")
 
 
 class TestReadHeaderInfo:
@@ -2629,18 +2451,17 @@ class TestSubmitToM3G:
 
 
 class TestDisseminateJobRange:
-    """dates= / supersede batching / force on run_epos_disseminate_job."""
+    """dates= / force on run_epos_disseminate_job."""
 
-    def _result(self, station, d, *, ok=True, cached=False, superseded=None):
+    def _result(self, station, d, *, ok=True, cached=False):
         from receivers.dissemination.engine import DisseminateResult
 
         r = DisseminateResult(station=station, file_date=d)
         r.ok = ok
         r.cached = cached
         r.dry_run = False
-        r.superseded_name = superseded
         r.relative_path = f"2013/jun/{station}/15s_24hr/rinex/x.crx.gz"
-        r.artifact_path = None  # index skipped -> supersede must NOT trigger
+        r.artifact_path = None
         return r
 
     def test_explicit_dates_and_force(self, tmp_path):
@@ -2674,7 +2495,6 @@ class TestDisseminateJobRange:
             no_qc=True,
             dates=dates,
             engine_factory=lambda t: _Eng(),
-            epos_conn_factory=lambda: None,
         )
         assert s0["pushed"] == 0 and not calls
         # force=True -> runs all dates, sorted+deduped, year-chunked
@@ -2685,9 +2505,8 @@ class TestDisseminateJobRange:
             dates=dates + [_date(2013, 6, 14)],  # dup dropped
             force=True,
             engine_factory=lambda t: _Eng(),
-            epos_conn_factory=lambda: None,
         )
-        assert s["pushed"] == 3 and s["failed"] == 0 and s["superseded"] == 0
+        assert s["pushed"] == 3 and s["failed"] == 0
         assert [d for _, d in calls] == sorted({*dates})
 
     def test_sequential_range_advances_progress_bar(self, tmp_path, monkeypatch):
@@ -2743,7 +2562,6 @@ class TestDisseminateJobRange:
             dates=dates,
             force=True,
             engine_factory=lambda t: _Eng(),
-            epos_conn_factory=lambda: None,
         )
         assert s["pushed"] == 3
         assert spy["total"] == 3  # one bar over ALL dates, not per chunk
@@ -2761,107 +2579,6 @@ class TestDisseminateJobRange:
         p.advance(1.5)
         p.set_postfix(pushed=1, failed=0)
         p.close()
-
-    def test_dead_epos_conn_reopened_mid_chunk(self, tmp_path):
-        """A conn severed mid-chunk (laptop sleep, NAT expiry) is reopened at
-        the next date instead of silently skipping indexes for the rest."""
-        from datetime import date as _date
-
-        from receivers.dissemination.job import run_epos_disseminate_job
-
-        cfg = tmp_path / "sync.yaml"
-        cfg.write_text(
-            "targets:\n"
-            "  - name: epos\n"
-            "    active: false\n"
-            "    tier: dissemination\n"
-            "    host: ''\n"
-            "    user: u\n"
-            "    dest: /tmp/x\n"
-            "    source_root: /tmp/src\n"
-        )
-
-        class _Conn:
-            closed = 0
-
-            def close(self):
-                self.closed = 1
-
-        conns: list = []
-
-        def factory():
-            c = _Conn()
-            conns.append(c)
-            return c
-
-        outer = self
-
-        class _Eng:
-            def run_one(self, station, d):
-                conns[-1].closed = 1  # peer dies while this date is processed
-                return TestDisseminateJobRange._result(outer, station, d)
-
-        run_epos_disseminate_job(
-            config_path=str(cfg),
-            markers=["RHOF"],
-            no_qc=True,
-            dates=[_date(2013, 6, 14), _date(2013, 6, 15)],
-            force=True,
-            engine_factory=lambda t: _Eng(),
-            epos_conn_factory=factory,
-        )
-        # initial conn + one reopen when date 2 found it closed
-        assert len(conns) == 2
-
-    def test_supersede_gated_on_indexed(self, tmp_path, monkeypatch):
-        """superseded_name WITHOUT a durable index must never queue removal."""
-        from datetime import date as _date
-
-        import receivers.dissemination.job as jobmod
-        from receivers.dissemination.job import run_epos_disseminate_job
-
-        cfg = tmp_path / "sync.yaml"
-        cfg.write_text(
-            "targets:\n"
-            "  - name: epos\n"
-            "    active: true\n"
-            "    tier: dissemination\n"
-            "    host: portal.example\n"
-            "    user: epos\n"
-            "    dest: /mnt/epos\n"
-            "    source_root: /tmp/src\n"
-        )
-
-        class _Eng:
-            def run_one(self, station, d):
-                return TestDisseminateJobRange._result(
-                    self, station, d, superseded="RHOF1650.13D.Z"
-                )
-
-        flushed = []
-        monkeypatch.setattr(
-            jobmod,
-            "_index_pushed",
-            lambda conn, tgt, res: None,  # index FAILED / skipped
-        )
-
-        def _boom(*a, **k):  # would be called only if a flush happens
-            flushed.append(1)
-            return {"removed": [], "skipped": [], "would_remove": [], "deindexed": []}
-
-        import receivers.dissemination.rinex_index as ri
-
-        monkeypatch.setattr(ri, "supersede_legacy_batch", _boom)
-        s = run_epos_disseminate_job(
-            config_path=str(cfg),
-            markers=["RHOF"],
-            no_qc=True,
-            dates=[_date(2013, 6, 14)],
-            engine_factory=lambda t: _Eng(),
-            epos_conn_factory=lambda: object(),  # conn present, index still None
-        )
-        assert s["pushed"] == 1
-        assert s["superseded"] == 0 and not flushed
 
 
 class TestProducts:
@@ -2937,7 +2654,6 @@ class TestProducts:
             no_qc=True,
             dates=[_date(2026, 7, 2)],
             engine_factory=lambda t: _Eng(),
-            epos_conn_factory=lambda: None,
         )
         assert s["pushed"] == 2
         assert [c[2] for c in calls] == [None, 30]

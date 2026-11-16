@@ -2,8 +2,8 @@
 
 The dissemination layer must react to TOS changes with no manual intervention:
 a daily scan compares each station's current TOS state to the last-seen state and
-classifies what changed, so the acting layer can re-ETL / re-disseminate / stop
-exactly the affected stations.
+classifies what changed, so the acting layer can re-disseminate / stop exactly the
+affected stations.
 
 This module is the *detection* half — a persistent per-station fingerprint store
 and the on/off/changed state machine. It is pure and offline-testable (the TOS
@@ -84,7 +84,7 @@ def classify(
     no current fingerprint for it. The transitions:
 
     - no prev, cur in_epos        → NEW (backfill from install)
-    - prev in_epos, cur not       → DEACTIVATED (stop-only, keep rows)
+    - prev in_epos, cur not       → DEACTIVATED (stop-only, portal files kept)
     - not prev in_epos, cur is    → ACTIVATED (backfill)
     - both in_epos, fp differs     → CHANGED (retro re-push affected range)
     - both in_epos, fp same        → UNCHANGED
@@ -245,21 +245,19 @@ def scan(
 class ReactiveActions:
     """The side-effecting callbacks the orchestrator dispatches (injectable).
 
-    Production wires these to the metadata ETL, the dissemination sweep over the
-    affected range, and site-log generation; tests pass fakes. Each returns/raises
+    Production wires these to the dissemination sweep over the affected range and
+    site-log generation; tests pass fakes. Each returns/raises
     so the orchestrator can mark a station succeeded (→ advance the store) only when
     its whole action chain worked.
     """
 
-    refresh_metadata: Callable[[str], None]
-    """Re-run the TOS→EPOS station ETL for a (re)activated / changed station."""
     disseminate: Callable[[StationChange], bool]
     """Re-disseminate the affected range; True on success. NEW/ACTIVATED ⇒ backfill
     from install, CHANGED ⇒ the header-affected range (cache auto-invalidates)."""
     regenerate_sitelog: Callable[[str], None]
     """Regenerate + (later) submit the IGS/M3G site log."""
     stop: Callable[[str], None]
-    """Stop-only on DEACTIVATED — mark inactive, never purge EPOS rows."""
+    """Stop-only on DEACTIVATED — mark inactive, never purge portal files."""
 
 
 def run_reactive_sync(
@@ -291,7 +289,6 @@ def run_reactive_sync(
             if ch.kind == DEACTIVATED:
                 actions.stop(ch.station)
             else:
-                actions.refresh_metadata(ch.station)
                 if not actions.disseminate(ch):
                     raise RuntimeError("dissemination reported failure")
                 actions.regenerate_sitelog(ch.station)
@@ -331,6 +328,6 @@ def advance(
         elif ch.station in succeeded and ch.new is not None:
             states[ch.station] = ch.new
         elif ch.kind == DEACTIVATED and ch.station in succeeded:
-            # record the off state (keep rows; just stop pushing)
+            # record the off state (just stop pushing)
             states[ch.station] = ch.new or StationState("", False)
     store.save(states)
