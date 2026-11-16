@@ -108,7 +108,11 @@ def cmd_plan(args: argparse.Namespace) -> int:
 def cmd_apply(args: argparse.Namespace) -> int:
     from ..archive.config import load_sync_config
     from ..archive.reindex import resolve_catalog_hosts
-    from ..archive.truncation_apply import ApplyConfig, apply_plan
+    from ..archive.truncation_apply import (
+        ApplyConfig,
+        apply_plan,
+        default_local_quarantine,
+    )
     from ..archive.truncation_scan import Plan
 
     plan = Plan.load(args.plan)
@@ -129,12 +133,16 @@ def cmd_apply(args: argparse.Namespace) -> int:
         ssh_target=f"{target.user}@{target.host}",
         dest_root=target.dest,
         catalog_hosts=hosts,
-        local_quarantine=args.local_quarantine,
+        local_quarantine=args.local_quarantine or default_local_quarantine(),
         archive_quarantine=args.archive_quarantine,
         rinex=not args.no_rinex,
         max_items=args.max_items,
     )
-    res = apply_plan(plan, cfg, execute=args.yes)
+    try:
+        res = apply_plan(plan, cfg, execute=args.yes)
+    except RuntimeError as exc:
+        print(f"❌ {exc}")
+        return 2
     for r in res.results:
         line = f"{_ICON.get(r.outcome, '?')} {r.outcome:<15} {r.action:<13} {r.rel}"
         if r.detail:
@@ -221,7 +229,10 @@ def create_archive_truncation_parser(subparsers) -> argparse.ArgumentParser:
         "--no-rinex", action="store_true", help="Do not convert repaired periods"
     )
     pa.add_argument(
-        "--local-quarantine", default="/mnt/data/gpsdata_quarantine/truncation"
+        "--local-quarantine",
+        default=None,
+        help="Where old local copies are kept "
+        "(default ~/.cache/gps_receivers/truncation_quarantine)",
     )
     pa.add_argument("--archive-quarantine", default="~/quarantine/truncation")
     pa.set_defaults(func=cmd_apply)

@@ -98,7 +98,7 @@ class ApplyConfig:
     ssh_target: str  # user@host of the archive gateway
     dest_root: str  # archive root on the gateway, e.g. ~/gpsdata
     catalog_hosts: list
-    local_quarantine: str  # e.g. /mnt/data/gpsdata_quarantine/truncation
+    local_quarantine: str  # see default_local_quarantine()
     archive_quarantine: str = "~/quarantine/truncation"
     work_dir: Optional[str] = None
     run_id: str = field(
@@ -368,7 +368,9 @@ def ledger_row(
     the archive from — it is still partial)."""
     a = item.copies.get("archive") or {}
     loc = item.copies.get("local") or {}
-    s = item.salvage or {}
+    # Salvage figures belong to a salvage row only: a refetch/replace item also
+    # carries the plan-time salvage estimate, which is not what was written.
+    s = (item.salvage or {}) if item.action == Action.SALVAGE.value else {}
     partial = res.outcome == "repaired" and (
         item.action == Action.SALVAGE.value or res.new_content_sha256 in salvaged
     )
@@ -485,6 +487,53 @@ def _default_reindex(cfg: ApplyConfig, files: list[str], root: str) -> dict:
     )
 
 
+def default_local_quarantine() -> str:
+    """Per-user, XDG cache: always writable by whoever runs apply.
+
+    The original default (/mnt/data/gpsdata_quarantine) does not exist on
+    rek-d01 and gpsops cannot create directories directly under /mnt/data, so
+    the first production run failed on every item (safely, before any write).
+    """
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    return os.path.join(base, "gps_receivers", "truncation_quarantine")
+
+
+def preflight_local_quarantine(path: str) -> Optional[str]:
+    """None if ``path`` can hold quarantine copies, else why not."""
+    try:
+        os.makedirs(path, exist_ok=True)
+        fd, probe = tempfile.mkstemp(prefix=".probe-", dir=path)
+        os.close(fd)
+        os.unlink(probe)
+    except OSError as exc:
+        return f"local quarantine {path} is not writable: {exc}"
+    return None
+
+
+def _default_track(item: Item, size: int) -> bool:
+    """Record the repaired local file through the seam every download uses:
+    file_tracking -> 'archived' with the new size (retracting a stale
+    'missing'/'suspect'), and the local_raw catalog row refreshed."""
+    from ..health.file_tracker import FileTracker
+
+    ft = FileTracker()
+    try:
+        return bool(
+            ft.mark_file_archived(
+                item.station,
+                item.session_type,
+                date.fromisoformat(item.file_date),
+                item.file_hour,
+                item.rel.rsplit("/", 1)[-1],
+                size,
+            )
+        )
+    finally:
+        close = getattr(ft, "close", None)
+        if callable(close):
+            close()
+
+
 def _default_rinex(item: Item) -> None:
     from ..scheduling.backfill import _run_backfill_rinex
 
@@ -506,6 +555,7 @@ def apply_plan(
     already_recorded: Optional[set] = None,
     salvaged: Optional[frozenset] = None,
     ledger_check: Callable[[list], list] = ledger_missing_on,
+    tracker: Callable[[Item, int], bool] = _default_track,
 ) -> ApplyResult:
     """Apply ``plan`` (dry-run unless ``execute``). See the module docstring."""
     result = ApplyResult()
@@ -513,17 +563,24 @@ def apply_plan(
     record_only = [i for i in plan.items if i.action in RECORD_ONLY]
 
     if not execute:
+        why_q = preflight_local_quarantine(cfg.local_quarantine)
         for it in actionable:
             why = recheck(it, plan)
             result.results.append(
                 ItemResult(
-                    it.rel, it.action, "refused" if why else "would_apply", why or ""
+                    it.rel,
+                    it.action,
+                    "refused" if (why or why_q) else "would_apply",
+                    why or why_q or "",
                 )
             )
         return result
 
     if not cfg.catalog_hosts:
         raise RuntimeError("no catalog hosts: refusing to write without a ledger")
+    why_q = preflight_local_quarantine(cfg.local_quarantine)
+    if why_q:
+        raise RuntimeError(why_q + " — refusing before touching any file")
     missing = ledger_check(cfg.catalog_hosts)
     if missing:
         raise RuntimeError(
@@ -664,6 +721,12 @@ def apply_plan(
                 audit.info(
                     "archive-truncation %s %s (%s)", it.action, rel, r.detail or "ok"
                 )
+                try:
+                    tracked = tracker(it, r.new_size or 0)
+                except Exception:  # noqa: BLE001
+                    tracked = False
+                if not tracked:
+                    r.detail = (r.detail + "; file_tracking not updated").lstrip("; ")
                 if cfg.rinex:
                     try:
                         rinexer(it)
