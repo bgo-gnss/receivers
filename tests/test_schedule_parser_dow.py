@@ -8,19 +8,19 @@ fire, so they check the real behaviour, not a string.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 from apscheduler.triggers.cron import CronTrigger
 
 from receivers.scheduling.schedule_parser import parse_schedule
 
-START = datetime(2026, 11, 15, 0, 0, tzinfo=timezone.utc)  # a Sunday
+START = datetime(2026, 11, 15, 0, 0, tzinfo=UTC)  # a Sunday
 
 
 def fire_days(schedule: str, n: int = 14) -> list[str]:
     t = parse_schedule(schedule)
-    trig = CronTrigger(timezone=timezone.utc, **t.trigger_kwargs)
+    trig = CronTrigger(timezone=UTC, **t.trigger_kwargs)
     out, prev, now = [], None, START
     for _ in range(n):
         nxt = trig.get_next_fire_time(prev, now)
