@@ -1840,6 +1840,10 @@ For subcommand help: receivers <command> --help
     create_archive_repair_stale_parser(subparsers)
     # archive-catalog-gc (delete phantom catalog rows; never a row whose file exists)
     create_archive_catalog_gc_parser(subparsers)
+    # archive-truncation (find + repair truncated raw: replace/refetch/salvage)
+    from .archive_truncation import create_archive_truncation_parser
+
+    create_archive_truncation_parser(subparsers)
 
     # archive-audit (junk + regen-candidate scan, emits fix commands)
     create_archive_audit_parser(subparsers)
