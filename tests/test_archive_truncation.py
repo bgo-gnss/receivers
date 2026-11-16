@@ -497,6 +497,7 @@ def local_swapper(remote_root: Path):
 class Recorder:
     def __init__(self):
         self.reindexed, self.rinexed, self.ledger, self.downloads = [], [], [], []
+        self.tracked = []
 
 
 def _apply(plan, tmp_path, rec, *, downloader=None, swapper=None, salvaged=frozenset()):
@@ -521,6 +522,7 @@ def _apply(plan, tmp_path, rec, *, downloader=None, swapper=None, salvaged=froze
             already_recorded=set(),
             salvaged=salvaged,
             ledger_check=lambda hosts: [],
+            tracker=lambda it, size: rec.tracked.append((it.rel, size)) or True,
         ),
         cfg,
     )
@@ -792,6 +794,7 @@ def test_push_and_swap_builds_a_working_rsync_and_ssh_call(tmp_path, monkeypatch
         already_recorded=set(),
         salvaged=frozenset(),
         ledger_check=lambda hosts: [],
+        tracker=lambda it, size: True,
     )  # fmt: skip
     assert calls == ["rsync", "ssh"], "one rsync + one ssh per batch"
     assert [r.outcome for r in res.results] == ["repaired"]
@@ -869,3 +872,120 @@ def test_archive_only_salvage_also_writes_local_for_rinex(tmp_path):
     assert [r.outcome for r in res.results] == ["repaired"]
     assert probe_gzip(loc / REL_H).status == GzipStatus.COMPLETE
     assert rec.rinexed == [("VONC", "1Hz_1hr", "2026-10-22")]
+
+
+@pytest.mark.unit
+def test_repaired_files_are_marked_present_with_their_new_size(tmp_path):
+    """file_tracking/local_raw go through the download seam: a stale
+    'missing'/'suspect' row and the old size are replaced."""
+    a, loc = _roots(tmp_path)
+    for root in (a, loc):
+        write_gz(root / REL_H, sbf_stream(3000), cut=0.6)
+        _age(root / REL_H)
+    hz = [("VONC", "1Hz_1hr", date(2026, 10, 26), 1, NOW - timedelta(hours=2))]
+    plan = _plan(FakeConn([], hz), a, loc)
+    rec = Recorder()
+    res, _ = _apply(plan, tmp_path, rec)
+    assert [r.outcome for r in res.results] == ["repaired"]
+    assert rec.tracked == [(REL_H, (loc / REL_H).stat().st_size)]
+
+
+@pytest.mark.unit
+def test_a_failed_repair_is_not_marked_present(tmp_path):
+    a, loc = _roots(tmp_path)
+    for root in (a, loc):
+        write_gz(root / REL_H, sbf_stream(3000), cut=0.6)
+        _age(root / REL_H)
+    hz = [("VONC", "1Hz_1hr", date(2026, 10, 26), 1, NOW - timedelta(hours=2))]
+    plan = _plan(FakeConn([], hz), a, loc)
+    rec = Recorder()
+    _apply(plan, tmp_path, rec,
+           swapper=lambda sw, cfg, wd: {x.item.rel: ("FAIL", "down") for x in sw})  # fmt: skip
+    assert rec.tracked == []
+
+
+@pytest.mark.unit
+def test_refetch_ledger_row_carries_no_salvage_figures(tmp_path):
+    a, loc = _roots(tmp_path)
+    raw = sbf_stream(800)
+    rel = "2026/oct/VONC/1Hz_1hr/raw/VONC202610271700b.sbf.gz"
+    for root in (a, loc):
+        write_gz(root / rel, raw, cut=0.6)
+        _age(root / rel)
+    hz = [("VONC", "1Hz_1hr", date(2026, 10, 26), 1, NOW - timedelta(hours=2))]
+    plan = _plan(FakeConn([], hz), a, loc)
+    assert plan.items[0].salvage is not None  # the plan-time estimate exists
+    rec = Recorder()
+    _apply(
+        plan, tmp_path, rec, downloader=lambda it: write_gz(loc / it.rel, raw) and "ok"
+    )
+    (row,) = rec.ledger
+    assert row[6:8] == ("refetch", "repaired")
+    assert row[10:13] == (None, None, None)  # readable_bytes, kept_bytes, blocks
+
+
+@pytest.mark.unit
+def test_unwritable_local_quarantine_refuses_before_any_write(tmp_path):
+    a, loc = _roots(tmp_path)
+    for root in (a, loc):
+        write_gz(root / REL_H, sbf_stream(3000), cut=0.6)
+        _age(root / REL_H)
+    hz = [("VONC", "1Hz_1hr", date(2026, 10, 26), 1, NOW - timedelta(hours=2))]
+    plan = _plan(FakeConn([], hz), a, loc)
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("x")  # a FILE where the quarantine dir would go
+    before = {r: (r / REL_H).read_bytes() for r in (a, loc)}
+    cfg = ta.ApplyConfig(ssh_target="x", dest_root=str(a), catalog_hosts=["h1"],
+                         local_quarantine=str(blocker / "q"))  # fmt: skip
+    with pytest.raises(RuntimeError, match="not writable"):
+        ta.apply_plan(plan, cfg, execute=True, ledger_check=lambda h: [],
+                      swapper=lambda *x: pytest.fail("wrote"),
+                      ledger=lambda *x: pytest.fail("ledger written"))  # fmt: skip
+    assert {r: (r / REL_H).read_bytes() for r in (a, loc)} == before
+    # the dry-run reports it too
+    res = ta.apply_plan(plan, cfg, execute=False)
+    assert [r.outcome for r in res.results] == ["refused"]
+    assert "not writable" in res.results[0].detail
+
+
+@pytest.mark.unit
+def test_default_local_quarantine_is_under_the_user_cache(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    assert ta.default_local_quarantine() == str(
+        tmp_path / "gps_receivers" / "truncation_quarantine"
+    )
+    assert ta.preflight_local_quarantine(ta.default_local_quarantine()) is None
+
+
+@pytest.mark.unit
+def test_default_tracker_calls_the_download_seam(monkeypatch):
+    import receivers.health.file_tracker as ftmod
+
+    calls = []
+
+    class FakeFT:
+        def mark_file_archived(self, *a, **k):
+            calls.append(a)
+            return True
+
+        def close(self):
+            calls.append("closed")
+
+    monkeypatch.setattr(ftmod, "FileTracker", FakeFT)
+    from receivers.archive.truncation_scan import Item
+
+    it = Item(rel=REL_H, station="VONC", session_type="1Hz_1hr", file_date="2026-10-22",
+              file_hour=17, copies={}, catalog=None, receiver={}, salvage=None,
+              decision={"action": "salvage"})  # fmt: skip
+    assert ta._default_track(it, 2232169) is True
+    assert calls == [
+        (
+            "VONC",
+            "1Hz_1hr",
+            date(2026, 10, 22),
+            17,
+            "VONC202610221700b.sbf.gz",
+            2232169,
+        ),
+        "closed",
+    ]
