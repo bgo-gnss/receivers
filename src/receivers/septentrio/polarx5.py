@@ -1432,6 +1432,39 @@ class PolaRX5(BaseReceiver):
         )
         return True
 
+    def _queue_local_copy_if_complete(
+        self, file_name: str, local_file: Path, downloaded_files: list
+    ) -> bool:
+        """Queue a leftover local copy for archiving ONLY if it is complete.
+
+        Used when the server reports ``file_name`` missing but a local copy is
+        in the tmp dir. That copy is usually the PARTIAL of an earlier attempt
+        that timed out. Without a completeness check it went straight to the
+        archive. SVIN202611151800b.sbf.gz was archived at 2,491,128 bytes with
+        a broken gzip stream on 2026-11-16, while SVIN's FTP was answering
+        "not found" for files it held. The archived-file check downstream only
+        looks at size and magic bytes, so the truncated hour then counted as
+        present and was never fetched again.
+
+        A completeness check by size is impossible here (the server gave no
+        size), so decompress the whole file. An incomplete copy stays in tmp
+        for a later resume and is NOT queued.
+        """
+        result = self.file_validator.validate_file(str(local_file))
+        if result["valid"]:
+            self.logger.info(
+                f"📁 Remote file {file_name} missing, but complete local copy "
+                f"exists ({result['size']:,} bytes) — queued for archiving"
+            )
+            downloaded_files.append(str(local_file))
+            return True
+        self.logger.warning(
+            f"⚠️  Remote file {file_name} missing and the local copy is "
+            f"incomplete ({result['status']}: {result['error']}) — NOT archiving; "
+            f"kept for a later resume: {local_file}"
+        )
+        return False
+
     def _ftp_download(
         self,
         files_dict,
@@ -1589,14 +1622,9 @@ class PolaRX5(BaseReceiver):
                         if local_file.exists():
                             local_size = local_file.stat().st_size
                             if local_size > 0:
-                                self.logger.info(
-                                    f"📁 Remote file {file_name} missing, but local copy exists ({local_size:,} bytes)"
+                                self._queue_local_copy_if_complete(
+                                    file_name, local_file, downloaded_files
                                 )
-                                self.logger.info(
-                                    f"   Adding existing local file to archive queue: {local_file}"
-                                )
-                                # Add to downloaded_files for archiving (it's a complete file from previous download)
-                                downloaded_files.append(str(local_file))
                             else:
                                 # Zero-size file should be removed
                                 self.logger.warning(
@@ -1674,10 +1702,9 @@ class PolaRX5(BaseReceiver):
                                     if local_file.exists():
                                         local_size = local_file.stat().st_size
                                         if local_size > 0:
-                                            self.logger.info(
-                                                f"📁 Remote file {file_name} missing, but local copy exists ({local_size:,} bytes)"
+                                            self._queue_local_copy_if_complete(
+                                                file_name, local_file, downloaded_files
                                             )
-                                            downloaded_files.append(str(local_file))
                                         else:
                                             self.logger.warning(
                                                 f"🗑️ Removing zero-size local file: {local_file}"
