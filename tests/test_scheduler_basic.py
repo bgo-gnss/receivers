@@ -816,7 +816,7 @@ class TestBackfillRinex:
         )
 
         # RINEX should be called
-        mock_rinex.assert_called_once_with("ELDC", "15s_24hr", fake_files)
+        mock_rinex.assert_called_once_with("ELDC", "15s_24hr", date(2026, 2, 10))
 
     @patch("receivers.scheduling.backfill._run_backfill_rinex")
     @patch("receivers.scheduling.backfill._extract_and_store_health")

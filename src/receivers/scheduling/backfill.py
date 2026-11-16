@@ -468,9 +468,12 @@ def _backfill_station_day_generic(
                     )
                     files_imported = imported
 
-                # Run RINEX conversion for data sessions (15s_24hr, 1Hz_1hr)
+                # Run RINEX conversion for data sessions (15s_24hr, 1Hz_1hr).
+                # `downloaded_files` only says THAT something arrived; the RINEX
+                # step finds the raw in the archive itself — see
+                # _run_backfill_rinex for why these paths cannot be used.
                 if run_rinex and downloaded_files and session_type != "status_1hr":
-                    _run_backfill_rinex(station_id, session_type, downloaded_files)
+                    _run_backfill_rinex(station_id, session_type, process_date)
 
         # Advance cursor
         next_date = process_date + timedelta(days=1)
@@ -599,33 +602,67 @@ def _download_day_generic(
 def _run_backfill_rinex(
     station_id: str,
     session_type: str,
-    downloaded_files: List[str],
+    process_date: date,
 ) -> None:
-    """Run RINEX conversion on backfilled files.
+    """Convert the backfilled day's raw files to RINEX, found in the ARCHIVE.
 
-    Reuses the same _run_rinex_conversion() from bulk_scheduler to maintain
-    consistent behavior between live downloads and backfill.
+    Runs the archive reconciler's per-station routine for this one day: it
+    locates the raw files actually on disk, skips those that already have
+    RINEX, and converts and tracks the rest — for every receiver type with a
+    converter.
+
+    Why not convert the paths the download returned: they are not where the
+    files are. The drivers report the TEMPORARY download path
+    (``/tmp/gps_receivers/SVIN/15s_24hr/SVIN3180.26_.gz``), and archiving has
+    already moved that file by the time this runs; in other cases (Trimble
+    STOR/VOTT) they report an archive name that does not match the file that
+    was archived. Every backfilled day therefore failed with "Input file not
+    found" — about 35 a day on rek-d01 from at least 2026-11-08 — and only the
+    6-hourly reconciler rescued it, which for 1Hz_1hr looks back 36 hours, so
+    older backfilled hours never got RINEX at all. Both the round-robin
+    backfill and the long-term backfill go through here.
 
     Args:
         station_id: Station identifier
         session_type: Session type ('15s_24hr', '1Hz_1hr')
-        downloaded_files: List of downloaded raw file paths
+        process_date: The backfilled day
     """
     try:
         from ..cli.main import get_station_config
-        from .bulk_scheduler import _run_rinex_conversion
+        from ..health.file_tracker import ArchiveFileChecker
+        from .archive_reconciler import (
+            _get_format_resolver,
+            _reconcile_station_session,
+            _yield_to_load_gate,
+        )
 
         station_config = get_station_config(station_id)
         if not station_config:
             logger.warning(f"Backfill RINEX: no config for {station_id}")
             return
+        receiver_type = (station_config.get("receiver_type") or "").lower()
 
-        _run_rinex_conversion(
-            station_id,
-            session_type,
-            downloaded_files,
-            station_config,
-            logger,
+        # Low-priority recovery of old data: yield to live work under load.
+        _yield_to_load_gate("backfill RINEX")
+
+        resolver = _get_format_resolver()
+        try:
+            missing, converted, errors = _reconcile_station_session(
+                station_id,
+                session_type,
+                process_date,
+                process_date,
+                ArchiveFileChecker(),
+                resolver,
+                receiver_type=receiver_type,
+            )
+        finally:
+            if resolver:
+                resolver.close()
+
+        logger.info(
+            f"Backfill RINEX {station_id}/{session_type} {process_date}: "
+            f"{missing} needed, {converted} converted, {errors} errors"
         )
 
     except ImportError as e:
