@@ -290,6 +290,24 @@ receivers archive-catalog-gc --read-root /mnt/rawgpsdata --catalog-prod         
 receivers archive-catalog-gc --read-root /mnt/rawgpsdata --catalog-prod --limit 500 --yes  # staged
 receivers archive-catalog-gc --read-root /mnt/rawgpsdata --catalog-prod --json
 
+# Repair TRUNCATED raw .gz (stream ends early: passes size/magic checks, so it is never
+# re-fetched and its RINEX fails forever). plan is read-only; candidates are raw with no
+# imo_archive catalog row or a size mismatch (cataloging decompresses), --deep probes all.
+# Ladder, first match wins: replace from a complete copy > refetch (fresh receiver_horizon
+# says the receiver still holds it) > DEFERRED (horizon unknown/stale, or the receiver said
+# not-found while its horizon still covers it — never salvage while the full file may
+# exist) > salvage (cut at the last CRC-valid SBF block, recompress) > unrecoverable /
+# unsupported (non-SBF). apply re-checks every planned fact, quarantines old copies
+# (rawdata ~/quarantine/truncation/<run>, local ~/.cache/gps_receivers/truncation_quarantine),
+# swaps the archive file with no hole (.repair-tmp + sha check + rename — the regular push
+# uses --ignore-existing for raw and cannot), reads back via the RO mount, reindexes both
+# catalogs, marks the file present (FileTracker.mark_file_archived), converts RINEX, and
+# writes the truncation_repair ledger (migration 076). truncation_repair.is_partial is the
+# ONLY record that an archive file is salvaged. One receiver contact per station per run.
+receivers archive-truncation plan --start 2026-10-17 --end 2026-11-15 -o plan.json
+receivers archive-truncation apply plan.json --catalog-prod         # dry-run: re-checks only
+receivers archive-truncation apply plan.json --catalog-prod --yes
+
 # Targeted bulk push (selection mode; watermark untouched). --timeout is per rsync
 # call (default 1800 s, 0 = unlimited; push-on-download keeps 60 s). Files already on
 # the archive are hashed under --read-root (default archive_verify.read_root) and
@@ -401,6 +419,7 @@ receivers download STATION --sync --archive  # Phase 1 is always active
 - **Gap detection**: Periodic scan for missing files (every 2h, configurable)
 - **Archive reconciler**: SBF→RINEX conversion for orphaned raw files (every 6h)
 - **Integrity checker**: Validates archives, detects untracked files, flags size anomalies (every 6h). Also runs a **report-only identity probe** on the window's RINEX (header-only, no `teqc`): flags **stray** files (`APPROX POSITION XYZ` closest to a *different* station — the FAGC class) and **stacked** files (multiple RINEX documents concatenated in one `.Z`). Never auto-repairs — logs under `receivers.scheduler.integrity` with the fix command (`archive-sort` for a stray, re-rinex for a stacked file). **Scoped to daily sessions only** by default (`identity_sessions=None` → non-`1hr`): hourly `1Hz_1hr` is ~24× the files for no extra signal, so at `days_back=7` this is ~1 local decompress/station/day (~a minute). Widen via `identity_sessions: [...]` or disable via `check_identity: false`. Shared probe: `receivers/archive/file_identity.py`.
+- **Truncation scan** (`truncation_scan`, Monday 06:40, read-only): runs `archive-truncation plan` over the last 30 days, saves the plan to `~/.cache/gps_receivers/truncation_plans` (newest 8 kept) and logs under `receivers.scheduler.truncation` — WARNING plus the exact `apply` command when it finds anything. Never repairs. With `icinga: true` it pushes `rek-d01.gps.vedur.is!Truncation scan` (OK / WARNING / UNKNOWN when the scan could not run, TTL 8 days); the Icinga service object still has to be created by IMO-IT — see `docs/monitoring/truncation-scan-alert.md`.
 - **Persistence**: SQLite job store survives restarts
 - **Manual compatibility**: All manual operations remain fully functional
 - **Extensibility**: Task interface allows scheduling any operation type (status, health, validation)
@@ -752,7 +771,7 @@ The scheduler now supports flexible schedule formats in addition to the legacy `
 3. **Interval (hours)**: `schedule: "6h"` - Runs every 6 hours
 4. **Interval (minutes)**: `schedule: "45m"` - Runs every 45 minutes
 5. **Multiple times**: `schedule: ["06:00", "14:00", "22:00"]` - Runs 3 times daily
-6. **Raw cron**: `schedule: "cron: */15 * * * *"` - Full cron expression support
+6. **Raw cron**: `schedule: "cron: */15 * * * *"` - Full cron expression support. Weekdays use **standard cron numbering** (0/7 = Sunday, 1 = Monday); the parser translates them for APScheduler, which counts 0 = Monday. Before 510fc08 they were passed through, so `* * 1` ran on Tuesday. Weekday steps (`*/2`) are refused.
 
 **Examples:**
 ```yaml
