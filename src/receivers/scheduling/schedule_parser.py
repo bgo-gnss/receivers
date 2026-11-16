@@ -208,6 +208,58 @@ def _parse_interval(interval_str: str) -> ScheduleTrigger:
         )
 
 
+_CRON_DAYS = ("sun", "mon", "tue", "wed", "thu", "fri", "sat")
+
+
+def _cron_dow_value(tok: str) -> int:
+    """Standard-cron weekday number (0 or 7 = Sunday) as an index into _CRON_DAYS."""
+    n = int(tok)
+    if not 0 <= n <= 7:
+        raise ValueError(f"cron day_of_week out of range: {tok}")
+    return n % 7
+
+
+def _cron_day_of_week(field: str) -> str:
+    """Translate a STANDARD cron day_of_week field into APScheduler names.
+
+    APScheduler numbers weekdays 0 = Monday, standard cron 0 = Sunday, and this
+    parser used to pass the field through unchanged: ``cron: 40 6 * * 1`` (meant
+    Monday) ran on Tuesday, and the documented ``1-5`` (Mon-Fri) ran Tue-Sat.
+    Numbers are converted to names, which APScheduler reads unambiguously; names
+    pass through. A range that wraps the week in APScheduler order (anything
+    reaching Sunday from below, e.g. ``0-2`` = sun-tue) is split into a list. A
+    step (``*/2``) is refused: cron steps from Sunday, APScheduler from Monday,
+    so it cannot be translated without changing which days fire.
+    """
+    out: list[str] = []
+    for part in field.split(","):
+        part = part.strip().lower()
+        if "/" in part:
+            raise ValueError(
+                f"cron day_of_week step {part!r} is not supported; list the days"
+            )
+        if "-" in part:
+            a, b = part.split("-", 1)
+            if not (a.isdigit() and b.isdigit()):
+                out.append(part)  # named range, e.g. mon-fri
+                continue
+            lo, hi = int(a), int(b)
+            if lo > hi or not (0 <= lo <= 7 and 0 <= hi <= 7):
+                raise ValueError(f"invalid cron day_of_week range: {part}")
+            days = sorted({_cron_dow_value(str(n)) for n in range(lo, hi + 1)})
+            # APScheduler order is mon..sun; Sunday (0) sorts last there.
+            ap = sorted(days, key=lambda d: (d - 1) % 7)
+            idx = [(d - 1) % 7 for d in ap]
+            if idx == list(range(idx[0], idx[0] + len(idx))):
+                first, last = _CRON_DAYS[ap[0]], _CRON_DAYS[ap[-1]]
+                out.append(first if first == last else f"{first}-{last}")
+            else:
+                out.extend(_CRON_DAYS[d] for d in ap)
+            continue
+        out.append(_CRON_DAYS[_cron_dow_value(part)] if part.isdigit() else part)
+    return ",".join(out)
+
+
 def _parse_cron_expression(cron_str: str) -> ScheduleTrigger:
     """Parse raw cron expression "minute hour day month day_of_week".
 
@@ -232,7 +284,7 @@ def _parse_cron_expression(cron_str: str) -> ScheduleTrigger:
     if month != "*":
         kwargs["month"] = month
     if day_of_week != "*":
-        kwargs["day_of_week"] = day_of_week
+        kwargs["day_of_week"] = _cron_day_of_week(day_of_week)
 
     return ScheduleTrigger(
         trigger_type="cron", trigger_kwargs=kwargs, description=f"Cron: {cron_str}"
