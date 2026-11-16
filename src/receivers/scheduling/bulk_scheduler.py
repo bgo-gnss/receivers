@@ -2601,6 +2601,7 @@ class BulkDownloadScheduler:
         self._schedule_epos_disseminate()
         self._schedule_epos_reactive()
         self._schedule_archive_verify()
+        self._schedule_truncation_scan()
         self._schedule_local_prune()
         self._schedule_receiver_horizon_probe()
         self._schedule_lifecycle_sweep()
@@ -3628,6 +3629,48 @@ class BulkDownloadScheduler:
         self.logger.info(
             f"Scheduled archive verify ({base_trigger.description}, "
             f"read_back={'on' if kwargs['read_root'] else 'off'})"
+        )
+
+    def _schedule_truncation_scan(self) -> None:
+        """Schedule the READ-ONLY truncation scan (``archive-truncation plan``).
+
+        Finds raw files whose gzip stream is broken (they pass every cheap
+        presence check, so nothing else notices), saves a repair plan and logs
+        it under ``receivers.scheduler.truncation``. It never repairs: apply
+        stays a human decision. Disabled unless scheduler.yaml
+        ``truncation_scan.enabled``.
+        """
+        cfg = self.yaml_config.get("truncation_scan", {}) or {}
+        if not cfg.get("enabled", False):
+            self._mark_disabled("Truncation scan", "truncation_scan")
+            return
+
+        from ..archive.truncation_job import run_truncation_scan_job
+
+        base_trigger = parse_schedule(cfg.get("schedule", "cron: 40 6 * * 1"))
+        kwargs = {
+            "days": int(cfg.get("days", 30)),
+            "sessions": cfg.get("sessions"),
+            "settle_hours": float(cfg.get("settle_hours", 6.0)),
+            "horizon_max_age_hours": float(cfg.get("horizon_max_age_hours", 48.0)),
+            "read_root": cfg.get("read_root"),
+            "plan_dir": cfg.get("plan_dir"),
+            "keep_plans": int(cfg.get("keep_plans", 8)),
+        }
+        self.scheduler.add_job(
+            func=run_truncation_scan_job,
+            trigger=base_trigger.trigger_type,
+            kwargs=kwargs,
+            id="truncation_scan",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            executor="backfill",
+            **base_trigger.trigger_kwargs,
+        )
+        self.logger.info(
+            f"Scheduled truncation scan ({base_trigger.description}, "
+            f"last {kwargs['days']} days, read-only)"
         )
 
     def _schedule_morning_recovery(self) -> None:

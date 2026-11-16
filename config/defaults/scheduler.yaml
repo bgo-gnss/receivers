@@ -138,3 +138,16 @@ recovery:
   auto_recovery_enabled: false
 
 stations: {}
+
+# Truncation scan — READ-ONLY weekly `receivers archive-truncation plan`.
+# Finds raw files whose gzip stream is broken (they pass every cheap presence
+# check, so nothing else notices), saves a repair plan under plan_dir and logs
+# it (logger receivers.scheduler.truncation, WARNING when anything is found).
+# It never repairs: review the plan, then `receivers archive-truncation apply`.
+truncation_scan:
+  enabled: false
+  schedule: "cron: 40 6 * * 1"   # Monday 06:40, clear of the busy windows
+  days: 30                       # look-back window (file dates)
+  # read_root: /mnt/rawgpsdata   # default: archive_verify.read_root
+  # plan_dir: ~/.cache/gps_receivers/truncation_plans
+  keep_plans: 8
