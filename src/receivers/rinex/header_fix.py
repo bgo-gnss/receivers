@@ -231,7 +231,11 @@ def fix_headers_in_file(
     Returns a summary dict: ``{file, fixed, changed_labels, archived, error}``.
     """
     from tostools.rinex import correct_rinex_from_tos
-    from tostools.rinex.corrector import render_correction, resolve_corrections
+    from tostools.rinex.corrector import (
+        _is_placeholder_serial,
+        render_correction,
+        resolve_corrections,
+    )
     from tostools.rinex.reader import parse_daily_rinex_date
     from tostools.rinex.validator import compare_rinex_to_tos
 
@@ -407,6 +411,27 @@ def fix_headers_in_file(
     _rec_value = comparison.get("corrections", {}).get(_rec_label)
     if _rec_label in discrepant_labels and _rec_value:
         extra_corrections[_rec_label] = list(_rec_value)
+
+    # ANT # / TYPE (only reachable with --correct-antenna): same legacy-session
+    # defect, same remedy. The validator's value is [serial, type, radome] with
+    # a synthetic TOS serial already published as "0000"; the corrector writes
+    # [serial, "TYPE(15) RADOME(4)"], so reshape it here. Without this an
+    # antenna swap inside a closed period (SVIN SEPCHOKE_B3E6 -> SEPPOLANT_X_MF,
+    # 2021-09-02) was rewritten from whatever session the corrector found first.
+    _ant_label = "ANT # / TYPE"
+    _ant_value = comparison.get("corrections", {}).get(_ant_label)
+    if _ant_label in discrepant_labels and _ant_value:
+        _vals = [str(v or "").strip() for v in _ant_value]
+        _serial = _vals[0] if _vals else ""
+        if len(_vals) >= 3:  # validator shape: [serial, type, radome]
+            _type_field = f"{_vals[1]:<15} {(_vals[2] or 'NONE'):<4}"
+        else:  # already the corrector shape: [serial, "TYPE(15) RADOME(4)"]
+            _type_field = _vals[1] if len(_vals) > 1 else ""
+        # A blank or synthetic serial is never written: published as "0000",
+        # exactly as the corrector's own builder does (M3G rejects a blank).
+        if _is_placeholder_serial(_serial):
+            _serial = "0000"
+        extra_corrections[_ant_label] = [_serial, _type_field]
 
     # The validator decides WHICH fields differ; the corrector decides WHAT is
     # written. Ask the corrector's own builder so the preview is the write.

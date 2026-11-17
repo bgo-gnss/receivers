@@ -403,3 +403,52 @@ def test_rec_is_never_injected_without_the_optin(monkeypatch, tmp_path):
     result, captured = _drive(monkeypatch, tmp_path, comparison=comparison)
     assert captured["only_fields"] == {"MARKER NUMBER"}
     assert "REC # / TYPE / VERS" not in (captured["extra_corrections"] or {})
+
+
+def test_correct_antenna_uses_the_period_session_not_the_corrector(
+    monkeypatch, tmp_path
+):
+    # SVIN: BNC headers kept SEPCHOKE_B3E6 SPKE after the 2021-09-02 swap to
+    # SEPPOLANT_X_MF. The validator's period-aware value (synthetic TOS serial
+    # already published as 0000) must be what is written, in the corrector's
+    # [serial, "TYPE(15) RADOME(4)"] shape.
+    comparison = {
+        "discrepancies": {
+            "antenna": {
+                "rinex": "5112 SEPCHOKE_B3E6 SPKE",
+                "tos": "0000 SEPPOLANT_X_MF NONE",
+            }
+        },
+        "corrections": {"ANT # / TYPE": ["0000", "SEPPOLANT_X_MF", "NONE"]},
+    }
+    result, captured = _drive(
+        monkeypatch,
+        tmp_path,
+        comparison=comparison,
+        correct_hardware=frozenset({"antenna"}),
+        resolved={},
+    )
+    assert result["fixed"] is True
+    assert captured["only_fields"] == {"ANT # / TYPE"}
+    assert captured["extra_corrections"]["ANT # / TYPE"] == [
+        "0000",
+        "SEPPOLANT_X_MF  NONE",
+    ]
+    _, new = result["changes"]["ANT # / TYPE"]
+    assert new == "0000                SEPPOLANT_X_MF  NONE"
+
+
+def test_ant_is_never_injected_without_the_optin(monkeypatch, tmp_path):
+    comparison = {
+        "discrepancies": {
+            "antenna": {"rinex": "x", "tos": "y"},
+            "domes": {"rinex": "RHOF", "tos": "10216M001"},
+        },
+        "corrections": {
+            "ANT # / TYPE": ["0000", "SEPPOLANT_X_MF", "NONE"],
+            "MARKER NUMBER": "10216M001",
+        },
+    }
+    result, captured = _drive(monkeypatch, tmp_path, comparison=comparison)
+    assert captured["only_fields"] == {"MARKER NUMBER"}
+    assert "ANT # / TYPE" not in (captured["extra_corrections"] or {})
