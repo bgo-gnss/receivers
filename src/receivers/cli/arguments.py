@@ -1444,7 +1444,7 @@ zero) and keep the same --work-dir (the staging tree IS the resume state).
         "volume. Staging is the NORMAL mode, not a fallback: the long-term "
         "archive (ananas:/gps/gpsdata) is mounted READ-ONLY everywhere — "
         "including rek-d01, where it is /mnt/rawgpsdata — because "
-        "rawdata.vedur.is is the sole writer, by design, for traceability. Read "
+        "rawdata-p01.vedur.is is the sole writer, by design, for traceability. Read "
         "over NFS, stage here, push via the gpsops@rawdata gateway with --push. "
         "Pass an empty string (--work-dir '') to fix in place, which works ONLY "
         "on a locally-writable tree such as rek-d01's rolling collection dir "

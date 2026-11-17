@@ -20,7 +20,7 @@ targets:
     active: false
     tier: archive                 # authoritative, audited, NO format conversion
 
-    host: rawdata.vedur.is
+    host: rawdata-p01.vedur.is # rawdata.vedur.is retired 2026-11-17 (IT naming: -p01 = production)
     user: gpsops
     dest: ~/gpsdata               # = a disk ON ananas; the sole archive writer
 

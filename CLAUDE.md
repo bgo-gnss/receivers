@@ -629,7 +629,7 @@ logger = logging.getLogger(f"receivers.download.{station_id}")
 ### ⚠️ Archive write access — `rawdata` is the ONLY writer
 
 **The long-term archive (`ananas.vedur.is:/gps/gpsdata`) is mounted READ-ONLY on
-every host. `rawdata.vedur.is` is the sole writer, by design, for traceability.**
+every host. `rawdata-p01.vedur.is` is the sole writer, by design, for traceability.**
 This is NOT a misconfiguration, NOT a per-host quirk, and NOT a blocker — it is
 the architecture, and every tool here is built around it.
 
@@ -930,7 +930,7 @@ memory for detail):**
 bgo is in the gpsops group — can read/write gpsops-owned dirs without owning them.
 
 **Being on rek-d01 does NOT grant archive write access.** `/mnt/rawgpsdata` is a
-read-only NFS mount there; `rawdata.vedur.is` is the sole writer. Archive edits
+read-only NFS mount there; `rawdata-p01.vedur.is` is the sole writer. Archive edits
 follow the same stage→push round-trip as from the laptop — see
 "⚠️ Archive write access" above.
 

@@ -269,7 +269,7 @@ The install script symlinks these to `/usr/local/bin/` and configures `ld.so.con
 |----------|---------|--------|
 | `/mnt/data/gpsdata/` | Local working data (downloads, processing) | Read/Write, owned by gpsops |
 | `/mnt/rawgpsdata/` | Production archive (read-only reference) | Read-only, NFS from ananas.vedur.is |
-| `rawdata.vedur.is` | Production archive (write target) | rsync over SSH as gpsops |
+| `rawdata-p01.vedur.is` | Production archive (write target) | rsync over SSH as gpsops |
 
 ## Dual-Database Write
 

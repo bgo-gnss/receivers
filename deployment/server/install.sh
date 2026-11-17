@@ -419,7 +419,7 @@ if ! mountpoint -q "$NFS_MOUNT" 2>/dev/null; then
         warn "NFS mount failed (nofail allows boot without archive server)"
 fi
 
-# SSH key for gpsops (rsync to rawdata.vedur.is)
+# SSH key for gpsops (rsync to rawdata-p01.vedur.is)
 GPSOPS_SSH_DIR="$GPSOPS_HOME/.ssh"
 if [[ ! -f "$GPSOPS_SSH_DIR/id_ed25519" ]]; then
     sudo -u "$SERVICE_USER" mkdir -p "$GPSOPS_SSH_DIR"
@@ -428,7 +428,7 @@ if [[ ! -f "$GPSOPS_SSH_DIR/id_ed25519" ]]; then
     chmod 700 "$GPSOPS_SSH_DIR"
     chmod 600 "$GPSOPS_SSH_DIR/id_ed25519"
     ok "Generated SSH key for $SERVICE_USER"
-    warn "Authorize on rawdata.vedur.is:"
+    warn "Authorize on rawdata-p01.vedur.is:"
     echo "    $(cat "$GPSOPS_SSH_DIR/id_ed25519.pub")"
 else
     ok "SSH key exists for $SERVICE_USER"

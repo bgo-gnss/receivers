@@ -804,7 +804,7 @@ def fix_headers_station(
     headers now match TOS). Never invoked on a dry-run.
 
     ``push_dest`` is a display-only string (the resolved archive gateway, e.g.
-    ``gpsops@rawdata.vedur.is:~/gpsdata/``); when set it is echoed on the
+    ``gpsops@rawdata-p01.vedur.is:~/gpsdata/``); when set it is echoed on the
     staging banner so the operator sees where fixed batches are pushed.
 
     Returns ``{station, scanned, fixed, skipped, errors, details: [...]}``.

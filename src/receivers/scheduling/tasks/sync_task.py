@@ -65,7 +65,7 @@ class SyncTask(ScheduledTask):
     """
 
     # Default remote configuration (overridable via env vars)
-    DEFAULT_HOST = os.getenv("SYNC_REMOTE_HOST", "gpsops@rawdata.vedur.is")
+    DEFAULT_HOST = os.getenv("SYNC_REMOTE_HOST", "gpsops@rawdata-p01.vedur.is")
     DEFAULT_PATH = os.getenv("SYNC_REMOTE_PATH", "/data/gps/archive")
 
     # Default to STANDARD priority

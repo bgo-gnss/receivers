@@ -330,7 +330,7 @@ def get_default_config() -> Dict[str, Any]:
             },
         },
         "sync": {
-            "remote_host": os.getenv("SYNC_REMOTE_HOST", "gpsops@rawdata.vedur.is"),
+            "remote_host": os.getenv("SYNC_REMOTE_HOST", "gpsops@rawdata-p01.vedur.is"),
             "remote_path": os.getenv("SYNC_REMOTE_PATH", "/data/gps/archive"),
             "raw_options": "--ignore-existing",
             "rinex_options": "--update",
