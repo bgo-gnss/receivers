@@ -191,7 +191,13 @@ def get_station_config(
         required_fields = ["router_ip", "receiver_type"]
         missing_fields = [field for field in required_fields if field not in raw_config]
         if missing_fields:
-            if not is_operated(raw_config):
+            status = raw_config.get("station_status")
+            if status in ("discontinued", "inactive"):
+                # Retired stations legitimately lose fields (ELDV has no
+                # receiver_type). Every selector drops them anyway, so this is
+                # not a config error. It was logged as ERROR on every startup.
+                logger.debug(f"Station {station_id} is {status}: skipping")
+            elif not is_operated(raw_config):
                 logger.debug(
                     f"Station {station_id} is passive (no direct connection): skipping"
                 )
