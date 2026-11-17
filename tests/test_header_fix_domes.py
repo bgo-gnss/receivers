@@ -353,3 +353,53 @@ class TestPreviewReportsWhatTheWriteWillDo:
             resolved={"MARKER NUMBER": None},
         )
         assert result["changes"]["MARKER NUMBER"] == ("RHOF", "<line removed>")
+
+
+def test_correct_receiver_uses_the_period_session_not_the_corrector(
+    monkeypatch, tmp_path
+):
+    # The corrector's legacy session model has gnss_receiver=None on every closed
+    # period, so its builder yields NO REC value for an old file. The rewrite must
+    # still happen, with the validator's period-aware value (SVIN 2023: a frozen
+    # 3025100/5.2.0 BNC header in the 3018495/5.4.0 era).
+    comparison = {
+        "discrepancies": {
+            "receiver": {
+                "rinex": "SEPT POLARX5 sn=3025100 fw=5.2.0",
+                "tos": "SEPT POLARX5 sn=3018495 fw=5.4.0",
+            }
+        },
+        "corrections": {"REC # / TYPE / VERS": ["3018495", "SEPT POLARX5", "5.4.0"]},
+    }
+    result, captured = _drive(
+        monkeypatch,
+        tmp_path,
+        comparison=comparison,
+        correct_hardware=frozenset({"receiver"}),
+        resolved={},  # corrector built nothing for this era
+    )
+    assert result["fixed"] is True
+    assert captured["only_fields"] == {"REC # / TYPE / VERS"}
+    assert captured["extra_corrections"]["REC # / TYPE / VERS"] == [
+        "3018495",
+        "SEPT POLARX5",
+        "5.4.0",
+    ]
+    _, new = result["changes"]["REC # / TYPE / VERS"]
+    assert new == "3018495             SEPT POLARX5        5.4.0"
+
+
+def test_rec_is_never_injected_without_the_optin(monkeypatch, tmp_path):
+    comparison = {
+        "discrepancies": {
+            "receiver": {"rinex": "x", "tos": "y"},
+            "domes": {"rinex": "RHOF", "tos": "10216M001"},
+        },
+        "corrections": {
+            "REC # / TYPE / VERS": ["3018495", "SEPT POLARX5", "5.4.0"],
+            "MARKER NUMBER": "10216M001",
+        },
+    }
+    result, captured = _drive(monkeypatch, tmp_path, comparison=comparison)
+    assert captured["only_fields"] == {"MARKER NUMBER"}
+    assert "REC # / TYPE / VERS" not in (captured["extra_corrections"] or {})

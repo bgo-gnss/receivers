@@ -395,6 +395,19 @@ def fix_headers_in_file(
             str(tos_session.get("agency") or "").strip(),
         ]
 
+    # REC # / TYPE / VERS (only reachable with --correct-receiver) must be
+    # injected too. The corrector resolves its session from the legacy
+    # gps_metadata device history, which carries gnss_receiver=None on every
+    # CLOSED period — so for any file older than the current receiver era it
+    # silently built no REC value, and --correct-receiver fixed only the newest
+    # era (SVIN 2026-11-17: 633 of the stale BNC files, never the 2021-2025
+    # ones). The validator's value comes from the same period-aware TOS session
+    # that decided the file is stale, so the rewrite is era-correct.
+    _rec_label = "REC # / TYPE / VERS"
+    _rec_value = comparison.get("corrections", {}).get(_rec_label)
+    if _rec_label in discrepant_labels and _rec_value:
+        extra_corrections[_rec_label] = list(_rec_value)
+
     # The validator decides WHICH fields differ; the corrector decides WHAT is
     # written. Ask the corrector's own builder so the preview is the write.
     # Previously the preview showed the validator's proposed value, and for a TOS
