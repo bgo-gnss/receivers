@@ -568,7 +568,10 @@ class ArchiveSync:
                 len(rel_paths),
                 immutability,
                 self.remote_dest,
-                " [dry-run]" if self.dry_run else "",
+                # a landed-file confirmation passes --dry-run via extra_args
+                " [dry-run]"
+                if self.dry_run or "--dry-run" in (extra_args or ())
+                else "",
             )
             limit = _subprocess_timeout(
                 self.rsync_timeout if timeout is None else timeout
@@ -593,6 +596,55 @@ class ArchiveSync:
             return proc.returncode == 0, transferred, proc.stderr.strip()
         finally:
             os.unlink(files_from)
+
+    def _landed_after_failure(
+        self,
+        itemized: list[str],
+        immutability: str,
+        *,
+        timeout: int | None = None,
+    ) -> list[str]:
+        """Which files a FAILED rsync itemized actually reached the archive.
+
+        rsync's sender itemizes a file (``>f+++``) as it starts sending it,
+        before the receiver has written anything. When the receiver then fails
+        (``mkstemp`` EROFS / EACCES / ENOSPC, rc=23), the file is itemized but
+        never landed. Cataloging the itemize list after a failed rsync therefore
+        writes rows for files that are not on the archive: on 2026-11-17 the
+        ananas export was still read-only for the new rawdata-p01 and two sweeps
+        cataloged 3854 + 4274 files while writing none.
+
+        So after a failed rsync the same transfer is re-run as ``--dry-run``
+        (same flags, same immutability rule): whatever it would *still*
+        transfer did not land. The answer comes from the destination itself,
+        so there is no NFS attribute-cache lag as with a read-mount check. If the
+        confirmation itself fails, nothing is returned. Under-cataloging can be
+        recovered (the watermark does not advance, and ``select --read-root``
+        catalogs present files), but a row for an absent file cannot.
+        """
+        if not itemized:
+            return []
+        ok, pending, stderr = self._rsync(
+            itemized, immutability, timeout=timeout, extra_args=["--dry-run"]
+        )
+        if not ok:
+            logger.error(
+                "rsync failed and the landed-file check failed too (%s); "
+                "cataloging none of %d itemized file(s)",
+                stderr,
+                len(itemized),
+            )
+            return []
+        still_pending = set(pending)
+        landed = [rel for rel in itemized if rel not in still_pending]
+        if len(landed) < len(itemized):
+            logger.warning(
+                "rsync failed: %d of %d itemized file(s) did NOT reach the "
+                "archive and are not cataloged",
+                len(itemized) - len(landed),
+                len(itemized),
+            )
+        return landed
 
     # ---- catalog -----------------------------------------------------------
 
@@ -745,7 +797,16 @@ class ArchiveSync:
                 errors.append(
                     stderr or f"rsync failed for {len(rels)} {category} file(s)"
                 )
-                continue
+                if self.dry_run:
+                    continue
+                # Catalog only what really landed. Itemized does not mean written
+                # (see _landed_after_failure). Dropping the landed files here
+                # would strand them: the next --ignore-existing push skips them.
+                transferred = self._landed_after_failure(
+                    transferred, _immutability_flag(category), timeout=timeout
+                )
+                if not transferred:
+                    continue
             moved.update(transferred)
             if self.dry_run:
                 # --dry-run: rsync itemized what WOULD transfer; never write the
@@ -935,6 +996,12 @@ class ArchiveSync:
                     result.errors.append(f"{category}: {stderr}")
                 if not rsync_ok:
                     all_ok = False
+                    if not self.dry_run:
+                        # Itemized does not mean written: catalog and count
+                        # only the files that actually landed.
+                        transferred = self._landed_after_failure(
+                            transferred, _immutability_flag(category)
+                        )
                 if not self.dry_run:
                     cataloged, cat_errors, _ = self._catalog_transferred(transferred)
                     result.cataloged += cataloged
