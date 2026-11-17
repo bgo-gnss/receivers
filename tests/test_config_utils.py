@@ -70,6 +70,17 @@ receiver_base_path = /External/
 receiver_cachedir_prefix = /CACHEDIR123/download
 ftp_username = gpsops
 ftp_password = secret
+
+[ELDV]
+station_id = ELDV
+station_name = Eldvatn
+router_ip = 10.0.0.2
+station_status = discontinued
+
+[BROK]
+station_id = BROK
+station_name = Broken
+router_ip = 10.0.0.3
 """
 
 # Minimal postprocess.cfg so gps_parser doesn't error during init.
@@ -178,6 +189,34 @@ def test_unknown_station_returns_none(fake_gps_config, caplog):
 
     cfg = get_station_config("ZZZZ", silent=True)
     assert cfg is None
+
+
+def test_discontinued_station_missing_fields_is_not_an_error(fake_gps_config, caplog):
+    """A retired station without receiver_type is skipped quietly (debug).
+
+    Regression: ELDV (station_status = discontinued, no receiver_type) logged
+    ``missing required fields`` at ERROR on every scheduler start.
+    """
+    import logging
+
+    from receivers.config_utils import get_station_config
+
+    with caplog.at_level(logging.DEBUG, logger="receivers.config_utils"):
+        assert get_station_config("ELDV") is None
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert "ELDV is discontinued: skipping" in caplog.text
+
+
+def test_operated_station_missing_fields_is_still_an_error(fake_gps_config, caplog):
+    """The real misconfiguration (an active station without receiver_type) stays loud."""
+    import logging
+
+    from receivers.config_utils import get_station_config
+
+    with caplog.at_level(logging.DEBUG, logger="receivers.config_utils"):
+        assert get_station_config("BROK") is None
+    errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+    assert errors == ["Station BROK missing required fields: ['receiver_type']"]
 
 
 class TestSupportedSessionCasing:
