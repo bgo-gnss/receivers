@@ -29,7 +29,7 @@ def test_migration_loop_skips_helpers_and_handles_optional_extension(
     )[0]
     # Only the real loop runs: fake sudo responds to prerequisite probes and logs
     # migration execution. Strict mode reproduces the production pipefail abort.
-    harness = r'''
+    harness = r"""
 set -euo pipefail
 sudo() {
     case "$*" in
@@ -47,12 +47,17 @@ APPLIED=001_applied
 MIGRATIONS_DIR="$1"
 CALL_LOG="$2"
 EXTENSION_INSTALLED="$3"
-'''
+"""
     call_log = tmp_path / "calls.txt"
     proc = subprocess.run(
         [
-            "bash", "-c", harness + loop, "migration-test",
-            str(migrations), str(call_log), str(int(extension_installed)),
+            "bash",
+            "-c",
+            harness + loop,
+            "migration-test",
+            str(migrations),
+            str(call_log),
+            str(int(extension_installed)),
         ],
         capture_output=True,
         text=True,

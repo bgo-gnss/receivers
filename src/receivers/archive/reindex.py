@@ -1,4 +1,4 @@
-"""archive_catalog reindex — refresh content_sha256 for files changed out-of-band.
+"""archive_catalog reindex — refresh both SHA256 hashes after out-of-band changes.
 
 The forward catalog (``catalog.upsert_catalog_row``) is written by the sync
 engine for every file it *transfers*. But a file can be modified on the archive
@@ -8,12 +8,12 @@ to the archive. After such a write the archive bytes change but the catalog's
 ``content_sha256`` still reflects the pre-edit content, so the scheduled
 integrity verify would flag the row as corrupt (a false positive).
 
-Reindex closes that gap: re-hash the authoritative bytes and upsert the row.
-The bytes are taken from a local *staging mirror* (the ``--work-dir`` tree that
-``--fix-headers`` pushed from) — byte-identical to what rsync placed on the
-archive — so no archive mount or ssh read-back is needed. This makes it usable
-from a laptop, where this kind of maintenance work actually happens (the
-production server is busy with the daily runs).
+Reindex hashes the explicitly supplied files and updates both ``content_sha256``
+and ``compressed_sha256``. A compression-only change must refresh the latter even
+when decompressed content is unchanged. Callers choose the source: a staging
+mirror is supported, but hashing it does NOT independently prove archive delivery.
+Recovery requiring archive-derived evidence must supply the archive read-back
+paths instead of assuming that staged bytes reached their destination.
 
 ``content_sha256`` here matches the verify pass exactly: it is taken over the
 DECOMPRESSED content (see :mod:`receivers.utils.content_hash`), so a ``.d.Z``
@@ -27,8 +27,9 @@ import logging
 import os
 import time
 from collections.abc import Iterable
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Optional
 
 from ..db.tx import read_only_cursor
@@ -40,7 +41,9 @@ from ..utils.content_hash import (
     content_sha256,
 )
 from .catalog import upsert_catalog_row
+from .catalog_recovery import RowGuard, open_required
 from .path_parse import parse_archive_path
+from .staged_manifest import open_regular_nofollow
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +59,9 @@ DEFAULT_MIN_ARCHIVE_FILE_BYTES = 128
 class ReindexStats:
     """Outcome of a reindex run."""
 
-    updated: int = 0  # existing row, content_sha256 changed
+    updated: int = 0  # existing row, at least one stored SHA256 needs refreshing
     inserted: int = 0  # no prior row for this file
-    unchanged: int = 0  # row already held the correct hash
+    unchanged: int = 0  # row already held both correct SHA256 hashes
     errors: list[str] = field(default_factory=list)
     skipped: int = 0  # file could not be parsed to an archive identity
     skipped_new: int = 0  # only_existing: no prior row, insert suppressed
@@ -87,6 +90,8 @@ def reindex_files(
     dest_prefix: str,
     dry_run: bool = False,
     only_existing: bool = False,
+    expected_checksums: Optional[dict[str, str]] = None,
+    recovery_guard=None,
     log: logging.Logger = logger,
 ) -> ReindexStats:
     """Re-hash each local file and upsert its ``archive_catalog`` row.
@@ -108,6 +113,9 @@ def reindex_files(
             surgically fixing sha256 the caller knows went stale, without
             expanding catalog coverage to previously-uncataloged files. Skipped
             inserts are counted in ``stats.skipped``.
+        expected_checksums: Optional approved on-disk SHA256 per relative path.
+            Reject missing/mismatching entries before catalog writes. This mode
+            hashes a no-follow descriptor view (Linux /proc) of the read-back file.
 
     Returns:
         :class:`ReindexStats`.
@@ -117,6 +125,16 @@ def reindex_files(
         stats.errors.append("no DB connection")
         return stats
     dest_prefix = dest_prefix.rstrip("/")
+    if recovery_guard is not None:
+        plan = recovery_guard.plan
+        if expected_checksums is None or (
+            str(Path(root).expanduser().absolute()),
+            storage_location,
+            dest_prefix,
+        ) != (plan.data["root"], plan.data["location"], plan.data["prefix"]):
+            raise ValueError(
+                "recovery must hash checksum-bound actual archive read-back root"
+            )
 
     for f in files:
         parsed = parse_archive_path(f, root)
@@ -124,8 +142,66 @@ def reindex_files(
             stats.skipped += 1
             log.warning("reindex: cannot parse archive identity from %s", f)
             continue
+        if recovery_guard is not None and (
+            parsed.relative_path not in recovery_guard.plan.data["selected"]
+            or (expected_checksums or {}).get(parsed.relative_path)
+            != recovery_guard.plan.data["scope"][parsed.relative_path]
+        ):
+            raise ValueError("recovery file selection/hash outside reviewed scope")
+        if (
+            expected_checksums is not None
+            and parsed.relative_path not in expected_checksums
+        ):
+            stats.errors.append(
+                f"outside approved checksum selection: {parsed.relative_path}"
+            )
+            continue
         try:
-            digest = content_sha256(f)
+            reader = (
+                open_regular_nofollow(
+                    Path(root).expanduser().absolute(), parsed.relative_path
+                )
+                if expected_checksums is not None
+                else nullcontext(None)
+            )
+            with reader as descriptor:
+                read_path = (
+                    f"/proc/{os.getpid()}/fd/{descriptor.fileno()}"
+                    if descriptor is not None
+                    else f
+                )
+                before = (
+                    os.fstat(descriptor.fileno())
+                    if descriptor is not None
+                    else os.stat(f)
+                )
+                digest = content_sha256(read_path)
+                blob_digest = compressed_sha256(read_path)
+                after = (
+                    os.fstat(descriptor.fileno())
+                    if descriptor is not None
+                    else os.stat(f)
+                )
+                # Ordinary-change guard, not a CAS/lock. Coordinate other writers.
+                if (
+                    before.st_dev,
+                    before.st_ino,
+                    before.st_size,
+                    before.st_mtime_ns,
+                    before.st_ctime_ns,
+                ) != (
+                    after.st_dev,
+                    after.st_ino,
+                    after.st_size,
+                    after.st_mtime_ns,
+                    after.st_ctime_ns,
+                ):
+                    raise OSError("file changed while computing reindex hashes")
+                if (
+                    expected_checksums is not None
+                    and blob_digest != expected_checksums[parsed.relative_path]
+                ):
+                    raise OSError("approved compressed checksum mismatch")
         except CorruptArchiveFileError as exc:
             # DEBUG, not ERROR: a re-rinex --push run reindexes the staging tree
             # AFTER _push_cleanup has removed what it pushed, so every cleaned
@@ -136,7 +212,7 @@ def reindex_files(
             stats.errors.append(f"corrupt, not reindexed: {f}: {exc}")
             log.debug("reindex: corrupt local file %s: %s", f, exc)
             continue
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             stats.errors.append(f"could not read {f}: {exc}")
             log.debug("reindex: could not read %s: %s", f, exc)
             continue
@@ -146,17 +222,32 @@ def reindex_files(
 
         # Classify against the existing row so the report distinguishes a genuine
         # correction (updated) from a no-op (unchanged) or a first index (inserted).
-        prior = _existing_sha(
+        values = (digest, blob_digest, after.st_size)
+        guard_args = (
+            recovery_guard.before(conn, parsed.relative_path, values, dry_run=dry_run)
+            if recovery_guard is not None
+            else {}
+        )
+        prior = _existing_hashes(
             conn, storage_location, parsed.session_type, parsed.file_category, key
         )
         if prior is None:
             outcome = "inserted"
-        elif prior == digest:
+        elif prior == (digest, blob_digest) and (
+            recovery_guard is None
+            or guard_args["row"]
+            == recovery_guard.plan.desired(
+                parsed.relative_path, values, recovery_guard.host
+            )
+        ):
             outcome = "unchanged"
         else:
             outcome = "updated"
 
         if outcome == "unchanged":
+            if recovery_guard is not None and not dry_run:
+                recovery_guard.after(conn, parsed.relative_path, values)
+                conn.commit()
             stats.unchanged += 1
             continue
         if outcome == "inserted" and only_existing:
@@ -165,11 +256,12 @@ def reindex_files(
 
         if dry_run:
             log.info(
-                "reindex[DRY]: %s %s %s → %s (%s)",
+                "reindex[DRY]: %s %s %s → content=%s compressed=%s (%s)",
                 storage_location,
                 parsed.station,
                 key,
                 digest[:12],
+                blob_digest[:12],
                 outcome,
             )
         else:
@@ -183,9 +275,13 @@ def reindex_files(
                 file_hour=parsed.file_hour,
                 archive_path=archive_path,
                 filename=os.path.basename(f),
-                file_size=os.path.getsize(f),
+                file_size=after.st_size,
                 content_sha256=digest,
+                compressed_sha256=blob_digest,
+                recovery_expected=guard_args if recovery_guard is not None else None,
             )
+            if recovery_guard is not None:
+                recovery_guard.after(conn, parsed.relative_path, values)
             conn.commit()  # per-file: a crash loses one row, not the run
         if outcome == "updated":
             stats.updated += 1
@@ -347,6 +443,10 @@ def reindex_files_multi(
     dest_prefix: str,
     dry_run: bool = False,
     only_existing: bool = False,
+    expected_checksums: Optional[dict[str, str]] = None,
+    recovery_plan=None,
+    owner_until=None,
+    recovery_values=None,
     log: logging.Logger = logger,
 ) -> dict:
     """Reindex ``files`` into EVERY host in ``hosts`` (the identical-catalog set).
@@ -358,12 +458,29 @@ def reindex_files_multi(
     """
     from ..db.connection import get_connection
 
+    def global_check():
+        if recovery_plan is None:
+            raise ValueError("catalog recovery plan required")
+        with open_required(hosts) as all_conns:
+            recovery_plan.validate(all_conns, verified_values=recovery_values)
+
     results: dict = {}
     for host in hosts:
         label = host or "localhost"
+        if recovery_plan is not None and any(
+            s is None or s.errors or s.skipped for s in results.values()
+        ):
+            results[label] = (
+                None  # stop rather than silently continuing on another host
+            )
+            continue
         conn = None
         try:
-            conn = get_connection(host_override=host)
+            conn = (
+                get_connection(host_override=host, single_host=True)
+                if recovery_plan is not None
+                else get_connection(host_override=host)
+            )
             results[label] = reindex_files(
                 conn,
                 files,
@@ -372,10 +489,30 @@ def reindex_files_multi(
                 dest_prefix=dest_prefix,
                 dry_run=dry_run,
                 only_existing=only_existing,
+                expected_checksums=expected_checksums,
+                recovery_guard=(
+                    RowGuard(recovery_plan, label, owner_until, global_check)
+                    if recovery_plan is not None
+                    else None
+                ),
                 log=log,
             )
         except Exception as exc:  # noqa: BLE001
-            log.error("reindex to %s failed: %s", label, exc)
+            code = getattr(exc, "pgcode", None)
+            safe_code = (
+                code
+                if isinstance(code, str)
+                and len(code) == 5
+                and code.isascii()
+                and code.isalnum()
+                else None
+            )
+            log.error(
+                "reindex to %s failed (%s, SQLSTATE=%s)",
+                label,
+                type(exc).__name__,
+                safe_code,
+            )
             results[label] = None
         finally:
             if conn is not None:
@@ -429,16 +566,36 @@ def preflight_catalog_hosts(
     return results
 
 
+def _existing_hashes(
+    conn, storage_location: str, session_type: str, file_category: str, key: str
+) -> Optional[tuple[Optional[str], Optional[str]]]:
+    """Return both stored hashes, or None only when the row is absent.
+
+    Use a plain cursor: this lookup shares the reindex writer's transaction.
+    Ending it here could discard pending caller writes. A present row with
+    NULL hashes is still an existing row, not an insertion.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT content_sha256, compressed_sha256 FROM archive_catalog
+               WHERE storage_location = %s AND session_type = %s
+                 AND file_category = %s AND canonical_key = %s""",
+            (storage_location, session_type, file_category, key),
+        )
+        row = cur.fetchone()
+    return (row[0], row[1]) if row is not None else None
+
+
 def _existing_sha(
     conn, storage_location: str, session_type: str, file_category: str, key: str
 ) -> Optional[str]:
     """Return the current content_sha256 for the catalog row, or None.
 
     Deliberately a plain cursor, NOT :func:`~receivers.db.tx.read_only_cursor`
-    — the one read in this module that must not end its transaction. It is
-    called from inside the per-file loop (see the ``_existing_sha`` call around
-    line 133), which upserts catalog rows on the same connection and commits in
-    batches. Rolling back here would discard the caller's pending upserts.
+    — this lookup must not end its caller's transaction. It is
+    used by the sync engine on its writer connection. Rolling back here could
+    discard the caller's pending upserts. Reindex itself uses the dual-hash
+    ``_existing_hashes`` lookup with the same transaction-ownership rule.
 
     The rule for the helper is "safe iff the read is the first statement on the
     connection", and here it is not. ``tests/test_transaction_audit.py`` carries

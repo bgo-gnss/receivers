@@ -96,8 +96,25 @@ def add_force_flag(parser: "argparse._ActionsContainer") -> None:
     )
 
 
+class _ExplicitDays(argparse.Action):
+    """Keep the legacy default while distinguishing an explicit date selector."""
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: object,
+        option_string: Optional[str] = None,
+    ) -> None:
+        setattr(namespace, self.dest, values)
+        namespace._days_explicit = True
+
+
 def add_date_flags(
-    parser: "argparse._ActionsContainer", include_days: bool = True
+    parser: "argparse._ActionsContainer",
+    include_days: bool = True,
+    *,
+    mark_explicit_days: bool = False,
 ) -> None:
     """Add standard date range flags.
 
@@ -128,6 +145,7 @@ def add_date_flags(
             "--days",
             type=int,
             default=defaults["days"],
+            action=_ExplicitDays if mark_explicit_days else "store",
             metavar="N",
             help=f"Number of periods back (default: {defaults['days']})",
         )
@@ -1235,7 +1253,7 @@ Supported formats:
   - Trimble T00 (.T00) - using runpkr00 + GFZRNX
   - Leica m00 (.m00, .m00.gz) - using teqc + GFZRNX
 
-THREE MODES - pick ONE (they are mutually exclusive):
+FOUR MODES - pick ONE (they are mutually exclusive):
   1. Daily convert (default) - convert recent raw from the live collection
      dir, in place. No archive read/write.
   2. Header fix (--fix-headers) - rewrite stale header fields in ARCHIVED
@@ -1243,6 +1261,9 @@ THREE MODES - pick ONE (they are mutually exclusive):
   3. Re-rinex (--from-archive) - re-convert the ARCHIVE from raw (e.g. to
      upgrade RINEX 2 -> 3 and recover GLONASS/Galileo/BeiDou). Converts and
      stages into a work-dir, then --push writes back via the rawdata gateway.
+  4. Staged publish (--push-only) - select existing products by a standard
+     SHA256 manifest; no conversion/header rewriting. Dry-run by default,
+     --push explicitly executes; catalogs use the archive read-back root.
 
 Version defaults: RINEX 3 for modern receivers (PolaRX5, NetR9); NetRS pins
 RINEX 2 (its L2 is codeless - RINEX 3 codes it C2D, which GAMIT drops).
@@ -1266,6 +1287,11 @@ Examples:
   receivers rinex VONC --session 15s_24hr --from-archive \\
       -s 20130801 -e 20260820 --parallel --push --catalog-prod --backup-old
 
+  # Publish previously approved products: preview first (no conversion or writes)
+  receivers rinex TEST --push-only --manifest approved.sha256 \\
+      --work-dir /data/staged --source-dir /mnt/rawgpsdata --catalog-prod
+  # Same exact manifest with --push executes; --dry-run always overrides --push.
+
   # Re-rinex: convert + stage ONLY (no push - verify before writing the archive)
   receivers rinex VONC --session 15s_24hr --from-archive \\
       -s 20130801 -e 20260820 --parallel
@@ -1286,7 +1312,7 @@ zero) and keep the same --work-dir (the staging tree IS the resume state).
 
     # Date/time options
     date_group = parser.add_argument_group("date options")
-    add_date_flags(date_group, include_days=True)
+    add_date_flags(date_group, include_days=True, mark_explicit_days=True)
 
     # Format options
     format_group = parser.add_argument_group("format options")
@@ -1453,7 +1479,9 @@ zero) and keep the same --work-dir (the staging tree IS the resume state).
 
     mode_group.add_argument(
         "--source-dir",
-        help="With --fix-headers: discover RINEX files from this directory. "
+        help="With --push-only: required archive read-back root for verification/"
+        "reindexing (different from --work-dir). With --fix-headers: discover "
+        "RINEX files from this directory. "
         "Defaults to /mnt_data/rawgpsdata if mounted (the IMO global archive), "
         "otherwise falls back to data_prepath from receivers.cfg.",
     )
@@ -1557,6 +1585,40 @@ zero) and keep the same --work-dir (the staging tree IS the resume state).
     )
 
     mode_group.add_argument(
+        "--recovery-plan",
+        help="Reviewed archive-reindex recovery snapshot; preserved-copy/no-raw publication path",
+    )
+    mode_group.add_argument(
+        "--plan-sha256", help="Reviewed recovery snapshot SHA256, mandatory with --push"
+    )
+    mode_group.add_argument(
+        "--originals-manifest",
+        help="SHA256 manifest of existing protected originals; never recreated/overwritten",
+    )
+    mode_group.add_argument(
+        "--originals-root", help="Existing original-copy root, separate from source-dir"
+    )
+    mode_group.add_argument(
+        "--owner-until",
+        help="Actual coordinated owner-window expiry (ISO8601 with timezone)",
+    )
+    mode_group.add_argument(
+        "--push-only",
+        action="store_true",
+        help="Publish only existing checksum-approved RINEX products; never convert "
+        "or rewrite headers. Requires --manifest, --work-dir, --source-dir archive "
+        "read-back root and an explicit catalog target. Preview only unless --push "
+        "is also supplied. Cannot combine with conversion/repair/cleanup selectors.",
+    )
+    mode_group.add_argument(
+        "--manifest",
+        metavar="SHA256SUMS",
+        help="With --push-only: standard sha256sum records (SHA256, two spaces or "
+        "space-star, archive-relative path). Every selected product must match; "
+        "duplicates, symlinks, traversal and non-RINEX/wrong-station paths refuse.",
+    )
+
+    mode_group.add_argument(
         "--push",
         action="store_true",
         help="With --fix-headers OR re-rinex (--from-archive): rsync the files "
@@ -1592,8 +1654,8 @@ zero) and keep the same --work-dir (the staging tree IS the resume state).
         "--reindex",
         action="store_true",
         help="With --push (--fix-headers or re-rinex): after the push, re-hash each "
-        "pushed file and update its archive_catalog.content_sha256 (the rewrite/"
-        "re-convert changes the hash, so the catalog row would otherwise be stale "
+        "pushed file and update both archive_catalog SHA256 hashes (the rewrite/"
+        "re-convert changes them, so the catalog row would otherwise be stale "
         "and the integrity verify would flag it). Targets the local dev gps_health "
         "by default; use --catalog-prod for production. Note: passing --catalog-prod "
         "or --catalog-host ALREADY implies this reindex — so `--push --catalog-prod` "
@@ -1849,6 +1911,9 @@ For subcommand help: receivers <command> --help
     create_archive_audit_parser(subparsers)
     # archive-reindex (refresh catalog sha256 after out-of-band file edits)
     create_archive_reindex_parser(subparsers)
+    from .archive_access import create_archive_access_parser
+
+    create_archive_access_parser(subparsers)
     # archive-rm (guarded deletion of empty/bad files from the archive)
     create_archive_rm_parser(subparsers)
     # archive-sort (relocate misfiled raw files: decoded date ≠ filename)

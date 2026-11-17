@@ -17,7 +17,7 @@ import re
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import gtimes.timefunc as gt
 from gtimes.timefunc import currDatetime
@@ -387,6 +387,7 @@ def cmd_download(args) -> int:
                 )
                 total_errors += 1
                 continue
+
             def dest(dt, _sid=sid):
                 return archive_dir(data_prepath, _sid, dt, args.session)
 
@@ -5839,13 +5840,15 @@ def _push_reindex(
     root: str,
     storage_location: Optional[str],
     dest_prefix: Optional[str],
-) -> None:
-    """After a --fix-headers --push, refresh archive_catalog.content_sha256.
+    expected_checksums: Optional[Dict[str, str]] = None,
+) -> Optional[bool]:
+    """Refresh both archive_catalog SHA256 values; report required-host success.
 
     A header rewrite changes content_sha256 (it is over decompressed content),
-    so every pushed file's catalog row is now stale and the integrity verify
-    would flag it. With --reindex we re-hash the pushed (staged) files and
-    upsert the rows on the catalog host; without it we just point the user at
+    would flag a stale catalog row. The caller supplies the hash source root:
+    staged-only publication requires the actual archive read-back root plus
+    approved compressed checksums; legacy callers may still use staged files.
+    Without a catalog target/reindex flag we just point the user at
     the reindex verb instead of the old (useless-here) `archive-sync --status`.
     """
     # Naming a catalog TARGET implies the reindex: --catalog-prod (production set)
@@ -5866,11 +5869,11 @@ def _push_reindex(
             "      (--catalog-prod writes ALL [archive] catalog_hosts; --catalog-host "
             "overrides; plain --reindex writes the local dev gps_health only)."
         )
-        return
+        return None
 
     if not storage_location or not dest_prefix:
         print("   ⚠️  --reindex: no archive storage_location/dest resolved — skipped")
-        return
+        return False
 
     from ..archive import reindex_files_multi, resolve_catalog_hosts
 
@@ -5882,7 +5885,7 @@ def _push_reindex(
             "receivers.cfg — refusing to reindex (would silently hit dev). "
             "Set catalog_hosts = rek-d01.vedur.is, pgdev.vedur.is."
         )
-        return
+        return False
     if hosts == [None] and not _prod:
         print(
             "   ↻ reindexing the DEFAULT gps_health (database.cfg). Add "
@@ -5895,21 +5898,41 @@ def _push_reindex(
             root=root,
             storage_location=storage_location,
             dest_prefix=dest_prefix,
+            expected_checksums=expected_checksums,
         )
+        all_ok = bool(hosts) and set(results) == {host or "localhost" for host in hosts}
         for label, stats in results.items():
             if stats is None:
                 print(
                     f"   ⚠️  reindex FAILED on {label} — catalogs may DIVERGE; re-run."
                 )
+                all_ok = False
                 continue
+            processed = stats.updated + stats.inserted + stats.unchanged
+            if stats.errors or processed != len(files):
+                all_ok = False
+                print(
+                    f"   ⚠️  reindex INCOMPLETE on {label}: {processed}/{len(files)} file(s), {len(stats.errors)} error(s)"
+                )
             print(
                 f"   ↻ reindexed archive_catalog on {label}: "
                 f"{stats.updated} updated, {stats.inserted} inserted, "
                 f"{stats.unchanged} unchanged"
                 + (f", {stats.skipped} unparsable" if stats.skipped else "")
             )
-    except Exception as exc:  # noqa: BLE001 — best-effort, never fail the push
-        print(f"   ⚠️  --reindex failed: {type(exc).__name__}: {exc}")
+        return all_ok
+    except Exception as exc:  # noqa: BLE001 — callers receive explicit failure
+        code = getattr(exc, "pgcode", None)
+        safe_code = (
+            code
+            if isinstance(code, str)
+            and len(code) == 5
+            and code.isascii()
+            and code.isalnum()
+            else None
+        )
+        print(f"   ⚠️  --reindex failed: {type(exc).__name__}, SQLSTATE={safe_code}")
+        return False
 
 
 def _push_cleanup(all_details: list[dict], *, work_dir, tos_cache) -> None:
@@ -5944,7 +5967,7 @@ def _resolve_archive_target():
         from ..archive.config import load_sync_config
 
         for t in load_sync_config():
-            if getattr(t, "tier", None) == "archive":
+            if getattr(t, "tier", None) == "archive" and getattr(t, "active", True):
                 dest = t.dest
                 full = f"{t.user}@{t.host}:{dest}" if t.host else dest
                 return full, t.name, dest
@@ -6140,14 +6163,26 @@ def _parallel_workers_for_chunks(args, n_chunks: int, logger) -> int:
 
 
 def _push_reconverted(
-    work_dir, args, logger, only_rel=None, verified_replacements=None
+    work_dir,
+    args,
+    logger,
+    only_rel=None,
+    verified_replacements=None,
+    reindex_root=None,
+    expected_checksums=None,
+    archive_target=None,
+    preserved_replacements=None,
+    before_transfer=None,
+    defer_catalog=False,
+    owner_until=None,
 ) -> Dict[str, Any]:
     """Push re-rinexed files from a --work-dir staging tree back to the archive.
 
     Archive-side --backup-old (move old ``rinex/FILE`` → ``rinex_bak/FILE`` via the
     rawdata SSH gateway) runs BEFORE the rsync, preserving the superseded file on
     the archive. Then rsync the staged tree to the archive tier and reindex.
-    Dry-run supported. Never raises.
+    Dry-run supported. Recovery precondition failures propagate to its CLI
+    boundary before transfer; they are not swallowed or retried.
 
     ``verified_replacements`` is a set of relative paths whose replacement the
     caller has ALREADY proven safe by a stronger test than the two gates below
@@ -6174,6 +6209,7 @@ def _push_reconverted(
         "rc": None,
         "seconds": 0.0,
         "note": "",
+        "catalog_ok": None,
     }
     work = Path(work_dir).expanduser()
     if only_rel is not None:
@@ -6234,7 +6270,7 @@ def _push_reconverted(
             return stats
 
     dry = getattr(args, "dry_run", False)
-    full, name, destpath = _resolve_archive_target()
+    full, name, destpath = archive_target or _resolve_archive_target()
     if not full:
         logger.error("push: no archive-tier target in sync.yaml — cannot push")
         stats["note"] = "no archive target configured"
@@ -6264,13 +6300,24 @@ def _push_reconverted(
     # too would refuse precisely the files it has just preserved, silently
     # blocking legitimate header repairs on raw-less products. The gate is for
     # the re-conversion path, which has no preservation of its own.
+    protected = set(preserved_replacements or ())
+    if protected and (protected != set(rel) or before_transfer is None):
+        stats["note"] = "preservation proof must cover exact transfer selection"
+        return stats
     verified = set(verified_replacements or ())
     if verified & set(rel):
         print(
             f"  ✓ {len(verified & set(rel))} replacement(s) proven by the caller "
             "(epochs with satellites, stream source) — gates pass them through"
         )
-    refuses_apply = bool(rel) and not getattr(args, "fix_headers", False)
+    if protected:
+        print(
+            f"  ✓ {len(protected)} existing original copies verified; accepted candidates hash-bound; no raw/size/QC probes"
+        )
+    verified |= protected
+    refuses_apply = (
+        bool(rel) and not protected and not getattr(args, "fix_headers", False)
+    )
     gate_applies = refuses_apply and bool(
         getattr(args, "from_archive", False) or getattr(args, "source_dir", None)
     )
@@ -6339,7 +6386,7 @@ def _push_reconverted(
     # both sides; decompressed size is one gunzip and is monotonic in content.
     # The tolerance absorbs header-only differences (a rewritten REC # / TYPE
     # line changes the byte count slightly); real truncation is orders larger.
-    if rel and not dry:
+    if rel and not protected and (not dry or getattr(args, "push_only", False)):
         import subprocess as _sp
 
         def _decompressed_size(p: Path) -> Optional[int]:
@@ -6389,6 +6436,12 @@ def _push_reconverted(
             print(f"  ⚠️  degradation gate could not run ({exc}) — push aborted")
             stats["note"] = f"degradation gate failed: {exc}"
             return stats
+
+    if getattr(args, "push_only", False) and len(rel) != len(only_rel or ()):
+        stats["staged"] = len(rel)
+        stats["note"] = "approved manifest selection refused by publication guards"
+        print("  ❌ exact manifest refused — no subset will be transferred")
+        return stats
 
     # Pre-overwrite safety copy — LOCAL ONLY. Never writes rinex_bak/ to the
     # archive.
@@ -6443,6 +6496,25 @@ def _push_reconverted(
         except Exception as exc:  # noqa: BLE001
             print(f"  ⚠️  local pre-overwrite copy failed: {exc}")
 
+    def reindex_published(published):
+        if defer_catalog:
+            print(
+                "   ↻ catalog reconciliation deferred to the exact reviewed archive-reindex plan"
+            )
+            return
+        read_root = str(Path(reindex_root).expanduser()) if reindex_root else str(work)
+        options: Dict[str, Any] = {}
+        if expected_checksums is not None:
+            options["expected_checksums"] = expected_checksums
+        stats["catalog_ok"] = _push_reindex(
+            args,
+            [str(Path(read_root) / r) for r in published],
+            root=read_root,
+            storage_location=name,
+            dest_prefix=destpath,
+            **options,
+        )
+
     dest = full.rstrip("/") + "/"
     src = str(work).rstrip("/") + "/"
     if dry:
@@ -6458,6 +6530,16 @@ def _push_reconverted(
         listf.close()
         print(f"  🚀 push: {len(rel)} file(s) → {dest}", flush=True)
         t0 = time.monotonic()
+        if before_transfer is not None:
+            before_transfer()
+        transfer_timeout = 3600.0
+        if owner_until is not None:
+            from ..archive.catalog_recovery import live_check
+
+            live_check(owner_until)
+            transfer_timeout = min(
+                transfer_timeout, max(1.0, owner_until - time.time())
+            )
         try:
             proc = subprocess.run(
                 [
@@ -6467,19 +6549,37 @@ def _push_reconverted(
                     listf.name,
                     "--no-owner",
                     "--no-group",
+                    # Recovery pins existing parent permissions/identity. Do not
+                    # let rsync apply stage-directory attrs to implied parents.
+                    *(["--no-implied-dirs"] if protected else []),
+                    *(
+                        ["--checksum", "--chmod=D755,F644"]
+                        if getattr(args, "push_only", False)
+                        else []
+                    ),
                     src,
                     dest,
                 ],
                 capture_output=True,
                 text=True,
-                timeout=3600,
+                timeout=transfer_timeout,
             )
         except FileNotFoundError as exc:
             # rsync never ran: nothing landed, nothing to reindex.
-            print(f"  ⚠️  rsync failed: {exc}")
-            stats["note"] = f"rsync failed: {exc}"
+            detail = type(exc).__name__ if defer_catalog else str(exc)
+            print(f"  ⚠️  rsync failed: {detail}")
+            stats["note"] = f"rsync failed: {detail}"
             return stats
         except subprocess.TimeoutExpired as exc:
+            if defer_catalog:
+                stats["seconds"] = time.monotonic() - t0
+                stats["note"] = "rsync timeout; archive poststate unverified"
+                print(
+                    "  ⚠️  rsync timeout: archive poststate UNKNOWN; stopping the "
+                    "caller does not prove remote/kernel cancellation. Reconcile "
+                    "actual state before any further execution."
+                )
+                return stats
             print(f"  ⚠️  rsync failed: {exc}")
             stats["note"] = f"rsync failed: {exc}"
             stats["seconds"] = time.monotonic() - t0
@@ -6493,16 +6593,20 @@ def _push_reconverted(
                     "timeout are durable — reindexing those; re-run the push to "
                     "send the rest"
                 )
-                _push_reindex(
-                    args,
-                    [str(work / r) for r in transferred],
-                    root=str(work),
-                    storage_location=name,
-                    dest_prefix=destpath,
-                )
+                reindex_published(transferred)
             return stats
         stats["seconds"] = time.monotonic() - t0
         stats["rc"] = proc.returncode
+        if defer_catalog and proc.returncode != 0:
+            stats["note"] = (
+                f"rsync exit {proc.returncode}; archive poststate unverified"
+            )
+            print(
+                f"  ⚠️  rsync exit {proc.returncode}: archive poststate UNKNOWN; "
+                "reconcile actual state before any further execution. No "
+                "catalog write or automatic retry."
+            )
+            return stats
         # rsync -av lists each file it actually transferred; files already
         # identical on the archive are skipped silently. Count real transfers
         # so the summary distinguishes "pushed" from "already there".
@@ -6527,25 +6631,13 @@ def _push_reconverted(
             # Reindex exactly the transferred subset — never the whole list,
             # which would stamp hashes for files that never landed.
             if transferred:
-                _push_reindex(
-                    args,
-                    [str(work / r) for r in transferred],
-                    root=str(work),
-                    storage_location=name,
-                    dest_prefix=destpath,
-                )
+                reindex_published(transferred)
             return stats
         print(
             f"  ✓ pushed {stats['pushed']} file(s) in {stats['seconds']:.0f}s "
             f"({len(rel) - stats['pushed']} already on archive)"
         )
-        _push_reindex(
-            args,
-            [str(work / r) for r in rel],
-            root=str(work),
-            storage_location=name,
-            dest_prefix=destpath,
-        )
+        reindex_published(rel)
     finally:
         try:
             Path(listf.name).unlink()
@@ -6589,9 +6681,170 @@ def netrs_version_override_warning(receiver_type, explicit_version):
     )
 
 
+def _cmd_push_staged(args, logger) -> int:
+    """Publish only checksum-approved existing products; never enter conversion."""
+    import os
+    from copy import copy
+
+    from ..archive import resolve_catalog_hosts
+    from ..archive.staged_manifest import open_directory_nofollow, read_staged_manifest
+
+    conflicting = (
+        "fix_headers",
+        "from_archive",
+        "clean",
+        "cleanup",
+        "del_backup",
+        "archive_old",
+        "backup_old",
+        "force",
+        "parallel",
+        "all",
+        "dates",
+        "start",
+        "end",
+        "_days_explicit",
+        "validate_only",
+        "correct_receiver",
+        "correct_antenna",
+        "no_header_correction",
+        "force_config_metadata",
+        "rinex_version",
+        "naming",
+        "output_format",
+        "output_dir",
+        "r00",
+        "ashtech",
+        "trimble",
+        "native_trimble",
+        "observation_types",
+        "skip_fields",
+    )
+    if any(getattr(args, key, None) for key in conflicting):
+        logger.error(
+            "--push-only cannot convert, fix headers, select dates, or clean/backup files; use only the manifest"
+        )
+        return 2
+    if (
+        not getattr(args, "manifest", None)
+        or not getattr(args, "work_dir", None)
+        or not getattr(args, "source_dir", None)
+    ):
+        logger.error(
+            "--push-only requires --manifest, an existing --work-dir, and --source-dir archive read-back root"
+        )
+        return 2
+    if bool(getattr(args, "catalog_prod", False)) == bool(
+        getattr(args, "catalog_host", None)
+    ):
+        logger.error(
+            "--push-only requires exactly one explicit catalog target: --catalog-prod or --catalog-host"
+        )
+        return 2
+    try:
+        work = Path(args.work_dir).expanduser().absolute()
+        read_root = Path(args.source_dir).expanduser().absolute()
+        with (
+            open_directory_nofollow(work) as source,
+            open_directory_nofollow(read_root) as archive,
+        ):
+            if (os.fstat(source).st_dev, os.fstat(source).st_ino) == (
+                os.fstat(archive).st_dev,
+                os.fstat(archive).st_ino,
+            ):
+                raise ValueError(
+                    "staging and archive read-back roots must be different"
+                )
+        manifest = read_staged_manifest(
+            args.manifest,
+            work_dir=str(work),
+            stations=[s.upper() for s in args.stations],
+            session=args.session,
+        )
+        hosts = resolve_catalog_hosts(
+            getattr(args, "catalog_host", None),
+            prod=getattr(args, "catalog_prod", False),
+        )
+        if not hosts or any(
+            not isinstance(h, str)
+            or not h
+            or any(
+                c
+                not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:-"
+                for c in h
+            )
+            for h in hosts
+        ):
+            raise ValueError(
+                "explicit catalog hostnames required; no implicit default/fallback"
+            )
+        target = _resolve_archive_target()
+        if not all(target):
+            raise ValueError("no active archive target configured")
+    except (OSError, ValueError) as exc:
+        logger.error("staged publication refused: %s", exc)
+        return 2
+
+    if any(
+        getattr(args, key, None)
+        for key in ("recovery_plan", "originals_manifest", "originals_root")
+    ):
+        from .archive_recovery import cmd_preserved_push
+
+        return cmd_preserved_push(
+            args, logger, manifest, work, read_root, hosts, target
+        )
+
+    planned = copy(args)
+    planned.work_dir, planned.source_dir = str(work), str(read_root)
+    planned.dry_run = bool(
+        getattr(args, "dry_run", False) or not getattr(args, "push", False)
+    )
+    planned.catalog_host = ",".join(hosts)  # bind exactly the displayed set
+    print(
+        f"Staged publication: {'DRY RUN (no transfer/catalog writes)' if planned.dry_run else 'EXECUTE'}"
+    )
+    print(f"  manifest SHA256: {manifest.sha256}")
+    print(f"  staged source: {work}\n  archive read-back: {read_root}")
+    print(f"  destination: {target[0]} ({target[1]})\n  catalogs: {', '.join(hosts)}")
+    print(
+        f"  selected: {len(manifest.products)} finished RINEX file(s); rsync mode intent D0755/F0644; no conversion/cleanup"
+    )
+    for relative, digest in manifest.products:
+        print(f"    {digest}  {relative}")
+    result = _push_reconverted(
+        work,
+        planned,
+        logger,
+        only_rel=list(manifest.checksums),
+        reindex_root=str(read_root),
+        expected_checksums=manifest.checksums,
+        archive_target=target,
+    )
+    if planned.dry_run:
+        return (
+            0
+            if result.get("note") == "dry-run"
+            and result["staged"] == len(manifest.products)
+            else 1
+        )
+    return (
+        0
+        if result.get("rc") == 0
+        and result.get("catalog_ok") is True
+        and result["staged"] == len(manifest.products)
+        else 1
+    )
+
+
 def cmd_rinex(args) -> int:
-    """RINEX conversion command - convert raw GPS data to RINEX format."""
+    """RINEX conversion, repair, or exact staged-product publication."""
     logger = setup_logging(args.loglevel)
+    if getattr(args, "push_only", False):
+        return _cmd_push_staged(args, logger)
+    if getattr(args, "manifest", None):
+        logger.error("--manifest requires --push-only")
+        return 2
     # Re-rinex (--from-archive) stages into a dedicated ~/tmp dir rather than the
     # fix-headers default ~/tmp/rinex_fixes — only when the user didn't set
     # --work-dir explicitly (i.e. it's still the argparse default).
@@ -6728,6 +6981,9 @@ def cmd_rinex(args) -> int:
     # Print progress info (always visible, not dependent on log level).
     # Skip when --fix-headers — it prints its own header below.
     if not getattr(args, "fix_headers", False):
+        if start_time is None or end_time is None:
+            logger.error("Conversion requires a bounded date range")
+            return 1
         print(f"RINEX conversion for {len(stations)} station(s)")
         print(
             f"Date range: {start_time.strftime('%Y-%m-%d')} to {end_time.strftime('%Y-%m-%d')}"
@@ -6761,12 +7017,12 @@ def cmd_rinex(args) -> int:
         # a single, deliberately-chosen station — a multi-station/fleet run would
         # corrupt any dual-instrument site, overwriting a correct streaming-box
         # header with the TOS daily receiver.
-        _correct_hw = set()
+        _correct_hw_set: set[str] = set()
         if getattr(args, "correct_receiver", False):
-            _correct_hw.add("receiver")
+            _correct_hw_set.add("receiver")
         if getattr(args, "correct_antenna", False):
-            _correct_hw.add("antenna")
-        _correct_hw = frozenset(_correct_hw)
+            _correct_hw_set.add("antenna")
+        _correct_hw = frozenset(_correct_hw_set)
 
         # --skip-fields: keys removed from the correctable set for this run.
         # Validated against the known keys so a typo ("coordinate") fails loudly
@@ -6890,7 +7146,7 @@ def cmd_rinex(args) -> int:
         # one batch, and a re-run of the same command resumes — already-pushed
         # files now match TOS on the archive, so they're skipped as clean.
         # Resolve early → fail fast before any fixing if push can't proceed.
-        _flush_fn = None
+        _header_flush: Optional[Callable[..., Any]] = None
         _flush_every = 0
         _push_dest_display = None
         if getattr(args, "push", False) and not _dry_run:
@@ -6962,7 +7218,7 @@ def cmd_rinex(args) -> int:
                         f"({', '.join(h or 'localhost' for h in _pf_hosts)})"
                     )
 
-            def _flush_fn(batch_details, _a=_adest, _n=_aname, _p=_adestpath):
+            def _header_flush_impl(batch_details, _a=_adest, _n=_aname, _p=_adestpath):
                 return _flush_fixed_batch(
                     batch_details,
                     args=args,
@@ -6972,6 +7228,8 @@ def cmd_rinex(args) -> int:
                     archive_destpath=_p,
                     tos_cache=tos_cache,
                 )
+
+            _header_flush = _header_flush_impl
 
         # --parallel: chunk the work like the re-rinex path — (station, year)
         # chunks in a date range, per-station chunks with --all (whole-archive
@@ -6995,15 +7253,19 @@ def cmd_rinex(args) -> int:
         # across workers (concurrent gateway pushes are unreliable; see engine
         # push-path notes). TOSSesionCache is shared: a concurrent first-fetch
         # per station is a benign duplicate, after which all workers hit cache.
-        if _flush_fn is not None and fh_workers > 1:
+        if _header_flush is not None and fh_workers > 1:
             import threading as _threading
 
             _flush_lock = _threading.Lock()
-            _unlocked_flush = _flush_fn
+            _unlocked_flush = _header_flush
 
-            def _flush_fn(batch_details, _f=_unlocked_flush, _lk=_flush_lock):
+            def _header_locked_flush(
+                batch_details, _f=_unlocked_flush, _lk=_flush_lock
+            ):
                 with _lk:
                     return _f(batch_details)
+
+            _header_flush = _header_locked_flush
 
         def _fh_label(chunk):
             sid, ys, _ye = chunk
@@ -7030,7 +7292,7 @@ def cmd_rinex(args) -> int:
                     work_dir=_work_dir,
                     source_dir=Path(_source_dir) if _source_dir else None,
                     tos_cache=tos_cache,
-                    flush_fn=_flush_fn,
+                    flush_fn=_header_flush,
                     flush_every=_flush_every,
                     push_dest=_push_dest_display,
                     retry_attempts=getattr(args, "retry_attempts", 2),
@@ -7195,6 +7457,10 @@ def cmd_rinex(args) -> int:
     push_stats: Optional[Dict[str, Any]] = None
     par_workers = _parallel_workers(args, stations, start_time, end_time, logger)
     aborted = False
+
+    if start_time is None or end_time is None:
+        logger.error("Conversion requires a bounded date range")
+        return 1
 
     # --push incremental flush (re-rinex): push to the archive every
     # `_rinex_flush_every` conversions instead of one big push at the very end.
@@ -7620,18 +7886,18 @@ def cmd_tools(args) -> int:
     elif args.tools_command == "check":
         receiver_type = getattr(args, "receiver_type", None)
 
-        tools = manager.check_tools(receiver_type=receiver_type)
+        available_tools = manager.check_tools(receiver_type=receiver_type)
 
         if receiver_type:
             print(f"\nTools for {receiver_type}:")
         else:
             print("\nTool availability:")
 
-        for name, available in tools.items():
+        for name, available in available_tools.items():
             icon = "✅" if available else "❌"
             print(f"  {icon} {name}")
 
-        all_available = all(tools.values())
+        all_available = all(available_tools.values())
         if all_available:
             print("\n✅ All required tools are available")
             return 0
@@ -7741,7 +8007,8 @@ def main() -> int:
         return handle_cfg_command(args)
 
     try:
-        return args.func(args)
+        status: int = args.func(args)
+        return status
     except KeyboardInterrupt:
         print("\nOperation cancelled by user")
         return 130

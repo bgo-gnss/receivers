@@ -14,9 +14,15 @@ import logging
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Protocol, cast
 
 logger = logging.getLogger("receivers.cli.archive_sync")
+
+
+class _WrittenPaths(Protocol):
+    """Typed view of the recorder function's existing public metadata attribute."""
+
+    last_written: list[Path]
 
 
 def _get_conn(host: Optional[str], required: bool):
@@ -497,6 +503,15 @@ def cmd_archive_reindex(args: argparse.Namespace) -> int:
         return 2
     dest_prefix = args.dest_prefix or target.dest
 
+    if any(
+        getattr(args, key, None)
+        for key in ("manifest", "scope_manifest", "write_plan", "plan")
+    ):
+        from .archive_recovery import cmd_guarded_reindex
+
+        hosts = resolve_catalog_hosts(args.catalog_host, prod=args.catalog_prod)
+        return cmd_guarded_reindex(args, target, root, hosts)
+
     # Collect files under the mirror (skip *_archive backup dirs).
     files: list[str] = []
     for dirpath, _dirs, names in os.walk(root):
@@ -629,9 +644,12 @@ def cmd_archive_index_backfill(args: argparse.Namespace) -> int:
     unparsable_fh = (
         open(args.report_unparsable, "w") if args.report_unparsable else None
     )
-    unparsable_cb = (
-        (lambda p: unparsable_fh.write(p + "\n")) if unparsable_fh is not None else None
-    )
+
+    def _write_unparsable(path: str) -> None:
+        if unparsable_fh is not None:
+            unparsable_fh.write(path + "\n")
+
+    unparsable_cb = _write_unparsable if unparsable_fh is not None else None
     try:
         stats = backfill_archive_catalog(
             hosts,
@@ -807,7 +825,7 @@ def cmd_archive_rm(args: argparse.Namespace) -> int:
 
 
 def create_archive_rm_parser(subparsers) -> argparse.ArgumentParser:
-    parser = subparsers.add_parser(
+    parser: argparse.ArgumentParser = subparsers.add_parser(
         "archive-rm",
         help="Guarded deletion of specific empty/bad files from the archive",
         description=(
@@ -874,7 +892,7 @@ def create_archive_rm_parser(subparsers) -> argparse.ArgumentParser:
 
 
 def create_archive_reindex_parser(subparsers) -> argparse.ArgumentParser:
-    parser = subparsers.add_parser(
+    parser: argparse.ArgumentParser = subparsers.add_parser(
         "archive-reindex",
         help="Refresh archive_catalog content_sha256 for out-of-band file edits",
         description=(
@@ -929,6 +947,9 @@ def create_archive_reindex_parser(subparsers) -> argparse.ArgumentParser:
     parser.add_argument(
         "--json", action="store_true", help="Emit machine-readable JSON results"
     )
+    from .archive_recovery import add_catalog_recovery_flags
+
+    add_catalog_recovery_flags(parser)
     parser.set_defaults(func=cmd_archive_reindex)
     return parser
 
@@ -936,7 +957,7 @@ def create_archive_reindex_parser(subparsers) -> argparse.ArgumentParser:
 def create_archive_index_backfill_parser(subparsers) -> argparse.ArgumentParser:
     from ..archive import DEFAULT_MIN_ARCHIVE_FILE_BYTES
 
-    parser = subparsers.add_parser(
+    parser: argparse.ArgumentParser = subparsers.add_parser(
         "archive-index-backfill",
         help="One-time index of already-on-disk archive files into archive_catalog",
         description=(
@@ -1074,7 +1095,7 @@ def create_archive_index_backfill_parser(subparsers) -> argparse.ArgumentParser:
 
 
 def create_archive_verify_parser(subparsers) -> argparse.ArgumentParser:
-    parser = subparsers.add_parser(
+    parser: argparse.ArgumentParser = subparsers.add_parser(
         "archive-verify",
         help="Verify archived files against the catalog (re-hash + local compare)",
         description=(
@@ -1133,7 +1154,7 @@ def create_archive_verify_parser(subparsers) -> argparse.ArgumentParser:
 
 
 def create_archive_audit_parser(subparsers) -> argparse.ArgumentParser:
-    parser = subparsers.add_parser(
+    parser: argparse.ArgumentParser = subparsers.add_parser(
         "archive-audit",
         help="Audit archive RINEX for junk + regen candidates (emits fix commands)",
         description=(
@@ -1192,7 +1213,7 @@ def create_archive_audit_parser(subparsers) -> argparse.ArgumentParser:
 
 
 def create_archive_sync_parser(subparsers) -> argparse.ArgumentParser:
-    parser = subparsers.add_parser(
+    parser: argparse.ArgumentParser = subparsers.add_parser(
         "archive-sync",
         help="Batch delta sync of raw files to the long-term archive gateway",
         description=(
@@ -1438,7 +1459,8 @@ def _persist_remediation_records(
 
     from ..config.receivers_config import ReceiversConfig
 
-    _persist_remediation_records.last_written = []
+    recorded = cast(_WrittenPaths, _persist_remediation_records)
+    recorded.last_written = []
     issues = [sk for sk in skips if sk.reason != "verified-correct"]
     if not plans and not issues:
         return
@@ -1493,7 +1515,7 @@ def _persist_remediation_records(
                 fh.write(f"ISSUE\t{sk.rel}\t{sk.reason}\t{sk.detail}\n")
         written.append(out_dir)
         print(f"   📁 fix files -> {out_dir}")
-    _persist_remediation_records.last_written = written
+    recorded.last_written = written
 
     if not commit:
         # Say it plainly rather than leaving the tree quietly dirty: someone
@@ -1507,9 +1529,9 @@ def _persist_remediation_records(
         return
 
     try:
-        rels = [str(d.relative_to(repo_path)) for d in written]
+        rel_paths = [str(d.relative_to(repo_path)) for d in written]
         subprocess.run(
-            ["git", "-C", str(repo_path), "add", *rels],
+            ["git", "-C", str(repo_path), "add", *rel_paths],
             check=True,
             capture_output=True,
             timeout=30,
@@ -1870,7 +1892,7 @@ def cmd_archive_sort(args: argparse.Namespace) -> int:
     if args.stations:
         from ..archive.sort import scan_station_raw, scan_station_rinex
 
-        years = None
+        years: list[int] | None = None
         if args.years:
             years = []
             for tok in args.years:
@@ -2070,7 +2092,7 @@ def cmd_archive_sort(args: argparse.Namespace) -> int:
 
 
 def create_archive_sort_parser(subparsers) -> argparse.ArgumentParser:
-    parser = subparsers.add_parser(
+    parser: argparse.ArgumentParser = subparsers.add_parser(
         "archive-sort",
         help="Move misfiled raw files (decoded date ≠ filename) to the right place",
         description=(
@@ -2322,7 +2344,7 @@ def cmd_archive_prune(args: argparse.Namespace) -> int:
 
 
 def create_archive_prune_parser(subparsers) -> argparse.ArgumentParser:
-    parser = subparsers.add_parser(
+    parser: argparse.ArgumentParser = subparsers.add_parser(
         "archive-prune",
         help="Ring-buffer prune of local gpsdata (catalog-gated, dry-run default)",
         description=(
@@ -2396,7 +2418,7 @@ def cmd_archive_catalog_backfill(args: argparse.Namespace) -> int:
 
 
 def create_archive_catalog_backfill_parser(subparsers) -> argparse.ArgumentParser:
-    parser = subparsers.add_parser(
+    parser: argparse.ArgumentParser = subparsers.add_parser(
         "catalog-backfill-local",
         help="Seed local_raw/local_rinex archive_catalog rows from file_tracking",
         description=(
@@ -2646,7 +2668,7 @@ def _print_repair_stale_report(rstats, vstats, unreadable, hosts, args) -> None:
 
 
 def create_archive_repair_stale_parser(subparsers) -> argparse.ArgumentParser:
-    parser = subparsers.add_parser(
+    parser: argparse.ArgumentParser = subparsers.add_parser(
         "archive-repair-stale",
         help="Re-hash catalog rows whose content_sha256 is provably STALE "
         "(archive rewritten after cataloguing) — never a corrupt file",
@@ -2954,7 +2976,7 @@ def _print_catalog_gc_report(stats, rows, hosts, args, read_root) -> None:
 def create_archive_catalog_gc_parser(subparsers) -> argparse.ArgumentParser:
     from ..archive.catalog_gc import DEFAULT_FRACTION_LIMIT, DEFAULT_MAX_SIZE
 
-    parser = subparsers.add_parser(
+    parser: argparse.ArgumentParser = subparsers.add_parser(
         "archive-catalog-gc",
         help="Delete archive_catalog PHANTOM rows (empty-content digest, file "
         "absent on the archive) — never a row whose file exists",

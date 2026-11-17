@@ -241,6 +241,7 @@ def upsert_catalog_row(
     compressed_sha256: Optional[str] = None,
     md5checksum: Optional[str] = None,
     md5uncompressed: Optional[str] = None,
+    recovery_expected: Optional[dict] = None,
 ) -> None:
     """Insert/refresh the catalog row for one archived file.
 
@@ -282,6 +283,33 @@ def upsert_catalog_row(
     """
     key = canonical_key(filename)
     compression = compression_suffix(filename)
+    guard_sql = ""
+    guard_params = ()
+    if recovery_expected is not None:
+        from .catalog_recovery import COLUMNS, TYPES
+
+        prior = recovery_expected["row"]
+        if prior is None:
+            # A concurrently inserted row was not in the reviewed snapshot:
+            # never update it. The caller verifies the final state before commit.
+            guard_sql = " AND FALSE"
+        else:
+            if (
+                len(prior) != len(COLUMNS)
+                or prior[6] is not None
+                or prior[12] is not None
+                or prior[13] is not None
+            ):
+                raise ValueError("unsupported recovery prior row")
+            guard_sql = (
+                " AND ("
+                + " AND ".join(
+                    f"archive_catalog.{column} IS NOT DISTINCT FROM %s::{kind}"
+                    for column, kind in zip(COLUMNS, TYPES)
+                )
+                + ")"
+            )
+            guard_params = tuple(prior)
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -311,7 +339,7 @@ def upsert_catalog_row(
                 file_tracking_id  = COALESCE(EXCLUDED.file_tracking_id,
                                              archive_catalog.file_tracking_id),
                 indexed_at        = now()
-            WHERE archive_catalog.file_path   IS DISTINCT FROM EXCLUDED.file_path
+            WHERE (archive_catalog.file_path   IS DISTINCT FROM EXCLUDED.file_path
                OR archive_catalog.compression IS DISTINCT FROM EXCLUDED.compression
                OR archive_catalog.file_size   IS DISTINCT FROM EXCLUDED.file_size
                OR archive_catalog.station     IS DISTINCT FROM EXCLUDED.station
@@ -337,8 +365,9 @@ def upsert_catalog_row(
                        IS DISTINCT FROM EXCLUDED.md5uncompressed)
                OR (EXCLUDED.file_tracking_id IS NOT NULL
                    AND archive_catalog.file_tracking_id
-                       IS DISTINCT FROM EXCLUDED.file_tracking_id)
-            """,
+                       IS DISTINCT FROM EXCLUDED.file_tracking_id))
+            """
+            + guard_sql,
             (
                 storage_location,
                 station,
@@ -355,5 +384,6 @@ def upsert_catalog_row(
                 md5checksum,
                 md5uncompressed,
                 file_tracking_id,
-            ),
+            )
+            + guard_params,
         )

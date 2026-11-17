@@ -11,7 +11,7 @@ import gzip
 import pytest
 
 from receivers.archive.reindex import reindex_files
-from receivers.utils.content_hash import content_sha256
+from receivers.utils.content_hash import compressed_sha256, content_sha256
 
 REL = "2026/jun/ELDC/15s_24hr/raw/ELDC_a.sbf.gz"
 LOC = "test_reindex"
@@ -52,7 +52,7 @@ def _seed_gz(root, rel, payload):
     return path, content_sha256(path)
 
 
-def _seed_row(conn, rel, digest):
+def _seed_row(conn, rel, digest, compressed_digest=None):
     from receivers.archive.catalog import upsert_catalog_row
 
     upsert_catalog_row(
@@ -66,6 +66,7 @@ def _seed_row(conn, rel, digest):
         filename=rel.split("/")[-1],
         file_size=1,
         content_sha256=digest,
+        compressed_sha256=compressed_digest,
     )
     conn.commit()
 
@@ -126,7 +127,7 @@ def test_only_existing_skips_insert(db_conn, tmp_path):
 
 def test_unchanged_when_hash_matches(db_conn, tmp_path):
     _, real = _seed_gz(tmp_path, REL, b"same content" * 50)
-    _seed_row(db_conn, REL, real)
+    _seed_row(db_conn, REL, real, compressed_sha256(tmp_path / REL))
     stats = reindex_files(
         db_conn,
         [str(tmp_path / REL)],
@@ -212,10 +213,12 @@ def test_reindex_files_multi_fans_out(monkeypatch, tmp_path):
     import receivers.archive.reindex as rx
 
     seen_hosts = []
-    monkeypatch.setattr(
-        "receivers.db.connection.get_connection",
-        lambda host_override=None: seen_hosts.append(host_override) or object(),
-    )
+
+    def connect(host_override=None):
+        seen_hosts.append(host_override)
+        return object()
+
+    monkeypatch.setattr("receivers.db.connection.get_connection", connect)
     monkeypatch.setattr(
         rx,
         "reindex_files",

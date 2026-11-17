@@ -10,6 +10,60 @@ Companion to [`metadata-extraction-deterministic-verbs.md`](metadata-extraction-
 This one covers **repairing an existing station** and is meant to be run by name,
 in order, without rediscovering the traps each time.
 
+## Operating rule: tools drive, LLM reviews
+
+Agreed with the operator, 2026-10-21:
+
+- Use the existing `tostools` / `receivers` commands and shared APIs for TOS
+  changes, re-rinexing, header repair, staged publication, catalog reconciliation,
+  site logs and visits. Reuse the EPOS workflow's common machinery; non-EPOS
+  stations omit M3G/EPOS publication and its rollout allowlist changes.
+- Before production writes, inspect the tool's dry-run / action-file preview:
+  exact station, dates/session/file set, destinations, catalog hosts, preservation
+  actions and outstanding work. LLM review explains the result and exceptions;
+  it does not replace the tool. A preview is not completion evidence or blanket
+  write authority; changed scope or stale preconditions require another review.
+- When a bottleneck appears, propose a small improvement in the existing package,
+  test it locally, and review the resulting dry-run. Do not build another
+  publisher, resume engine or LLM-managed execution protocol in scratch scripts.
+- Reuse completed products and accepted QC. For partial runs, reconcile the exact
+  outstanding subset through tool-owned operations; do not reconvert or replay
+  completed stages just to reconstruct agent context. Never broadly push a mixed
+  staging tree. If the CLI cannot express the required subset safely, improve it.
+- Verify actual artifacts, both required catalogs and final access permissions
+  before declaring completion. Detached-job launch or stage selection alone is
+  not success. Site logs and completion visits describe verified completed work.
+
+**AFST recovery:** retain its staged products, originals, accepted exceptions and
+incident evidence. Existing curation publishers are evidence/prototypes, not the
+pipeline driver. The examples below are not authority to rerun AFST, clean its
+work directories, read additional raw data, or reuse its consumed confirmations.
+
+### Staged recovery — existing tools, reviewed phases
+
+See **[Exact staged archive recovery](archive-recovery.md)** for command syntax,
+input schemas, verification gates and limits. The implemented recovery path is:
+
+1. `archive-reindex --write-plan`: read-only full-scope catalog snapshot and
+   exact publication/original bindings (standard SHA256 manifests).
+2. `rinex --push-only --recovery-plan`: existing pusher with verified original
+   copies, no raw discovery or scientific-QC rerun, singleton then <=50 batches;
+   omit already-correct data and leave catalog writes to the next phase.
+3. `archive-reindex --plan`: actual archive-FD dual-hash read-back, exact catalog
+   subset, repeated full-scope NULL-MD5/hour guards, prior-state SQL predicates
+   and required-host outcomes. Preview default; cross-host writes are not atomic.
+4. `archive-access`: only after complete data/catalog proof, review fresh exact
+   inode/parent/alias pins, restore owned FD modes, and verify the full final
+   archive/catalog/original state. No source/original cleanup or byte writes.
+
+The last captured AFST state needs 145 replacements, 195 keys per catalog host
+and 1716 permission corrections over 1861 published names. These counts are not
+fresh live observations. **Local implementation/tests do not authorize rollout
+or execution.** First review the deployed-tool preview and obtain real, fresh
+owner coordination covering data and parent namespaces; old confirmations are
+consumed/expired. Checks do not cancel already-running NFS/kernel work or confer
+write authority. Only verified close-out may lead to GAMIT/site-log/visit work.
+
 ## The invariant this pipeline establishes
 
 > For every archived observation, the RINEX header states what was actually
@@ -183,4 +237,4 @@ round of verbs:
 
 ---
 
-*Last reviewed: 2026-08-03*
+*Last reviewed: 2026-10-21 (tool-first operating rule; historical examples retained)*

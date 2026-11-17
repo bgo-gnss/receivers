@@ -35,7 +35,11 @@ ALLOWED = {
     (
         "src/receivers/archive/reindex.py",
         "_existing_sha",
-    ): "inside the per-file upsert loop; the caller's transaction owns it",
+    ): "sync engine lookup on the caller's writer transaction",
+    (
+        "src/receivers/archive/reindex.py",
+        "_existing_hashes",
+    ): "dual-hash lookup inside reindex's caller-owned per-file write transaction",
 }
 
 
@@ -59,6 +63,7 @@ def _run_audit() -> list[tuple[str, str, int]]:
         elif stripped.startswith("clean"):
             continue
         elif "()" in stripped and path:
+            assert line is not None, "audit finding has no source line"
             fn = stripped.split("()")[0].strip()
             findings.append((path, fn, line))
             path = None
