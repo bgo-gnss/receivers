@@ -304,6 +304,124 @@ class TestRun:
         assert eng._archive_path("a/b.T02.gz") == "~/gpsdata_staging/a/b.T02.gz"
 
 
+# ------------------------------------------- failed rsync: catalog only landed files
+class TestCatalogOnlyLanded:
+    """A failed rsync must not catalog files it itemized but never wrote.
+
+    rsync's sender itemizes ``>f+++`` before the receiver's ``mkstemp``. On a
+    read-only archive (EROFS, rc=23) every file is itemized and none lands. Seen
+    2026-11-17, when two sweeps cataloged 3854 + 4274 absent files. Only the files a
+    confirming ``--dry-run`` no longer wants to send may be cataloged.
+    """
+
+    A = "2026/jun/AKUR/15s_24hr/raw/AKUR_a.T02.gz"
+    B = "2026/jun/THOB/1Hz_1hr/raw/THOB_b.sbf.gz"
+
+    def _engine(self, tmp_path, monkeypatch, *, confirm_ok=True, pending=()):
+        new = CUTOVER + timedelta(days=1)
+        for rel in (self.A, self.B):
+            _make_file(tmp_path, rel, new)
+        eng = ArchiveSync(_target(tmp_path), conn=None)
+        calls: list[dict] = []
+
+        def fake_rsync(rels, imm, *, timeout=None, extra_args=None):
+            calls.append({"rels": list(rels), "extra_args": extra_args})
+            if extra_args and "--dry-run" in extra_args:
+                if not confirm_ok:
+                    return False, [], "ssh: connect to host: No route to host"
+                return True, [r for r in rels if r in pending], ""
+            # the real push: everything itemized, then the receiver failed
+            return False, sorted(rels), 'mkstemp "...": Read-only file system (30)'
+
+        cataloged: list[list[str]] = []
+
+        def fake_catalog(rels):
+            cataloged.append(list(rels))
+            return len(rels), [], {r: "0" * 64 for r in rels}
+
+        monkeypatch.setattr(eng, "_rsync", fake_rsync)
+        monkeypatch.setattr(eng, "_catalog_transferred", fake_catalog)
+        return eng, calls, cataloged
+
+    def test_sweep_erofs_catalogs_nothing(self, tmp_path, monkeypatch):
+        eng, calls, cataloged = self._engine(
+            tmp_path, monkeypatch, pending=(self.A, self.B)
+        )
+        res = eng.run()
+        assert res.ok is False
+        assert cataloged == [[]]
+        assert res.cataloged == 0
+        assert res.transferred == 0
+        assert "raw 0/2" in res.message
+        assert calls[1]["extra_args"] == ["--dry-run"]
+
+    def test_sweep_partial_failure_catalogs_only_landed(self, tmp_path, monkeypatch):
+        eng, _, cataloged = self._engine(tmp_path, monkeypatch, pending=(self.A,))
+        res = eng.run()
+        assert res.ok is False  # watermark still must not advance
+        assert cataloged == [[self.B]]
+        assert res.transferred == 1
+
+    def test_sweep_confirm_failure_catalogs_nothing(self, tmp_path, monkeypatch):
+        eng, _, cataloged = self._engine(tmp_path, monkeypatch, confirm_ok=False)
+        res = eng.run()
+        assert res.ok is False
+        assert cataloged == [[]]
+        assert res.transferred == 0
+
+    def test_sweep_success_skips_confirmation(self, tmp_path, monkeypatch):
+        eng, calls, cataloged = self._engine(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            eng,
+            "_rsync",
+            lambda rels, imm, **kw: (calls.append(kw) or True, sorted(rels), ""),
+        )
+        res = eng.run()
+        assert res.ok
+        assert cataloged == [sorted([self.A, self.B])]
+        assert len(calls) == 1  # no --dry-run round trip on success
+
+    def test_push_explicit_erofs_catalogs_nothing(self, tmp_path, monkeypatch):
+        eng, _, cataloged = self._engine(
+            tmp_path, monkeypatch, pending=(self.A, self.B)
+        )
+        pushed, errors, digests = eng.push_explicit(
+            [str(tmp_path / self.A), str(tmp_path / self.B)]
+        )
+        assert (pushed, digests) == (0, {})
+        assert cataloged == []
+        assert errors and "Read-only file system" in errors[0]
+
+    def test_push_explicit_partial_failure_catalogs_landed(self, tmp_path, monkeypatch):
+        """Before the fix a failed push cataloged nothing, which stranded the files
+        that did land: the next --ignore-existing push skips them for good."""
+        eng, _, cataloged = self._engine(tmp_path, monkeypatch, pending=(self.A,))
+        pushed, errors, digests = eng.push_explicit(
+            [str(tmp_path / self.A), str(tmp_path / self.B)]
+        )
+        assert pushed == 1
+        assert set(digests) == {self.B}
+        assert cataloged == [[self.B]]
+        assert errors  # the rsync failure is still reported
+
+    def test_real_rsync_confirmation_separates_landed(self, tmp_path):
+        """The real ``rsync --dry-run`` confirmation: of two itemized files, the one
+        already present at the destination is the only one reported landed."""
+        import shutil
+
+        if not shutil.which("rsync"):
+            pytest.skip("rsync not available")
+        src, dst = tmp_path / "src", tmp_path / "dst"
+        new = CUTOVER + timedelta(days=1)
+        for rel in (self.A, self.B):
+            _make_file(src, rel, new)
+        _make_file(dst, self.B, new)  # B landed, A did not
+        eng = ArchiveSync(_target(src, host="", dest=str(dst)), conn=None)
+        landed = eng._landed_after_failure([self.A, self.B], "--ignore-existing")
+        assert landed == [self.B]
+        assert not (dst / self.A).exists()  # the confirmation never writes
+
+
 # --------------------------------------------------------- DB-backed round-trip
 def _local_conn():
     try:
