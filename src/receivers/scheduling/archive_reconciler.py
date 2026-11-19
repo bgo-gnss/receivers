@@ -17,7 +17,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from .lookback import Lookback
 
@@ -650,6 +650,42 @@ def _find_rinex_file(raw_path: Path) -> Optional[Path]:
     return None
 
 
+def _trimble_version_kwargs(receiver_type: str) -> Dict[str, Any]:
+    """RINEX version (+ naming) a Trimble converter must be built with here.
+
+    The THIRD copy of this decision, after the live path (``async_converter``)
+    and the backfill task (``rinex_task``). This one built the converter with no
+    version at all, so it took the class default — RINEX 3 — and a NetRS came
+    out with its codeless L2 coded as C2D, which GAMIT deletes. Found 2026-11-19:
+    every SKOG (NetRS) daily the reconciler and the "Backfill RINEX" step wrote
+    was CRINEX 3.0, while FEDG's live-path files were RINEX 2.
+
+    Non-Trimble types get no kwargs (the converter's own defaults stand); a
+    Trimble type that is not codeless keeps RINEX 3.
+    """
+    from ..rinex.converter_base import NamingConvention, RinexVersion
+    from ..rinex.converter_select import (
+        resolve_trimble_rinex_version,
+        wants_native_trimble,
+    )
+
+    if not wants_native_trimble(receiver_type):
+        return {}
+    try:
+        from ..config.receivers_config import get_receivers_config
+
+        rinex_config = get_receivers_config().get_rinex_config()
+    except Exception:  # noqa: BLE001 - the resolver defaults NetRS to 2 without it
+        rinex_config = None
+    version = resolve_trimble_rinex_version(
+        3, receiver_type=receiver_type, rinex_config=rinex_config
+    )
+    kwargs: Dict[str, Any] = {"rinex_version": RinexVersion(version)}
+    if version == 2:
+        kwargs["naming_convention"] = NamingConvention.SHORT
+    return kwargs
+
+
 def _convert_raw_to_rinex(
     station_id: str,
     raw_path: Path,
@@ -687,7 +723,11 @@ def _convert_raw_to_rinex(
         # daily-form names (e.g. HEDI1450.26d.Z) for hourly raw files and each
         # hour overwrites the previous (the bug PR #75 fixed in the live path,
         # silently re-introduced here).
-        converter = converter_class(station_id=station_id, session_type=session_type)
+        converter = converter_class(
+            station_id=station_id,
+            session_type=session_type,
+            **_trimble_version_kwargs(receiver_type),
+        )
         result = converter.convert_file(raw_path, output_dir=rinex_dir)
 
         if result.success:
