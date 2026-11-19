@@ -537,3 +537,99 @@ class TestStationStatusSync:
         )
         assert rc == 0
         assert "station_status" not in capsys.readouterr().out
+
+
+class TestGlobalReadsRepo:
+    """`--global` plans against the repo's stations.cfg, not this host's copy.
+
+    Regression (SKOG, 2026-11-18): a station committed to gps-config-data but
+    not yet deployed locally was skipped as "no stations.cfg section", because
+    the baseline came from the gps_parser-deployed file even under --global.
+    """
+
+    SECTION = (
+        "[SKOG]\nrouter_ip = 10.4.1.231\nreceiver_type = NetRS\nreceiver_serial = OLD\n"
+    )
+
+    def _run(self, monkeypatch, tmp_path, *, local_text, repo_text):
+        import types
+
+        import receivers.cfg.reconciler as rec
+        import receivers.cli.arguments as cliargs
+        import receivers.cli.cfg as cfgmod
+        import receivers.config_utils as cu
+
+        repo = tmp_path / "repo_stations.cfg"
+        repo.write_text(repo_text, encoding="utf-8")
+        local = tmp_path / "local_stations.cfg"
+        local.write_text(local_text, encoding="utf-8")
+
+        monkeypatch.setattr(cliargs, "normalize_station_tokens", lambda t: list(t))
+        # The deployed-config loader must NOT be the baseline under --global.
+        monkeypatch.setattr(cu, "get_station_config", lambda sid, silent=True: None)
+        monkeypatch.setattr(cfgmod, "_resolve_global_target", lambda args: repo)
+        monkeypatch.setattr(cfgmod, "_local_stations_cfg_path", lambda: local)
+        monkeypatch.setattr(cfgmod, "_query_tos", lambda sid: {"id_entity": 1})
+        monkeypatch.setattr(cfgmod, "_maybe_commit_global", lambda *a, **k: None)
+
+        seen = {}
+        spec = types.SimpleNamespace(cfg_format=lambda v: v)
+
+        def fake_compare(sid, station_config, **kw):
+            seen["baseline"] = dict(station_config)
+            return [
+                types.SimpleNamespace(
+                    cfg_key="receiver_serial",
+                    cfg_value=station_config.get("receiver_serial"),
+                    tos_value="NEW",
+                    needs_attention=True,
+                    spec=spec,
+                )
+            ]
+
+        monkeypatch.setattr(rec, "compare_station", fake_compare)
+        writes: list = []
+        monkeypatch.setattr(
+            rec,
+            "apply_diff",
+            lambda sid, d, v, cfg_path=None: writes.append(cfg_path) or True,
+        )
+        rc = cmd_cfg_sync_from_tos(
+            _args(
+                station=["SKOG"],
+                global_cfg=True,
+                push=True,
+                no_dry_run=True,
+                yes=True,
+                no_sim=True,
+                only=["receiver_serial"],
+            )
+        )
+        return rc, seen, writes, repo
+
+    def test_repo_only_station_is_synced_not_skipped(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        rc, seen, writes, repo = self._run(
+            monkeypatch, tmp_path, local_text="[AAAA]\nx = 1\n", repo_text=self.SECTION
+        )
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "no stations.cfg section" not in out
+        assert seen["baseline"]["receiver_serial"] == "OLD"  # from the repo file
+        assert writes == [repo]  # the local file lacks [SKOG]: repo only
+
+    def test_local_section_present_writes_both(self, monkeypatch, tmp_path):
+        rc, _, writes, repo = self._run(
+            monkeypatch, tmp_path, local_text=self.SECTION, repo_text=self.SECTION
+        )
+        assert rc == 0
+        assert writes == [None, repo]  # None = the local deployed cfg
+
+    def test_station_missing_from_repo_is_skipped(self, monkeypatch, tmp_path, capsys):
+        rc, seen, writes, _ = self._run(
+            monkeypatch, tmp_path, local_text=self.SECTION, repo_text="[AAAA]\nx = 1\n"
+        )
+        assert rc == 0
+        assert writes == [] and "baseline" not in seen
+        assert "no [SKOG] section" in capsys.readouterr().out

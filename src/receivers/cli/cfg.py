@@ -4104,6 +4104,27 @@ def _local_stations_cfg_path() -> Path:
     return Path(_gps.ConfigParser().get_stations_config_path())
 
 
+def _read_cfg_section(path: Path, station_id: str) -> Optional[Dict[str, str]]:
+    """Return one ``[STATION]`` section of a stations.cfg as a flat dict.
+
+    ``None`` when the file or the section is absent. The flat shape is what
+    ``compare_station`` reads first (``_read_cfg_value``), and the keys are the
+    literal stations.cfg keys, so it is a faithful planning baseline for any
+    stations.cfg file — not only the gps_parser-deployed one.
+    """
+    import configparser
+
+    cp = configparser.ConfigParser(interpolation=None, strict=False)
+    try:
+        if not cp.read(path, encoding="utf-8"):
+            return None
+    except (configparser.Error, OSError, UnicodeDecodeError):
+        return None
+    if not cp.has_section(station_id):
+        return None
+    return dict(cp.items(station_id))
+
+
 def cmd_cfg_sync_from_tos(args) -> int:
     """Overwrite stations.cfg device fields from current TOS state (TOS-authoritative)."""
     from tostools.rinex import is_iers_domes
@@ -4169,7 +4190,25 @@ def cmd_cfg_sync_from_tos(args) -> int:
 
     any_global_change = False
     for sid in station_ids:
-        station_config = get_station_config(sid, silent=True)
+        # Under --global the repo's stations.cfg is the file being finalized, so
+        # it is also the planning baseline: a station committed to the repo but
+        # not yet deployed here must not be skipped, and the diff must be against
+        # the repo's values, not this host's copy. The local write still happens
+        # when the local file has the section; otherwise the deploy brings it.
+        station_targets = write_targets
+        if global_target is not None:
+            station_config = _read_cfg_section(global_target, sid)
+            if not station_config:
+                print(f"⏭️  {sid}: no [{sid}] section in {global_target} — skipping")
+                continue
+            if _read_cfg_section(_local_stations_cfg_path(), sid) is None:
+                station_targets = [global_target]
+                print(
+                    f"ℹ️  {sid}: not in the local stations.cfg yet — writing the repo "
+                    f"only (the sync timer / deploy.py brings it here)"
+                )
+        else:
+            station_config = get_station_config(sid, silent=True)
         if not station_config:
             print(f"⏭️  {sid}: no stations.cfg section — skipping")
             continue
@@ -4340,12 +4379,12 @@ def cmd_cfg_sync_from_tos(args) -> int:
             new_val = d.spec.cfg_format(d.tos_value)
             if new_val is None:
                 continue
-            for tgt in write_targets:
+            for tgt in station_targets:
                 if apply_diff(sid, d, new_val, cfg_path=tgt) and tgt is not None:
                     any_global_change = True
             print(f"  ✓ {d.cfg_key} = {new_val!r}")
         if sim_overwrite is not None:
-            for tgt in write_targets:
+            for tgt in station_targets:
                 path = tgt if tgt is not None else _local_stations_cfg_path()
                 if _update_cfg_field(path, sid, "router_ip", sim_overwrite) and (
                     tgt is not None
@@ -4353,7 +4392,7 @@ def cmd_cfg_sync_from_tos(args) -> int:
                     any_global_change = True
             print(f"  ✓ router_ip = {sim_overwrite!r}")
         if strip_marker:
-            for tgt in write_targets:
+            for tgt in station_targets:
                 path = tgt if tgt is not None else _local_stations_cfg_path()
                 if _remove_cfg_field(path, sid, "rinex_marker_number") and (
                     tgt is not None
@@ -4361,13 +4400,13 @@ def cmd_cfg_sync_from_tos(args) -> int:
                     any_global_change = True
             print("  ✓ rinex_marker_number removed (not an IERS DOMES)")
         if status_clear:
-            for tgt in write_targets:
+            for tgt in station_targets:
                 path = tgt if tgt is not None else _local_stations_cfg_path()
                 if _remove_cfg_field(path, sid, "station_status") and (tgt is not None):
                     any_global_change = True
             print("  ✓ station_status cleared (active again)")
         if status_deactivate is not None:
-            for tgt in write_targets:
+            for tgt in station_targets:
                 path = tgt if tgt is not None else _local_stations_cfg_path()
                 if _update_cfg_field(
                     path, sid, "station_status", status_deactivate
