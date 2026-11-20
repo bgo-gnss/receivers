@@ -48,7 +48,6 @@ from ..cfg.intake_request import FILE_FILLABLE, IntakeRequest
 from ..cfg.reconcile_apply import CfgTargets, resolve_effective_date, silent_emit
 from ..cfg.reconcile_plan import decide_field
 from ..cfg.reconcile_policy import ReconcilePolicy
-from ..operational_scope import is_operated
 from ..cfg.reconciler import (
     FieldDiff,
     SourceUnavailableError,
@@ -57,6 +56,7 @@ from ..cfg.reconciler import (
     compare_station,
     remove_diff,
 )
+from ..operational_scope import is_operated
 
 logger = logging.getLogger(__name__)
 
@@ -3467,6 +3467,63 @@ def _discover_phone_milesight(
     return 0
 
 
+def _catch_discovered_phone(args, catcher, token: Optional[str]) -> int:
+    """Read the catcher router's inbox for ``token``; print (and record) the sender.
+
+    The second half of ``discover-phone --via``. Exit 1 when the message does
+    not arrive in time or the catcher cannot be read; the number is never
+    guessed from an unmatched row.
+    """
+    import sys
+
+    from ..cfg.sms_catcher import CatcherError, wait_for_sender
+
+    assert token
+    print(
+        f"   ⏳ waiting up to {args.wait:.0f}s for {token} in the inbox of "
+        f"{catcher.label} ({catcher.host}) …"
+    )
+    try:
+        sender = wait_for_sender(catcher.host, token, timeout=args.wait)
+    except CatcherError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        return 1
+    if not sender:
+        print(
+            f"❌ {token} did not reach {catcher.label} within {args.wait:.0f}s. "
+            f"Re-check later with the catcher's inbox, or raise --wait.",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"✅ SIM number: {sender}")
+    if not args.record:
+        station_arg = (
+            f"--station {args.station}" if args.station else "--station <MARKER>"
+        )
+        print(
+            "   Record it on the SIM:\n"
+            f"     receivers cfg set-attr {station_arg} --subtype sim_card "
+            f"--field phone_number --value {sender} --no-dry-run"
+        )
+        return 0
+
+    from ..cfg.operations import CfgOperationError, set_device_attribute
+
+    try:
+        result = set_device_attribute(
+            args.station,
+            subtype="sim_card",
+            code="phone_number",
+            value=sender,
+            dry_run=False,
+        )
+    except CfgOperationError as e:
+        print(f"❌ recording phone_number failed: {e}", file=sys.stderr)
+        return 1
+    _print_result_summary(result, json_output=False, dry_run=False)
+    return 0
+
+
 def cmd_cfg_discover_phone(args) -> int:
     """``cfg discover-phone`` — reveal a router SIM's own phone number (MSISDN).
 
@@ -3530,11 +3587,34 @@ def cmd_cfg_discover_phone(args) -> int:
             )
         return 0
 
-    to = args.to or resolve_discover_phone_to()
+    # --via: another station's router is the catcher. Its inbox is read
+    # programmatically, so the sender (= this SIM's number) is found without a
+    # human reading a phone. --to then only overrides the catcher's number.
+    catcher = None
+    token = None
+    if getattr(args, "via", None):
+        from ..cfg.sms_catcher import CatcherError, make_token, resolve_catcher
+
+        try:
+            catcher = resolve_catcher(args.via, number=args.to)
+        except CatcherError as e:
+            print(f"❌ {e}", file=sys.stderr)
+            return 2
+        to = catcher.number
+        token = make_token()
+    else:
+        to = args.to or resolve_discover_phone_to()
     if not to:
         print(
             "❌ --to <catcher mobile> is required (or set [teltonika] "
-            "discover_phone_to in receivers.cfg)",
+            "discover_phone_to in receivers.cfg, or use --via <STATION>)",
+            file=sys.stderr,
+        )
+        return 2
+    if getattr(args, "record", False) and not (catcher and args.station):
+        print(
+            "❌ --record needs --via (an automatic catcher) and --station "
+            "(the SIM to record the number on)",
             file=sys.stderr,
         )
         return 2
@@ -3550,6 +3630,8 @@ def cmd_cfg_discover_phone(args) -> int:
             bits.append(args.station)
         bits += [host, "GPS SIM MSISDN discovery", _date.today().isoformat()]
         message = " ".join(bits)
+    if token:
+        message = f"{message} {token}"
 
     # Milesight routers take a different road: no `gsmctl`, no SSH shell tool.
     # They expose SMS through the same /cgi API as the rest of their config
@@ -3558,7 +3640,10 @@ def cmd_cfg_discover_phone(args) -> int:
     # itself, not from cfg, so a stations.cfg router_type that is stale or
     # absent cannot send us down the wrong path.
     if _is_milesight(host, args):
-        return _discover_phone_milesight(host, to, message, dry_run=dry_run)
+        rc = _discover_phone_milesight(host, to, message, dry_run=dry_run)
+        if rc != 0 or dry_run or catcher is None:
+            return rc
+        return _catch_discovered_phone(args, catcher, token)
 
     try:
         result = send_sms_ssh(
@@ -3568,11 +3653,21 @@ def cmd_cfg_discover_phone(args) -> int:
         print(f"❌ {e}", file=sys.stderr)
         return 1
 
+    if catcher is not None and not dry_run:
+        print(f"✅ SMS sent from {host} SIM to {catcher.label} ({to}).")
+        return _catch_discovered_phone(args, catcher, token)
+
     if dry_run:
         print(
             f"DRY RUN: would SSH to {host} and send SMS to {to} via "
             f"{result['cmd']}. Add --no-dry-run to send (costs a message)."
         )
+        if catcher is not None:
+            print(
+                f"   then read the inbox of catcher {catcher.label} "
+                f"({catcher.host}) for {token} and take its sender"
+                + (" and record it on the SIM in TOS" if args.record else "")
+            )
     else:
         print(f"✅ SMS sent from {host} SIM to {to}.")
         print(
@@ -5808,6 +5903,10 @@ Examples:
 
   # By station marker (router_ip from stations.cfg):
   receivers cfg discover-phone --station GSIG --to +3548XXXXXX --no-dry-run
+
+  # No phone needed: VFLS's router catches the SMS, its inbox is read, and the
+  # number is written to MJSK's SIM in TOS:
+  receivers cfg discover-phone --station MJSK --via VFLS --record --no-dry-run
 """,
     )
     disc.add_argument("--host", help="Router IP/hostname (or use --station).")
@@ -5819,6 +5918,32 @@ Examples:
         help=(
             "Catcher mobile that receives the SMS (digits, optional leading +). "
             "Falls back to [teltonika] discover_phone_to in receivers.cfg."
+        ),
+    )
+    disc.add_argument(
+        "--via",
+        metavar="STATION|HOST",
+        help=(
+            "Use another router as the catcher instead of a mobile: the SMS goes "
+            "to that router's SIM and its inbox is read automatically for the "
+            "sender. A station marker (e.g. VFLS) resolves the router from "
+            "stations.cfg and its number from TOS; a host needs --to as the "
+            "catcher's number."
+        ),
+    )
+    disc.add_argument(
+        "--wait",
+        type=float,
+        default=180.0,
+        metavar="SECONDS",
+        help="With --via: how long to poll the catcher's inbox (default 180).",
+    )
+    disc.add_argument(
+        "--record",
+        action="store_true",
+        help=(
+            "With --via and --station: write the discovered number to the "
+            "station's open sim_card phone_number in TOS (a live write)."
         ),
     )
     disc.add_argument(
@@ -6988,6 +7113,17 @@ Examples:
         help=(
             "Catcher number that receives the discovery SMS (your mobile). "
             "Default: [teltonika] discover_phone_to in receivers.cfg."
+        ),
+    )
+    rs.add_argument(
+        "--discover-phone-via",
+        dest="discover_phone_via",
+        metavar="STATION|HOST",
+        help=(
+            "Catch the discovery SMS on another router (e.g. VFLS) instead of "
+            "a mobile: its inbox is read automatically, so no number is typed. "
+            "A marker resolves router + number from stations.cfg/TOS; a host "
+            "needs --discover-phone-to as its number."
         ),
     )
     rs.add_argument(
@@ -8575,17 +8711,39 @@ def _discover_phone(args, *, dry_run: bool) -> Optional[str]:
             file=sys.stderr,
         )
         return None
-    to_number = getattr(args, "discover_phone_to", None) or resolve_discover_phone_to()
+    via = getattr(args, "discover_phone_via", None)
+    catcher = None
+    token = ""
+    if via:
+        from ..cfg.sms_catcher import CatcherError, make_token, resolve_catcher
+
+        try:
+            catcher = resolve_catcher(
+                via, number=getattr(args, "discover_phone_to", None)
+            )
+        except CatcherError as exc:
+            print(f"❌ {exc}", file=sys.stderr)
+            return None
+        to_number = catcher.number
+        token = " " + make_token()
+    else:
+        to_number = (
+            getattr(args, "discover_phone_to", None) or resolve_discover_phone_to()
+        )
     if not to_number:
         print(
             "❌ --discover-phone needs a catcher number: pass --discover-phone-to "
-            "or set [teltonika] discover_phone_to in receivers.cfg.",
+            "or --discover-phone-via STATION, or set [teltonika] discover_phone_to "
+            "in receivers.cfg.",
             file=sys.stderr,
         )
         return None
 
     station = args.station
-    body = f"{station} SIM number check ({_normalise_date_arg(args.date) or 'now'})"
+    body = (
+        f"{station} SIM number check ({_normalise_date_arg(args.date) or 'now'})"
+        f"{token}"
+    )
     mode = "[DRY-RUN] would send" if dry_run else "sending"
     print(
         f"   📲 {mode} SMS from {from_host} → {to_number}: {body!r} "
@@ -8610,6 +8768,27 @@ def _discover_phone(args, *, dry_run: bool) -> Optional[str]:
             "enter the number you receive.)"
         )
         return None
+    if catcher is not None:
+        from ..cfg.sms_catcher import CatcherError, wait_for_sender
+
+        print(
+            f"   ✅ SMS sent. Reading the inbox of {catcher.label} "
+            f"({catcher.host}) for{token} …"
+        )
+        try:
+            sender = wait_for_sender(catcher.host, token.strip())
+        except CatcherError as exc:
+            print(f"   ❌ {exc}", file=sys.stderr)
+            return None
+        if not sender:
+            print(
+                f"   ⚠️  the SMS did not reach {catcher.label} in time — "
+                f"recording no phone number",
+                file=sys.stderr,
+            )
+            return None
+        print(f"   📞 {station} SIM number: {sender}")
+        return sender
     print(
         f"   ✅ SMS sent. Check {to_number} for the message; its sender is the "
         f"{station} SIM's number."

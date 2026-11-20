@@ -3990,6 +3990,34 @@ def replace_sim(
     return result
 
 
+def station_device_attribute(
+    station_id: str,
+    *,
+    subtype: str,
+    code: str,
+    writer: Optional[TOSWriter] = None,
+) -> Optional[str]:
+    """Read the open value of ``code`` on a station's open ``subtype`` device.
+
+    The read-only counterpart of :func:`set_device_attribute` — e.g. a catcher
+    station's SIM ``phone_number`` for ``cfg discover-phone --via``. Returns
+    ``None`` when the station has no open device of that subtype or the
+    device carries no open value.
+    """
+    w = _resolve_writer(writer, True)
+    station_eid = _resolve_station(w, station_id)
+    device_id = _find_open_child(w, station_eid, subtype)
+    if device_id is None:
+        return None
+    rows = w.get_attribute_values(device_id, code)
+    open_vals = [a for a in rows if a.get("date_to") is None]
+    if not open_vals:
+        return None
+    current = max(open_vals, key=lambda a: a.get("date_from") or "")
+    value = current.get("value")
+    return str(value) if value not in (None, "") else None
+
+
 def set_device_attribute(
     station_id: str,
     *,
