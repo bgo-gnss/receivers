@@ -1036,9 +1036,12 @@ RINEX 62" means "23 stations the laptop hasn't recently downloaded raw data for"
 - `https://grafana.vedur.is/` (production dashboards, backed by pgdev)
 
 **The laptop's RECEIVERS config is independent of `gps-config-data`.**
-`receivers.cfg`, `scheduler.yaml`, `stations.cfg`, `sync.yaml` and `icinga.cfg`
+`receivers.cfg`, `scheduler.yaml`, `sync.yaml` and `icinga.cfg`
 in `~/.config/gpsconfig/` are the user's own development config, not the IMO
-server config repo. The divergence is deliberate and load-bearing:
+server config repo. **`stations.cfg` is NOT in that set** (since 2026-08-25): the
+laptop tracks the repo's copy, but there is **no sync timer on the laptop** — it
+changes only when `deploy.py --env laptop-bgo --target ~/.config/gpsconfig --sync`
+is run, so it lags every gps-config-data push until then. The divergence is deliberate and load-bearing:
 `scheduler.yaml` runs `max_workers: 2` against production's 100, `data_prepath`
 and `tmp_dir` point somewhere reboot-persistent (`~/tmp/…`) because `/tmp` is
 tmpfs, and the laptop tracks a working subset of stations. Deploying the repo
