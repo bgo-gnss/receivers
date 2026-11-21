@@ -1,0 +1,118 @@
+"""Slice 3: the GPS Daily Solutions Grafana dashboard.
+
+Static checks always run. With ``RECEIVERS_TEST_PG_DSN`` set (see
+``test_solution_store.py``) every panel's SQL is also executed, with the
+Grafana macros filled in, against a freshly migrated disposable database.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import json
+import re
+from pathlib import Path
+
+import pytest
+
+# reuse the disposable-database fixtures
+from tests.test_solution_store import admin_dsn, db  # noqa: F401
+
+DASHBOARD = (
+    Path(__file__).resolve().parents[1]
+    / "docs"
+    / "grafana"
+    / "gps_daily_solutions_dashboard.json"
+)
+
+
+@pytest.fixture(scope="module")
+def dash() -> dict:
+    return json.loads(DASHBOARD.read_text())
+
+
+def _sqls(dash: dict) -> list[tuple[str, str]]:
+    return [
+        (p["title"], t["rawSql"])
+        for p in dash["panels"]
+        for t in p.get("targets", [])
+        if "rawSql" in t
+    ]
+
+
+def _grid_panel(dash: dict) -> dict:
+    return next(p for p in dash["panels"] if p["title"] == "Station × UTC day")
+
+
+def test_states_come_only_from_solution_day_grid(dash):
+    # No panel may re-derive a state from the fact tables (plan §3, S3).
+    for title, sql in _sqls(dash):
+        for table_or_column in ("solution_fact", "deadline_time", "expected_lag_days"):
+            assert table_or_column not in sql, title
+
+
+def test_matrix_columns_are_keyed_by_iso_date_and_shown_uniquely(dash):
+    p = _grid_panel(dash)
+    assert "to_char(day, 'YYYY-MM-DD') AS day" in p["targets"][0]["rawSql"]
+    matrix, rename = p["transformations"]
+    assert matrix["id"] == "groupingToMatrix"
+    assert matrix["options"]["columnField"] == "day"
+    assert rename["id"] == "renameByRegex"
+    # the shown header must stay unique across months (a bare DD merged
+    # October and November columns in Grafana 12.3.1)
+    rx = re.compile(rename["options"]["regex"])
+    pattern = (
+        rename["options"]["renamePattern"].replace("$1", r"\1").replace("$2", r"\2")
+    )
+    days = [dt.date(2026, 10, 1) + dt.timedelta(days=k) for k in range(400)]
+    shown = [rx.sub(pattern, d.isoformat()) for d in days[:365]]
+    assert len(set(shown)) == len(shown)
+
+
+def test_every_state_has_a_colour_and_unknown_frozen_are_not_green(dash):
+    p = _grid_panel(dash)
+    opts = p["fieldConfig"]["defaults"]["mappings"][0]["options"]
+    assert set(opts) == {str(k) for k in range(1, 11)}
+    green = opts["1"]["color"]
+    for code in ("2", "10"):  # frozen, unknown
+        assert opts[code]["color"] != green
+
+
+def test_station_column_is_frozen_and_links_to_context(dash):
+    p = _grid_panel(dash)
+    assert p["options"]["frozenColumns"] == {"left": 1}
+    props = p["fieldConfig"]["overrides"][0]["properties"]
+    links = next(x["value"] for x in props if x["id"] == "links")
+    assert any("/d/gps-data-delivery/" in link["url"] for link in links)
+
+
+# ------------------------------------------------- panel SQL on a real schema
+
+
+def _fill(
+    sql: str, stations: str, frm: dt.datetime, to: dt.datetime, show: str = "problems"
+) -> str:
+    return (
+        sql.replace("${stream}", "imo.24hr_itrf14")
+        .replace("$__timeFrom()", f"'{frm.isoformat()}'::timestamptz")
+        .replace("$__timeTo()", f"'{to.isoformat()}'::timestamptz")
+        .replace("${station:sqlstring}", stations)
+        .replace("${show}", show)
+    )
+
+
+def test_every_panel_query_runs_against_migration_077(dash, db):  # noqa: F811 (fixture)
+    from receivers.monitoring.solutions.store import record_check
+    from tests.test_solution_store import NOW, payload, q
+
+    record_check(db, payload())
+    stations = "'AFST','NEWS','THOB'"
+    for v in dash["templating"]["list"]:
+        if v["type"] == "query":
+            q(db, v["query"].replace("${stream}", "imo.24hr_itrf14"))
+    for title, sql in _sqls(dash):
+        rows = q(db, _fill(sql, stations, NOW - dt.timedelta(days=45), NOW))
+        assert rows is not None, title
+    grid_sql = _grid_panel(dash)["targets"][0]["rawSql"]
+    frm = NOW - dt.timedelta(days=45)
+    grid = q(db, _fill(grid_sql, stations, frm, NOW, show="all"))
+    assert len(grid) == 3 * 46

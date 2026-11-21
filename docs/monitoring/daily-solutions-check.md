@@ -140,9 +140,12 @@ The migration has not been applied to rek-d01 or pgdev. When it is, apply it as
 bgo, the owner, on each host.
 
 Open items for slice 5 (real destinations):
-- **The pgdev write role.** `record_solution_check` is EXECUTE-granted only to
-  `gpsops`, which doesn't exist on pgdev. Grant it to the role `database.cfg` uses for
-  pgdev, or the second destination gets permission denied.
+- **The pgdev write identity (checked 2026-11-21, no grant needed).** rek-d01
+  writes to pgdev as `mirror_user = bgo` (`database.cfg`). pgdev is a shared IMO
+  server with personal LDAP roles, so there is no `gpsops` there by design. `bgo` owns
+  every gps_health table on pgdev and, once 077 is applied as bgo, owns
+  `record_solution_check` too, so it can EXECUTE without a grant. On rek-d01 the
+  checker runs as `gpsops`, which the migration grants EXECUTE.
 - **The cadence-dependent settings.** Replace the 26 h `freshness_ttl` placeholder with
   a value tied to the timer cadence. Make sure one check runs after 09:15 UTC;
   otherwise late days stay `pending/awaiting_recheck`.

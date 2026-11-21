@@ -176,6 +176,51 @@ in `database_factory` (the writer deliberately does NOT use `single_host=True`),
 migration 075 has been applied on pgdev as well — pgdev migrations are hand-applied. Until
 both hold, treat the dashboard as dev-only.
 
+## Dashboard: GPS Daily Solutions
+
+**File**: `gps_daily_solutions_dashboard.json` · **UID**: `gps-daily-solutions` · **Refresh**: 15 min ·
+**Default range**: last 45 days (UTC) · **Source**: `solution_day_grid()` (migration 077)
+
+Daily POS solution availability per station and UTC day. This is slice 3 of
+`docs/architecture/daily-solutions-implementation-plan.md`. Every panel reads the
+states from `solution_day_grid` and never re-derives them; the dashboard only turns
+state and reason into a colour.
+
+- **Stat row:** last successful check, latest check outcome, problem days (pending
+  before the deadline is normal and not counted), confirmed absences, unexpected files.
+- **Station × UTC day grid:** a table with the *grouping to matrix* transform. The
+  `Rows` variable switches between `problems` (only stations with a problem day) and
+  `all`. Click a station for its data-delivery and receiver dashboards.
+- **Problem days, counts by state and reason, recent check runs, and unexpected
+  files/other products.**
+
+Grid cell legend:
+
+| Cell | Colour | State / reason | Meaning |
+|---|---|---|---|
+| ✓ | green | available / verified | valid row, re-checked in the 45-day window |
+| ❄ | blue-grey | available / frozen | valid when last verified, now older than the window |
+| … | light blue | pending / before_deadline | not due yet (D+1 09:15 UTC) |
+| ↻ | blue | pending / awaiting_recheck | absent, but only seen before the deadline |
+| late | orange | overdue / no_completion_record | late; not confirmed missing |
+| ✗ | red | overdue / absent_after_completion | confirmed missing |
+| rej | dark red | overdue / producer_rejected, producer_failed | the producer says so |
+| inv | purple | invalid | a bad row or file (see Problem days for the code) |
+| – | light grey | not_expected | excluded, or outside the station's roster intervals |
+| ? | dark grey | unknown | stale or failed check, unreadable, never checked |
+
+Unknown and frozen cells are never plain green.
+
+**Gotcha (Grafana 12.3.1), found while building this:** the matrix transform sorts its
+columns as text, and the table matches columns by *display name*. The column key is
+therefore the full ISO date, and the header is renamed to `MM-DD`. A bare `DD` made
+October and November share columns and silently showed November's cells under
+October's dates. `tests/test_solution_dashboard.py` pins both properties.
+
+**Not on grafana.vedur.is yet.** pgdev needs migration 077 (applied as bgo), and a
+real check must be writing to it (slice 5). Only then add it to the `vedur` target in
+`scripts/grafana_sync.py`'s `grafana_targets.yaml`.
+
 ## Syncing to grafana.vedur.is
 
 The `scripts/grafana_sync.py` tool pushes local dashboard JSON to the production Grafana instance. It remaps datasource UIDs and inter-dashboard link UIDs automatically.
