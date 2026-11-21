@@ -213,6 +213,29 @@ class TestTimeParameterProcessing:
         with pytest.raises(ValueError, match="End time .* is before start time"):
             self.processor.process_time_parameters(start, end, "15s_24hr")
 
+    def test_process_rejects_empty_range(self):
+        """Start == end is an EMPTY range: the end is exclusive.
+
+        ``--station X -s 20261119 -e 20261119`` used to pass validation and
+        then report "Generated 0 timestamps" + "Archive is up to date", which
+        reads like "nothing is missing" (BGÓ 2026-11-21). It has to say that
+        the range is empty and which end actually covers one day.
+        """
+        start = datetime(2025, 9, 24, 0, 0, 0)
+
+        with pytest.raises(ValueError, match="Empty time range") as excinfo:
+            self.processor.process_time_parameters(start, start, "15s_24hr")
+
+        # the message names the end that covers the single day
+        assert "20250925" in str(excinfo.value)
+
+    def test_process_rejects_empty_range_hourly(self):
+        """The same rule for an hourly session, with an hourly step."""
+        start = datetime(2025, 9, 24, 14, 0, 0)
+
+        with pytest.raises(ValueError, match="Empty time range"):
+            self.processor.process_time_parameters(start, start, "1Hz_1hr")
+
 
 class TestDefaultTimeRangeCalculation:
     """Test default time range calculation (-D parameter logic)."""

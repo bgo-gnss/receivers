@@ -240,7 +240,10 @@ def _download_station_period(
             for file_path in result.get("downloaded_files", []):
                 logger.debug(f"  - {file_path}")
 
-    except (ConfigurationError, ConnectionError) as e:
+    except (ConfigurationError, ConnectionError, ValueError) as e:
+        # ValueError is bad input, not a surprise: an empty or reversed time
+        # range lands here with a message that already says how to fix it,
+        # so it must not be reported as an "Unexpected error" (BGÓ 2026-11-21)
         logger.error(f"Error processing {station_id}: {e}")
         errors += 1
     except Exception as e:
