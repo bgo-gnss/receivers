@@ -78,6 +78,15 @@ the file written by `geo_dataread.pos.write_pos`. That file is pinned by
 `geo_dataread/tests/test_pos_monitor_contract.py`. If the geo_dataread test fails,
 copy its new fixture here and run `tests/test_solution_contract.py`.
 
+This is the production writer path. yang's `update-pos-yang.sh` runs
+`gps-realign --frame igb14 --update`, and `realign.py` calls
+`write_pos(frame="IGb14", soln="24hrs")`, then `merge_pos`. `merge_pos` keeps the
+bytes of rows that were not re-made. The fixture is written by `write_pos` from three
+positions. Two of them are AFST's X/Y/Z for 2026-11-19 and -20, taken from yang. The
+third is made up, and the sigmas and correlations are simplified. So the fixture is
+not a copy of a real file. The owner-approved real sample is still
+gate G6.
+
 ## First real-data run (2026-11-21, a copy of yang's directory)
 
 The roster was provisional (all 385 files, expected since 2000). Window 2026-10-07 ..
