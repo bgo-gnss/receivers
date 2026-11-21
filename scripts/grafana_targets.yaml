@@ -22,6 +22,8 @@ targets:
       gps_health_dashboard: "gps-health-voltage"
       gps_map_dashboard: "gps-map"
       gps_station_detail_dashboard: "gps-station-detail"
+      gps_daily_solutions_dashboard: "gps-daily-solutions"
+      # not under vedur yet: pgdev needs migration 077 and real data first (slice 5)
 
   vedur:
     url: "https://grafana.vedur.is"
