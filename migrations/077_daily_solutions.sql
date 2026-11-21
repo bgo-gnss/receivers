@@ -440,6 +440,10 @@ CROSS JOIN LATERAL (
         WHEN c.fact = 'valid' AND c.in_window THEN 'available|verified'          -- 5
         WHEN c.fact = 'valid' THEN 'available|frozen'
         WHEN a.absentish AND p_now < c.deadline THEN 'pending|before_deadline'   -- 6
+        -- the absence was seen BEFORE the deadline (e.g. a 07:00 check, file at
+        -- 08:46): late is not established until a check after the deadline
+        WHEN a.absentish AND (c.last_verified_at IS NULL OR c.last_verified_at < c.deadline)
+            THEN 'pending|awaiting_recheck'                                      -- 6b
         WHEN a.absentish AND c.item_outcome = 'rejected' THEN 'overdue|producer_rejected'  -- 7
         WHEN a.absentish AND c.item_outcome = 'failed' THEN 'overdue|producer_failed'
         WHEN a.absentish AND c.completion_id IS NOT NULL

@@ -138,3 +138,11 @@ RECEIVERS_TEST_PG_DSN="host=127.0.0.1 port=54329 user=$USER dbname=postgres" \
 
 The migration has not been applied to rek-d01 or pgdev. When it is, apply it as
 bgo, the owner, on each host.
+
+Open items for slice 5 (real destinations):
+- **The pgdev write role.** `record_solution_check` is EXECUTE-granted only to
+  `gpsops`, which doesn't exist on pgdev. Grant it to the role `database.cfg` uses for
+  pgdev, or the second destination gets permission denied.
+- **The cadence-dependent settings.** Replace the 26 h `freshness_ttl` placeholder with
+  a value tied to the timer cadence. Make sure one check runs after 09:15 UTC;
+  otherwise late days stay `pending/awaiting_recheck`.

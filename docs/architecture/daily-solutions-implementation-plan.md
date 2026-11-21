@@ -76,6 +76,7 @@ Rules, applied in order (the first match wins):
 | 4 | Fact invalid (malformed, duplicate, non-finite XYZ, wrong station/frame/session/product) | **invalid** | the validation code |
 | 5 | Fact valid | **available** | `verified` (in window) / `frozen` (older than 45 days, last verified at `last_verified_at`) |
 | 6 | Absent, `now < deadline(d)` | **pending** | `before_deadline` |
+| 6b | Absent, deadline passed, but the absence was last observed **before** the deadline | **pending** | `awaiting_recheck` |
 | 7 | Absent, deadline passed, the completion record covering the day lists it as `rejected` or `failed` | **overdue** | `producer_rejected` / `producer_failed` |
 | 8 | Absent, deadline passed, a completion record covers the day and the station is missing | **overdue** | `absent_after_completion` |
 | 9 | Absent, deadline passed, no completion record covers the day | **overdue** | `no_completion_record` |
@@ -86,6 +87,9 @@ Slice 2 additions (2026-11-21, implemented in migration 077):
   beside it (`unverifiable_code`, `unverifiable_at`). Rule 3 makes the in-window cell
   unknown, and once the day leaves the window the last known fact shows again, for
   example as `frozen`.
+- **Rules 7–9 need an absence observed after the deadline.** A check at 07:00 that
+  saw D-1 absent does not make it overdue at 09:15; the cell waits as
+  `pending/awaiting_recheck` until a later check sees it.
 - **Days from today onward with no fact are treated as absent-like**, so they show
   as `pending`.
 - **Runs and completion records after `now` are ignored**, so an injected `now` sees

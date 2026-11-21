@@ -60,7 +60,12 @@ def _admin_dsn() -> str:
 
     p = parse_dsn(dsn)
     host = p.get("host", "")
-    if not (host in {"", "localhost", "127.0.0.1", "::1"} or host.startswith("/")):
+    if not host or p.get("hostaddr") or p.get("service"):
+        pytest.fail("RECEIVERS_TEST_PG_DSN needs an explicit local host=")
+    if any(os.environ.get(v) for v in ("PGHOSTADDR", "PGSERVICE", "PGSERVICEFILE")):
+        pytest.fail("unset PGHOSTADDR / PGSERVICE / PGSERVICEFILE for these tests")
+    local = {"localhost", "127.0.0.1", "::1"}
+    if not all(h in local or h.startswith("/") for h in host.split(",")):
         pytest.fail("RECEIVERS_TEST_PG_DSN must point at this machine")
     if p.get("dbname") == "gps_health":
         pytest.fail("RECEIVERS_TEST_PG_DSN must not be gps_health")
@@ -322,21 +327,26 @@ def test_rule5_verified_in_window_frozen_after(db):
 
 
 @pytest.mark.parametrize(
-    ("now", "expected"),
+    ("checked", "now", "expected"),
     [
-        (dt.datetime(2026, 11, 21, 9, 14, tzinfo=UTC), ("pending", "before_deadline")),
-        (
-            dt.datetime(2026, 11, 21, 9, 15, tzinfo=UTC),
-            ("overdue", "no_completion_record"),
-        ),
+        ("09:00", "09:14", ("pending", "before_deadline")),
+        # absence seen at 09:00 does not prove lateness at 09:15
+        ("09:00", "09:15", ("pending", "awaiting_recheck")),
+        ("09:00", "20:00", ("pending", "awaiting_recheck")),
+        ("09:15", "09:16", ("overdue", "no_completion_record")),
+        ("09:20", "09:30", ("overdue", "no_completion_record")),
     ],
 )
-def test_rule6_deadline_is_d_plus_lag_at_0915_utc(db, now, expected):
-    record_check(db, payload(
-        checked_at=dt.datetime(2026, 11, 21, 9, 0, tzinfo=UTC),
-        facts={("AFST", d(1)): ("absent", None, None)},
-    ))  # fmt: skip
-    assert grid(db, now=now)[("AFST", d(1))] == expected
+def test_rule6_deadline_is_d_plus_lag_at_0915_utc(db, checked, now, expected):
+    def at(hhmm: str) -> dt.datetime:
+        h, m = map(int, hhmm.split(":"))
+        return dt.datetime(2026, 11, 21, h, m, tzinfo=UTC)
+
+    record_check(
+        db,
+        payload(checked_at=at(checked), facts={("AFST", d(1)): ("absent", None, None)}),
+    )
+    assert grid(db, now=at(now))[("AFST", d(1))] == expected
 
 
 def test_rule6_today_is_pending(db):
@@ -579,6 +589,8 @@ def test_writer_is_security_definer_and_not_public(db):
         "host=127.0.0.1 dbname=gps_health",
         "host=127.0.0.1",
         "postgresql://u:secret@pgdev.vedur.is/sol",
+        "dbname=sol",  # no host: libpq would fall back to PGHOST
+        "host=127.0.0.1 service=prod dbname=sol",
     ],
 )
 def test_slice2_refuses_non_disposable_destinations(dsn):
@@ -589,10 +601,22 @@ def test_slice2_refuses_non_disposable_destinations(dsn):
 
 @pytest.mark.parametrize(
     "dsn",
-    ["host=127.0.0.1 dbname=sol", "host=/var/run/postgresql dbname=sol", "dbname=sol"],
+    ["host=127.0.0.1 dbname=sol", "host=/var/run/postgresql dbname=sol"],
 )
 def test_local_destinations_are_accepted(dsn):
     check_destination(dsn)
+
+
+def test_a_dsn_without_host_is_refused_by_name():
+    with pytest.raises(DestinationRefusedError, match="explicit local host"):
+        check_destination("dbname=sol")
+
+
+@pytest.mark.parametrize("var", ["PGHOSTADDR", "PGSERVICE", "PGSERVICEFILE"])
+def test_libpq_environment_redirects_are_refused(monkeypatch, var):
+    monkeypatch.setenv(var, "10.0.0.1" if var == "PGHOSTADDR" else "prod")
+    with pytest.raises(DestinationRefusedError, match=var):
+        check_destination("host=127.0.0.1 dbname=sol")
 
 
 def test_each_destination_is_written_separately_and_failures_reported(admin_dsn, db):

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 from typing import Any
 
 LOCAL_HOSTS = frozenset({"", "localhost", "127.0.0.1", "::1"})
@@ -56,15 +57,28 @@ def describe(dsn: str) -> str:
 def check_destination(dsn: str) -> None:
     """Raise :class:`DestinationRefusedError` unless ``dsn`` is a disposable local DB."""
     p = _parse(dsn)
+    # Anything libpq would fill in from elsewhere is refused: without an
+    # explicit host it falls back to PGHOST, and hostaddr / a service entry
+    # (from the DSN, PGHOSTADDR or PGSERVICE) can point anywhere.
+    if p.get("service") or p.get("hostaddr"):
+        raise DestinationRefusedError(
+            f"{describe(dsn)}: service and hostaddr are not allowed"
+        )
+    for var in ("PGHOSTADDR", "PGSERVICE", "PGSERVICEFILE"):
+        if os.environ.get(var):
+            raise DestinationRefusedError(
+                f"{describe(dsn)}: refused while {var} is set in the environment"
+            )
     host = p.get("host", "")
-    hosts = host.split(",") if host else [""]
-    for h in hosts:
-        if not (h in LOCAL_HOSTS or h.startswith("/")):
+    if not host:
+        raise DestinationRefusedError(
+            f"{describe(dsn)}: an explicit local host= is required"
+        )
+    for h in host.split(","):
+        if not (h in LOCAL_HOSTS - {""} or h.startswith("/")):
             raise DestinationRefusedError(
                 f"{describe(dsn)}: slice 2 writes to local disposable databases only"
             )
-    if p.get("hostaddr"):
-        raise DestinationRefusedError(f"{describe(dsn)}: hostaddr is not allowed")
     if p.get("dbname", "") in PROTECTED_DBNAMES or not p.get("dbname"):
         raise DestinationRefusedError(
             f"{describe(dsn)}: an explicit, non-production dbname is required"
