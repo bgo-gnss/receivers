@@ -278,7 +278,7 @@ def test_cli_json_output_is_facts_only(tmp_path, capsys):
     )  # fmt: skip
     assert rc == EXIT_OK
     doc = json.loads(capsys.readouterr().out)
-    assert doc["schema"] == "solution-check-facts/1"
+    assert doc["schema"] == "solution-check-facts/2"
     assert doc["window"] == {
         "from": FIRST.isoformat(), "to": YESTERDAY.isoformat(), "days": 45
     }  # fmt: skip

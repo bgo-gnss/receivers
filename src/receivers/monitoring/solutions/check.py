@@ -25,7 +25,8 @@ from .window import WINDOW_DAYS, check_window
 CellFactKind = Literal["valid", "invalid", "absent", "unverifiable"]
 Outcome = Literal["ok", "source_unavailable"]
 
-SCHEMA = "solution-check-facts/1"
+#: /2 (slice 2): adds the roster snapshot that record_solution_check installs
+SCHEMA = "solution-check-facts/2"
 
 #: earlier names of the same series (mirrors ``geo_dataread.pos.LEGACY_IDS``,
 #: kept here because receivers does not depend on geo_dataread). A file under
@@ -111,6 +112,7 @@ class CheckReport:
                 "stations": len(self.roster.stations),
                 "frame_label": self.roster.spec.frame_label,
                 "session": self.roster.spec.session,
+                **self.roster.snapshot(),
             },
             "summary": {
                 "facts": self.fact_counts,

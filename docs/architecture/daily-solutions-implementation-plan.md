@@ -71,14 +71,32 @@ Rules, applied in order (the first match wins):
 |---|---|---|---|
 | 1 | Not in roster-reviewed coverage | **unknown** | `roster_unreviewed` |
 | 2 | Covered, explicitly excluded | **not expected** | `roster_excluded` |
-| 3 | Day inside the 45-day window and `check_ok` false (failed, stale, unreadable, mount lost, hash mismatch against the completion inventory) | **unknown** | `check_failed` / `check_stale` / `source_unavailable` / `inventory_mismatch` |
+| 2b | Covered, but outside every expected interval of the station | **not expected** | `roster_not_expected` |
+| 3 | Day inside the 45-day window and `check_ok` false (failed, stale, unreadable, mount lost, hash mismatch against the completion inventory) | **unknown** | `no_check_run` (no run covers the day) / `source_unavailable` / `check_failed` / `check_stale` / `file_unverifiable` (the latest run could not read the file or date a row) / `not_in_last_check` (the latest covering run carries no fact for the cell) / `inventory_mismatch` (slice 4) |
 | 4 | Fact invalid (malformed, duplicate, non-finite XYZ, wrong station/frame/session/product) | **invalid** | the validation code |
 | 5 | Fact valid | **available** | `verified` (in window) / `frozen` (older than 45 days, last verified at `last_verified_at`) |
 | 6 | Absent, `now < deadline(d)` | **pending** | `before_deadline` |
+| 6b | Absent, deadline passed, but the absence was last observed **before** the deadline | **pending** | `awaiting_recheck` |
 | 7 | Absent, deadline passed, the completion record covering the day lists it as `rejected` or `failed` | **overdue** | `producer_rejected` / `producer_failed` |
 | 8 | Absent, deadline passed, a completion record covers the day and the station is missing | **overdue** | `absent_after_completion` |
 | 9 | Absent, deadline passed, no completion record covers the day | **overdue** | `no_completion_record` |
-| 10 | Day older than 45 days, never observed (before the first run) | **unknown** | `never_checked` |
+| 10 | Outside the window, no known fact | **unknown** | `never_verified` (only ever unverifiable) / `never_checked` |
+
+Slice 2 additions (2026-11-21, implemented in migration 077):
+- **An unverifiable observation never overwrites the last known fact.** It is stored
+  beside it (`unverifiable_code`, `unverifiable_at`). Rule 3 makes the in-window cell
+  unknown, and once the day leaves the window the last known fact shows again, for
+  example as `frozen`.
+- **Rules 7–9 need an absence observed after the deadline.** A check at 07:00 that
+  saw D-1 absent does not make it overdue at 09:15; the cell waits as
+  `pending/awaiting_recheck` until a later check sees it.
+- **Days from today onward with no fact are treated as absent-like**, so they show
+  as `pending`.
+- **Runs and completion records after `now` are ignored**, so an injected `now` sees
+  only the past.
+- **`freshness_ttl` = 26 h is a placeholder** until slice 5 fixes the timer cadence.
+- **Transition retention is not implemented yet.** It is set from the G7 churn
+  measurement.
 
 Consequences:
 - A **valid row is positive evidence** without a completion record (rule 5 comes
