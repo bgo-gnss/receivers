@@ -1867,6 +1867,10 @@ For subcommand help: receivers <command> --help
     from .missing import create_missing_parser
 
     create_missing_parser(subparsers)
+    # solution-health (daily POS solution facts vs a roster — no database)
+    from .solution_health import create_solution_health_parser
+
+    create_solution_health_parser(subparsers)
 
     # epos-disseminate (RINEX3 long-name dissemination to the EPOS files server)
     from .epos_disseminate import create_epos_disseminate_parser
