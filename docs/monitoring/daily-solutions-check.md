@@ -1,4 +1,4 @@
-# Daily POS solution check (slice 1)
+# Daily POS solution check (slices 1–2)
 
 `receivers solution-health check` reads a directory of daily PBO `.pos` files and an
 explicit roster. For each roster station it reports one **fact** per day for the last
@@ -98,3 +98,43 @@ The roster was provisional (all 385 files, expected since 2000). Window 2026-10-
 - 113 stations had none, which matches the roughly 115 files nobody maintains.
 
 The run took 13 s.
+
+## Recording runs and the grid (slice 2)
+
+Migration `077_daily_solutions.sql` adds the store, `record_solution_check(payload)`
+and `solution_day_grid(stream, day_from, day_to, now)`. The grid is the only place
+the six states are decided; see plan §3 for the rules and reasons.
+
+```bash
+# record into a disposable local database (slice 2 refuses anything else)
+receivers solution-health check --source DIR --roster FILE \
+    --record-dsn "host=127.0.0.1 port=54329 dbname=sol_scratch"
+psql ... -c "SELECT * FROM solution_day_grid('imo.24hr_itrf14', '2026-10-01', '2026-11-20', now())"
+```
+
+- **One write per destination.** Each `--record-dsn` is written in its own
+  connection and its own transaction (owner decision G8). If one fails it is
+  reported and the exit code is 3; the others are still written.
+- **A source-unavailable run is recorded too.** That record is what turns the
+  window's cells unknown.
+- **All or nothing.** `record_solution_check` installs a complete snapshot (every
+  roster station × every window day) or nothing.
+- **Replays.** A replayed `run_id` is a no-op when the payload is identical, and an
+  error when it differs.
+- **Late arrivals.** An older snapshot that arrives late never moves a fact back.
+- **Speed.** Measured on a laptop cluster with 385 stations × 45 days: 0.4 s to
+  record, 0.01 s for the grid.
+
+Tests: set `RECEIVERS_TEST_PG_DSN` to an admin DSN on a disposable local cluster.
+Without it, `tests/test_solution_store.py` is skipped. Each test creates and drops
+its own database, and the guard refuses non-local hosts and `gps_health`.
+
+```bash
+initdb -D /tmp/pg -A trust -U $USER
+pg_ctl -D /tmp/pg -o "-p 54329 -c listen_addresses=127.0.0.1 -c unix_socket_directories=''" start
+RECEIVERS_TEST_PG_DSN="host=127.0.0.1 port=54329 user=$USER dbname=postgres" \
+  PYTHONPATH=scripts/dev pytest tests/test_solution_store.py -p no_network_plugin
+```
+
+The migration has not been applied to rek-d01 or pgdev. When it is, apply it as
+bgo, the owner, on each host.

@@ -1,11 +1,14 @@
-"""``receivers solution-health``: daily POS solution monitoring (slice 1).
+"""``receivers solution-health``: daily POS solution monitoring.
 
 ``check`` reads a POS directory and a roster file and reports facts per
-station-day. It touches no database and writes nothing.
+station-day. Without ``--record-dsn`` it touches no database and writes
+nothing. With it, the run is recorded in each named database separately
+(owner decision G8); in slice 2 only local disposable databases are accepted.
 
 Exit codes: 0 = the check ran (whatever it found); 2 = it could not run
-(roster invalid, source unavailable). An exit code of 0 says nothing about
-completeness: read the report.
+(roster invalid, source unavailable, destination refused); 3 = a
+``--record-dsn`` destination failed (the others were still written).
+An exit code of 0 says nothing about completeness: read the report.
 """
 
 from __future__ import annotations
@@ -19,10 +22,16 @@ from pathlib import Path
 
 from ..monitoring.solutions.check import Cell, CheckReport, run_check
 from ..monitoring.solutions.roster import RosterError, load_roster
+from ..monitoring.solutions.store import (
+    DestinationRefusedError,
+    check_destination,
+    record_to_destinations,
+)
 from ..monitoring.solutions.window import WINDOW_DAYS
 
 EXIT_OK = 0
 EXIT_CANNOT_CHECK = 2
+EXIT_RECORD_FAILED = 3
 
 
 def _parse_now(value: str | None) -> dt.datetime:
@@ -94,14 +103,36 @@ def cmd_solution_health_check(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_CANNOT_CHECK
 
+    dsns: list[str] = list(args.record_dsn or [])
+    for dsn in dsns:  # refuse before reading anything, not after
+        try:
+            check_destination(dsn)
+        except DestinationRefusedError as exc:
+            print(f"error: --record-dsn {exc}", file=sys.stderr)
+            return EXIT_CANNOT_CHECK
+
     report = run_check(
         Path(args.source).expanduser(), roster, now, window_days=args.window_days
     )
+    payload = report.to_json()
     if args.json:
-        json.dump(report.to_json(), sys.stdout, indent=2)
+        json.dump(payload, sys.stdout, indent=2)
         sys.stdout.write("\n")
     else:
         _print_human(report)
+
+    record_failed = False
+    if dsns:
+        # A source_unavailable run is recorded too: it is what turns the
+        # window's cells unknown instead of leaving an old green in place.
+        for res in record_to_destinations(dsns, payload):
+            if res.ok:
+                print(f"recorded {res.label}: {res.status}", file=sys.stderr)
+            else:
+                record_failed = True
+                print(f"error: record {res.label}: {res.error}", file=sys.stderr)
+    if record_failed:
+        return EXIT_RECORD_FAILED
     return EXIT_OK if report.outcome == "ok" else EXIT_CANNOT_CHECK
 
 
@@ -109,7 +140,7 @@ def create_solution_health_parser(subparsers) -> argparse.ArgumentParser:
     """Register ``solution-health`` (with its ``check`` verb) on ``subparsers``."""
     parser: argparse.ArgumentParser = subparsers.add_parser(
         "solution-health",
-        help="Daily GNSS POS solution monitoring (facts only, no database)",
+        help="Daily GNSS POS solution monitoring",
         description=(
             "Check daily POS solution files against an explicit roster. "
             "Reports facts per station-day (valid / invalid / absent / "
@@ -119,10 +150,10 @@ def create_solution_health_parser(subparsers) -> argparse.ArgumentParser:
     verbs = parser.add_subparsers(dest="solution_health_verb", required=True)
     check = verbs.add_parser(
         "check",
-        help="Scan a POS directory against a roster (read-only)",
+        help="Scan a POS directory against a roster",
         description=(
             f"Re-check the last {WINDOW_DAYS} completed UTC days of every roster "
-            "station. Read-only: no database, no writes."
+            "station. Reads only; writes nothing unless --record-dsn is given."
         ),
     )
     check.add_argument("--source", required=True, help="POS directory to read")
@@ -140,5 +171,13 @@ def create_solution_health_parser(subparsers) -> argparse.ArgumentParser:
         help=f"Completed UTC days to check (default {WINDOW_DAYS})",
     )
     check.add_argument("--json", action="store_true", help="JSON facts on stdout")
+    check.add_argument(
+        "--record-dsn",
+        action="append",
+        metavar="DSN",
+        help="Also record the run in this database via record_solution_check "
+        "(repeatable; each destination is written separately and every failure "
+        "is reported). Slice 2: local disposable databases only.",
+    )
     check.set_defaults(func=cmd_solution_health_check)
     return parser

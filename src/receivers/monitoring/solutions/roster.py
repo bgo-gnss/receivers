@@ -71,6 +71,35 @@ class Roster:
     version: str
     path: Path
 
+    def snapshot(self) -> dict[str, Any]:
+        """The roster as data, for ``record_solution_check`` to install (S2)."""
+
+        def iso(d: dt.date | None) -> str | None:
+            return None if d is None else d.isoformat()
+
+        intervals = [
+            {
+                "station": sid,
+                "kind": kind,
+                "day_from": iv.start.isoformat(),
+                "day_to": iso(iv.end),
+                "reason": iv.reason,
+            }
+            for sid, entry in sorted(self.stations.items())
+            for kind, ivs in (
+                ("expected", entry.expected),
+                ("excluded", entry.excluded),
+            )
+            for iv in ivs
+        ]
+        return {
+            "version": self.version,
+            "reviewed_from": self.reviewed.start.isoformat(),
+            "reviewed_to": iso(self.reviewed.end),
+            "stations": sorted(self.stations),
+            "intervals": intervals,
+        }
+
     def fact(self, station: str, day: dt.date) -> RosterFact:
         if not self.reviewed.contains(day):
             return "unreviewed"
