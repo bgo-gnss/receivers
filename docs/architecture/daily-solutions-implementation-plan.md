@@ -97,22 +97,21 @@ Consequences:
   exception summary as `unexpected_file`, together with any other-product files found
   in the configured location.
 
-**Owner gate G3:** confirm that `overdue` covers both late delivery (rule 9) and
-confirmed absence (rule 8), separated by reason, rather than introducing a seventh
-state.
+**Owner gate G3 (decided 2026-11-21):** `overdue` covers both late delivery (rule 9)
+and confirmed absence (rule 8), separated by reason. There is no seventh state.
 
 ### 4. Owner gates → blocked slices (B5)
 
 | Gate | Question | Status 2026-11-20 | Blocks | Evidence artefact |
 |---|---|---|---|---|
-| G1 | Read path from rek-d01 to the POS directory (an NFS export from yang, or another approved path) and gpsops readability | **Open**: local ext4, not exported | slice 5 | `findmnt` + a test read as gpsops on rek-d01 |
+| G1 | Read path from rek-d01 to the POS directory (an NFS export from yang, or another approved path) and gpsops readability | **Open**: local ext4, not exported. Owner (2026-11-21) will export directories when needed; proposed: read-only NFS export of `/mnt/data/gpsops/pos` to rek-d01 | slice 5 | `findmnt` + a test read as gpsops on rek-d01 |
 | G2 | Roster source, curator, and historical expectation intervals | Open | slices 2, 3 (real roster); slice 1 runs on a synthetic roster | reviewed `daily_solutions.yaml` |
-| G3 | Overdue semantics (§3) | Open | slice 2 | owner note in this doc |
+| G3 | Overdue semantics (§3) | **Decided 2026-11-21**: one `overdue` state, split by reason code (rules 7–9); no seventh state | slice 2 | owner note in this doc |
 | G4 | Lag and deadline | **Measured** D-1 / 09:15 (§2); owner confirms | slice 2 | §2 table |
 | G5 | Canonical producer branch and every writer entry point (timers, ad-hoc runs, laptop) | Partial: the timers are known; the branch is `feat/yang-deployment` | slice 4 | list in the slice-4 MR |
 | G6 | Owner-approved real `imo.24hr_itrf14` sample; product id (`itrf14` vs the `igb14` label) | Open | slice 1 against real data (synthetic first) | fixture under `tests/data/` |
 | G7 | Revision churn over 40 re-made days × 270 stations | Open | slice 2 schema retention | slice-1 report run on two consecutive days |
-| G8 | pgdev write path (§5, S5) | Open | slice 2 | decision recorded here |
+| G8 | pgdev write path (§5, S5) | **Decided 2026-11-21**: pgdev is an explicit second destination with its own result check and `solution_check_run` row | slice 2 | decision recorded here |
 
 ### 5. Slices (B4): each one mergeable on its own, default-off
 
@@ -174,11 +173,11 @@ against a directory and a roster file given on the command line.
   - pytest drives the SQL function with an injected `now`, one case per §3 rule;
   - a wiring mutation check: revert the CLI → `record_solution_check` call site and
     assert a test goes red.
-- G8, the pgdev write path. Recommended option: write to pgdev as an **explicit
-  second destination**, with its own result check and its own `solution_check_run`
-  row, instead of relying on `_DualCursor`'s silent mirror. If the owner prefers the
-  factory mirror, add these tables to the `gps-mirror-parity` check. Checker reads
-  use `connection(single_host=True)`.
+- G8, the pgdev write path (**decided 2026-11-21**): write to pgdev as an
+  **explicit second destination**, with its own result check and its own
+  `solution_check_run` row, not through `_DualCursor`'s silent mirror. Both writes
+  use `connection(single_host=True)`, and a failed pgdev write is reported, never
+  swallowed. Checker reads use `connection(single_host=True)` too.
 
 **Slice 3: Grafana dashboard.** `docs/grafana/gps_daily_solutions_dashboard.json`,
 fed by `solution_day_grid` only:
