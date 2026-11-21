@@ -674,7 +674,12 @@ class PolaRX5(BaseReceiver):
             except Exception as e:
                 # Connection failed - now run diagnostics to understand why
                 try:
-                    from ..base.download_diagnostics import DownloadDiagnosticsAnalyzer
+                    # deliberately absent: base/download_diagnostics has never
+                    # been implemented, and the except ImportError below is the
+                    # documented fallback (BGÓ 2026-11-21)
+                    from ..base.download_diagnostics import (  # type: ignore[import-not-found]
+                        DownloadDiagnosticsAnalyzer,
+                    )
 
                     diagnostics = DownloadDiagnosticsAnalyzer(
                         self.station_id, self.logger
@@ -1208,7 +1213,10 @@ class PolaRX5(BaseReceiver):
             )
 
             try:
-                from ..base.download_diagnostics import DownloadDiagnosticsAnalyzer
+                # deliberately absent, as above
+                from ..base.download_diagnostics import (  # type: ignore[import-not-found]
+                    DownloadDiagnosticsAnalyzer,
+                )
 
                 diagnostics = DownloadDiagnosticsAnalyzer(self.station_id, self.logger)
                 # Quick network classification to understand the failure

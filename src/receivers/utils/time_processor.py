@@ -154,7 +154,10 @@ class TimeParameterProcessor:
 
         from gtimes.timefunc import parse_datetime_flexible as _gt_parse
 
-        return _gt_parse(dt_input)
+        # typed local: _gt_parse is untyped, and a bare ``return`` of its
+        # result leaks Any into a function declared to return datetime
+        parsed: datetime = _gt_parse(dt_input)
+        return parsed
 
     def normalize_timestamp(self, dt: datetime, ffrequency: str) -> datetime:
         """Normalize timestamp based on file frequency.
@@ -258,9 +261,22 @@ class TimeParameterProcessor:
                 # For daily sessions, default to single day
                 end_dt = start_dt + timedelta(days=1)
 
-        # Validate time range
+        # Validate time range.  The END is EXCLUSIVE (a daily run covers
+        # [start, end)), which makes ``-s D -e D`` an EMPTY range -- it used to
+        # pass this check and then surface as "Generated 0 timestamps" plus
+        # "Archive is up to date", reading like "nothing is missing"
+        # (BGÓ 2026-11-21).  Say what happened instead.
         if end_dt < start_dt:
             raise ValueError(f"End time {end_dt} is before start time {start_dt}")
+        if end_dt == start_dt:
+            ffrequency = session.split("_")[1] if "_" in session else "24hr"
+            step = timedelta(minutes=1) if ffrequency == "1hr" else timedelta(days=1)
+            raise ValueError(
+                f"Empty time range: end {end_dt} equals start {start_dt}, and the "
+                f"end is exclusive. For a single {ffrequency} pass the next one "
+                f"(end={start_dt + step}): e.g. -s {start_dt:%Y%m%d} "
+                f"-e {(start_dt + step):%Y%m%d}"
+            )
 
         self.logger.debug(
             f"Processed time parameters: {start_dt} to {end_dt} for session {session}"
