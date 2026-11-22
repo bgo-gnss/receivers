@@ -148,6 +148,31 @@
         "multi": false
       },
       {
+        "name": "ignored",
+        "label": "Ignored files",
+        "type": "custom",
+        "description": "Files of stations outside the fleet (reference sites, inactive): recorded, not counted",
+        "query": "hide : hide,show : show",
+        "current": {
+          "text": "hide",
+          "value": "hide"
+        },
+        "options": [
+          {
+            "text": "hide",
+            "value": "hide",
+            "selected": true
+          },
+          {
+            "text": "show",
+            "value": "show",
+            "selected": false
+          }
+        ],
+        "includeAll": false,
+        "multi": false
+      },
+      {
         "name": "plot_base",
         "type": "constant",
         "hide": 2,
@@ -433,7 +458,7 @@
       "id": 5,
       "type": "stat",
       "title": "Unexpected files",
-      "description": "Files the check did not read: legacy aliases, .gz, stations not in the roster.",
+      "description": "Files the check did not read: legacy aliases, .gz, our stations missing from the roster. Files of stations outside the fleet (reference sites, inactive) are not counted; 'Ignored files: show' lists them below.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "gps_health"
@@ -488,7 +513,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT jsonb_array_length(unexpected_files) AS n FROM solution_check_run WHERE stream = '${stream}' AND outcome = 'ok' ORDER BY checked_at DESC LIMIT 1",
+          "rawSql": "SELECT (SELECT count(*) FROM jsonb_array_elements(unexpected_files) u WHERE u ->> 'reason' <> 'not_in_fleet') AS n FROM solution_check_run WHERE stream = '${stream}' AND outcome = 'ok' ORDER BY checked_at DESC LIMIT 1",
           "refId": "A"
         }
       ]
@@ -1611,7 +1636,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH r AS (SELECT unexpected_files, other_products FROM solution_check_run\n           WHERE stream = '${stream}' AND outcome = 'ok'\n           ORDER BY checked_at DESC LIMIT 1)\nSELECT u ->> 'name' AS file, u ->> 'reason' AS reason\nFROM r, jsonb_array_elements(r.unexpected_files) u\nUNION ALL\nSELECT o.key || ' (' || o.value || ' files)', 'other product (not checked)'\nFROM r, jsonb_each_text(r.other_products) o\nORDER BY 2, 1",
+          "rawSql": "WITH r AS (SELECT unexpected_files, other_products FROM solution_check_run\n           WHERE stream = '${stream}' AND outcome = 'ok'\n           ORDER BY checked_at DESC LIMIT 1)\nSELECT u ->> 'name' AS file, u ->> 'reason' AS reason\nFROM r, jsonb_array_elements(r.unexpected_files) u\nWHERE u ->> 'reason' <> 'not_in_fleet' OR '${ignored}' = 'show'\nUNION ALL\nSELECT o.key || ' (' || o.value || ' files)', 'other product (not checked)'\nFROM r, jsonb_each_text(r.other_products) o\nORDER BY 2, 1",
           "refId": "A"
         }
       ],

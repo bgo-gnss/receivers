@@ -27,6 +27,8 @@ Outcome = Literal["ok", "source_unavailable"]
 
 #: /2 (slice 2): adds the roster snapshot that record_solution_check installs
 SCHEMA = "solution-check-facts/2"
+#: the unexpected-file reason that is recorded but not counted (fleet.py)
+IGNORED_REASON = "not_in_fleet"
 
 #: earlier names of the same series (mirrors ``geo_dataread.pos.LEGACY_IDS``,
 #: kept here because receivers does not depend on geo_dataread). A file under
@@ -92,6 +94,15 @@ class CheckReport:
         """Expected station-days that are not valid: what an operator reads."""
         return [c for c in self.cells if c.roster == "expected" and c.fact != "valid"]
 
+    @property
+    def counted_unexpected(self) -> list[UnexpectedFile]:
+        """Unexpected files an operator should look at (not ``not_in_fleet``)."""
+        return [u for u in self.unexpected_files if u.reason != IGNORED_REASON]
+
+    @property
+    def ignored_files(self) -> list[UnexpectedFile]:
+        return [u for u in self.unexpected_files if u.reason == IGNORED_REASON]
+
     def to_json(self) -> dict[str, Any]:
         return {
             "schema": SCHEMA,
@@ -117,7 +128,8 @@ class CheckReport:
             "summary": {
                 "facts": self.fact_counts,
                 "expected_not_valid": len(self.exceptions()),
-                "unexpected_files": len(self.unexpected_files),
+                "unexpected_files": len(self.counted_unexpected),
+                "ignored_files": len(self.ignored_files),
             },
             "files": [
                 {
@@ -145,9 +157,13 @@ def _product_of(rest: str) -> str | None:
 
 
 def _classify(
-    names: list[str], roster: Roster
+    names: list[str], roster: Roster, fleet: frozenset[str] | None = None
 ) -> tuple[dict[str, str], list[UnexpectedFile], dict[str, int]]:
-    """Split directory entries into (station → file name, unexpected, others)."""
+    """Split directory entries into (station → file name, unexpected, others).
+
+    A file for a station outside the roster is ``station_not_in_roster`` when
+    the station is in ``fleet`` (or no fleet is given), else ``not_in_fleet``.
+    """
     stream = roster.spec.stream
     legacy = set(LEGACY_IDS.get(stream, ()))
     wanted: dict[str, str] = {}
@@ -167,7 +183,9 @@ def _classify(
             elif not is_station_id(sid):
                 unexpected.append(UnexpectedFile(name, "bad_station_name"))
             elif sid not in roster.stations:
-                unexpected.append(UnexpectedFile(name, "station_not_in_roster"))
+                ours = fleet is None or sid in fleet
+                reason = "station_not_in_roster" if ours else IGNORED_REASON
+                unexpected.append(UnexpectedFile(name, reason))
             else:
                 wanted[sid] = name
         elif product in legacy:
@@ -201,10 +219,13 @@ def run_check(
     *,
     window_days: int = WINDOW_DAYS,
     run_id: str | None = None,
+    fleet: frozenset[str] | None = None,
 ) -> CheckReport:
     """Check ``source`` against ``roster`` for the window ending before ``now``.
 
     ``now`` must be timezone-aware; it is the only clock this function uses.
+    ``fleet`` (fleet.py) turns files of stations outside it into ignored
+    ``not_in_fleet`` entries; ``None`` counts every such file as unexpected.
     """
     if now.tzinfo is None:
         raise ValueError("now must be timezone-aware")
@@ -232,7 +253,7 @@ def run_check(
         # 270 stations x 45 days of absence.
         return report("source_unavailable", f"{source}: {exc.strerror}", [], [], [], {})
 
-    wanted, unexpected, others = _classify(names, roster)
+    wanted, unexpected, others = _classify(names, roster, fleet)
     inspections = {
         sid: inspect_pos(source / name, sid, roster.spec)
         for sid, name in sorted(wanted.items())
