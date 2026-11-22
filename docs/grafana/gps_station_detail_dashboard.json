@@ -30,6 +30,18 @@
       "tooltip": "Per-station file delivery & download history",
       "type": "link",
       "url": "/d/gps-data-delivery/gps-data-delivery"
+    },
+    {
+      "asDropdown": false,
+      "icon": "dashboard",
+      "includeVars": false,
+      "keepTime": false,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Daily Solutions",
+      "tooltip": "Daily POS solutions: which stations are missing days, and since when",
+      "type": "link",
+      "url": "/d/gps-daily-solutions/gps-daily-solutions?var-area=${area}"
     }
   ],
   "liveNow": false,

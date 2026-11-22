@@ -192,7 +192,7 @@ state and reason into a colour.
   "GPS Station Health — 24h" table. One row per station: status of the latest *due* day
   (Missing = confirmed; Late = not yet confirmed; Invalid; Unknown; OK), **Since** and
   **Days** of the current gap (`≤` means the gap starts before the time range), last good
-  day, a plain-language reason, a **plot ↗** link to the 90-day plot on brunnur, and
+  day, a plain-language reason, a **plot ↗** menu with the plate-fixed plots on brunnur (90 days, 1 year, full series), and
   last **Total**: all problem days in the range, including gaps that have since recovered
   (so Total ≥ Days; it shows stations that keep dropping out). **Area** is one short label, the volcano area before the region, with `+N` for
   the other areas the station belongs to. Column widths are fixed so the table fits beside
@@ -234,9 +234,23 @@ October's dates. `tests/test_solution_dashboard.py` pins both properties.
 real check must be writing to it (slice 5). Only then add it to the `vedur` target in
 `scripts/grafana_sync.py`'s `grafana_targets.yaml`.
 
+## Navigation between the boards
+
+Every station board has the same top-bar buttons (Health Overview, Map, Station
+Detail, Data Delivery, LTB Runs where relevant, Daily Solutions). Links into and out
+of **Daily Solutions** pass only the area (`?var-area=${area}`), never the time range
+or the other variables: each board keeps its own range, because 45 days on the
+`block_*` boards is a heavy query. All boards share one `area` variable (`'all'` is a
+real option, not Grafana's All) so `var-area=` works in both directions.
+
+`tests/test_grafana_links.py` fails when a link points to a uid that no board in
+`docs/grafana` has, or when a board provisioned on rek-d01 or the laptop
+(`deployment/*/docker-compose.yml`) links to one that is not provisioned there.
+Add a new board to both compose files when another board links to it.
+
 ## Syncing to grafana.vedur.is
 
-The `scripts/grafana_sync.py` tool pushes local dashboard JSON to the production Grafana instance. It remaps datasource UIDs and inter-dashboard link UIDs automatically.
+The `scripts/grafana_sync.py` tool pushes local dashboard JSON to the production Grafana instance. It remaps datasource UIDs and inter-dashboard link UIDs automatically. Top-bar links to boards the target does not carry (for now Daily Solutions and LTB Runs) are dropped on the way, instead of showing "Dashboard not found".
 
 ```bash
 # Preview changes

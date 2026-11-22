@@ -363,6 +363,37 @@ def remap_dashboard_links(
     return count
 
 
+def drop_links_to_unsynced(
+    dashboard: dict[str, Any], target_dashboards: dict[str, str]
+) -> list[str]:
+    """Remove top-bar links to local boards the target does not carry.
+
+    ``target_dashboards`` is the target's ``dashboards`` mapping (source file
+    name -> target uid). A link to a board that is not pushed there would only
+    show "Dashboard not found". Call BEFORE ``remap_dashboard_links``, while
+    the URLs still hold local uids. Returns the titles of the dropped links.
+    """
+    synced = set()
+    local: set[str] = set()
+    for path in DASHBOARDS_DIR.glob("*_dashboard.json"):
+        uid = json.loads(path.read_text()).get("uid")
+        if uid:
+            local.add(uid)
+            if path.stem in target_dashboards:
+                synced.add(uid)
+    kept, dropped = [], []
+    for link in dashboard.get("links", []):
+        url = str(link.get("url", ""))
+        uid = url.split("/d/", 1)[1].split("/", 1)[0] if "/d/" in url else None
+        if uid in local and uid not in synced:
+            dropped.append(str(link.get("title", url)))
+        else:
+            kept.append(link)
+    if dropped:
+        dashboard["links"] = kept
+    return dropped
+
+
 def set_dashboard_uid(dashboard: dict[str, Any], uid: str) -> None:
     """Set the dashboard UID and clear the id (let Grafana assign it)."""
     dashboard["uid"] = uid
@@ -464,6 +495,10 @@ def cmd_push(args: argparse.Namespace) -> None:
         ds_count = remap_datasource_uid(dashboard, target_ds_uid)
         info(f"  Datasource UIDs remapped: {ds_count}")
 
+        dropped = drop_links_to_unsynced(dashboard, dashboards)
+        if dropped:
+            info(f"  Links to boards not on {target_name} dropped: {', '.join(dropped)}")
+
         # Remap inter-dashboard link UIDs
         link_count = remap_dashboard_links(dashboard, link_mappings, target_name)
         info(f"  Dashboard link UIDs remapped: {link_count}")
@@ -492,7 +527,7 @@ def cmd_push(args: argparse.Namespace) -> None:
         payload: dict[str, Any] = {
             "dashboard": dashboard,
             "overwrite": True,
-            "message": f"Synced from local via grafana_sync.py",
+            "message": "Synced from local via grafana_sync.py",
         }
         if folder_uid:
             payload["folderUid"] = folder_uid
@@ -545,6 +580,7 @@ def cmd_diff(args: argparse.Namespace) -> None:
         with open(src_file) as f:
             local_dash = json.load(f)
         remap_datasource_uid(local_dash, target_ds_uid)
+        drop_links_to_unsynced(local_dash, dashboards)
         remap_dashboard_links(local_dash, link_mappings, target_name)
         set_dashboard_uid(local_dash, target_uid)
         local_dash.pop("version", None)
@@ -558,7 +594,7 @@ def cmd_diff(args: argparse.Namespace) -> None:
             remote_dash.pop("id", None)
             remote_dash.pop("version", None)
         except Exception:
-            warn(f"  Could not fetch remote — dashboard may not exist yet")
+            warn("  Could not fetch remote — dashboard may not exist yet")
             continue
 
         # Compare as normalized JSON strings

@@ -151,7 +151,15 @@ def test_station_list_has_since_days_and_a_plot_link(dash):
     plot = next(
         o for o in p["fieldConfig"]["overrides"] if o["matcher"]["options"] == "Plot"
     )
-    link = next(x["value"] for x in plot["properties"] if x["id"] == "links")[0]
+    links = next(x["value"] for x in plot["properties"] if x["id"] == "links")
+    # all three plate-fixed plots brunnur makes, each named in the menu
+    assert [lk["url"].rsplit("-", 1)[1] for lk in links] == [
+        "90d.png",
+        "year.png",
+        "full.png",
+    ]
+    assert len({lk["title"] for lk in links}) == 3
+    link = links[0]
     assert link["url"].startswith(
         "http://brunnur.vedur.is/gps/timeseries/${__value.raw}"
     )

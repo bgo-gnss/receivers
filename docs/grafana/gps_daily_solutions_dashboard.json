@@ -18,9 +18,52 @@
   "graphTooltip": 0,
   "links": [
     {
-      "title": "Data delivery",
+      "asDropdown": false,
+      "icon": "dashboard",
+      "includeVars": false,
+      "keepTime": false,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Health Overview",
+      "tooltip": "Receiver health dashboard",
       "type": "link",
-      "url": "/d/gps-data-delivery/gps-data-delivery"
+      "url": "/d/gps-health-voltage/gps-receiver-health-overview?var-area=${area}"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external-link",
+      "includeVars": false,
+      "keepTime": false,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Map",
+      "tooltip": "Full-screen station map",
+      "type": "link",
+      "url": "/d/gps-map/gps-station-map?var-area=${area}"
+    },
+    {
+      "asDropdown": false,
+      "icon": "info-circle",
+      "includeVars": false,
+      "keepTime": false,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Station Detail",
+      "tooltip": "Per-station deep dive",
+      "type": "link",
+      "url": "/d/gps-station-detail/gps-station-detail?var-area=${area}"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external-link",
+      "includeVars": false,
+      "keepTime": false,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Data Delivery",
+      "tooltip": "Per-station file delivery & download history",
+      "type": "link",
+      "url": "/d/gps-data-delivery/gps-data-delivery?var-area=${area}"
     }
   ],
   "templating": {
@@ -51,15 +94,15 @@
           "type": "grafana-postgresql-datasource",
           "uid": "gps_health"
         },
-        "query": "SELECT area_name AS __text, area_id AS __value FROM station_areas ORDER BY area_name",
-        "definition": "SELECT area_name AS __text, area_id AS __value FROM station_areas ORDER BY area_name",
+        "query": "SELECT 'all' AS __value, 'All Stations' AS __text UNION ALL SELECT area_id AS __value, area_name || ' (' || area_type || ')' AS __text FROM station_areas ORDER BY __text",
+        "definition": "SELECT 'all' AS __value, 'All Stations' AS __text UNION ALL SELECT area_id AS __value, area_name || ' (' || area_type || ')' AS __text FROM station_areas ORDER BY __text",
         "current": {
-          "text": "All",
-          "value": "$__all"
+          "selected": true,
+          "text": "All Stations",
+          "value": "all"
         },
-        "allValue": "all",
         "refresh": 1,
-        "includeAll": true,
+        "includeAll": false,
         "multi": false
       },
       {
@@ -763,8 +806,18 @@
                 "value": [
                   {
                     "targetBlank": true,
-                    "title": "View 90-day plot",
+                    "title": "90 days: ${__value.raw} (plate fixed)",
                     "url": "http://brunnur.vedur.is/gps/timeseries/${__value.raw}-plate-90d.png"
+                  },
+                  {
+                    "targetBlank": true,
+                    "title": "1 year: ${__value.raw} (plate fixed)",
+                    "url": "http://brunnur.vedur.is/gps/timeseries/${__value.raw}-plate-year.png"
+                  },
+                  {
+                    "targetBlank": true,
+                    "title": "Full series: ${__value.raw} (plate fixed)",
+                    "url": "http://brunnur.vedur.is/gps/timeseries/${__value.raw}-plate-full.png"
                   }
                 ]
               },

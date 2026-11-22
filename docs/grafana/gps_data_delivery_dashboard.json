@@ -79,6 +79,18 @@
       "tooltip": "Long-term backfill run metrics (budget vs cap)",
       "type": "link",
       "url": "/d/gps-ltb-runs/gps-long-term-backfill-runs"
+    },
+    {
+      "asDropdown": false,
+      "icon": "dashboard",
+      "includeVars": false,
+      "keepTime": false,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Daily Solutions",
+      "tooltip": "Daily POS solutions: which stations are missing days, and since when",
+      "type": "link",
+      "url": "/d/gps-daily-solutions/gps-daily-solutions?var-area=${area}"
     }
   ],
   "liveNow": false,
