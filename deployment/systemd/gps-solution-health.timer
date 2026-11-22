@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the daily POS solutions check every hour
+
+[Timer]
+# Hourly at :25. The day's file is due by 09:15 UTC, so 09:25 is the first run
+# that can call a missing day overdue (an absence seen before the deadline only
+# ever says "awaiting recheck"). yang's realign runs at about 10:45 and 16:45;
+# the next runs after each pick that up. One run takes a few seconds.
+OnCalendar=*-*-* *:25:00
+RandomizedDelaySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target

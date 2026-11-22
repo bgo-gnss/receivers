@@ -1,0 +1,37 @@
+[Unit]
+# Daily POS solutions check (receivers solution-health, slice 5). Reads yang's
+# imo.24hr_itrf14 files over the read-only NFS mount /mnt/yang_pos, checks them
+# against the hand-reviewed roster from gps-config-data, and records the run
+# in rek-d01's gps_health, which the "GPS Daily Solutions" board reads.
+# See docs/monitoring/daily-solutions-check.md.
+#
+# A failed or unreadable source is still RECORDED (outcome source_unavailable),
+# which turns the board's cells unknown instead of leaving an old green. So the
+# unit fails (exit 2 or 3) only when that record could not be made or the
+# roster is broken; check `journalctl --user-unit gps-solution-health`.
+#
+# USER-LEVEL unit, installed at
+#   ~gpsops/.config/systemd/user/gps-solution-health.{service,timer}
+# managed by gpsops with NO sudo:
+#   systemctl --user enable --now gps-solution-health.timer
+#   systemctl --user start gps-solution-health        # run once now
+#   journalctl --user-unit gps-solution-health -n 20
+#
+# --production allows exactly gps_health here or on pgdev.vedur.is. pgdev (for
+# grafana.vedur.is) is a second --record-dsn, added when the board goes there.
+Description=Daily POS solutions check (yang imo.24hr_itrf14 -> gps_health)
+After=network-online.target remote-fs.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment="LANG=en_US.UTF-8"
+Environment="GPS_CONFIG_PATH=/home/gpsops/.config/gpsconfig"
+ExecStart=/home/bgo/git/receivers/venv/bin/receivers solution-health check \
+    --source /mnt/yang_pos \
+    --roster /home/gpsops/.config/gpsconfig/daily_solutions.yaml \
+    --production --record-dsn "host=/var/run/postgresql dbname=gps_health"
+TimeoutStartSec=10min
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gps-solution-health

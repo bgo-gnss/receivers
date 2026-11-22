@@ -35,15 +35,15 @@ CREATE TABLE IF NOT EXISTS solution_stream (
     stream              TEXT PRIMARY KEY,
     expected_lag_days   SMALLINT NOT NULL CHECK (expected_lag_days BETWEEN 0 AND 30),
     deadline_time       TIME     NOT NULL,       -- UTC, on day + expected_lag_days
-    -- PLACEHOLDER until slice 5 fixes the timer cadence: a check older than
-    -- this turns its in-window cells unknown/check_stale
+    -- a check older than this turns its in-window cells unknown/check_stale;
+    -- 3 h = three missed runs of the hourly gps-solution-health.timer
     freshness_ttl       INTERVAL NOT NULL CHECK (freshness_ttl > interval '0'),
     window_days         SMALLINT NOT NULL CHECK (window_days BETWEEN 1 AND 366)
 );
 
 -- G4: lag D-1 and the 09:15 UTC deadline were measured on yang (plan §2)
 INSERT INTO solution_stream (stream, expected_lag_days, deadline_time, freshness_ttl, window_days)
-VALUES ('imo.24hr_itrf14', 1, '09:15', interval '26 hours', 45)
+VALUES ('imo.24hr_itrf14', 1, '09:15', interval '3 hours', 45)
 ON CONFLICT (stream) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS solution_roster (

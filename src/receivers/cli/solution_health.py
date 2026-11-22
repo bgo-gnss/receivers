@@ -106,7 +106,7 @@ def cmd_solution_health_check(args: argparse.Namespace) -> int:
     dsns: list[str] = list(args.record_dsn or [])
     for dsn in dsns:  # refuse before reading anything, not after
         try:
-            check_destination(dsn)
+            check_destination(dsn, production=args.production)
         except DestinationRefusedError as exc:
             print(f"error: --record-dsn {exc}", file=sys.stderr)
             return EXIT_CANNOT_CHECK
@@ -125,7 +125,7 @@ def cmd_solution_health_check(args: argparse.Namespace) -> int:
     if dsns:
         # A source_unavailable run is recorded too: it is what turns the
         # window's cells unknown instead of leaving an old green in place.
-        for res in record_to_destinations(dsns, payload):
+        for res in record_to_destinations(dsns, payload, production=args.production):
             if res.ok:
                 print(f"recorded {res.label}: {res.status}", file=sys.stderr)
             else:
@@ -177,7 +177,13 @@ def create_solution_health_parser(subparsers) -> argparse.ArgumentParser:
         metavar="DSN",
         help="Also record the run in this database via record_solution_check "
         "(repeatable; each destination is written separately and every failure "
-        "is reported). Slice 2: local disposable databases only.",
+        "is reported). Without --production: local disposable databases only.",
+    )
+    check.add_argument(
+        "--production",
+        action="store_true",
+        help="Allow --record-dsn to name the production databases, and only "
+        "those: gps_health on this machine, or on pgdev.vedur.is",
     )
     check.set_defaults(func=cmd_solution_health_check)
     return parser

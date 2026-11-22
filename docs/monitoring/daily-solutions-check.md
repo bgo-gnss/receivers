@@ -136,16 +136,41 @@ RECEIVERS_TEST_PG_DSN="host=127.0.0.1 port=54329 user=$USER dbname=postgres" \
   PYTHONPATH=scripts/dev pytest tests/test_solution_store.py -p no_network_plugin
 ```
 
-The migration has not been applied to rek-d01 or pgdev. When it is, apply it as
-bgo, the owner, on each host.
+## Production on rek-d01 (slice 5)
 
-Open items for slice 5 (real destinations):
-- **The pgdev write identity (checked 2026-11-21, no grant needed).** rek-d01
-  writes to pgdev as `mirror_user = bgo` (`database.cfg`). pgdev is a shared IMO
-  server with personal LDAP roles, so there is no `gpsops` there by design. `bgo` owns
-  every gps_health table on pgdev and, once 077 is applied as bgo, owns
-  `record_solution_check` too, so it can EXECUTE without a grant. On rek-d01 the
-  checker runs as `gpsops`, which the migration grants EXECUTE.
-- **The cadence-dependent settings.** Replace the 26 h `freshness_ttl` placeholder with
-  a value tied to the timer cadence. Make sure one check runs after 09:15 UTC;
-  otherwise late days stay `pending/awaiting_recheck`.
+```
+yang-d01:/mnt/data/gpsops/pos ──NFS ro──> rek-d01:/mnt/yang_pos
+gps-config-data daily_solutions.yaml ──sync timer──> ~gpsops/.config/gpsconfig/
+gps-solution-health.timer (gpsops, hourly :25)
+  └─ receivers solution-health check --production
+       --record-dsn "host=/var/run/postgresql dbname=gps_health"
+rek-d01 Grafana (:3000) ── "GPS Daily Solutions" board
+```
+
+- **The mount.** yang exports `/mnt/data/gpsops/pos` read-only to rek-d01
+  (10.170.80.15) only; rek-d01 mounts it at `/mnt/yang_pos` with `soft`, so a
+  stalled yang gives the check an error (recorded as `source_unavailable`, shown
+  as "POS directory unreadable") instead of a hung run. Set up 2026-11-22.
+- **The roster** lives in gps-config-data as `daily_solutions.yaml` and is
+  deployed like `stations.cfg`. Stations without solutions are kept there
+  commented out, by reason; enabling one is removing a `#`.
+- **`--production`** lets `--record-dsn` name exactly `gps_health` on this machine
+  or on pgdev.vedur.is (G8), one host each, and nothing else. Without it the store
+  still writes only to local disposable databases.
+- **The timer** (`deployment/systemd/gps-solution-health.{service,timer}`, a gpsops
+  user unit) runs hourly at :25. 09:25 is the first run after the 09:15 deadline,
+  so a missing day turns overdue then. `freshness_ttl` is 3 h: three missed runs
+  turn the window's cells `unknown/check_stale`.
+- **Migration 077** is applied as bgo, the owner. It grants `gpsops` EXECUTE on
+  `record_solution_check` and SELECT on the tables (the board's datasource user).
+
+pgdev, for grafana.vedur.is, comes later: apply 077 there as bgo, then add a
+second `--record-dsn "host=pgdev.vedur.is dbname=gps_health user=bgo"` to the
+service. rek-d01 writes to pgdev as `mirror_user = bgo`; pgdev is a shared IMO
+server with personal LDAP roles, so it has no `gpsops`, by design, and bgo owns
+`record_solution_check` there, so no grant is needed.
+
+**Churn (G7, measured 2026-11-22).** Comparing two days of yang's files: on the
+44 shared days, 43 were byte-identical for every station; only the newest day
+(11-20) changed, for all 250 stations, because each day is re-estimated once in
+the next run. One station-day arrived late (absent → valid).
