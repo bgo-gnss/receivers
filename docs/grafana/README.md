@@ -188,6 +188,19 @@ state and reason into a colour.
 
 - **Stat row:** last successful check, latest check outcome, problem days (pending
   before the deadline is normal and not counted), confirmed absences, unexpected files.
+- **Stations with missing solutions:** the list for the monitoring room, modelled on the
+  "GPS Station Health — 24h" table. One row per station: status of the latest *due* day
+  (Missing = confirmed; Late = not yet confirmed; Invalid; Unknown; OK), **Since** and
+  **Days** of the current gap (`≤` means the gap starts before the time range), last good
+  day, a plain-language reason, a **plot ↗** link to the 90-day plot on brunnur, and
+  last **Total**: all problem days in the range, including gaps that have since recovered
+  (so Total ≥ Days; it shows stations that keep dropping out). **Area** is one short label, the volcano area before the region, with `+N` for
+  the other areas the station belongs to. Column widths are fixed so the table fits beside
+  the map without scrolling sideways. Click the SID for its grid row, data delivery and
+  receiver health.
+- **Map:** the same status per station, with problem stations drawn larger. Coordinates
+  come from `stations`.
+- **Area** filter, the same `station_areas` variable the other GPS boards use.
 - **Station × UTC day grid:** a table with the *grouping to matrix* transform. The
   `Rows` variable switches between `problems` (only stations with a problem day) and
   `all`. Click a station for its data-delivery and receiver dashboards.

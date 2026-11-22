@@ -44,6 +44,25 @@
         "multi": false
       },
       {
+        "name": "area",
+        "label": "Area",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "gps_health"
+        },
+        "query": "SELECT area_name AS __text, area_id AS __value FROM station_areas ORDER BY area_name",
+        "definition": "SELECT area_name AS __text, area_id AS __value FROM station_areas ORDER BY area_name",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "allValue": "all",
+        "refresh": 1,
+        "includeAll": true,
+        "multi": false
+      },
+      {
         "name": "station",
         "label": "Station",
         "type": "query",
@@ -51,8 +70,8 @@
           "type": "grafana-postgresql-datasource",
           "uid": "gps_health"
         },
-        "query": "SELECT station FROM solution_roster_station WHERE stream = '${stream}' ORDER BY 1",
-        "definition": "SELECT station FROM solution_roster_station WHERE stream = '${stream}' ORDER BY 1",
+        "query": "SELECT r.station FROM solution_roster_station r WHERE r.stream = '${stream}' AND ('${area}' = 'all' OR EXISTS (SELECT 1 FROM station_area_members m WHERE m.sid = r.station AND m.area_id = '${area}')) ORDER BY 1",
+        "definition": "SELECT r.station FROM solution_roster_station r WHERE r.stream = '${stream}' AND ('${area}' = 'all' OR EXISTS (SELECT 1 FROM station_area_members m WHERE m.sid = r.station AND m.area_id = '${area}')) ORDER BY 1",
         "current": {
           "text": "All",
           "value": "$__all"
@@ -437,6 +456,643 @@
       }
     },
     {
+      "id": 12,
+      "type": "table",
+      "title": "Stations with missing solutions",
+      "description": "One row per station. Status = the latest day that is due (pending before the deadline is not due). Since / Days = the current gap; Total = all problem days in the range: the due days after the last available day ('≤' = the gap starts before the time range). Missing = confirmed (the producer finished without it); Late = not yet confirmed. Click the station for its grid and other dashboards.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health"
+      },
+      "gridPos": {
+        "h": 14,
+        "w": 16,
+        "x": 0,
+        "y": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH g AS (SELECT * FROM solution_day_grid('${stream}',\n        ($__timeFrom() AT TIME ZONE 'UTC')::date,\n        ($__timeTo() AT TIME ZONE 'UTC')::date,\n        now()) WHERE station IN (${station:sqlstring})),\ndue AS (SELECT * FROM g WHERE state <> 'not_expected' AND reason <> 'before_deadline'),\ncur AS (SELECT DISTINCT ON (station) station, state AS cur_state, reason AS cur_reason\n        FROM due ORDER BY station, day DESC),\nagg AS (SELECT station,\n               max(day) FILTER (WHERE state = 'available') AS last_ok,\n               count(*) FILTER (WHERE state <> 'available') AS problem_days\n        FROM due GROUP BY station),\ngap AS (SELECT d.station, min(d.day) AS since, count(*) AS gap_days\n        FROM due d JOIN agg a USING (station)\n        WHERE d.day > coalesce(a.last_ok, '-infinity'::date)\n        GROUP BY d.station),\nareas AS (SELECT sam.sid,\n                 -- one short label: the volcano area first, then the region;\n                 -- \"+N\" says how many more (the Area filter covers them all)\n                 (array_agg(sa.area_name ORDER BY (sa.area_type = 'volcanic') DESC,\n                            sa.area_name))[1]\n                 || CASE WHEN count(*) > 1 THEN ' +' || (count(*) - 1)::text ELSE '' END\n                   AS area_list\n          FROM station_area_members sam JOIN station_areas sa USING (area_id)\n          GROUP BY sam.sid),\nst AS (\n  SELECT c.station, s.station_name, s.latitude, s.longitude, ar.area_list,\n         CASE WHEN c.cur_state = 'overdue' AND c.cur_reason IN\n                   ('absent_after_completion', 'producer_rejected', 'producer_failed') THEN 4\n              WHEN c.cur_state IN ('overdue', 'pending') THEN 3\n              WHEN c.cur_state = 'invalid' THEN 2\n              WHEN c.cur_state = 'unknown' THEN 1\n              ELSE 0 END AS status,\n         CASE WHEN c.cur_state = 'available' THEN NULL\n              WHEN a.last_ok IS NULL THEN '≤ ' || gp.since::text\n              ELSE gp.since::text END AS since,\n         CASE WHEN c.cur_state = 'available' THEN 0 ELSE gp.gap_days END AS gap_days,\n         gp.since AS since_date, a.last_ok, a.problem_days,\n         CASE WHEN c.cur_state = 'available' THEN NULL ELSE c.cur_reason END AS reason\n  FROM cur c JOIN agg a USING (station)\n  LEFT JOIN gap gp USING (station)\n  LEFT JOIN stations s ON s.sid = c.station\n  LEFT JOIN areas ar ON ar.sid = c.station)\nSELECT station AS \"SID\", station_name AS \"Name\", area_list AS \"Area\",\n       status AS \"Status\", since AS \"Since\", gap_days AS \"Days\",\n       last_ok::text AS \"Last good\", reason AS \"Reason\",\n       station AS \"Plot\", problem_days AS \"Total\"\nFROM st\nWHERE '${show}' = 'all' OR problem_days > 0 OR status > 0\nORDER BY status DESC, since_date NULLS LAST, station",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "SID"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 70
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Grid for ${__value.raw}",
+                    "url": "/d/gps-daily-solutions/gps-daily-solutions?var-stream=${stream}&var-area=all&var-station=${__value.raw}&var-show=all&${__url_time_range}"
+                  },
+                  {
+                    "title": "Data delivery (raw / RINEX) for ${__value.raw}",
+                    "url": "/d/gps-data-delivery/gps-data-delivery?var-station=${__value.raw}&${__url_time_range}"
+                  },
+                  {
+                    "title": "Receiver health for ${__value.raw}",
+                    "url": "/d/gps-station-detail/gps-station-detail?var-station=${__value.raw}"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Name"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 125
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Area"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 125
+              },
+              {
+                "id": "description",
+                "value": "Volcano area first, then region; +N = more areas"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Status"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 74
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "4": {
+                        "text": "Missing",
+                        "color": "#E02F44",
+                        "index": 0
+                      },
+                      "3": {
+                        "text": "Late",
+                        "color": "#FF9830",
+                        "index": 1
+                      },
+                      "2": {
+                        "text": "Invalid",
+                        "color": "#A352CC",
+                        "index": 2
+                      },
+                      "1": {
+                        "text": "Unknown",
+                        "color": "#4D4D4D",
+                        "index": 3
+                      },
+                      "0": {
+                        "text": "OK",
+                        "color": "#37872D",
+                        "index": 4
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Since"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 102
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Days"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 48
+              },
+              {
+                "id": "description",
+                "value": "Length of the current, still open gap"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Last good"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 92
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Total"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 50
+              },
+              {
+                "id": "description",
+                "value": "All problem days in the time range, including gaps that have recovered"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Reason"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "absent_after_completion": {
+                        "text": "not produced",
+                        "index": 0
+                      },
+                      "producer_rejected": {
+                        "text": "rejected by processing",
+                        "index": 1
+                      },
+                      "producer_failed": {
+                        "text": "processing failed",
+                        "index": 2
+                      },
+                      "no_completion_record": {
+                        "text": "late, run not confirmed",
+                        "index": 3
+                      },
+                      "awaiting_recheck": {
+                        "text": "missing, recheck pending",
+                        "index": 4
+                      },
+                      "check_stale": {
+                        "text": "check is stale",
+                        "index": 5
+                      },
+                      "check_failed": {
+                        "text": "check failed",
+                        "index": 6
+                      },
+                      "source_unavailable": {
+                        "text": "POS directory unreadable",
+                        "index": 7
+                      },
+                      "file_unverifiable": {
+                        "text": "file unreadable",
+                        "index": 8
+                      },
+                      "no_check_run": {
+                        "text": "not checked",
+                        "index": 9
+                      },
+                      "not_in_last_check": {
+                        "text": "not in the last check",
+                        "index": 10
+                      },
+                      "never_checked": {
+                        "text": "never checked",
+                        "index": 12
+                      },
+                      "never_verified": {
+                        "text": "never readable",
+                        "index": 13
+                      },
+                      "roster_unreviewed": {
+                        "text": "roster not reviewed",
+                        "index": 14
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^(.+)$",
+                      "result": {
+                        "text": "invalid: $1",
+                        "index": 11
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 190
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Plot"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 76
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "targetBlank": true,
+                    "title": "View 90-day plot",
+                    "url": "http://brunnur.vedur.is/gps/timeseries/${__value.raw}-plate-90d.png"
+                  }
+                ]
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": ".*",
+                      "result": {
+                        "text": "plot ↗",
+                        "index": 0
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "id": 13,
+      "type": "geomap",
+      "title": "Map: current status",
+      "description": "Each station coloured by the status of its latest due day (same as the list). Stations without coordinates in `stations` are not shown.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health"
+      },
+      "gridPos": {
+        "h": 14,
+        "w": 8,
+        "x": 16,
+        "y": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH g AS (SELECT * FROM solution_day_grid('${stream}',\n        ($__timeFrom() AT TIME ZONE 'UTC')::date,\n        ($__timeTo() AT TIME ZONE 'UTC')::date,\n        now()) WHERE station IN (${station:sqlstring})),\ndue AS (SELECT * FROM g WHERE state <> 'not_expected' AND reason <> 'before_deadline'),\ncur AS (SELECT DISTINCT ON (station) station, state AS cur_state, reason AS cur_reason\n        FROM due ORDER BY station, day DESC),\nagg AS (SELECT station,\n               max(day) FILTER (WHERE state = 'available') AS last_ok,\n               count(*) FILTER (WHERE state <> 'available') AS problem_days\n        FROM due GROUP BY station),\ngap AS (SELECT d.station, min(d.day) AS since, count(*) AS gap_days\n        FROM due d JOIN agg a USING (station)\n        WHERE d.day > coalesce(a.last_ok, '-infinity'::date)\n        GROUP BY d.station),\nareas AS (SELECT sam.sid,\n                 -- one short label: the volcano area first, then the region;\n                 -- \"+N\" says how many more (the Area filter covers them all)\n                 (array_agg(sa.area_name ORDER BY (sa.area_type = 'volcanic') DESC,\n                            sa.area_name))[1]\n                 || CASE WHEN count(*) > 1 THEN ' +' || (count(*) - 1)::text ELSE '' END\n                   AS area_list\n          FROM station_area_members sam JOIN station_areas sa USING (area_id)\n          GROUP BY sam.sid),\nst AS (\n  SELECT c.station, s.station_name, s.latitude, s.longitude, ar.area_list,\n         CASE WHEN c.cur_state = 'overdue' AND c.cur_reason IN\n                   ('absent_after_completion', 'producer_rejected', 'producer_failed') THEN 4\n              WHEN c.cur_state IN ('overdue', 'pending') THEN 3\n              WHEN c.cur_state = 'invalid' THEN 2\n              WHEN c.cur_state = 'unknown' THEN 1\n              ELSE 0 END AS status,\n         CASE WHEN c.cur_state = 'available' THEN NULL\n              WHEN a.last_ok IS NULL THEN '≤ ' || gp.since::text\n              ELSE gp.since::text END AS since,\n         CASE WHEN c.cur_state = 'available' THEN 0 ELSE gp.gap_days END AS gap_days,\n         gp.since AS since_date, a.last_ok, a.problem_days,\n         CASE WHEN c.cur_state = 'available' THEN NULL ELSE c.cur_reason END AS reason\n  FROM cur c JOIN agg a USING (station)\n  LEFT JOIN gap gp USING (station)\n  LEFT JOIN stations s ON s.sid = c.station\n  LEFT JOIN areas ar ON ar.sid = c.station)\nSELECT latitude, longitude, status, station AS \"SID\", station_name AS \"Name\",\n       since AS \"Since\", gap_days AS \"Days\", reason AS \"Reason\"\nFROM st WHERE latitude IS NOT NULL AND longitude IS NOT NULL\nORDER BY status",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#37872D",
+                "value": null
+              },
+              {
+                "color": "#4D4D4D",
+                "value": 1
+              },
+              {
+                "color": "#A352CC",
+                "value": 2
+              },
+              {
+                "color": "#FF9830",
+                "value": 3
+              },
+              {
+                "color": "#E02F44",
+                "value": 4
+              }
+            ]
+          },
+          "custom": {
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(latitude|longitude)$"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "legend": false,
+                  "tooltip": true,
+                  "viz": false
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "SID"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Grid for ${__value.raw}",
+                    "url": "/d/gps-daily-solutions/gps-daily-solutions?var-stream=${stream}&var-area=all&var-station=${__value.raw}&var-show=all&${__url_time_range}"
+                  },
+                  {
+                    "title": "Data delivery (raw / RINEX) for ${__value.raw}",
+                    "url": "/d/gps-data-delivery/gps-data-delivery?var-station=${__value.raw}&${__url_time_range}"
+                  },
+                  {
+                    "title": "Receiver health for ${__value.raw}",
+                    "url": "/d/gps-station-detail/gps-station-detail?var-station=${__value.raw}"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "status"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "4": {
+                        "text": "Missing",
+                        "color": "#E02F44",
+                        "index": 0
+                      },
+                      "3": {
+                        "text": "Late",
+                        "color": "#FF9830",
+                        "index": 1
+                      },
+                      "2": {
+                        "text": "Invalid",
+                        "color": "#A352CC",
+                        "index": 2
+                      },
+                      "1": {
+                        "text": "Unknown",
+                        "color": "#4D4D4D",
+                        "index": 3
+                      },
+                      "0": {
+                        "text": "OK",
+                        "color": "#37872D",
+                        "index": 4
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "displayName",
+                "value": "Status"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Reason"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "absent_after_completion": {
+                        "text": "not produced",
+                        "index": 0
+                      },
+                      "producer_rejected": {
+                        "text": "rejected by processing",
+                        "index": 1
+                      },
+                      "producer_failed": {
+                        "text": "processing failed",
+                        "index": 2
+                      },
+                      "no_completion_record": {
+                        "text": "late, run not confirmed",
+                        "index": 3
+                      },
+                      "awaiting_recheck": {
+                        "text": "missing, recheck pending",
+                        "index": 4
+                      },
+                      "check_stale": {
+                        "text": "check is stale",
+                        "index": 5
+                      },
+                      "check_failed": {
+                        "text": "check failed",
+                        "index": 6
+                      },
+                      "source_unavailable": {
+                        "text": "POS directory unreadable",
+                        "index": 7
+                      },
+                      "file_unverifiable": {
+                        "text": "file unreadable",
+                        "index": 8
+                      },
+                      "no_check_run": {
+                        "text": "not checked",
+                        "index": 9
+                      },
+                      "not_in_last_check": {
+                        "text": "not in the last check",
+                        "index": 10
+                      },
+                      "never_checked": {
+                        "text": "never checked",
+                        "index": 12
+                      },
+                      "never_verified": {
+                        "text": "never readable",
+                        "index": 13
+                      },
+                      "roster_unreviewed": {
+                        "text": "roster not reviewed",
+                        "index": 14
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^(.+)$",
+                      "result": {
+                        "text": "invalid: $1",
+                        "index": 11
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "basemap": {
+          "config": {},
+          "name": "Layer 0",
+          "type": "osm-standard"
+        },
+        "controls": {
+          "mouseWheelZoom": true,
+          "showAttribution": true,
+          "showScale": true,
+          "showZoom": true
+        },
+        "layers": [
+          {
+            "type": "markers",
+            "name": "Status",
+            "tooltip": true,
+            "location": {
+              "mode": "coords",
+              "latitude": "latitude",
+              "longitude": "longitude"
+            },
+            "config": {
+              "showLegend": false,
+              "style": {
+                "color": {
+                  "field": "status",
+                  "fixed": "dark-green"
+                },
+                "opacity": 0.9,
+                "size": {
+                  "field": "status",
+                  "fixed": 8,
+                  "min": 7,
+                  "max": 15
+                },
+                "symbol": {
+                  "fixed": "img/icons/marker/circle.svg",
+                  "mode": "fixed"
+                }
+              }
+            }
+          }
+        ],
+        "tooltip": {
+          "mode": "details"
+        },
+        "view": {
+          "id": "coords",
+          "lat": 64.9,
+          "lon": -18.6,
+          "zoom": 6.2,
+          "allLayers": true
+        }
+      }
+    },
+    {
       "id": 7,
       "type": "table",
       "title": "Station × UTC day",
@@ -449,7 +1105,7 @@
         "h": 22,
         "w": 24,
         "x": 0,
-        "y": 6
+        "y": 20
       },
       "targets": [
         {
@@ -477,8 +1133,8 @@
         {
           "id": "renameByRegex",
           "options": {
-            "regex": "^\\d{4}-(\\d{2})-(\\d{2})$",
-            "renamePattern": "$1-$2"
+            "regex": "^\\d{4}-0?(\\d+)-0?(\\d+)$",
+            "renamePattern": "$2.$1"
           }
         }
       ],
@@ -486,7 +1142,7 @@
         "defaults": {
           "custom": {
             "align": "center",
-            "width": 40,
+            "width": 44,
             "wrapHeaderText": true,
             "cellOptions": {
               "type": "color-background",
@@ -565,7 +1221,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 64
+                "value": 72
               },
               {
                 "id": "custom.cellOptions",
@@ -617,7 +1273,7 @@
         "h": 12,
         "w": 14,
         "x": 0,
-        "y": 28
+        "y": 42
       },
       "targets": [
         {
@@ -723,7 +1379,7 @@
         "h": 12,
         "w": 10,
         "x": 14,
-        "y": 28
+        "y": 42
       },
       "targets": [
         {
@@ -808,7 +1464,7 @@
         "h": 9,
         "w": 14,
         "x": 0,
-        "y": 40
+        "y": 54
       },
       "targets": [
         {
@@ -881,7 +1537,7 @@
         "h": 9,
         "w": 10,
         "x": 14,
-        "y": 40
+        "y": 54
       },
       "targets": [
         {
