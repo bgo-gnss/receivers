@@ -806,8 +806,18 @@
                 "value": [
                   {
                     "targetBlank": true,
-                    "title": "View 90-day plot",
+                    "title": "90 days: ${__value.raw} (plate fixed)",
                     "url": "http://brunnur.vedur.is/gps/timeseries/${__value.raw}-plate-90d.png"
+                  },
+                  {
+                    "targetBlank": true,
+                    "title": "1 year: ${__value.raw} (plate fixed)",
+                    "url": "http://brunnur.vedur.is/gps/timeseries/${__value.raw}-plate-year.png"
+                  },
+                  {
+                    "targetBlank": true,
+                    "title": "Full series: ${__value.raw} (plate fixed)",
+                    "url": "http://brunnur.vedur.is/gps/timeseries/${__value.raw}-plate-full.png"
                   }
                 ]
               },

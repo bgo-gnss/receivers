@@ -192,7 +192,7 @@ state and reason into a colour.
   "GPS Station Health — 24h" table. One row per station: status of the latest *due* day
   (Missing = confirmed; Late = not yet confirmed; Invalid; Unknown; OK), **Since** and
   **Days** of the current gap (`≤` means the gap starts before the time range), last good
-  day, a plain-language reason, a **plot ↗** link to the 90-day plot on brunnur, and
+  day, a plain-language reason, a **plot ↗** menu with the plate-fixed plots on brunnur (90 days, 1 year, full series), and
   last **Total**: all problem days in the range, including gaps that have since recovered
   (so Total ≥ Days; it shows stations that keep dropping out). **Area** is one short label, the volcano area before the region, with `+N` for
   the other areas the station belongs to. Column widths are fixed so the table fits beside
