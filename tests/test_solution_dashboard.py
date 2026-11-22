@@ -89,7 +89,12 @@ def test_station_column_is_frozen_and_links_to_context(dash):
 
 
 def _fill(
-    sql: str, stations: str, frm: dt.datetime, to: dt.datetime, show: str = "problems"
+    sql: str,
+    stations: str,
+    frm: dt.datetime,
+    to: dt.datetime,
+    show: str = "problems",
+    ignored: str = "hide",
 ) -> str:
     # the panels pass now() to the grid; pin it to the window end, or the
     # results drift with the wall clock (this broke the day after it was written)
@@ -100,6 +105,7 @@ def _fill(
         .replace("$__timeTo()", f"'{to.isoformat()}'::timestamptz")
         .replace("${station:sqlstring}", stations)
         .replace("${show}", show)
+        .replace("${ignored}", ignored)
     )
 
 
@@ -207,3 +213,27 @@ def test_list_and_map_rows_come_back(dash, db):  # noqa: F811 (fixture)
     assert any(r[0] != "AFST" for r in rows)
     sql = _panel(dash, "Map: current status")["targets"][0]["rawSql"]
     assert [r[3] for r in q(db, _fill(sql, "'AFST'", frm, NOW))] == ["AFST"]
+
+
+def test_files_outside_the_fleet_are_recorded_but_not_counted(dash, db):  # noqa: F811
+    from receivers.monitoring.solutions.store import record_check
+    from tests.test_solution_store import NOW, payload, q
+
+    doc = payload()
+    doc["unexpected_files"] = [
+        {"name": "BJAC.imo.24hr_itrf14.pos", "reason": "station_not_in_roster"},
+        {"name": "BRUX.imo.24hr_itrf14.pos", "reason": "not_in_fleet"},
+        {"name": "TSKB.imo.24hr_itrf14.pos", "reason": "not_in_fleet"},
+    ]
+    record_check(db, doc)
+    frm = NOW - dt.timedelta(days=45)
+    stat = _panel(dash, "Unexpected files")["targets"][0]["rawSql"]
+    assert q(db, _fill(stat, "'AFST'", frm, NOW)) == [(1,)]
+    table = next(p for p in dash["panels"] if p["id"] == 11)["targets"][0]["rawSql"]
+
+    def files(ignored: str) -> set[str]:
+        rows = q(db, _fill(table, "'AFST'", frm, NOW, ignored=ignored))
+        return {r[0][:4] for r in rows if r[0].endswith(".pos")}
+
+    assert files("hide") == {"BJAC"}
+    assert files("show") == {"BJAC", "BRUX", "TSKB"}

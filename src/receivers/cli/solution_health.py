@@ -21,6 +21,7 @@ import sys
 from pathlib import Path
 
 from ..monitoring.solutions.check import Cell, CheckReport, run_check
+from ..monitoring.solutions.fleet import FleetError, default_stations_cfg, load_fleet
 from ..monitoring.solutions.roster import RosterError, load_roster
 from ..monitoring.solutions.store import (
     DestinationRefusedError,
@@ -82,10 +83,15 @@ def _print_human(report: CheckReport) -> None:
             parts.append(f"{span} {label}")
         print(f"  {sid}  " + "; ".join(parts))
 
-    if report.unexpected_files:
-        print(f"\nUnexpected files: {len(report.unexpected_files)}")
-        for u in report.unexpected_files:
+    if report.counted_unexpected:
+        print(f"\nUnexpected files: {len(report.counted_unexpected)}")
+        for u in report.counted_unexpected:
             print(f"  {u.name}  ({u.reason})")
+    if report.ignored_files:
+        print(
+            f"\nIgnored: {len(report.ignored_files)} files of stations outside the "
+            "fleet (--no-ignore lists them)"
+        )
     if report.other_products:
         others = ", ".join(f"{k} {v}" for k, v in report.other_products.items())
         print(f"\nOther products in the directory (not checked): {others}")
@@ -111,8 +117,30 @@ def cmd_solution_health_check(args: argparse.Namespace) -> int:
             print(f"error: --record-dsn {exc}", file=sys.stderr)
             return EXIT_CANNOT_CHECK
 
+    fleet: frozenset[str] | None = None
+    if not args.no_ignore:
+        cfg = (
+            Path(args.stations_cfg).expanduser()
+            if args.stations_cfg
+            else default_stations_cfg()
+        )
+        try:
+            fleet = load_fleet(cfg)
+        except FleetError as exc:
+            if args.stations_cfg:  # named explicitly: a mistake, say so and stop
+                print(f"error: --stations-cfg {exc}", file=sys.stderr)
+                return EXIT_CANNOT_CHECK
+            print(
+                f"note: {exc}; no files are ignored (pass --stations-cfg)",
+                file=sys.stderr,
+            )
+
     report = run_check(
-        Path(args.source).expanduser(), roster, now, window_days=args.window_days
+        Path(args.source).expanduser(),
+        roster,
+        now,
+        window_days=args.window_days,
+        fleet=fleet,
     )
     payload = report.to_json()
     if args.json:
@@ -178,6 +206,19 @@ def create_solution_health_parser(subparsers) -> argparse.ArgumentParser:
         help="Also record the run in this database via record_solution_check "
         "(repeatable; each destination is written separately and every failure "
         "is reported). Without --production: local disposable databases only.",
+    )
+    check.add_argument(
+        "--stations-cfg",
+        metavar="PATH",
+        help="stations.cfg defining the fleet (default: $GPS_CONFIG_PATH or "
+        "~/.config/gpsconfig). Files of stations that are not active, or are "
+        "reference sites, are recorded as not_in_fleet and not counted",
+    )
+    check.add_argument(
+        "--no-ignore",
+        action="store_true",
+        help="Count every file of a station outside the roster as unexpected, "
+        "including stations outside the fleet",
     )
     check.add_argument(
         "--production",
