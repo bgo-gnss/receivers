@@ -459,7 +459,7 @@
       "id": 12,
       "type": "table",
       "title": "Stations with missing solutions",
-      "description": "One row per station. Status = the latest day that is due (pending before the deadline is not due). Since / Days = the current gap: the due days after the last available day ('≤' = the gap starts before the time range). Missing = confirmed (the producer finished without it); Late = not yet confirmed. Click the station for its grid and other dashboards.",
+      "description": "One row per station. Status = the latest day that is due (pending before the deadline is not due). Since / Days = the current gap; Total = all problem days in the range: the due days after the last available day ('≤' = the gap starts before the time range). Missing = confirmed (the producer finished without it); Late = not yet confirmed. Click the station for its grid and other dashboards.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "gps_health"
@@ -479,7 +479,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH g AS (SELECT * FROM solution_day_grid('${stream}',\n        ($__timeFrom() AT TIME ZONE 'UTC')::date,\n        ($__timeTo() AT TIME ZONE 'UTC')::date,\n        now()) WHERE station IN (${station:sqlstring})),\ndue AS (SELECT * FROM g WHERE state <> 'not_expected' AND reason <> 'before_deadline'),\ncur AS (SELECT DISTINCT ON (station) station, state AS cur_state, reason AS cur_reason\n        FROM due ORDER BY station, day DESC),\nagg AS (SELECT station,\n               max(day) FILTER (WHERE state = 'available') AS last_ok,\n               count(*) FILTER (WHERE state <> 'available') AS problem_days\n        FROM due GROUP BY station),\ngap AS (SELECT d.station, min(d.day) AS since, count(*) AS gap_days\n        FROM due d JOIN agg a USING (station)\n        WHERE d.day > coalesce(a.last_ok, '-infinity'::date)\n        GROUP BY d.station),\nareas AS (SELECT sam.sid, string_agg(sa.area_name, ', ' ORDER BY sa.area_name) AS area_list\n          FROM station_area_members sam JOIN station_areas sa USING (area_id)\n          GROUP BY sam.sid),\nst AS (\n  SELECT c.station, s.station_name, s.latitude, s.longitude, ar.area_list,\n         CASE WHEN c.cur_state = 'overdue' AND c.cur_reason IN\n                   ('absent_after_completion', 'producer_rejected', 'producer_failed') THEN 4\n              WHEN c.cur_state IN ('overdue', 'pending') THEN 3\n              WHEN c.cur_state = 'invalid' THEN 2\n              WHEN c.cur_state = 'unknown' THEN 1\n              ELSE 0 END AS status,\n         CASE WHEN c.cur_state = 'available' THEN NULL\n              WHEN a.last_ok IS NULL THEN '≤ ' || gp.since::text\n              ELSE gp.since::text END AS since,\n         CASE WHEN c.cur_state = 'available' THEN 0 ELSE gp.gap_days END AS gap_days,\n         gp.since AS since_date, a.last_ok, a.problem_days,\n         CASE WHEN c.cur_state = 'available' THEN NULL ELSE c.cur_reason END AS reason\n  FROM cur c JOIN agg a USING (station)\n  LEFT JOIN gap gp USING (station)\n  LEFT JOIN stations s ON s.sid = c.station\n  LEFT JOIN areas ar ON ar.sid = c.station)\nSELECT station AS \"SID\", station_name AS \"Name\", area_list AS \"Area\",\n       status AS \"Status\", since AS \"Since\", gap_days AS \"Days\",\n       last_ok::text AS \"Last good\", problem_days AS \"Problem days\",\n       reason AS \"Reason\", station AS \"Plot\"\nFROM st\nWHERE '${show}' = 'all' OR problem_days > 0 OR status > 0\nORDER BY status DESC, since_date NULLS LAST, station",
+          "rawSql": "WITH g AS (SELECT * FROM solution_day_grid('${stream}',\n        ($__timeFrom() AT TIME ZONE 'UTC')::date,\n        ($__timeTo() AT TIME ZONE 'UTC')::date,\n        now()) WHERE station IN (${station:sqlstring})),\ndue AS (SELECT * FROM g WHERE state <> 'not_expected' AND reason <> 'before_deadline'),\ncur AS (SELECT DISTINCT ON (station) station, state AS cur_state, reason AS cur_reason\n        FROM due ORDER BY station, day DESC),\nagg AS (SELECT station,\n               max(day) FILTER (WHERE state = 'available') AS last_ok,\n               count(*) FILTER (WHERE state <> 'available') AS problem_days\n        FROM due GROUP BY station),\ngap AS (SELECT d.station, min(d.day) AS since, count(*) AS gap_days\n        FROM due d JOIN agg a USING (station)\n        WHERE d.day > coalesce(a.last_ok, '-infinity'::date)\n        GROUP BY d.station),\nareas AS (SELECT sam.sid,\n                 -- one short label: the volcano area first, then the region;\n                 -- \"+N\" says how many more (the Area filter covers them all)\n                 (array_agg(sa.area_name ORDER BY (sa.area_type = 'volcanic') DESC,\n                            sa.area_name))[1]\n                 || CASE WHEN count(*) > 1 THEN ' +' || (count(*) - 1)::text ELSE '' END\n                   AS area_list\n          FROM station_area_members sam JOIN station_areas sa USING (area_id)\n          GROUP BY sam.sid),\nst AS (\n  SELECT c.station, s.station_name, s.latitude, s.longitude, ar.area_list,\n         CASE WHEN c.cur_state = 'overdue' AND c.cur_reason IN\n                   ('absent_after_completion', 'producer_rejected', 'producer_failed') THEN 4\n              WHEN c.cur_state IN ('overdue', 'pending') THEN 3\n              WHEN c.cur_state = 'invalid' THEN 2\n              WHEN c.cur_state = 'unknown' THEN 1\n              ELSE 0 END AS status,\n         CASE WHEN c.cur_state = 'available' THEN NULL\n              WHEN a.last_ok IS NULL THEN '≤ ' || gp.since::text\n              ELSE gp.since::text END AS since,\n         CASE WHEN c.cur_state = 'available' THEN 0 ELSE gp.gap_days END AS gap_days,\n         gp.since AS since_date, a.last_ok, a.problem_days,\n         CASE WHEN c.cur_state = 'available' THEN NULL ELSE c.cur_reason END AS reason\n  FROM cur c JOIN agg a USING (station)\n  LEFT JOIN gap gp USING (station)\n  LEFT JOIN stations s ON s.sid = c.station\n  LEFT JOIN areas ar ON ar.sid = c.station)\nSELECT station AS \"SID\", station_name AS \"Name\", area_list AS \"Area\",\n       status AS \"Status\", since AS \"Since\", gap_days AS \"Days\",\n       last_ok::text AS \"Last good\", problem_days AS \"Total\",\n       reason AS \"Reason\", station AS \"Plot\"\nFROM st\nWHERE '${show}' = 'all' OR problem_days > 0 OR status > 0\nORDER BY status DESC, since_date NULLS LAST, station",
           "refId": "A"
         }
       ],
@@ -502,7 +502,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 70
+                "value": 58
               },
               {
                 "id": "links",
@@ -531,7 +531,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 190
+                "value": 130
               }
             ]
           },
@@ -543,7 +543,11 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 190
+                "value": 132
+              },
+              {
+                "id": "description",
+                "value": "Volcano area first, then region; +N = more areas"
               }
             ]
           },
@@ -555,7 +559,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 90
+                "value": 78
               },
               {
                 "id": "mappings",
@@ -608,7 +612,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 110
+                "value": 106
               }
             ]
           },
@@ -620,7 +624,11 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 60
+                "value": 48
+              },
+              {
+                "id": "description",
+                "value": "Length of the current, still open gap"
               }
             ]
           },
@@ -632,19 +640,23 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 100
+                "value": 92
               }
             ]
           },
           {
             "matcher": {
               "id": "byName",
-              "options": "Problem days"
+              "options": "Total"
             },
             "properties": [
               {
                 "id": "custom.width",
-                "value": 115
+                "value": 50
+              },
+              {
+                "id": "description",
+                "value": "All problem days in the time range, including gaps that have recovered"
               }
             ]
           },
@@ -661,7 +673,7 @@
                     "type": "value",
                     "options": {
                       "absent_after_completion": {
-                        "text": "not produced (processing finished without it)",
+                        "text": "not produced (processing finished)",
                         "index": 0
                       },
                       "producer_rejected": {
@@ -729,6 +741,10 @@
                     }
                   }
                 ]
+              },
+              {
+                "id": "custom.width",
+                "value": 250
               }
             ]
           },
@@ -738,10 +754,6 @@
               "options": "Plot"
             },
             "properties": [
-              {
-                "id": "custom.width",
-                "value": 90
-              },
               {
                 "id": "links",
                 "value": [
@@ -803,7 +815,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH g AS (SELECT * FROM solution_day_grid('${stream}',\n        ($__timeFrom() AT TIME ZONE 'UTC')::date,\n        ($__timeTo() AT TIME ZONE 'UTC')::date,\n        now()) WHERE station IN (${station:sqlstring})),\ndue AS (SELECT * FROM g WHERE state <> 'not_expected' AND reason <> 'before_deadline'),\ncur AS (SELECT DISTINCT ON (station) station, state AS cur_state, reason AS cur_reason\n        FROM due ORDER BY station, day DESC),\nagg AS (SELECT station,\n               max(day) FILTER (WHERE state = 'available') AS last_ok,\n               count(*) FILTER (WHERE state <> 'available') AS problem_days\n        FROM due GROUP BY station),\ngap AS (SELECT d.station, min(d.day) AS since, count(*) AS gap_days\n        FROM due d JOIN agg a USING (station)\n        WHERE d.day > coalesce(a.last_ok, '-infinity'::date)\n        GROUP BY d.station),\nareas AS (SELECT sam.sid, string_agg(sa.area_name, ', ' ORDER BY sa.area_name) AS area_list\n          FROM station_area_members sam JOIN station_areas sa USING (area_id)\n          GROUP BY sam.sid),\nst AS (\n  SELECT c.station, s.station_name, s.latitude, s.longitude, ar.area_list,\n         CASE WHEN c.cur_state = 'overdue' AND c.cur_reason IN\n                   ('absent_after_completion', 'producer_rejected', 'producer_failed') THEN 4\n              WHEN c.cur_state IN ('overdue', 'pending') THEN 3\n              WHEN c.cur_state = 'invalid' THEN 2\n              WHEN c.cur_state = 'unknown' THEN 1\n              ELSE 0 END AS status,\n         CASE WHEN c.cur_state = 'available' THEN NULL\n              WHEN a.last_ok IS NULL THEN '≤ ' || gp.since::text\n              ELSE gp.since::text END AS since,\n         CASE WHEN c.cur_state = 'available' THEN 0 ELSE gp.gap_days END AS gap_days,\n         gp.since AS since_date, a.last_ok, a.problem_days,\n         CASE WHEN c.cur_state = 'available' THEN NULL ELSE c.cur_reason END AS reason\n  FROM cur c JOIN agg a USING (station)\n  LEFT JOIN gap gp USING (station)\n  LEFT JOIN stations s ON s.sid = c.station\n  LEFT JOIN areas ar ON ar.sid = c.station)\nSELECT latitude, longitude, status, station AS \"SID\", station_name AS \"Name\",\n       since AS \"Since\", gap_days AS \"Days\", reason AS \"Reason\"\nFROM st WHERE latitude IS NOT NULL AND longitude IS NOT NULL\nORDER BY status",
+          "rawSql": "WITH g AS (SELECT * FROM solution_day_grid('${stream}',\n        ($__timeFrom() AT TIME ZONE 'UTC')::date,\n        ($__timeTo() AT TIME ZONE 'UTC')::date,\n        now()) WHERE station IN (${station:sqlstring})),\ndue AS (SELECT * FROM g WHERE state <> 'not_expected' AND reason <> 'before_deadline'),\ncur AS (SELECT DISTINCT ON (station) station, state AS cur_state, reason AS cur_reason\n        FROM due ORDER BY station, day DESC),\nagg AS (SELECT station,\n               max(day) FILTER (WHERE state = 'available') AS last_ok,\n               count(*) FILTER (WHERE state <> 'available') AS problem_days\n        FROM due GROUP BY station),\ngap AS (SELECT d.station, min(d.day) AS since, count(*) AS gap_days\n        FROM due d JOIN agg a USING (station)\n        WHERE d.day > coalesce(a.last_ok, '-infinity'::date)\n        GROUP BY d.station),\nareas AS (SELECT sam.sid,\n                 -- one short label: the volcano area first, then the region;\n                 -- \"+N\" says how many more (the Area filter covers them all)\n                 (array_agg(sa.area_name ORDER BY (sa.area_type = 'volcanic') DESC,\n                            sa.area_name))[1]\n                 || CASE WHEN count(*) > 1 THEN ' +' || (count(*) - 1)::text ELSE '' END\n                   AS area_list\n          FROM station_area_members sam JOIN station_areas sa USING (area_id)\n          GROUP BY sam.sid),\nst AS (\n  SELECT c.station, s.station_name, s.latitude, s.longitude, ar.area_list,\n         CASE WHEN c.cur_state = 'overdue' AND c.cur_reason IN\n                   ('absent_after_completion', 'producer_rejected', 'producer_failed') THEN 4\n              WHEN c.cur_state IN ('overdue', 'pending') THEN 3\n              WHEN c.cur_state = 'invalid' THEN 2\n              WHEN c.cur_state = 'unknown' THEN 1\n              ELSE 0 END AS status,\n         CASE WHEN c.cur_state = 'available' THEN NULL\n              WHEN a.last_ok IS NULL THEN '≤ ' || gp.since::text\n              ELSE gp.since::text END AS since,\n         CASE WHEN c.cur_state = 'available' THEN 0 ELSE gp.gap_days END AS gap_days,\n         gp.since AS since_date, a.last_ok, a.problem_days,\n         CASE WHEN c.cur_state = 'available' THEN NULL ELSE c.cur_reason END AS reason\n  FROM cur c JOIN agg a USING (station)\n  LEFT JOIN gap gp USING (station)\n  LEFT JOIN stations s ON s.sid = c.station\n  LEFT JOIN areas ar ON ar.sid = c.station)\nSELECT latitude, longitude, status, station AS \"SID\", station_name AS \"Name\",\n       since AS \"Since\", gap_days AS \"Days\", reason AS \"Reason\"\nFROM st WHERE latitude IS NOT NULL AND longitude IS NOT NULL\nORDER BY status",
           "refId": "A"
         }
       ],
@@ -947,7 +959,7 @@
                     "type": "value",
                     "options": {
                       "absent_after_completion": {
-                        "text": "not produced (processing finished without it)",
+                        "text": "not produced (processing finished)",
                         "index": 0
                       },
                       "producer_rejected": {
