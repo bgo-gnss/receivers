@@ -160,9 +160,13 @@ def test_station_list_has_since_days_and_a_plot_link(dash):
     ]
     assert len({lk["title"] for lk in links}) == 3
     link = links[0]
-    assert link["url"].startswith(
-        "http://brunnur.vedur.is/gps/timeseries/${__value.raw}"
+    assert link["url"].startswith("${plot_base}/${__value.raw}-plate-")
+    base = next(v for v in dash["templating"]["list"] if v["name"] == "plot_base")
+    # yang's gpsplot tree, not brunnur (which gpsplot no longer publishes to)
+    assert (
+        base["query"] == "http://yang-d01.vedur.is/gps/timeseries/graphs/standard_24h"
     )
+    assert base["type"] == "constant" and base["hide"] == 2
 
 
 def test_map_value_mappings_are_scoped_to_the_status_field(dash):
@@ -191,11 +195,15 @@ def test_list_and_map_rows_come_back(dash, db):  # noqa: F811 (fixture)
           " ('reykjanes', 'AFST'), ('krysuvik', 'AFST')")  # fmt: skip
     frm = NOW - dt.timedelta(days=45)
     sql = _panel(dash, "Stations with missing solutions")["targets"][0]["rawSql"]
-    rows = q(db, _fill(sql, "'AFST','NEWS','THOB'", frm, NOW))
+    rows = q(db, _fill(sql, "'AFST','NEWS','THOB'", frm, NOW, show="all"))
     afst = next(r for r in rows if r[0] == "AFST")
     # AFST: one absent day, d(3), since recovered -> OK now, 1 problem day
     assert afst[3] == 0 and afst[9] == 1  # Total is the last column
     # one short Area label: the volcano area first, "+N" for the rest
     assert afst[2] == "Krýsuvík +1"
+    # a plot link only for our own stations (yang has none for the others)
+    assert afst[8] == "AFST"
+    assert all(r[8] is None for r in rows if r[0] != "AFST")
+    assert any(r[0] != "AFST" for r in rows)
     sql = _panel(dash, "Map: current status")["targets"][0]["rawSql"]
     assert [r[3] for r in q(db, _fill(sql, "'AFST'", frm, NOW))] == ["AFST"]
