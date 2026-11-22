@@ -44,6 +44,18 @@
       "tooltip": "Receiver health dashboard",
       "type": "link",
       "url": "/d/gps-health-voltage/gps-receiver-health-overview"
+    },
+    {
+      "asDropdown": false,
+      "icon": "dashboard",
+      "includeVars": false,
+      "keepTime": false,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Daily Solutions",
+      "tooltip": "Daily POS solutions: which stations are missing days, and since when",
+      "type": "link",
+      "url": "/d/gps-daily-solutions/gps-daily-solutions"
     }
   ],
   "liveNow": false,

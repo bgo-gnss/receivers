@@ -234,9 +234,23 @@ October's dates. `tests/test_solution_dashboard.py` pins both properties.
 real check must be writing to it (slice 5). Only then add it to the `vedur` target in
 `scripts/grafana_sync.py`'s `grafana_targets.yaml`.
 
+## Navigation between the boards
+
+Every station board has the same top-bar buttons (Health Overview, Map, Station
+Detail, Data Delivery, LTB Runs where relevant, Daily Solutions). Links into and out
+of **Daily Solutions** pass only the area (`?var-area=${area}`), never the time range
+or the other variables: each board keeps its own range, because 45 days on the
+`block_*` boards is a heavy query. All boards share one `area` variable (`'all'` is a
+real option, not Grafana's All) so `var-area=` works in both directions.
+
+`tests/test_grafana_links.py` fails when a link points to a uid that no board in
+`docs/grafana` has, or when a board provisioned on rek-d01 or the laptop
+(`deployment/*/docker-compose.yml`) links to one that is not provisioned there.
+Add a new board to both compose files when another board links to it.
+
 ## Syncing to grafana.vedur.is
 
-The `scripts/grafana_sync.py` tool pushes local dashboard JSON to the production Grafana instance. It remaps datasource UIDs and inter-dashboard link UIDs automatically.
+The `scripts/grafana_sync.py` tool pushes local dashboard JSON to the production Grafana instance. It remaps datasource UIDs and inter-dashboard link UIDs automatically. Top-bar links to boards the target does not carry (for now Daily Solutions and LTB Runs) are dropped on the way, instead of showing "Dashboard not found".
 
 ```bash
 # Preview changes
