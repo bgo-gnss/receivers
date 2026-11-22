@@ -1258,6 +1258,26 @@ gpsops_systemctl daemon-reload
 gpsops_systemctl enable --now gps-health-freshness-alert.timer >/dev/null
 ok "Health-liveness alert timer installed as gpsops user unit (every 10 min → Icinga)"
 
+# Daily POS solutions check — hourly at :25, reads yang's POS files over the
+# read-only NFS mount /mnt/yang_pos and records into gps_health for the "GPS
+# Daily Solutions" board. Installed only when the mount exists: without it every
+# run would record source_unavailable (correct, but not useful) until IT/bgo
+# set up the export (docs/monitoring/daily-solutions-check.md).
+SOL_SVC="$USER_UNIT_DIR/gps-solution-health.service"
+SOL_TIMER="$USER_UNIT_DIR/gps-solution-health.timer"
+if mountpoint -q /mnt/yang_pos; then
+    sed -e "s|ExecStart=.*/bin/receivers |ExecStart=$VENV_DIR/bin/receivers |" \
+        "$INSTALL_DIR/deployment/systemd/gps-solution-health.service" > "$SOL_SVC"
+    install -m 644 "$INSTALL_DIR/deployment/systemd/gps-solution-health.timer" "$SOL_TIMER"
+    chown "$SERVICE_USER:$SERVICE_GROUP" "$SOL_SVC" "$SOL_TIMER"
+    chmod 644 "$SOL_SVC" "$SOL_TIMER"
+    gpsops_systemctl daemon-reload
+    gpsops_systemctl enable --now gps-solution-health.timer >/dev/null
+    ok "Daily POS solutions check timer installed as gpsops user unit (hourly :25)"
+else
+    warn "/mnt/yang_pos not mounted — daily POS solutions timer NOT installed"
+fi
+
 # Open-transaction age alert timer — runs every 5 min, pushes a passive check
 # result to Icinga (rek-d01.gps.vedur.is!Transaction age). The RUNTIME half of
 # the transaction-leak work: dev/audits/tx_audit.py is blind by construction to

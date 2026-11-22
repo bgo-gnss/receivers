@@ -277,9 +277,10 @@ def test_runs_after_now_are_not_seen(db):
 
 def test_rule3_stale_check(db):
     record_check(db, payload())
-    g = grid(db, now=NOW + dt.timedelta(hours=27))
+    # freshness_ttl 3 h: three missed hourly runs
+    g = grid(db, now=NOW + dt.timedelta(hours=5))
     assert g[("AFST", d(3))] == ("unknown", "check_stale")
-    assert grid(db, now=NOW + dt.timedelta(hours=25))[("AFST", d(3))][0] == "available"
+    assert grid(db, now=NOW + dt.timedelta(hours=3))[("AFST", d(3))][0] == "available"
 
 
 def test_rule3_unverifiable_in_latest_run(db):
@@ -332,7 +333,7 @@ def test_rule5_verified_in_window_frozen_after(db):
         ("09:00", "09:14", ("pending", "before_deadline")),
         # absence seen at 09:00 does not prove lateness at 09:15
         ("09:00", "09:15", ("pending", "awaiting_recheck")),
-        ("09:00", "20:00", ("pending", "awaiting_recheck")),
+        ("09:00", "11:00", ("pending", "awaiting_recheck")),  # within the 3 h ttl
         ("09:15", "09:16", ("overdue", "no_completion_record")),
         ("09:20", "09:30", ("overdue", "no_completion_record")),
     ],
