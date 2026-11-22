@@ -502,7 +502,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 58
+                "value": 70
               },
               {
                 "id": "links",
@@ -531,7 +531,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 130
+                "value": 125
               }
             ]
           },
@@ -543,7 +543,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 132
+                "value": 125
               },
               {
                 "id": "description",
@@ -559,7 +559,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 78
+                "value": 74
               },
               {
                 "id": "mappings",
@@ -612,7 +612,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 106
+                "value": 102
               }
             ]
           },
@@ -673,11 +673,11 @@
                     "type": "value",
                     "options": {
                       "absent_after_completion": {
-                        "text": "not produced (processing finished)",
+                        "text": "not produced",
                         "index": 0
                       },
                       "producer_rejected": {
-                        "text": "rejected by the processing",
+                        "text": "rejected by processing",
                         "index": 1
                       },
                       "producer_failed": {
@@ -685,11 +685,11 @@
                         "index": 2
                       },
                       "no_completion_record": {
-                        "text": "late (processing not confirmed finished)",
+                        "text": "late, run not confirmed",
                         "index": 3
                       },
                       "awaiting_recheck": {
-                        "text": "missing at last check, before the deadline",
+                        "text": "missing, recheck pending",
                         "index": 4
                       },
                       "check_stale": {
@@ -725,7 +725,7 @@
                         "index": 13
                       },
                       "roster_unreviewed": {
-                        "text": "roster not reviewed for this day",
+                        "text": "roster not reviewed",
                         "index": 14
                       }
                     }
@@ -735,7 +735,7 @@
                     "options": {
                       "pattern": "^(.+)$",
                       "result": {
-                        "text": "invalid file/row: $1",
+                        "text": "invalid: $1",
                         "index": 11
                       }
                     }
@@ -744,7 +744,7 @@
               },
               {
                 "id": "custom.width",
-                "value": 250
+                "value": 190
               }
             ]
           },
@@ -756,7 +756,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 72
+                "value": 76
               },
               {
                 "id": "links",
@@ -776,7 +776,7 @@
                     "options": {
                       "pattern": ".*",
                       "result": {
-                        "text": "View plot",
+                        "text": "plot ↗",
                         "index": 0
                       }
                     }
@@ -963,11 +963,11 @@
                     "type": "value",
                     "options": {
                       "absent_after_completion": {
-                        "text": "not produced (processing finished)",
+                        "text": "not produced",
                         "index": 0
                       },
                       "producer_rejected": {
-                        "text": "rejected by the processing",
+                        "text": "rejected by processing",
                         "index": 1
                       },
                       "producer_failed": {
@@ -975,11 +975,11 @@
                         "index": 2
                       },
                       "no_completion_record": {
-                        "text": "late (processing not confirmed finished)",
+                        "text": "late, run not confirmed",
                         "index": 3
                       },
                       "awaiting_recheck": {
-                        "text": "missing at last check, before the deadline",
+                        "text": "missing, recheck pending",
                         "index": 4
                       },
                       "check_stale": {
@@ -1015,7 +1015,7 @@
                         "index": 13
                       },
                       "roster_unreviewed": {
-                        "text": "roster not reviewed for this day",
+                        "text": "roster not reviewed",
                         "index": 14
                       }
                     }
@@ -1025,7 +1025,7 @@
                     "options": {
                       "pattern": "^(.+)$",
                       "result": {
-                        "text": "invalid file/row: $1",
+                        "text": "invalid: $1",
                         "index": 11
                       }
                     }
@@ -1133,8 +1133,8 @@
         {
           "id": "renameByRegex",
           "options": {
-            "regex": "^\\d{4}-(\\d{2})-(\\d{2})$",
-            "renamePattern": "$1-$2"
+            "regex": "^\\d{4}-0?(\\d+)-0?(\\d+)$",
+            "renamePattern": "$2.$1"
           }
         }
       ],
@@ -1142,7 +1142,7 @@
         "defaults": {
           "custom": {
             "align": "center",
-            "width": 40,
+            "width": 44,
             "wrapHeaderText": true,
             "cellOptions": {
               "type": "color-background",
@@ -1221,7 +1221,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 64
+                "value": 72
               },
               {
                 "id": "custom.cellOptions",
