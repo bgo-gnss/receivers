@@ -607,6 +607,51 @@ def test_local_destinations_are_accepted(dsn):
     check_destination(dsn)
 
 
+@pytest.mark.parametrize(
+    "dsn",
+    [
+        "host=/var/run/postgresql dbname=gps_health",  # the rek-d01 timer
+        "host=localhost dbname=gps_health",
+        "host=pgdev.vedur.is dbname=gps_health user=bgo",  # G8 second destination
+    ],
+)
+def test_production_accepts_exactly_the_production_databases(dsn):
+    check_destination(dsn, production=True)
+
+
+@pytest.mark.parametrize(
+    "dsn",
+    [
+        "host=rek-d01.vedur.is dbname=gps_health",  # remote, but not pgdev
+        "host=pgdev.vedur.is dbname=sol",  # pgdev, wrong database
+        "host=127.0.0.1 dbname=sol",  # a disposable DB is not production
+        "host=127.0.0.1,pgdev.vedur.is dbname=gps_health",
+        "host=pgdev.vedur.is hostaddr=10.0.0.1 dbname=gps_health",
+        "host=pgdev.vedur.is service=prod dbname=gps_health",
+        "dbname=gps_health",  # no host: PGHOST would decide
+        "postgresql://u:secret@pgdev.example.org/gps_health",
+    ],
+)
+def test_production_refuses_everything_else(dsn):
+    with pytest.raises(DestinationRefusedError) as exc:
+        check_destination(dsn, production=True)
+    assert "secret" not in str(exc.value)
+
+
+def test_production_still_refuses_libpq_environment_redirects(monkeypatch):
+    monkeypatch.setenv("PGSERVICE", "prod")
+    with pytest.raises(DestinationRefusedError, match="PGSERVICE"):
+        check_destination("host=localhost dbname=gps_health", production=True)
+
+
+def test_production_flag_reaches_every_write(db):
+    # the disposable test DB is not a production destination, so a production
+    # write to it must be refused: proves the flag is passed down, not dropped
+    (res,) = record_to_destinations([db], payload(), production=True)
+    assert not res.ok and "--production writes only" in (res.error or "")
+    assert q(db, "SELECT count(*) FROM solution_check_run")[0][0] == 0
+
+
 def test_a_dsn_without_host_is_refused_by_name():
     with pytest.raises(DestinationRefusedError, match="explicit local host"):
         check_destination("dbname=sol")
@@ -699,6 +744,14 @@ def test_cli_refuses_a_remote_destination_before_reading(tmp_path, capsys):
                "--record-dsn", "host=pgdev.vedur.is dbname=gps_health"])  # fmt: skip
     assert rc == 2
     assert "local disposable" in capsys.readouterr().err
+
+
+def test_cli_production_flag_reaches_the_destination_check(tmp_path, capsys):
+    src, ros = _source_and_roster(tmp_path)
+    rc = _cli(["solution-health", "check", "--source", str(src), "--roster", str(ros),
+               "--production", "--record-dsn", "host=127.0.0.1 dbname=sol"])  # fmt: skip
+    assert rc == 2
+    assert "--production writes only" in capsys.readouterr().err
 
 
 def test_payload_from_a_real_check_is_accepted_as_is(db, tmp_path):
