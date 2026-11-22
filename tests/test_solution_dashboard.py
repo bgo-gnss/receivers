@@ -186,7 +186,7 @@ def test_list_and_map_rows_come_back(dash, db):  # noqa: F811 (fixture)
     rows = q(db, _fill(sql, "'AFST','NEWS','THOB'", frm, NOW))
     afst = next(r for r in rows if r[0] == "AFST")
     # AFST: one absent day, d(3), since recovered -> OK now, 1 problem day
-    assert afst[3] == 0 and afst[7] == 1
+    assert afst[3] == 0 and afst[9] == 1  # Total is the last column
     # one short Area label: the volcano area first, "+N" for the rest
     assert afst[2] == "Krýsuvík +1"
     sql = _panel(dash, "Map: current status")["targets"][0]["rawSql"]
