@@ -201,6 +201,8 @@ state and reason into a colour.
 - **Map:** the same status per station, with problem stations drawn larger. Coordinates
   come from `stations`.
 - **Area** filter, the same `station_areas` variable the other GPS boards use.
+- **Stations** filter: `ours` (default) is the fleet, the stations in `stations`; `all` adds
+  the global reference stations that the roster also carries because their solutions arrive.
 - **Station × UTC day grid:** a table with the *grouping to matrix* transform. The
   `Rows` variable switches between `problems` (only stations with a problem day) and
   `all`. Click a station for its data-delivery and receiver dashboards.

@@ -237,3 +237,28 @@ def test_files_outside_the_fleet_are_recorded_but_not_counted(dash, db):  # noqa
 
     assert files("hide") == {"BJAC"}
     assert files("show") == {"BJAC", "BRUX", "TSKB"}
+
+
+def test_station_scope_hides_the_global_reference_stations(dash, db):  # noqa: F811
+    # the roster carries reference stations too (their solutions arrive);
+    # "ours" = in the stations table, "all" brings them back
+    from receivers.monitoring.solutions.store import record_check
+    from tests.test_solution_store import payload, q
+
+    record_check(db, payload())
+    q(db, "CREATE TABLE stations (sid varchar PRIMARY KEY)")
+    q(db, "CREATE TABLE station_area_members (area_id varchar, sid varchar)")
+    q(db, "INSERT INTO stations VALUES ('AFST')")
+    var = next(v for v in dash["templating"]["list"] if v["name"] == "station")
+    names = [v["name"] for v in dash["templating"]["list"]]
+    assert names.index("scope") < names.index("station")  # station refreshes on it
+
+    def listed(scope: str) -> list[str]:
+        sql = (var["query"].replace("${stream}", "imo.24hr_itrf14")
+               .replace("${area}", "all").replace("${scope}", scope))  # fmt: skip
+        return [r[0] for r in q(db, sql)]
+
+    assert listed("ours") == ["AFST"]
+    assert len(listed("all")) > 1 and "AFST" in listed("all")
+    scope = next(v for v in dash["templating"]["list"] if v["name"] == "scope")
+    assert scope["current"]["value"] == "ours"
