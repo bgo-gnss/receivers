@@ -106,6 +106,31 @@
         "multi": false
       },
       {
+        "name": "scope",
+        "label": "Stations",
+        "type": "custom",
+        "description": "ours = the fleet (stations.cfg); all adds the global reference stations the processing uses",
+        "query": "ours : ours,all : all",
+        "current": {
+          "text": "ours",
+          "value": "ours"
+        },
+        "options": [
+          {
+            "text": "ours",
+            "value": "ours",
+            "selected": true
+          },
+          {
+            "text": "all",
+            "value": "all",
+            "selected": false
+          }
+        ],
+        "includeAll": false,
+        "multi": false
+      },
+      {
         "name": "station",
         "label": "Station",
         "type": "query",
@@ -113,8 +138,8 @@
           "type": "grafana-postgresql-datasource",
           "uid": "gps_health"
         },
-        "query": "SELECT r.station FROM solution_roster_station r WHERE r.stream = '${stream}' AND ('${area}' = 'all' OR EXISTS (SELECT 1 FROM station_area_members m WHERE m.sid = r.station AND m.area_id = '${area}')) ORDER BY 1",
-        "definition": "SELECT r.station FROM solution_roster_station r WHERE r.stream = '${stream}' AND ('${area}' = 'all' OR EXISTS (SELECT 1 FROM station_area_members m WHERE m.sid = r.station AND m.area_id = '${area}')) ORDER BY 1",
+        "query": "SELECT r.station FROM solution_roster_station r WHERE r.stream = '${stream}' AND ('${area}' = 'all' OR EXISTS (SELECT 1 FROM station_area_members m WHERE m.sid = r.station AND m.area_id = '${area}')) AND ('${scope}' = 'all' OR EXISTS (SELECT 1 FROM stations s WHERE s.sid = r.station)) ORDER BY 1",
+        "definition": "SELECT r.station FROM solution_roster_station r WHERE r.stream = '${stream}' AND ('${area}' = 'all' OR EXISTS (SELECT 1 FROM station_area_members m WHERE m.sid = r.station AND m.area_id = '${area}')) AND ('${scope}' = 'all' OR EXISTS (SELECT 1 FROM stations s WHERE s.sid = r.station)) ORDER BY 1",
         "current": {
           "text": "All",
           "value": "$__all"
