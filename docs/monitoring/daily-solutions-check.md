@@ -189,6 +189,19 @@ while these facts follow stations.cfg. The board's **Stations: local / all** opt
 (list, grid, map, counts and the unexpected-file table) and its **Agency** filter read
 it. Apply 078 on a host before the code that sends `station_info` reaches it.
 
+**Completion inferred from the files (2026-11-23, migration 079).** Slice 4 planned a
+completion record written by yang's processing. Until one exists, the check infers it:
+the run for day D is done when at least half (`COMPLETE_SHARE`) of the stations expected
+on D have a valid solution for D. Measured on 2026-11-23: a processed day sits at
+89–91 %, an unprocessed one at 0 %, so the threshold is far from both. Each run sends
+one record per contiguous range of processed days (`files:<run_id>:<day_from>`), so a
+day the processing never ran stays uncovered and its gaps stay `late`. On a covered day,
+a station still absent after the deadline is `overdue/absent_after_completion` (red),
+not `overdue/no_completion_record` (orange). `record_solution_completions` writes them
+into `solution_completion` in the same transaction; `solution_day_grid` is unchanged.
+A late arrival still turns the cell green (a valid row comes before every completion
+rule). A producer-written record can replace this later without a board change.
+
 **Churn (G7, measured 2026-11-22).** Comparing two days of yang's files: on the
 44 shared days, 43 were byte-identical for every station; only the newest day
 (11-20) changed, for all 250 stations, because each day is re-estimated once in

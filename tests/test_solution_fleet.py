@@ -178,3 +178,34 @@ def test_cli_explicit_missing_stations_cfg_is_an_error(tmp_path, capsys):
                str(ros), "--stations-cfg", str(tmp_path / "typo.cfg")])  # fmt: skip
     assert rc == 2
     assert "--stations-cfg" in capsys.readouterr().err
+
+
+def test_completion_is_inferred_per_contiguous_range_of_processed_days(tmp_path):
+    # three expected stations; a day is processed when >= half have it.
+    # days[2] has one of three (an outage): it splits the ranges and stays out.
+    src = tmp_path / "pos"
+    src.mkdir()
+    days = check_window(NOW.date())
+    outage, gap = days[2], days[10]
+    write_pos(src / "AFST.imo.24hr_itrf14.pos", [x for x in days if x != gap])
+    write_pos(src / "THOB.imo.24hr_itrf14.pos",
+              [x for x in days if x != outage], station="THOB")  # fmt: skip
+    write_pos(src / "OLKE.imo.24hr_itrf14.pos",
+              [x for x in days if x != outage], station="OLKE")  # fmt: skip
+    ros = tmp_path / "daily_solutions.yaml"
+    ros.write_text(
+        "version: 1\nstream: imo.24hr_itrf14\nreviewed: {from: 2026-01-01}\n"
+        "stations:\n" + "".join(f"  {s}: {{expected: [{{from: 2021-01-01}}]}}\n"
+                                for s in ("AFST", "THOB", "OLKE"))  # fmt: skip
+    )
+    # only AFST has the outage day: 1 of 3 < 0.5. AFST's own gap is covered
+    report = run_check(src, load_roster(ros), NOW)
+    comps = report.completions()
+    spans = [(c["day_from"], c["day_to"]) for c in comps]
+    assert spans == [
+        (days[0].isoformat(), days[1].isoformat()),
+        (days[3].isoformat(), days[-1].isoformat()),
+    ]
+    doc = report.to_json()
+    assert doc["completion_id"] == f"files:{report.run_id}"
+    assert all(c["completion_id"].startswith("files:") for c in doc["completions"])

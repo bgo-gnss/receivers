@@ -28,6 +28,11 @@ Outcome = Literal["ok", "source_unavailable"]
 
 #: /2 (slice 2): adds the roster snapshot that record_solution_check installs
 SCHEMA = "solution-check-facts/2"
+#: a day's processing run counts as done when at least this share of the
+#: stations expected that day have a valid solution for it. Measured on
+#: 2026-11-23: a processed day sits at 89-91 %, an unprocessed one at 0 %.
+COMPLETE_SHARE = 0.5
+
 #: the unexpected-file reason that is recorded but not counted (fleet.py)
 IGNORED_REASON = "not_local"
 
@@ -89,6 +94,48 @@ class CheckReport:
     #: stations.cfg facts per station (fleet.py), recorded in solution_station
     station_info: dict[str, StationInfo] | None = None
 
+    def completions(self) -> list[dict[str, Any]]:
+        """The completion records these files imply (slice 4, inferred).
+
+        yang writes no record of a finished run, so the files stand in for
+        one: the run for day D is done when ``COMPLETE_SHARE`` of the stations
+        expected on D have a valid solution for D. One record per contiguous
+        range of such days, so a day the processing never ran (an outage)
+        stays uncovered. A station still absent on a covered day after the
+        deadline is then ``overdue/absent_after_completion``, not
+        ``no_completion_record``. Empty for a run that read no files.
+        """
+        if self.outcome != "ok":
+            return []
+        expected: Counter[dt.date] = Counter()
+        valid: Counter[dt.date] = Counter()
+        for c in self.cells:
+            if c.roster == "expected":
+                expected[c.day] += 1
+                if c.fact == "valid":
+                    valid[c.day] += 1
+
+        def done(d: dt.date) -> bool:
+            return bool(expected[d]) and valid[d] / expected[d] >= COMPLETE_SHARE
+
+        ranges: list[list[dt.date]] = []
+        for d in self.window:  # ascending
+            if not done(d):
+                continue
+            if ranges and ranges[-1][1] == d - dt.timedelta(days=1):
+                ranges[-1][1] = d
+            else:
+                ranges.append([d, d])
+        return [
+            {
+                "completion_id": f"files:{self.run_id}:{a.isoformat()}",
+                "day_from": a.isoformat(),
+                "day_to": b.isoformat(),
+                "rule": f"valid share >= {COMPLETE_SHARE}",
+            }
+            for a, b in ranges
+        ]
+
     @property
     def fact_counts(self) -> dict[str, int]:
         return dict(sorted(Counter(c.fact for c in self.cells).items()))
@@ -149,7 +196,14 @@ class CheckReport:
             "unexpected_files": [u.to_json() for u in self.unexpected_files],
             "other_products": self.other_products,
             **self._station_info_json(),
+            **self._completion_json(),
         }
+
+    def _completion_json(self) -> dict[str, Any]:
+        comps = self.completions()
+        if not comps:
+            return {}
+        return {"completion_id": f"files:{self.run_id}", "completions": comps}
 
     def _station_info_json(self) -> dict[str, Any]:
         # only when stations.cfg was read: without it the board keeps the
