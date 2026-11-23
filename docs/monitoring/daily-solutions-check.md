@@ -188,6 +188,9 @@ its own because the roster snapshot is replaced only when the roster file change
 while these facts follow stations.cfg. The board's **Stations: local / all** option
 (list, grid, map, counts and the unexpected-file table) and its **Agency** filter read
 it. Apply 078 on a host before the code that sends `station_info` reaches it.
+Migration 080 adds the **operator** (`station_operator`, who runs the station, apart
+from the owner) for the board's **Operator** filter; 078's writer ignores the new key,
+so only the board has to wait for 080.
 
 **Completion inferred from the files (2026-11-23, migration 079).** Slice 4 planned a
 completion record written by yang's processing. Until one exists, the check infers it:

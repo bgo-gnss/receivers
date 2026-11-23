@@ -107,6 +107,7 @@ def _fill(
         .replace("${show}", show)
         .replace("${scope}", scope)
         .replace("${owner}", "all")
+        .replace("${operator}", "all")
     )
 
 
@@ -253,8 +254,8 @@ def test_files_outside_the_fleet_are_recorded_but_not_counted(dash, db):  # noqa
     ]
     record_check(db, doc)
     frm = NOW - dt.timedelta(days=45)
-    stat = _panel(dash, "Unexpected files")["targets"][0]["rawSql"]
-    assert q(db, _fill(stat, "'AFST'", frm, NOW)) == [(1,)]
+    # no stat for it any more: an admin signal, it lives in the table only
+    assert not any(p["title"] == "Unexpected files" for p in dash["panels"])
     table = next(p for p in dash["panels"] if p["id"] == 11)["targets"][0]["rawSql"]
 
     def files(scope: str) -> set[str]:
@@ -277,8 +278,8 @@ def test_station_scope_and_agency_come_from_solution_station(dash, db):  # noqa:
 
     doc = payload()
     doc["station_info"] = [
-        {"station": "AFST", "local": True, "agency": "IMO"},
-        {"station": "NEWS", "local": True, "agency": None},
+        {"station": "AFST", "local": True, "agency": "IMO", "operator": "IMO"},
+        {"station": "NEWS", "local": True, "agency": "KAUST", "operator": "IMO"},
         {"station": "THOB", "local": False, "agency": "IGS"},
     ]
     record_check(db, doc)
@@ -289,11 +290,13 @@ def test_station_scope_and_agency_come_from_solution_station(dash, db):  # noqa:
     # station refreshes on both
     assert names.index("scope") < names.index("station")
     assert names.index("owner") < names.index("station")
+    assert names.index("operator") < names.index("station")
 
-    def listed(scope: str, owner: str = "all") -> list[str]:
+    def listed(scope: str, owner: str = "all", operator: str = "all") -> list[str]:
         sql = (var["query"].replace("${stream}", "imo.24hr_itrf14")
                .replace("${area}", "all").replace("${scope}", scope)
-               .replace("${owner}", owner))  # fmt: skip
+               .replace("${owner}", owner)
+               .replace("${operator}", operator))  # fmt: skip
         return [r[0] for r in q(db, sql)]
 
     assert listed("local") == ["AFST", "NEWS"]
@@ -304,4 +307,10 @@ def test_station_scope_and_agency_come_from_solution_station(dash, db):  # noqa:
     assert scope["current"]["value"] == "local"
     owner = next(v for v in tvars if v["name"] == "owner")
     assert owner["label"] == "Agency" and owner["current"]["value"] == "all"
-    assert [r[0] for r in q(db, owner["query"])] == ["all", "IGS", "IMO"]
+    assert [r[0] for r in q(db, owner["query"])] == ["all", "IGS", "IMO", "KAUST"]
+    # Operator: who runs it, apart from the owner (080). IMO runs NEWS for KAUST
+    assert listed("all", operator="IMO") == ["AFST", "NEWS"]
+    assert listed("all", "KAUST", "IMO") == ["NEWS"]
+    op = next(v for v in tvars if v["name"] == "operator")
+    assert op["label"] == "Operator" and op["current"]["value"] == "all"
+    assert [r[0] for r in q(db, op["query"])] == ["all", "IMO"]

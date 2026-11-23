@@ -34,6 +34,7 @@ MIGRATION = (
 )
 MIGRATION_078 = MIGRATION.with_name("078_solution_station.sql")
 MIGRATION_079 = MIGRATION.with_name("079_solution_completion_from_files.sql")
+MIGRATION_080 = MIGRATION.with_name("080_solution_station_operator.sql")
 STREAM = "imo.24hr_itrf14"
 UTC = dt.UTC
 NOW = dt.datetime(2026, 11, 21, 10, 0, tzinfo=UTC)
@@ -109,6 +110,7 @@ def _create_db(admin_dsn: str, *, migrate: bool = True) -> str:
             cur.execute(MIGRATION.read_text())
             cur.execute(MIGRATION_078.read_text())
             cur.execute(MIGRATION_079.read_text())
+            cur.execute(MIGRATION_080.read_text())
     conn.close()
     return dsn
 
@@ -787,6 +789,18 @@ def test_station_info_is_recorded_with_the_run_and_never_moved_back(db):
     late = NOW - dt.timedelta(hours=1)
     record_check(db, info(late, "00000000-0000-4000-8000-0000000000a2", False, "X"))
     assert q(db, "SELECT is_local, agency FROM solution_station") == [(True, "IMO")]
+
+
+def test_the_operator_is_recorded_apart_from_the_owner(db):
+    # 080: KAUST owns it, IMO runs it; a station without one stays NULL
+    doc = payload()
+    doc["station_info"] = [
+        {"station": "AFST", "local": True, "agency": "KAUST", "operator": "IMO"},
+        {"station": "THOB", "local": True, "agency": "IMO", "operator": " "},
+    ]
+    record_check(db, doc)
+    rows = q(db, "SELECT station, agency, operator FROM solution_station ORDER BY 1")
+    assert rows == [("AFST", "KAUST", "IMO"), ("THOB", "IMO", None)]
 
 
 def test_a_payload_without_station_info_does_not_need_078(admin_dsn):

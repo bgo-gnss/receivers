@@ -212,7 +212,12 @@ class CheckReport:
             return {}
         return {
             "station_info": [
-                {"station": sid, "local": i.local, "agency": i.agency}
+                {
+                    "station": sid,
+                    "local": i.local,
+                    "agency": i.agency,
+                    "operator": i.operator,
+                }
                 for sid, i in sorted(self.station_info.items())
                 if sid in self.roster.stations
             ]
