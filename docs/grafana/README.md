@@ -252,7 +252,7 @@ Add a new board to both compose files when another board links to it.
 
 ## Syncing to grafana.vedur.is
 
-The `scripts/grafana_sync.py` tool pushes local dashboard JSON to the production Grafana instance. It remaps datasource UIDs and inter-dashboard link UIDs automatically. Top-bar links to boards the target does not carry (for now Daily Solutions and LTB Runs) are dropped on the way, instead of showing "Dashboard not found".
+The `scripts/grafana_sync.py` tool pushes local dashboard JSON to the production Grafana instance. It remaps datasource UIDs and inter-dashboard link UIDs automatically. Top-bar links to boards the target does not carry (for now LTB Runs) are dropped on the way, instead of showing "Dashboard not found".
 
 ```bash
 # Preview changes

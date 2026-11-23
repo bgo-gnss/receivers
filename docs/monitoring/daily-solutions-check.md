@@ -164,9 +164,9 @@ rek-d01 Grafana (:3000) ── "GPS Daily Solutions" board
 - **Migration 077** is applied as bgo, the owner. It grants `gpsops` EXECUTE on
   `record_solution_check` and SELECT on the tables (the board's datasource user).
 
-pgdev, for grafana.vedur.is, comes later: apply 077 there as bgo, then add a
-second `--record-dsn "host=pgdev.vedur.is dbname=gps_health user=bgo"` to the
-service. rek-d01 writes to pgdev as `mirror_user = bgo`; pgdev is a shared IMO
+pgdev, for grafana.vedur.is (2026-11-23): 077 is applied there as bgo, and the
+service has a second `--record-dsn "host=pgdev.vedur.is dbname=gps_health user=bgo"`
+(gpsops' `~/.pgpass` covers it). rek-d01 writes to pgdev as `mirror_user = bgo`; pgdev is a shared IMO
 server with personal LDAP roles, so it has no `gpsops`, by design, and bgo owns
 `record_solution_check` there, so no grant is needed.
 

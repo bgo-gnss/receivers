@@ -140,4 +140,6 @@ def test_sync_drops_top_bar_links_to_boards_the_target_lacks():
         b["uid"] for n, b in BOARDS.items() if n.removesuffix(".json") in vedur
     }
     assert "gps-health-voltage" in kept
-    assert "Daily Solutions" in dropped and "LTB Runs" in dropped
+    # vedur carries Daily Solutions since 2026-11-23; LTB Runs stays local
+    assert "gps-daily-solutions" in kept
+    assert "Daily Solutions" not in dropped and "LTB Runs" in dropped
