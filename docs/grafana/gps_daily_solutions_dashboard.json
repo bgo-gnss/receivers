@@ -150,6 +150,26 @@
         "multi": false
       },
       {
+        "name": "operator",
+        "label": "Operator",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "gps_health"
+        },
+        "description": "station_operator in stations.cfg: who runs the station. Agency is the owner.",
+        "query": "SELECT operator FROM (SELECT 'all' AS operator, 0 AS k UNION SELECT operator, 1 FROM solution_station WHERE operator IS NOT NULL) o ORDER BY k, operator",
+        "definition": "SELECT operator FROM (SELECT 'all' AS operator, 0 AS k UNION SELECT operator, 1 FROM solution_station WHERE operator IS NOT NULL) o ORDER BY k, operator",
+        "current": {
+          "selected": true,
+          "text": "all",
+          "value": "all"
+        },
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false
+      },
+      {
         "name": "station",
         "label": "Station",
         "type": "query",
@@ -157,8 +177,8 @@
           "type": "grafana-postgresql-datasource",
           "uid": "gps_health"
         },
-        "query": "SELECT r.station FROM solution_roster_station r WHERE r.stream = '${stream}' AND ('${area}' = 'all' OR EXISTS (SELECT 1 FROM station_area_members m WHERE m.sid = r.station AND m.area_id = '${area}')) AND ('${scope}' = 'all' OR EXISTS (SELECT 1 FROM solution_station x WHERE x.station = r.station AND x.is_local)) AND ('${owner}' = 'all' OR EXISTS (SELECT 1 FROM solution_station x WHERE x.station = r.station AND x.agency = '${owner}')) ORDER BY 1",
-        "definition": "SELECT r.station FROM solution_roster_station r WHERE r.stream = '${stream}' AND ('${area}' = 'all' OR EXISTS (SELECT 1 FROM station_area_members m WHERE m.sid = r.station AND m.area_id = '${area}')) AND ('${scope}' = 'all' OR EXISTS (SELECT 1 FROM solution_station x WHERE x.station = r.station AND x.is_local)) AND ('${owner}' = 'all' OR EXISTS (SELECT 1 FROM solution_station x WHERE x.station = r.station AND x.agency = '${owner}')) ORDER BY 1",
+        "query": "SELECT r.station FROM solution_roster_station r WHERE r.stream = '${stream}' AND ('${area}' = 'all' OR EXISTS (SELECT 1 FROM station_area_members m WHERE m.sid = r.station AND m.area_id = '${area}')) AND ('${scope}' = 'all' OR EXISTS (SELECT 1 FROM solution_station x WHERE x.station = r.station AND x.is_local)) AND ('${owner}' = 'all' OR EXISTS (SELECT 1 FROM solution_station x WHERE x.station = r.station AND x.agency = '${owner}')) AND ('${operator}' = 'all' OR EXISTS (SELECT 1 FROM solution_station x WHERE x.station = r.station AND x.operator = '${operator}')) ORDER BY 1",
+        "definition": "SELECT r.station FROM solution_roster_station r WHERE r.stream = '${stream}' AND ('${area}' = 'all' OR EXISTS (SELECT 1 FROM station_area_members m WHERE m.sid = r.station AND m.area_id = '${area}')) AND ('${scope}' = 'all' OR EXISTS (SELECT 1 FROM solution_station x WHERE x.station = r.station AND x.is_local)) AND ('${owner}' = 'all' OR EXISTS (SELECT 1 FROM solution_station x WHERE x.station = r.station AND x.agency = '${owner}')) AND ('${operator}' = 'all' OR EXISTS (SELECT 1 FROM solution_station x WHERE x.station = r.station AND x.operator = '${operator}')) ORDER BY 1",
         "current": {
           "text": "All",
           "value": "$__all"
@@ -356,7 +376,7 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 5,
+        "w": 6,
         "x": 7,
         "y": 0
       },
@@ -420,8 +440,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 12,
+        "w": 5,
+        "x": 13,
         "y": 0
       },
       "fieldConfig": {
@@ -484,8 +504,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 16,
+        "w": 6,
+        "x": 18,
         "y": 0
       },
       "fieldConfig": {
@@ -533,70 +553,6 @@
           "format": "table",
           "rawQuery": true,
           "rawSql": "WITH g AS (SELECT * FROM solution_day_grid('${stream}',\n        ($__timeFrom() AT TIME ZONE 'UTC')::date,\n        ($__timeTo() AT TIME ZONE 'UTC')::date,\n        now()) WHERE station IN (${station:sqlstring})),\ndue AS (SELECT * FROM g WHERE state <> 'not_expected' AND reason <> 'before_deadline'),\ncur AS (SELECT DISTINCT ON (station) station, state AS cur_state, reason AS cur_reason\n        FROM due ORDER BY station, day DESC),\nagg AS (SELECT station,\n               max(day) FILTER (WHERE state = 'available') AS last_ok,\n               count(*) FILTER (WHERE state <> 'available') AS problem_days\n        FROM due GROUP BY station),\ngap AS (SELECT d.station, min(d.day) AS since, count(*) AS gap_days\n        FROM due d JOIN agg a USING (station)\n        WHERE d.day > coalesce(a.last_ok, '-infinity'::date)\n        GROUP BY d.station),\nareas AS (SELECT sam.sid,\n                 -- one short label: the volcano area first, then the region;\n                 -- \"+N\" says how many more (the Area filter covers them all)\n                 (array_agg(sa.area_name ORDER BY (sa.area_type = 'volcanic') DESC,\n                            sa.area_name))[1]\n                 || CASE WHEN count(*) > 1 THEN ' +' || (count(*) - 1)::text ELSE '' END\n                   AS area_list\n          FROM station_area_members sam JOIN station_areas sa USING (area_id)\n          GROUP BY sam.sid),\nst AS (\n  SELECT c.station, s.station_name, s.latitude, s.longitude, ar.area_list, x.agency,\n         s.sid AS plot_sid,  -- yang plots only our own stations\n         CASE WHEN c.cur_state = 'overdue' AND c.cur_reason IN\n                   ('absent_after_completion', 'producer_rejected', 'producer_failed') THEN 4\n              WHEN c.cur_state IN ('overdue', 'pending') THEN 3\n              WHEN c.cur_state = 'invalid' THEN 2\n              WHEN c.cur_state = 'unknown' THEN 1\n              ELSE 0 END AS status,\n         CASE WHEN c.cur_state = 'available' THEN NULL\n              WHEN a.last_ok IS NULL THEN '≤ ' || gp.since::text\n              ELSE gp.since::text END AS since,\n         CASE WHEN c.cur_state = 'available' THEN 0 ELSE gp.gap_days END AS gap_days,\n         gp.since AS since_date, a.last_ok, a.problem_days,\n         CASE WHEN c.cur_state = 'available' THEN NULL ELSE c.cur_reason END AS reason\n  FROM cur c JOIN agg a USING (station)\n  LEFT JOIN gap gp USING (station)\n  LEFT JOIN stations s ON s.sid = c.station\n  LEFT JOIN areas ar ON ar.sid = c.station\n  LEFT JOIN solution_station x ON x.station = c.station)\nSELECT count(*) FILTER (WHERE status = 0) AS n FROM st",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 5,
-      "type": "stat",
-      "title": "Unexpected files",
-      "description": "Files the check did not read: legacy aliases, .gz, our stations missing from the roster. Files of stations that are not local (abroad, or inactive) are not counted; 'Stations: all' lists them below.",
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "gps_health"
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 20,
-        "y": 0
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "orange",
-                "value": 1
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "/.*/",
-          "values": false
-        },
-        "textMode": "value",
-        "wideLayout": true
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "gps_health"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT (SELECT count(*) FROM jsonb_array_elements(unexpected_files) u WHERE u ->> 'reason' NOT IN ('not_local', 'not_in_fleet')) AS n FROM solution_check_run WHERE stream = '${stream}' AND outcome = 'ok' ORDER BY checked_at DESC LIMIT 1",
           "refId": "A"
         }
       ]

@@ -16,7 +16,9 @@ them; ``is_in_iceland`` is set on only a few), falling back to
 ``is_in_iceland`` when the coordinates are missing.
 
 The **agency** is ``station_owner``, the value the other GPS boards' Agency
-filter shows; None when stations.cfg has none.
+filter shows; the **operator** is ``station_operator``, who runs the station
+(IMO runs stations owned by others), for the board's Operator filter. Either
+is None when stations.cfg has none.
 
 Only the section names and the keys above are read. stations.cfg also holds
 receiver passwords; nothing here prints or keeps any other value.
@@ -44,6 +46,7 @@ class FleetError(ValueError):
 class StationInfo:
     local: bool
     agency: str | None
+    operator: str | None = None
 
 
 def default_stations_cfg() -> Path:
@@ -79,7 +82,9 @@ def load_stations(path: Path) -> dict[str, StationInfo]:
         sec = parser[sid]
         status = (sec.get("station_status") or "active").strip().lower()
         owner = (sec.get("station_owner") or "").strip() or None
-        info[sid] = StationInfo(status not in INACTIVE and _in_iceland(sec), owner)
+        operator = (sec.get("station_operator") or "").strip() or None
+        local = status not in INACTIVE and _in_iceland(sec)
+        info[sid] = StationInfo(local, owner, operator)
     if not any(i.local for i in info.values()):
         raise FleetError(f"{path}: no active stations in Iceland")
     return info

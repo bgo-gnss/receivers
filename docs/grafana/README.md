@@ -188,8 +188,8 @@ state and reason into a colour.
 
 - **Stat row:** last successful check, latest check outcome, then **stations** by
   current status — Missing, Late (late, invalid or unknown), OK — the same numbers as
-  the list below (station counts, as the health board counts, not station-days), and
-  unexpected files.
+  the list below (station counts, as the health board counts, not station-days).
+  Unexpected files are an admin signal and appear only in their table further down.
 - **Stations with missing solutions:** the list for the monitoring room, modelled on the
   "GPS Station Health — 24h" table. One row per station: status of the latest *due* day
   (Missing = confirmed; Late = not yet confirmed; Invalid; Unknown; OK), **Since** and
@@ -209,6 +209,8 @@ state and reason into a colour.
   unexpected-file table. **Agency** is the stations.cfg `station_owner`, the same filter as
   on the other GPS boards. Both read `solution_station` (migration 078), which every check
   run refreshes from stations.cfg; stations without an owner show under `all` only.
+  **Operator** is `station_operator`, who runs the station (IMO runs stations owned by
+  KAUST, UI, PSU …), so an IMO operator can pick the stations IMO runs (migration 080).
 - **Station × UTC day grid:** a table with the *grouping to matrix* transform. The
   `Rows` variable switches between `problems` (only stations with a problem day) and
   `all`. Click a station for its data-delivery and receiver dashboards.

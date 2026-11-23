@@ -24,7 +24,8 @@ NOW = dt.datetime(2026, 11, 21, 10, 0, tzinfo=dt.UTC)
 
 STATIONS_CFG = """\
 [AFST]
-station_owner = IMO
+station_owner = KAUST
+station_operator = IMO
 receiver_pwd = hunter2
 latitude = 63.98
 longitude = -22.14
@@ -70,7 +71,7 @@ def test_local_is_in_iceland_and_not_inactive(cfg):
     # by IMO) are local; UP has no coordinates and falls back to is_in_iceland
     assert load_fleet(cfg) == {"AFST", "OURS", "HOFN", "UP"}
     info = load_stations(cfg)
-    assert info["AFST"] == StationInfo(True, "IMO")
+    assert info["AFST"] == StationInfo(True, "KAUST", "IMO")
     assert info["OURS"] == StationInfo(True, None)
     assert info["BRUX"] == StationInfo(False, None)
 
@@ -119,7 +120,9 @@ def test_station_info_is_sent_for_roster_stations_only(tmp_path, cfg):
     src, ros = _setup(tmp_path)
     info = load_stations(cfg)
     doc = run_check(src, load_roster(ros), NOW, stations=info).to_json()
-    assert doc["station_info"] == [{"station": "AFST", "local": True, "agency": "IMO"}]
+    assert doc["station_info"] == [
+        {"station": "AFST", "local": True, "agency": "KAUST", "operator": "IMO"}
+    ]
     # without stations.cfg nothing is sent, so the board keeps the last facts
     assert "station_info" not in run_check(src, load_roster(ros), NOW).to_json()
 
@@ -156,7 +159,9 @@ def test_cli_reads_the_fleet_from_gps_config_path(tmp_path, cfg, capsys, monkeyp
     summary = doc["summary"]
     assert (summary["unexpected_files"], summary["ignored_files"]) == (4, 0)
     # --no-ignore changes the counting only; the board still gets the facts
-    assert doc["station_info"] == [{"station": "AFST", "local": True, "agency": "IMO"}]
+    assert doc["station_info"] == [
+        {"station": "AFST", "local": True, "agency": "KAUST", "operator": "IMO"}
+    ]
 
 
 def test_cli_without_stations_cfg_ignores_nothing_and_says_so(
