@@ -211,6 +211,7 @@ state and reason into a colour.
   run refreshes from stations.cfg; stations without an owner show under `all` only.
   **Operator** is `station_operator`, who runs the station (IMO runs stations owned by
   KAUST, UI, PSU …), so an IMO operator can pick the stations IMO runs (migration 080).
+  A station without `station_operator` is run by its owner, so it falls back to the owner.
 - **Station × UTC day grid:** a table with the *grouping to matrix* transform. The
   `Rows` variable switches between `problems` (only stations with a problem day) and
   `all`. Click a station for its data-delivery and receiver dashboards.

@@ -17,8 +17,9 @@ them; ``is_in_iceland`` is set on only a few), falling back to
 
 The **agency** is ``station_owner``, the value the other GPS boards' Agency
 filter shows; the **operator** is ``station_operator``, who runs the station
-(IMO runs stations owned by others), for the board's Operator filter. Either
-is None when stations.cfg has none.
+(IMO runs stations owned by others), for the board's Operator filter. A
+station without ``station_operator`` is run by its owner, so the operator
+falls back to the agency. Either is None when stations.cfg has neither.
 
 Only the section names and the keys above are read. stations.cfg also holds
 receiver passwords; nothing here prints or keeps any other value.
@@ -82,7 +83,8 @@ def load_stations(path: Path) -> dict[str, StationInfo]:
         sec = parser[sid]
         status = (sec.get("station_status") or "active").strip().lower()
         owner = (sec.get("station_owner") or "").strip() or None
-        operator = (sec.get("station_operator") or "").strip() or None
+        # no operator given: the owner runs it (HITA, VFLN, VFLS)
+        operator = (sec.get("station_operator") or "").strip() or owner
         local = status not in INACTIVE and _in_iceland(sec)
         info[sid] = StationInfo(local, owner, operator)
     if not any(i.local for i in info.values()):
