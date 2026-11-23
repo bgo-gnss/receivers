@@ -33,6 +33,7 @@ MIGRATION = (
     Path(__file__).resolve().parents[1] / "migrations" / "077_daily_solutions.sql"
 )
 MIGRATION_078 = MIGRATION.with_name("078_solution_station.sql")
+MIGRATION_079 = MIGRATION.with_name("079_solution_completion_from_files.sql")
 STREAM = "imo.24hr_itrf14"
 UTC = dt.UTC
 NOW = dt.datetime(2026, 11, 21, 10, 0, tzinfo=UTC)
@@ -107,6 +108,7 @@ def _create_db(admin_dsn: str, *, migrate: bool = True) -> str:
         if migrate:
             cur.execute(MIGRATION.read_text())
             cur.execute(MIGRATION_078.read_text())
+            cur.execute(MIGRATION_079.read_text())
     conn.close()
     return dsn
 
@@ -805,3 +807,27 @@ def test_a_payload_without_station_info_does_not_need_078(admin_dsn):
             record_check(dsn, doc)
     finally:
         _drop_db(admin_dsn, dsn)
+
+
+# ------------------------------------- 079: completion inferred from the files
+
+
+def test_an_inferred_completion_turns_late_into_absent_only_on_covered_days(db):
+    # AFST absent on d(3) and d(5); the record covers d(3) but not d(5) (a
+    # day the processing never ran stays uncovered, so it stays "late")
+    doc = payload(facts={("AFST", d(3)): ("absent", None, None),
+                         ("AFST", d(5)): ("absent", None, None)})  # fmt: skip
+    doc["completion_id"] = f"files:{doc['run_id']}"
+    doc["completions"] = [
+        {"completion_id": f"files:{doc['run_id']}:a", "day_from": d(4).isoformat(),
+         "day_to": d(1).isoformat()},
+        {"completion_id": f"files:{doc['run_id']}:b", "day_from": W_FROM.isoformat(),
+         "day_to": d(6).isoformat()},
+    ]  # fmt: skip
+    record_check(db, doc)
+    g = grid(db)
+    assert g[("AFST", d(3))] == ("overdue", "absent_after_completion")
+    assert g[("AFST", d(5))] == ("overdue", "no_completion_record")
+    # replaying the same run writes nothing twice
+    record_check(db, doc)
+    assert q(db, "SELECT count(*) FROM solution_completion") == [(2,)]

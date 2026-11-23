@@ -207,12 +207,12 @@ def test_list_and_map_rows_come_back(dash, db):  # noqa: F811 (fixture)
     rows = q(db, _fill(sql, "'AFST','NEWS','THOB'", frm, NOW, show="all"))
     afst = next(r for r in rows if r[0] == "AFST")
     # AFST: one absent day, d(3), since recovered -> OK now, 1 problem day
-    assert afst[3] == 0 and afst[9] == 1  # Total is the last column
+    assert afst[4] == 0 and afst[10] == 1  # Total is the last column
     # one short Area label: the volcano area first, "+N" for the rest
     assert afst[2] == "Krýsuvík +1"
     # a plot link only for our own stations (yang has none for the others)
-    assert afst[8] == "AFST"
-    assert all(r[8] is None for r in rows if r[0] != "AFST")
+    assert afst[9] == "AFST"
+    assert all(r[9] is None for r in rows if r[0] != "AFST")
     assert any(r[0] != "AFST" for r in rows)
     sql = _panel(dash, "Map: current status")["targets"][0]["rawSql"]
     assert [r[3] for r in q(db, _fill(sql, "'AFST'", frm, NOW))] == ["AFST"]
