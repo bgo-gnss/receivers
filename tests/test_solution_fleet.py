@@ -74,6 +74,8 @@ def test_local_is_in_iceland_and_not_inactive(cfg):
     assert info["AFST"] == StationInfo(True, "KAUST", "IMO")
     assert info["OURS"] == StationInfo(True, None)
     assert info["BRUX"] == StationInfo(False, None)
+    # no station_operator: the owner runs it
+    assert info["HOFN"] == StationInfo(True, "LMI", "LMI")
 
 
 def test_fleet_errors_never_echo_values(tmp_path):
