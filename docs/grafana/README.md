@@ -201,8 +201,12 @@ state and reason into a colour.
 - **Map:** the same status per station, with problem stations drawn larger. Coordinates
   come from `stations`.
 - **Area** filter, the same `station_areas` variable the other GPS boards use.
-- **Stations** filter: `ours` (default) is the fleet, the stations in `stations`; `all` adds
-  the global reference stations that the roster also carries because their solutions arrive.
+- **Stations** filter: `local` (default) is every station in Iceland that is not inactive,
+  whoever runs it (HOFN, REYK, BJAC included); `all` adds the global reference stations the
+  roster carries because their solutions arrive, and lists their files in the
+  unexpected-file table. **Agency** is the stations.cfg `station_owner`, the same filter as
+  on the other GPS boards. Both read `solution_station` (migration 078), which every check
+  run refreshes from stations.cfg; stations without an owner show under `all` only.
 - **Station × UTC day grid:** a table with the *grouping to matrix* transform. The
   `Rows` variable switches between `problems` (only stations with a problem day) and
   `all`. Click a station for its data-delivery and receiver dashboards.

@@ -21,7 +21,13 @@ import sys
 from pathlib import Path
 
 from ..monitoring.solutions.check import Cell, CheckReport, run_check
-from ..monitoring.solutions.fleet import FleetError, default_stations_cfg, load_fleet
+from ..monitoring.solutions.fleet import (
+    FleetError,
+    StationInfo,
+    default_stations_cfg,
+    load_stations,
+    local_stations,
+)
 from ..monitoring.solutions.roster import RosterError, load_roster
 from ..monitoring.solutions.store import (
     DestinationRefusedError,
@@ -89,8 +95,8 @@ def _print_human(report: CheckReport) -> None:
             print(f"  {u.name}  ({u.reason})")
     if report.ignored_files:
         print(
-            f"\nIgnored: {len(report.ignored_files)} files of stations outside the "
-            "fleet (--no-ignore lists them)"
+            f"\nIgnored: {len(report.ignored_files)} files of stations that are not "
+            "local (--no-ignore lists them)"
         )
     if report.other_products:
         others = ", ".join(f"{k} {v}" for k, v in report.other_products.items())
@@ -117,23 +123,25 @@ def cmd_solution_health_check(args: argparse.Namespace) -> int:
             print(f"error: --record-dsn {exc}", file=sys.stderr)
             return EXIT_CANNOT_CHECK
 
-    fleet: frozenset[str] | None = None
-    if not args.no_ignore:
-        cfg = (
-            Path(args.stations_cfg).expanduser()
-            if args.stations_cfg
-            else default_stations_cfg()
+    # stations.cfg: which stations are local (Iceland) and whose they are.
+    # Recorded for the board even with --no-ignore, which only changes counting.
+    stations: dict[str, StationInfo] | None = None
+    cfg = (
+        Path(args.stations_cfg).expanduser()
+        if args.stations_cfg
+        else default_stations_cfg()
+    )
+    try:
+        stations = load_stations(cfg)
+    except FleetError as exc:
+        if args.stations_cfg:  # named explicitly: a mistake, say so and stop
+            print(f"error: --stations-cfg {exc}", file=sys.stderr)
+            return EXIT_CANNOT_CHECK
+        print(
+            f"note: {exc}; no files are ignored (pass --stations-cfg)",
+            file=sys.stderr,
         )
-        try:
-            fleet = load_fleet(cfg)
-        except FleetError as exc:
-            if args.stations_cfg:  # named explicitly: a mistake, say so and stop
-                print(f"error: --stations-cfg {exc}", file=sys.stderr)
-                return EXIT_CANNOT_CHECK
-            print(
-                f"note: {exc}; no files are ignored (pass --stations-cfg)",
-                file=sys.stderr,
-            )
+    fleet = None if stations is None or args.no_ignore else local_stations(stations)
 
     report = run_check(
         Path(args.source).expanduser(),
@@ -141,6 +149,7 @@ def cmd_solution_health_check(args: argparse.Namespace) -> int:
         now,
         window_days=args.window_days,
         fleet=fleet,
+        stations=stations,
     )
     payload = report.to_json()
     if args.json:
@@ -210,15 +219,15 @@ def create_solution_health_parser(subparsers) -> argparse.ArgumentParser:
     check.add_argument(
         "--stations-cfg",
         metavar="PATH",
-        help="stations.cfg defining the fleet (default: $GPS_CONFIG_PATH or "
-        "~/.config/gpsconfig). Files of stations that are not active, or are "
-        "reference sites, are recorded as not_in_fleet and not counted",
+        help="stations.cfg: which stations are local (in Iceland, not inactive) and "
+        "their agency (default: $GPS_CONFIG_PATH or ~/.config/gpsconfig). Files of "
+        "stations that are not local are recorded as not_local and not counted",
     )
     check.add_argument(
         "--no-ignore",
         action="store_true",
         help="Count every file of a station outside the roster as unexpected, "
-        "including stations outside the fleet",
+        "including stations that are not local",
     )
     check.add_argument(
         "--production",

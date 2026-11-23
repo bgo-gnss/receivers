@@ -134,6 +134,11 @@ def record_check(dsn: str, payload: dict[str, Any], *, production: bool = False)
                     "SELECT record_solution_check(%s::jsonb)", (json.dumps(payload),)
                 )
                 row = cur.fetchone()
+                if "station_info" in payload:  # migration 078; same transaction
+                    cur.execute(
+                        "SELECT record_solution_stations(%s::jsonb)",
+                        (json.dumps(payload),),
+                    )
         return str(row[0]) if row else "no-status"
     finally:
         conn.close()

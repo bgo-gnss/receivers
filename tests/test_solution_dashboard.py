@@ -94,7 +94,7 @@ def _fill(
     frm: dt.datetime,
     to: dt.datetime,
     show: str = "problems",
-    ignored: str = "hide",
+    scope: str = "local",
 ) -> str:
     # the panels pass now() to the grid; pin it to the window end, or the
     # results drift with the wall clock (this broke the day after it was written)
@@ -105,7 +105,8 @@ def _fill(
         .replace("$__timeTo()", f"'{to.isoformat()}'::timestamptz")
         .replace("${station:sqlstring}", stations)
         .replace("${show}", show)
-        .replace("${ignored}", ignored)
+        .replace("${scope}", scope)
+        .replace("${owner}", "all")
     )
 
 
@@ -133,7 +134,9 @@ def test_every_panel_query_runs_against_migration_077(dash, db):  # noqa: F811 (
                 db,
                 v["query"]
                 .replace("${stream}", "imo.24hr_itrf14")
-                .replace("${area}", "all"),
+                .replace("${area}", "all")
+                .replace("${scope}", "local")
+                .replace("${owner}", "all"),
             )
     for title, sql in _sqls(dash):
         rows = q(db, _fill(sql, stations, NOW - dt.timedelta(days=45), NOW))
@@ -222,7 +225,8 @@ def test_files_outside_the_fleet_are_recorded_but_not_counted(dash, db):  # noqa
     doc = payload()
     doc["unexpected_files"] = [
         {"name": "BJAC.imo.24hr_itrf14.pos", "reason": "station_not_in_roster"},
-        {"name": "BRUX.imo.24hr_itrf14.pos", "reason": "not_in_fleet"},
+        {"name": "BRUX.imo.24hr_itrf14.pos", "reason": "not_local"},
+        # runs recorded before migration 078 used the old name
         {"name": "TSKB.imo.24hr_itrf14.pos", "reason": "not_in_fleet"},
     ]
     record_check(db, doc)
@@ -231,34 +235,51 @@ def test_files_outside_the_fleet_are_recorded_but_not_counted(dash, db):  # noqa
     assert q(db, _fill(stat, "'AFST'", frm, NOW)) == [(1,)]
     table = next(p for p in dash["panels"] if p["id"] == 11)["targets"][0]["rawSql"]
 
-    def files(ignored: str) -> set[str]:
-        rows = q(db, _fill(table, "'AFST'", frm, NOW, ignored=ignored))
+    def files(scope: str) -> set[str]:
+        rows = q(db, _fill(table, "'AFST'", frm, NOW, scope=scope))
         return {r[0][:4] for r in rows if r[0].endswith(".pos")}
 
-    assert files("hide") == {"BJAC"}
-    assert files("show") == {"BJAC", "BRUX", "TSKB"}
+    # one option for the list and the files: local hides them, all shows them
+    assert files("local") == {"BJAC"}
+    assert files("all") == {"BJAC", "BRUX", "TSKB"}
+    names = [v["name"] for v in dash["templating"]["list"]]
+    assert "ignored" not in names
 
 
-def test_station_scope_hides_the_global_reference_stations(dash, db):  # noqa: F811
+def test_station_scope_and_agency_come_from_solution_station(dash, db):  # noqa: F811
     # the roster carries reference stations too (their solutions arrive);
-    # "ours" = in the stations table, "all" brings them back
+    # "local" (in Iceland) and the agency are recorded per station by the
+    # check (078). Not the stations table: HOFN/REYK/BJAC are not in it.
     from receivers.monitoring.solutions.store import record_check
     from tests.test_solution_store import payload, q
 
-    record_check(db, payload())
-    q(db, "CREATE TABLE stations (sid varchar PRIMARY KEY)")
+    doc = payload()
+    doc["station_info"] = [
+        {"station": "AFST", "local": True, "agency": "IMO"},
+        {"station": "NEWS", "local": True, "agency": None},
+        {"station": "THOB", "local": False, "agency": "IGS"},
+    ]
+    record_check(db, doc)
     q(db, "CREATE TABLE station_area_members (area_id varchar, sid varchar)")
-    q(db, "INSERT INTO stations VALUES ('AFST')")
-    var = next(v for v in dash["templating"]["list"] if v["name"] == "station")
-    names = [v["name"] for v in dash["templating"]["list"]]
-    assert names.index("scope") < names.index("station")  # station refreshes on it
+    tvars = dash["templating"]["list"]
+    var = next(v for v in tvars if v["name"] == "station")
+    names = [v["name"] for v in tvars]
+    # station refreshes on both
+    assert names.index("scope") < names.index("station")
+    assert names.index("owner") < names.index("station")
 
-    def listed(scope: str) -> list[str]:
+    def listed(scope: str, owner: str = "all") -> list[str]:
         sql = (var["query"].replace("${stream}", "imo.24hr_itrf14")
-               .replace("${area}", "all").replace("${scope}", scope))  # fmt: skip
+               .replace("${area}", "all").replace("${scope}", scope)
+               .replace("${owner}", owner))  # fmt: skip
         return [r[0] for r in q(db, sql)]
 
-    assert listed("ours") == ["AFST"]
-    assert len(listed("all")) > 1 and "AFST" in listed("all")
-    scope = next(v for v in dash["templating"]["list"] if v["name"] == "scope")
-    assert scope["current"]["value"] == "ours"
+    assert listed("local") == ["AFST", "NEWS"]
+    assert listed("all") == ["AFST", "NEWS", "THOB"]
+    assert listed("all", "IGS") == ["THOB"]
+    assert listed("local", "IMO") == ["AFST"]
+    scope = next(v for v in tvars if v["name"] == "scope")
+    assert scope["current"]["value"] == "local"
+    owner = next(v for v in tvars if v["name"] == "owner")
+    assert owner["label"] == "Agency" and owner["current"]["value"] == "all"
+    assert [r[0] for r in q(db, owner["query"])] == ["all", "IGS", "IMO"]

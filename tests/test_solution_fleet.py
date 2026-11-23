@@ -1,4 +1,4 @@
-"""Files of stations outside the fleet are recorded but not counted."""
+"""Local = in Iceland (stations.cfg); files of other stations are not counted."""
 
 from __future__ import annotations
 
@@ -10,7 +10,12 @@ from pathlib import Path
 import pytest
 
 from receivers.monitoring.solutions.check import IGNORED_REASON, run_check
-from receivers.monitoring.solutions.fleet import FleetError, load_fleet
+from receivers.monitoring.solutions.fleet import (
+    FleetError,
+    StationInfo,
+    load_fleet,
+    load_stations,
+)
 from receivers.monitoring.solutions.roster import load_roster
 from receivers.monitoring.solutions.window import check_window
 from tests.solution_pos_helpers import write_pos
@@ -21,19 +26,35 @@ STATIONS_CFG = """\
 [AFST]
 station_owner = IMO
 receiver_pwd = hunter2
+latitude = 63.98
+longitude = -22.14
 [OURS]
-health_check = passive
+# in Iceland, run by someone else, no owner in the cfg (the BJAC case)
 station_role = passive
+latitude = 65.605
+longitude = -16.825
+[HOFN]
+# an IGS reference site in Iceland is still local
+is_reference_site = true
+station_owner = LMI
+latitude = 64.267
+longitude = 344.80
 [GONE]
 station_status = discontinued
+latitude = 63.9
+longitude = -22.2
 [IDLE]
 station_status = inactive
+latitude = 64.0
+longitude = -21.0
 [BRUX]
 is_reference_site = true
 station_role = passive
+latitude = 50.80
+longitude = 4.36
 [UP]
 station_status = active
-is_reference_site = false
+is_in_iceland = true
 """
 
 
@@ -44,9 +65,14 @@ def cfg(tmp_path: Path) -> Path:
     return p
 
 
-def test_fleet_is_active_non_reference_stations(cfg):
-    # a passive station of ours stays in: station_role is NOT the test
-    assert load_fleet(cfg) == {"AFST", "OURS", "UP"}
+def test_local_is_in_iceland_and_not_inactive(cfg):
+    # a place, not an owner: HOFN (IGS, 0-360 longitude) and OURS (not run
+    # by IMO) are local; UP has no coordinates and falls back to is_in_iceland
+    assert load_fleet(cfg) == {"AFST", "OURS", "HOFN", "UP"}
+    info = load_stations(cfg)
+    assert info["AFST"] == StationInfo(True, "IMO")
+    assert info["OURS"] == StationInfo(True, None)
+    assert info["BRUX"] == StationInfo(False, None)
 
 
 def test_fleet_errors_never_echo_values(tmp_path):
@@ -55,7 +81,7 @@ def test_fleet_errors_never_echo_values(tmp_path):
     assert "hunter2" not in str(exc.value)
     empty = tmp_path / "empty.cfg"
     empty.write_text("[GONE]\nstation_status = inactive\n")
-    with pytest.raises(FleetError, match="no active stations"):
+    with pytest.raises(FleetError, match="no active stations in Iceland"):
         load_fleet(empty)
 
 
@@ -73,19 +99,29 @@ def _setup(tmp_path: Path) -> tuple[Path, Path]:
     return src, ros
 
 
-def test_only_fleet_stations_count_as_unexpected(tmp_path, cfg):
+def test_only_local_stations_count_as_unexpected(tmp_path, cfg):
     src, ros = _setup(tmp_path)
     report = run_check(src, load_roster(ros), NOW, fleet=load_fleet(cfg))
     reasons = {u.name[:4]: u.reason for u in report.unexpected_files}
     # everything is still RECORDED, with its reason
     assert reasons == {
-        "OURS": "station_not_in_roster",  # ours, missing from the roster
-        "BRUX": IGNORED_REASON,  # reference site
+        "OURS": "station_not_in_roster",  # local, missing from the roster
+        "BRUX": IGNORED_REASON,  # abroad
         "GONE": IGNORED_REASON,  # discontinued
         "XXXX": IGNORED_REASON,  # not in stations.cfg at all
     }
     summary = report.to_json()["summary"]
     assert (summary["unexpected_files"], summary["ignored_files"]) == (1, 3)
+    assert IGNORED_REASON == "not_local"
+
+
+def test_station_info_is_sent_for_roster_stations_only(tmp_path, cfg):
+    src, ros = _setup(tmp_path)
+    info = load_stations(cfg)
+    doc = run_check(src, load_roster(ros), NOW, stations=info).to_json()
+    assert doc["station_info"] == [{"station": "AFST", "local": True, "agency": "IMO"}]
+    # without stations.cfg nothing is sent, so the board keeps the last facts
+    assert "station_info" not in run_check(src, load_roster(ros), NOW).to_json()
 
 
 def test_without_a_fleet_everything_counts(tmp_path):
@@ -116,8 +152,11 @@ def test_cli_reads_the_fleet_from_gps_config_path(tmp_path, cfg, capsys, monkeyp
     assert _summary(capsys)["unexpected_files"] == 1
     # --no-ignore: the option to see them all again
     _cli([*argv, "--now", NOW.isoformat(), "--json", "--no-ignore"])
-    summary = _summary(capsys)
+    doc = json.loads(capsys.readouterr().out)
+    summary = doc["summary"]
     assert (summary["unexpected_files"], summary["ignored_files"]) == (4, 0)
+    # --no-ignore changes the counting only; the board still gets the facts
+    assert doc["station_info"] == [{"station": "AFST", "local": True, "agency": "IMO"}]
 
 
 def test_cli_without_stations_cfg_ignores_nothing_and_says_so(

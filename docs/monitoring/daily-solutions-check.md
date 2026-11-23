@@ -170,16 +170,24 @@ service has a second `--record-dsn "host=pgdev.vedur.is dbname=gps_health user=b
 server with personal LDAP roles, so it has no `gpsops`, by design, and bgo owns
 `record_solution_check` there, so no grant is needed.
 
-**Ignored files (2026-11-22).** yang's directory also holds files for the global
-reference stations and for stations out of service. A file of a station outside the
-roster is `station_not_in_roster` only when the station is in our fleet; otherwise it
-is recorded as `not_in_fleet` and not counted (summary `ignored_files`). The fleet is
-read from stations.cfg (`fleet.py`): every station that is not inactive/discontinued
-and not `is_reference_site = true`. `--stations-cfg PATH` names the file (default
-`$GPS_CONFIG_PATH/stations.cfg`); `--no-ignore` counts everything again. On the board,
-the stat leaves them out and the variable **Ignored files: show** lists them in the
-table. First run: 105 of 106 ignored; the one left, BJAC, is an active fleet station
-with no solutions.
+**Local stations and agency (2026-11-23, migration 078).** yang's directory also
+holds files for the global reference stations and for stations out of service. A
+station is **local** when stations.cfg places it in Iceland (by `latitude`/`longitude`;
+`is_in_iceland` only when the coordinates are missing) and it is not
+inactive/discontinued. Local is a place, not an owner: HOFN and REYK (IGS) and BJAC
+(not run by IMO) are local. A file of a station outside the roster is
+`station_not_in_roster` only when the station is local; otherwise it is recorded as
+`not_local` (runs before 078: `not_in_fleet`) and not counted (summary
+`ignored_files`). `--stations-cfg PATH` names the file (default
+`$GPS_CONFIG_PATH/stations.cfg`); `--no-ignore` counts everything again.
+
+Every run also sends `station_info` (local + agency, the `station_owner`) for each
+roster station; `record_solution_stations` writes it to `solution_station` in the same
+transaction, never letting a late older run overwrite a newer fact. It is a table of
+its own because the roster snapshot is replaced only when the roster file changes,
+while these facts follow stations.cfg. The board's **Stations: local / all** option
+(list, grid, map, counts and the unexpected-file table) and its **Agency** filter read
+it. Apply 078 on a host before the code that sends `station_info` reaches it.
 
 **Churn (G7, measured 2026-11-22).** Comparing two days of yang's files: on the
 44 shared days, 43 were byte-identical for every station; only the newest day

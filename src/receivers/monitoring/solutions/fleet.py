@@ -1,19 +1,24 @@
-"""Which stations are ours: the fleet, as stations.cfg declares it.
+"""Which stations are local, and whose they are, as stations.cfg declares it.
 
 yang's POS directory also holds files for the global reference stations the
 processing uses and for stations long out of service. A file for a station
 outside the roster is only worth an operator's attention when the station is
-one of ours, so the check tags the others ``not_in_fleet`` and leaves them out
-of the "unexpected files" count (``--no-ignore`` counts them again).
+local, so the check tags the others ``not_local`` and leaves them out of the
+"unexpected files" count (``--no-ignore`` counts them again). The board's
+"Stations: local / all" option and its Agency filter read the same facts,
+which every check run records in ``solution_station`` (migration 078).
 
-The fleet is every ``[STATION]`` section of stations.cfg that is
+A station is **local** when stations.cfg places it in Iceland and it is not
+``station_status = inactive`` / ``discontinued``. Local is a place, not an
+owner: HOFN and REYK (IGS) and BJAC (not run by IMO) are local. "In Iceland"
+is decided from the section's ``latitude``/``longitude`` (every section has
+them; ``is_in_iceland`` is set on only a few), falling back to
+``is_in_iceland`` when the coordinates are missing.
 
-* not ``station_status = inactive`` / ``discontinued``, and
-* not ``is_reference_site = true`` (the global IGS stations; never use
-  ``station_role = passive`` for this, which also covers our own passive
-  stations).
+The **agency** is ``station_owner``, the value the other GPS boards' Agency
+filter shows; None when stations.cfg has none.
 
-Only the section names and those two keys are read. stations.cfg also holds
+Only the section names and the keys above are read. stations.cfg also holds
 receiver passwords; nothing here prints or keeps any other value.
 """
 
@@ -21,13 +26,24 @@ from __future__ import annotations
 
 import configparser
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 INACTIVE = frozenset({"inactive", "discontinued"})
 
+#: Iceland with its offshore islands (Grímsey, Kolbeinsey, Vestmannaeyjar)
+ICELAND_LAT = (62.5, 67.5)
+ICELAND_LON = (-25.5, -12.5)
+
 
 class FleetError(ValueError):
     """stations.cfg could not be read."""
+
+
+@dataclass(frozen=True)
+class StationInfo:
+    local: bool
+    agency: str | None
 
 
 def default_stations_cfg() -> Path:
@@ -37,21 +53,42 @@ def default_stations_cfg() -> Path:
     return root / "stations.cfg"
 
 
-def load_fleet(path: Path) -> frozenset[str]:
-    """The active, non-reference stations in ``path``."""
+def _in_iceland(sec: configparser.SectionProxy) -> bool:
+    try:
+        lat = float(sec.get("latitude", ""))
+        lon = float(sec.get("longitude", ""))
+    except ValueError:
+        return (sec.get("is_in_iceland") or "").strip().lower() == "true"
+    if lon > 180:
+        lon -= 360
+    return (
+        ICELAND_LAT[0] < lat < ICELAND_LAT[1] and ICELAND_LON[0] < lon < ICELAND_LON[1]
+    )
+
+
+def load_stations(path: Path) -> dict[str, StationInfo]:
+    """Every station in ``path``: whether it is local, and its agency."""
     parser = configparser.ConfigParser(interpolation=None, strict=False)
     try:
         with path.open(encoding="utf-8", errors="replace") as fh:
             parser.read_file(fh)
     except (OSError, configparser.Error) as exc:
         raise FleetError(f"{path}: {type(exc).__name__}") from exc
-    fleet = set()
+    info = {}
     for sid in parser.sections():
         sec = parser[sid]
         status = (sec.get("station_status") or "active").strip().lower()
-        reference = (sec.get("is_reference_site") or "false").strip().lower()
-        if status not in INACTIVE and reference != "true":
-            fleet.add(sid)
-    if not fleet:
-        raise FleetError(f"{path}: no active stations")
-    return frozenset(fleet)
+        owner = (sec.get("station_owner") or "").strip() or None
+        info[sid] = StationInfo(status not in INACTIVE and _in_iceland(sec), owner)
+    if not any(i.local for i in info.values()):
+        raise FleetError(f"{path}: no active stations in Iceland")
+    return info
+
+
+def local_stations(info: dict[str, StationInfo]) -> frozenset[str]:
+    return frozenset(sid for sid, i in info.items() if i.local)
+
+
+def load_fleet(path: Path) -> frozenset[str]:
+    """The local stations in ``path``."""
+    return local_stations(load_stations(path))

@@ -109,16 +109,16 @@
         "name": "scope",
         "label": "Stations",
         "type": "custom",
-        "description": "ours = the fleet (stations.cfg); all adds the global reference stations the processing uses",
-        "query": "ours : ours,all : all",
+        "description": "local = in Iceland and not inactive (stations.cfg), whoever runs the station; all adds the global reference stations the processing uses",
+        "query": "local : local,all : all",
         "current": {
-          "text": "ours",
-          "value": "ours"
+          "text": "local",
+          "value": "local"
         },
         "options": [
           {
-            "text": "ours",
-            "value": "ours",
+            "text": "local",
+            "value": "local",
             "selected": true
           },
           {
@@ -131,6 +131,25 @@
         "multi": false
       },
       {
+        "name": "owner",
+        "label": "Agency",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "gps_health"
+        },
+        "query": "SELECT station_owner FROM (SELECT 'all' AS station_owner, 0 AS k UNION SELECT agency, 1 FROM solution_station WHERE agency IS NOT NULL) o ORDER BY k, station_owner",
+        "definition": "SELECT station_owner FROM (SELECT 'all' AS station_owner, 0 AS k UNION SELECT agency, 1 FROM solution_station WHERE agency IS NOT NULL) o ORDER BY k, station_owner",
+        "current": {
+          "selected": true,
+          "text": "all",
+          "value": "all"
+        },
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false
+      },
+      {
         "name": "station",
         "label": "Station",
         "type": "query",
@@ -138,8 +157,8 @@
           "type": "grafana-postgresql-datasource",
           "uid": "gps_health"
         },
-        "query": "SELECT r.station FROM solution_roster_station r WHERE r.stream = '${stream}' AND ('${area}' = 'all' OR EXISTS (SELECT 1 FROM station_area_members m WHERE m.sid = r.station AND m.area_id = '${area}')) AND ('${scope}' = 'all' OR EXISTS (SELECT 1 FROM stations s WHERE s.sid = r.station)) ORDER BY 1",
-        "definition": "SELECT r.station FROM solution_roster_station r WHERE r.stream = '${stream}' AND ('${area}' = 'all' OR EXISTS (SELECT 1 FROM station_area_members m WHERE m.sid = r.station AND m.area_id = '${area}')) AND ('${scope}' = 'all' OR EXISTS (SELECT 1 FROM stations s WHERE s.sid = r.station)) ORDER BY 1",
+        "query": "SELECT r.station FROM solution_roster_station r WHERE r.stream = '${stream}' AND ('${area}' = 'all' OR EXISTS (SELECT 1 FROM station_area_members m WHERE m.sid = r.station AND m.area_id = '${area}')) AND ('${scope}' = 'all' OR EXISTS (SELECT 1 FROM solution_station x WHERE x.station = r.station AND x.is_local)) AND ('${owner}' = 'all' OR EXISTS (SELECT 1 FROM solution_station x WHERE x.station = r.station AND x.agency = '${owner}')) ORDER BY 1",
+        "definition": "SELECT r.station FROM solution_roster_station r WHERE r.stream = '${stream}' AND ('${area}' = 'all' OR EXISTS (SELECT 1 FROM station_area_members m WHERE m.sid = r.station AND m.area_id = '${area}')) AND ('${scope}' = 'all' OR EXISTS (SELECT 1 FROM solution_station x WHERE x.station = r.station AND x.is_local)) AND ('${owner}' = 'all' OR EXISTS (SELECT 1 FROM solution_station x WHERE x.station = r.station AND x.agency = '${owner}')) ORDER BY 1",
         "current": {
           "text": "All",
           "value": "$__all"
@@ -166,31 +185,6 @@
           {
             "text": "all",
             "value": "all",
-            "selected": false
-          }
-        ],
-        "includeAll": false,
-        "multi": false
-      },
-      {
-        "name": "ignored",
-        "label": "Ignored files",
-        "type": "custom",
-        "description": "Files of stations outside the fleet (reference sites, inactive): recorded, not counted",
-        "query": "hide : hide,show : show",
-        "current": {
-          "text": "hide",
-          "value": "hide"
-        },
-        "options": [
-          {
-            "text": "hide",
-            "value": "hide",
-            "selected": true
-          },
-          {
-            "text": "show",
-            "value": "show",
             "selected": false
           }
         ],
@@ -483,7 +477,7 @@
       "id": 5,
       "type": "stat",
       "title": "Unexpected files",
-      "description": "Files the check did not read: legacy aliases, .gz, our stations missing from the roster. Files of stations outside the fleet (reference sites, inactive) are not counted; 'Ignored files: show' lists them below.",
+      "description": "Files the check did not read: legacy aliases, .gz, our stations missing from the roster. Files of stations that are not local (abroad, or inactive) are not counted; 'Stations: all' lists them below.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "gps_health"
@@ -538,7 +532,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT (SELECT count(*) FROM jsonb_array_elements(unexpected_files) u WHERE u ->> 'reason' <> 'not_in_fleet') AS n FROM solution_check_run WHERE stream = '${stream}' AND outcome = 'ok' ORDER BY checked_at DESC LIMIT 1",
+          "rawSql": "SELECT (SELECT count(*) FROM jsonb_array_elements(unexpected_files) u WHERE u ->> 'reason' NOT IN ('not_local', 'not_in_fleet')) AS n FROM solution_check_run WHERE stream = '${stream}' AND outcome = 'ok' ORDER BY checked_at DESC LIMIT 1",
           "refId": "A"
         }
       ]
@@ -1661,7 +1655,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH r AS (SELECT unexpected_files, other_products FROM solution_check_run\n           WHERE stream = '${stream}' AND outcome = 'ok'\n           ORDER BY checked_at DESC LIMIT 1)\nSELECT u ->> 'name' AS file, u ->> 'reason' AS reason\nFROM r, jsonb_array_elements(r.unexpected_files) u\nWHERE u ->> 'reason' <> 'not_in_fleet' OR '${ignored}' = 'show'\nUNION ALL\nSELECT o.key || ' (' || o.value || ' files)', 'other product (not checked)'\nFROM r, jsonb_each_text(r.other_products) o\nORDER BY 2, 1",
+          "rawSql": "WITH r AS (SELECT unexpected_files, other_products FROM solution_check_run\n           WHERE stream = '${stream}' AND outcome = 'ok'\n           ORDER BY checked_at DESC LIMIT 1)\nSELECT u ->> 'name' AS file, u ->> 'reason' AS reason\nFROM r, jsonb_array_elements(r.unexpected_files) u\nWHERE u ->> 'reason' NOT IN ('not_local', 'not_in_fleet') OR '${scope}' = 'all'\nUNION ALL\nSELECT o.key || ' (' || o.value || ' files)', 'other product (not checked)'\nFROM r, jsonb_each_text(r.other_products) o\nORDER BY 2, 1",
           "refId": "A"
         }
       ],

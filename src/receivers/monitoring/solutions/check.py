@@ -18,6 +18,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Literal
 
+from .fleet import StationInfo
 from .pos_reader import PosInspection, inspect_pos, is_station_id
 from .roster import Roster, RosterFact
 from .window import WINDOW_DAYS, check_window
@@ -28,7 +29,7 @@ Outcome = Literal["ok", "source_unavailable"]
 #: /2 (slice 2): adds the roster snapshot that record_solution_check installs
 SCHEMA = "solution-check-facts/2"
 #: the unexpected-file reason that is recorded but not counted (fleet.py)
-IGNORED_REASON = "not_in_fleet"
+IGNORED_REASON = "not_local"
 
 #: earlier names of the same series (mirrors ``geo_dataread.pos.LEGACY_IDS``,
 #: kept here because receivers does not depend on geo_dataread). A file under
@@ -85,6 +86,8 @@ class CheckReport:
     unexpected_files: list[UnexpectedFile]
     #: other ``.pos`` products in the same directory, by product → count
     other_products: dict[str, int]
+    #: stations.cfg facts per station (fleet.py), recorded in solution_station
+    station_info: dict[str, StationInfo] | None = None
 
     @property
     def fact_counts(self) -> dict[str, int]:
@@ -96,7 +99,7 @@ class CheckReport:
 
     @property
     def counted_unexpected(self) -> list[UnexpectedFile]:
-        """Unexpected files an operator should look at (not ``not_in_fleet``)."""
+        """Unexpected files an operator should look at (not ``not_local``)."""
         return [u for u in self.unexpected_files if u.reason != IGNORED_REASON]
 
     @property
@@ -145,6 +148,20 @@ class CheckReport:
             "cells": [c.to_json() for c in self.cells],
             "unexpected_files": [u.to_json() for u in self.unexpected_files],
             "other_products": self.other_products,
+            **self._station_info_json(),
+        }
+
+    def _station_info_json(self) -> dict[str, Any]:
+        # only when stations.cfg was read: without it the board keeps the
+        # last known facts instead of being told every station is foreign
+        if self.station_info is None:
+            return {}
+        return {
+            "station_info": [
+                {"station": sid, "local": i.local, "agency": i.agency}
+                for sid, i in sorted(self.station_info.items())
+                if sid in self.roster.stations
+            ]
         }
 
 
@@ -162,7 +179,7 @@ def _classify(
     """Split directory entries into (station → file name, unexpected, others).
 
     A file for a station outside the roster is ``station_not_in_roster`` when
-    the station is in ``fleet`` (or no fleet is given), else ``not_in_fleet``.
+    the station is in ``fleet`` (or no fleet is given), else ``not_local``.
     """
     stream = roster.spec.stream
     legacy = set(LEGACY_IDS.get(stream, ()))
@@ -183,8 +200,8 @@ def _classify(
             elif not is_station_id(sid):
                 unexpected.append(UnexpectedFile(name, "bad_station_name"))
             elif sid not in roster.stations:
-                ours = fleet is None or sid in fleet
-                reason = "station_not_in_roster" if ours else IGNORED_REASON
+                local = fleet is None or sid in fleet
+                reason = "station_not_in_roster" if local else IGNORED_REASON
                 unexpected.append(UnexpectedFile(name, reason))
             else:
                 wanted[sid] = name
@@ -220,12 +237,15 @@ def run_check(
     window_days: int = WINDOW_DAYS,
     run_id: str | None = None,
     fleet: frozenset[str] | None = None,
+    stations: dict[str, StationInfo] | None = None,
 ) -> CheckReport:
     """Check ``source`` against ``roster`` for the window ending before ``now``.
 
     ``now`` must be timezone-aware; it is the only clock this function uses.
-    ``fleet`` (fleet.py) turns files of stations outside it into ignored
-    ``not_in_fleet`` entries; ``None`` counts every such file as unexpected.
+    ``fleet`` (fleet.py, the local stations) turns files of stations outside
+    it into ignored ``not_local`` entries; ``None`` counts every such file as
+    unexpected. ``stations`` (fleet.load_stations) is recorded per roster
+    station as ``station_info`` for the board's local/all and Agency filters.
     """
     if now.tzinfo is None:
         raise ValueError("now must be timezone-aware")
@@ -243,7 +263,7 @@ def run_check(
     ) -> CheckReport:
         return CheckReport(
             rid, now, source, roster, window, outcome, error, files, cells,
-            unexpected, others,
+            unexpected, others, stations,
         )  # fmt: skip
 
     try:
