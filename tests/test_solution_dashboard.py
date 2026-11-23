@@ -216,6 +216,28 @@ def test_list_and_map_rows_come_back(dash, db):  # noqa: F811 (fixture)
     assert any(r[0] != "AFST" for r in rows)
     sql = _panel(dash, "Map: current status")["targets"][0]["rawSql"]
     assert [r[3] for r in q(db, _fill(sql, "'AFST'", frm, NOW))] == ["AFST"]
+    # the station counts on top are the list's statuses, one per station
+    counts = {
+        t: q(
+            db,
+            _fill(
+                _panel(dash, t)["targets"][0]["rawSql"],
+                "'AFST','NEWS','THOB'",
+                frm,
+                NOW,
+            ),
+        )[0][
+            0
+        ]  # fmt: skip
+        for t in ("Missing", "Late", "OK")
+    }
+    status = [r[4] for r in rows]
+    assert counts == {
+        "Missing": status.count(4),
+        "Late": sum(s in (1, 2, 3) for s in status),
+        "OK": status.count(0),
+    }
+    assert sum(counts.values()) == len(rows)
 
 
 def test_files_outside_the_fleet_are_recorded_but_not_counted(dash, db):  # noqa: F811

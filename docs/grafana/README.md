@@ -186,8 +186,10 @@ Daily POS solution availability per station and UTC day. This is slice 3 of
 states from `solution_day_grid` and never re-derives them; the dashboard only turns
 state and reason into a colour.
 
-- **Stat row:** last successful check, latest check outcome, problem days (pending
-  before the deadline is normal and not counted), confirmed absences, unexpected files.
+- **Stat row:** last successful check, latest check outcome, then **stations** by
+  current status — Missing, Late (late, invalid or unknown), OK — the same numbers as
+  the list below (station counts, as the health board counts, not station-days), and
+  unexpected files.
 - **Stations with missing solutions:** the list for the monitoring room, modelled on the
   "GPS Station Health — 24h" table. One row per station: status of the latest *due* day
   (Missing = confirmed; Late = not yet confirmed; Invalid; Unknown; OK), **Since** and
