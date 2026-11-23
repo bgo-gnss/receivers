@@ -538,21 +538,6 @@
       ]
     },
     {
-      "id": 6,
-      "type": "text",
-      "title": "",
-      "gridPos": {
-        "h": 2,
-        "w": 24,
-        "x": 0,
-        "y": 4
-      },
-      "options": {
-        "mode": "markdown",
-        "content": "**Legend** &nbsp; <span style=\"background:#37872D;color:#fff;padding:1px 6px;border-radius:3px\">✓</span> available / verified &nbsp; <span style=\"background:#5A7D8C;color:#fff;padding:1px 6px;border-radius:3px\">❄</span> available / frozen &nbsp; <span style=\"background:#8AB8FF;color:#fff;padding:1px 6px;border-radius:3px\">…</span> pending / before deadline &nbsp; <span style=\"background:#3274D9;color:#fff;padding:1px 6px;border-radius:3px\">↻</span> pending / awaiting recheck &nbsp; <span style=\"background:#FF9830;color:#fff;padding:1px 6px;border-radius:3px\">late</span> overdue / no completion record &nbsp; <span style=\"background:#E02F44;color:#fff;padding:1px 6px;border-radius:3px\">✗</span> overdue / absent after completion &nbsp; <span style=\"background:#8F1A2A;color:#fff;padding:1px 6px;border-radius:3px\">rej</span> overdue / producer &nbsp; <span style=\"background:#A352CC;color:#fff;padding:1px 6px;border-radius:3px\">inv</span> invalid &nbsp; <span style=\"background:#D0D0D0;color:#fff;padding:1px 6px;border-radius:3px\">–</span> not expected &nbsp; <span style=\"background:#4D4D4D;color:#fff;padding:1px 6px;border-radius:3px\">?</span> unknown<br/>States come from `solution_day_grid` only (plan §3). Click a station for its data-delivery and receiver dashboards."
-      }
-    },
-    {
       "id": 12,
       "type": "table",
       "title": "Stations with missing solutions",
@@ -565,7 +550,7 @@
         "h": 14,
         "w": 16,
         "x": 0,
-        "y": 6
+        "y": 4
       },
       "targets": [
         {
@@ -915,7 +900,7 @@
         "h": 14,
         "w": 8,
         "x": 16,
-        "y": 6
+        "y": 4
       },
       "targets": [
         {
@@ -1200,6 +1185,317 @@
       }
     },
     {
+      "id": 8,
+      "type": "table",
+      "title": "Problem days",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 14,
+        "x": 0,
+        "y": 18
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT station, day::text AS day, state, reason, fact, code AS fact_code, last_verified_at\nFROM solution_day_grid('${stream}',\n        ($__timeFrom() AT TIME ZONE 'UTC')::date,\n        ($__timeTo() AT TIME ZONE 'UTC')::date,\n        now())\nWHERE station IN (${station:sqlstring}) AND state NOT IN ('available', 'not_expected') AND reason <> 'before_deadline'\nORDER BY CASE state WHEN 'overdue' THEN 1 WHEN 'invalid' THEN 2 WHEN 'unknown' THEN 3 ELSE 4 END, day DESC, station",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "station"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Data delivery (raw / RINEX) for ${__value.raw}",
+                    "url": "/d/gps-data-delivery/gps-data-delivery?var-station=${__value.raw}&${__url_time_range}"
+                  },
+                  {
+                    "title": "Receiver health for ${__value.raw}",
+                    "url": "/d/gps-station-detail/gps-station-detail?var-station=${__value.raw}"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "state"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "available": {
+                        "color": "#37872D",
+                        "index": 0
+                      },
+                      "pending": {
+                        "color": "#3274D9",
+                        "index": 1
+                      },
+                      "overdue": {
+                        "color": "#FF9830",
+                        "index": 2
+                      },
+                      "invalid": {
+                        "color": "#A352CC",
+                        "index": 3
+                      },
+                      "not_expected": {
+                        "color": "#D0D0D0",
+                        "index": 4
+                      },
+                      "unknown": {
+                        "color": "#4D4D4D",
+                        "index": 5
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 9,
+      "type": "table",
+      "title": "Counts by state and reason",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 10,
+        "x": 14,
+        "y": 18
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT state, reason, count(*) AS days FROM solution_day_grid('${stream}',\n        ($__timeFrom() AT TIME ZONE 'UTC')::date,\n        ($__timeTo() AT TIME ZONE 'UTC')::date,\n        now())\nWHERE station IN (${station:sqlstring})\nGROUP BY 1, 2 ORDER BY 1, 2",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "state"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "available": {
+                        "color": "#37872D",
+                        "index": 0
+                      },
+                      "pending": {
+                        "color": "#3274D9",
+                        "index": 1
+                      },
+                      "overdue": {
+                        "color": "#FF9830",
+                        "index": 2
+                      },
+                      "invalid": {
+                        "color": "#A352CC",
+                        "index": 3
+                      },
+                      "not_expected": {
+                        "color": "#D0D0D0",
+                        "index": 4
+                      },
+                      "unknown": {
+                        "color": "#4D4D4D",
+                        "index": 5
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 10,
+      "type": "table",
+      "title": "Recent check runs",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 14,
+        "x": 0,
+        "y": 30
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT checked_at, outcome, error, cell_count,\n       left(roster_version, 12) AS roster_version,\n       window_from::text AS window_from, window_to::text AS window_to\nFROM solution_check_run WHERE stream = '${stream}'\nORDER BY checked_at DESC LIMIT 20",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "outcome"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "ok": {
+                        "color": "green",
+                        "index": 0
+                      },
+                      "source_unavailable": {
+                        "color": "red",
+                        "index": 1
+                      },
+                      "failed": {
+                        "color": "red",
+                        "index": 2
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 11,
+      "type": "table",
+      "title": "Unexpected files and other products (latest ok check)",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 10,
+        "x": 14,
+        "y": 30
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH r AS (SELECT unexpected_files, other_products FROM solution_check_run\n           WHERE stream = '${stream}' AND outcome = 'ok'\n           ORDER BY checked_at DESC LIMIT 1)\nSELECT u ->> 'name' AS file, u ->> 'reason' AS reason\nFROM r, jsonb_array_elements(r.unexpected_files) u\nWHERE u ->> 'reason' NOT IN ('not_local', 'not_in_fleet') OR '${scope}' = 'all'\nUNION ALL\nSELECT o.key || ' (' || o.value || ' files)', 'other product (not checked)'\nFROM r, jsonb_each_text(r.other_products) o\nORDER BY 2, 1",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 6,
+      "type": "text",
+      "title": "",
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 39
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**Legend** &nbsp; <span style=\"background:#37872D;color:#fff;padding:1px 6px;border-radius:3px\">✓</span> available / verified &nbsp; <span style=\"background:#5A7D8C;color:#fff;padding:1px 6px;border-radius:3px\">❄</span> available / frozen &nbsp; <span style=\"background:#8AB8FF;color:#fff;padding:1px 6px;border-radius:3px\">…</span> pending / before deadline &nbsp; <span style=\"background:#3274D9;color:#fff;padding:1px 6px;border-radius:3px\">↻</span> pending / awaiting recheck &nbsp; <span style=\"background:#FF9830;color:#fff;padding:1px 6px;border-radius:3px\">late</span> overdue / no completion record &nbsp; <span style=\"background:#E02F44;color:#fff;padding:1px 6px;border-radius:3px\">✗</span> overdue / absent after completion &nbsp; <span style=\"background:#8F1A2A;color:#fff;padding:1px 6px;border-radius:3px\">rej</span> overdue / producer &nbsp; <span style=\"background:#A352CC;color:#fff;padding:1px 6px;border-radius:3px\">inv</span> invalid &nbsp; <span style=\"background:#D0D0D0;color:#fff;padding:1px 6px;border-radius:3px\">–</span> not expected &nbsp; <span style=\"background:#4D4D4D;color:#fff;padding:1px 6px;border-radius:3px\">?</span> unknown<br/>States come from `solution_day_grid` only (plan §3). Click a station for its data-delivery and receiver dashboards."
+      }
+    },
+    {
       "id": 7,
       "type": "table",
       "title": "Station × UTC day",
@@ -1212,7 +1508,7 @@
         "h": 22,
         "w": 24,
         "x": 0,
-        "y": 20
+        "y": 41
       },
       "targets": [
         {
@@ -1366,302 +1662,6 @@
         "frozenColumns": {
           "left": 1
         }
-      }
-    },
-    {
-      "id": 8,
-      "type": "table",
-      "title": "Problem days",
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "gps_health"
-      },
-      "gridPos": {
-        "h": 12,
-        "w": 14,
-        "x": 0,
-        "y": 42
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "gps_health"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT station, day::text AS day, state, reason, fact, code AS fact_code, last_verified_at\nFROM solution_day_grid('${stream}',\n        ($__timeFrom() AT TIME ZONE 'UTC')::date,\n        ($__timeTo() AT TIME ZONE 'UTC')::date,\n        now())\nWHERE station IN (${station:sqlstring}) AND state NOT IN ('available', 'not_expected') AND reason <> 'before_deadline'\nORDER BY CASE state WHEN 'overdue' THEN 1 WHEN 'invalid' THEN 2 WHEN 'unknown' THEN 3 ELSE 4 END, day DESC, station",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "station"
-            },
-            "properties": [
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "Data delivery (raw / RINEX) for ${__value.raw}",
-                    "url": "/d/gps-data-delivery/gps-data-delivery?var-station=${__value.raw}&${__url_time_range}"
-                  },
-                  {
-                    "title": "Receiver health for ${__value.raw}",
-                    "url": "/d/gps-station-detail/gps-station-detail?var-station=${__value.raw}"
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "state"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "available": {
-                        "color": "#37872D",
-                        "index": 0
-                      },
-                      "pending": {
-                        "color": "#3274D9",
-                        "index": 1
-                      },
-                      "overdue": {
-                        "color": "#FF9830",
-                        "index": 2
-                      },
-                      "invalid": {
-                        "color": "#A352CC",
-                        "index": 3
-                      },
-                      "not_expected": {
-                        "color": "#D0D0D0",
-                        "index": 4
-                      },
-                      "unknown": {
-                        "color": "#4D4D4D",
-                        "index": 5
-                      }
-                    }
-                  }
-                ]
-              },
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "type": "color-text"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "showHeader": true,
-        "cellHeight": "sm"
-      }
-    },
-    {
-      "id": 9,
-      "type": "table",
-      "title": "Counts by state and reason",
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "gps_health"
-      },
-      "gridPos": {
-        "h": 12,
-        "w": 10,
-        "x": 14,
-        "y": 42
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "gps_health"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT state, reason, count(*) AS days FROM solution_day_grid('${stream}',\n        ($__timeFrom() AT TIME ZONE 'UTC')::date,\n        ($__timeTo() AT TIME ZONE 'UTC')::date,\n        now())\nWHERE station IN (${station:sqlstring})\nGROUP BY 1, 2 ORDER BY 1, 2",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "state"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "available": {
-                        "color": "#37872D",
-                        "index": 0
-                      },
-                      "pending": {
-                        "color": "#3274D9",
-                        "index": 1
-                      },
-                      "overdue": {
-                        "color": "#FF9830",
-                        "index": 2
-                      },
-                      "invalid": {
-                        "color": "#A352CC",
-                        "index": 3
-                      },
-                      "not_expected": {
-                        "color": "#D0D0D0",
-                        "index": 4
-                      },
-                      "unknown": {
-                        "color": "#4D4D4D",
-                        "index": 5
-                      }
-                    }
-                  }
-                ]
-              },
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "type": "color-text"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "showHeader": true,
-        "cellHeight": "sm"
-      }
-    },
-    {
-      "id": 10,
-      "type": "table",
-      "title": "Recent check runs",
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "gps_health"
-      },
-      "gridPos": {
-        "h": 9,
-        "w": 14,
-        "x": 0,
-        "y": 54
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "gps_health"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT checked_at, outcome, error, cell_count,\n       left(roster_version, 12) AS roster_version,\n       window_from::text AS window_from, window_to::text AS window_to\nFROM solution_check_run WHERE stream = '${stream}'\nORDER BY checked_at DESC LIMIT 20",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "outcome"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "ok": {
-                        "color": "green",
-                        "index": 0
-                      },
-                      "source_unavailable": {
-                        "color": "red",
-                        "index": 1
-                      },
-                      "failed": {
-                        "color": "red",
-                        "index": 2
-                      }
-                    }
-                  }
-                ]
-              },
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "type": "color-text"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "showHeader": true,
-        "cellHeight": "sm"
-      }
-    },
-    {
-      "id": 11,
-      "type": "table",
-      "title": "Unexpected files and other products (latest ok check)",
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "gps_health"
-      },
-      "gridPos": {
-        "h": 9,
-        "w": 10,
-        "x": 14,
-        "y": 54
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "gps_health"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "WITH r AS (SELECT unexpected_files, other_products FROM solution_check_run\n           WHERE stream = '${stream}' AND outcome = 'ok'\n           ORDER BY checked_at DESC LIMIT 1)\nSELECT u ->> 'name' AS file, u ->> 'reason' AS reason\nFROM r, jsonb_array_elements(r.unexpected_files) u\nWHERE u ->> 'reason' NOT IN ('not_local', 'not_in_fleet') OR '${scope}' = 'all'\nUNION ALL\nSELECT o.key || ' (' || o.value || ' files)', 'other product (not checked)'\nFROM r, jsonb_each_text(r.other_products) o\nORDER BY 2, 1",
-          "refId": "A"
-        }
-      ],
-      "options": {
-        "showHeader": true,
-        "cellHeight": "sm"
       }
     }
   ]
