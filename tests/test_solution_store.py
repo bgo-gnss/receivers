@@ -32,6 +32,7 @@ psycopg2 = pytest.importorskip("psycopg2")
 MIGRATION = (
     Path(__file__).resolve().parents[1] / "migrations" / "077_daily_solutions.sql"
 )
+MIGRATION_078 = MIGRATION.with_name("078_solution_station.sql")
 STREAM = "imo.24hr_itrf14"
 UTC = dt.UTC
 NOW = dt.datetime(2026, 11, 21, 10, 0, tzinfo=UTC)
@@ -105,6 +106,7 @@ def _create_db(admin_dsn: str, *, migrate: bool = True) -> str:
         )
         if migrate:
             cur.execute(MIGRATION.read_text())
+            cur.execute(MIGRATION_078.read_text())
     conn.close()
     return dsn
 
@@ -763,3 +765,43 @@ def test_payload_from_a_real_check_is_accepted_as_is(db, tmp_path):
     report = run_check(src, load_roster(ros), NOW)
     doc = json.loads(json.dumps(report.to_json()))
     assert record_check(db, doc) == "recorded:ok"
+
+
+# ------------------------------------------------- 078: per-station facts
+
+
+def test_station_info_is_recorded_with_the_run_and_never_moved_back(db):
+    def info(at: dt.datetime, run: str, local: bool, agency: str) -> dict:
+        doc = payload()
+        doc["run_id"], doc["checked_at"] = run, at.isoformat()
+        doc["station_info"] = [{"station": "AFST", "local": local, "agency": agency}]
+        return doc
+
+    record_check(db, info(NOW, "00000000-0000-4000-8000-0000000000a1", True, "IMO"))
+    assert q(db, "SELECT station, is_local, agency FROM solution_station") == [
+        ("AFST", True, "IMO")
+    ]
+    # an older run arriving late does not overwrite the newer fact
+    late = NOW - dt.timedelta(hours=1)
+    record_check(db, info(late, "00000000-0000-4000-8000-0000000000a2", False, "X"))
+    assert q(db, "SELECT is_local, agency FROM solution_station") == [(True, "IMO")]
+
+
+def test_a_payload_without_station_info_does_not_need_078(admin_dsn):
+    # record_check calls record_solution_stations only when station_info is
+    # present, so a host without 078 keeps recording runs without it
+    dsn = _create_db(admin_dsn, migrate=False)
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(MIGRATION.read_text())  # 077 only
+        conn.close()
+        assert record_check(dsn, payload()).startswith("recorded")
+        doc = payload()
+        doc["run_id"] = "00000000-0000-4000-8000-0000000000a3"
+        doc["station_info"] = []
+        with pytest.raises(psycopg2.Error):
+            record_check(dsn, doc)
+    finally:
+        _drop_db(admin_dsn, dsn)
