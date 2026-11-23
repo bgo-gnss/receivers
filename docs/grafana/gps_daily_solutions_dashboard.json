@@ -215,7 +215,7 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 5,
+        "w": 4,
         "x": 0,
         "y": 0
       },
@@ -276,8 +276,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 5,
+        "w": 3,
+        "x": 4,
         "y": 0
       },
       "fieldConfig": {
@@ -348,8 +348,8 @@
     {
       "id": 3,
       "type": "stat",
-      "title": "Problem days",
-      "description": "Overdue, invalid, unknown and awaiting-recheck cells in the time range (pending before the deadline is normal and not counted).",
+      "title": "Missing",
+      "description": "Stations whose latest due day is confirmed absent: the processing ran for that day (half the stations have it) and this station is not in it.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "gps_health"
@@ -357,7 +357,7 @@
       "gridPos": {
         "h": 4,
         "w": 5,
-        "x": 9,
+        "x": 7,
         "y": 0
       },
       "fieldConfig": {
@@ -404,7 +404,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT count(*) FILTER (WHERE state NOT IN ('available', 'not_expected') AND reason <> 'before_deadline') AS n FROM solution_day_grid('${stream}',\n        ($__timeFrom() AT TIME ZONE 'UTC')::date,\n        ($__timeTo() AT TIME ZONE 'UTC')::date,\n        now()) WHERE station IN (${station:sqlstring})",
+          "rawSql": "WITH g AS (SELECT * FROM solution_day_grid('${stream}',\n        ($__timeFrom() AT TIME ZONE 'UTC')::date,\n        ($__timeTo() AT TIME ZONE 'UTC')::date,\n        now()) WHERE station IN (${station:sqlstring})),\ndue AS (SELECT * FROM g WHERE state <> 'not_expected' AND reason <> 'before_deadline'),\ncur AS (SELECT DISTINCT ON (station) station, state AS cur_state, reason AS cur_reason\n        FROM due ORDER BY station, day DESC),\nagg AS (SELECT station,\n               max(day) FILTER (WHERE state = 'available') AS last_ok,\n               count(*) FILTER (WHERE state <> 'available') AS problem_days\n        FROM due GROUP BY station),\ngap AS (SELECT d.station, min(d.day) AS since, count(*) AS gap_days\n        FROM due d JOIN agg a USING (station)\n        WHERE d.day > coalesce(a.last_ok, '-infinity'::date)\n        GROUP BY d.station),\nareas AS (SELECT sam.sid,\n                 -- one short label: the volcano area first, then the region;\n                 -- \"+N\" says how many more (the Area filter covers them all)\n                 (array_agg(sa.area_name ORDER BY (sa.area_type = 'volcanic') DESC,\n                            sa.area_name))[1]\n                 || CASE WHEN count(*) > 1 THEN ' +' || (count(*) - 1)::text ELSE '' END\n                   AS area_list\n          FROM station_area_members sam JOIN station_areas sa USING (area_id)\n          GROUP BY sam.sid),\nst AS (\n  SELECT c.station, s.station_name, s.latitude, s.longitude, ar.area_list, x.agency,\n         s.sid AS plot_sid,  -- yang plots only our own stations\n         CASE WHEN c.cur_state = 'overdue' AND c.cur_reason IN\n                   ('absent_after_completion', 'producer_rejected', 'producer_failed') THEN 4\n              WHEN c.cur_state IN ('overdue', 'pending') THEN 3\n              WHEN c.cur_state = 'invalid' THEN 2\n              WHEN c.cur_state = 'unknown' THEN 1\n              ELSE 0 END AS status,\n         CASE WHEN c.cur_state = 'available' THEN NULL\n              WHEN a.last_ok IS NULL THEN '≤ ' || gp.since::text\n              ELSE gp.since::text END AS since,\n         CASE WHEN c.cur_state = 'available' THEN 0 ELSE gp.gap_days END AS gap_days,\n         gp.since AS since_date, a.last_ok, a.problem_days,\n         CASE WHEN c.cur_state = 'available' THEN NULL ELSE c.cur_reason END AS reason\n  FROM cur c JOIN agg a USING (station)\n  LEFT JOIN gap gp USING (station)\n  LEFT JOIN stations s ON s.sid = c.station\n  LEFT JOIN areas ar ON ar.sid = c.station\n  LEFT JOIN solution_station x ON x.station = c.station)\nSELECT count(*) FILTER (WHERE status = 4) AS n FROM st",
           "refId": "A"
         }
       ]
@@ -412,16 +412,16 @@
     {
       "id": 4,
       "type": "stat",
-      "title": "Overdue: confirmed absent",
-      "description": "Only these are confirmed missing. A day's run counts as done when half the expected stations have that day; a station still missing it after the deadline is absent. 'late' means the run for that day is not done.",
+      "title": "Late",
+      "description": "Stations whose latest due day is late (the run for that day is not done), invalid or unknown.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "gps_health"
       },
       "gridPos": {
         "h": 4,
-        "w": 5,
-        "x": 14,
+        "w": 4,
+        "x": 12,
         "y": 0
       },
       "fieldConfig": {
@@ -437,7 +437,7 @@
                 "value": null
               },
               {
-                "color": "red",
+                "color": "orange",
                 "value": 1
               }
             ]
@@ -468,7 +468,71 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT count(*) AS n FROM solution_day_grid('${stream}',\n        ($__timeFrom() AT TIME ZONE 'UTC')::date,\n        ($__timeTo() AT TIME ZONE 'UTC')::date,\n        now()) WHERE station IN (${station:sqlstring}) AND state = 'overdue' AND reason IN ('absent_after_completion', 'producer_rejected', 'producer_failed')",
+          "rawSql": "WITH g AS (SELECT * FROM solution_day_grid('${stream}',\n        ($__timeFrom() AT TIME ZONE 'UTC')::date,\n        ($__timeTo() AT TIME ZONE 'UTC')::date,\n        now()) WHERE station IN (${station:sqlstring})),\ndue AS (SELECT * FROM g WHERE state <> 'not_expected' AND reason <> 'before_deadline'),\ncur AS (SELECT DISTINCT ON (station) station, state AS cur_state, reason AS cur_reason\n        FROM due ORDER BY station, day DESC),\nagg AS (SELECT station,\n               max(day) FILTER (WHERE state = 'available') AS last_ok,\n               count(*) FILTER (WHERE state <> 'available') AS problem_days\n        FROM due GROUP BY station),\ngap AS (SELECT d.station, min(d.day) AS since, count(*) AS gap_days\n        FROM due d JOIN agg a USING (station)\n        WHERE d.day > coalesce(a.last_ok, '-infinity'::date)\n        GROUP BY d.station),\nareas AS (SELECT sam.sid,\n                 -- one short label: the volcano area first, then the region;\n                 -- \"+N\" says how many more (the Area filter covers them all)\n                 (array_agg(sa.area_name ORDER BY (sa.area_type = 'volcanic') DESC,\n                            sa.area_name))[1]\n                 || CASE WHEN count(*) > 1 THEN ' +' || (count(*) - 1)::text ELSE '' END\n                   AS area_list\n          FROM station_area_members sam JOIN station_areas sa USING (area_id)\n          GROUP BY sam.sid),\nst AS (\n  SELECT c.station, s.station_name, s.latitude, s.longitude, ar.area_list, x.agency,\n         s.sid AS plot_sid,  -- yang plots only our own stations\n         CASE WHEN c.cur_state = 'overdue' AND c.cur_reason IN\n                   ('absent_after_completion', 'producer_rejected', 'producer_failed') THEN 4\n              WHEN c.cur_state IN ('overdue', 'pending') THEN 3\n              WHEN c.cur_state = 'invalid' THEN 2\n              WHEN c.cur_state = 'unknown' THEN 1\n              ELSE 0 END AS status,\n         CASE WHEN c.cur_state = 'available' THEN NULL\n              WHEN a.last_ok IS NULL THEN '≤ ' || gp.since::text\n              ELSE gp.since::text END AS since,\n         CASE WHEN c.cur_state = 'available' THEN 0 ELSE gp.gap_days END AS gap_days,\n         gp.since AS since_date, a.last_ok, a.problem_days,\n         CASE WHEN c.cur_state = 'available' THEN NULL ELSE c.cur_reason END AS reason\n  FROM cur c JOIN agg a USING (station)\n  LEFT JOIN gap gp USING (station)\n  LEFT JOIN stations s ON s.sid = c.station\n  LEFT JOIN areas ar ON ar.sid = c.station\n  LEFT JOIN solution_station x ON x.station = c.station)\nSELECT count(*) FILTER (WHERE status IN (1, 2, 3)) AS n FROM st",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "OK",
+      "description": "Stations whose latest due day has a valid solution.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "gps_health"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/.*/",
+          "values": false
+        },
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "gps_health"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH g AS (SELECT * FROM solution_day_grid('${stream}',\n        ($__timeFrom() AT TIME ZONE 'UTC')::date,\n        ($__timeTo() AT TIME ZONE 'UTC')::date,\n        now()) WHERE station IN (${station:sqlstring})),\ndue AS (SELECT * FROM g WHERE state <> 'not_expected' AND reason <> 'before_deadline'),\ncur AS (SELECT DISTINCT ON (station) station, state AS cur_state, reason AS cur_reason\n        FROM due ORDER BY station, day DESC),\nagg AS (SELECT station,\n               max(day) FILTER (WHERE state = 'available') AS last_ok,\n               count(*) FILTER (WHERE state <> 'available') AS problem_days\n        FROM due GROUP BY station),\ngap AS (SELECT d.station, min(d.day) AS since, count(*) AS gap_days\n        FROM due d JOIN agg a USING (station)\n        WHERE d.day > coalesce(a.last_ok, '-infinity'::date)\n        GROUP BY d.station),\nareas AS (SELECT sam.sid,\n                 -- one short label: the volcano area first, then the region;\n                 -- \"+N\" says how many more (the Area filter covers them all)\n                 (array_agg(sa.area_name ORDER BY (sa.area_type = 'volcanic') DESC,\n                            sa.area_name))[1]\n                 || CASE WHEN count(*) > 1 THEN ' +' || (count(*) - 1)::text ELSE '' END\n                   AS area_list\n          FROM station_area_members sam JOIN station_areas sa USING (area_id)\n          GROUP BY sam.sid),\nst AS (\n  SELECT c.station, s.station_name, s.latitude, s.longitude, ar.area_list, x.agency,\n         s.sid AS plot_sid,  -- yang plots only our own stations\n         CASE WHEN c.cur_state = 'overdue' AND c.cur_reason IN\n                   ('absent_after_completion', 'producer_rejected', 'producer_failed') THEN 4\n              WHEN c.cur_state IN ('overdue', 'pending') THEN 3\n              WHEN c.cur_state = 'invalid' THEN 2\n              WHEN c.cur_state = 'unknown' THEN 1\n              ELSE 0 END AS status,\n         CASE WHEN c.cur_state = 'available' THEN NULL\n              WHEN a.last_ok IS NULL THEN '≤ ' || gp.since::text\n              ELSE gp.since::text END AS since,\n         CASE WHEN c.cur_state = 'available' THEN 0 ELSE gp.gap_days END AS gap_days,\n         gp.since AS since_date, a.last_ok, a.problem_days,\n         CASE WHEN c.cur_state = 'available' THEN NULL ELSE c.cur_reason END AS reason\n  FROM cur c JOIN agg a USING (station)\n  LEFT JOIN gap gp USING (station)\n  LEFT JOIN stations s ON s.sid = c.station\n  LEFT JOIN areas ar ON ar.sid = c.station\n  LEFT JOIN solution_station x ON x.station = c.station)\nSELECT count(*) FILTER (WHERE status = 0) AS n FROM st",
           "refId": "A"
         }
       ]
@@ -484,8 +548,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 5,
-        "x": 19,
+        "w": 4,
+        "x": 20,
         "y": 0
       },
       "fieldConfig": {
